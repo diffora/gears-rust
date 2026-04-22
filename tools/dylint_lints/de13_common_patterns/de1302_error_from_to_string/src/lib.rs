@@ -26,8 +26,9 @@ dylint_linting::declare_late_lint! {
     ///
     /// ### Why is this bad?
     ///
-    /// When you call `e.to_string()` inside a `From` impl, you convert the original
-    /// error to a string and discard it. The resulting error:
+    /// When you call `e.to_string()` inside a `From` or `TryFrom` impl, you
+    /// convert the original error to a string and discard it. The resulting
+    /// error:
     /// - Has no `.source()` (error chain is broken)
     /// - Cannot be matched or downcast by callers
     /// - Loses structured metadata (error codes, fields, etc.)
@@ -115,7 +116,7 @@ impl<'tcx> ToStringVisitor<'tcx, '_> {
     fn emit(&self, span: rustc_span::Span) {
         self.cx.span_lint(DE1302_ERROR_FROM_TO_STRING, span, |diag| {
             diag.primary_message(
-                "`.to_string()` in `From` impl destroys the error chain (DE1302)",
+                "`.to_string()` in `From`/`TryFrom` impl destroys the error chain (DE1302)",
             );
             diag.help(
                 "store the source error directly, use an enum variant, or use `#[from]` with thiserror",
@@ -143,6 +144,18 @@ impl<'tcx> ToStringVisitor<'tcx, '_> {
             return true;
         }
         inner == self.source_ty && implements_error(self.cx, inner)
+    }
+
+    /// Walk a closure's body with the closure's own typeck results installed.
+    /// Uses `std::mem::replace` for the swap so the restore is a single
+    /// unambiguous assignment. Panic-safety is intentionally not provided —
+    /// if `walk_expr` panics, rustc is already unwinding out of a lint pass
+    /// and per-visitor state is moot.
+    fn visit_closure_body(&mut self, closure: &'tcx hir::Closure<'tcx>) {
+        let body = self.cx.tcx.hir_body(closure.body);
+        let prev = std::mem::replace(&mut self.typeck, self.cx.tcx.typeck(closure.def_id));
+        hir::intravisit::walk_expr(self, body.value);
+        self.typeck = prev;
     }
 }
 
@@ -204,14 +217,11 @@ impl<'tcx> hir::intravisit::Visitor<'tcx> for ToStringVisitor<'tcx, '_> {
                     }
                 }
             }
-            // Closures have their own typeck tables. Swap the typeck context so
-            // expressions inside `|e| e.to_string()` keep being checked correctly.
+            // Closures have their own typeck tables; delegate to a helper
+            // that swaps `self.typeck`, walks the body, and restores the
+            // outer tables before returning.
             ExprKind::Closure(closure) => {
-                let outer_typeck = self.typeck;
-                self.typeck = self.cx.tcx.typeck(closure.def_id);
-                let body = self.cx.tcx.hir_body(closure.body);
-                hir::intravisit::walk_expr(self, body.value);
-                self.typeck = outer_typeck;
+                self.visit_closure_body(closure);
                 return;
             }
             _ => {}

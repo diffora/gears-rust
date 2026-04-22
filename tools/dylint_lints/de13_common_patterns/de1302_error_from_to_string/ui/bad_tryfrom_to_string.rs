@@ -26,16 +26,12 @@ impl fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
+// Intentionally NOT `impl Error for ConversionRejected` — this test exercises
+// the path where the source (`DatabaseError`) is the Error-implementing gate
+// trigger, not the associated `Error` type. That way the lint's firing here
+// depends only on the source-type match, not on the assoc-type gate.
 #[derive(Debug)]
 struct ConversionRejected;
-
-impl fmt::Display for ConversionRejected {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "rejected")
-    }
-}
-
-impl std::error::Error for ConversionRejected {}
 
 // `TryFrom` impls are also covered.
 impl TryFrom<DatabaseError> for AppError {

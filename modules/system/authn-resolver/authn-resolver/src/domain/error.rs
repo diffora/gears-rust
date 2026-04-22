@@ -29,28 +29,30 @@ pub enum DomainError {
     Internal(String),
 }
 
-// TODO(DE1302): `DomainError::Internal` only carries a String, so these From
-// impls drop the source error. Extend the variant to hold a boxed source (or
-// introduce typed variants) so `.source()` returns the original error, then
-// remove these allows.
+// TODO(DE1302): `DomainError::Internal` only carries a String, so the From
+// impls below drop the source error. Extend the variant to hold a boxed
+// source (or introduce typed variants) so `.source()` returns the original
+// error, then remove this allow.
 #[allow(unknown_lints, de1302_error_from_to_string)]
-impl From<types_registry_sdk::TypesRegistryError> for DomainError {
-    fn from(e: types_registry_sdk::TypesRegistryError) -> Self {
-        Self::Internal(e.to_string())
-    }
-}
+mod error_froms {
+    use super::DomainError;
 
-#[allow(unknown_lints, de1302_error_from_to_string)]
-impl From<modkit::client_hub::ClientHubError> for DomainError {
-    fn from(e: modkit::client_hub::ClientHubError) -> Self {
-        Self::Internal(e.to_string())
+    impl From<types_registry_sdk::TypesRegistryError> for DomainError {
+        fn from(e: types_registry_sdk::TypesRegistryError) -> Self {
+            Self::Internal(e.to_string())
+        }
     }
-}
 
-#[allow(unknown_lints, de1302_error_from_to_string)]
-impl From<serde_json::Error> for DomainError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Internal(e.to_string())
+    impl From<modkit::client_hub::ClientHubError> for DomainError {
+        fn from(e: modkit::client_hub::ClientHubError) -> Self {
+            Self::Internal(e.to_string())
+        }
+    }
+
+    impl From<serde_json::Error> for DomainError {
+        fn from(e: serde_json::Error) -> Self {
+            Self::Internal(e.to_string())
+        }
     }
 }
 

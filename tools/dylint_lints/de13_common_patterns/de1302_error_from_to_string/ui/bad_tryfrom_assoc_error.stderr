@@ -1,4 +1,4 @@
-error: `.to_string()` in `From` impl destroys the error chain (DE1302)
+error: `.to_string()` in `From`/`TryFrom` impl destroys the error chain (DE1302)
   --> $DIR/bad_tryfrom_assoc_error.rs:50:37
    |
 LL |             return Err(MyErr { msg: inner.to_string(), source: None });

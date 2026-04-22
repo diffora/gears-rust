@@ -1,4 +1,4 @@
-error: `.to_string()` in `From` impl destroys the error chain (DE1302)
+error: `.to_string()` in `From`/`TryFrom` impl destroys the error chain (DE1302)
   --> $DIR/bad_macro_rules.rs:37:9
    |
 LL |         $e.to_string()

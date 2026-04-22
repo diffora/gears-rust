@@ -1,4 +1,4 @@
-error: `.to_string()` in `From` impl destroys the error chain (DE1302)
+error: `.to_string()` in `From`/`TryFrom` impl destroys the error chain (DE1302)
   --> $DIR/bad_ufcs_to_string.rs:30:18
    |
 LL |         AppError(ToString::to_string(&e))
