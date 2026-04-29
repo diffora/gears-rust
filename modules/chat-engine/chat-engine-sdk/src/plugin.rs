@@ -140,13 +140,24 @@ impl PluginCallContext {
         self.cancel.is_cancelled()
     }
 
-    /// Remaining time until the deadline, or `None` if no deadline is set
-    /// or it has already elapsed. Plugins typically pass this to
-    /// `tokio::time::timeout(...)` or `reqwest::Client::timeout(...)`.
+    /// Remaining time until the deadline.
+    ///
+    /// - `None` — no deadline was set; the plugin may use its own default budget.
+    /// - `Some(Duration::ZERO)` — deadline has already elapsed; the plugin
+    ///   should abort immediately (typically returning `PluginError::timeout()`).
+    /// - `Some(d)` where `d > 0` — `d` of budget remains. Plugins typically
+    ///   pass this to `tokio::time::timeout(...)` or `reqwest::Client::timeout(...)`.
+    ///
+    /// **Important**: collapsing "no deadline" and "elapsed" into `None`
+    /// would be a footgun (`.unwrap_or(default)` would let elapsed deadlines
+    /// silently extend their budget). Callers must handle the three cases
+    /// distinctly.
     #[must_use]
     pub fn remaining(&self) -> Option<Duration> {
-        self.deadline
-            .and_then(|d| d.checked_duration_since(Instant::now()))
+        self.deadline.map(|d| {
+            d.checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO)
+        })
     }
 }
 
@@ -233,10 +244,26 @@ mod plugin_call_context_tests {
     }
 
     #[test]
-    fn remaining_is_none_when_deadline_already_elapsed() {
+    fn remaining_is_zero_when_deadline_already_elapsed() {
         let mut ctx = make_ctx();
         ctx.deadline = Some(Instant::now() - Duration::from_secs(1));
-        assert!(ctx.remaining().is_none());
+        // Elapsed deadlines must be Some(ZERO), not None — the latter would
+        // be indistinguishable from "no deadline set" and let plugins
+        // silently extend their budget via `.unwrap_or(default)`.
+        assert_eq!(ctx.remaining(), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn remaining_is_zero_at_exact_deadline() {
+        let mut ctx = make_ctx();
+        ctx.deadline = Some(Instant::now());
+        // Race-tolerant: anything <= 0 is Some(ZERO); a tiny positive value
+        // is also acceptable but should be sub-millisecond.
+        let r = ctx.remaining().expect("deadline is set");
+        assert!(
+            r <= Duration::from_millis(1),
+            "expected ~ZERO, got {r:?}"
+        );
     }
 }
 
