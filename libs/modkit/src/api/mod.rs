@@ -21,7 +21,7 @@ mod odata_policy_tests;
 
 pub use canonical_error_layer::canonical_error_middleware;
 pub use error_layer::{
-    IntoProblem, error_mapping_middleware, extract_trace_id, map_error_to_problem,
+    IntoCanonical, error_mapping_middleware, extract_trace_id, map_error_to_canonical,
 };
 pub use openapi_registry::{OpenApiInfo, OpenApiRegistry, OpenApiRegistryImpl, ensure_schema};
 pub use operation_builder::{

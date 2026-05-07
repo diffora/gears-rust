@@ -1,46 +1,22 @@
 //! Centralized error mapping for Axum
 //!
-//! This module provides utilities for automatically converting all framework
-//! and module errors into consistent RFC 9457 Problem+JSON responses, eliminating
-//! per-route boilerplate.
+//! Converts framework and module errors into `CanonicalError`. Wire rendering
+//! (RFC 9457 `application/problem+json`), `instance`, and `trace_id` are
+//! attached by `IntoResponse for CanonicalError` plus the
+//! `canonical_error_middleware` (`crate::api::canonical_error_layer`).
 
 use axum::{extract::Request, http::HeaderMap, middleware::Next, response::Response};
-use http::StatusCode;
 use std::any::Any;
 
-use crate::api::problem::Problem;
 use crate::config::ConfigError;
+use modkit_canonical_errors::CanonicalError;
 use modkit_odata::Error as ODataError;
 
-/// Middleware function that provides centralized error mapping
-///
-/// This middleware can be applied to routes to automatically extract request context
-/// and provide it to error handlers. The actual error conversion happens in the
-/// `IntoProblem` trait implementations and `map_error_to_problem` function.
+/// Passthrough middleware kept for backwards compatibility with the api-gateway
+/// layer stack. The real work (logging `diagnostic()`, filling `trace_id` /
+/// `instance`) is now done by `canonical_error_middleware`.
 pub async fn error_mapping_middleware(request: Request, next: Next) -> Response {
-    let _uri = request.uri().clone();
-    let _headers = request.headers().clone();
-
-    let response = next.run(request).await;
-
-    // If the response is already successful or is already a Problem response, pass it through
-    if response.status().is_success() || is_problem_response(&response) {
-        return response;
-    }
-
-    // For error responses, the actual error conversion should happen in the handlers
-    // using the IntoProblem trait or map_error_to_problem function
-    // This middleware provides the infrastructure for extracting request context
-    response
-}
-
-/// Check if a response is already a Problem+JSON response
-fn is_problem_response(response: &Response) -> bool {
-    response
-        .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.contains("application/problem+json"))
+    next.run(request).await
 }
 
 /// Extract trace ID from headers or generate one
@@ -60,131 +36,81 @@ pub fn extract_trace_id(headers: &HeaderMap) -> Option<String> {
         })
 }
 
-/// Centralized error mapping function
+/// Centralized downcast-based error mapping.
 ///
-/// This function provides a single place to convert all framework and module errors
-/// into consistent Problem responses with proper trace IDs and instance paths.
-pub fn map_error_to_problem(error: &dyn Any, instance: &str, trace_id: Option<String>) -> Problem {
-    // Try to downcast to known error types
+/// Converts known framework and module error types into `CanonicalError`. The
+/// descriptive detail for `Internal`-category mappings flows into the
+/// canonical's `ctx.description` (recoverable via `diagnostic()`) so the
+/// `canonical_error_middleware` can log it server-side without leaking onto
+/// the wire (`detail` stays opaque per DESIGN.md §3.6).
+#[must_use]
+pub fn map_error_to_canonical(error: &dyn Any) -> CanonicalError {
     if let Some(odata_err) = error.downcast_ref::<ODataError>() {
-        return crate::api::odata::error::odata_error_to_problem(odata_err, instance, trace_id);
+        return CanonicalError::from(odata_err.clone());
     }
 
     if let Some(config_err) = error.downcast_ref::<ConfigError>() {
-        let mut problem = match config_err {
-            ConfigError::ModuleNotFound { module } => Problem::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Configuration Error",
-                format!("Module '{module}' configuration not found"),
-            )
-            .with_code("CONFIG_MODULE_NOT_FOUND")
-            .with_type("https://errors.example.com/CONFIG_MODULE_NOT_FOUND"),
-
-            ConfigError::InvalidModuleStructure { module } => Problem::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Configuration Error",
-                format!("Module '{module}' has invalid configuration structure"),
-            )
-            .with_code("CONFIG_INVALID_STRUCTURE")
-            .with_type("https://errors.example.com/CONFIG_INVALID_STRUCTURE"),
-
-            ConfigError::MissingConfigSection { module } => Problem::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Configuration Error",
-                format!("Module '{module}' is missing required config section"),
-            )
-            .with_code("CONFIG_MISSING_SECTION")
-            .with_type("https://errors.example.com/CONFIG_MISSING_SECTION"),
-
-            ConfigError::InvalidConfig { module, .. } => Problem::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Configuration Error",
-                format!("Module '{module}' has invalid configuration"),
-            )
-            .with_code("CONFIG_INVALID")
-            .with_type("https://errors.example.com/CONFIG_INVALID"),
-
+        let detail = match config_err {
+            ConfigError::ModuleNotFound { module } => {
+                format!("Module '{module}' configuration not found")
+            }
+            ConfigError::InvalidModuleStructure { module } => {
+                format!("Module '{module}' has invalid configuration structure")
+            }
+            ConfigError::MissingConfigSection { module } => {
+                format!("Module '{module}' is missing required config section")
+            }
+            ConfigError::InvalidConfig { module, .. } => {
+                format!("Module '{module}' has invalid configuration")
+            }
             ConfigError::VarExpand { module, source } => {
+                // The `source` carries the failing env-var name. It is logged
+                // locally for operators but intentionally NOT placed into the
+                // canonical's diagnostic — `diagnostic()` is exposed through
+                // `canonical_error_middleware` and we keep the env-var name
+                // out of any path that could reach a downstream consumer.
                 tracing::error!(
                     module = %module,
                     error = %source,
                     "Environment variable expansion failed in module config"
                 );
-                Problem::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Configuration Error",
-                    format!("Module '{module}' has invalid environment-backed configuration"),
-                )
-                .with_code("CONFIG_ENV_EXPAND")
-                .with_type("https://errors.example.com/CONFIG_ENV_EXPAND")
+                format!("Module '{module}' has invalid environment-backed configuration")
             }
         };
-
-        problem = problem.with_instance(instance);
-        if let Some(tid) = trace_id {
-            problem = problem.with_trace_id(tid);
-        }
-        return problem;
+        return CanonicalError::internal(detail).create();
     }
 
-    // Handle anyhow::Error
     if let Some(anyhow_err) = error.downcast_ref::<anyhow::Error>() {
-        let mut problem = Problem::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal Server Error",
-            "An internal error occurred",
-        )
-        .with_code("INTERNAL_ERROR")
-        .with_type("https://errors.example.com/INTERNAL_ERROR");
-
-        problem = problem.with_instance(instance);
-        if let Some(tid) = trace_id {
-            problem = problem.with_trace_id(tid);
-        }
-
-        // Log the full error for debugging
-        tracing::error!(error = %anyhow_err, "Internal server error");
-        return problem;
+        return CanonicalError::internal(format!("{anyhow_err:#}")).create();
     }
 
-    // Fallback for unknown error types
-    let mut problem = Problem::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Unknown Error",
-        "An unknown error occurred",
-    )
-    .with_code("UNKNOWN_ERROR")
-    .with_type("https://errors.example.com/UNKNOWN_ERROR");
-
-    problem = problem.with_instance(instance);
-    if let Some(tid) = trace_id {
-        problem = problem.with_trace_id(tid);
-    }
-
-    tracing::error!("Unknown error type in error mapping layer");
-    problem
+    CanonicalError::internal("unknown error type in error mapping layer").create()
 }
 
-/// Helper trait for converting errors to Problem responses with context
-pub trait IntoProblem {
-    fn into_problem(self, instance: &str, trace_id: Option<String>) -> Problem;
+/// Helper trait for converting concrete error types into `CanonicalError`.
+///
+/// Prefer `impl From<E> for CanonicalError` for new error types — this trait
+/// exists for cases where the conversion is performed through a dynamic
+/// downcast (see [`map_error_to_canonical`]).
+pub trait IntoCanonical {
+    fn into_canonical(self) -> CanonicalError;
 }
 
-impl IntoProblem for ODataError {
-    fn into_problem(self, instance: &str, trace_id: Option<String>) -> Problem {
-        crate::api::odata::error::odata_error_to_problem(&self, instance, trace_id)
+impl IntoCanonical for ODataError {
+    fn into_canonical(self) -> CanonicalError {
+        CanonicalError::from(self)
     }
 }
 
-impl IntoProblem for ConfigError {
-    fn into_problem(self, instance: &str, trace_id: Option<String>) -> Problem {
-        map_error_to_problem(&self as &dyn Any, instance, trace_id)
+impl IntoCanonical for ConfigError {
+    fn into_canonical(self) -> CanonicalError {
+        map_error_to_canonical(&self as &dyn Any)
     }
 }
 
-impl IntoProblem for anyhow::Error {
-    fn into_problem(self, instance: &str, trace_id: Option<String>) -> Problem {
-        map_error_to_problem(&self as &dyn Any, instance, trace_id)
+impl IntoCanonical for anyhow::Error {
+    fn into_canonical(self) -> CanonicalError {
+        map_error_to_canonical(&self as &dyn Any)
     }
 }
 
@@ -192,76 +118,86 @@ impl IntoProblem for anyhow::Error {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use modkit_canonical_errors::Problem;
 
     #[test]
-    fn test_odata_error_mapping() {
-        let error = ODataError::InvalidFilter("malformed".to_owned());
-        let problem = error.into_problem("/tests/v1/test", Some("trace123".to_owned()));
+    fn odata_error_maps_to_invalid_argument() {
+        let canonical = ODataError::InvalidFilter("malformed".to_owned()).into_canonical();
+        assert_eq!(canonical.status_code(), 400);
+        assert!(canonical.gts_type().contains("invalid_argument"));
 
-        assert_eq!(problem.status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(problem.code.contains("invalid_filter"));
-        assert_eq!(problem.instance, "/tests/v1/test");
-        assert_eq!(problem.trace_id, Some("trace123".to_owned()));
+        // Wire serialization shape — instance / trace_id are filled by middleware.
+        let problem = Problem::from(canonical);
+        assert_eq!(problem.status, 400);
+        assert!(problem.instance.is_none());
     }
 
     #[test]
-    fn test_config_error_mapping() {
-        let error = ConfigError::ModuleNotFound {
+    fn config_module_not_found_preserves_diagnostic() {
+        let canonical = ConfigError::ModuleNotFound {
             module: "test_module".to_owned(),
-        };
-        let problem = error.into_problem("/tests/v1/test", None);
+        }
+        .into_canonical();
 
-        assert_eq!(problem.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(problem.code, "CONFIG_MODULE_NOT_FOUND");
-        assert_eq!(problem.instance, "/tests/v1/test");
-        assert!(problem.detail.contains("test_module"));
+        assert_eq!(canonical.status_code(), 500);
+        assert!(canonical.gts_type().contains("internal"));
+
+        // Module name reaches `diagnostic()` (logged by middleware) but never
+        // the wire `detail` (which stays the canonical opaque string).
+        let diag = canonical.diagnostic().expect("Internal carries diagnostic");
+        assert!(diag.contains("test_module"), "diagnostic was {diag:?}");
+
+        let problem = Problem::from(canonical);
+        assert!(
+            !problem.detail.contains("test_module"),
+            "wire detail leaked module name: {}",
+            problem.detail
+        );
     }
 
     #[test]
-    fn test_anyhow_error_mapping() {
-        let error = anyhow::anyhow!("Something went wrong");
-        let problem = error.into_problem("/tests/v1/test", Some("trace456".to_owned()));
-
-        assert_eq!(problem.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(problem.code, "INTERNAL_ERROR");
-        assert_eq!(problem.instance, "/tests/v1/test");
-        assert_eq!(problem.trace_id, Some("trace456".to_owned()));
+    fn anyhow_error_preserves_diagnostic() {
+        let canonical = anyhow::anyhow!("Something went wrong").into_canonical();
+        assert_eq!(canonical.status_code(), 500);
+        let diag = canonical.diagnostic().expect("Internal carries diagnostic");
+        assert!(diag.contains("Something went wrong"));
     }
 
     #[test]
-    fn test_config_var_expand_error_sanitizes_detail() {
+    fn config_var_expand_redacts_env_and_source_from_diagnostic() {
         let source = modkit_utils::var_expand::ExpandVarsError::Var {
             name: "SECRET_API_KEY".to_owned(),
             source: std::env::VarError::NotPresent,
         };
-        let error = ConfigError::VarExpand {
+        let canonical = ConfigError::VarExpand {
             module: "my_mod".to_owned(),
             source,
-        };
-        let problem = error.into_problem("/tests/v1/test", Some("trace789".to_owned()));
+        }
+        .into_canonical();
 
-        assert_eq!(problem.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(problem.code, "CONFIG_ENV_EXPAND");
-        assert_eq!(
-            problem.type_url,
-            "https://errors.example.com/CONFIG_ENV_EXPAND"
-        );
-        assert_eq!(problem.instance, "/tests/v1/test");
-        assert_eq!(problem.trace_id, Some("trace789".to_owned()));
+        assert_eq!(canonical.status_code(), 500);
 
-        // Detail MUST NOT leak the env var name or the underlying error message.
+        // The env-var name and the source error message MUST NOT reach either
+        // the wire or the diagnostic — only the module name is allowed
+        // through, and only via `diagnostic()`.
+        let diag = canonical.diagnostic().expect("Internal carries diagnostic");
         assert!(
-            !problem.detail.contains("SECRET_API_KEY"),
-            "detail must not contain env var name, got: {}",
-            problem.detail,
+            !diag.contains("SECRET_API_KEY"),
+            "diagnostic leaked env var name: {diag}"
         );
         assert!(
-            !problem.detail.contains("not present"),
-            "detail must not contain source error text, got: {}",
-            problem.detail,
+            !diag.contains("not present"),
+            "diagnostic leaked source text: {diag}"
         );
-        // It should still mention the module name (non-sensitive).
-        assert!(problem.detail.contains("my_mod"));
+        assert!(
+            diag.contains("my_mod"),
+            "diagnostic dropped module name: {diag}"
+        );
+
+        let problem = Problem::from(canonical);
+        assert!(!problem.detail.contains("SECRET_API_KEY"));
+        assert!(!problem.detail.contains("not present"));
+        assert!(!problem.detail.contains("my_mod"));
     }
 
     #[test]

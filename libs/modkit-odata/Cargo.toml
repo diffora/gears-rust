@@ -21,8 +21,7 @@ workspace = true
 with-utoipa = ["dep:utoipa"]
 
 [dependencies]
-modkit-errors = { workspace = true }
-modkit-errors-macro = { workspace = true }
+modkit-canonical-errors = { workspace = true }
 bigdecimal = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true, default-features = false, features = ["clock"] }
@@ -36,3 +35,4 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 utoipa = { workspace = true, optional = true }
 http = { workspace = true }
+tracing = { workspace = true }

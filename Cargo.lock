@@ -2561,8 +2561,7 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "chrono-tz",
- "cyberware-modkit-errors",
- "cyberware-modkit-errors-macro",
+ "cyberware-modkit-canonical-errors",
  "hex",
  "http",
  "peg",
@@ -2570,6 +2569,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "tracing",
  "utoipa",
  "uuid",
 ]
