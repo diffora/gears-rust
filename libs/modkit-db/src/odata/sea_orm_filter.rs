@@ -500,6 +500,93 @@ where
     Mapper: Fn(E::Model) -> D,
     C: DBRunner,
 {
+    let (rows, page_info) =
+        paginate_odata_collect::<F, M, E, C>(select, conn, query, tiebreaker, limit_cfg).await?;
+    let items = rows.into_iter().map(model_to_domain).collect();
+    Ok(Page { items, page_info })
+}
+
+/// Sibling of [`paginate_odata`] for callers whose `model -> domain`
+/// mapping is **fallible** — e.g. when a domain enum is reconstructed
+/// from a `SMALLINT` column whose values are pinned by a DDL `CHECK`
+/// constraint but could in theory drift on legacy / manually-repaired
+/// databases. Instead of panicking in the mapper, the error is
+/// propagated through the typed [`PaginateOdataTryError`] wrapper so
+/// the caller decides whether the row-shape drift surfaces as 500
+/// (`Internal`) or some other category.
+///
+/// Existing infallible callers should keep using [`paginate_odata`];
+/// this variant is additive and the two share the internal
+/// pagination machinery (`paginate_odata_collect`) so cursor / filter
+/// / ordering semantics stay identical.
+///
+/// # Errors
+/// * [`PaginateOdataTryError::OData`] — same set of failures
+///   [`paginate_odata`] surfaces (filter / cursor / DB).
+/// * [`PaginateOdataTryError::MapError`] — first mapper failure
+///   short-circuits the page assembly with the caller's domain error
+///   verbatim.
+pub async fn paginate_odata_try<F, M, E, D, Mapper, MapErr, C>(
+    select: SecureSelect<E, Scoped>,
+    conn: &C,
+    query: &modkit_odata::ODataQuery,
+    tiebreaker: (&str, SortDir),
+    limit_cfg: LimitCfg,
+    model_to_domain: Mapper,
+) -> Result<Page<D>, PaginateOdataTryError<MapErr>>
+where
+    F: FilterField,
+    M: ODataFieldMapping<F, Entity = E>,
+    E: EntityTrait,
+    Mapper: Fn(E::Model) -> Result<D, MapErr>,
+    C: DBRunner,
+{
+    let (rows, page_info) =
+        paginate_odata_collect::<F, M, E, C>(select, conn, query, tiebreaker, limit_cfg)
+            .await
+            .map_err(PaginateOdataTryError::OData)?;
+    let items = rows
+        .into_iter()
+        .map(model_to_domain)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(PaginateOdataTryError::MapError)?;
+    Ok(Page { items, page_info })
+}
+
+/// Error envelope for [`paginate_odata_try`]. Carries the
+/// caller's `MapErr` verbatim so the AM domain-error mapping
+/// (`DomainError::Internal { diagnostic, cause }`) is preserved
+/// across the helper boundary.
+#[derive(thiserror::Error, Debug)]
+pub enum PaginateOdataTryError<MapErr> {
+    /// `OData` / filter / cursor / DB failure — identical category set to
+    /// what plain [`paginate_odata`] would surface.
+    #[error("OData pagination failed: {0}")]
+    OData(#[from] ODataError),
+    /// Caller's `model -> domain` mapping failed on a row. The first
+    /// failure short-circuits page assembly.
+    #[error("model→domain mapping failed: {0}")]
+    MapError(MapErr),
+}
+
+/// Internal page-collector shared by [`paginate_odata`] and
+/// [`paginate_odata_try`]. Returns the raw `Vec<E::Model>` rows plus
+/// the assembled [`PageInfo`] (cursor tokens + clamped limit) so the
+/// public wrappers can apply either an infallible or a fallible
+/// `model -> domain` projection on top.
+async fn paginate_odata_collect<F, M, E, C>(
+    select: SecureSelect<E, Scoped>,
+    conn: &C,
+    query: &modkit_odata::ODataQuery,
+    tiebreaker: (&str, SortDir),
+    limit_cfg: LimitCfg,
+) -> Result<(Vec<E::Model>, PageInfo), ODataError>
+where
+    F: FilterField,
+    M: ODataFieldMapping<F, Entity = E>,
+    E: EntityTrait,
+    C: DBRunner,
+{
     let limit = clamp_limit(query.limit, limit_cfg);
     let fetch = limit + 1;
 
@@ -617,16 +704,14 @@ where
         None
     };
 
-    let items = rows.into_iter().map(model_to_domain).collect();
-
-    Ok(Page {
-        items,
-        page_info: PageInfo {
+    Ok((
+        rows,
+        PageInfo {
             next_cursor,
             prev_cursor,
             limit,
         },
-    })
+    ))
 }
 
 /// Build a cursor from rows, using either the first or last row

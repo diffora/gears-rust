@@ -1881,6 +1881,7 @@ name = "cyberware-account-management"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "cyberware-account-management-sdk",
  "cyberware-authz-resolver-sdk",
@@ -1899,6 +1900,8 @@ dependencies = [
  "futures",
  "gts",
  "jsonschema",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "parking_lot",
  "proptest",
  "sea-orm",
@@ -1922,15 +1925,18 @@ version = "0.1.1"
 dependencies = [
  "async-trait",
  "cyberware-modkit",
- "cyberware-modkit-canonical-errors",
  "cyberware-modkit-gts",
  "cyberware-modkit-odata",
+ "cyberware-modkit-odata-macros",
+ "cyberware-modkit-security",
  "cyberware-tenant-resolver-sdk",
  "gts",
  "gts-macros",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+ "time",
  "tokio",
  "uuid",
 ]
