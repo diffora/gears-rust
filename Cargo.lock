@@ -4096,6 +4096,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gts-analyze"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "proc-macro2",
+ "regex",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "walkdir",
+]
+
+[[package]]
 name = "gts-id"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

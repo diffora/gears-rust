@@ -24,6 +24,7 @@ debug = "line-tables-only"
 [workspace]
 members = [
     "apps/cyberware-example-server",
+    "tools/gts-analyze",
     "tools/xtask",
     "libs/modkit",
     "libs/modkit-macros",
