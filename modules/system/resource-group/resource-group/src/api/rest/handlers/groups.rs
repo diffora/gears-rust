@@ -9,8 +9,7 @@ use axum::http::Uri;
 use axum::response::IntoResponse;
 use tracing::field::Empty;
 
-use modkit::api::odata::OData;
-use modkit::api::prelude::*;
+use modkit::api::canonical_prelude::*;
 
 use super::{CreateGroupDto, GroupDto, GroupWithDepthDto, SecurityContext, UpdateGroupDto, info};
 use crate::module::ConcreteGroupService;

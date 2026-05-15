@@ -9,6 +9,31 @@
 
 use cyberware_resource_group::domain::error::DomainError;
 use cyberware_resource_group::domain::validation::{self, RG_TYPE_PREFIX};
+use modkit_canonical_errors::{CanonicalError, Problem};
+
+/// Build the wire `Problem` the canonical error middleware would emit
+/// for a given `DomainError`. The integration tests run without the
+/// middleware in scope, so `instance` / `trace_id` stay `None` here —
+/// that injection is exercised by integration tests that drive the full
+/// router.
+fn wire(err: DomainError) -> Problem {
+    Problem::from(CanonicalError::from(err))
+}
+
+// Canonical category problem-type URIs. See
+// `docs/arch/errors/categories/*.md`.
+const NOT_FOUND_TYPE: &str = "gts://gts.cf.core.errors.err.v1~cf.core.err.not_found.v1~";
+const ALREADY_EXISTS_TYPE: &str = "gts://gts.cf.core.errors.err.v1~cf.core.err.already_exists.v1~";
+const INVALID_ARGUMENT_TYPE: &str =
+    "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~";
+const FAILED_PRECONDITION_TYPE: &str =
+    "gts://gts.cf.core.errors.err.v1~cf.core.err.failed_precondition.v1~";
+const PERMISSION_DENIED_TYPE: &str =
+    "gts://gts.cf.core.errors.err.v1~cf.core.err.permission_denied.v1~";
+const INTERNAL_TYPE: &str = "gts://gts.cf.core.errors.err.v1~cf.core.err.internal.v1~";
+
+/// Resource-group GTS prefix (matches `RgError`'s `#[resource_error(...)]`).
+const RG_GTS: &str = "gts.cf.core.resource_group.group.v1~";
 
 // ── validate_type_code ──────────────────────────────────────────────────
 
@@ -541,10 +566,12 @@ fn domain_to_sdk_membership_not_found() {
 
 #[test]
 fn domain_to_problem_membership_not_found_is_404() {
-    use modkit::api::problem::Problem;
     let domain = DomainError::membership_not_found("(gid, type, rid)");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::NOT_FOUND);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 404);
+    assert_eq!(problem.problem_type, NOT_FOUND_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(problem.context["resource_name"], "(gid, type, rid)");
 }
 
 #[test]
@@ -561,115 +588,264 @@ fn domain_to_sdk_access_denied_maps_to_internal() {
 
 #[test]
 fn domain_to_problem_type_not_found_is_404() {
-    use modkit::api::problem::Problem;
     let domain = DomainError::type_not_found("my.code");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::NOT_FOUND);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 404);
+    assert_eq!(problem.problem_type, NOT_FOUND_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(problem.context["resource_name"], "my.code");
 }
 
 #[test]
 fn domain_to_problem_type_already_exists_is_409() {
-    use modkit::api::problem::Problem;
     let domain = DomainError::type_already_exists("dup");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::CONFLICT);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.problem_type, ALREADY_EXISTS_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(problem.context["resource_name"], "dup");
 }
 
 #[test]
 fn domain_to_problem_validation_is_400() {
-    use modkit::api::problem::Problem;
     let domain = DomainError::validation("bad");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::BAD_REQUEST);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 400);
+    assert_eq!(problem.problem_type, INVALID_ARGUMENT_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    // Format variant — message lands in `context.format`, no field_violations.
+    assert_eq!(problem.context["format"], "bad");
+    assert!(
+        problem.context.get("field_violations").is_none()
+            || problem.context["field_violations"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+    );
 }
 
 #[test]
 fn domain_to_problem_group_not_found_is_404() {
-    use modkit::api::problem::Problem;
-    let domain = DomainError::group_not_found(uuid::Uuid::now_v7());
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::NOT_FOUND);
+    let id = uuid::Uuid::now_v7();
+    let domain = DomainError::group_not_found(id);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 404);
+    assert_eq!(problem.problem_type, NOT_FOUND_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(problem.context["resource_name"], id.to_string());
 }
 
 #[test]
-fn domain_to_problem_cycle_detected_is_409() {
-    use modkit::api::problem::Problem;
+fn domain_to_problem_cycle_detected_is_400() {
+    // ⚠ wire change accepted in the migration plan: 409 → 400.
     let domain = DomainError::cycle_detected("cycle");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::CONFLICT);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 400);
+    assert_eq!(problem.problem_type, FAILED_PRECONDITION_TYPE);
+    let v = problem
+        .context
+        .get("violations")
+        .and_then(|v| v.as_array())
+        .expect("violations must be present");
+    assert_eq!(v[0]["subject"], "hierarchy");
+    assert_eq!(v[0]["type"], "STATE");
+    assert_eq!(v[0]["description"], "cycle");
 }
 
 #[test]
-fn domain_to_problem_limit_violation_is_409() {
-    use modkit::api::problem::Problem;
+fn domain_to_problem_limit_violation_is_400() {
+    // ⚠ wire change accepted in the migration plan: 409 → 400.
     let domain = DomainError::limit_violation("too deep");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::CONFLICT);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 400);
+    assert_eq!(problem.problem_type, FAILED_PRECONDITION_TYPE);
+    let v = problem
+        .context
+        .get("violations")
+        .and_then(|v| v.as_array())
+        .expect("violations must be present");
+    assert_eq!(v[0]["subject"], "limit");
+    assert_eq!(v[0]["type"], "STATE");
+    assert_eq!(v[0]["description"], "too deep");
 }
 
 #[test]
 fn domain_to_problem_invalid_parent_type_is_400() {
-    use modkit::api::problem::Problem;
     let domain = DomainError::invalid_parent_type("mismatch");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::BAD_REQUEST);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 400);
+    assert_eq!(problem.problem_type, INVALID_ARGUMENT_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    let v = problem
+        .context
+        .get("field_violations")
+        .and_then(|v| v.as_array())
+        .expect("field_violations must be present");
+    assert_eq!(v[0]["field"], "parent_type");
+    assert_eq!(v[0]["reason"], "INVALID_PARENT_TYPE");
+    assert_eq!(v[0]["description"], "mismatch");
 }
 
 #[test]
-fn domain_to_problem_conflict_active_refs_is_409() {
-    use modkit::api::problem::Problem;
+fn domain_to_problem_conflict_active_refs_is_400() {
+    // ⚠ wire change accepted in the migration plan: 409 → 400.
     let domain = DomainError::conflict_active_references("children exist");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::CONFLICT);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 400);
+    assert_eq!(problem.problem_type, FAILED_PRECONDITION_TYPE);
+    let v = problem
+        .context
+        .get("violations")
+        .and_then(|v| v.as_array())
+        .expect("violations must be present");
+    assert_eq!(v[0]["subject"], "active_references");
+    assert_eq!(v[0]["type"], "STATE");
+    assert_eq!(v[0]["description"], "children exist");
 }
 
 #[test]
-fn domain_to_problem_allowed_parent_types_violation_is_409() {
-    use modkit::api::problem::Problem;
+fn domain_to_problem_allowed_parent_types_violation_is_400() {
+    // ⚠ wire change accepted in the migration plan: 409 → 400.
     let domain = DomainError::allowed_parent_types_violation("violation");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::CONFLICT);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 400);
+    assert_eq!(problem.problem_type, FAILED_PRECONDITION_TYPE);
+    let v = problem
+        .context
+        .get("violations")
+        .and_then(|v| v.as_array())
+        .expect("violations must be present");
+    assert_eq!(v[0]["subject"], "allowed_parents");
+    assert_eq!(v[0]["type"], "STATE");
+    assert_eq!(v[0]["description"], "violation");
 }
 
 #[test]
-fn domain_to_problem_tenant_incompatibility_is_409() {
-    use modkit::api::problem::Problem;
+fn domain_to_problem_tenant_incompatibility_is_400() {
+    // ⚠ wire change accepted in the migration plan: 409 → 400.
     let domain = DomainError::tenant_incompatibility("wrong tenant");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::CONFLICT);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 400);
+    assert_eq!(problem.problem_type, FAILED_PRECONDITION_TYPE);
+    let v = problem
+        .context
+        .get("violations")
+        .and_then(|v| v.as_array())
+        .expect("violations must be present");
+    assert_eq!(v[0]["subject"], "tenant");
+    assert_eq!(v[0]["type"], "STATE");
+    assert_eq!(v[0]["description"], "wrong tenant");
 }
 
 #[test]
 fn domain_to_problem_access_denied_is_403() {
-    use modkit::api::problem::Problem;
     let domain = DomainError::AccessDenied {
         message: "denied".to_owned(),
     };
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::FORBIDDEN);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 403);
+    assert_eq!(problem.problem_type, PERMISSION_DENIED_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(problem.context["reason"], "ACCESS_DENIED");
+    // The user-supplied `message` MUST NOT reach the wire — it stays in
+    // the server-side `tracing::debug!` event only.
+    assert!(
+        !problem.detail.contains("denied"),
+        "user-supplied AccessDenied message leaked to wire detail: {:?}",
+        problem.detail,
+    );
 }
 
 #[test]
 fn domain_to_problem_database_is_500() {
-    use modkit::api::problem::Problem;
-    let domain = DomainError::database("db error");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::INTERNAL_SERVER_ERROR);
+    let domain = DomainError::database("connection refused: 127.0.0.1:5432");
+    let canonical = CanonicalError::from(domain);
+
+    // Diagnostic side: source description must reach `diagnostic()` so the
+    // canonical-error middleware can log it with the request trace_id.
+    let diag = canonical.diagnostic().expect("Internal carries diagnostic");
+    assert!(
+        diag.contains("connection refused"),
+        "diagnostic dropped DB source: {diag:?}"
+    );
+
+    let problem = Problem::from(canonical);
+    assert_eq!(problem.status, 500);
+    assert_eq!(problem.problem_type, INTERNAL_TYPE);
+    // Internal must NOT carry a per-error `resource_type` — it's a
+    // resource-absent category.
+    assert!(problem.context.get("resource_type").is_none());
+    // Wire side: raw DB error string must NOT leak to the wire detail.
+    assert!(
+        !problem.detail.contains("connection refused"),
+        "raw DB error leaked to wire detail: {:?}",
+        problem.detail,
+    );
+    assert!(
+        !problem.detail.contains("127.0.0.1"),
+        "raw DB error leaked to wire detail: {:?}",
+        problem.detail,
+    );
 }
 
 #[test]
 fn domain_to_problem_internal_error_is_500() {
-    use modkit::api::problem::Problem;
-    let problem: Problem = DomainError::InternalError.into();
-    assert_eq!(problem.status, http::StatusCode::INTERNAL_SERVER_ERROR);
+    let canonical = CanonicalError::from(DomainError::InternalError);
+    assert!(
+        canonical.diagnostic().is_some(),
+        "Internal carries diagnostic"
+    );
+    let problem = Problem::from(canonical);
+    assert_eq!(problem.status, 500);
+    assert_eq!(problem.problem_type, INTERNAL_TYPE);
+    assert!(problem.context.get("resource_type").is_none());
+}
+
+#[test]
+fn domain_to_problem_duplicate_membership_is_409() {
+    let domain = DomainError::duplicate_membership(
+        "(g1, type_id=42, r1)",
+        "Membership already exists: (g1, type_id=42, r1)",
+    );
+    let problem = wire(domain);
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.problem_type, ALREADY_EXISTS_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(problem.context["resource_name"], "(g1, type_id=42, r1)");
+    assert!(problem.detail.contains("Membership already exists"));
 }
 
 #[test]
 fn domain_to_problem_conflict_is_409() {
-    use modkit::api::problem::Problem;
+    // Generic Conflict has no structural resource id — routes through
+    // `aborted` with reason="CONFLICT" rather than `already_exists`.
     let domain = DomainError::conflict("dup");
-    let problem: Problem = domain.into();
-    assert_eq!(problem.status, http::StatusCode::CONFLICT);
+    let problem = wire(domain);
+    assert_eq!(problem.status, 409);
+    assert_eq!(
+        problem.problem_type,
+        "gts://gts.cf.core.errors.err.v1~cf.core.err.aborted.v1~"
+    );
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(problem.context["reason"], "CONFLICT");
+    assert!(problem.detail.contains("dup"));
+}
+
+#[test]
+fn domain_to_problem_tenant_root_already_exists_is_409() {
+    let existing_root_id = uuid::Uuid::now_v7();
+    let domain = DomainError::tenant_root_already_exists(
+        existing_root_id,
+        "Cannot create tenant-type root 'foo'",
+    );
+    let problem = wire(domain);
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.problem_type, ALREADY_EXISTS_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(
+        problem.context["resource_name"],
+        existing_root_id.to_string()
+    );
 }
 
 // @cpt-dod:cpt-cf-resource-group-dod-testing-error-conversions:p2

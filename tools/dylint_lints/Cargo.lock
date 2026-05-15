@@ -821,17 +821,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cyberware-modkit-errors-macro"
-version = "0.6.3"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "cyberware-modkit-gts"
 version = "0.1.0"
 dependencies = [
@@ -875,8 +864,7 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "chrono-tz",
- "cyberware-modkit-errors",
- "cyberware-modkit-errors-macro",
+ "cyberware-modkit-canonical-errors",
  "hex",
  "http",
  "peg",
@@ -884,6 +872,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
 ]
 

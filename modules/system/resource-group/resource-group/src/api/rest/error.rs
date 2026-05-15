@@ -1,133 +1,144 @@
 // Created: 2026-04-16 by Constructor Tech
-// Updated: 2026-04-28 by Constructor Tech
+// Updated: 2026-05-07 by Constructor Tech
 // @cpt-begin:cpt-cf-resource-group-dod-sdk-foundation-sdk-errors:p1:inst-full
 // @cpt-algo:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1
-//! Map domain errors to RFC 9457 Problem Details for REST responses.
+//! Map domain errors to canonical errors (`modkit-canonical-errors`) for
+//! REST responses. Handlers return `ApiResult<T>` (= `Result<T,
+//! CanonicalError>`); the canonical error middleware
+//! (`modkit::api::canonical_error_middleware`) converts the `CanonicalError`
+//! to a wire `Problem` and fills `instance` / `trace_id` post-response.
 
-use modkit::api::problem::Problem;
+use modkit_canonical_errors::{CanonicalError, resource_error};
 
 use crate::domain::error::DomainError;
 
-/// Implement `Into<Problem>` for `DomainError` so `?` works in handlers.
-impl From<DomainError> for Problem {
+/// Errors attributable to a resource group as a resource.
+#[resource_error("gts.cf.core.resource_group.group.v1~")]
+pub struct RgError;
+
+/// Implement `From<DomainError> for CanonicalError` so `?` works in
+/// handlers that return `ApiResult<T>`.
+impl From<DomainError> for CanonicalError {
+    #[allow(clippy::cognitive_complexity)]
     fn from(e: DomainError) -> Self {
         // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-1
         // Receive DomainError variant
         // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-1
         // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2
         // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-3
-        #[allow(clippy::let_and_return)]
-        let problem = match &e {
+        // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-4
+        match e {
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2a
             DomainError::Validation { message } => {
-                Problem::new(http::StatusCode::BAD_REQUEST, "Validation error", message)
+                RgError::invalid_argument().with_format(message).create()
             }
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2a
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2b
-            DomainError::TypeNotFound { code } => Problem::new(
-                http::StatusCode::NOT_FOUND,
-                "Type not found",
-                format!("GTS type with code '{code}' was not found"),
-            ),
-            DomainError::GroupNotFound { id } => Problem::new(
-                http::StatusCode::NOT_FOUND,
-                "Group not found",
-                format!("Resource group with id '{id}' was not found"),
-            ),
-            DomainError::MembershipNotFound { key } => Problem::new(
-                http::StatusCode::NOT_FOUND,
-                "Membership not found",
-                format!("Membership '{key}' was not found"),
-            ),
+            DomainError::TypeNotFound { code } => {
+                RgError::not_found(format!("GTS type with code '{code}' was not found"))
+                    .with_resource(code)
+                    .create()
+            }
+            DomainError::GroupNotFound { id } => {
+                RgError::not_found(format!("Resource group with id '{id}' was not found"))
+                    .with_resource(id.to_string())
+                    .create()
+            }
+            DomainError::MembershipNotFound { key } => {
+                RgError::not_found(format!("Membership '{key}' was not found"))
+                    .with_resource(key)
+                    .create()
+            }
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2b
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2c
-            DomainError::TypeAlreadyExists { code } => Problem::new(
-                http::StatusCode::CONFLICT,
-                "Type already exists",
-                format!("GTS type with code '{code}' already exists"),
-            ),
+            DomainError::TypeAlreadyExists { code } => {
+                RgError::already_exists(format!("GTS type with code '{code}' already exists"))
+                    .with_resource(code)
+                    .create()
+            }
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2c
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2d
-            DomainError::InvalidParentType { message } => Problem::new(
-                http::StatusCode::BAD_REQUEST,
-                "Invalid parent type",
-                message,
-            ),
+            DomainError::InvalidParentType { message } => RgError::invalid_argument()
+                .with_field_violation("parent_type", message, "INVALID_PARENT_TYPE")
+                .create(),
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2d
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2e
-            DomainError::AllowedParentTypesViolation { message } => Problem::new(
-                http::StatusCode::CONFLICT,
-                "Allowed parents violation",
-                message,
-            ),
+            // ⚠ wire change accepted in the migration plan: 409 → 400.
+            DomainError::AllowedParentTypesViolation { message } => RgError::failed_precondition()
+                .with_precondition_violation("allowed_parents", message, "STATE")
+                .create(),
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2e
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2f
-            DomainError::CycleDetected { message } => {
-                Problem::new(http::StatusCode::CONFLICT, "Cycle detected", message)
-            }
+            // ⚠ wire change accepted in the migration plan: 409 → 400.
+            DomainError::CycleDetected { message } => RgError::failed_precondition()
+                .with_precondition_violation("hierarchy", message, "STATE")
+                .create(),
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2f
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2g
-            DomainError::ConflictActiveReferences { message } => Problem::new(
-                http::StatusCode::CONFLICT,
-                "Active references exist",
-                message,
-            ),
+            // ⚠ wire change accepted in the migration plan: 409 → 400.
+            DomainError::ConflictActiveReferences { message } => RgError::failed_precondition()
+                .with_precondition_violation("active_references", message, "STATE")
+                .create(),
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2g
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2h
-            DomainError::LimitViolation { message } => {
-                Problem::new(http::StatusCode::CONFLICT, "Limit violation", message)
-            }
+            // ⚠ wire change accepted in the migration plan: 409 → 400.
+            DomainError::LimitViolation { message } => RgError::failed_precondition()
+                .with_precondition_violation("limit", message, "STATE")
+                .create(),
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2h
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2i
-            DomainError::TenantIncompatibility { message } => Problem::new(
-                http::StatusCode::CONFLICT,
-                "Tenant incompatibility",
-                message,
-            ),
+            // ⚠ wire change accepted in the migration plan: 409 → 400.
+            DomainError::TenantIncompatibility { message } => RgError::failed_precondition()
+                .with_precondition_violation("tenant", message, "STATE")
+                .create(),
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2i
-            DomainError::DuplicateMembership { message } => {
-                Problem::new(http::StatusCode::CONFLICT, "Duplicate membership", message)
+            // Duplicate-on-create variants route through `already_exists`
+            // with the structural resource id as `resource_name` (matches
+            // the spec semantic for duplicate-on-create — see
+            // `docs/arch/errors/categories/06-already-exists.md`).
+            DomainError::DuplicateMembership { key, message } => {
+                RgError::already_exists(message).with_resource(key).create()
             }
+            DomainError::TenantRootAlreadyExists {
+                existing_root_id,
+                detail,
+            } => RgError::already_exists(detail)
+                .with_resource(existing_root_id.to_string())
+                .create(),
+            // Generic conflict carries no structural resource id — route
+            // through `aborted` with a stable reason discriminator.
             DomainError::Conflict { message } => {
-                Problem::new(http::StatusCode::CONFLICT, "Conflict", message)
+                RgError::aborted(message).with_reason("CONFLICT").create()
             }
-            DomainError::TenantRootAlreadyExists { message } => Problem::new(
-                http::StatusCode::CONFLICT,
-                "Tenant root already exists",
-                message,
-            ),
             DomainError::AccessDenied { message } => {
-                Problem::new(http::StatusCode::FORBIDDEN, "Access denied", message)
+                tracing::debug!(reason = %message, "resource-group access denied");
+                RgError::permission_denied()
+                    .with_reason("ACCESS_DENIED")
+                    .create()
             }
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2j
-            // ServiceUnavailable: no dedicated variant — DB / infra failures fall through to the
-            // Database arm below and surface as 500 Internal Server Error. A genuine 503
-            // (e.g. AuthZ Resolver unreachable) is produced by platform middleware upstream
-            // of this mapper, not here.
+            // ServiceUnavailable: no dedicated variant — DB / infra failures
+            // fall through to the Database arm below and surface as a
+            // canonical Internal (HTTP 500). A genuine 503 (e.g. AuthZ
+            // Resolver unreachable) is produced by platform middleware
+            // upstream of this mapper, not here.
             // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2j
             // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2k
-            DomainError::Database(_) => {
-                tracing::error!(error = ?e, "Database error occurred");
-                Problem::new(
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal error",
-                    "An internal database error occurred",
-                )
+            // Source description flows into the canonical's `ctx.description`
+            // (recoverable via `diagnostic()`) so `canonical_error_middleware`
+            // (DESIGN.md §3.6) logs it server-side with the request `trace_id`.
+            // `Internal::description` is `#[serde(skip)]`, so the DB text
+            // never reaches the wire `detail`.
+            DomainError::Database(db_err) => {
+                CanonicalError::internal(format!("resource-group DB error: {db_err}")).create()
             }
             DomainError::InternalError => {
-                tracing::error!(error = ?e, "Internal error occurred");
-                Problem::new(
-                    http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal error",
-                    "An internal error occurred",
-                )
+                CanonicalError::internal("resource-group internal error").create()
             } // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2k
-        };
+        }
+        // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-4
         // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-3
         // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-2
-        // @cpt-begin:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-4
-        problem
-        // @cpt-end:cpt-cf-resource-group-algo-sdk-foundation-map-domain-error:p1:inst-err-map-4
     }
 }
 // @cpt-end:cpt-cf-resource-group-dod-sdk-foundation-sdk-errors:p1:inst-full

@@ -271,10 +271,13 @@ impl std::fmt::Display for ODataOrderBy {
 ///
 /// ## HTTP Mapping
 ///
-/// These errors map to RFC 9457 Problem responses via the catalog in `modkit`:
-/// - `InvalidFilter` → 422 `gts...~hx.odata.errors.invalid_filter.v1`
-/// - `InvalidOrderByField` → 422 `gts...~hx.odata.errors.invalid_orderby.v1`
-/// - Cursor errors → 422 `gts...~hx.odata.errors.invalid_cursor.v1`
+/// These errors map to canonical RFC 9457 Problem responses via
+/// `impl From<Error> for CanonicalError` in [`crate::problem_mapping`]:
+/// - `InvalidFilter` / `InvalidOrderByField` / cursor errors / cursor-vs-query
+///   mismatches / `InvalidLimit` / `OrderWithCursor` → canonical
+///   `InvalidArgument` (HTTP 400), with the offending parameter surfaced as
+///   a `field_violation` (`$filter`, `$orderby`, `$top`, or `cursor`).
+/// - `Db` / `ParsingUnavailable` → canonical `Internal` (HTTP 500).
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
     // Filter parsing and validation errors

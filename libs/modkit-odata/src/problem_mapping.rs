@@ -1,14 +1,18 @@
-//! Mapping from `OData` errors to Problem (pure data)
+//! Mapping from `OData` errors to canonical [`CanonicalError`].
 //!
-//! This provides a baseline conversion from `OData` errors to RFC 9457 Problem
-//! without HTTP framework dependencies. The HTTP layer in `modkit` adds
-//! instance paths and trace IDs before the Problem is converted to an HTTP response.
+//! Handlers and the `OData` axum extractor return `CanonicalError` directly;
+//! `IntoResponse for CanonicalError` (in `modkit-canonical-errors`) renders the
+//! wire `Problem` and stashes the original error into the response extensions
+//! so the `canonical_error_middleware` (in `modkit::api`) can log
+//! `diagnostic()` and fill `instance` / `trace_id`. This module is the single
+//! source of truth for `Error → CanonicalError`; it does no logging of its own.
+
+use modkit_canonical_errors::CanonicalError;
 
 use crate::Error;
-use crate::errors::ErrorCode;
-use modkit_errors::problem::Problem;
+use crate::errors::OdataError;
 
-impl From<Error> for Problem {
+impl From<Error> for CanonicalError {
     fn from(err: Error) -> Self {
         use Error::{
             CursorInvalidBase64, CursorInvalidDirection, CursorInvalidFields, CursorInvalidJson,
@@ -18,61 +22,116 @@ impl From<Error> for Problem {
         };
 
         match err {
-            // Filter parsing errors → 422
-            InvalidFilter(msg) => ErrorCode::odata_errors_invalid_filter_v1()
-                .as_problem(format!("Invalid $filter: {msg}")),
+            InvalidFilter(msg) => OdataError::invalid_argument()
+                .with_field_violation(
+                    "$filter",
+                    format!("Invalid $filter: {msg}"),
+                    "INVALID_FILTER",
+                )
+                .create(),
 
-            // OrderBy parsing and validation errors → 422
-            InvalidOrderByField(field) => ErrorCode::odata_errors_invalid_orderby_v1()
-                .as_problem(format!("Unsupported $orderby field: {field}")),
+            InvalidOrderByField(field) => OdataError::invalid_argument()
+                .with_field_violation(
+                    "$orderby",
+                    format!("Unsupported $orderby field: {field}"),
+                    "INVALID_ORDERBY_FIELD",
+                )
+                .create(),
 
-            // All cursor-related errors → 422
-            InvalidCursor => {
-                ErrorCode::odata_errors_invalid_cursor_v1().as_problem("invalid cursor")
+            InvalidCursor => OdataError::invalid_argument()
+                .with_field_violation("cursor", "invalid cursor", "INVALID_CURSOR")
+                .create(),
+
+            CursorInvalidBase64 => OdataError::invalid_argument()
+                .with_field_violation(
+                    "cursor",
+                    "invalid cursor: invalid base64url encoding",
+                    "INVALID_CURSOR",
+                )
+                .create(),
+
+            CursorInvalidJson => OdataError::invalid_argument()
+                .with_field_violation("cursor", "invalid cursor: malformed JSON", "INVALID_CURSOR")
+                .create(),
+
+            CursorInvalidVersion => OdataError::invalid_argument()
+                .with_field_violation(
+                    "cursor",
+                    "invalid cursor: unsupported version",
+                    "INVALID_CURSOR",
+                )
+                .create(),
+
+            CursorInvalidKeys => OdataError::invalid_argument()
+                .with_field_violation(
+                    "cursor",
+                    "invalid cursor: empty or invalid keys",
+                    "INVALID_CURSOR",
+                )
+                .create(),
+
+            CursorInvalidFields => OdataError::invalid_argument()
+                .with_field_violation(
+                    "cursor",
+                    "invalid cursor: empty or invalid fields",
+                    "INVALID_CURSOR",
+                )
+                .create(),
+
+            CursorInvalidDirection => OdataError::invalid_argument()
+                .with_field_violation(
+                    "cursor",
+                    "invalid cursor: invalid sort direction",
+                    "INVALID_CURSOR",
+                )
+                .create(),
+
+            OrderMismatch => OdataError::invalid_argument()
+                .with_field_violation(
+                    "cursor",
+                    "Order mismatch between cursor and query",
+                    "ORDER_MISMATCH",
+                )
+                .create(),
+
+            FilterMismatch => OdataError::invalid_argument()
+                .with_field_violation(
+                    "cursor",
+                    "Filter mismatch between cursor and query",
+                    "FILTER_MISMATCH",
+                )
+                .create(),
+
+            InvalidLimit => OdataError::invalid_argument()
+                .with_field_violation("$top", "Invalid limit parameter", "INVALID_LIMIT")
+                .create(),
+
+            // Surface both halves of the conflict so a client filtering by
+            // `field` to render UI hints sees `$orderby` and `cursor`
+            // simultaneously. Both entries carry the same reason code so
+            // dispatch by `reason` still groups them.
+            OrderWithCursor => OdataError::invalid_argument()
+                .with_field_violation(
+                    "$orderby",
+                    "Cannot specify $orderby when cursor is present",
+                    "ORDER_WITH_CURSOR",
+                )
+                .with_field_violation(
+                    "cursor",
+                    "Cannot specify cursor when $orderby is present",
+                    "ORDER_WITH_CURSOR",
+                )
+                .create(),
+
+            // For Internal-category errors, the caller-supplied detail flows
+            // into `ctx.description` (recoverable via `CanonicalError::diagnostic()`)
+            // and is logged by `canonical_error_middleware` once the response
+            // reaches it. The wire `detail` stays opaque per DESIGN.md §3.6.
+            Db(msg) => CanonicalError::internal(format!("OData Db error: {msg}")).create(),
+
+            ParsingUnavailable(msg) => {
+                CanonicalError::internal(format!("OData parsing unavailable: {msg}")).create()
             }
-
-            CursorInvalidBase64 => ErrorCode::odata_errors_invalid_cursor_v1()
-                .as_problem("invalid cursor: invalid base64url encoding"),
-
-            CursorInvalidJson => ErrorCode::odata_errors_invalid_cursor_v1()
-                .as_problem("invalid cursor: malformed JSON"),
-
-            CursorInvalidVersion => ErrorCode::odata_errors_invalid_cursor_v1()
-                .as_problem("invalid cursor: unsupported version"),
-
-            CursorInvalidKeys => ErrorCode::odata_errors_invalid_cursor_v1()
-                .as_problem("invalid cursor: empty or invalid keys"),
-
-            CursorInvalidFields => ErrorCode::odata_errors_invalid_cursor_v1()
-                .as_problem("invalid cursor: empty or invalid fields"),
-
-            CursorInvalidDirection => ErrorCode::odata_errors_invalid_cursor_v1()
-                .as_problem("invalid cursor: invalid sort direction"),
-
-            // Pagination validation errors → 422
-            OrderMismatch => ErrorCode::odata_errors_invalid_orderby_v1()
-                .as_problem("Order mismatch between cursor and query"),
-
-            FilterMismatch => ErrorCode::odata_errors_invalid_filter_v1()
-                .as_problem("Filter mismatch between cursor and query"),
-
-            InvalidLimit => {
-                ErrorCode::odata_errors_invalid_filter_v1().as_problem("Invalid limit parameter")
-            }
-
-            OrderWithCursor => ErrorCode::odata_errors_invalid_cursor_v1()
-                .as_problem("Cannot specify both $orderby and cursor parameters"),
-
-            // Database errors → 500 (should be caught earlier)
-            Db(_msg) => {
-                // Use filter error as safe default for unexpected DB errors
-                ErrorCode::odata_errors_internal_v1()
-                    .as_problem("An internal error occurred while processing the OData query")
-            }
-
-            // Configuration errors → 500 (feature not enabled)
-            ParsingUnavailable(msg) => ErrorCode::odata_errors_internal_v1()
-                .as_problem(format!("OData parsing unavailable: {msg}")),
         }
     }
 }
@@ -81,44 +140,149 @@ impl From<Error> for Problem {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use modkit_canonical_errors::Problem;
 
-    #[test]
-    fn test_filter_error_converts_to_problem() {
-        use http::StatusCode;
+    const ODATA_RESOURCE_TYPE: &str = "gts.cf.core.odata.query.v1~";
 
-        let err = Error::InvalidFilter("malformed".to_owned());
-        let problem: Problem = err.into();
+    fn wire(err: Error) -> Problem {
+        Problem::from(CanonicalError::from(err))
+    }
 
-        assert_eq!(problem.status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(problem.title, "Invalid Filter");
-        assert!(problem.detail.contains("malformed"));
-        assert!(problem.code.contains("odata"));
-        assert!(problem.code.contains("invalid_filter"));
+    fn field_violations(p: &Problem) -> &Vec<serde_json::Value> {
+        p.context
+            .get("field_violations")
+            .and_then(|v| v.as_array())
+            .expect("invalid_argument context must carry field_violations[]")
+    }
+
+    fn assert_violation(v: &serde_json::Value, field: &str, reason: &str) {
+        assert_eq!(
+            v.get("field").and_then(|x| x.as_str()),
+            Some(field),
+            "unexpected violation field in {v}"
+        );
+        assert_eq!(
+            v.get("reason").and_then(|x| x.as_str()),
+            Some(reason),
+            "unexpected violation reason in {v}"
+        );
+    }
+
+    fn resource_type(p: &Problem) -> &str {
+        p.context
+            .get("resource_type")
+            .and_then(|v| v.as_str())
+            .expect("InvalidArgument from the OData scope must tag resource_type")
     }
 
     #[test]
-    fn test_orderby_error_converts_to_problem() {
-        use http::StatusCode;
-
-        let err = Error::InvalidOrderByField("unknown".to_owned());
-        let problem: Problem = err.into();
-
-        assert_eq!(problem.status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(problem.title, "Invalid OrderBy");
-        assert!(problem.code.contains("odata"));
-        assert!(problem.code.contains("invalid_orderby"));
+    fn invalid_filter_populates_field_violation() {
+        let p = wire(Error::InvalidFilter("malformed".into()));
+        assert_eq!(p.status, 400);
+        assert!(p.problem_type.contains("invalid_argument"));
+        assert_eq!(resource_type(&p), ODATA_RESOURCE_TYPE);
+        let violations = field_violations(&p);
+        assert_eq!(violations.len(), 1);
+        assert_violation(&violations[0], "$filter", "INVALID_FILTER");
+        let desc = violations[0]
+            .get("description")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default();
+        assert!(desc.contains("malformed"), "description was {desc:?}");
     }
 
     #[test]
-    fn test_cursor_error_converts_to_problem() {
-        use http::StatusCode;
+    fn invalid_orderby_field_populates_field_violation() {
+        let p = wire(Error::InvalidOrderByField("unknown".into()));
+        assert_eq!(p.status, 400);
+        assert_eq!(resource_type(&p), ODATA_RESOURCE_TYPE);
+        let violations = field_violations(&p);
+        assert_eq!(violations.len(), 1);
+        assert_violation(&violations[0], "$orderby", "INVALID_ORDERBY_FIELD");
+    }
 
-        let err = Error::CursorInvalidBase64;
-        let problem: Problem = err.into();
+    #[test]
+    fn cursor_invalid_base64_populates_field_violation() {
+        let p = wire(Error::CursorInvalidBase64);
+        assert_eq!(p.status, 400);
+        assert_eq!(resource_type(&p), ODATA_RESOURCE_TYPE);
+        let violations = field_violations(&p);
+        assert_eq!(violations.len(), 1);
+        assert_violation(&violations[0], "cursor", "INVALID_CURSOR");
+    }
 
-        assert_eq!(problem.status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(problem.title, "Invalid Cursor");
-        assert!(problem.code.contains("odata"));
-        assert!(problem.code.contains("invalid_cursor"));
+    #[test]
+    fn order_with_cursor_emits_two_violations() {
+        let p = wire(Error::OrderWithCursor);
+        assert_eq!(p.status, 400);
+        assert_eq!(resource_type(&p), ODATA_RESOURCE_TYPE);
+        let violations = field_violations(&p);
+        assert_eq!(
+            violations.len(),
+            2,
+            "OrderWithCursor must surface both `$orderby` and `cursor`"
+        );
+        let fields: Vec<&str> = violations
+            .iter()
+            .filter_map(|v| v.get("field").and_then(|x| x.as_str()))
+            .collect();
+        assert!(fields.contains(&"$orderby"));
+        assert!(fields.contains(&"cursor"));
+        for v in violations {
+            assert_eq!(
+                v.get("reason").and_then(|x| x.as_str()),
+                Some("ORDER_WITH_CURSOR")
+            );
+        }
+    }
+
+    #[test]
+    fn order_mismatch_keys_to_cursor() {
+        let p = wire(Error::OrderMismatch);
+        let violations = field_violations(&p);
+        assert_eq!(violations.len(), 1);
+        assert_violation(&violations[0], "cursor", "ORDER_MISMATCH");
+    }
+
+    #[test]
+    fn filter_mismatch_keys_to_cursor() {
+        let p = wire(Error::FilterMismatch);
+        let violations = field_violations(&p);
+        assert_eq!(violations.len(), 1);
+        assert_violation(&violations[0], "cursor", "FILTER_MISMATCH");
+    }
+
+    #[test]
+    fn invalid_limit_keys_to_top() {
+        let p = wire(Error::InvalidLimit);
+        let violations = field_violations(&p);
+        assert_eq!(violations.len(), 1);
+        assert_violation(&violations[0], "$top", "INVALID_LIMIT");
+    }
+
+    #[test]
+    fn db_error_maps_to_internal_with_diagnostic() {
+        let canonical =
+            CanonicalError::from(Error::Db("connection refused: 127.0.0.1:5432".into()));
+        // Wire side: opaque internal envelope.
+        let p = Problem::from(canonical.clone());
+        assert_eq!(p.status, 500);
+        assert!(p.problem_type.contains("internal"));
+        // The wire `detail` is the canonical fixed string — never the raw msg.
+        assert!(!p.detail.contains("127.0.0.1"));
+        // Diagnostic side: descriptive cause preserved for `canonical_error_middleware`.
+        let diag = canonical.diagnostic().expect("Internal carries diagnostic");
+        assert!(
+            diag.contains("connection refused"),
+            "diagnostic was {diag:?}"
+        );
+    }
+
+    #[test]
+    fn parsing_unavailable_maps_to_internal_with_diagnostic() {
+        let canonical = CanonicalError::from(Error::ParsingUnavailable("feature off"));
+        assert_eq!(canonical.status_code(), 500);
+        let diag = canonical.diagnostic().expect("Internal carries diagnostic");
+        assert!(diag.contains("feature off"), "diagnostic was {diag:?}");
     }
 }

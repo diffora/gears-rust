@@ -116,9 +116,12 @@ impl MembershipRepositoryTrait for MembershipRepository {
             .map_err(|e| {
                 let msg = e.to_string();
                 if msg.contains("duplicate key") || msg.contains("UNIQUE constraint") {
-                    DomainError::duplicate_membership(format!(
-                        "Membership already exists: ({group_id}, type_id={gts_type_id}, {resource_id})"
-                    ))
+                    DomainError::duplicate_membership(
+                        format!("({group_id}, type_id={gts_type_id}, {resource_id})"),
+                        format!(
+                            "Membership already exists: ({group_id}, type_id={gts_type_id}, {resource_id})"
+                        ),
+                    )
                 } else {
                     DomainError::database(msg)
                 }

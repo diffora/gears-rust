@@ -703,10 +703,13 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait> GroupService<GR, TR> {
                     .find_root_id_with_type_prefix(tx, TENANT_RG_TYPE_PATH)
                     .await?
             {
-                return Err(DomainError::tenant_root_already_exists(format!(
-                    "Cannot create tenant-type root '{}' ({}): tenant root already exists (id={})",
-                    req.name, req.code, existing_root_id
-                )));
+                return Err(DomainError::tenant_root_already_exists(
+                    existing_root_id,
+                    format!(
+                        "Cannot create tenant-type root '{}' ({}): tenant root already exists",
+                        req.name, req.code
+                    ),
+                ));
             }
             // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5c
             // @cpt-end:cpt-cf-resource-group-flow-entity-hier-create-group:p1:inst-create-group-5
@@ -1185,10 +1188,13 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait> GroupService<GR, TR> {
                     .await?
                 && existing_root_id != group_id
             {
-                return Err(DomainError::tenant_root_already_exists(format!(
-                    "Cannot move tenant-type group '{}' ({group_id}) to root: tenant root already exists (id={existing_root_id})",
-                    rg_type.code
-                )));
+                return Err(DomainError::tenant_root_already_exists(
+                    existing_root_id,
+                    format!(
+                        "Cannot move tenant-type group '{}' ({group_id}) to root: tenant root already exists",
+                        rg_type.code
+                    ),
+                ));
             }
         }
 

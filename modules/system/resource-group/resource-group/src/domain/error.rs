@@ -33,7 +33,7 @@ pub enum DomainError {
     MembershipNotFound { key: String },
 
     #[error("Duplicate membership: {message}")]
-    DuplicateMembership { message: String },
+    DuplicateMembership { key: String, message: String },
 
     #[error("Invalid parent type: {message}")]
     InvalidParentType { message: String },
@@ -53,9 +53,13 @@ pub enum DomainError {
     /// with more than one root group whose GTS type code starts with
     /// `TENANT_RG_TYPE_PATH`. Enforces
     /// `cpt-cf-resource-group-fr-enforce-tenant-root-uniqueness`. Maps to
-    /// `ResourceGroupError::conflict` (HTTP 409).
-    #[error("Tenant root already exists: {message}")]
-    TenantRootAlreadyExists { message: String },
+    /// canonical `already_exists` (HTTP 409) with `existing_root_id` as the
+    /// `resource_name`.
+    #[error("Tenant root already exists (id={existing_root_id}): {detail}")]
+    TenantRootAlreadyExists {
+        existing_root_id: uuid::Uuid,
+        detail: String,
+    },
 
     /// Cross-tenant link rejected when adding a membership.
     ///
@@ -143,8 +147,9 @@ impl DomainError {
         Self::MembershipNotFound { key: key.into() }
     }
 
-    pub fn duplicate_membership(message: impl Into<String>) -> Self {
+    pub fn duplicate_membership(key: impl Into<String>, message: impl Into<String>) -> Self {
         Self::DuplicateMembership {
+            key: key.into(),
             message: message.into(),
         }
     }
@@ -173,9 +178,13 @@ impl DomainError {
         }
     }
 
-    pub fn tenant_root_already_exists(message: impl Into<String>) -> Self {
+    pub fn tenant_root_already_exists(
+        existing_root_id: uuid::Uuid,
+        detail: impl Into<String>,
+    ) -> Self {
         Self::TenantRootAlreadyExists {
-            message: message.into(),
+            existing_root_id,
+            detail: detail.into(),
         }
     }
 
@@ -217,9 +226,11 @@ impl From<DomainError> for ResourceGroupError {
                 ResourceGroupError::conflict_active_references(message)
             }
             DomainError::Conflict { message }
-            | DomainError::DuplicateMembership { message }
-            | DomainError::TenantRootAlreadyExists { message } => {
+            | DomainError::DuplicateMembership { message, .. } => {
                 ResourceGroupError::conflict(message)
+            }
+            DomainError::TenantRootAlreadyExists { detail, .. } => {
+                ResourceGroupError::conflict(detail)
             }
             DomainError::GroupNotFound { id } => ResourceGroupError::not_found(id.to_string()),
             DomainError::MembershipNotFound { key } => ResourceGroupError::not_found(key),

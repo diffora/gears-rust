@@ -1,11 +1,6 @@
-//! `OData` error catalog - centralized error definitions for all `OData` operations
-//!
-//! This module provides GTS error codes from the `OData` error catalog that are used
-//! to map `modkit_odata::Error` to RFC 9457 Problem responses.
-use modkit_errors_macro::declare_errors;
+//! GTS-typed error scope for the `OData` query / pagination / cursor layer.
 
-declare_errors! {
-    path = "gts/errors_odata.json",
-    namespace = "odata_errors",
-    vis = "pub"
-}
+use modkit_canonical_errors::resource_error;
+
+#[resource_error("gts.cf.core.odata.query.v1~")]
+pub struct OdataError;

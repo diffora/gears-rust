@@ -60,6 +60,7 @@ types-registry-sdk = { workspace = true }
 
 # Local dependencies
 modkit = { workspace = true }
+modkit-canonical-errors = { workspace = true }
 modkit-db = { workspace = true, features = ["sqlite", "pg"] }
 modkit-db-macros = { workspace = true }
 modkit-security = { workspace = true }

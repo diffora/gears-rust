@@ -9,8 +9,7 @@ use axum::http::Uri;
 use axum::response::IntoResponse;
 use tracing::field::Empty;
 
-use modkit::api::odata::OData;
-use modkit::api::prelude::*;
+use modkit::api::canonical_prelude::*;
 
 use super::{CreateTypeDto, SecurityContext, TypeDto, UpdateTypeDto, info};
 use crate::module::ConcreteTypeService;

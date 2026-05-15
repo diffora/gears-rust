@@ -11,8 +11,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use tracing::field::Empty;
 
-use modkit::api::odata::OData;
-use modkit::api::prelude::*;
+use modkit::api::canonical_prelude::*;
 
 use super::{MembershipDto, SecurityContext, debug, info};
 use crate::module::ConcreteMembershipService;
