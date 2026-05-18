@@ -12,9 +12,10 @@
 //!   then use plain function handlers (no per-route closures that capture/clones).
 //! - Optional `method_router(...)` for advanced use (layers/middleware on route level).
 
-use crate::api::{api_dto, problem};
+use crate::api::api_dto;
 use axum::{Router, handler::Handler, routing::MethodRouter};
 use http::Method;
+use modkit_canonical_errors::problem;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -1859,7 +1860,7 @@ mod tests {
         for resp in error_responses {
             assert_eq!(
                 resp.content_type,
-                crate::api::problem::APPLICATION_PROBLEM_JSON
+                modkit_canonical_errors::problem::APPLICATION_PROBLEM_JSON
             );
             assert!(resp.schema_name.is_some());
         }
@@ -1977,7 +1978,7 @@ mod tests {
         assert_eq!(validation_response.description, "Validation Error");
         assert_eq!(
             validation_response.content_type,
-            crate::api::problem::APPLICATION_PROBLEM_JSON
+            modkit_canonical_errors::problem::APPLICATION_PROBLEM_JSON
         );
         assert!(validation_response.schema_name.is_some());
     }

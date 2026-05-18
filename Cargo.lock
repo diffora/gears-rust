@@ -2287,7 +2287,6 @@ dependencies = [
  "chrono",
  "cyberware-modkit-canonical-errors",
  "cyberware-modkit-db",
- "cyberware-modkit-errors",
  "cyberware-modkit-gts",
  "cyberware-modkit-macros",
  "cyberware-modkit-odata",
@@ -2451,29 +2450,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "trybuild",
-]
-
-[[package]]
-name = "cyberware-modkit-errors"
-version = "0.7.0"
-dependencies = [
- "axum",
- "http",
- "serde",
- "serde_json",
- "tracing",
- "utoipa",
-]
-
-[[package]]
-name = "cyberware-modkit-errors-macro"
-version = "0.6.3"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -10052,13 +10028,13 @@ name = "users-info-sdk"
 version = "0.6.1"
 dependencies = [
  "async-trait",
+ "cyberware-modkit-canonical-errors",
  "cyberware-modkit-odata",
  "cyberware-modkit-odata-macros",
  "cyberware-modkit-sdk",
  "cyberware-modkit-security",
  "futures",
  "futures-core",
- "thiserror 2.0.18",
  "time",
  "tokio",
  "uuid",

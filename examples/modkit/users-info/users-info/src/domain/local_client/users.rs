@@ -43,6 +43,10 @@ impl UsersStreamingClientV1 for LocalUsersStreamingClient {
                 })
             }),
         );
-        Box::pin(stream.map(|res| res.map_err(|err| UsersInfoError::streaming(err.to_string()))))
+        Box::pin(stream.map(|res| {
+            res.map_err(|err| {
+                UsersInfoError::internal(format!("streaming failure: {err}")).create()
+            })
+        }))
     }
 }

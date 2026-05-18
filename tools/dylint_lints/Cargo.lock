@@ -706,7 +706,6 @@ dependencies = [
  "axum 0.8.9",
  "cyberware-modkit-canonical-errors",
  "cyberware-modkit-db",
- "cyberware-modkit-errors",
  "cyberware-modkit-gts",
  "cyberware-modkit-macros",
  "cyberware-modkit-odata",
@@ -806,18 +805,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "cyberware-modkit-errors"
-version = "0.7.0"
-dependencies = [
- "axum 0.8.9",
- "http",
- "serde",
- "serde_json",
- "tracing",
- "utoipa",
 ]
 
 [[package]]

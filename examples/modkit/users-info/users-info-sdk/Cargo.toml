@@ -22,10 +22,12 @@ odata = [
 
 [dependencies]
 # Core dependencies for API trait
-thiserror = { workspace = true }
 uuid = { workspace = true }
 time = { workspace = true }
 async-trait = { workspace = true }
+
+# Canonical error envelope (re-exported as `UsersInfoError`)
+modkit-canonical-errors = { workspace = true }
 
 # OData macros (for #[derive(ODataFilterable)])
 modkit-odata-macros = { workspace = true, optional = true }

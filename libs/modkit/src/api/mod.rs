@@ -10,10 +10,8 @@ pub mod error_layer;
 pub mod odata;
 pub mod openapi_registry;
 pub mod operation_builder;
-pub mod problem;
 pub mod response;
 pub mod select;
-pub mod trace_layer;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -28,41 +26,9 @@ pub use operation_builder::{
     Missing, OperationBuilder, OperationSpec, ParamLocation, ParamSpec, Present, RateLimitSpec,
     ResponseSpec, state,
 };
-pub use problem::{
-    APPLICATION_PROBLEM_JSON, Problem, ValidationError, bad_request, conflict, internal_error,
-    not_found,
-};
 pub use select::{apply_select, page_to_projected_json, project_json};
-pub use trace_layer::{WithRequestContext, WithTraceContext};
 
-/// Prelude module that re-exports common API types and utilities for module authors
-pub mod prelude {
-    // Result type (Problem-only)
-    pub use crate::result::ApiResult;
-
-    // Problem type for error construction
-    pub use super::problem::Problem;
-
-    // Response sugar
-    pub use super::response::{JsonBody, JsonPage, created_json, no_content, ok_json};
-
-    // OData and field projection
-    pub use super::select::apply_select;
-
-    // Useful axum bits (common in handlers)
-    pub use axum::{Json, http::StatusCode, response::IntoResponse};
-}
-
-/// Parallel prelude for modules migrated to the canonical error catalog.
-///
-/// Mirrors [`prelude`] but re-exports `Problem` and `ApiResult` from
-/// `modkit-canonical-errors` so handlers can write the usual
-/// `ApiResult<JsonBody<T>>` signature without name clashes against the legacy
-/// types. Each per-module migration PR swaps `use modkit::api::prelude::*;`
-/// for `use modkit::api::canonical_prelude::*;` — no per-signature edits.
-///
-/// This module is collapsed into [`prelude`] and
-/// the legacy entries above are deleted.
+/// Prelude that re-exports the canonical error types and common API utilities.
 pub mod canonical_prelude {
     // Canonical error types
     pub use modkit_canonical_errors::{CanonicalError, Problem, resource_error};

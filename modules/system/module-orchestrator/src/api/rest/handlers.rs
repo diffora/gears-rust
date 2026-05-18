@@ -1,5 +1,5 @@
 use axum::Extension;
-use modkit::api::prelude::*;
+use modkit::api::canonical_prelude::*;
 use std::sync::Arc;
 
 use super::dto::ModuleDto;

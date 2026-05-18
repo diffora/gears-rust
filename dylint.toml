@@ -22,8 +22,6 @@ excluded_paths = [
     "libs/modkit-canonical-errors-macro",
     "libs/modkit-db",
     "libs/modkit-db-macros",
-    "libs/modkit-errors",
-    "libs/modkit-errors-macro",
     "libs/modkit-http",
     "libs/modkit-macros",
     "libs/modkit-macros-tests",

@@ -40,8 +40,6 @@ members = [
     "libs/modkit-sdk",
     "libs/modkit-odata-macros",
     "libs/modkit-security",
-    "libs/modkit-errors",
-    "libs/modkit-errors-macro",
     "libs/modkit-odata",
     "libs/modkit-node-info",
     "libs/modkit-transport-grpc",
@@ -231,8 +229,6 @@ modkit-canonical-errors = { package = "cyberware-modkit-canonical-errors", versi
 modkit-canonical-errors-macro = { package = "cyberware-modkit-canonical-errors-macro", version = "0.6.1", path = "libs/modkit-canonical-errors-macro" }
 modkit-db = { package = "cyberware-modkit-db", version = "0.8.2", path = "libs/modkit-db" }
 modkit-db-macros = { package = "cyberware-modkit-db-macros", version = "0.6.2", path = "libs/modkit-db-macros" }
-modkit-errors = { package = "cyberware-modkit-errors", version = "0.7.0", path = "libs/modkit-errors" }
-modkit-errors-macro = { package = "cyberware-modkit-errors-macro", version = "0.6.3", path = "libs/modkit-errors-macro" }
 modkit-gts = { package = "cyberware-modkit-gts", version = "0.1.0", path = "libs/modkit-gts" }
 modkit-gts-macro = { package = "cyberware-modkit-gts-macro", version = "0.1.0", path = "libs/modkit-gts-macro" }
 modkit-macros = { package = "cyberware-modkit-macros", version = "0.6.2", path = "libs/modkit-macros" }

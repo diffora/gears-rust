@@ -2276,52 +2276,28 @@
         "type": "object"
       },
       "Problem": {
-        "description": "RFC 9457 Problem Details for HTTP APIs",
+        "description": "RFC 9457 problem+json. `context` varies by error category.",
         "properties": {
-          "code": {
-            "description": "Optional machine-readable error code defined by the application.",
-            "type": "string"
-          },
           "context": {
-            "description": "Optional structured context (e.g. `resource_type`, `resource_name`)."
+            "type": "object"
           },
           "detail": {
-            "description": "A human-readable explanation specific to this occurrence of the problem.",
             "type": "string"
           },
-          "errors": {
-            "description": "Optional validation errors for 4xx problems.",
-            "items": {
-              "$ref": "#/components/schemas/ValidationViolation"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
           "instance": {
-            "description": "A URI reference that identifies the specific occurrence of the problem.",
             "type": "string"
           },
           "status": {
-            "description": "The HTTP status code for this occurrence of the problem.\nSerializes as u16 for RFC 9457 compatibility.",
             "format": "int32",
-            "minimum": 0,
             "type": "integer"
           },
           "title": {
-            "description": "A short, human-readable summary of the problem type.",
             "type": "string"
           },
           "trace_id": {
-            "description": "Optional trace id useful for tracing.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "type": {
-            "description": "A URI reference that identifies the problem type.\nWhen dereferenced, it might provide human-readable documentation.",
             "type": "string"
           }
         },
@@ -2329,9 +2305,9 @@
           "type",
           "title",
           "status",
-          "detail"
+          "detail",
+          "context"
         ],
-        "title": "Problem",
         "type": "object"
       },
       "PutAddressReq": {
@@ -3713,32 +3689,6 @@
         "title": "UserEvent",
         "type": "object"
       },
-      "ValidationViolation": {
-        "description": "Individual validation violation for a specific field or property.",
-        "properties": {
-          "code": {
-            "description": "Optional machine-readable error code",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "field": {
-            "description": "field path, e.g. \"email\" or \"user.email\"",
-            "type": "string"
-          },
-          "message": {
-            "description": "Human-readable message describing the validation error",
-            "type": "string"
-          }
-        },
-        "required": [
-          "field",
-          "message"
-        ],
-        "title": "ValidationViolation",
-        "type": "object"
-      },
       "Vec": {
         "items": {
           "properties": {
@@ -3912,16 +3862,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -4050,16 +3990,6 @@
             },
             "description": "Unsupported Media Type"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -4167,16 +4097,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -4316,16 +4236,6 @@
             },
             "description": "Unsupported Media Type"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -4452,16 +4362,6 @@
               }
             },
             "description": "Unsupported Media Type"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -5044,16 +4944,6 @@
             },
             "description": "Unsupported Media Type"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -5170,16 +5060,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -5293,16 +5173,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -5429,16 +5299,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -5554,16 +5414,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -5690,16 +5540,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -5818,16 +5658,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -5944,16 +5774,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -6068,16 +5888,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -6191,16 +6001,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -6318,16 +6118,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -6423,16 +6213,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -6541,16 +6321,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -6646,16 +6416,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -6753,16 +6513,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -7128,16 +6878,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -7243,16 +6983,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -7362,16 +7092,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -7477,16 +7197,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -7605,16 +7315,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -7732,16 +7432,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -7847,16 +7537,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -7966,16 +7646,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -8081,16 +7751,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -8208,16 +7868,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -9524,16 +9174,6 @@
             },
             "description": "Conflict"
           },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -9639,16 +9279,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {
@@ -9757,16 +9387,6 @@
               }
             },
             "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unprocessable Entity"
           },
           "429": {
             "content": {

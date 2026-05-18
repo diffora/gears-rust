@@ -279,7 +279,7 @@ async fn get_user(Path(id): Path<String>) -> Result<Json<User>, CanonicalError> 
 
 **Technology**: Rust enums, GTS
 
-**Location**: [`libs/modkit-errors/src/`](../../../libs/modkit-errors/src/)
+**Location**: [`libs/modkit-canonical-errors/src/`](../../../libs/modkit-canonical-errors/src/)
 
 **Core Entities**:
 
@@ -956,5 +956,5 @@ All variants share the same structure: `{ ctx: ContextType, detail: String, reso
 
 - **PRD**: [PRD.md](./PRD.md)
 - **ADRs**: [ADR/](./ADR/)
-- **Existing implementation**: [`libs/modkit-errors/src/problem.rs`](../../../libs/modkit-errors/src/problem.rs)
+- **Existing implementation**: [`libs/modkit-canonical-errors/src/problem.rs`](../../../libs/modkit-canonical-errors/src/problem.rs)
 - **Supersedes**: PR #290 (`docs/unified-error-system/`)

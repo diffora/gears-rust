@@ -6,12 +6,20 @@
 //!   `AddressesStreamingClientV1` streaming facades — feature `odata`
 //!   (enabled by default)
 //! - Model types for users, addresses and cities
-//! - Error type (`UsersInfoError`)
+//! - GTS resource-type constants ([`gts`])
 //! - `OData` filter field definitions — feature `odata` (enabled by default)
 //!
 //! The `odata` feature is on by default; consumers that set
 //! `default-features = false` need to re-enable it explicitly to access the
 //! client and streaming facades.
+//!
+//! # Errors
+//!
+//! All fallible APIs return [`modkit_canonical_errors::CanonicalError`],
+//! surfaced here as [`UsersInfoError`] for backwards-readability with the
+//! `account-management-sdk` naming pattern. The boundary mapping from the
+//! impl crate's `DomainError` lives in
+//! `users_info::api::rest::error::From<DomainError> for CanonicalError`.
 //!
 //! ## Usage
 //!
@@ -44,7 +52,7 @@
 
 #[cfg(feature = "odata")]
 pub mod client;
-pub mod errors;
+pub mod gts;
 pub mod models;
 
 // OData filter field definitions (feature-gated)
@@ -56,8 +64,10 @@ pub mod odata;
 pub use client::{
     AddressesStreamingClientV1, CitiesStreamingClientV1, UsersInfoClientV1, UsersStreamingClientV1,
 };
-pub use errors::UsersInfoError;
+pub use gts::{ADDRESS_RESOURCE_TYPE, CITY_RESOURCE_TYPE, USER_RESOURCE_TYPE};
 pub use models::{
     Address, AddressPatch, City, CityPatch, NewAddress, NewCity, NewUser, UpdateAddressRequest,
     UpdateCityRequest, UpdateUserRequest, User, UserFull, UserPatch,
 };
+pub use modkit_canonical_errors::CanonicalError as UsersInfoError;
+pub use modkit_canonical_errors::{self, CanonicalError, Problem};

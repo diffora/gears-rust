@@ -11,7 +11,7 @@ use modkit_security::SecurityContext;
 use std::pin::Pin;
 use uuid::Uuid;
 
-use crate::errors::UsersInfoError;
+use crate::UsersInfoError;
 use crate::models::{
     Address, City, NewAddress, NewCity, NewUser, UpdateAddressRequest, UpdateCityRequest,
     UpdateUserRequest, User, UserFull,
