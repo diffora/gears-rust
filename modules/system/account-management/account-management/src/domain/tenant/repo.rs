@@ -146,7 +146,8 @@ pub trait TenantRepo: Send + Sync {
     /// `query.filter` does NOT reference the `status` column, the
     /// implementation `AND`-s `status IN (Active, Suspended)` so soft-
     /// deleted rows stay hidden by default — callers wanting them pass
-    /// `$filter=status eq 3` explicitly.
+    /// `$filter=status eq 'deleted'` explicitly (string form matching
+    /// the [`account_management_sdk::TenantStatus`] serde rename).
     ///
     /// Ordering defaults to `created_at ASC` (the cursor tiebreaker)
     /// when `$orderby` is absent, keeping cursor re-reads stable.

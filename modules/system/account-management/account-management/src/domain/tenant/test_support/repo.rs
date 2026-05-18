@@ -462,12 +462,18 @@ fn mark_terminal_failure_with_status(
 /// subtree-clamp shape AND the legacy convenience shape -- without
 /// it, every conversion-side test would need to be retrofitted to
 /// build PEP-shape scopes manually.
-/// Extract the `i16` from a single-predicate `$filter=status eq <num>`
-/// AST. Returns `None` for any other shape (compound predicates,
-/// non-`status` columns, non-numeric RHS) — the fake intentionally
-/// supports only the minimal flavour tests exercise so a malformed
-/// match falls through to the default "no status filter" branch
-/// (which then engages the hidden-AND `Active + Suspended` default).
+/// Extract the `i16` from a single-predicate `$filter=status eq <v>`
+/// AST. Mirrors the production `TenantODataMapper::map_value`
+/// translation: the SDK contract speaks the string form
+/// (`'active'`/`'suspended'`/`'deleted'`) and the fake maps it to the
+/// storage SMALLINT here. A legacy numeric RHS is still accepted so
+/// service-tests that build the AST by hand with a SMALLINT keep
+/// working until they migrate. Returns `None` for any other shape
+/// (compound predicates, non-`status` columns, unknown label) — the
+/// fake intentionally supports only the minimal flavour tests
+/// exercise so a malformed match falls through to the default "no
+/// status filter" branch (which then engages the hidden-AND
+/// `Active + Suspended` default).
 fn extract_status_eq(expr: &modkit_odata::ast::Expr) -> Option<i16> {
     use modkit_odata::ast::{CompareOperator, Expr, Value};
     let Expr::Compare(l, CompareOperator::Eq, r) = expr else {
@@ -480,6 +486,12 @@ fn extract_status_eq(expr: &modkit_odata::ast::Expr) -> Option<i16> {
     };
     match value_side? {
         Value::Number(n) => n.to_string().parse::<i16>().ok(),
+        Value::String(s) => match s.as_str() {
+            "active" => Some(TenantStatus::Active.as_smallint()),
+            "suspended" => Some(TenantStatus::Suspended.as_smallint()),
+            "deleted" => Some(TenantStatus::Deleted.as_smallint()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1740,7 +1752,12 @@ mod repo_contract_tests {
             "idempotent retry MUST NOT re-stamp deleted_at"
         );
         assert_eq!(
-            repo.state.lock().expect("lock").retention.get(&leaf).copied(),
+            repo.state
+                .lock()
+                .expect("lock")
+                .retention
+                .get(&leaf)
+                .copied(),
             retention_after_first,
             "idempotent retry MUST NOT rewrite the retention bookkeeping"
         );

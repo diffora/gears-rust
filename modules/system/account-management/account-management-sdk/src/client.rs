@@ -146,7 +146,8 @@ pub trait AccountManagementClient: Send + Sync + 'static {
     /// When `query` does not mention `status`, the repo layer ANDs
     /// `status IN (Active, Suspended)` so soft-deleted rows stay
     /// hidden by default. Callers wanting to see deleted rows pass
-    /// `$filter=status eq 3` explicitly.
+    /// `$filter=status eq 'deleted'` explicitly (string form matching
+    /// the [`crate::TenantStatus`] serde rename).
     ///
     /// # Errors
     ///

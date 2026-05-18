@@ -161,9 +161,7 @@ pub(super) async fn set_status(
         }
         TenantStatus::Provisioning => {
             return Err(DomainError::Conflict {
-                detail: format!(
-                    "tenant {tenant_id}: set_status cannot transition to provisioning"
-                ),
+                detail: format!("tenant {tenant_id}: set_status cannot transition to provisioning"),
             });
         }
     }

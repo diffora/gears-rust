@@ -48,6 +48,8 @@ parking_lot = { workspace = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }
 
+bigdecimal = { workspace = true }
+
 tracing = { workspace = true }
 
 opentelemetry = { workspace = true }

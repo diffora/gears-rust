@@ -6,10 +6,12 @@
 //! scope (PEP gate is the service-layer guard).
 
 use account_management_sdk::TenantInfoFilterField;
+use bigdecimal::BigDecimal;
 use modkit_db::odata::sea_orm_filter::{
     FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, paginate_odata_try,
 };
 use modkit_db::secure::SecureEntityExt;
+use modkit_odata::filter::{FilterOp, ODataValue};
 use modkit_odata::{ODataQuery, Page, SortDir, ast};
 use modkit_security::AccessScope;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
@@ -42,6 +44,73 @@ impl FieldToColumn<TenantInfoFilterField> for TenantODataMapper {
             TenantInfoFilterField::CreatedAt => tenants::Column::CreatedAt,
             TenantInfoFilterField::UpdatedAt => tenants::Column::UpdatedAt,
         }
+    }
+
+    /// Translate the SDK-facing `status` string contract into the
+    /// storage-side numeric value. Wire callers speak the public
+    /// [`account_management_sdk::TenantStatus`] strings
+    /// (`"active"` / `"suspended"` / `"deleted"`); the column on
+    /// disk is `SMALLINT` with the encoding pinned by
+    /// [`TenantStatus::as_smallint`]. The hook keeps the storage
+    /// encoding out of the SDK contract: unknown strings — including
+    /// the AM-internal `"provisioning"` — surface as a validation
+    /// error before the predicate reaches `SeaORM`.
+    ///
+    /// Only the membership-style operators (`Eq` / `Ne` / `In`) are
+    /// admissible on `status`: an ordered comparison
+    /// (`status lt 'deleted'`) would otherwise be rewritten to
+    /// `status < 3` and start comparing the hidden storage ordinal
+    /// instead of the published wire strings. Tenant lifecycle is a
+    /// categorical column, so there is no honest meaning for ordered
+    /// operators on either shape — the mapper rejects them.
+    ///
+    /// Other fields fall through to the default identity
+    /// implementation.
+    fn map_value(
+        field: TenantInfoFilterField,
+        op: FilterOp,
+        value: &ODataValue,
+    ) -> Result<ODataValue, String> {
+        match (field, value) {
+            (TenantInfoFilterField::Status, ODataValue::String(s)) => {
+                match op {
+                    FilterOp::Eq | FilterOp::Ne | FilterOp::In => {}
+                    other => {
+                        return Err(format!(
+                            "operator {other:?} is not supported on `status`; \
+                             use `eq`, `ne`, or `in` — ordered comparisons on a \
+                             categorical lifecycle column would silently fall \
+                             back to the storage ordinal"
+                        ));
+                    }
+                }
+                let code = match s.as_str() {
+                    "active" => TenantStatus::Active.as_smallint(),
+                    "suspended" => TenantStatus::Suspended.as_smallint(),
+                    "deleted" => TenantStatus::Deleted.as_smallint(),
+                    other => {
+                        return Err(format!(
+                            "invalid `status` value '{other}'; expected one of \
+                             'active', 'suspended', 'deleted'"
+                        ));
+                    }
+                };
+                Ok(ODataValue::Number(BigDecimal::from(i64::from(code))))
+            }
+            _ => Ok(value.clone()),
+        }
+    }
+
+    /// Reject `$orderby=status` and `status` cursor keys: the column
+    /// is exposed as a string contract on the wire while it is
+    /// `SMALLINT` in storage, and there is no consistent ordering
+    /// across the two shapes — alphabetical (`active < deleted <
+    /// suspended`) versus numeric (`Active = 1 < Suspended = 2 <
+    /// Deleted = 3`). The framework rejects the `$orderby` clause as
+    /// `InvalidOrderByField` before composing the effective order, so
+    /// the cursor codec never sees a translated-shape value.
+    fn is_orderable(field: TenantInfoFilterField) -> bool {
+        !matches!(field, TenantInfoFilterField::Status)
     }
 }
 
@@ -213,9 +282,12 @@ pub(super) async fn list_children(
     // Hidden-AND default: when the caller has not mentioned `status`
     // in `$filter`, AND the base condition with `status IN (Active,
     // Suspended)` so soft-deleted rows stay invisible by default.
-    // Callers wanting to see deleted rows pass `$filter=status eq 3`
-    // explicitly. This preserves the legacy `ListChildrenQuery::
-    // status_filter = None -> Active+Suspended only` contract.
+    // Callers wanting to see deleted rows pass
+    // `$filter=status eq 'deleted'` explicitly (the string form is the
+    // SDK contract; the impl-side `TenantODataMapper::map_value` hook
+    // translates it into the storage SMALLINT before binding). This
+    // preserves the legacy `ListChildrenQuery::status_filter = None
+    // -> Active+Suspended only` contract.
     let mut base_cond = Condition::all()
         .add(tenants::Column::ParentId.eq(parent_id))
         // Defence-in-depth: `Provisioning` rows never cross the public

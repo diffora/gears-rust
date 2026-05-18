@@ -258,10 +258,11 @@ impl UpdateTenantRequest {
 /// Status filtering retains the AM-default hidden-AND: when a caller
 /// supplies no `status` predicate, the repo layer ANDs
 /// `status IN (Active, Suspended)` so soft-deleted rows stay hidden by
-/// default (callers can opt-in to seeing them via
-/// `$filter=status eq 3`). The default lives on the impl side
-/// (`infra::storage::repo_impl::reads::list_children`) so the SDK does
-/// not have to encode wire-level `i16` status codes.
+/// default. Callers wanting to see deleted rows opt in via
+/// `$filter=status eq 'deleted'`. The accepted string values match the
+/// serde rename on the public [`TenantStatus`] enum (`"active"`,
+/// `"suspended"`, `"deleted"`); the AM-internal `Provisioning` status
+/// has no SDK representation and is rejected as a validation error.
 ///
 /// The struct is **never** constructed; its only role is to drive the
 /// derive macro. The `dead_code` allow keeps clippy quiet on the
@@ -278,16 +279,14 @@ pub struct TenantInfoQuery {
     /// path for exact-id reads.
     #[odata(filter(kind = "Uuid"))]
     pub id: Uuid,
-    /// `tenants.status` SMALLINT code (0=Provisioning, 1=Active,
-    /// 2=Suspended, 3=Deleted). Filtering goes against the storage
-    /// representation rather than the public 3-variant
-    /// [`TenantStatus`] enum so `$filter=status eq 1` parses through
-    /// the standard `I64` field-kind path; the impl-side mapper
-    /// translates to `tenants::Column::Status`. The repo also enforces
-    /// the "no `Provisioning` to non-internal callers" rule downstream
-    /// of the filter.
-    #[odata(filter(kind = "I64"))]
-    pub status: i16,
+    /// `tenants.status` projected as the public [`TenantStatus`]
+    /// lifecycle string: `"active"`, `"suspended"`, or `"deleted"`
+    /// (the serde rename on the SDK enum). The `OData` parser
+    /// validates the string up-front; unknown values — including the
+    /// AM-internal `"provisioning"` — are rejected as a validation
+    /// error before the predicate reaches storage.
+    #[odata(filter(kind = "String"))]
+    pub status: String,
     /// Deterministic `UUIDv5` of the registered tenant-type schema id.
     /// Filtering on the UUID rather than the chained `gts.*` string
     /// keeps the wire path simple — callers building a UI dropdown

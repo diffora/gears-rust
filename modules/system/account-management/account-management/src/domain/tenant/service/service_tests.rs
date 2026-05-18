@@ -8,15 +8,23 @@ use modkit_odata::ast::{CompareOperator, Expr, Value as OdataValue};
 
 use super::*;
 
-/// Build a one-predicate `$filter=status eq <code>` `ODataQuery` for
-/// `list_children` tests. Constructing the AST by hand keeps the test
-/// dependency surface stable — relying on the parser would couple
-/// these tests to grammar changes in `modkit-odata`.
-fn list_children_status_eq(code: i64) -> ODataQuery {
+/// Build a one-predicate `$filter=status eq '<label>'` `ODataQuery`
+/// for `list_children` tests. Constructing the AST by hand keeps the
+/// test dependency surface stable — relying on the parser would couple
+/// these tests to grammar changes in `modkit-odata`. The string form
+/// matches the public SDK contract; the impl-side
+/// `TenantODataMapper::map_value` translates it into the storage
+/// SMALLINT before binding.
+fn list_children_status_eq(status: PublicTenantStatus) -> ODataQuery {
+    let label = match status {
+        PublicTenantStatus::Active => "active",
+        PublicTenantStatus::Suspended => "suspended",
+        PublicTenantStatus::Deleted => "deleted",
+    };
     let expr = Expr::Compare(
         Box::new(Expr::Identifier("status".to_owned())),
         CompareOperator::Eq,
-        Box::new(Expr::Value(OdataValue::Number(code.into()))),
+        Box::new(Expr::Value(OdataValue::String(label.to_owned()))),
     );
     ODataQuery::default().with_filter(expr).with_limit(10)
 }
@@ -597,17 +605,27 @@ async fn list_children_status_filter_applies() {
         .await
         .expect("suspend c2");
 
-    // Status SMALLINT codes mirror `TenantStatus::as_smallint`:
-    // Provisioning=0, Active=1, Suspended=2, Deleted=3.
+    // Filter by the public SDK string contract — `'active'` /
+    // `'suspended'` / `'deleted'`. The impl-side
+    // `TenantODataMapper::map_value` translates these into the
+    // storage SMALLINT before binding.
     let active_only = svc
-        .list_children(&ctx_for(root), root, &list_children_status_eq(1))
+        .list_children(
+            &ctx_for(root),
+            root,
+            &list_children_status_eq(PublicTenantStatus::Active),
+        )
         .await
         .expect("list ok");
     assert_eq!(active_only.items.len(), 1);
     assert_eq!(active_only.items[0].id.0, c1);
 
     let suspended_only = svc
-        .list_children(&ctx_for(root), root, &list_children_status_eq(2))
+        .list_children(
+            &ctx_for(root),
+            root,
+            &list_children_status_eq(PublicTenantStatus::Suspended),
+        )
         .await
         .expect("list ok");
     assert_eq!(suspended_only.items.len(), 1);
@@ -1152,7 +1170,12 @@ async fn delete_tenant_is_idempotent_on_already_deleted_tenant() {
         "second delete MUST NOT re-probe RG"
     );
     assert_eq!(
-        repo.state.lock().expect("lock").retention.get(&child).copied(),
+        repo.state
+            .lock()
+            .expect("lock")
+            .retention
+            .get(&child)
+            .copied(),
         retention_after_first,
         "idempotent retry MUST NOT rewrite the retention row"
     );

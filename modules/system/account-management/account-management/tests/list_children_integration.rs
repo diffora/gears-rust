@@ -14,7 +14,7 @@
 //! those invariants to the real `SeaORM` path:
 //!
 //! * Hidden-AND default — empty `$filter` excludes `Deleted`.
-//! * Explicit `$filter=status eq 3` returns Deleted rows.
+//! * Explicit `$filter=status eq 'deleted'` returns Deleted rows.
 //! * `$filter=tenant_type_uuid eq <uuid>` partitions a mixed-type
 //!   sibling set.
 //! * `$filter=self_managed eq true` isolates the barrier children.
@@ -32,7 +32,7 @@ use account_management::domain::tenant::TenantRepo;
 use account_management_sdk::TenantInfoFilterField;
 use modkit_odata::ast::{CompareOperator, Expr, Value as OdataValue};
 use modkit_odata::filter::FilterField;
-use modkit_odata::{CursorV1, ODataQuery};
+use modkit_odata::{CursorV1, ODataOrderBy, ODataQuery, OrderKey, SortDir};
 use sea_orm::ActiveValue;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -97,14 +97,26 @@ async fn seed_root(h: &Harness, root_id: Uuid) {
         .expect("root self-row");
 }
 
-/// Build `$filter=<field> eq <i16>` for a numeric column. Mirrors
-/// the SDK-internal smallint encoding (`Provisioning=0, Active=1,
-/// Suspended=2, Deleted=3`).
+/// Build `$filter=<field> eq <i16>` for a numeric column. Used by
+/// non-status numeric columns in these tests (none currently — kept
+/// as scaffold for future numeric filters).
+#[allow(dead_code)]
 fn filter_field_eq_i64(field: &str, value: i64) -> Expr {
     Expr::Compare(
         Box::new(Expr::Identifier(field.to_owned())),
         CompareOperator::Eq,
         Box::new(Expr::Value(OdataValue::Number(value.into()))),
+    )
+}
+
+/// Build `$filter=<field> eq '<label>'` for a string-encoded column
+/// (e.g. the `status` lifecycle enum exposed as a string contract on
+/// the SDK surface).
+fn filter_field_eq_string(field: &str, label: &str) -> Expr {
+    Expr::Compare(
+        Box::new(Expr::Identifier(field.to_owned())),
+        CompareOperator::Eq,
+        Box::new(Expr::Value(OdataValue::String(label.to_owned()))),
     )
 }
 
@@ -195,7 +207,7 @@ async fn list_children_explicit_status_filter_returns_deleted() {
     seed_tenant_at(&h, active, root, ACTIVE, false, type_a, ts_at(1)).await;
     seed_tenant_at(&h, deleted, root, DELETED, false, type_a, ts_at(2)).await;
 
-    let query = ODataQuery::default().with_filter(filter_field_eq_i64("status", DELETED.into()));
+    let query = ODataQuery::default().with_filter(filter_field_eq_string("status", "deleted"));
     let page = h
         .repo
         .list_children(&allow_all(), root, &query)
@@ -205,8 +217,110 @@ async fn list_children_explicit_status_filter_returns_deleted() {
     assert_eq!(
         ids_of(&page.items),
         vec![deleted],
-        "`$filter=status eq 3` MUST bypass the hidden-AND default and \
-         return the soft-deleted row"
+        "`$filter=status eq 'deleted'` MUST bypass the hidden-AND \
+         default and return the soft-deleted row"
+    );
+}
+
+/// `status` filter values outside the public SDK contract — including
+/// the AM-internal `'provisioning'` — surface as a validation error
+/// from `TenantODataMapper::map_value` before the predicate reaches
+/// `SeaORM`. The storage SMALLINT encoding is intentionally NOT part
+/// of the wire contract, so numeric forms (`status eq 3`) are also
+/// rejected by the framework's kind-validation step before this hook
+/// even runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_children_rejects_unknown_status_value() {
+    let h = setup_sqlite().await.expect("harness");
+    let root = Uuid::from_u128(ROOT_ID);
+    seed_root(&h, root).await;
+
+    let query = ODataQuery::default().with_filter(filter_field_eq_string("status", "wat"));
+    let err = h
+        .repo
+        .list_children(&allow_all(), root, &query)
+        .await
+        .expect_err("unknown status value MUST be rejected");
+    let detail = format!("{err:?}");
+    assert!(
+        detail.contains("invalid `status` value") || detail.contains("invalid status"),
+        "expected validation error referencing the invalid status; got {detail}"
+    );
+
+    // `'provisioning'` is the AM-internal status and has no SDK
+    // representation; the map_value hook MUST reject it the same way
+    // as any other unknown string.
+    let query = ODataQuery::default().with_filter(filter_field_eq_string("status", "provisioning"));
+    let err = h
+        .repo
+        .list_children(&allow_all(), root, &query)
+        .await
+        .expect_err("'provisioning' MUST be rejected (internal status)");
+    let detail = format!("{err:?}");
+    assert!(
+        detail.contains("invalid `status` value"),
+        "expected validation error referencing the invalid status; got {detail}"
+    );
+}
+
+/// `status` is a categorical lifecycle column. Ordered operators
+/// (`lt`/`le`/`gt`/`ge`) on the wire string would silently fall
+/// back to the hidden storage ordinal (`status < 3` meaning "any
+/// SMALLINT less than `Deleted`"), which is a confusing semantic
+/// mismatch with the public string contract. The AM mapper rejects
+/// these operators via `FieldToColumn::map_value`; the framework
+/// surfaces the rejection as a validation error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_children_rejects_ordered_comparison_on_status() {
+    let h = setup_sqlite().await.expect("harness");
+    let root = Uuid::from_u128(ROOT_ID);
+    seed_root(&h, root).await;
+
+    let lt = Expr::Compare(
+        Box::new(Expr::Identifier("status".to_owned())),
+        CompareOperator::Lt,
+        Box::new(Expr::Value(OdataValue::String("deleted".to_owned()))),
+    );
+    let query = ODataQuery::default().with_filter(lt);
+    let err = h
+        .repo
+        .list_children(&allow_all(), root, &query)
+        .await
+        .expect_err("ordered comparison on status MUST be rejected");
+    let detail = format!("{err:?}");
+    assert!(
+        detail.contains("not supported on `status`") || detail.contains("ordered"),
+        "expected mapper rejection for ordered operator; got {detail}"
+    );
+}
+
+/// `$orderby=status` is rejected by the framework before the
+/// effective-order is composed: the column is exposed as a string on
+/// the wire but is `SMALLINT` in storage, so the cursor codec would
+/// either fail to decode the token (decoded as a String when the
+/// model side returned a `SmallInt`) or compare against the wrong
+/// SQL type on the next page. `TenantODataMapper::is_orderable`
+/// returns `false` for `Status`, which the framework's order-
+/// validation loop trips on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_children_rejects_orderby_on_status() {
+    let h = setup_sqlite().await.expect("harness");
+    let root = Uuid::from_u128(ROOT_ID);
+    seed_root(&h, root).await;
+
+    let query = ODataQuery::default().with_order(ODataOrderBy(vec![OrderKey {
+        field: "status".to_owned(),
+        dir: SortDir::Asc,
+    }]));
+    let err = h
+        .repo
+        .list_children(&allow_all(), root, &query)
+        .await
+        .expect_err("$orderby=status MUST be rejected");
+    let detail = format!("{err:?}");
+    assert!(
+        detail.contains("status") || detail.contains("InvalidOrderByField"),
+        "expected order-validation rejection; got {detail}"
     );
 }
 

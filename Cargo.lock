@@ -1883,6 +1883,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
+ "bigdecimal",
  "cyberware-account-management-sdk",
  "cyberware-authz-resolver-sdk",
  "cyberware-modkit",

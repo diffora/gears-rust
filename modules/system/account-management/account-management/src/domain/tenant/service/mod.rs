@@ -1616,9 +1616,7 @@ impl<R: TenantRepo> TenantService<R> {
         }
         if matches!(current.status, TenantStatus::Deleted) {
             return Err(DomainError::Conflict {
-                detail: format!(
-                    "tenant {id} is deleted; status is terminal during retention"
-                ),
+                detail: format!("tenant {id} is deleted; status is terminal during retention"),
             });
         }
         let now = OffsetDateTime::now_utc();
