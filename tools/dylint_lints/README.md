@@ -61,7 +61,7 @@ make gts-docs-test       # Run unit tests for GTS validator
 - TODO
 
 ### Documentation (DE12xx)
-- TODO
+- ✅ DE1201: Publishable crates must set `package.metadata.docs.rs.all-features = true`
 
 ### Common patterns (DE13xx)
 - ✅ DE1301: No Print/Debug Macros in libraries/modules

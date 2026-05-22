@@ -7,6 +7,10 @@ libraries = [
     { path = "tools/dylint_lints/de*/de*" }
 ]
 
+# DE1201: Publishable crates must build docs.rs with all features enabled.
+[de1201_docs_rs_all_features]
+excluded_crates = []
+
 # DE1101: Tests must be in separate files.
 # Remove entries as modules are migrated.
 [de1101_tests_in_separate_files]

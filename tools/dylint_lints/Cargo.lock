@@ -1241,6 +1241,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "de1201_docs_rs_all_features"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "dylint_linting",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "de1301_no_print_macros"
 version = "0.1.0"
 dependencies = [
