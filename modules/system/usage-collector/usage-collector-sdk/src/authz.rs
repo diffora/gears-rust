@@ -38,9 +38,9 @@ pub mod actions {
 /// The `supported_properties` set declares the full attribute surface the
 /// caller is prepared to enforce — PDP may return constraints over any of
 /// these, and the storage plugin's `scope_to_sql` translator handles them.
-pub const USAGE_RECORD: ResourceType = ResourceType {
-    name: USAGE_RECORD_GTS,
-    supported_properties: &[
+pub const USAGE_RECORD: ResourceType = ResourceType::from_static(
+    USAGE_RECORD_GTS,
+    &[
         pep_properties::OWNER_TENANT_ID,
         properties::RESOURCE_ID,
         properties::RESOURCE_TYPE,
@@ -48,7 +48,7 @@ pub const USAGE_RECORD: ResourceType = ResourceType {
         properties::SUBJECT_ID,
         properties::SUBJECT_TYPE,
     ],
-};
+);
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

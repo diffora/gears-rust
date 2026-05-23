@@ -43,15 +43,10 @@ pub fn allow_all_enforcer() -> PolicyEnforcer {
 pub fn test_server_config() -> rustls::ServerConfig {
     use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
-    // Ensure a crypto provider is available — tests don't go through
-    // the full bootstrap, so one may not be installed yet.
-    // Mirrors `modkit::bootstrap::init_crypto_provider` provider selection.
+    // Ensure a crypto provider is available; tests don't go through the full
+    // bootstrap, so one may not be installed yet.
     if rustls::crypto::CryptoProvider::get_default().is_none() {
-        #[cfg(not(feature = "fips"))]
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
-        #[cfg(feature = "fips")]
-        let _ = rustls::crypto::default_fips_provider().install_default();
+        modkit::bootstrap::init_crypto_provider().expect("crypto provider initialization");
     }
 
     let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];

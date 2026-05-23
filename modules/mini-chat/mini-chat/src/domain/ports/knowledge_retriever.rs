@@ -5,8 +5,10 @@
 //! implementation lives in `infra/llm/providers/azure_knowledge_retriever.rs`.
 
 use async_trait::async_trait;
+use modkit_macros::domain_model;
 
 /// A single retrieved chunk returned by a knowledge search call.
+#[domain_model]
 #[derive(Debug, Clone)]
 pub struct RetrievedChunk {
     /// Stable URI for citation attribution.
@@ -25,6 +27,7 @@ pub struct RetrievedChunk {
 }
 
 /// Parameters for a single knowledge retrieval call.
+#[domain_model]
 #[derive(Debug, Clone)]
 pub struct RetrievalRequest {
     /// Natural-language query to search for.
@@ -42,6 +45,7 @@ pub struct RetrievalRequest {
 }
 
 /// Errors from knowledge retrieval operations.
+#[domain_model]
 #[derive(Debug, thiserror::Error)]
 pub enum RetrievalError {
     /// Provider explicitly rejected the request (4xx).

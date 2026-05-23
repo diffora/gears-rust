@@ -190,7 +190,7 @@ The plugin produces a `SecurityContext` (defined in `modkit-security`) with fiel
 
 - [x] `p2` - **ID**: `cpt-cf-authn-plugin-constraint-gts-identity`
 
-The plugin is identified by a chained GTS schema ID: `gts.x.core.modkit.plugin.v1~x.core.authn_resolver.plugin.v1~`. The OIDC plugin instance is registered with vendor key `"cyberfabric"` via `AuthNResolverPluginSpecV1::gts_make_instance_id(...)`. This identity is used for ClientHub registration and vendor-based plugin selection.
+The plugin is identified by a chained GTS schema ID: `gts.cf.core.modkit.plugin.v1~cf.core.authn_resolver.plugin.v1~`. The OIDC plugin instance is registered with vendor key `"cyberfabric"` via `AuthNResolverPluginSpecV1::gts_make_instance_id(...)`. This identity is used for ClientHub registration and vendor-based plugin selection.
 
 **ADRs**: Platform convention — GTS schema identity defined by ModKit plugin framework.
 
@@ -695,8 +695,8 @@ The OIDC plugin integrates with Cyber Ware's plugin framework using GTS identifi
 
 | Aspect | Value |
 |--------|-------|
-| Base schema | `gts.x.core.modkit.plugin.v1~` |
-| Plugin schema | `gts.x.core.modkit.plugin.v1~x.core.authn_resolver.plugin.v1~` |
+| Base schema | `gts.cf.core.modkit.plugin.v1~` |
+| Plugin schema | `gts.cf.core.modkit.plugin.v1~cf.core.authn_resolver.plugin.v1~` |
 | OIDC instance ID | Generated via `AuthNResolverPluginSpecV1::gts_make_instance_id(...)` |
 
 **ClientHub Registration** (at startup):
@@ -726,7 +726,7 @@ flowchart TD
 
 | Field | Value | Description |
 |-------|-------|-------------|
-| `gts_schema_id` | `gts.x.core.modkit.plugin.v1~x.core.authn_resolver.plugin.v1~` | Plugin type identity |
+| `gts_schema_id` | `gts.cf.core.modkit.plugin.v1~cf.core.authn_resolver.plugin.v1~` | Plugin type identity |
 | `vendor_key` | `"cyberfabric"` | Unique vendor identifier for selection |
 | `priority` | `100` | Default priority (lower = preferred); configurable |
 | `display_name` | `"OIDC AuthN Resolver"` | Human-readable name for diagnostics |

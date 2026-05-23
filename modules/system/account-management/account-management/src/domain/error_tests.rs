@@ -214,7 +214,10 @@ fn metadata_entry_not_found_carries_chained_schema_id() {
     let AccountManagementError::MetadataEntryNotFound { entry, .. } = &ame else {
         panic!("expected MetadataEntryNotFound variant");
     };
-    assert_eq!(entry, "gts.cf.core.am.tenant_metadata.v1~cf.core.billing.usage.v1~");
+    assert_eq!(
+        entry,
+        "gts.cf.core.am.tenant_metadata.v1~cf.core.billing.usage.v1~"
+    );
     assert!(ame.is_not_found());
 }
 

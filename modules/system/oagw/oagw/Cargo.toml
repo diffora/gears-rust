@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [features]
 # FIPS-140-3: compile TLS deps with FIPS-approved cipher suites only
 fips = ["modkit-http/fips"]
-test-utils = ["axum/ws", "dep:async-stream", "dep:futures", "dep:tower", "dep:rustls", "dep:rustls-pki-types", "dep:rcgen", "tokio/net", "tokio/sync", "tokio/rt"]
+test-utils = ["axum/ws", "modkit/bootstrap", "dep:async-stream", "dep:futures", "dep:tower", "dep:rustls", "dep:rustls-pki-types", "dep:rcgen", "tokio/net", "tokio/sync", "tokio/rt"]
 
 [dependencies]
 oagw-sdk = { path = "../oagw-sdk", package="cyberware-oagw-sdk", version = "0.5.1", features = ["axum"] }
@@ -75,6 +75,7 @@ rcgen = { workspace = true, optional = true }
 
 [dev-dependencies]
 cyberware-oagw = { path = ".", features = ["test-utils"] }
+modkit = { workspace = true, features = ["bootstrap"] }
 types-registry-sdk = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "net"] }
 tower = { workspace = true, features = ["util"] }

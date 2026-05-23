@@ -35,6 +35,7 @@ use super::types::{
 };
 
 /// Parameters for knowledge search (RAG) within the agentic loop.
+#[domain_model]
 pub(super) struct KnowledgeSearchParams {
     pub retriever: Arc<dyn KnowledgeRetriever>,
     pub vector_store_id: String,

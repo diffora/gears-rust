@@ -131,6 +131,7 @@ async fn get_metadata_returns_200_with_entry() {
     assert_eq!(body["value"]["x"], 42);
 }
 
+// @cpt-dod:cpt-cf-account-management-dod-tenant-metadata-unified-404:p1
 #[tokio::test]
 async fn get_metadata_unknown_schema_returns_404_with_distinct_code() {
     let h = setup_sqlite().await.expect("sqlite");
