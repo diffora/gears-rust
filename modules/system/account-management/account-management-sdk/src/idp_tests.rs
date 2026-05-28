@@ -129,6 +129,27 @@ fn provision_failure_metric_labels_are_stable() {
         .as_metric_label(),
         "unsupported_operation"
     );
+    // `InvalidInput` carries an additional `field` for canonical-error
+    // `field_violations` attribution; the metric label is independent
+    // of that and stays stable so dashboards don't fragment.
+    assert_eq!(
+        IdpProvisionFailure::InvalidInput {
+            detail: String::new(),
+            field: Some("provisioning_metadata.realm_name".into()),
+        }
+        .as_metric_label(),
+        "invalid_input"
+    );
+    // And with `field: None` — for plugins that can't localise the
+    // violation to a specific key. Same label.
+    assert_eq!(
+        IdpProvisionFailure::InvalidInput {
+            detail: String::new(),
+            field: None,
+        }
+        .as_metric_label(),
+        "invalid_input"
+    );
 }
 
 #[test]
@@ -179,6 +200,20 @@ fn provision_failure_detail_and_display() {
         detail: "refused".to_owned(),
     };
     assert_eq!(f2.to_string(), "clean_failure: refused");
+    // InvalidInput Display uses the same label-prefixed shape; the
+    // `field` is intentionally NOT in `Display` (it's a structured
+    // attribute consumed by `into_domain_error`, not part of the
+    // free-text trace line). Detail still round-trips verbatim so
+    // operator log greps stay simple.
+    let f3 = IdpProvisionFailure::InvalidInput {
+        detail: "realm_name must be non-empty".to_owned(),
+        field: Some("provisioning_metadata.realm_name".into()),
+    };
+    assert_eq!(f3.detail(), "realm_name must be non-empty");
+    assert_eq!(
+        f3.to_string(),
+        "invalid_input: realm_name must be non-empty"
+    );
 }
 
 #[test]

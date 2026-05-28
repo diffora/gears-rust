@@ -72,6 +72,31 @@ pub enum DomainError {
     #[error("root tenant cannot be converted")]
     RootTenantCannotConvert,
 
+    /// Root tenant lifecycle state is immutable from the public API
+    /// (`POST /suspend` and `POST /unsuspend`). Symmetric with
+    /// [`Self::RootTenantCannotDelete`]: AM-internal bootstrap owns
+    /// root status; flipping it through the public surface would
+    /// cascade into downstream modules that branch on
+    /// `root.status` with no documented recovery path.
+    #[error("root tenant status cannot be changed")]
+    RootTenantCannotChangeStatus,
+
+    /// `IdP` plugin rejected the provisioning request shape BEFORE
+    /// making any external call. Distinct from [`Self::Validation`]
+    /// so the SDK boundary can carry the dotted-path `field` the
+    /// plugin localised the violation to (e.g.
+    /// `provisioning_metadata.realm_name`) as the structured
+    /// `field_violations[0].field` in the canonical envelope, with
+    /// `reason = "IDP_INVALID_INPUT"`. `field = None` means the
+    /// plugin couldn't localise to a specific sub-key; the canonical
+    /// mapping falls back to the shared `"provisioning_metadata"`
+    /// field key. Surfaces as HTTP 400 `invalid_argument`.
+    #[error("IdP provider rejected request shape: {detail}")]
+    IdpInvalidInput {
+        detail: String,
+        field: Option<String>,
+    },
+
     // ---- NotFound (HTTP 404) ----
     // For every variant in this group, `resource` is the stable id
     // surfaced through the AIP-193 `NotFound` envelope's `with_resource`,

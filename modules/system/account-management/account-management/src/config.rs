@@ -414,7 +414,7 @@ impl Default for TrPluginConfig {
 }
 
 /// External `IdP` integration policy.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IdpConfig {
     /// When `true`, module init fails closed if no
@@ -429,6 +429,41 @@ pub struct IdpConfig {
     /// default is `false` so dev / test deployments without an `IdP`
     /// plugin keep booting without changing existing config.
     pub required: bool,
+
+    /// Plugin vendor used to select the `IdpPluginClient` instance
+    /// from the types-registry catalogue at module init. AM enumerates
+    /// every registered `PluginV1<IdpPluginSpecV1>` instance, filters
+    /// by `vendor`, and tie-breaks by `priority` (lower wins — see
+    /// `modkit::plugins::choose_plugin_instance` for the canonical
+    /// algorithm shared with Tenant Resolver / `AuthN` Resolver).
+    ///
+    /// Defaults to `"cf"` so a stock deploy that ships
+    /// `static-idp-plugin` (vendor = `"cf"`, the in-process echo)
+    /// resolves out-of-the-box. Deployments that integrate with a
+    /// real `IdP` (a downstream-supplied plugin advertising its own
+    /// vendor identifier) MUST override this knob to match the
+    /// running plugin's vendor; otherwise the lazy resolver
+    /// surfaces `CleanFailure` on every IdP-touching call (when
+    /// `idp.required = true`) or silently falls back to the no-op
+    /// provider.
+    ///
+    /// Symmetric with [`TrPluginConfig::vendor`] — same selection
+    /// machinery, same string format, same priority semantics.
+    pub vendor: String,
+}
+
+impl Default for IdpConfig {
+    fn default() -> Self {
+        Self {
+            // Dev / test default — AM boots without an external IdP.
+            required: false,
+            // Aligns with `StaticIdpPluginConfig::default().vendor`
+            // so a fresh deploy that ships only the static echo
+            // plugin resolves the plugin without per-deploy
+            // configuration. Production deploys override.
+            vendor: "cf".to_owned(),
+        }
+    }
 }
 
 impl AccountManagementConfig {

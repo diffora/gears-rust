@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 use account_management_sdk::{IdpPluginClient, IdpPluginSpecV1};
 use async_trait::async_trait;
 use modkit::Module;
+use modkit::client_hub::ClientScope;
 use modkit::context::ModuleCtx;
 use modkit::gts::PluginV1;
 use tracing::{info, warn};
@@ -15,15 +16,22 @@ use crate::domain::Service;
 
 /// Static `IdP` plugin module.
 ///
-/// Registers the permissive echo [`Service`] as the process-wide
-/// `IdpPluginClient` so Account Management's bootstrap saga and tenant
-/// lifecycle flows succeed without a real `IdP` deployment.
+/// Registers the permissive echo [`Service`] as a scoped
+/// `IdpPluginClient` candidate so Account Management's bootstrap saga
+/// and tenant lifecycle flows succeed without a real `IdP` deployment.
 ///
-/// Account Management resolves the plugin via an **unscoped**
-/// `ClientHub::get::<dyn IdpPluginClient>()` lookup, so this plugin
-/// registers itself unscoped — the GTS instance is still published to
-/// `types-registry` for catalogue visibility, but the client trait
-/// object is the load-bearing artefact.
+/// Selection flow (symmetric with Tenant Resolver / `AuthN` Resolver):
+///
+///   1. Plugin init publishes a `PluginV1<IdpPluginSpecV1>` instance
+///      to types-registry carrying the configured `vendor` + `priority`.
+///   2. Plugin init registers the trait object under
+///      `ClientHub::register_scoped::<dyn IdpPluginClient>(scope = gts_id)`
+///      so coexisting `IdP` plugins cannot silently overwrite each other.
+///   3. AM resolves at module init: enumerate every
+///      `PluginV1<IdpPluginSpecV1>` instance, `choose_plugin_instance`
+///      by `cfg.idp.vendor` (default `"cf"` — matches this plugin's
+///      default vendor) + priority tiebreak, then `get_scoped` keyed
+///      on the chosen `gts_id`.
 #[modkit::module(
     name = "static-idp-plugin",
     deps = ["types-registry"]
@@ -101,11 +109,16 @@ impl Module for StaticIdpPlugin {
             .set(service.clone())
             .map_err(|_| anyhow::anyhow!("{} module already initialized", Self::MODULE_NAME))?;
 
-        // AM consumes the IdP plugin via an unscoped `get` (see
-        // `account_management::module::Module::init` — single IdP
-        // plugin per process).
+        // AM's lazy IdP resolver (`account_management::infra::idp::
+        // LazyIdpProvider`) reads this scoped registration on first
+        // API call via `ClientHub::try_get_scoped` keyed on the
+        // catalogue instance id. The scope MUST equal `instance_id`
+        // (the same value `PluginV1::build_registration` derived
+        // above) so the lazy `choose_plugin_instance` → `get_scoped`
+        // chain finds this trait object.
         let api: Arc<dyn IdpPluginClient> = service;
-        ctx.client_hub().register::<dyn IdpPluginClient>(api);
+        ctx.client_hub()
+            .register_scoped::<dyn IdpPluginClient>(ClientScope::gts_id(&instance_id), api);
 
         info!(instance_id = %instance_id);
         Ok(())

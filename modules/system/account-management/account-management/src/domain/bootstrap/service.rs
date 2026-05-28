@@ -1329,6 +1329,25 @@ impl<R: TenantRepo> BootstrapService<R> {
                 self.compensate(scope, root_id, "unsupported").await;
                 DomainError::UnsupportedOperation { detail }
             }
+            IdpProvisionFailure::InvalidInput { detail, field } => {
+                // Bootstrap-path symmetry with the steady-state saga
+                // (see `tenant/service/mod.rs`): plugin proved nothing
+                // was attempted on the IdP side, so compensate the row
+                // and surface as a 400-class diagnostic. The bootstrap
+                // saga has no public API caller — this `DomainError`
+                // becomes a bootstrap fatal logged loudly, so the
+                // wrong-shape `root_tenant_metadata` config is visible
+                // in operator logs rather than masked as a transient
+                // outage. Reuse `ProvisionFailureExt::into_domain_error`
+                // for the actual category mapping (Validation /
+                // detail-with-field shape), so bootstrap and steady
+                // state stay in lock-step when the mapping evolves.
+                self.compensate(scope, root_id, "invalid-input").await;
+                crate::domain::idp::ProvisionFailureExt::into_domain_error(
+                    IdpProvisionFailure::InvalidInput { detail, field },
+                    root_id,
+                )
+            }
             other => {
                 // SDK marks `IdpProvisionFailure` as `#[non_exhaustive]`;
                 // any new variant added later that hits the bootstrap

@@ -86,6 +86,10 @@ impl From<DomainError> for AccountManagementError {
             DomainError::MetadataValidation { detail } => Self::MetadataInvalidRequest { detail },
             DomainError::RootTenantCannotDelete => Self::RootTenantCannotDelete,
             DomainError::RootTenantCannotConvert => Self::RootTenantCannotConvert,
+            DomainError::RootTenantCannotChangeStatus => Self::RootTenantCannotChangeStatus,
+            DomainError::IdpInvalidInput { detail, field } => {
+                Self::IdpInvalidInput { detail, field }
+            }
 
             DomainError::NotFound { detail, resource } => Self::TenantNotFound {
                 tenant_id: resource,
@@ -281,6 +285,28 @@ pub(crate) fn account_management_error_to_canonical(err: AccountManagementError)
                 "tenant_id",
                 "root tenant cannot be converted",
                 "ROOT_TENANT_CANNOT_CONVERT",
+            )
+            .create(),
+        A::RootTenantCannotChangeStatus => TenantResource::invalid_argument()
+            .with_field_violation(
+                "tenant_id",
+                "root tenant status cannot be changed",
+                "ROOT_TENANT_CANNOT_CHANGE_STATUS",
+            )
+            .create(),
+        // `field` is the dotted-path the IdP plugin localised the
+        // violation to (e.g. `provisioning_metadata.realm_name`). When
+        // the plugin can't localise (`None`) we fall back to the
+        // shared `"provisioning_metadata"` field key — the public
+        // surface every IdP plugin shares — so callers see a
+        // consistent attribution shape rather than a missing field.
+        // Stays on `TenantResource` (the operation being rejected is
+        // tenant provisioning).
+        A::IdpInvalidInput { detail, field } => TenantResource::invalid_argument()
+            .with_field_violation(
+                field.unwrap_or_else(|| "provisioning_metadata".to_owned()),
+                detail,
+                "IDP_INVALID_INPUT",
             )
             .create(),
 

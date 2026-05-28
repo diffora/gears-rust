@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use account_management_sdk::error::AccountManagementError;
-use modkit_canonical_errors::CanonicalError;
+use modkit_canonical_errors::{CanonicalError, InvalidArgument};
 
 use crate::domain::error::DomainError;
 use crate::infra::sdk_error_mapping::account_management_error_to_canonical;
@@ -102,6 +102,81 @@ fn root_tenant_cannot_convert_maps_to_400() {
         canonical.resource_type(),
         Some(account_management_sdk::gts::TENANT_RESOURCE_TYPE)
     );
+}
+
+/// Symmetric coverage with `_delete` / `_convert` above: the new
+/// `RootTenantCannotChangeStatus` variant (added to close the
+/// suspend/unsuspend protection gap discovered via e2e probing) must
+/// map to 400 `invalid_argument` with the tenant resource type, so
+/// the wire envelope is indistinguishable from the existing
+/// root-protection rejections.
+#[test]
+fn root_tenant_cannot_change_status_maps_to_400() {
+    let canonical = round_trip(DomainError::RootTenantCannotChangeStatus);
+    assert_eq!(canonical.status_code(), 400);
+    assert_eq!(
+        canonical.resource_type(),
+        Some(account_management_sdk::gts::TENANT_RESOURCE_TYPE)
+    );
+}
+
+/// Pin the full wire shape for the `IdP` plugin's permanent
+/// shape-rejection: 400 `invalid_argument` on `TenantResource` with
+/// the dotted-path `field` carried as the canonical
+/// `field_violations[0].field` (not squashed into the description).
+/// `reason = "IDP_INVALID_INPUT"` is the discriminator clients use
+/// to tell this rejection from generic `VALIDATION` (`InvalidRequest`)
+/// without parsing `detail`.
+#[test]
+fn idp_invalid_input_with_field_carries_dotted_path_on_canonical() {
+    let canonical = round_trip(DomainError::IdpInvalidInput {
+        detail: "realm_name must be non-empty".to_owned(),
+        field: Some("provisioning_metadata.realm_name".to_owned()),
+    });
+    assert_eq!(canonical.status_code(), 400);
+    assert_eq!(
+        canonical.resource_type(),
+        Some(account_management_sdk::gts::TENANT_RESOURCE_TYPE)
+    );
+    let CanonicalError::InvalidArgument { ctx, .. } = canonical else {
+        panic!("expected CanonicalError::InvalidArgument");
+    };
+    let InvalidArgument::FieldViolations { field_violations } = ctx else {
+        panic!("expected InvalidArgument::FieldViolations ctx");
+    };
+    assert_eq!(field_violations.len(), 1);
+    assert_eq!(
+        field_violations[0].field, "provisioning_metadata.realm_name",
+        "dotted-path field MUST survive to the canonical envelope, not be squashed into detail"
+    );
+    assert_eq!(
+        field_violations[0].description,
+        "realm_name must be non-empty"
+    );
+    assert_eq!(field_violations[0].reason, "IDP_INVALID_INPUT");
+}
+
+/// Companion to the `Some(...)` pin above: when the plugin can't
+/// localise the violation to a sub-key (`field = None`), the
+/// canonical envelope falls back to the shared
+/// `"provisioning_metadata"` field key — every `IdP` plugin shares
+/// this surface — so callers always see a structured attribution
+/// rather than a missing field.
+#[test]
+fn idp_invalid_input_without_field_falls_back_to_provisioning_metadata() {
+    let canonical = round_trip(DomainError::IdpInvalidInput {
+        detail: "metadata body rejected".to_owned(),
+        field: None,
+    });
+    assert_eq!(canonical.status_code(), 400);
+    let CanonicalError::InvalidArgument { ctx, .. } = canonical else {
+        panic!("expected CanonicalError::InvalidArgument");
+    };
+    let InvalidArgument::FieldViolations { field_violations } = ctx else {
+        panic!("expected InvalidArgument::FieldViolations ctx");
+    };
+    assert_eq!(field_violations[0].field, "provisioning_metadata");
+    assert_eq!(field_violations[0].reason, "IDP_INVALID_INPUT");
 }
 
 // ---------------------------------------------------------------------------

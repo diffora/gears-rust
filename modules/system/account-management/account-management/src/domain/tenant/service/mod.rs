@@ -932,6 +932,48 @@ impl<R: TenantRepo> TenantService<R> {
                         return Err(IdpProvisionFailure::UnsupportedOperation { detail }
                             .into_domain_error(provisioning_row.id));
                     }
+                    IdpProvisionFailure::InvalidInput { detail, field } => {
+                        // Permanent client error: the plugin rejected
+                        // the request shape BEFORE making any provider
+                        // call. Compensate the `provisioning` row
+                        // (same shape as CleanFailure — nothing on the
+                        // IdP side to undo) and surface as 400
+                        // invalid_argument so the caller sees "fix
+                        // your request" rather than "retry later".
+                        if let Err(e) = self
+                            .repo
+                            // Saga path: pass `None` so the repo
+                            // fences the DELETE on `claimed_by IS
+                            // NULL`. Symmetric with the CleanFailure /
+                            // UnsupportedOperation arms above — a peer
+                            // reaper mid-takeover must not be erased
+                            // by the saga's compensation.
+                            .compensate_provisioning(
+                                &AccessScope::allow_all(),
+                                provisioning_row.id,
+                                None,
+                            )
+                            .await
+                        {
+                            warn!(
+                                target: "am.tenant.saga",
+                                tenant_id = %provisioning_row.id,
+                                error = %e,
+                                "compensate_provisioning failed after IdP InvalidInput; \
+                                 provisioning row left for reaper"
+                            );
+                            emit_metric(
+                                AM_TENANT_RETENTION,
+                                MetricKind::Counter,
+                                &[
+                                    ("job", "saga_compensation"),
+                                    ("outcome", "compensate_failed"),
+                                ],
+                            );
+                        }
+                        return Err(IdpProvisionFailure::InvalidInput { detail, field }
+                            .into_domain_error(provisioning_row.id));
+                    }
                     other => {
                         // SDK is `#[non_exhaustive]`; future variants
                         // arrive without an AM-side recompile. We do
@@ -1571,6 +1613,8 @@ impl<R: TenantRepo> TenantService<R> {
     ///   `Provisioning`.
     /// - [`DomainError::Conflict`] when the tenant is in `Deleted`
     ///   status (terminal during retention).
+    /// - [`DomainError::RootTenantCannotChangeStatus`] when `id` is
+    ///   the platform root tenant (root status is bootstrap-owned).
     // @cpt-begin:cpt-cf-account-management-dod-tenant-hierarchy-management-status-change-non-cascading:p1:inst-dod-status-change-service-suspend
     pub async fn suspend_tenant(
         &self,
@@ -1638,6 +1682,21 @@ impl<R: TenantRepo> TenantService<R> {
             return Err(DomainError::Conflict {
                 detail: format!("tenant {id} is deleted; status is terminal during retention"),
             });
+        }
+        // Symmetric ROOT-guard with `delete_tenant` /
+        // `update_tenant`: the platform root tenant's lifecycle
+        // state is bootstrap-owned and must not flip from the
+        // public `/suspend` or `/unsuspend` endpoints. Without this
+        // guard, any admin token could suspend the root (every
+        // downstream module that branches on `root.status` would
+        // hit an unexpected path) or "unsuspend" it back without
+        // audit attribution. Root is identified by
+        // `parent_id.is_none()`, same shape as `delete_tenant`'s
+        // guard. Fires AFTER `find_by_id` so a missing-id caller
+        // still gets 404 — preserves the "tenant not found" surface
+        // for malformed admin scripts.
+        if current.parent_id.is_none() {
+            return Err(DomainError::RootTenantCannotChangeStatus);
         }
         let now = OffsetDateTime::now_utc();
         let updated = self.repo.set_status(&scope, id, target, now).await?;

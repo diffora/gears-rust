@@ -1038,6 +1038,52 @@ async fn delete_tenant_rejects_root_tenant() {
     assert_eq!(err.code(), "root_tenant_cannot_delete");
 }
 
+/// Symmetric with `delete_tenant_rejects_root_tenant`: the platform
+/// root's lifecycle state must not flip via the public `/suspend`
+/// endpoint. Pre-fix, this RED-then-GREEN test would have failed
+/// (the suspend handler had no ROOT guard, the row would have been
+/// mutated to `Suspended`); post-fix the service short-circuits with
+/// `RootTenantCannotChangeStatus` (code → 400 `invalid_argument` at
+/// the canonical boundary).
+#[tokio::test]
+async fn suspend_tenant_rejects_root_tenant() {
+    let root = Uuid::from_u128(0x100);
+    let repo = Arc::new(FakeTenantRepo::with_root(root));
+    let svc = svc_with(
+        repo,
+        FakeOutcome::Ok,
+        AccountManagementConfig::default(),
+        Arc::new(InertResourceOwnershipChecker),
+    );
+    let err = svc
+        .suspend_tenant(&ctx(), root)
+        .await
+        .expect_err("root suspend reject");
+    assert_eq!(err.code(), "root_tenant_cannot_change_status");
+}
+
+/// Counterpart to `suspend_tenant_rejects_root_tenant`: both verbs
+/// route through `set_status_internal`, so the guard covers them
+/// uniformly. Pin both surfaces so a future refactor that splits
+/// the verbs onto separate code paths cannot regress only one of
+/// them.
+#[tokio::test]
+async fn unsuspend_tenant_rejects_root_tenant() {
+    let root = Uuid::from_u128(0x100);
+    let repo = Arc::new(FakeTenantRepo::with_root(root));
+    let svc = svc_with(
+        repo,
+        FakeOutcome::Ok,
+        AccountManagementConfig::default(),
+        Arc::new(InertResourceOwnershipChecker),
+    );
+    let err = svc
+        .unsuspend_tenant(&ctx(), root)
+        .await
+        .expect_err("root unsuspend reject");
+    assert_eq!(err.code(), "root_tenant_cannot_change_status");
+}
+
 #[tokio::test]
 async fn delete_tenant_rejects_tenant_with_children() {
     let root = Uuid::from_u128(0x100);
@@ -3569,7 +3615,10 @@ async fn create_tenant_finalization_failure_with_unsupported_idp_required_leaves
         crate::domain::tenant_type::inert_tenant_type_checker(),
         mock_enforcer(),
         AccountManagementConfig {
-            idp: IdpConfig { required: true },
+            idp: IdpConfig {
+                required: true,
+                ..IdpConfig::default()
+            },
             ..AccountManagementConfig::default()
         },
     )
@@ -3639,7 +3688,10 @@ async fn hard_delete_batch_defers_unsupported_when_idp_required_true() {
                 default_window_secs: 0,
                 ..crate::config::RetentionConfig::default()
             },
-            idp: IdpConfig { required: true },
+            idp: IdpConfig {
+                required: true,
+                ..IdpConfig::default()
+            },
             ..AccountManagementConfig::default()
         },
     )
@@ -3692,7 +3744,10 @@ async fn reaper_marks_unsupported_terminal_when_idp_required_true() {
         crate::domain::tenant_type::inert_tenant_type_checker(),
         mock_enforcer(),
         AccountManagementConfig {
-            idp: IdpConfig { required: true },
+            idp: IdpConfig {
+                required: true,
+                ..IdpConfig::default()
+            },
             ..AccountManagementConfig::default()
         },
     )

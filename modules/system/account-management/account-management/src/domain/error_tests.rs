@@ -52,6 +52,14 @@ fn invalid_argument_variants_map_to_400() {
     );
     assert_eq!(status_of(DomainError::RootTenantCannotDelete), 400);
     assert_eq!(status_of(DomainError::RootTenantCannotConvert), 400);
+    assert_eq!(status_of(DomainError::RootTenantCannotChangeStatus), 400);
+    assert_eq!(
+        status_of(DomainError::IdpInvalidInput {
+            detail: "x".into(),
+            field: None,
+        }),
+        400
+    );
 }
 
 #[test]
@@ -271,6 +279,8 @@ impl DomainError {
             Self::MetadataValidation { .. } => "metadata_validation",
             Self::RootTenantCannotDelete => "root_tenant_cannot_delete",
             Self::RootTenantCannotConvert => "root_tenant_cannot_convert",
+            Self::RootTenantCannotChangeStatus => "root_tenant_cannot_change_status",
+            Self::IdpInvalidInput { .. } => "idp_invalid_input",
             Self::NotFound { .. } => "not_found",
             Self::UserNotFound { .. } => "user_not_found",
             Self::ConversionRequestNotFound { .. } => "conversion_request_not_found",
@@ -315,6 +325,8 @@ impl DomainError {
             | Self::MetadataValidation { .. }
             | Self::RootTenantCannotDelete
             | Self::RootTenantCannotConvert
+            | Self::RootTenantCannotChangeStatus
+            | Self::IdpInvalidInput { .. }
             | Self::InvalidActorForTransition { .. }
             | Self::TypeNotAllowed { .. }
             | Self::TenantDepthExceeded { .. }

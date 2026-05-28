@@ -5,10 +5,11 @@
 //! `DomainError → CanonicalError` via the `From` impl in
 //! `crate::infra::sdk_error_mapping`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::http::Uri;
 use axum::response::IntoResponse;
 use tracing::Span;
@@ -23,7 +24,7 @@ use crate::api::rest::dto::{
     ChildConversionRequestDto, ConversionPatchDto, ConversionPatchStatusDto,
     OwnConversionRequestDto, RequestChildConversionDto, RequestOwnConversionDto,
 };
-use crate::api::rest::handlers::common::clamp_listing_top;
+use crate::api::rest::handlers::common::{clamp_listing_top, reject_non_odata_params};
 use crate::domain::conversion::model::ConversionRequest;
 use crate::domain::conversion::service::{ConversionCaller, ConversionService};
 use crate::domain::error::DomainError;
@@ -73,19 +74,29 @@ pub async fn request_own_conversion(
 /// # Errors
 ///
 /// Surfaces a canonical `Problem` envelope. Notable codes:
-/// `validation` (400 — malformed `$filter` / `$orderby`),
-/// `cross_tenant_denied` (403), tenant `not_found` (404),
-/// `service_unavailable` (503 — PDP / DB transport failure).
+/// `validation` (400 — malformed `$filter` / `$orderby`;
+/// unrecognized non-`OData` query parameter — see
+/// [`reject_non_odata_params`]), `cross_tenant_denied` (403), tenant
+/// `not_found` (404), `service_unavailable` (503 — PDP / DB transport
+/// failure).
+// `Query<HashMap<String, String>>` is the canonical Axum form for
+// scanning unmodelled query keys; generic-hasher generalisation has no
+// pay-off here because Axum's `serde_urlencoded` extractor always
+// produces the default hasher. Allow the lint at the handler-signature
+// level rather than rewriting the extractor type for no reason.
+#[allow(clippy::implicit_hasher)]
 #[tracing::instrument(
-    skip(svc, ctx, query),
+    skip(svc, ctx, query, extras),
     fields(tenant_id = %tenant_id, request_id = Empty)
 )]
 pub async fn list_own_conversions(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<ConcreteConversionService>>,
     Path(tenant_id): Path<Uuid>,
+    Query(extras): Query<HashMap<String, String>>,
     OData(query): OData,
 ) -> ApiResult<Json<modkit_odata::Page<OwnConversionRequestDto>>> {
+    reject_non_odata_params(&extras)?;
     let query = clamp_listing_top(query, svc.max_listing_top());
     let page = svc.list_own_for_tenant(&ctx, tenant_id, &query).await?;
     Ok(Json(
@@ -201,19 +212,24 @@ pub async fn request_child_conversion(
 /// # Errors
 ///
 /// Surfaces a canonical `Problem` envelope. Notable codes:
-/// `validation` (400 — malformed `$filter` / `$orderby`),
-/// `cross_tenant_denied` (403), parent `not_found` (404),
-/// `service_unavailable` (503).
+/// `validation` (400 — malformed `$filter` / `$orderby`;
+/// unrecognized non-`OData` query parameter — see
+/// [`reject_non_odata_params`]), `cross_tenant_denied` (403), parent
+/// `not_found` (404), `service_unavailable` (503).
+// See `list_own_conversions` for the rationale on this allow.
+#[allow(clippy::implicit_hasher)]
 #[tracing::instrument(
-    skip(svc, ctx, query),
+    skip(svc, ctx, query, extras),
     fields(parent_id = %parent_id, request_id = Empty)
 )]
 pub async fn list_child_conversions(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<ConcreteConversionService>>,
     Path(parent_id): Path<Uuid>,
+    Query(extras): Query<HashMap<String, String>>,
     OData(query): OData,
 ) -> ApiResult<Json<modkit_odata::Page<ChildConversionRequestDto>>> {
+    reject_non_odata_params(&extras)?;
     let query = clamp_listing_top(query, svc.max_listing_top());
     let page = svc.list_inbound_for_parent(&ctx, parent_id, &query).await?;
     Ok(Json(page.map_items(

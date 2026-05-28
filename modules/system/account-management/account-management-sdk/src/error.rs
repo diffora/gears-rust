@@ -75,6 +75,34 @@ pub enum AccountManagementError {
     #[error("root tenant cannot be converted")]
     RootTenantCannotConvert,
 
+    /// Root tenant status is immutable — `suspend` / `unsuspend` refused.
+    /// Symmetric with [`Self::RootTenantCannotDelete`]: the platform
+    /// root is a singleton whose lifecycle state must not flip from
+    /// the public API. Downstream modules that branch on
+    /// `root.status` may take unexpected paths (read-only mode,
+    /// refuse provisioning, etc.) without a documented recovery
+    /// runbook.
+    #[error("root tenant status cannot be changed")]
+    RootTenantCannotChangeStatus,
+
+    /// `IdP` plugin rejected the provisioning request shape BEFORE
+    /// making any external call. Permanent client error — the
+    /// `provisioning` row was compensated by the saga; nothing on
+    /// the provider side to undo. Distinct from
+    /// [`Self::InvalidRequest`] so the canonical envelope can carry
+    /// the dotted-path `field` (e.g. `provisioning_metadata.realm_name`)
+    /// the plugin localised the violation to, surfaced as
+    /// `field_violations[0].field` with reason `IDP_INVALID_INPUT`.
+    /// `field` is `None` when the plugin couldn't localise to a
+    /// specific key; the canonical mapping then uses
+    /// `"provisioning_metadata"` as the field key (the surface
+    /// every `IdP` plugin shares).
+    #[error("IdP provider rejected request shape: {detail}")]
+    IdpInvalidInput {
+        detail: String,
+        field: Option<String>,
+    },
+
     // ===================================================================
     // Conversion request
     // ===================================================================
@@ -258,6 +286,8 @@ impl AccountManagementError {
                 | Self::MetadataInvalidRequest { .. }
                 | Self::RootTenantCannotDelete
                 | Self::RootTenantCannotConvert
+                | Self::RootTenantCannotChangeStatus
+                | Self::IdpInvalidInput { .. }
         )
     }
 

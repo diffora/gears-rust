@@ -39,6 +39,12 @@ pub enum FakeOutcome {
     CleanFailure,
     Ambiguous,
     Unsupported,
+    /// Plugin returned [`IdpProvisionFailure::InvalidInput`] — the
+    /// permanent client-error category. AM saga compensates the
+    /// `provisioning` row and surfaces 400 `invalid_argument`. Used by
+    /// saga tests pinning the "no retry, no reaper, immediate 400"
+    /// path that distinguishes this category from `CleanFailure`.
+    InvalidInput,
     Hang,
 }
 
@@ -139,6 +145,10 @@ impl IdpPluginClient for FakeIdpProvisioner {
             }),
             FakeOutcome::Unsupported => Err(IdpProvisionFailure::UnsupportedOperation {
                 detail: "fake unsupported".into(),
+            }),
+            FakeOutcome::InvalidInput => Err(IdpProvisionFailure::InvalidInput {
+                detail: "fake invalid input".into(),
+                field: Some("provisioning_metadata".into()),
             }),
             FakeOutcome::Hang => {
                 std::future::pending::<()>().await;

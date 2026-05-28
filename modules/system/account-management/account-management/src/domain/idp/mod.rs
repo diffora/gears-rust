@@ -205,6 +205,31 @@ impl ProvisionFailureExt for IdpProvisionFailure {
                     ),
                 }
             }
+            Self::InvalidInput { detail, field } => {
+                // Permanent client error: the plugin proved no IdP-side
+                // state was attempted because the input failed the
+                // plugin's shape-check before any provider call. Surface
+                // as `DomainError::IdpInvalidInput { detail, field }` so
+                // the SDK boundary keeps the dotted-path `field` as a
+                // structured attribute — the canonical envelope then
+                // carries it as `field_violations[0].field` with
+                // `reason = "IDP_INVALID_INPUT"` instead of squashing
+                // it into the free-text detail.
+                //
+                // The `detail` text comes from the plugin's wire-shape
+                // validator (it describes the structural issue, not a
+                // vendor error message), so it is safe to surface
+                // verbatim in the public envelope. This matches the
+                // existing `Validation`/`MetadataValidation` arms:
+                // `detail` is already operator-safe by construction.
+                tracing::warn!(
+                    target: "am.idp",
+                    tenant_id = %tenant_id,
+                    field = field.as_deref().unwrap_or("<unknown>"),
+                    "IdP provision InvalidInput; surfacing as 400 idp_invalid_input"
+                );
+                DomainError::IdpInvalidInput { detail, field }
+            }
             // SDK enum is `#[non_exhaustive]`. A new variant added in a
             // future SDK release lands here until the AM-side mapping
             // is updated; surface as `Internal` with a loud `error!`

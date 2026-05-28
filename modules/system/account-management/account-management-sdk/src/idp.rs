@@ -224,6 +224,29 @@ pub enum IdpProvisionFailure {
     /// Provider does not support the requested provisioning at all.
     /// Surfaces as `idp_unsupported_operation`.
     UnsupportedOperation { detail: String },
+    /// Provider rejected the input as malformed/incomplete BEFORE
+    /// making any external call. Permanent client error: nothing was
+    /// attempted on the provider side, so the saga short-circuits
+    /// without a real compensation step (the `provisioning` row is
+    /// still cleaned up for repo hygiene). Maps to
+    /// `CanonicalError::InvalidArgument` (HTTP 400) — distinct from
+    /// `CleanFailure` (which carries the "transient outage" 503
+    /// shape) so clients can tell "fix your request" from "retry
+    /// later" without parsing the detail string.
+    ///
+    /// `field` carries the dotted-path reference (e.g.
+    /// `"provisioning_metadata.realm_name"`) describing where in the
+    /// request body the violation lives. The AM-side boundary lifts
+    /// this into `AccountManagementError::IdpInvalidInput { field }`
+    /// and the canonical envelope surfaces it as
+    /// `field_violations[0].field` with `reason = "IDP_INVALID_INPUT"`.
+    /// `None` means the plugin couldn't localise the violation to a
+    /// specific key — the canonical mapping then falls back to the
+    /// shared `"provisioning_metadata"` field key.
+    InvalidInput {
+        detail: String,
+        field: Option<String>,
+    },
 }
 
 impl IdpProvisionFailure {
@@ -238,6 +261,7 @@ impl IdpProvisionFailure {
             Self::CleanFailure { .. } => "clean_failure",
             Self::Ambiguous { .. } => "ambiguous",
             Self::UnsupportedOperation { .. } => "unsupported_operation",
+            Self::InvalidInput { .. } => "invalid_input",
         }
     }
 
@@ -249,7 +273,8 @@ impl IdpProvisionFailure {
         match self {
             Self::CleanFailure { detail }
             | Self::Ambiguous { detail }
-            | Self::UnsupportedOperation { detail } => detail,
+            | Self::UnsupportedOperation { detail }
+            | Self::InvalidInput { detail, .. } => detail,
         }
     }
 }

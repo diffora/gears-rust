@@ -44,7 +44,7 @@ use crate::domain::tenant::resource_checker::ResourceOwnershipChecker;
 use crate::domain::tenant::service::TenantService;
 use crate::domain::tenant_type::TenantTypeChecker;
 use crate::domain::user::service::UserService;
-use crate::infra::idp::NoopIdpProvider;
+use crate::infra::idp::LazyIdpProvider;
 use crate::infra::metrics::build_default_adapter;
 use crate::infra::rg::RgResourceOwnershipChecker;
 use crate::infra::storage::migrations::Migrator;
@@ -599,48 +599,33 @@ impl Module for AccountManagementModule {
         // `cyberfabric-core#1813`; gating it with a separate
         // `idp.user_operations_required` knob can land alongside the
         // REST surface if deployments need to opt in independently.
-        // @cpt-begin:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-resolve-plugin
-        let idp: Arc<dyn IdpPluginClient> = match ctx.client_hub().get::<dyn IdpPluginClient>() {
-            Ok(plugin) => {
-                info!("idp provider plugin resolved from client hub");
-                plugin
-            }
-            Err(e) if cfg.idp.required => {
-                return Err(anyhow::anyhow!(
-                    "idp.required=true but no IdpPluginClient is registered: {e}"
-                ));
-            }
-            Err(_) => {
-                info!(
-                    "no idp provider plugin registered; falling back to NoopIdpProvider \
-                         (idp.required=false)"
-                );
-                Arc::new(NoopIdpProvider)
-            }
-        };
-        // @cpt-end:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-resolve-plugin
-
         // FEATURE 2.3 (tenant-type-enforcement) — hard-resolve the
         // GTS Types Registry client. types-registry is declared in
         // `deps` so the runtime guarantees init ordering, and AM
         // genuinely cannot function without it: every Tenant DTO
         // returned to API consumers carries a `tenant_type` field
-        // sourced from the registry, and tenant-type enforcement
+        // sourced from the registry, tenant-type enforcement
         // (parent/child pairing admission) is the registry's
-        // dedicated job. A missing client would degrade those into
-        // null `tenant_type` fields and admit-everything pairings,
-        // which is contract-broken rather than degraded — so we
-        // fail closed at init instead of binding an inert fallback
-        // in production. (Tests construct the service directly with
-        // `inert_tenant_type_checker()` and bypass this init path.)
+        // dedicated job, AND the IdP plugin is now selected via
+        // `choose_plugin_instance` over types-registry-published
+        // `PluginV1<IdpPluginSpecV1>` instances (the vendor-based
+        // resolve below — symmetric with AuthN Resolver). A missing
+        // client would degrade these into null `tenant_type` fields
+        // and admit-everything pairings, which is contract-broken
+        // rather than degraded — so we fail closed at init instead
+        // of binding an inert fallback in production. (Tests construct
+        // the service directly with `inert_tenant_type_checker()`
+        // and bypass this init path.)
         //
-        // The resolved client is reused for two purposes:
+        // The resolved client is reused for three purposes:
         //   * the type-compatibility barrier
         //     ([`GtsTenantTypeChecker`])
         //   * the `tenant_type_uuid` → chained-id lookup that lowers
         //     `TenantModel` into the public
         //     [`account_management_sdk::Tenant`] shape on every
         //     service-layer CRUD return value.
+        //   * the `IdpPluginSpecV1` instance enumeration used by the
+        //     vendor-based plugin selection block immediately below.
         let types_registry: Arc<dyn types_registry_sdk::TypesRegistryClient> = ctx
             .client_hub()
             .get::<dyn types_registry_sdk::TypesRegistryClient>()
@@ -648,6 +633,69 @@ impl Module for AccountManagementModule {
         info!("types-registry client resolved from client hub; enabling GTS tenant-type checker");
         let tenant_type_checker: Arc<dyn TenantTypeChecker + Send + Sync> =
             Arc::new(GtsTenantTypeChecker::new(types_registry.clone()));
+
+        // IdP provider plugin — lazy vendor-based selection.
+        //
+        // AM `Module::init` runs in modkit's *config* phase, where
+        // the types-registry catalogue is still in its private
+        // staging buffer and `list_instances` would return 0 for
+        // runtime-registered plugin instances even if the plugin
+        // published earlier in the same init pass. The catalogue
+        // only flips to ready in types-registry's `post_init`
+        // hook, strictly after every module's init returns. So
+        // resolution MUST happen later — symmetric with how
+        // `authn-resolver` uses `GtsPluginSelector::get_or_init`
+        // (lazy on first API call).
+        //
+        // We hold `Arc<LazyIdpProvider>` instead of the resolved
+        // `Arc<dyn IdpPluginClient>` directly. The wrapper
+        // implements `IdpPluginClient` itself and forwards each
+        // call to the catalogue-resolved underlying plugin, lazily
+        // resolved + cached on first need. Plugins register
+        // **only** the scoped trait object
+        // (`register_scoped::<dyn IdpPluginClient>(
+        //     ClientScope::gts_id(&instance_id))`) keyed on the
+        // same `instance_id` they publish to types-registry, and
+        // the lazy wrapper finds the trait object via
+        // `try_get_scoped` keyed on the gts_id
+        // `choose_plugin_instance` selects for `cfg.idp.vendor`.
+        //
+        // `cfg.idp.required` semantics shift slightly but stay
+        // honest:
+        //   * `required = true`  → wrapper surfaces
+        //                          `CleanFailure` /
+        //                          `Retryable` / `Unavailable` per
+        //                          IdP-side trait when the catalogue
+        //                          hasn't yet (or no longer)
+        //                          advertises a matching vendor. The
+        //                          saga compensates, the wire surface
+        //                          is `503` `service_unavailable` —
+        //                          retryable, distinct from the
+        //                          permanent `UnsupportedOperation`
+        //                          shape.
+        //   * `required = false` → wrapper internally delegates to
+        //                          `NoopIdpProvider`, preserving the
+        //                          existing dev / test posture.
+        //
+        // The shift: under `required = true`, a misconfigured deploy
+        // surfaces at first IdP-touching API call (503), not at init.
+        // The pre-existing "fail closed at init" contract documented
+        // around this site is intentionally relaxed because the
+        // catalogue cannot be probed at init time — see the
+        // `LazyIdpProvider` module docs for the full rationale.
+        // @cpt-begin:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-resolve-plugin
+        let idp: Arc<dyn IdpPluginClient> = Arc::new(LazyIdpProvider::new(
+            ctx.client_hub(),
+            Arc::clone(&types_registry),
+            cfg.idp.vendor.clone(),
+            cfg.idp.required,
+        ));
+        info!(
+            configured_vendor = %cfg.idp.vendor,
+            required = cfg.idp.required,
+            "idp provider plugin wrapped in LazyIdpProvider; resolution deferred to first call"
+        );
+        // @cpt-end:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-resolve-plugin
 
         // FEATURE 2.3 follow-up — hard-resolve the Resource Group
         // client for the soft-delete `tenant_has_resources` probe.

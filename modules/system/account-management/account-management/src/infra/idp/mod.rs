@@ -16,9 +16,13 @@
 use account_management_sdk::IdpPluginClient;
 use async_trait::async_trait;
 
+mod lazy;
+pub use lazy::LazyIdpProvider;
+
 /// No-op `IdP` provider plugin: inherits the trait's
 /// `UnsupportedOperation` defaults for every tenant / user operation.
-/// Used when AM boots without an `IdP` plugin.
+/// Used when AM boots without an `IdP` plugin AND when
+/// [`LazyIdpProvider`] cannot resolve a plugin under `required = false`.
 #[derive(Debug, Default, Clone)]
 pub struct NoopIdpProvider;
 
