@@ -2,7 +2,7 @@
 cypilot: true
 type: requirement
 name: Rust PR Review Guidelines
-version: 1.0
+version: 1.1
 purpose: Idiomatic, engineering-grade checklist for reviewing Rust pull requests
 ---
 
@@ -15,19 +15,25 @@ Use this guideline to review Rust pull requests for correctness, idiomatic style
 This is a **PR review checklist**, not a language tutorial and not a generic architecture manifesto.
 Focus on **real merge risk**, **idiomatic Rust**, and **actionable findings**.
 
+The checklist has two tiers:
+
+1. **Architecture review** — run once at the PR level before reading any file. Catches structural and design-level problems that span multiple files or are invisible inside a single hunk.
+2. **Code review** — run per-file. Catches implementation-level problems in the diff.
+
 ## Review Goals
 
 Review the PR as a senior Rust engineer. Prioritize:
 
-1. Correctness and invariant preservation
-2. Idiomatic Rust usage
-3. Error handling and panic safety
-4. Async and concurrency correctness
-5. API and type design
-6. Security and data handling
-7. Performance footguns
-8. Test adequacy
-9. Observability and operability
+1. Architecture and structural correctness (PR-level pass first)
+2. Correctness and invariant preservation
+3. Idiomatic Rust usage
+4. Error handling and panic safety
+5. Async and concurrency correctness
+6. API and type design
+7. Security and data handling
+8. Performance footguns
+9. Test adequacy
+10. Observability and operability
 
 ---
 
@@ -63,6 +69,23 @@ For each issue include:
 - **HIGH**: significant correctness, maintainability, or operability risk; should usually be fixed before merge
 - **MEDIUM**: meaningful improvement; fix if practical in this PR
 - **LOW**: minor issue or polish
+
+---
+
+# ARCHITECTURE REVIEW (PR-level pass — run before reading individual files)
+
+Assess the PR as a whole before examining any file. Read the title, body, full file list, and diff structure. For each statement below, investigate the diff and relevant code, then flag any violations as PR-level comments with a severity and a concrete fix.
+
+- Long-running work (retries, external I/O, waits) should not block process startup or prevent clean shutdown.
+- Known safety limitations documented only in source comments are invisible to operators — they need a runtime signal.
+- Layer boundaries must be respected: infrastructure must not encode business rules, domain must not import persistence types.
+- Multi-step writes must define a recovery path for every partial-failure arm — no silent half-committed state.
+- The same decision (classification, validity check, traversal) should be computed in one place and consumed elsewhere, not re-implemented independently.
+- Degraded-mode paths, skipped steps, and background failures must surface at `warn` or higher — not swallowed or logged at `info`.
+- Error variants must be semantically distinct; reusing a generic variant for domain-specific conditions breaks pattern-matching by callers.
+- New background tasks and periodic loops must have lifecycle control (cancellation, bounded retries, failure signaling).
+- Shared mutable state and lock scope must be justified; prefer ownership transfer and message passing.
+- If the PR bundles multiple independently shippable changes, note it in the summary (do not post as a PR comment).
 
 ---
 
