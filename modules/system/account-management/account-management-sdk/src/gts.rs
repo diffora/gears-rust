@@ -102,18 +102,16 @@ pub const USER_RG_TYPE_CODE: &str = "gts.cf.core.rg.type.v1~cf.core.am.user.v1~"
 // AM base envelope schema registration
 // ---------------------------------------------------------------------------
 //
-// Registered AM-owned base envelopes (boot-time, via
-// `modkit_gts::inventory::submit!`):
+// Registered AM-owned base envelopes (boot-time, via the link-time
+// `modkit_gts` inventory the `#[gts_type_schema]` macro populates):
 //
 //   * `gts.cf.core.am.tenant_metadata.v1~` and
-//     `gts.cf.core.am.tenant_type.v1~` -- registered inline in
-//     `gts_envelopes.rs` so vendor metadata / tenant_type schemas
-//     deriving from them are admitted by `register_type_schemas`.
-//     The inline `inventory::submit!` is a workaround until the
-//     `#[gts_type_schema]` macro supports `x-gts-traits-schema` /
-//     `x-gts-traits` (tracked in
-//     <https://github.com/cyberfabric/cyberware-rust/issues/1928>,
-//     blocked upstream by GTS-rust/#85).
+//     `gts.cf.core.am.tenant_type.v1~` -- the abstract trait-carrier
+//     envelopes in `gts_envelopes.rs` so vendor metadata / tenant_type
+//     schemas deriving from them are admitted by `register_type_schemas`.
+//     They use the gts-rust 0.10.0 `traits_schema` + `gts_abstract` macro
+//     params to emit `x-gts-traits-schema` / `x-gts-abstract` from Rust
+//     trait structs (no more hand-authored inline JSON).
 //   * `gts.cf.core.am.user.v1~` -- registered via [`UserV1`] below.
 //     `domain::gts_validation::validate_new_user_payload_via_gts` is
 //     fail-closed and returns `ServiceUnavailable` if this envelope is

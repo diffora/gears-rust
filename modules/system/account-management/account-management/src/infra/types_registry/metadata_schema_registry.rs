@@ -38,16 +38,9 @@ use crate::domain::metadata::registry::{InheritancePolicy, MetadataSchemaRegistr
 
 /// Top-level key in the effective trait map carrying the inheritance
 /// policy enum value. Defined on the `gts.cf.core.am.tenant_metadata.v1~`
-/// envelope's `x-gts-traits-schema`.
-// TODO(cyberfabric/cyberware-rust#1928): the base envelope
-// `gts.cf.core.am.tenant_metadata.v1~` is currently registered via the
-// `inventory::submit!` workaround in
-// `account-management-sdk/src/gts_envelopes.rs`. Once the
-// `#[gts_type_schema]` macro grows `x-gts-traits-schema` /
-// `x-gts-traits` support (tracked in #1928, blocked upstream by
-// GTS-rust/#85), the envelope migrates to a macro-derived
-// registration and this comment can disappear.
-// See <https://github.com/cyberfabric/cyberware-rust/issues/1928>.
+/// envelope's `x-gts-traits-schema` (see
+/// `account_management_sdk::gts_envelopes::TenantMetadataTraits`, the
+/// Rust source of truth the macro emits the trait schema from).
 const INHERITANCE_POLICY_TRAIT: &str = "inheritance_policy";
 
 /// Wire token for the `Inherit` policy. Anything else (missing key,
