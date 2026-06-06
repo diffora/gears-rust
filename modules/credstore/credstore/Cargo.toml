@@ -20,22 +20,40 @@ workspace = true
 
 [dependencies]
 credstore-sdk = { workspace = true }
+modkit = { workspace = true }
+modkit-macros = { workspace = true }
+modkit-security = { workspace = true }
+modkit-db = { workspace = true }
+modkit-canonical-errors = { workspace = true }
+authz-resolver-sdk = { workspace = true }
+tenant-resolver-sdk = { workspace = true }
 types-registry-sdk = { workspace = true }
 
-anyhow = { workspace = true }
 async-trait = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
-inventory = { workspace = true }
+axum = { workspace = true }
+sea-orm = { workspace = true }
+sea-orm-migration = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-utoipa = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
-
-modkit = { workspace = true }
-modkit-security = { workspace = true }
-modkit-macros = { workspace = true }
+anyhow = { workspace = true }
+time = { workspace = true }
+utoipa = { workspace = true }
+opentelemetry = { workspace = true, features = ["metrics"] }
 
 [dev-dependencies]
-types-registry-sdk = { workspace = true, features = ["test-util"] }
+tower = { workspace = true }
+modkit-db = { workspace = true, features = ["sqlite"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[features]
+test-support = ["dep:opentelemetry_sdk"]
+
+[dependencies.opentelemetry_sdk]
+workspace = true
+features = ["metrics", "testing"]
+optional = true

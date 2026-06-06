@@ -203,7 +203,33 @@ impl CredStoreClientV1 for MockCredStoreClient {
             owner_tenant_id: CredstoreTenantId::nil(),
             sharing: SharingMode::default(),
             is_inherited: false,
+            version: 1,
         }))
+    }
+
+    // oagw only consumes `get`; the write half of the trait is a no-op here.
+    async fn put(
+        &self,
+        _ctx: &SecurityContext,
+        _key: &SecretRef,
+        _value: SecretValue,
+        _sharing: SharingMode,
+    ) -> Result<(), CredStoreError> {
+        Ok(())
+    }
+
+    async fn create(
+        &self,
+        _ctx: &SecurityContext,
+        _key: &SecretRef,
+        _value: SecretValue,
+        _sharing: SharingMode,
+    ) -> Result<(), CredStoreError> {
+        Ok(())
+    }
+
+    async fn delete(&self, _ctx: &SecurityContext, _key: &SecretRef) -> Result<(), CredStoreError> {
+        Ok(())
     }
 }
 
@@ -220,6 +246,30 @@ impl CredStoreClientV1 for FailingCredStoreClient {
         _ctx: &SecurityContext,
         _key: &SecretRef,
     ) -> Result<Option<GetSecretResponse>, CredStoreError> {
+        Err(CredStoreError::Internal("backend failure".into()))
+    }
+
+    async fn put(
+        &self,
+        _ctx: &SecurityContext,
+        _key: &SecretRef,
+        _value: SecretValue,
+        _sharing: SharingMode,
+    ) -> Result<(), CredStoreError> {
+        Err(CredStoreError::Internal("backend failure".into()))
+    }
+
+    async fn create(
+        &self,
+        _ctx: &SecurityContext,
+        _key: &SecretRef,
+        _value: SecretValue,
+        _sharing: SharingMode,
+    ) -> Result<(), CredStoreError> {
+        Err(CredStoreError::Internal("backend failure".into()))
+    }
+
+    async fn delete(&self, _ctx: &SecurityContext, _key: &SecretRef) -> Result<(), CredStoreError> {
         Err(CredStoreError::Internal("backend failure".into()))
     }
 }

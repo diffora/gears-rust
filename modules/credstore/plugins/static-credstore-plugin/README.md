@@ -1,16 +1,30 @@
 # Static CredStore Plugin
 
-CredStore storage-backend plugin that serves pre-configured secrets from YAML configuration. Designed for development, testing, and fixed-credential deployments where a full secrets vault is unnecessary.
+CredStore **value-store** backend for development and testing: an in-memory
+per-tenant secret store, optionally seeded from YAML configuration. Implements
+the `CredStorePluginClientV1` contract (`get`/`put`/`delete`) so the stateful
+`credstore` gateway can use it as a backend without a full secrets vault.
 
 ## Overview
 
 The `cyberware-static-credstore-plugin` module provides:
 
-- **Static secret mapping** — secrets defined in YAML config, loaded and validated at init
-- **Four sharing scopes** — Private, Tenant, Shared (tenant-scoped), and Global
-- **O(1) lookup** — secrets are pre-indexed into separate `HashMap`s per scope
-- **Deterministic precedence** — lookup order: Private → Tenant → Shared → Global
-- **Strict config validation** — invalid keys, duplicate entries, and contradictory field combinations are rejected at startup
+- **Per-tenant value store** — `get`/`put`/`delete` keyed by `tenant_id` + `key`
+  + optional `owner_id` (`Some` = private key class, `None` = tenant key class).
+  No sharing/hierarchy/policy here — that lives in the gateway.
+- **Writable at runtime** — the gateway's write saga (`put`/`delete`) mutates the
+  in-memory store, so it works as a development backend, not just a read fixture.
+- **Config seeding** — secrets defined in YAML are loaded and validated at init.
+- **Read fallbacks** — config-seeded `shared`/global entries serve `owner_id =
+  None` reads when no tenant-class entry exists.
+- **Strict config validation** — invalid keys, duplicate entries, and
+  contradictory field combinations are rejected at startup.
+
+> **Note (stateful gateway):** the gateway resolves metadata from its own
+> database first and only then reads the value here. A secret seeded **only** in
+> this plugin's config (with no corresponding gateway metadata row) is therefore
+> *not* reachable through the gateway — write it via the credstore API
+> (`POST/PUT /credstore/v1/secrets`) so a metadata row exists.
 
 The plugin registers itself via the types registry as a `CredStorePluginClientV1` implementation and is discovered by the `credstore` gateway module.
 
@@ -80,29 +94,29 @@ The plugin rejects invalid configurations at startup with a descriptive error:
 - **Global with non-Shared mode** — `tenant_id: None` only allows `shared` (or inferred `shared`)
 - **Duplicate keys** — within the same scope (same tenant + sharing mode), keys must be unique
 
-## Lookup precedence
+## Read resolution
 
-When a secret is requested, the plugin checks maps in this order:
+The gateway calls `get(tenant_id, key, owner_id)`. The plugin resolves against
+its in-memory key classes:
 
-1. **Private** — keyed by `(tenant_id, owner_id, key)`, matched against `SecurityContext`
-2. **Tenant** — keyed by `(tenant_id, key)`, any subject in the tenant
-3. **Shared** — keyed by `(tenant_id, key)`, tenant-scoped but visible to descendants
-4. **Global** — keyed by `key` only, fallback for any caller
+- **`owner_id = Some`** → the **private** class only: `(tenant_id, owner_id, key)`.
+- **`owner_id = None`** → the **tenant** class `(tenant_id, key)`, falling back to
+  config-seeded **shared** `(tenant_id, key)` then **global** `key`.
 
-The first match wins. This means a Private secret shadows a Tenant secret with the same key for the matching user, while other users in the same tenant still see the Tenant-level value.
-
-### `SecretMetadata::owner_id` resolution
-
-For **Private** secrets, `owner_id` comes from the config. For **Tenant**, **Shared**, and **Global** secrets, `owner_id` is not stored — the plugin fills it from `SecurityContext::subject_id()` of the caller at lookup time.
+`put`/`delete` target the private class when `owner_id = Some`, otherwise the
+tenant class (with `delete` also sweeping the `shared`/global fallbacks). The
+config-seeded `shared`/global maps exist only to keep development configs
+resolving; they are never written by `put`. The plugin returns the raw
+`SecretValue` — all sharing/owner metadata is owned by the gateway.
 
 ## Architecture
 
-```
+```text
 module.rs          ModKit module — init, config loading, GTS registration
 config.rs          YAML config model + resolve_sharing() + validation docs
 domain/
-  service.rs       Service — from_config() builder + get() lookup
-  client.rs        CredStorePluginClientV1 impl (maps SecretEntry → SecretMetadata)
+  service.rs       Service — from_config() seeder + get_value/put_value/delete_value (RwLock store)
+  client.rs        CredStorePluginClientV1 impl (get/put/delete -> SecretValue)
   mod.rs           Re-exports
 ```
 
@@ -122,12 +136,11 @@ cargo test -p cyberware-static-credstore-plugin
 
 The test suite covers:
 
-- Lookup per scope (private, tenant, shared, global)
-- Precedence across all four scopes
-- Owner/tenant isolation
+- Read per key class (private vs tenant) and `shared`/global fallbacks
+- `put`/`delete` round-trips and owner/tenant isolation
 - Config validation (all rejection rules)
 - Sharing mode inference and explicit overrides
-- `SecretMetadata` owner resolution from `SecurityContext`
+- The `CredStorePluginClientV1` trait impl (`get`/`put`/`delete`)
 
 ## License
 
