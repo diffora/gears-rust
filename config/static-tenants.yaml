@@ -19,6 +19,15 @@ database:
         max_conns: 5
 
 modules:
+  credstore:
+    database:
+      server: "sqlite_test"
+      file: "credstore.db"
+    config:
+      # Gateway selects its value-store backend plugin by GTS vendor;
+      # must match static-credstore-plugin (default "cyberfabric").
+      vendor: "cyberfabric"
+
   api-gateway:
     config:
       bind_addr: "127.0.0.1:8087"

@@ -177,17 +177,29 @@ pub struct GetSecretResponse {
     /// `true` if the secret was retrieved from an ancestor tenant via
     /// hierarchical resolution, `false` if owned by the requesting tenant.
     pub is_inherited: bool,
-}
-
-/// Metadata returned by plugins alongside the secret value.
-#[derive(Debug)]
-pub struct SecretMetadata {
-    pub value: SecretValue,
-    pub owner_id: OwnerId,
-    pub sharing: SharingMode,
-    pub owner_tenant_id: TenantId,
+    /// Monotonic version of the resolved secret (optimistic-locking
+    /// groundwork); surfaced as the HTTP `ETag` by the gateway.
+    pub version: i64,
 }
 
 #[cfg(test)]
-#[path = "models_tests.rs"]
-mod models_tests;
+mod models_tests {
+    use super::*;
+    #[test]
+    fn secret_ref_rejects_colon_and_empty() {
+        assert!(SecretRef::new("ok-key_1").is_ok());
+        assert!(SecretRef::new("").is_err());
+        assert!(SecretRef::new("has:colon").is_err());
+        assert!(SecretRef::new("a".repeat(256)).is_err());
+    }
+    #[test]
+    fn secret_value_redacts() {
+        let v = SecretValue::from("supersecret");
+        assert_eq!(format!("{v:?}"), "[REDACTED]");
+        assert_eq!(format!("{v}"), "[REDACTED]");
+    }
+    #[test]
+    fn sharing_mode_default_is_tenant() {
+        assert_eq!(SharingMode::default(), SharingMode::Tenant);
+    }
+}

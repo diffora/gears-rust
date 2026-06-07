@@ -486,7 +486,36 @@ mod tests {
                     owner_tenant_id: CredstoreTenantId::nil(),
                     sharing: SharingMode::default(),
                     is_inherited: false,
+                    version: 1,
                 }))
+            }
+
+            async fn put(
+                &self,
+                _ctx: &modkit_security::SecurityContext,
+                _key: &SecretRef,
+                _value: SecretValue,
+                _sharing: SharingMode,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
+            }
+
+            async fn create(
+                &self,
+                _ctx: &modkit_security::SecurityContext,
+                _key: &SecretRef,
+                _value: SecretValue,
+                _sharing: SharingMode,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
+            }
+
+            async fn delete(
+                &self,
+                _ctx: &modkit_security::SecurityContext,
+                _key: &SecretRef,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
             }
         }
 

@@ -30,13 +30,20 @@ pub async fn register_oagw_upstreams(
     providers: &mut HashMap<String, ProviderEntry>,
 ) -> anyhow::Result<()> {
     for (provider_id, entry) in providers.iter_mut() {
-        // Register root upstream + route. Fail hard — without upstreams the
-        // module cannot proxy LLM requests.
-        let upstream = create_upstream(gateway, ctx, provider_id, entry)
-            .await
-            .ok_or_else(|| {
-                anyhow::anyhow!("OAGW upstream registration failed for provider '{provider_id}'")
-            })?;
+        // Register root upstream + route. A failure here is non-fatal: with the
+        // stateful credstore a provider's backend secret may not be provisioned
+        // yet at startup (secrets are created at runtime via the credstore API,
+        // there is no startup seed). Skip such a provider — it stays unavailable
+        // until provisioned — rather than crashing the whole module at boot.
+        let Some(upstream) = create_upstream(gateway, ctx, provider_id, entry).await else {
+            warn!(
+                provider_id,
+                "skipping OAGW provisioning for provider: upstream registration failed \
+                 (its credstore secret may not be accessible yet); the provider will be \
+                 unavailable until its secret is provisioned"
+            );
+            continue;
+        };
         entry.upstream_alias = Some(upstream.alias.clone());
         register_route(gateway, ctx, provider_id, entry, &upstream)
             .await

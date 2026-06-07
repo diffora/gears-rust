@@ -455,6 +455,64 @@ def server(test_env):
     _db_summary_text = _print_db_summary()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _provision_credstore_secrets(request, server):
+    """Provision the LLM provider secrets through the credstore gateway.
+
+    mini-chat routes LLM calls through OAGW, whose auth plugin resolves the
+    provider ``secret_ref`` (``openai-key`` / ``azure-openai-key``) via the
+    now-stateful credstore gateway. The gateway resolves a secret's metadata
+    from its own DB before reading the value, so the secrets must be created
+    through its API — pre-seeding the static plugin config alone is no longer
+    reachable.
+
+    The mini-chat rig is single-tenant (``single-tenant-tr-plugin``) with
+    ``accept_all`` authn, so a ``tenant``-scoped secret resolves for the S2S
+    context OAGW uses when proxying. Offline mode (default) uses mock values
+    (the mock provider ignores them); online mode uses the real env keys, the
+    same ones ``_patch_mini_chat_config`` would otherwise inject.
+
+    PUT is an idempotent upsert, so reruns are safe.
+    """
+    if request.config.getoption("mode") == "online":
+        secrets = {
+            "openai-key": os.environ.get("OPENAI_API_KEY", ""),
+            "azure-openai-key": os.environ.get("AZURE_OPENAI_API_KEY", ""),
+        }
+    else:
+        secrets = {
+            "openai-key": "mock-key-openai",
+            "azure-openai-key": "mock-key-azure",
+        }
+    headers = {
+        "Authorization": "Bearer mini-chat-e2e",
+        "content-type": "application/json",
+    }
+    for ref, value in secrets.items():
+        if not value:
+            continue  # online mode without that provider's key configured
+        try:
+            resp = httpx.put(
+                f"{server}/credstore/v1/secrets/{ref}",
+                headers=headers,
+                json={"value": value, "sharing": "tenant"},
+                timeout=5.0,
+            )
+        except httpx.ConnectError:
+            return
+        if resp.status_code not in (200, 201, 204):
+            msg = (
+                f"could not provision credstore secret {ref!r}: "
+                f"{resp.status_code} {resp.text[:200]}"
+            )
+            if request.config.getoption("mode") == "offline":
+                # Offline mode is deterministic — a provisioning failure is a real
+                # problem, so fail fast instead of letting tests fail opaquely.
+                raise RuntimeError(f"[e2e] {msg}")
+            print(f"[e2e] WARN: {msg}")
+    yield
+
+
 @pytest.fixture(scope="session")
 def mock_provider(test_env):
     """Access to the mock provider sidecar (for set_next_scenario)."""

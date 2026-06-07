@@ -177,6 +177,15 @@ modules:
     config:
       vendor: "cyberfabric"
 
+  credstore:
+    database:
+      server: "sqlite_users"
+      file: "credstore.db"
+    config:
+      # Gateway selects its value-store backend plugin by GTS vendor;
+      # must match static-credstore-plugin (default "cyberfabric").
+      vendor: "cyberfabric"
+
   static-credstore-plugin:
     config:
       secrets:
