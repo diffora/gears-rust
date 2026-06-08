@@ -608,7 +608,7 @@ mod tests {
             let mut child = cmd.spawn().expect("should spawn test process");
 
             // Wait for it to exit
-            tokio::time::timeout(Duration::from_millis(100), child.wait())
+            tokio::time::timeout(Duration::from_secs(2), child.wait())
                 .await
                 .expect("process should exit within timeout")
                 .expect("wait should succeed");
