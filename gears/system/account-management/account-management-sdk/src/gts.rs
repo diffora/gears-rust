@@ -351,7 +351,7 @@ pub struct TenantTypeTraits {
 /// Base tenant-type envelope (abstract). Carries no instance data — the
 /// `id` field exists only to satisfy the `gts-macros` base-struct
 /// contract (a base must declare an `id: GtsInstanceId` or `gts_type:
-/// GtsTypeId`) and is inert (see module docs).
+/// GtsTypeId`) and is inert (see gear docs).
 #[gts_type_schema(
     dir_path = "schemas",
     base = true,
