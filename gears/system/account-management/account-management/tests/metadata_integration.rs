@@ -364,15 +364,42 @@ async fn resolve_inherit_walks_up_to_root_then_barrier_stops() {
         .await
         .expect("flip mid self_managed");
 
-    // From leaf again: ancestor barrier on `mid` returns empty BEFORE
-    // any read at root, per `inst-algo-walk-ancestor-barrier-return`.
+    // From leaf again: `mid` is now the self-managed inheritance domain
+    // root. It has no value of its own, and root's value lives ABOVE the
+    // barrier — so the walk stops after `mid` without crossing to root
+    // and resolves empty (VHP-1672: the stop is AFTER reading `mid`, not
+    // before; the outcome is empty only because `mid` itself has no
+    // value).
     let resolved = svc
         .resolve_metadata(&ctx_for(root), leaf, schema_a())
         .await
         .expect("resolve after barrier");
     assert!(
         resolved.is_none(),
-        "barrier-stop must collapse to empty; got {resolved:?}"
+        "value above the self-managed barrier is never consulted; got {resolved:?}"
+    );
+
+    // Inclusive domain root: seed a value ON `mid` (the self-managed
+    // domain root). The leaf MUST now inherit `mid`'s value — a
+    // self-managed ancestor shares its own defaults down into its
+    // domain even though it blocks inheritance from above
+    // (`barrier(mid, leaf) = 0`).
+    svc.upsert_metadata(
+        &ctx_for(mid),
+        mid,
+        UpsertMetadataRequest::new(schema_a(), json!({"flag": "from_mid"})),
+    )
+    .await
+    .expect("put mid value");
+    let resolved = svc
+        .resolve_metadata(&ctx_for(root), leaf, schema_a())
+        .await
+        .expect("resolve from leaf via domain root");
+    let entry = resolved.expect("walk-up must inherit the self-managed domain root's value");
+    assert_eq!(
+        entry.value,
+        json!({"flag": "from_mid"}),
+        "descendant inherits its nearest self-managed ancestor (domain root)"
     );
 }
 

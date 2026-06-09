@@ -1260,7 +1260,13 @@ async fn resolve_inherit_stops_at_self_managed_start_tenant_barrier() {
 }
 
 #[tokio::test]
-async fn resolve_inherit_stops_at_mid_walk_self_managed_ancestor_barrier() {
+async fn resolve_inherit_includes_nearest_self_managed_ancestor_as_domain_root() {
+    // VHP-1672: a `self_managed` ancestor is the INCLUSIVE top of its
+    // descendants' inheritance domain — not an exclusive cutoff. The
+    // `tenant_closure` barrier rule sets `barrier(self_managed,
+    // direct_descendant) = 0` (ancestor excluded, descendant included;
+    // DESIGN §3.2 / closure.rs invariant 3), so a descendant MUST read
+    // the nearest self-managed ancestor's value and stop *after* it.
     let md_repo = Arc::new(FakeMetadataRepo::new());
     let tenants = Arc::new(FakeTenantRepo::new());
     let registry = Arc::new(StubMetadataSchemaRegistry::with_seed(vec![(
@@ -1271,9 +1277,9 @@ async fn resolve_inherit_stops_at_mid_walk_self_managed_ancestor_barrier() {
     let mid_sm = Uuid::from_u128(0x2);
     let leaf = Uuid::from_u128(0x3);
     seed_tenant(&tenants, root, None, TenantStatus::Active, false, "root");
-    // mid is self-managed -> ancestor barrier-stop BEFORE reading its
-    // value (even if mid had a row, the spec says barrier stops the
-    // walk before reading the ancestor).
+    // mid is self-managed -> it is the leaf's inheritance domain root:
+    // its value IS inherited, but the walk stops after it (root above
+    // the barrier is never consulted).
     seed_tenant(
         &tenants,
         mid_sm,
@@ -1290,6 +1296,8 @@ async fn resolve_inherit_stops_at_mid_walk_self_managed_ancestor_barrier() {
         false,
         "leaf",
     );
+    // Seed BOTH root (above the barrier) and mid_sm (the domain root).
+    // The leaf must inherit mid's value, never root's.
     seed_metadata_row(
         &md_repo,
         root,
@@ -1298,8 +1306,6 @@ async fn resolve_inherit_stops_at_mid_walk_self_managed_ancestor_barrier() {
         fixed_now(),
     )
     .await;
-    // Even seed a row on mid_sm to verify the barrier stop fires
-    // BEFORE the read.
     seed_metadata_row(
         &md_repo,
         mid_sm,
@@ -1311,14 +1317,73 @@ async fn resolve_inherit_stops_at_mid_walk_self_managed_ancestor_barrier() {
 
     let svc = make_service(md_repo, tenants, registry, fixed_now());
 
+    let entry = svc
+        .resolve_metadata(&ctx(), leaf, schema_a())
+        .await
+        .expect("resolve domain-root")
+        .expect("nearest self-managed ancestor's value is inherited");
+
+    assert_eq!(
+        entry.value,
+        json!({"v": "mid"}),
+        "descendant inherits its nearest self-managed ancestor (domain root), \
+         never an ancestor above the barrier"
+    );
+}
+
+#[tokio::test]
+async fn resolve_inherit_stops_after_self_managed_domain_root_without_crossing() {
+    // VHP-1672 companion: the self-managed domain root has NO own value
+    // and the only value lives on its parent (above the barrier). The
+    // walk MUST stop *after* the domain root and return empty — it must
+    // not cross the barrier to consult the value above it.
+    let md_repo = Arc::new(FakeMetadataRepo::new());
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let registry = Arc::new(StubMetadataSchemaRegistry::with_seed(vec![(
+        schema_a(),
+        InheritancePolicy::Inherit,
+    )]));
+    let root = Uuid::from_u128(0x1);
+    let mid_sm = Uuid::from_u128(0x2);
+    let leaf = Uuid::from_u128(0x3);
+    seed_tenant(&tenants, root, None, TenantStatus::Active, false, "root");
+    seed_tenant(
+        &tenants,
+        mid_sm,
+        Some(root),
+        TenantStatus::Active,
+        true,
+        "mid-sm",
+    );
+    seed_tenant(
+        &tenants,
+        leaf,
+        Some(mid_sm),
+        TenantStatus::Active,
+        false,
+        "leaf",
+    );
+    // Value lives ONLY on root (above the barrier); domain root mid_sm
+    // has none.
+    seed_metadata_row(
+        &md_repo,
+        root,
+        &schema_a(),
+        json!({"v": "root"}),
+        fixed_now(),
+    )
+    .await;
+
+    let svc = make_service(md_repo, tenants, registry, fixed_now());
+
     let result = svc
         .resolve_metadata(&ctx(), leaf, schema_a())
         .await
-        .expect("resolve mid-barrier");
+        .expect("resolve above-barrier");
 
     assert!(
         result.is_none(),
-        "barrier-stop fires BEFORE reading the self-managed ancestor's value: got {result:?}"
+        "value above the self-managed barrier is never consulted; got {result:?}"
     );
 }
 

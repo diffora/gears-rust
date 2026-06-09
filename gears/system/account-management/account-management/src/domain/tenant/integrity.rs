@@ -1,23 +1,22 @@
 //! Hierarchy-integrity types consumed by the Rust-side classifier.
 //!
 //! The classifier itself lives in
-//! `crate::infra::storage::integrity::classifiers/`: 8 pure-Rust functions
-//! run synchronously over an in-memory `(tenants, tenant_closure)`
-//! snapshot loaded via `SecureSelect` inside a read-only
-//! `REPEATABLE READ` transaction (see `integrity::run_integrity_check`).
-//! The single-flight gate (`integrity_check_runs`) acquires and
-//! releases in **separate** short committed transactions outside the
-//! snapshot tx — see `integrity::lock` for the three-transaction
-//! lifecycle. Together the 8 classifiers emit the 10 fixed-shape
-//! categories enumerated by [`IntegrityCategory::all`].
+//! `crate::infra::storage::integrity::classifiers/`: 8 pure-Rust
+//! functions run synchronously over an in-memory
+//! `(tenants, tenant_closure)` snapshot loaded via `SecureSelect`
+//! inside a read-only `REPEATABLE READ` transaction (see
+//! `integrity::run_integrity_check`). Together the 8 classifiers
+//! emit the 10 fixed-shape categories enumerated by
+//! [`IntegrityCategory::all`].
 //!
 //! This gear retains the type vocabulary shared by:
 //!
 //! * the `TenantRepo::run_integrity_check` trait surface, which
 //!   returns a flat `Vec<(IntegrityCategory, Violation)>`.
-//! * the `TenantService::check_hierarchy_integrity` orchestrator, which
-//!   re-buckets the flat pairs into a fixed-order [`IntegrityReport`]
-//!   and emits one gauge sample per category.
+//! * the
+//!   [`crate::domain::integrity_check::coordinator::IntegrityCoordinator`]
+//!   which re-buckets the flat pairs into a fixed-order
+//!   [`IntegrityReport`] and emits one gauge sample per category.
 
 use toolkit_macros::domain_model;
 use uuid::Uuid;

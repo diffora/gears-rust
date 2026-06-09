@@ -314,7 +314,7 @@ pub struct ConversionRequestParentProjection {
 /// [`account_management_sdk::gts::CONVERSION_REQUEST_RG_TYPE_CODE`];
 /// the impl-side duplication is required because `ResourceType.name`
 /// is a `&'static str` consumed at compile time.
-pub(super) mod pep {
+pub(crate) mod pep {
     use super::{ResourceType, pep_properties};
 
     /// Resource declaration for `ConversionRequest`. The compiled

@@ -47,6 +47,7 @@ use crate::domain::user::service::UserService;
 use crate::infra::idp::LazyIdpProvider;
 use crate::infra::metrics::build_default_adapter;
 use crate::infra::rg::RgResourceOwnershipChecker;
+use crate::infra::storage::integrity::coordinator::IntegrityCoordinator;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo_impl::{
     AmDbProvider, ConversionRepoImpl, MetadataRepoImpl, TenantHierarchyReadAdapter, TenantRepoImpl,
@@ -117,6 +118,13 @@ pub struct AccountManagementGear {
     /// `serve()`. `None` when bootstrap is not configured, config is
     /// invalid (non-strict), or after `serve()` has taken the params.
     bootstrap_params: Mutex<Option<BootstrapParams>>,
+    /// Concrete [`TenantRepoImpl`] handle, published in `init()` so
+    /// `serve()` can construct the
+    /// [`crate::domain::integrity_check::coordinator::IntegrityCoordinator`]
+    /// without re-deriving the repo from the service surface (the
+    /// `Arc<dyn TenantRepo>` projection would lose the concrete type
+    /// the coordinator needs to call `repo.provider()`).
+    repo: OnceLock<Arc<TenantRepoImpl>>,
 }
 
 impl Default for AccountManagementGear {
@@ -128,6 +136,7 @@ impl Default for AccountManagementGear {
             metadata_service: OnceLock::new(),
             pending_hard_delete_hooks: Mutex::new(Vec::new()),
             bootstrap_params: Mutex::new(None),
+            repo: OnceLock::new(),
         }
     }
 }
@@ -222,7 +231,19 @@ impl AccountManagementGear {
         let conversion_cancel = tasks_cancel.clone();
         let retention_svc = svc.clone();
         let reaper_svc = svc.clone();
-        let integrity_checker: Arc<dyn IntegrityChecker> = svc;
+        // The integrity coordinator owns the AM-local lease for the
+        // whole check + maybe-repair cycle. TTL and renewal period
+        // come from `cfg.integrity_check` (bounded by
+        // `IntegrityCheckConfig::validate`).
+        let integrity_repo = self.repo.get().cloned().ok_or_else(|| {
+            anyhow::anyhow!("account-management: serve invoked before repo was published in init")
+        })?;
+        let integrity_checker: Arc<dyn IntegrityChecker> = Arc::new(IntegrityCoordinator::new(
+            integrity_repo,
+            integrity_cfg.lease_ttl(),
+            integrity_cfg.lease_renew_period(),
+        ));
+        drop(svc);
 
         let mut retention_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(retention_tick);
@@ -1135,6 +1156,18 @@ impl Gear for AccountManagementGear {
                     Self::MODULE_NAME
                 )
             })?;
+        // Publish the concrete `TenantRepoImpl` so `serve()` can
+        // construct the `IntegrityCoordinator` (which needs
+        // `repo.provider()` to materialize a `LeaseManager`). The
+        // service surface erases the concrete type behind
+        // `Arc<dyn TenantRepo>`, which is not enough for the
+        // coordinator's lease wiring.
+        self.repo.set(Arc::clone(&repo)).map_err(|_| {
+            anyhow::anyhow!(
+                "{} gear already initialized (repo handle)",
+                Self::MODULE_NAME
+            )
+        })?;
 
         // Publish the SDK-facing `AccountManagementClient` via
         // `ClientHub` so sibling gears / the REST handler resolve

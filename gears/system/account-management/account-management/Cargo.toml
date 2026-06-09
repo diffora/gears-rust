@@ -33,6 +33,11 @@ toolkit-odata = { workspace = true, features = ["with-utoipa"] }
 # is pulled directly into this crate.
 toolkit-odata-macros = { workspace = true }
 toolkit-utils = { workspace = true, features = ["humantime-serde"] }
+# Link-time GTS permission catalog (`src/gts/permissions.rs`): declares
+# AuthzPermissionV1 instances into the toolkit-gts inventory the
+# types-registry aggregates at boot.
+toolkit-gts = { workspace = true }
+inventory = { workspace = true }
 
 axum = { workspace = true, features = ["macros"] }
 http = { workspace = true }

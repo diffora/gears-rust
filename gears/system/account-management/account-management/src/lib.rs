@@ -47,6 +47,7 @@ pub mod client;
 pub mod config;
 pub mod domain;
 pub mod gear;
+pub(crate) mod gts;
 pub mod infra;
 pub(crate) mod tr_plugin;
 

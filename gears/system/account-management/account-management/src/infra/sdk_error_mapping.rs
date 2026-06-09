@@ -211,6 +211,15 @@ impl From<DomainError> for AccountManagementError {
                     .map(|d| u32::try_from(d.as_secs()).unwrap_or(u32::MAX)),
             },
 
+            // Not reachable via REST (canonical impl short-circuits to 429);
+            // mirrors `IntegrityCheckInProgress` — both bypass through
+            // `From<DomainError> for CanonicalError` below and only
+            // hit this arm via tooling that lifts `DomainError`
+            // directly.
+            DomainError::IntegrityCheckLeaseLost => Self::Internal {
+                detail: "integrity repair aborted: lease lost to a peer".to_owned(),
+            },
+
             // ---- Internal ----
             DomainError::Internal {
                 diagnostic,
@@ -459,6 +468,21 @@ impl From<DomainError> for CanonicalError {
                     .with_quota_violation(
                         "integrity_check",
                         "another integrity check is already in progress",
+                    )
+                    .create()
+            }
+            // `IntegrityCheckLeaseLost` shares the public retry
+            // contract with `IntegrityCheckInProgress` — both surface
+            // as the same canonical 429 envelope. The metric-label
+            // split (`AbortedLeaseLost` vs `SkippedInProgress`) is
+            // observed at the loop-driver layer, not at the REST
+            // boundary, so collapsing them here keeps the public
+            // contract stable.
+            DomainError::IntegrityCheckLeaseLost => {
+                TenantResource::resource_exhausted("integrity repair aborted: lease lost to a peer")
+                    .with_quota_violation(
+                        "integrity_check",
+                        "integrity repair aborted; another worker took the lease",
                     )
                     .create()
             }

@@ -1,16 +1,19 @@
 //! Hierarchy-integrity check subsystem (Rust-side).
 //!
-//! This gear replaces the legacy raw-SQL classifier path with eight
-//! pure-Rust classifiers that operate on an in-memory
-//! [`Snapshot`](snapshot::Snapshot) of `(tenants, tenant_closure)`. The
-//! split between transient DB I/O and synchronous classification is the
-//! central refactor invariant:
+//! Eight pure-Rust classifiers operate on an in-memory
+//! [`Snapshot`](snapshot::Snapshot) of `(tenants, tenant_closure)`.
+//! The split between transient DB I/O and synchronous classification
+//! is the central design invariant:
 //!
 //! * `integrity/snapshot.rs` — value types + index builder.
 //! * `integrity/classifiers/` — eight DB-free classifier functions; the
 //!   only crate-internal entry is [`classifiers::run`].
 //! * `integrity/loader.rs` — SecureORM-only snapshot loader.
-//! * `integrity/lock.rs` — `integrity_check_runs` PK single-flight gate.
+//!
+//! Coordination is owned by [`crate::infra::lease`] (`am_leases`
+//! table) plus the
+//! [`crate::domain::integrity_check::coordinator::IntegrityCoordinator`]
+//! that wraps it.
 //!
 //! The single public entry [`run_classifiers`] consumes a snapshot and
 //! returns an
@@ -20,8 +23,8 @@
 //! An empty `Vec` for a category means "no violations".
 
 mod classifiers;
+pub mod coordinator;
 pub mod loader;
-pub mod lock;
 pub mod repair;
 pub mod snapshot;
 
@@ -33,6 +36,7 @@ use toolkit_security::AccessScope;
 use crate::domain::error::DomainError;
 use crate::domain::tenant::integrity::{IntegrityCategory, IntegrityReport, Violation};
 
+pub use coordinator::{HIERARCHY_INTEGRITY_KEY, IntegrityCoordinator};
 pub use snapshot::{ClosureSnap, Snapshot, TenantSnap};
 
 /// Run every classifier and aggregate the results into an

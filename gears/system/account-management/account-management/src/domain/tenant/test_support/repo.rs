@@ -58,10 +58,10 @@ pub enum NextActivationOutcome {
 /// Test injection for `run_integrity_check`. The default `Ok`
 /// arm returns an empty violation list (a clean snapshot trivially
 /// passes every classifier); `Violations` lets callers script a
-/// non-empty bucket to drive the service-layer rebucketing path; and
+/// non-empty bucket to exercise the consumer rebucketing path; and
 /// `Err` exercises error propagation (e.g.
 /// [`DomainError::IntegrityCheckInProgress`] surfacing through the
-/// `TenantService::check_hierarchy_integrity` `?` operator).
+/// `TenantRepo::run_integrity_check` return).
 ///
 /// One-shot semantics (consumed via `mem::take` and reset to default
 /// after firing) — matches the [`NextActivationOutcome`] pattern and
@@ -339,16 +339,15 @@ impl FakeTenantRepo {
             .next_upsert_idp_metadata_failure = Some(detail.into());
     }
 
-    /// Script `run_integrity_check_for_scope` to return a non-empty
-    /// violation list. Drives the `TenantService::check_hierarchy_integrity`
-    /// rebucketing path that the trivial default cannot exercise.
+    /// Script `run_integrity_check` to return a non-empty
+    /// violation list. Drives the consumer rebucketing path that
+    /// the trivial default cannot exercise.
     pub fn set_audit_violations(&self, pairs: Vec<(IntegrityCategory, Violation)>) {
         self.state.lock().expect("lock").next_audit_outcome = NextAuditOutcome::Violations(pairs);
     }
 
-    /// Script `run_integrity_check_for_scope` to return a domain error.
-    /// Used to verify error propagation through
-    /// `TenantService::check_hierarchy_integrity`.
+    /// Script `run_integrity_check` to return a domain error. Used
+    /// to verify error propagation through the trait surface.
     pub fn set_audit_error(&self, err: DomainError) {
         self.state.lock().expect("lock").next_audit_outcome = NextAuditOutcome::Err(err);
     }

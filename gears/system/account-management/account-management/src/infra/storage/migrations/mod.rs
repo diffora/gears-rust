@@ -35,6 +35,15 @@
 //!   guards. Per-decision storage preserves the full audit story
 //!   across the dual-consent lifecycle — the counterparty's
 //!   "why approved" cannot rewrite the initiator's "why requested".
+//! * `m0007_create_am_leases` — `am_leases` distributed-lease table
+//!   backing the hierarchy-integrity coordinator (`infra::lease` +
+//!   `domain::integrity_check::coordinator`). PK on `key` lets
+//!   future singleton coordination domains slot in without schema
+//!   work; today the only key is `"hierarchy_integrity"`.
+//! * `m0008_drop_integrity_check_runs` — drops the legacy
+//!   `integrity_check_runs` table from `m0003`. The coordinator
+//!   above is the only coordination primitive going forward; the
+//!   table is unused after that commit shipped.
 
 use sea_orm_migration::prelude::*;
 
@@ -44,6 +53,8 @@ pub mod m0003_create_integrity_check_runs;
 pub mod m0004_create_conversion_requests;
 pub mod m0005_tenant_metadata_indexes;
 pub mod m0006_add_conversion_audit_comments;
+pub mod m0007_create_am_leases;
+pub mod m0008_drop_integrity_check_runs;
 
 pub struct Migrator;
 
@@ -57,6 +68,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0004_create_conversion_requests::Migration),
             Box::new(m0005_tenant_metadata_indexes::Migration),
             Box::new(m0006_add_conversion_audit_comments::Migration),
+            Box::new(m0007_create_am_leases::Migration),
+            Box::new(m0008_drop_integrity_check_runs::Migration),
         ]
     }
 }

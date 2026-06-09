@@ -55,7 +55,7 @@ use toolkit_security::AccessScope;
 use uuid::Uuid;
 
 use account_management::Migrator;
-use account_management::infra::storage::entity::{integrity_check_runs, tenant_closure, tenants};
+use account_management::infra::storage::entity::{am_leases, tenant_closure, tenants};
 use account_management::infra::storage::repo_impl::{AmDbProvider, TenantRepoImpl};
 
 /// Status code constants matching `domain::tenant::model::TenantStatus`'s
@@ -322,6 +322,91 @@ async fn insert_tenant_with_type(
     Ok(())
 }
 
+/// Seed a `Deleted`-status tenant with explicit retention columns so
+/// the retention scanner can be driven deterministically without
+/// replaying the soft-delete saga. `retention_window_secs = None`
+/// exercises the scanner's gear-default fallback; `claimed_by` /
+/// `claimed_at` let a test pre-stamp a (possibly stale) worker claim;
+/// `terminal_failure_at = Some(_)` parks the row out of the scan.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_deleted_tenant(
+    provider: &Arc<AmDbProvider>,
+    id: Uuid,
+    parent_id: Option<Uuid>,
+    name: &str,
+    depth: i32,
+    deleted_at: OffsetDateTime,
+    retention_window_secs: Option<i64>,
+    claimed_by: Option<Uuid>,
+    claimed_at: Option<OffsetDateTime>,
+    terminal_failure_at: Option<OffsetDateTime>,
+) -> Result<()> {
+    let conn = provider
+        .conn()
+        .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
+    let now = OffsetDateTime::now_utc();
+    let am = tenants::ActiveModel {
+        id: ActiveValue::Set(id),
+        parent_id: ActiveValue::Set(parent_id),
+        name: ActiveValue::Set(name.to_owned()),
+        status: ActiveValue::Set(DELETED),
+        self_managed: ActiveValue::Set(false),
+        tenant_type_uuid: ActiveValue::Set(Uuid::nil()),
+        depth: ActiveValue::Set(depth),
+        created_at: ActiveValue::Set(now),
+        updated_at: ActiveValue::Set(now),
+        deleted_at: ActiveValue::Set(Some(deleted_at)),
+        retention_window_secs: ActiveValue::Set(retention_window_secs),
+        claimed_by: ActiveValue::Set(claimed_by),
+        claimed_at: ActiveValue::Set(claimed_at),
+        terminal_failure_at: ActiveValue::Set(terminal_failure_at),
+    };
+    secure_insert::<tenants::Entity>(am, &allow_all(), &conn)
+        .await
+        .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
+    Ok(())
+}
+
+/// Seed a `Provisioning` tenant with explicit `created_at` and claim /
+/// terminal columns so the provisioning-reaper scan
+/// (`scan_stuck_provisioning`) can be driven deterministically.
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_provisioning_tenant(
+    provider: &Arc<AmDbProvider>,
+    id: Uuid,
+    parent_id: Option<Uuid>,
+    name: &str,
+    depth: i32,
+    created_at: OffsetDateTime,
+    claimed_by: Option<Uuid>,
+    claimed_at: Option<OffsetDateTime>,
+    terminal_failure_at: Option<OffsetDateTime>,
+) -> Result<()> {
+    let conn = provider
+        .conn()
+        .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
+    let am = tenants::ActiveModel {
+        id: ActiveValue::Set(id),
+        parent_id: ActiveValue::Set(parent_id),
+        name: ActiveValue::Set(name.to_owned()),
+        status: ActiveValue::Set(PROVISIONING),
+        self_managed: ActiveValue::Set(false),
+        tenant_type_uuid: ActiveValue::Set(Uuid::nil()),
+        depth: ActiveValue::Set(depth),
+        created_at: ActiveValue::Set(created_at),
+        updated_at: ActiveValue::Set(created_at),
+        deleted_at: ActiveValue::Set(None),
+        retention_window_secs: ActiveValue::Set(None),
+        claimed_by: ActiveValue::Set(claimed_by),
+        claimed_at: ActiveValue::Set(claimed_at),
+        terminal_failure_at: ActiveValue::Set(terminal_failure_at),
+    };
+    secure_insert::<tenants::Entity>(am, &allow_all(), &conn)
+        .await
+        .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
+    Ok(())
+}
+
 /// Insert a single `tenant_closure` row.
 pub async fn insert_closure(
     provider: &Arc<AmDbProvider>,
@@ -501,39 +586,47 @@ pub async fn stamp_retention_claim(
     Ok(())
 }
 
-/// Insert a synthetic `integrity_check_runs` row so the next gate
-/// `acquire` observes the gate as already held. Returns the
-/// synthetic `worker_id` so the caller can DELETE the row after the
-/// assertion.
+/// Insert a synthetic `am_leases` row so the next `LeaseManager::acquire`
+/// observes the lease as already held. Returns the synthetic holder
+/// UUID so the caller can DELETE the row after the assertion.
+///
+/// The lease key is fixed to `"hierarchy_integrity"` (the only key
+/// in use today — see
+/// [`account_management::domain::integrity_check::HIERARCHY_INTEGRITY_KEY`]).
+/// `locked_until` is set 1h into the future so the steal path's
+/// `WHERE locked_until < NOW()` filter does not pick the row up.
 pub async fn pre_populate_gate(provider: &Arc<AmDbProvider>) -> Result<Uuid> {
-    let worker_id = Uuid::new_v4();
+    let holder = Uuid::new_v4();
     let conn = provider
         .conn()
         .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
-    let am = integrity_check_runs::ActiveModel {
-        id: ActiveValue::Set(1),
-        worker_id: ActiveValue::Set(worker_id),
-        started_at: ActiveValue::Set(OffsetDateTime::now_utc()),
+    let am = am_leases::ActiveModel {
+        key: ActiveValue::Set("hierarchy_integrity".to_owned()),
+        locked_by: ActiveValue::Set(Some(holder)),
+        locked_until: ActiveValue::Set(
+            OffsetDateTime::now_utc() + std::time::Duration::from_secs(3600),
+        ),
+        attempts: ActiveValue::Set(1),
     };
-    secure_insert::<integrity_check_runs::Entity>(am, &allow_all(), &conn)
+    secure_insert::<am_leases::Entity>(am, &allow_all(), &conn)
         .await
         .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
-    Ok(worker_id)
+    Ok(holder)
 }
 
-/// Release the synthetic gate row — the next operation MUST succeed
-/// (gate is non-sticky).
+/// Release the synthetic lease row — the next operation MUST succeed
+/// (the row's `locked_by` is reset to NULL).
 ///
-/// Filters on `worker_id`, mirroring the production `lock::release`
-/// contract.
-pub async fn release_gate(provider: &Arc<AmDbProvider>, worker_id: Uuid) -> Result<()> {
+/// Filters on the holder UUID so we don't accidentally clear a row
+/// the test itself didn't seed.
+pub async fn release_gate(provider: &Arc<AmDbProvider>, holder: Uuid) -> Result<()> {
     use toolkit_db::secure::SecureDeleteExt;
     let conn = provider
         .conn()
         .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
     let allow = allow_all();
-    integrity_check_runs::Entity::delete_many()
-        .filter(integrity_check_runs::Column::WorkerId.eq(worker_id))
+    am_leases::Entity::delete_many()
+        .filter(am_leases::Column::LockedBy.eq(holder))
         .secure()
         .scope_with(&allow)
         .exec(&conn)

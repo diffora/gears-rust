@@ -35,7 +35,7 @@ use super::AmDbProvider;
 /// * `TxError::Db(db_err)` is classified by [`classify_db_err_to_domain`].
 /// * `TxError::Domain(d)` is returned verbatim.
 #[derive(Debug)]
-pub(super) enum TxError {
+pub enum TxError {
     /// Raw `DbErr` carried through retry. After retry exhaustion the
     /// helper translates it to a typed [`DomainError`] via
     /// [`classify_db_err_to_domain`].
@@ -50,7 +50,7 @@ impl TxError {
     /// to feed the wrapped `DbErr` into
     /// [`toolkit_db::contention::is_retryable_contention`] for the
     /// retry decision.
-    pub(super) fn db_err(&self) -> Option<&DbErr> {
+    pub(crate) fn db_err(&self) -> Option<&DbErr> {
         match self {
             Self::Db(e) => Some(e),
             Self::Domain(_) => None,
@@ -77,7 +77,7 @@ impl From<DbError> for TxError {
 /// transactional [`TxError`]. `ScopeError::Db(_)` carries the raw
 /// `DbErr` through retry; the remaining variants are typed domain
 /// failures by construction.
-pub(super) fn map_scope_to_tx(err: ScopeError) -> TxError {
+pub fn map_scope_to_tx(err: ScopeError) -> TxError {
     match err {
         ScopeError::Db(db) => TxError::Db(db),
         ScopeError::Invalid(msg) => TxError::Domain(DomainError::Internal {
@@ -144,9 +144,7 @@ pub(super) const MAX_SERIALIZABLE_ATTEMPTS: u32 = 5;
 /// `claimed_by` would otherwise stay set forever. `claimed_at` decoupled
 /// from `updated_at` so future `updated_at` patches don't keep stale
 /// claims alive.
-// `from_mins` is unstable on the workspace MSRV; keep `from_secs` form.
-#[allow(clippy::duration_suboptimal_units)]
-pub(super) const RETENTION_CLAIM_TTL: Duration = Duration::from_secs(600);
+pub(super) const RETENTION_CLAIM_TTL: Duration = Duration::from_mins(10);
 
 /// Run a SERIALIZABLE transaction with bounded retry on retryable
 /// contention. Thin wrapper over

@@ -52,10 +52,9 @@ pub struct AccountManagementConfig {
     pub bootstrap: Option<BootstrapConfig>,
 
     /// Periodic hierarchy-integrity check job configuration. Default
-    /// is `enabled = true` with a 1-hour cadence; setting `enabled =
-    /// false` disables only the in-process loop while leaving the
-    /// on-demand `TenantService::check_hierarchy_integrity` SDK
-    /// method available to admin tools.
+    /// is `enabled = true` with a 1-hour cadence; setting `enabled
+    /// = false` is a clean opt-out — the loop is not spawned at
+    /// all.
     pub integrity_check: IntegrityCheckConfig,
 
     /// In-process Tenant Resolver plugin registration knobs.

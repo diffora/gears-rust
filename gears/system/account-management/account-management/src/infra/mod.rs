@@ -12,6 +12,7 @@
 pub mod canonical_mapping;
 pub mod error_conv;
 pub mod idp;
+pub mod lease;
 pub mod metrics;
 pub mod rg;
 pub mod sdk_error_mapping;

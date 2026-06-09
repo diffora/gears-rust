@@ -51,7 +51,6 @@
 pub mod client;
 pub mod error;
 pub mod gts;
-mod gts_envelopes;
 pub mod idp;
 pub mod idp_user;
 pub mod metadata;

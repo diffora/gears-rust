@@ -82,14 +82,12 @@ use crate::config::AccountManagementConfig;
 use crate::domain::error::DomainError;
 use crate::domain::idp::ProvisionFailureExt;
 use crate::domain::metrics::{
-    AM_DEPENDENCY_HEALTH, AM_HIERARCHY_DEPTH_EXCEEDANCE, AM_HIERARCHY_INTEGRITY_REPAIRED,
-    AM_HIERARCHY_INTEGRITY_VIOLATIONS, AM_TENANT_RETENTION, MetricKind, emit_gauge_value,
+    AM_DEPENDENCY_HEALTH, AM_HIERARCHY_DEPTH_EXCEEDANCE, AM_TENANT_RETENTION, MetricKind,
     emit_metric,
 };
 use crate::domain::tenant::closure::build_activation_rows;
 use crate::domain::tenant::context::TenantContext;
 use crate::domain::tenant::hooks::TenantHardDeleteHook;
-use crate::domain::tenant::integrity::{IntegrityCategory, IntegrityReport, Violation};
 use crate::domain::tenant::model::{ChildCountFilter, NewTenant, TenantModel, TenantStatus};
 use crate::domain::tenant::repo::TenantRepo;
 use crate::domain::tenant::resource_checker::ResourceOwnershipChecker;
@@ -1860,177 +1858,6 @@ impl<R: TenantRepo> TenantService<R> {
     // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-soft-delete-preconditions:p1:inst-dod-soft-delete-preconditions
     // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-soft-delete-preconditions:p1:inst-algo-sdelpc-service
     // @cpt-end:cpt-cf-account-management-flow-tenant-hierarchy-management-soft-delete-tenant:p1:inst-flow-sdel-service
-
-    /// Repair derivable hierarchy-integrity violations and emit
-    /// per-category telemetry.
-    ///
-    /// Forwards to
-    /// [`crate::domain::tenant::repo::TenantRepo::repair_derivable_closure_violations`]
-    /// with `AccessScope::allow_all()` (closure rows are
-    /// `no_tenant/no_resource`, see the `check_hierarchy_integrity`
-    /// rationale a few methods below — same gate). Emits one
-    /// [`crate::domain::metrics::AM_HIERARCHY_INTEGRITY_REPAIRED`]
-    /// gauge per category in fixed order with `bucket = repaired |
-    /// deferred` so dashboards always see a stable shape.
-    /// `warn`-logs the deferred bucket if any non-derivable
-    /// category carries a non-zero count — those are the
-    /// operator-triage signals.
-    ///
-    /// # Errors
-    ///
-    /// * [`DomainError::FeatureDisabled`] — the staged-rollout
-    ///   master switch `integrity_check.repair.enabled` is `false`
-    ///   (default).
-    /// * [`DomainError::IntegrityCheckInProgress`] — a concurrent
-    ///   check or repair holds the single-flight gate.
-    /// * Any other [`DomainError`] produced by the repository.
-    ///
-    /// # Visibility
-    ///
-    /// Crate-private (`pub(crate)`) on purpose: the only production
-    /// caller is the periodic-job [`IntegrityChecker`] impl in
-    /// `crate::domain::integrity_check::service`, which runs under
-    /// the in-process scheduler with no caller `SecurityContext` and
-    /// hardcodes [`AccessScope::allow_all`]. Exposing this method as
-    /// `pub` would let the first admin REST handler or sibling
-    /// gear that reuses it bypass authorization by construction.
-    /// REST exposure lands together with the `InTenantSubtree`
-    /// predicate (gears-rust#1813) and will go through a
-    /// privileged-context wrapper at that point.
-    pub(crate) async fn repair_hierarchy_integrity(
-        &self,
-    ) -> Result<crate::domain::tenant::integrity::RepairReport, DomainError> {
-        // `integrity_check.repair.enabled` is the staged-rollout
-        // master switch: while it is `false` (default), the repair
-        // path MUST NOT mutate `tenant_closure`, even from on-demand
-        // admin entry points. The periodic loop already gates on
-        // this flag (`auto_after_check && repair.enabled`); the same
-        // gate has to live here so the SDK / admin REST surface
-        // honours the rollout switch instead of bypassing it.
-        if !self.cfg.integrity_check.repair.enabled {
-            return Err(DomainError::FeatureDisabled {
-                detail: "integrity_check.repair is disabled by configuration".to_owned(),
-            });
-        }
-
-        let report = self
-            .repo
-            .repair_derivable_closure_violations(&AccessScope::allow_all())
-            .await?;
-
-        // Iterate `IntegrityCategory::all()` rather than the report
-        // maps so a category that was non-zero on a previous tick
-        // and absent on this one still emits a fresh zero. Mirrors
-        // `check_hierarchy_integrity`'s emission shape so the
-        // dashboard sees a stable per-category gauge across all
-        // ticks even if a future refactor produces sparse maps.
-        let repaired_lookup: std::collections::HashMap<IntegrityCategory, usize> =
-            report.repaired_per_category.iter().copied().collect();
-        let deferred_lookup: std::collections::HashMap<IntegrityCategory, usize> =
-            report.deferred_per_category.iter().copied().collect();
-        for cat in IntegrityCategory::all() {
-            if cat.is_derivable() {
-                let count = repaired_lookup.get(&cat).copied().unwrap_or(0);
-                emit_gauge_value(
-                    AM_HIERARCHY_INTEGRITY_REPAIRED,
-                    i64::try_from(count).unwrap_or(i64::MAX),
-                    &[("category", cat.as_str()), ("bucket", "repaired")],
-                );
-            } else {
-                let count = deferred_lookup.get(&cat).copied().unwrap_or(0);
-                emit_gauge_value(
-                    AM_HIERARCHY_INTEGRITY_REPAIRED,
-                    i64::try_from(count).unwrap_or(i64::MAX),
-                    &[("category", cat.as_str()), ("bucket", "deferred")],
-                );
-            }
-        }
-
-        if report.total_deferred() > 0 {
-            warn!(
-                target: "am.integrity",
-                deferred_total = report.total_deferred(),
-                repaired_total = report.total_repaired(),
-                "hierarchy integrity repair deferred non-derivable violations to operator triage"
-            );
-        }
-
-        Ok(report)
-    }
-
-    /// Hierarchy-integrity check. Drives the Rust-side classifier
-    /// pipeline through `TenantRepo::run_integrity_check`, buckets
-    /// the flat violation pairs into the fixed-category report shape,
-    /// and emits one `AM_HIERARCHY_INTEGRITY_VIOLATIONS` gauge sample
-    /// per category (including zero-valued ones, so the dashboard can
-    /// distinguish "no violations" from "checker never ran").
-    ///
-    /// The service forwards `AccessScope::allow_all()` to the repo
-    /// because `tenants` and `tenant_closure` are declared
-    /// `no_tenant/no_resource/no_owner/no_type`; per-caller subtree
-    /// clamping lands with the `InTenantSubtree` predicate
-    /// (gears-rust#1813).
-    ///
-    /// # Errors
-    ///
-    /// Propagates any [`DomainError`] produced by the repository:
-    /// notably [`DomainError::IntegrityCheckInProgress`] when another worker
-    /// holds the single-flight gate.
-    ///
-    /// # Visibility
-    ///
-    /// Crate-private (`pub(crate)`) for the same reason as
-    /// [`Self::repair_hierarchy_integrity`]: the only production
-    /// caller is the periodic-job [`IntegrityChecker`] impl, which
-    /// runs under the in-process scheduler with no
-    /// `SecurityContext` and hardcodes [`AccessScope::allow_all`].
-    /// REST exposure ships together with the `InTenantSubtree`
-    /// predicate (gears-rust#1813).
-    // @cpt-begin:cpt-cf-account-management-algo-tenant-hierarchy-management-hierarchy-integrity-check:p2:inst-algo-integ-service
-    // @cpt-begin:cpt-cf-account-management-dod-tenant-hierarchy-management-integrity-diagnostics:p2:inst-dod-integrity-diagnostics-service
-    // @cpt-begin:cpt-cf-account-management-dod-tenant-hierarchy-management-data-remediation:p2:inst-dod-data-remediation-integrity
-    pub(crate) async fn check_hierarchy_integrity(&self) -> Result<IntegrityReport, DomainError> {
-        let pairs = self
-            .repo
-            .run_integrity_check(&AccessScope::allow_all())
-            .await?;
-
-        let mut bucketed: std::collections::HashMap<IntegrityCategory, Vec<Violation>> =
-            std::collections::HashMap::new();
-        for (cat, viol) in pairs {
-            bucketed.entry(cat).or_default().push(viol);
-        }
-
-        let violations_by_category: Vec<(IntegrityCategory, Vec<Violation>)> =
-            IntegrityCategory::all()
-                .iter()
-                .map(|cat| (*cat, bucketed.remove(cat).unwrap_or_default()))
-                .collect();
-
-        for (cat, viols) in &violations_by_category {
-            let count = viols.len();
-            emit_gauge_value(
-                AM_HIERARCHY_INTEGRITY_VIOLATIONS,
-                i64::try_from(count).unwrap_or(i64::MAX),
-                &[("category", cat.as_str())],
-            );
-            if count > 0 {
-                warn!(
-                    target: "am.integrity",
-                    category = cat.as_str(),
-                    count,
-                    "hierarchy integrity violations detected"
-                );
-            }
-        }
-
-        Ok(IntegrityReport {
-            violations_by_category,
-        })
-    }
-    // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-hierarchy-integrity-check:p2:inst-algo-integ-service
-    // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-integrity-diagnostics:p2:inst-dod-integrity-diagnostics-service
-    // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-data-remediation:p2:inst-dod-data-remediation-integrity
 }
 
 #[cfg(test)]

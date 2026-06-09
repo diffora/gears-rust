@@ -62,6 +62,29 @@ pub struct IntegrityCheckConfig {
     /// Periodic repair sub-section. Default-off; see
     /// [`IntegrityRepairConfig`].
     pub repair: IntegrityRepairConfig,
+
+    /// AM-local lease TTL (seconds) used by the
+    /// [`crate::domain::integrity_check::coordinator::IntegrityCoordinator`].
+    /// Sized as the worst-case single-tick check+repair budget;
+    /// when a holder crashes mid-flight, this is the upper bound on
+    /// how long a peer waits before the slot can be stolen.
+    ///
+    /// Bounded by [`Self::MIN_LEASE_TTL_SECS`] /
+    /// [`Self::MAX_LEASE_TTL_SECS`] in [`Self::validate`]. Anything
+    /// below 60s is risky (heartbeat misses become structurally
+    /// likely); anything above the loop's `interval_secs` is
+    /// pointless (a holder that survives one tick will always
+    /// renew before the next acquire).
+    pub lease_ttl_secs: u64,
+
+    /// Renewal heartbeat period (seconds) for
+    /// [`crate::infra::lease::LeaseGuard::spawn_renewal`].
+    ///
+    /// Convention is `lease_ttl_secs / 3` so the lease survives one
+    /// missed tick (transient DB blip). [`Self::validate`] enforces
+    /// `renew_period_secs * 2 <= lease_ttl_secs` — bare minimum so
+    /// a single missed heartbeat does not lose the lease.
+    pub lease_renew_period_secs: u64,
 }
 
 /// Periodic hierarchy-integrity repair configuration.
@@ -147,15 +170,32 @@ impl Default for IntegrityCheckConfig {
             // every hour".
             jitter: 0.1,
             repair: IntegrityRepairConfig::default(),
+            // 15 min — sized well above any realistic single-tick
+            // check + repair runtime on a multi-million-row tree
+            // (typical repair is seconds-to-minutes; 15 min is a
+            // ~30× headroom). Operators can shorten this if they
+            // have tighter SLOs on multi-replica crash recovery.
+            lease_ttl_secs: 15 * 60,
+            // 5 min — `lease_ttl_secs / 3` per the convention.
+            lease_renew_period_secs: 5 * 60,
         }
     }
 }
 
+/// Default lease TTL used by the trait-level
+/// [`crate::domain::tenant::TenantRepo::run_integrity_check`] /
+/// [`crate::domain::tenant::TenantRepo::repair_derivable_closure_violations`].
+/// These run outside the coordinator (mostly from integration
+/// tests) and have no [`IntegrityCheckConfig`] in scope. Production
+/// callers go through the coordinator, which reads
+/// [`IntegrityCheckConfig::lease_ttl`] instead.
+pub const LEASE_TTL: std::time::Duration = std::time::Duration::from_mins(15);
+
 impl IntegrityCheckConfig {
     /// Lower bound on `interval_secs`. Anything tighter is pointless
-    /// because the per-scope `integrity_check_runs` gate serialises
-    /// concurrent ticks across replicas and inside one replica the
-    /// snapshot load alone takes seconds on non-trivial trees.
+    /// because the AM-local lease serialises concurrent ticks across
+    /// replicas and inside one replica the snapshot load alone takes
+    /// seconds on non-trivial trees.
     pub const MIN_INTERVAL_SECS: u64 = 60;
 
     /// Upper bound on `interval_secs`. Beyond a day the cadence is
@@ -169,6 +209,25 @@ impl IntegrityCheckConfig {
     /// indistinguishable from misconfiguring the interval itself.
     pub const MAX_JITTER: f64 = 0.5;
 
+    /// Lower bound on `lease_ttl_secs`. Below 60s the renewal
+    /// heartbeat (which must be `<= ttl/2`) collapses into the
+    /// sub-30s range where transient DB blips structurally exceed
+    /// the renew budget; operators wanting tighter coordination
+    /// should use leader election, not a shorter lease.
+    pub const MIN_LEASE_TTL_SECS: u64 = 60;
+
+    /// Upper bound on `lease_ttl_secs`. Beyond 24h the lease
+    /// degenerates into a persistent gate that a crash leaves
+    /// holding for a day; the periodic loop's `MAX_INTERVAL_SECS`
+    /// is also 24h, so anything longer would have the next
+    /// scheduled tick contend with the previous one's stale row.
+    pub const MAX_LEASE_TTL_SECS: u64 = 86_400;
+
+    /// Lower bound on `lease_renew_period_secs`. Sub-second
+    /// heartbeats produce sustained DB load that dwarfs the cost
+    /// of the protected work; 5s is a sensible floor.
+    pub const MIN_LEASE_RENEW_PERIOD_SECS: u64 = 5;
+
     /// `interval_secs` lifted to a [`Duration`].
     #[must_use]
     pub fn interval(&self) -> Duration {
@@ -179,6 +238,18 @@ impl IntegrityCheckConfig {
     #[must_use]
     pub fn initial_delay(&self) -> Duration {
         Duration::from_secs(self.initial_delay_secs)
+    }
+
+    /// `lease_ttl_secs` lifted to a [`Duration`].
+    #[must_use]
+    pub fn lease_ttl(&self) -> Duration {
+        Duration::from_secs(self.lease_ttl_secs)
+    }
+
+    /// `lease_renew_period_secs` lifted to a [`Duration`].
+    #[must_use]
+    pub fn lease_renew_period(&self) -> Duration {
+        Duration::from_secs(self.lease_renew_period_secs)
     }
 
     /// Reject configurations whose values would either make the loop
@@ -237,6 +308,36 @@ impl IntegrityCheckConfig {
         if self.initial_delay_secs > self.interval_secs {
             bad.push(
                 "integrity_check.initial_delay_secs (must be <= interval_secs; otherwise the first tick lags more than one interval)",
+            );
+        }
+        if self.lease_ttl_secs < Self::MIN_LEASE_TTL_SECS {
+            bad.push(
+                "integrity_check.lease_ttl_secs (must be >= 60; below that the heartbeat budget collapses)",
+            );
+        }
+        if self.lease_ttl_secs > Self::MAX_LEASE_TTL_SECS {
+            bad.push(
+                "integrity_check.lease_ttl_secs (must be <= 86400; longer leases overlap with the next scheduled tick)",
+            );
+        }
+        if self.lease_renew_period_secs < Self::MIN_LEASE_RENEW_PERIOD_SECS {
+            bad.push(
+                "integrity_check.lease_renew_period_secs (must be >= 5; sub-second heartbeats produce sustained DB load)",
+            );
+        }
+        // Single missed heartbeat must not lose the lease: require
+        // `renew * 2 <= ttl`. Two missed ticks then *can* lose it,
+        // which is the desired TTL fallback behaviour — operators
+        // who want a tighter survival window set `renew = ttl / N`
+        // for larger N themselves. `checked_mul` guards against a
+        // user-supplied `renew_period_secs >= 2^63` that would
+        // panic in debug builds and wrap in release builds; an
+        // overflow simply means the value is absurdly out of
+        // range, which is the same conclusion as the comparison.
+        let renew_doubled = self.lease_renew_period_secs.checked_mul(2);
+        if renew_doubled.is_none_or(|v| v > self.lease_ttl_secs) {
+            bad.push(
+                "integrity_check.lease_renew_period_secs (must be <= lease_ttl_secs / 2; otherwise a single missed heartbeat loses the lease)",
             );
         }
         let repair_err = self.repair.validate().err();

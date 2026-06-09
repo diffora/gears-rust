@@ -302,6 +302,7 @@ impl DomainError {
             Self::IdpUnavailable { .. } => "idp_unavailable",
             Self::UnsupportedOperation { .. } => "unsupported_operation",
             Self::IntegrityCheckInProgress => "integrity_check_in_progress",
+            Self::IntegrityCheckLeaseLost => "integrity_check_lease_lost",
             Self::Internal { .. } => "internal",
         }
     }
@@ -346,7 +347,7 @@ impl DomainError {
             Self::CrossTenantDenied { .. } => 403,
             Self::ServiceUnavailable { .. } | Self::IdpUnavailable { .. } => 503,
             Self::UnsupportedOperation { .. } => 501,
-            Self::IntegrityCheckInProgress => 429,
+            Self::IntegrityCheckInProgress | Self::IntegrityCheckLeaseLost => 429,
             Self::Internal { .. } => 500,
         }
     }

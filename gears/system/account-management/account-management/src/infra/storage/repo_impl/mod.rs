@@ -6,9 +6,9 @@
 //! the matching submodule.
 
 pub mod conversion;
-mod helpers;
+pub(crate) mod helpers;
 mod hierarchy_read;
-mod integrity;
+pub(crate) mod integrity;
 mod lifecycle;
 pub mod metadata;
 mod reads;
@@ -53,6 +53,15 @@ impl TenantRepoImpl {
     #[must_use]
     pub fn new(db: Arc<AmDbProvider>) -> Self {
         Self { db }
+    }
+
+    /// Borrow the underlying provider. Exposed for the integrity
+    /// coordinator (`domain::integrity_check::coordinator`) which
+    /// needs to construct a [`crate::infra::lease::LeaseManager`]
+    /// from the same `Db` the repo writes through.
+    #[must_use]
+    pub(crate) fn provider(&self) -> &Arc<AmDbProvider> {
+        &self.db
     }
 }
 

@@ -1,52 +1,26 @@
 //! `run_integrity_check` and `repair_derivable_closure_violations`
-//! dispatch.
+//! dispatch, plus the lease-free helpers
+//! [`run_check_under_lease`] and [`apply_repair_in_tx`] used by
+//! [`crate::domain::integrity_check::coordinator::IntegrityCoordinator`].
 //!
-//! Both entries follow a **three-transaction lifecycle** (see
-//! [`crate::infra::storage::integrity::lock`]):
+//! The trait-level entries acquire the AM-local `am_leases` row
+//! keyed `"hierarchy_integrity"` for the duration of the work,
+//! then release. The check phase runs read-only under REPEATABLE
+//! READ; the repair phase runs under SERIALIZABLE retry with
+//! fence-in-tx (see
+//! [`crate::infra::lease::LeaseGuard::with_ack_in_tx`]). A peer
+//! holding the lease surfaces as
+//! [`DomainError::IntegrityCheckInProgress`]; a mid-flight steal
+//! during repair surfaces as
+//! [`DomainError::IntegrityCheckLeaseLost`].
 //!
-//! 1. *Acquire* — `lock::acquire_committed` runs a short committed
-//!    transaction that sweeps stale `integrity_check_runs` rows
-//!    (older than `MAX_LOCK_AGE`) and inserts the singleton gate row
-//!    keyed by `worker_id`. Committing here makes the row visible to
-//!    concurrent contenders, who surface
-//!    `DomainError::IntegrityCheckInProgress` from their own
-//!    acquire instead of queueing on an uncommitted PK.
-//! 2. *Snapshot/work* — `run_integrity_check` opens a `REPEATABLE
-//!    READ` transaction (read-only at the `SecureSelect` level; no
-//!    writes inside this tx, so a long-running check cannot
-//!    self-evict on SI conflicts).
-//!    `repair_derivable_closure_violations` opens a `SERIALIZABLE`
-//!    transaction wrapped by [`with_serializable_retry`] so the
-//!    closure-side writes can re-plan against a fresh snapshot on
-//!    40001 aborts.
-//! 3. *Release* — `lock::release_committed` runs a short committed
-//!    transaction that deletes the gate row keyed by `worker_id`. A
-//!    zero-rows-affected DELETE means the row was reclaimed by a
-//!    stale-lock sweep — the
-//!    [`crate::infra::storage::integrity::lock::release`] helper
-//!    emits a warn so the eviction is observable in telemetry.
-//!
-//! The release call is invoked even when the snapshot/work tx
-//! returned an error so a transient failure does not leave the
-//! gate held until the stale-lock TTL.
+//! The production loop driver wires the coordinator, which unifies
+//! check + repair under a single lease. The trait entries are the
+//! `TenantRepo` surface kept for ad-hoc callers (integration tests)
+//! that need a single-shot check or repair with its own lease.
 //!
 //! Visibility: `pub(super)` — only the trait `impl` in [`super`]
 //! dispatches here.
-//!
-//! `NOTE` (`integrity-sqlite-busy`): on `SQLite` the `RepeatableRead`
-//! request maps to `Serializable`; `SQLITE_BUSY` →
-//! `IntegrityCheckInProgress` so the integrity tick stays observable
-//! without spurious failures. PG path is unaffected.
-//!
-//! NOTE(toolkit-coord-migration): the lock acquired here via
-//! `integrity::lock::acquire_committed` is an interim singleton-lock
-//! primitive. It is NOT safe under the full multi-replica failure
-//! model (no fence-in-tx for the repair commit, no renewal
-//! heartbeat with takeover signal, no forensic `attempts` counter).
-//! See `infra::storage::integrity::lock` gear docs for the gap.
-//! Migration to `toolkit-coord` (`LeaseManager` +
-//! `Guard::with_ack_in_tx`) is tracked in
-//! <https://github.com/constructorfabric/gears-rust/issues/1873>.
 
 use sea_orm::DbErr;
 use sea_orm::sea_query::Expr;
@@ -56,67 +30,155 @@ use toolkit_db::secure::{
     TxConfig, TxIsolationLevel,
 };
 use toolkit_security::AccessScope;
-use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::integrity_check::LEASE_TTL;
 use crate::domain::tenant::integrity::{IntegrityCategory, RepairReport, Violation};
+use crate::infra::canonical_mapping::classify_db_err_to_domain;
+use crate::infra::lease::{AckError, CoordError, LeaseManager};
 use crate::infra::storage::entity::tenant_closure;
 use crate::infra::storage::integrity;
+use crate::infra::storage::integrity::coordinator::HIERARCHY_INTEGRITY_KEY;
 
 use super::TenantRepoImpl;
-use super::helpers::{TxError, map_scope_to_tx, with_serializable_retry};
+use super::helpers::{TxError, map_scope_to_tx};
 
 pub(super) async fn run_integrity_check(
     repo: &TenantRepoImpl,
     scope: &AccessScope,
 ) -> Result<Vec<(IntegrityCategory, Violation)>, DomainError> {
-    // 3-transaction lifecycle (acquire / snapshot+classify / release);
-    // see integrity::lock gear docs. Release runs on both happy and
-    // error paths so a snapshot-tx failure does not block on
-    // MAX_LOCK_AGE.
-    let worker_id = Uuid::new_v4();
+    // Acquire the AM-local lease. `LeaseHeld` maps to the public
+    // `IntegrityCheckInProgress` contract via `From<CoordError>`
+    // so callers do not see a renamed error code.
+    let mgr = LeaseManager::new(repo.provider().db());
+    let guard = mgr
+        .acquire(HIERARCHY_INTEGRITY_KEY, LEASE_TTL)
+        .await
+        .map_err(DomainError::from)?;
 
-    integrity::lock::acquire_committed(&repo.db, worker_id).await?;
+    // Same REPEATABLE-READ snapshot semantics as before — only the
+    // serialization mechanism changed.
+    let report_result = run_check_under_lease(repo, scope).await;
 
+    // Always release. On failure, release_with_retry preserves
+    // attempts as a forensic streak so a flapping holder is visible
+    // to operators.
+    log_release_failure(match &report_result {
+        Ok(_) => guard.release().await,
+        Err(_) => guard.release_with_retry().await,
+    });
+
+    report_result
+}
+
+/// Log a best-effort lease release that failed at the DB layer.
+///
+/// By the time release runs the integrity work has already finished, so
+/// a release failure does **not** invalidate the outcome — the
+/// `am_leases` row frees via its TTL fallback. But a DB-level release
+/// error is surfaced here (rather than silently dropped) so the
+/// slot-not-freed-promptly condition stays observable. The
+/// already-stolen / zero-rows case is logged inside
+/// [`crate::infra::lease::LeaseGuard::release`] itself and returns `Ok`.
+fn log_release_failure(result: Result<(), CoordError>) {
+    if let Err(err) = result {
+        tracing::warn!(
+            target: "am.integrity",
+            error = %err,
+            "hierarchy-integrity lease release failed at the DB layer; \
+             relying on the TTL fallback to free the slot",
+        );
+    }
+}
+
+/// `repair_derivable_closure_violations` dispatch — runs the
+/// pure-Rust [`integrity::repair::compute_repair_plan`] over a
+/// snapshot loaded inside a `SERIALIZABLE` transaction with retry
+/// AND fence-in-tx, applies the resulting closure-side INSERT /
+/// UPDATE / DELETE ops in the same tx.
+///
+/// The single-flight gate is **shared** with [`run_integrity_check`]
+/// — both serialize on the same `am_leases` key. Concurrent
+/// check + repair is guaranteed to happen one-at-a-time. Contention
+/// surfaces as [`DomainError::IntegrityCheckInProgress`]; a
+/// mid-flight steal of the lease during the repair tx surfaces as
+/// [`DomainError::IntegrityCheckLeaseLost`].
+///
+/// `with_ack_in_tx` is built on `transaction_with_retry` so 40001
+/// aborts re-plan against a fresh snapshot — the SI cycle detector
+/// catches saga races (status flip, hard-delete, `activate_tenant`)
+/// before they can leave the repair tx with a stale plan.
+pub(super) async fn repair_derivable_closure_violations(
+    repo: &TenantRepoImpl,
+    scope: &AccessScope,
+) -> Result<RepairReport, DomainError> {
+    let mgr = LeaseManager::new(repo.provider().db());
+    let guard = mgr
+        .acquire(HIERARCHY_INTEGRITY_KEY, LEASE_TTL)
+        .await
+        .map_err(DomainError::from)?;
+
+    let scope_owned = scope.clone();
+    let ack = guard
+        .with_ack_in_tx::<_, RepairReport, TxError, _>(TxError::db_err, move |tx| {
+            let scope = scope_owned.clone();
+            Box::pin(async move { apply_repair_in_tx(tx, &scope).await })
+        })
+        .await;
+
+    match ack {
+        Ok(report) => {
+            log_release_failure(guard.release().await);
+            Ok(report)
+        }
+        Err(AckError::LeaseLost) => {
+            // DO NOT release — TTL handles it; releasing now would
+            // steal the slot back from whoever has it.
+            Err(DomainError::IntegrityCheckLeaseLost)
+        }
+        Err(AckError::Work(TxError::Domain(d))) => {
+            log_release_failure(guard.release_with_retry().await);
+            Err(d)
+        }
+        Err(AckError::Work(TxError::Db(db_err))) => {
+            log_release_failure(guard.release_with_retry().await);
+            Err(classify_db_err_to_domain(db_err))
+        }
+        Err(AckError::Db(db_err)) => {
+            log_release_failure(guard.release_with_retry().await);
+            Err(DomainError::from(db_err))
+        }
+    }
+}
+
+/// Run the check phase against the caller's already-held lease.
+///
+/// The coordinator owns the AM-local lease (`am_leases`) for the
+/// whole check + maybe-repair cycle, so this helper performs only
+/// the REPEATABLE-READ snapshot + classifier work — no acquire,
+/// no release. Same return shape as the trait-level
+/// [`run_integrity_check`] so the caller can rebucket via the
+/// existing `IntegrityReport` mapping without reshaping.
+///
+/// # Errors
+///
+/// Any DB error from the snapshot SELECTs is funnelled through
+/// the canonical [`From<toolkit_db::DbError> for DomainError`] ladder.
+pub async fn run_check_under_lease(
+    repo: &TenantRepoImpl,
+    scope: &AccessScope,
+) -> Result<Vec<(IntegrityCategory, Violation)>, DomainError> {
     let cfg = TxConfig {
         isolation: Some(TxIsolationLevel::RepeatableRead),
         access_mode: None,
     };
     let scope_owned = scope.clone();
-    let report_result = repo
+    let report = repo
         .db
         .transaction_with_config(cfg, move |tx| {
             Box::pin(async move { integrity::run_integrity_check(tx, &scope_owned).await })
         })
-        .await;
-
-    // Always release, regardless of snapshot outcome. The release
-    // call is short and bounded; the stale-lock sweeper on the next
-    // acquire eventually reclaims the row even if release fails.
-    //
-    // Error precedence: when work succeeded but release failed, we
-    // still return the report so the service layer can emit
-    // per-category violation metrics. The gate-health signal is
-    // preserved via the `AM_INTEGRITY_LOCK_EVENTS` counter and
-    // this warn log — operators see the stuck-gate shape without
-    // the violation data going stale. When work failed AND release
-    // failed, the work error is the more useful diagnostic, so we
-    // log the release failure and propagate the work error.
-    if let Err(release_err) = integrity::lock::release_committed(&repo.db, worker_id).await {
-        tracing::warn!(
-            target: "am.integrity",
-            worker_id = %worker_id,
-            error = %release_err,
-            work_succeeded = report_result.is_ok(),
-            "lock release failed after integrity check; stale-lock sweeper will reclaim",
-        );
-    }
-
-    let report = report_result?;
-    // Flatten `IntegrityReport` (one entry per category) into the
-    // `Vec<(IntegrityCategory, Violation)>` return shape pinned by the
-    // trait surface — the service layer rebuckets these into a fresh
-    // `IntegrityReport` on the consumer side.
+        .await?;
     Ok(report
         .violations_by_category
         .into_iter()
@@ -124,71 +186,35 @@ pub(super) async fn run_integrity_check(
         .collect())
 }
 
-/// `repair_derivable_closure_violations` dispatch — runs the
-/// pure-Rust [`integrity::repair::compute_repair_plan`] over a
-/// snapshot loaded inside a `SERIALIZABLE` transaction with retry
-/// (see [`with_serializable_retry`]) and applies the resulting
-/// closure-side INSERT / UPDATE / DELETE ops in the same tx.
+/// Tx-bound body of [`repair_derivable_closure_violations`] sans
+/// lock and sans SERIALIZABLE-retry. Loads a fresh snapshot inside
+/// the caller's `tx`, runs the pure-Rust classifier + planner, and
+/// applies the closure-side INSERT / UPDATE / DELETE ops.
 ///
-/// The single-flight gate is **shared** with [`run_integrity_check`]
-/// — both serialize on the `integrity_check_runs` singleton PK so a
-/// concurrent check + repair is guaranteed to happen one-at-a-time.
-/// Contention surfaces as
-/// [`DomainError::IntegrityCheckInProgress`].
+/// Designed to be invoked inside
+/// [`crate::infra::lease::LeaseGuard::with_ack_in_tx`] — that
+/// helper owns the SERIALIZABLE retry budget AND appends the
+/// `am_leases` fence SELECT to the same tx, so a peer steal that
+/// invalidates the snapshot is caught at commit time and the whole
+/// repair rolls back.
 ///
-/// Why `SERIALIZABLE` rather than `RepeatableRead` (the check's
-/// isolation level)? The repair plan is computed from a snapshot,
-/// then closure rows are written inside the same tx. Under
-/// `SERIALIZABLE` the SI cycle detector aborts (40001) any tx whose
-/// post-snapshot writes would be invalidated by a concurrent
-/// commit's read-set / write-set, so saga races (status flip,
-/// hard-delete, `activate_tenant`) cannot leave the repair tx with
-/// a stale plan. [`with_serializable_retry`] re-enters from the top
-/// of the closure on 40001, so retry observes the new state and
-/// re-plans against it.
-pub(super) async fn repair_derivable_closure_violations(
-    repo: &TenantRepoImpl,
+/// # Errors
+///
+/// * `TxError::Db` — raw `DbErr` carried up to the retry helper for
+///   contention classification.
+/// * `TxError::Domain` — typed domain failure from the snapshot
+///   loader or apply pass.
+pub async fn apply_repair_in_tx(
+    tx: &DbTx<'_>,
     scope: &AccessScope,
-) -> Result<RepairReport, DomainError> {
-    // Same 3-transaction lifecycle as `run_integrity_check`:
-    // committed acquire, SERIALIZABLE work TX (with retry on 40001),
-    // committed release. SI conflicts retry only the work TX — they
-    // do not re-acquire the gate, so a SERIALIZABLE retry storm cannot
-    // produce spurious `IntegrityCheckInProgress` against itself.
-    let worker_id = Uuid::new_v4();
-
-    integrity::lock::acquire_committed(&repo.db, worker_id).await?;
-
-    let scope_owned = scope.clone();
-    let work_result = with_serializable_retry(&repo.db, move || {
-        let scope = scope_owned.clone();
-        Box::new(move |tx: &DbTx<'_>| {
-            Box::pin(async move {
-                let snapshot = integrity::loader::load_snapshot(tx, &scope)
-                    .await
-                    .map_err(TxError::Domain)?;
-
-                let report = integrity::run_classifiers(&snapshot);
-                let plan = integrity::repair::compute_repair_plan(&snapshot, &report);
-                apply_repair_plan(tx, &plan).await?;
-
-                Ok(plan.into_report())
-            })
-        })
-    })
-    .await;
-
-    if let Err(release_err) = integrity::lock::release_committed(&repo.db, worker_id).await {
-        tracing::warn!(
-            target: "am.integrity",
-            worker_id = %worker_id,
-            error = %release_err,
-            work_succeeded = work_result.is_ok(),
-            "lock release failed after repair; stale-lock sweeper will reclaim",
-        );
-    }
-
-    work_result
+) -> Result<RepairReport, TxError> {
+    let snapshot = integrity::loader::load_snapshot(tx, scope)
+        .await
+        .map_err(TxError::Domain)?;
+    let report = integrity::run_classifiers(&snapshot);
+    let plan = integrity::repair::compute_repair_plan(&snapshot, &report);
+    apply_repair_plan(tx, &plan).await?;
+    Ok(plan.into_report())
 }
 
 /// Apply pass — issue the INSERT / DELETE / UPDATE ops the planner

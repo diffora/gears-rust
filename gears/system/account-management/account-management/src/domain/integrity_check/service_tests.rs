@@ -138,6 +138,7 @@ fn cfg(interval_secs: u64, initial_delay_secs: u64, jitter: f64) -> IntegrityChe
         initial_delay_secs,
         jitter,
         repair: IntegrityRepairConfig::default(),
+        ..IntegrityCheckConfig::default()
     }
 }
 
@@ -155,6 +156,7 @@ fn cfg_auto_repair(interval_secs: u64, initial_delay_secs: u64) -> IntegrityChec
             enabled: true,
             auto_after_check: true,
         },
+        ..IntegrityCheckConfig::default()
     }
 }
 
@@ -180,6 +182,7 @@ async fn disabled_config_does_not_run_check() {
         initial_delay_secs: 0,
         jitter: 0.0,
         repair: IntegrityRepairConfig::default(),
+        ..IntegrityCheckConfig::default()
     };
     let (handle, cancel) = spawn_loop(Arc::clone(&checker) as Arc<dyn IntegrityChecker>, cfg);
 
@@ -449,6 +452,7 @@ async fn auto_after_check_disabled_skips_repair_even_on_derivable() {
             enabled: false,
             auto_after_check: false,
         },
+        ..IntegrityCheckConfig::default()
     };
     let (handle, cancel) = spawn_loop(Arc::clone(&checker) as Arc<dyn IntegrityChecker>, cfg);
 

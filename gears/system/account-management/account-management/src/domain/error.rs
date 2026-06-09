@@ -263,6 +263,20 @@ pub enum DomainError {
     #[error("integrity check already in progress")]
     IntegrityCheckInProgress,
 
+    /// Hierarchy-integrity repair refused mid-tx because the AM-local
+    /// lease was stolen by a peer worker between the work phase and
+    /// the fence SELECT in
+    /// [`crate::infra::lease::LeaseGuard::with_ack_in_tx`]. The
+    /// whole repair tx rolled back; TTL handles release on the
+    /// original holder's side. Distinct from
+    /// [`Self::IntegrityCheckInProgress`] so the coordinator's
+    /// `AbortedLeaseLost` outcome surfaces as a separate metric
+    /// label without overloading the `skipped_in_progress` value.
+    /// Maps to HTTP 409 at the canonical-errors boundary
+    /// (mid-flight contention surfaced after partial work completed).
+    #[error("integrity repair aborted: lease lost to a peer")]
+    IntegrityCheckLeaseLost,
+
     // ---- Internal (HTTP 500) ----
     /// Unclassified internal failure. The `diagnostic` field is
     /// recorded in the audit trail but **MUST NOT** be leaked through

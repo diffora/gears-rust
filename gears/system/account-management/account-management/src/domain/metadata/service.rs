@@ -70,7 +70,7 @@ use crate::domain::tenant::repo::TenantRepo;
 /// [`account_management_sdk::TENANT_METADATA_RESOURCE_TYPE`]; the
 /// literal duplication is cross-checked against the SDK constant in
 /// [`crate::domain::error_tests`] so a divergence trips at test time.
-pub(super) mod pep {
+pub(crate) mod pep {
     use super::{ResourceType, pep_properties};
 
     /// Resource declaration for `tenant_metadata`. Supported PEP
@@ -793,9 +793,12 @@ impl MetadataService {
     /// 3. Start tenant `self_managed == true` ⇒ return empty
     ///    (start-tenant barrier).
     /// 4. Walk loop: advance to `parent_id`; null ⇒ root-empty;
-    ///    self-managed ancestor ⇒ barrier-empty BEFORE reading;
-    ///    suspended ancestor ⇒ skip-traverse; otherwise read and
-    ///    return on hit, loop on miss.
+    ///    suspended ancestor ⇒ skip-traverse (or stop if it is the
+    ///    self-managed domain root); otherwise read and return on hit.
+    ///    A `self_managed` ancestor is the inclusive top of the
+    ///    inheritance domain — its value is read like any other, then
+    ///    the walk stops *after* it (never crossing to its parent),
+    ///    matching the `tenant_closure` barrier rule (VHP-1672).
     ///
     /// Application-only-enforcement contract: this is a pure
     /// service-layer computation. No DB trigger, no materialized
@@ -910,17 +913,32 @@ impl MetadataService {
                     ))
                 })?;
 
-            // Step 9 — barrier-stop ancestor: return empty BEFORE
-            // reading the ancestor's value per `inst-algo-walk-ancestor-barrier-return`.
-            if ancestor.self_managed {
-                return Ok(None);
-            }
+            // Step 9 — barrier classification (`inst-algo-walk-ancestor-barrier`).
+            // A `self_managed` ancestor is the INCLUSIVE top of the
+            // descendant's inheritance domain — its own value IS
+            // inheritable; only crossing ABOVE it is blocked. This
+            // mirrors the authoritative `tenant_closure` barrier rule:
+            // `barrier(A, D) = 1` iff some tenant on `(A, D]` is
+            // self_managed (ancestor excluded, descendant included —
+            // DESIGN §3.2 / `closure.rs` invariant 3), so
+            // `barrier(self_managed, direct_descendant) = 0` and the
+            // self_managed tenant sits inside its descendants' domain.
+            // VHP-1672: this previously returned empty BEFORE the read,
+            // over-blocking by one level vs the closure/scope barrier
+            // and leaving tenants inside a self-managed org unable to
+            // inherit defaults from their own domain root.
+            let is_domain_root = ancestor.self_managed;
 
-            // Step 10 — suspended ancestor: skip the read but
-            // continue the walk to its parent. Suspension is a
-            // lifecycle state, not a barrier per
-            // `inst-algo-walk-suspended-continue`.
+            // Step 10 — suspended ancestor: never consult its value —
+            // suspension is a lifecycle state, not a barrier
+            // (`inst-algo-walk-suspended-continue`). If this ancestor is
+            // also the self_managed domain root the walk still stops
+            // here (the barrier above it blocks crossing regardless of
+            // status); otherwise traverse on to its parent.
             if matches!(ancestor.status, TenantStatus::Suspended) {
+                if is_domain_root {
+                    return Ok(None);
+                }
                 current_parent = ancestor.parent_id;
                 continue;
             }
@@ -942,8 +960,14 @@ impl MetadataService {
                 return Ok(Some(row));
             }
 
-            // Step 13 — loop back to root-reached check with the new
-            // `current`. `inst-algo-walk-loop`.
+            // Step 13 — self_managed domain root reached with no value:
+            // stop *after* it per the barrier rule
+            // (`inst-algo-walk-ancestor-barrier-return`) — do not cross
+            // to its parent. A non-barrier ancestor with no value loops
+            // on to its parent (`inst-algo-walk-loop`).
+            if is_domain_root {
+                return Ok(None);
+            }
             current_parent = ancestor.parent_id;
         }
     }

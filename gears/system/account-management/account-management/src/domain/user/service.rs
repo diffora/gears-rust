@@ -99,7 +99,7 @@ const MAX_PROFILE_FIELD_CHARS: usize = 255;
 /// PEP descriptors. The literal type-name duplicates
 /// `USER_RESOURCE_TYPE` because `ResourceType.name` is `&'static str`;
 /// a cross-check test pins them in sync.
-pub(super) mod pep {
+pub(crate) mod pep {
     use super::{ResourceType, pep_properties};
 
     /// Resource declaration for `IdpUser`. AM persists no user table

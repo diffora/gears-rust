@@ -9,7 +9,7 @@
     "additionalProperties": false,
     "properties": {
       "inheritance_policy": {
-        "description": "How MetadataService resolves values across the tenant hierarchy for this schema. 'override_only' returns the tenant's own entry or empty; 'inherit' walks ancestors via parent_id, stopping at self-managed barriers.",
+        "description": "How MetadataService resolves values across the tenant hierarchy for this schema, per MetadataInheritancePolicy. 'override_only' (MetadataInheritancePolicy::OverrideOnly) returns the tenant's own entry or empty; 'inherit' (MetadataInheritancePolicy::Inherit) walks ancestors via parent_id, includes the nearest self-managed ancestor, then stops.",
         "type": "string",
         "enum": ["override_only", "inherit"],
         "default": "override_only"
