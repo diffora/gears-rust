@@ -80,8 +80,6 @@ base64.workspace = true
 
 # Secret string type for S2S client credentials
 secrecy.workspace = true
-sha2.workspace = true
-hex.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

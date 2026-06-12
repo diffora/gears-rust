@@ -358,6 +358,7 @@ Project-specific architectural lints run on every CI build via `cargo dylint`. T
 | ID | Lint | Security Relevance |
 |---|---|---|
 | **DE0706** | `no_direct_sqlx` | Prohibits direct `sqlx` usage — forces all DB access through SeaORM/SecORM |
+| **DE0708** | `no_non_fips_hasher` | Prohibits `sha2`/`sha1`/`md5` imports outside allow-list — prevents unreviewed non-FIPS crypto usage |
 | DE0103 | `no_http_types_in_contract` | Prevents HTTP types leaking into contract layer |
 | DE0301 | `no_infra_in_domain` | Prevents domain layer from importing `sea_orm`, `sqlx`, `axum`, `hyper`, `http` |
 | DE0308 | `no_http_in_domain` | Prevents HTTP types in domain logic |
@@ -443,6 +444,8 @@ make security           # Runs both `deny` (license/advisory) and `fips-policy`
 ```
 
 **Phase A** (shipped) bans crates not currently in the graph — zero-pain regression gate: future PRs adding `md2`/`md4`/`ripemd`, `chacha20poly1305`/`salsa20`, the Curve25519 family (`x25519-dalek`, `ed25519-dalek`, …), alternative TLS frameworks (`openssl`, `boring`, `native-tls`), or alternative rustls CryptoProviders (`rustls-symcrypt`, `rustls-mbedcrypto-provider`, `rustls-openssl`, `rustls-rustcrypto`, `rustls-graviola`, `rustls-wolfcrypto-provider`, `boring-rustls-provider`) all fail the gate.
+
+**Non-FIPS hasher guard** — Dylint lint **DE0708** (`no_non_fips_hasher`) rejects new `sha2`/`sha1`/`md5` imports outside an explicit allow-list (currently empty), preventing unreviewed non-FIPS crypto usage from creeping in. All previous direct use sites have been replaced with inline FNV-1a (a deterministic, non-cryptographic fingerprint): `libs/toolkit-odata/src/pagination.rs` (cursor consistency) and `oidc-authn-plugin/src/infra/token_client.rs` (credential cache key). `sha2` remains in the dependency graph as a Phase B transitive (via `sqlx-core`, `sqlx-postgres`, `lopdf`, `rust-embed-utils`) and will be promoted to Phase A once those pull-throughs are eliminated.
 
 **Phase B** (pending transitive cleanup) is documented inline in `deny-fips.toml` — `ring`, non-FIPS `aws-lc-rs`, `chacha20`, `md-5`, `sha1`, `blake2`/`blake3`, `aes`, `hmac`, `hkdf`, etc. — currently pulled by upstream deps (`pingora-rustls`/`ureq`, rustls's default features, `rand`). Each moves to Phase A as its upstream pull-through is replaced. **Tracking**: [ADR 0005 §"Phasing"](fips/adrs/0005-fips-dependency-policy.md) and [FIPS PRD §13 TODO-7](fips/PRD.md#13-open-questions) — promotion to Phase A is the unit of work; no per-crate sub-tickets today.
 

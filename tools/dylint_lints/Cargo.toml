@@ -25,6 +25,7 @@ members = [
     "de03_domain_layer/de0309_must_have_domain_model",
     "de05_client_layer/de0504_client_versioning",
     "de07_security/de0707_drop_zeroize",
+    "de07_security/de0708_no_non_fips_hasher",
     "de12_documentation/de1201_docs_rs_all_features",
     "de13_common_patterns/de1301_no_print_macros",
     "de13_common_patterns/de1302_error_from_to_string",
@@ -77,6 +78,7 @@ uuid = "1.0"
 anyhow = "1.0"
 thiserror = "2.0"
 http = "1.0"
+sha2 = "0.10"
 
 [workspace.lints.clippy]
 all = "warn"

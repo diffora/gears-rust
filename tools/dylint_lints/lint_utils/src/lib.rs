@@ -198,6 +198,18 @@ pub fn is_in_sdk_crate(cx: &rustc_lint::EarlyContext<'_>, span: Span) -> bool {
     file_path.contains("-sdk/") || file_path.contains("-sdk\\") || is_temp_path(&file_path)
 }
 
+/// Check if span is within the allow-list for non-FIPS hasher imports (DE0708).
+///
+/// Currently empty — all direct `sha2`/`sha1`/`md5` call sites have been
+/// replaced. The only remaining `sha2` usage (`rustls-corecrypto-provider`)
+/// is `#[cfg(test)]`-gated and invisible to the lint.
+///
+/// Add entries here if a legitimate non-cryptographic or FIPS-validated
+/// usage is introduced in the future.
+pub fn is_in_hasher_allow_list(_source_map: &SourceMap, _span: Span) -> bool {
+    false
+}
+
 /// Check if span is within libs/toolkit-db/ - the internal sqlx wrapper library
 /// This path is excluded from sqlx restrictions as it provides the abstraction layer
 pub fn is_in_toolkit_db_path(source_map: &SourceMap, span: Span) -> bool {
