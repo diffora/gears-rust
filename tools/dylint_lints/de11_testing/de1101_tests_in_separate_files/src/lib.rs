@@ -159,7 +159,7 @@ impl EarlyLintPass for De1101TestsInSeparateFiles {
         for violation in violations {
             match violation {
                 TestViolation::InlineTestCode => {
-                    cx.span_lint(DE1101_TESTS_IN_SEPARATE_FILES, item.span, |diag| {
+                    cx.opt_span_lint(DE1101_TESTS_IN_SEPARATE_FILES, Some(item.span), |diag| {
                         diag.primary_message(
                             "test code must be moved to a separate test file (DE1101)",
                         );
@@ -170,7 +170,7 @@ impl EarlyLintPass for De1101TestsInSeparateFiles {
                     });
                 }
                 TestViolation::InlineTestCodeWithCompanion => {
-                    cx.span_lint(DE1101_TESTS_IN_SEPARATE_FILES, item.span, |diag| {
+                    cx.opt_span_lint(DE1101_TESTS_IN_SEPARATE_FILES, Some(item.span), |diag| {
                         diag.primary_message(
                             "test code must not be added back to a file that already has a companion test file (DE1101)",
                         );
@@ -180,7 +180,7 @@ impl EarlyLintPass for De1101TestsInSeparateFiles {
                     });
                 }
                 TestViolation::WrongPathAttr { expected, actual } => {
-                    cx.span_lint(DE1101_TESTS_IN_SEPARATE_FILES, item.span, |diag| {
+                    cx.opt_span_lint(DE1101_TESTS_IN_SEPARATE_FILES, Some(item.span), |diag| {
                         diag.primary_message(format!(
                             "test module path `{actual}.rs` must reference `{expected}.rs` to match the source file (DE1101)",
                         ));

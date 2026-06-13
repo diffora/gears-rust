@@ -116,7 +116,7 @@ fn emit_lint(
         format!("{trait_name}Client")
     };
 
-    cx.span_lint(DE0503_PLUGIN_CLIENT_SUFFIX, span, |diag| {
+    cx.opt_span_lint(DE0503_PLUGIN_CLIENT_SUFFIX, Some(span), |diag| {
         diag.primary_message(format!(
             "plugin client trait `{trait_name}` should use `*{suggested_suffix}` suffix, not `*{wrong_suffix}` (DE0503)"
         ));

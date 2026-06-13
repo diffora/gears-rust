@@ -114,7 +114,7 @@ struct ToStringVisitor<'tcx, 'cx> {
 impl<'tcx> ToStringVisitor<'tcx, '_> {
     /// Emit the DE1302 diagnostic at `span`.
     fn emit(&self, span: rustc_span::Span) {
-        self.cx.span_lint(DE1302_ERROR_FROM_TO_STRING, span, |diag| {
+        self.cx.opt_span_lint(DE1302_ERROR_FROM_TO_STRING, Some(span), |diag| {
             diag.primary_message(
                 "`.to_string()` in `From`/`TryFrom` impl destroys the error chain (DE1302)",
             );

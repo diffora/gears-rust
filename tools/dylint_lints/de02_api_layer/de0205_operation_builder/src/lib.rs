@@ -71,14 +71,14 @@ impl<'tcx> LateLintPass<'tcx> for De0205OperationBuilder {
                     if let Some(tag_arg) = args.first() {
                         if let Some(tag_string) = extract_tag_value(cx, tag_arg) {
                             if !is_valid_tag_format(&tag_string) {
-                                cx.span_lint(DE0205_OPERATION_BUILDER, tag_arg.span, |diag| {
+                                cx.opt_span_lint(DE0205_OPERATION_BUILDER, Some(tag_arg.span), |diag| {
                                         diag.primary_message("tag format is invalid");
                                         diag.help("tags must contain whitespace-separated words, each starting with a capital letter");
                                         diag.note("example: \"User Management\", \"Simple Resource Registry\"");
                                     });
                             }
                         } else {
-                            cx.span_lint(DE0205_OPERATION_BUILDER, tag_arg.span, |diag| {
+                            cx.opt_span_lint(DE0205_OPERATION_BUILDER, Some(tag_arg.span), |diag| {
                                     diag.primary_message("tag must be a string literal or const string");
                                     diag.help("use a string literal like `.tag(\"Your Tag\")` or a const string");
                                 });
@@ -89,13 +89,17 @@ impl<'tcx> LateLintPass<'tcx> for De0205OperationBuilder {
                     if let Some(summary_arg) = args.first() {
                         if let Some(summary_string) = extract_tag_value(cx, summary_arg) {
                             if summary_string.trim().is_empty() {
-                                cx.span_lint(DE0205_OPERATION_BUILDER, summary_arg.span, |diag| {
-                                    diag.primary_message("summary cannot be empty");
-                                    diag.help("provide a meaningful summary for the operation");
-                                });
+                                cx.opt_span_lint(
+                                    DE0205_OPERATION_BUILDER,
+                                    Some(summary_arg.span),
+                                    |diag| {
+                                        diag.primary_message("summary cannot be empty");
+                                        diag.help("provide a meaningful summary for the operation");
+                                    },
+                                );
                             }
                         } else {
-                            cx.span_lint(DE0205_OPERATION_BUILDER, summary_arg.span, |diag| {
+                            cx.opt_span_lint(DE0205_OPERATION_BUILDER, Some(summary_arg.span), |diag| {
                                     diag.primary_message("summary must be a string literal or const string");
                                     diag.help("use a string literal like `.summary(\"Your summary\")` or a const string");
                                 });
@@ -120,7 +124,7 @@ fn check_complete_builder_chain(cx: &LateContext<'_>, expr: &rustc_hir::Expr<'_>
         // Report missing calls
         let builder_span = get_builder_constructor_span(expr);
         if !has_tag || !has_summary {
-            cx.span_lint(DE0205_OPERATION_BUILDER, builder_span, |diag| {
+            cx.opt_span_lint(DE0205_OPERATION_BUILDER, Some(builder_span), |diag| {
                 match (has_tag, has_summary) {
                     (false, false) => {
                         diag.primary_message("operation builder missing .tag() and .summary() calls");

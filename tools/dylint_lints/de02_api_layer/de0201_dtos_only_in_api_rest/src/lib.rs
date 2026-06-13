@@ -41,7 +41,7 @@ impl EarlyLintPass for De0201DtosOnlyInApiRest {
 
         // Check if the file is in api/rest folder (supports simulated_dir for tests)
         if !lint_utils::is_in_api_rest_folder(cx.sess().source_map(), item.span) {
-            cx.span_lint(DE0201_DTOS_ONLY_IN_API_REST, span, |diag| {
+            cx.opt_span_lint(DE0201_DTOS_ONLY_IN_API_REST, Some(span), |diag| {
                 diag.primary_message(format!(
                     "DTO type `{}` is defined outside of api/rest folder (DE0201)",
                     item_name

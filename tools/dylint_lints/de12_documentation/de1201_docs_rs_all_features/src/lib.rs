@@ -75,7 +75,7 @@ impl LateLintPass<'_> for De1201DocsRsAllFeatures {
         {
             Ok(metadata) => metadata,
             Err(error) => {
-                cx.span_lint(DE1201_DOCS_RS_ALL_FEATURES, DUMMY_SP, |diag| {
+                cx.opt_span_lint(DE1201_DOCS_RS_ALL_FEATURES, Some(DUMMY_SP), |diag| {
                     diag.primary_message(format!(
                         "could not read Cargo metadata for docs.rs configuration check: {error}"
                     ));
@@ -85,7 +85,7 @@ impl LateLintPass<'_> for De1201DocsRsAllFeatures {
         };
 
         let Some(package) = find_current_package(&metadata, &manifest_path) else {
-            cx.span_lint(DE1201_DOCS_RS_ALL_FEATURES, DUMMY_SP, |diag| {
+            cx.opt_span_lint(DE1201_DOCS_RS_ALL_FEATURES, Some(DUMMY_SP), |diag| {
                 diag.primary_message(format!(
                     "could not find current package in Cargo metadata for `{}`",
                     manifest_path.display()
@@ -103,7 +103,7 @@ impl LateLintPass<'_> for De1201DocsRsAllFeatures {
             return;
         };
 
-        cx.span_lint(DE1201_DOCS_RS_ALL_FEATURES, DUMMY_SP, |diag| {
+        cx.opt_span_lint(DE1201_DOCS_RS_ALL_FEATURES, Some(DUMMY_SP), |diag| {
             diag.primary_message(format!(
                 "publishable crate `{}` must set `package.metadata.docs.rs.all-features = true` (DE1201)",
                 package.name

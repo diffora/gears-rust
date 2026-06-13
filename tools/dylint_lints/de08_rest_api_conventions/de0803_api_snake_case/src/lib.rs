@@ -104,7 +104,7 @@ fn find_serde_attribute_value(
 fn check_type_rename_all(cx: &EarlyContext<'_>, attrs: &[Attribute]) {
     for (span, value) in find_serde_attribute_value(attrs, "rename_all") {
         if value != "snake_case" {
-            cx.span_lint(DE0803_API_SNAKE_CASE, span, |diag| {
+            cx.opt_span_lint(DE0803_API_SNAKE_CASE, Some(span), |diag| {
                 diag.primary_message(
                     "DTOs must not use non-snake_case in serde rename_all (DE0803)",
                 );
@@ -120,7 +120,7 @@ fn check_type_rename_all(cx: &EarlyContext<'_>, attrs: &[Attribute]) {
 fn check_variant_rename(cx: &EarlyContext<'_>, attrs: &[Attribute]) {
     for (span, value) in find_serde_attribute_value(attrs, "rename") {
         if !is_snake_case(&value) {
-            cx.span_lint(DE0803_API_SNAKE_CASE, span, |diag| {
+            cx.opt_span_lint(DE0803_API_SNAKE_CASE, Some(span), |diag| {
                 diag.primary_message(
                     "Enum variants must not use non-snake_case in serde rename (DE0803)",
                 );
@@ -157,9 +157,9 @@ fn check_field_snake_case(cx: &EarlyContext<'_>, field: &FieldDef) {
     if rename_values.is_empty() {
         // No field-level serde rename - field name must be snake_case
         if !is_snake_case(&field_name) {
-            cx.span_lint(
+            cx.opt_span_lint(
                 DE0803_API_SNAKE_CASE,
-                field.ident.unwrap().span,
+                Some(field.ident.unwrap().span),
                 |diag| {
                     diag.primary_message(
                         "DTO field name must be snake_case or have a serde rename to snake_case (DE0803)"
@@ -175,7 +175,7 @@ fn check_field_snake_case(cx: &EarlyContext<'_>, field: &FieldDef) {
         // Has field-level serde rename - the rename value must be snake_case
         for (span, value) in rename_values {
             if !is_snake_case(&value) {
-                cx.span_lint(DE0803_API_SNAKE_CASE, span, |diag| {
+                cx.opt_span_lint(DE0803_API_SNAKE_CASE, Some(span), |diag| {
                     diag.primary_message(
                         "DTO fields must not use non-snake_case in serde rename (DE0803)",
                     );

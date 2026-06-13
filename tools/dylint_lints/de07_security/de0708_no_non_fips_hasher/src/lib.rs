@@ -70,7 +70,7 @@ impl EarlyLintPass for De0708NoNonFipsHasher {
         };
 
         if let Some(path_str) = find_banned_path(use_tree) {
-            cx.span_lint(DE0708_NO_NON_FIPS_HASHER, item.span, |diag| {
+            cx.opt_span_lint(DE0708_NO_NON_FIPS_HASHER, Some(item.span), |diag| {
                 diag.primary_message(format!(
                     "non-FIPS-validated hasher import detected: `{}` (DE0708)",
                     path_str

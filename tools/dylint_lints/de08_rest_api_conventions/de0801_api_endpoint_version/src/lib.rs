@@ -273,7 +273,7 @@ fn check_path_argument<'tcx>(cx: &LateContext<'tcx>, path_arg: &'tcx Expr<'tcx>)
                 ),
             };
 
-            cx.span_lint(DE0801_API_ENDPOINT_VERSION, path_arg.span, |diag| {
+            cx.opt_span_lint(DE0801_API_ENDPOINT_VERSION, Some(path_arg.span), |diag| {
                 diag.primary_message(message);
                 diag.help(help);
                 diag.note(note);

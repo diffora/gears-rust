@@ -158,7 +158,7 @@ impl<'tcx> hir::intravisit::Visitor<'tcx> for ZeroingVisitor<'tcx, '_> {
                 {
                     let inner_ty = self.typeck.expr_ty(inner);
                     if is_u8_ptr_or_ref(inner_ty) {
-                        self.cx.span_lint(DE0707_DROP_ZEROIZE, expr.span, |diag| {
+                        self.cx.opt_span_lint(DE0707_DROP_ZEROIZE, Some(expr.span), |diag| {
                                 diag.primary_message(
                                     "manual byte-zeroing in `Drop::drop` may be eliminated by the optimizer (DE0707)",
                                 );
@@ -190,7 +190,7 @@ impl<'tcx> hir::intravisit::Visitor<'tcx> for ZeroingVisitor<'tcx, '_> {
                     // Use adjusted type so Vec<u8> auto-derefs to [u8]
                     let recv_ty = self.typeck.expr_ty_adjusted(recv);
                     if method_in_std && has_u8_element(recv_ty) {
-                        self.cx.span_lint(DE0707_DROP_ZEROIZE, expr.span, |diag| {
+                        self.cx.opt_span_lint(DE0707_DROP_ZEROIZE, Some(expr.span), |diag| {
                                     diag.primary_message(
                                         "manual byte-zeroing in `Drop::drop` may be eliminated by the optimizer (DE0707)",
                                     );
@@ -215,9 +215,9 @@ impl<'tcx> hir::intravisit::Visitor<'tcx> for ZeroingVisitor<'tcx, '_> {
                     && let Some(def_id) = self.cx.qpath_res(qpath, func.hir_id).opt_def_id()
                     && is_ptr_write_bytes(self.cx, def_id)
                 {
-                    self.cx.span_lint(
+                    self.cx.opt_span_lint(
                                             DE0707_DROP_ZEROIZE,
-                                            expr.span,
+                                            Some(expr.span),
                                             |diag| {
                                                 diag.primary_message(
                                                     "manual byte-zeroing in `Drop::drop` may be eliminated by the optimizer (DE0707)",

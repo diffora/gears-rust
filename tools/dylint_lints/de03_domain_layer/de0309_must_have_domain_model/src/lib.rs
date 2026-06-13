@@ -76,7 +76,7 @@ fn check_domain_model_attribute(cx: &EarlyContext<'_>, item: &Item) {
         _ => return,
     };
 
-    cx.span_lint(DE0309_MUST_HAVE_DOMAIN_MODEL, item.span, |diag| {
+    cx.opt_span_lint(DE0309_MUST_HAVE_DOMAIN_MODEL, Some(item.span), |diag| {
         diag.primary_message(format!(
             "domain type `{item_name}` is missing required #[domain_model] attribute (DE0309)"
         ));

@@ -77,7 +77,7 @@ impl EarlyLintPass for De0104NoApiDtoInContract {
                 );
 
                 if is_api_dto {
-                    cx.span_lint(DE0104_NO_API_DTO_IN_CONTRACT, attr.span, |diag| {
+                    cx.opt_span_lint(DE0104_NO_API_DTO_IN_CONTRACT, Some(attr.span), |diag| {
                         diag.primary_message("contract type should not use `api_dto` macro (DE0104)");
                         diag.help("api_dto is for API DTOs; use plain structs in contract/ and create DTOs in api/rest/");
                     });

@@ -81,10 +81,14 @@ fn check_dto_toschema_derive(cx: &EarlyContext<'_>, item: &Item) {
 
     // Report missing derive
     if !has_toschema {
-        cx.span_lint(DE0204_DTOS_MUST_HAVE_TOSCHEMA_DERIVE, item.span, |diag| {
-            diag.primary_message("api/rest type is missing required ToSchema derive (DE0204)");
-            diag.help("DTOs in api/rest must derive ToSchema for OpenAPI documentation");
-        });
+        cx.opt_span_lint(
+            DE0204_DTOS_MUST_HAVE_TOSCHEMA_DERIVE,
+            Some(item.span),
+            |diag| {
+                diag.primary_message("api/rest type is missing required ToSchema derive (DE0204)");
+                diag.help("DTOs in api/rest must derive ToSchema for OpenAPI documentation");
+            },
+        );
     }
 }
 

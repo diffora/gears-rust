@@ -133,7 +133,7 @@ impl<'a, 'cx> ForbiddenMacroVisitor<'a, 'cx> {
         }
 
         self.cx
-            .span_lint(DE1301_NO_PRINT_MACROS, mac_call.span(), |diag| {
+            .opt_span_lint(DE1301_NO_PRINT_MACROS, Some(mac_call.span()), |diag| {
                 diag.primary_message(format!(
                     "macro `{name}!` is forbidden in production code (DE1301)"
                 ));

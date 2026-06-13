@@ -109,7 +109,7 @@ fn check_use_in_contract(cx: &rustc_lint::EarlyContext<'_>, item: &Item) {
     let path_str = use_tree_to_string(use_tree);
     for pattern in HTTP_TYPE_PATTERNS {
         if path_str.contains(pattern) {
-            cx.span_lint(DE0103_NO_HTTP_TYPES_IN_CONTRACT, item.span, |diag| {
+            cx.opt_span_lint(DE0103_NO_HTTP_TYPES_IN_CONTRACT, Some(item.span), |diag| {
                 diag.primary_message("contract module imports HTTP type (DE0103)");
                 diag.help(
                     "contract gears should be transport-agnostic; move HTTP types to api/rest/",

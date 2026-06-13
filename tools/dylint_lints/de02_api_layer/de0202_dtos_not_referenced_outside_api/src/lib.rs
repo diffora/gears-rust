@@ -59,15 +59,19 @@ impl<'tcx> LateLintPass<'tcx> for De0202DtosNotReferencedOutsideApi {
                     "infra"
                 };
 
-                cx.span_lint(DE0202_DTOS_NOT_REFERENCED_OUTSIDE_API, item.span, |diag| {
-                    diag.primary_message(format!(
-                        "{} module imports DTO type `{}` from api layer (DE0202)",
-                        module_type, last
-                    ));
-                    diag.help(
+                cx.opt_span_lint(
+                    DE0202_DTOS_NOT_REFERENCED_OUTSIDE_API,
+                    Some(item.span),
+                    |diag| {
+                        diag.primary_message(format!(
+                            "{} module imports DTO type `{}` from api layer (DE0202)",
+                            module_type, last
+                        ));
+                        diag.help(
                         "DTOs are API layer details; use contract models or domain types instead",
                     );
-                });
+                    },
+                );
             }
         }
     }

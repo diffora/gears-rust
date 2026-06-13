@@ -70,14 +70,14 @@ impl EarlyLintPass for De0101NoSerdeInContract {
             let is_deserialize = lint_utils::is_serde_trait(&segments, "Deserialize");
 
             if is_serialize {
-                cx.span_lint(DE0101_NO_SERDE_IN_CONTRACT, attr.span, |diag| {
+                cx.opt_span_lint(DE0101_NO_SERDE_IN_CONTRACT, Some(attr.span), |diag| {
                     diag.primary_message("contract type should not derive `Serialize` (DE0101)");
                     diag.help(
                         "remove serde derives from contract models; use DTOs in the API layer",
                     );
                 });
             } else if is_deserialize {
-                cx.span_lint(DE0101_NO_SERDE_IN_CONTRACT, attr.span, |diag| {
+                cx.opt_span_lint(DE0101_NO_SERDE_IN_CONTRACT, Some(attr.span), |diag| {
                     diag.primary_message("contract type should not derive `Deserialize` (DE0101)");
                     diag.help(
                         "remove serde derives from contract models; use DTOs in the API layer",

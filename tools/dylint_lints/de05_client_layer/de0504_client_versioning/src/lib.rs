@@ -116,7 +116,7 @@ fn emit_lint(
             format!("{}V1", version.base)
         };
 
-    cx.span_lint(DE0504_CLIENT_VERSIONING, span, |diag| {
+    cx.opt_span_lint(DE0504_CLIENT_VERSIONING, Some(span), |diag| {
         diag.primary_message(format!(
             "Client trait `{trait_name}` in non-system gear must have a version suffix (DE0504)"
         ));

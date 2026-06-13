@@ -103,7 +103,7 @@ impl EarlyLintPass for De1303NoPrimitiveTypeAlias {
             return;
         }
 
-        cx.span_lint(DE1303_NO_PRIMITIVE_TYPE_ALIAS, item.span, |diag| {
+        cx.opt_span_lint(DE1303_NO_PRIMITIVE_TYPE_ALIAS, Some(item.span), |diag| {
             diag.primary_message(format!(
                 "`pub type {name} = {backing}` is a transparent alias with no type safety (DE1303)"
             ));

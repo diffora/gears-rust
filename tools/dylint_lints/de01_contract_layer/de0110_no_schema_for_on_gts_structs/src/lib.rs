@@ -113,9 +113,9 @@ impl<'tcx> LateLintPass<'tcx> for De0110NoSchemaForOnGtsStructs {
                             && is_gts_type(cx, ty)
                         {
                             let type_name = get_type_name(ty);
-                            cx.span_lint(
+                            cx.opt_span_lint(
                                         DE0110_NO_SCHEMA_FOR_ON_GTS_STRUCTS,
-                                        callsite_span,
+                                        Some(callsite_span),
                                         |diag| {
                                             diag.primary_message(format!(
                                                 "do not use `schema_for!({})` on GTS-wrapped struct (DE0110)",

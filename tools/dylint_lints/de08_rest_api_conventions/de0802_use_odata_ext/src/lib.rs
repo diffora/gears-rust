@@ -133,7 +133,7 @@ fn check_odata_param<'tcx>(cx: &LateContext<'tcx>, arg: &'tcx Expr<'tcx>, method
         if ODATA_PARAMS.contains(&param_name) {
             let recommended = get_recommended_method(param_name);
 
-            cx.span_lint(DE0802_USE_ODATA_EXT, arg.span, |diag| {
+            cx.opt_span_lint(DE0802_USE_ODATA_EXT, Some(arg.span), |diag| {
                 diag.primary_message(format!(
                     "use OperationBuilderODataExt instead of .{}() for OData parameter `{}` (DE0802)",
                     method_name, param_name
