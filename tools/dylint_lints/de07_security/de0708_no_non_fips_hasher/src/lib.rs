@@ -3,6 +3,7 @@
 
 extern crate rustc_ast;
 
+use clippy_utils::diagnostics::span_lint_and_then;
 use lint_utils::{is_in_hasher_allow_list, use_tree_to_strings};
 use rustc_ast::{Item, ItemKind};
 use rustc_lint::{EarlyLintPass, LintContext};
@@ -70,16 +71,18 @@ impl EarlyLintPass for De0708NoNonFipsHasher {
         };
 
         if let Some(path_str) = find_banned_path(use_tree) {
-            cx.span_lint(DE0708_NO_NON_FIPS_HASHER, item.span, |diag| {
-                diag.primary_message(format!(
-                    "non-FIPS-validated hasher import detected: `{}` (DE0708)",
-                    path_str
-                ));
-                diag.help(
-                    "these crates use pure-Rust RustCrypto; add to the DE0708 allow-list if usage is non-cryptographic",
-                );
-                diag.note("see docs/security/SECURITY.md §9 for the FIPS dependency policy");
-            });
+            span_lint_and_then(
+                cx,
+                DE0708_NO_NON_FIPS_HASHER,
+                item.span,
+                format!("non-FIPS-validated hasher import detected: `{path_str}` (DE0708)"),
+                |diag| {
+                    diag.help(
+                        "these crates use pure-Rust RustCrypto; add to the DE0708 allow-list if usage is non-cryptographic",
+                    );
+                    diag.note("see docs/security/SECURITY.md §9 for the FIPS dependency policy");
+                },
+            );
         }
     }
 }
