@@ -489,20 +489,22 @@ bench-db-longhaul: bench-pg-longhaul bench-mysql-longhaul bench-mariadb-longhaul
 
 .PHONY: e2e e2e-local e2e-local-smoke e2e-mini-chat e2e-docker e2e-docker-smoke e2e-tr-authz
 
+E2E_TARGET ?=
+
 # Run E2E tests in Docker (default)
 e2e: e2e-docker
 
 ## Run E2E tests in Docker environment
 e2e-docker:
-	python3 tools/scripts/ci.py e2e-docker $(E2E_ARGS)
+	python3 tools/scripts/ci.py e2e-docker -- $(E2E_TARGET)
 
 ## Run E2E smoke tests in Docker (only tests marked @pytest.mark.smoke)
 e2e-docker-smoke:
-	python3 tools/scripts/ci.py e2e-docker $(E2E_ARGS) -- -m smoke
+	python3 tools/scripts/ci.py e2e-docker -- -m smoke $(E2E_TARGET)
 
-# Run E2E tests locally
+# Run E2E tests locally, use `make e2e-local E2E_TARGET=testing/e2e/gears/` to specify target
 e2e-local:
-	python3 tools/scripts/ci.py e2e-local
+	python3 tools/scripts/ci.py e2e-local -- $(E2E_TARGET)
 
 ## Run RG + AuthZ barrier E2E tests with tr-authz-plugin going through TR -> RG
 e2e-tr-authz:
