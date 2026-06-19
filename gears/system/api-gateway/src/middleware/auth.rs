@@ -1,5 +1,6 @@
 use axum::http::Method;
 use axum::response::IntoResponse;
+use http::HeaderValue;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::middleware::common;
@@ -226,20 +227,35 @@ pub async fn authn_middleware(
 /// middleware sits inside its layer.
 fn authn_error_to_response(err: &AuthNResolverError) -> axum::response::Response {
     log_authn_error(err);
-    let canonical = match err {
-        AuthNResolverError::Unauthorized(_) => CanonicalError::unauthenticated()
-            .with_reason("AUTHN_FAILED")
-            .create(),
+    match err {
+        AuthNResolverError::Unauthorized(_) => {
+            // A token was presented but rejected. RFC 6750 §3 requires a
+            // rejected bearer request to carry a `WWW-Authenticate` challenge,
+            // with an `error` code when a token was supplied — here
+            // `invalid_token`. We deliberately omit `realm` and
+            // `error_description` so the challenge discloses no internal detail.
+            let mut response = CanonicalError::unauthenticated()
+                .with_reason("AUTHN_FAILED")
+                .create()
+                .into_response();
+            response.headers_mut().append(
+                "WWW-Authenticate",
+                HeaderValue::from_static(r#"Bearer error="invalid_token""#),
+            );
+            response
+        }
         AuthNResolverError::NoPluginAvailable | AuthNResolverError::ServiceUnavailable(_) => {
             CanonicalError::service_unavailable()
                 .with_retry_after_seconds(5)
                 .create()
+                .into_response()
         }
         AuthNResolverError::TokenAcquisitionFailed(_) | AuthNResolverError::Internal(_) => {
-            CanonicalError::internal("authentication infrastructure failure").create()
+            CanonicalError::internal("authentication infrastructure failure")
+                .create()
+                .into_response()
         }
-    };
-    canonical.into_response()
+    }
 }
 
 /// Log authentication errors at appropriate levels.
