@@ -304,30 +304,41 @@ The cost is one `Box<dyn Future>` allocation per async method call — negligibl
 
 - [ ] `p1` - **ID**: `cpt-cf-binding-constraint-security-context`
 
-Every method on a remote-capable contract (Api, Backend, and their `*Rest`/`*Grpc` projections) MUST accept `&SecurityContext` as its first non-self argument. This is a hard rule enforced by convention and validated by the macro and by CI.
+Every method on a remote-capable contract (Api, Backend, and their `*Rest`/`*Grpc` projections) MUST accept a **plane context** as its first non-self argument — either `&SecurityContext` (tenant plane) or `&PlatformSecurityContext` (platform plane). This is a hard rule enforced by convention and validated by the macro and by CI.
+
+**The context type is the plane marker.** `SecurityContext` and `PlatformSecurityContext` are distinct types (per the [two-plane model](../toolkit-oop/ADR/0008-cpt-cf-adr-two-plane-auth.md)), so plane selection is a compile-time property of the signature. The macro maps the type to its carrier: `&SecurityContext` → `Authorization: Bearer <jwt>`; `&PlatformSecurityContext` → `X-ToolKit-Internal-Token` (mTLS+SPIFFE next phase, [ADR-0006](../toolkit-oop/ADR/0006-cpt-cf-adr-platform-plane-auth.md)). A method takes exactly one. The client forwards the tenant bearer token but does **not** source the platform secret — the runtime injects that below the contract layer.
 
 ```rust
-// Remote-capable — SecurityContext required.
+// Remote-capable, tenant plane — SecurityContext required.
 pub trait NotificationBackend: Send + Sync {
     async fn deliver(
         &self,
-        ctx: &SecurityContext,            // required first arg
+        ctx: &SecurityContext,            // tenant plane → Authorization
         req: &DeliverRequest,
     ) -> Result<DeliverResponse, NotificationError>;
 }
 
-// Local — SecurityContext optional (caller already has it in scope).
+// Remote-capable, platform plane — PlatformSecurityContext required.
+pub trait DirectoryRegistrationBackend: Send + Sync {
+    async fn register_instance(
+        &self,
+        ctx: &PlatformSecurityContext,    // platform plane → X-ToolKit-Internal-Token
+        req: &RegisterInstanceRequest,
+    ) -> Result<RegisterInstanceResponse, DirectoryError>;
+}
+
+// Local — context optional (caller already has it in scope).
 pub trait NotificationFormatterExtension: Send + Sync {
     async fn format(&self, message: &str, channel: &Channel) -> Result<String, FormatError>;
 }
 ```
 
-**Rationale:** Every cross-boundary call carries some authorization context — a bearer token, a service identity, a tenant scope. Making it the first parameter ensures:
+**Rationale:** Every cross-boundary call carries some authorization context — a bearer token, a service identity, a tenant scope. Making a plane context the first parameter ensures:
 
-1. Authors cannot forget it. Missing `ctx` is a compile error at every call site.
-2. The macro generates consistent propagation. The generated REST client maps `ctx` into the appropriate transport-level carrier (Authorization header, metadata, etc.) in one place.
-3. Code review and audit are mechanical. Every remote call has `ctx` visible in the signature; calls without it are locally scoped by construction.
-4. Middleware composes cleanly. Layers that inject tenant context, validate tokens, or emit audit logs hook into a single, uniform slot.
+1. Authors cannot forget it or pick the wrong plane — a missing `ctx` is a compile error, and the wrong context type is a type error.
+2. The macro maps the context type to its carrier (`Authorization` for tenant, `X-ToolKit-Internal-Token` for platform) in one place.
+3. Review and audit are mechanical — every remote call shows `ctx`, and its type names the plane.
+4. Middleware composes cleanly through a single, uniform slot.
 
 Local contracts (Embedded, Extension) do not require `SecurityContext` because they run in the caller's scope and inherit the caller's context directly (task-local storage, explicit parameters, or gear-owned state). Authors MAY pass `SecurityContext` explicitly to local methods when the contract needs it.
 
@@ -391,7 +402,7 @@ Remote services expose their OpenAPI spec at `/.well-known/openapi.json`. The se
 // 1. The contract — plain Rust trait, domain only, no transport awareness.
 //    Lives in the SDK crate. This is what consumers and compile-time plugins depend on.
 pub trait NotificationBackend: Send + Sync {
-    async fn deliver(&self, req: &DeliverRequest) -> Result<DeliverResponse, Err>;
+    async fn deliver(&self, ctx: &SecurityContext, req: &DeliverRequest) -> Result<DeliverResponse, Err>;
 }
 
 // 2. The protocol projection — extends the base with REST annotations.
@@ -399,7 +410,7 @@ pub trait NotificationBackend: Send + Sync {
 #[toolkit_rest_contract]
 pub trait NotificationBackendRest: NotificationBackend {
     #[post("/v1/deliver")]
-    async fn deliver(&self, req: &DeliverRequest) -> Result<DeliverResponse, Err>;
+    async fn deliver(&self, ctx: &SecurityContext, req: &DeliverRequest) -> Result<DeliverResponse, Err>;
 }
 ```
 
@@ -409,8 +420,8 @@ After macro expansion:
 // The projection trait after the macro processes it — methods now have defaults
 // that delegate to the base via fully-qualified call syntax.
 pub trait NotificationBackendRest: NotificationBackend {
-    async fn deliver(&self, req: &DeliverRequest) -> Result<DeliverResponse, Err> {
-        NotificationBackend::deliver(self, req).await
+    async fn deliver(&self, ctx: &SecurityContext, req: &DeliverRequest) -> Result<DeliverResponse, Err> {
+        NotificationBackend::deliver(self, ctx, req).await
     }
 }
 
@@ -422,8 +433,9 @@ pub struct NotificationBackendRestClient {
 
 // Single source of actual HTTP dispatch — on the BASE trait.
 impl NotificationBackend for NotificationBackendRestClient {
-    async fn deliver(&self, req: &DeliverRequest) -> Result<DeliverResponse, Err> {
+    async fn deliver(&self, ctx: &SecurityContext, req: &DeliverRequest) -> Result<DeliverResponse, Err> {
         let resp = self.http.post(format!("{}/v1/deliver", self.config.base_url))
+            .bearer_auth(ctx.token())            // tenant plane → Authorization
             .json(req).send().await?;
         if !resp.status().is_success() { return Err(self.parse_error(resp).await); }
         resp.json().await.map_err(Err::from_transport)
@@ -446,7 +458,7 @@ The three diagrams below each answer a different question. They share a common v
 ```
   // Consumer code (e.g., the notification gear using a delivery plugin)
   let backend: Arc<dyn NotificationBackend> = hub.get();
-  backend.deliver(&req).await;
+  backend.deliver(&ctx, &req).await;
             │
             │   dynamic dispatch through Arc<dyn NotificationBackend>
             v
@@ -465,13 +477,13 @@ Perspective: **consumer**. Point: the consumer sees one trait. Whether the imple
   // Caller holding the concrete generated client type (rare — usually tests or
   // code that needs protocol-specific methods declared only on the projection)
   let client: NotificationBackendRestClient = ...;
-  <_ as NotificationBackendRest>::deliver(&client, &req).await;
+  <_ as NotificationBackendRest>::deliver(&client, &ctx, &req).await;
             │
             │   dispatches to the projection trait
             v
   default method in NotificationBackendRest (synthesized by the macro):
-      fn deliver(&self, req) -> ... {
-          NotificationBackend::deliver(self, req).await
+      fn deliver(&self, ctx, req) -> ... {
+          NotificationBackend::deliver(self, ctx, req).await
       }
             │
             │   delegates via fully-qualified call syntax
@@ -492,7 +504,7 @@ Perspective: **code that uses the protocol-specific surface** (projection-only m
   struct InProcEmailPlugin { /* SMTP client, whatever */ }
 
   impl NotificationBackend for InProcEmailPlugin {
-      async fn deliver(&self, req) -> ... {
+      async fn deliver(&self, ctx, req) -> ... {
           // direct function call — no serialization, no HTTP, no retry wrapper
       }
   }
