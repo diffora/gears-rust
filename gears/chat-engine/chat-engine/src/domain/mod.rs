@@ -25,6 +25,7 @@ pub mod retention;
 pub mod search;
 pub mod service;
 pub mod session;
+pub mod stream_delta;
 
 // ---- Re-exports of SDK types that have no per-type sub-module ----
 pub use chat_engine_sdk::models::{Capability, CapabilityValue, HealthStatus, TenantId, UserId};
