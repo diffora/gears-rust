@@ -142,8 +142,10 @@ engine, `cpt-cf-file-storage-fr-orphan-reconciliation`). Clients **should** rebi
     (below), the concrete codec is an internal detail of control + sidecar and may move to a literal PASETO library
     without any client-visible change.
   - **FIPS posture:** Ed25519 is FIPS 186-5 approved, but a FIPS deployment requires the sign/verify primitive to run
-    inside a FIPS-validated module (the platform's `rustls-corecrypto-provider`); a FIPS-approved fallback (e.g.
-    ECDSA P-256) is available behind the same opaque token. See ADR-0004 "FIPS posture".
+    inside a FIPS-validated module (the platform's `rustls-corecrypto-provider`). The primitive sits behind an in-house
+    `SignatureProvider` abstraction and we **MUST NOT** pull in any crate that hard-wires a non-FIPS algorithm we
+    cannot replace; a FIPS-approved alternative (e.g. ECDSA P-256) is reachable behind the same opaque token without a
+    codec change. See ADR-0004 "FIPS posture".
 - **Opaque to everyone but control + sidecar.** The token's claim-set and crypto are private to the minter and verifier;
   every other participant (browser, CDN, proxy, app, logs, SDK transport) MUST treat it as **opaque bytes** and never
   parse it — the format can and will change ("Token Opacity Contract").

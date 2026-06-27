@@ -101,16 +101,28 @@ the dual-envelope (query + header) and the asymmetric, sidecar-cannot-mint prope
   (sidecar)**; all claims live inside the token.
 * **New dependency:** a PASETO v4 library — control plane signs (`v4.public`), sidecar verifies. Ed25519 keys as before
   (private → control, public → sidecar); `kid` in the footer; rotation is P2.
-* **FIPS posture (must be settled before implementation).** PASETO `v4.public` uses **Ed25519**, which *is* approved
-  under **FIPS 186-5**, but approval requires the signing/verifying primitive to run inside a **FIPS-validated
-  cryptographic module** — a generic PASETO/Ed25519 crate is not automatically compliant. Plan: in FIPS deployments
-  the token signer/verifier MUST be backed by a FIPS-validated provider (the platform already ships
-  `rustls-corecrypto-provider`); the chosen PASETO/Ed25519 implementation must route through it or be replaced by one
-  that does. Because the token is **opaque and the codec is freely evolvable** (Token Opacity Contract), a
-  **fallback** to a FIPS-approved alternative (e.g. ECDSA P-256 / a JWS profile over the validated module) is
-  available without changing the rest of the design. The concrete crate + provider choice (and the non-FIPS default)
-  is an implementation-time decision gated on confirming the deployment's FIPS requirement; it does **not** alter the
-  control-signs / sidecar-verifies / sidecar-cannot-mint property.
+* **FIPS posture (binding constraint on the dependency, not a deferred fallback).** PASETO `v4.public` uses **Ed25519**,
+  which *is* approved under **FIPS 186-5**, but approval requires the signing/verifying primitive to run inside a
+  **FIPS-validated cryptographic module** — a generic PASETO/Ed25519 crate is not automatically compliant. The binding
+  rule for implementation is therefore about *which crate we pull in*:
+  * **MUST NOT** introduce any new crate that hard-wires a **non-FIPS algorithm or a self-contained crypto
+    implementation we cannot swap out.** No dependency may bake the signing primitive in such a way that the algorithm
+    or its backing module is fixed at the crate boundary.
+  * The token signer/verifier **MUST sit behind a thin in-house crypto-provider abstraction** (a `SignatureProvider`
+    trait: `sign(claims) -> token` on control, `verify(token) -> claims` on the sidecar). The PASETO codec calls that
+    abstraction; the abstraction is what binds to the concrete algorithm + module.
+  * In FIPS deployments the provider **MUST** be backed by a FIPS-validated module (the platform already ships
+    `rustls-corecrypto-provider`); the PASETO/Ed25519 path must route through it. If no validated Ed25519 module is
+    available for a target, the provider is swapped for a FIPS-approved alternative (e.g. ECDSA P-256 / a JWS profile
+    over the validated module) — **without touching the token codec, claim-set, or the rest of this design**, because
+    the token is **opaque and the codec is freely evolvable** (Token Opacity Contract).
+  * Concretely this means we evaluate the candidate PASETO crate for this property **before** adding it: prefer one that
+    accepts an external signer/key backend (so the algorithm is replaceable), and reject any that statically links a
+    non-replaceable non-FIPS implementation.
+
+  This preserves the control-signs / sidecar-verifies / sidecar-cannot-mint property regardless of which module backs
+  the provider. The concrete crate + provider choice (and the non-FIPS default) is settled at implementation time, but
+  the **replaceability requirement above is not deferrable** — it gates dependency selection.
 * **Observability/debuggability** is **sanitized server-side structured logging** by control/sidecar (tenant/file ids,
   outcome; never the token or raw claims). It is **not** done by decoding the token at the edge.
 * **Embeddable vs. leak vs. cache:** query envelope (token in URL, short `exp`) for embeddable; header envelope (token

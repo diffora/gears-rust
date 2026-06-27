@@ -1753,8 +1753,10 @@ with the design intent above and is recorded here so the doc matches what ships.
   (`base64url(payload).base64url(signature)`), codec-equivalent to PASETO `v4.public` (control signs with the private
   key, sidecar verifies with the public key, sidecar can never mint). Because the token is opaque, swapping to a
   literal PASETO library is a non-breaking change. **FIPS**: Ed25519 is FIPS 186-5 approved but must run inside a
-  FIPS-validated module (`rustls-corecrypto-provider`); a FIPS-approved fallback (ECDSA P-256) is available behind the
-  opaque token — final crate/provider choice is gated on the deployment's FIPS requirement (ADR-0004 "FIPS posture").
+  FIPS-validated module (`rustls-corecrypto-provider`). Binding rule: the sign/verify primitive sits behind an in-house
+  `SignatureProvider` abstraction and we **MUST NOT** add any crate that hard-wires a non-FIPS algorithm we cannot
+  swap; a FIPS-approved alternative (ECDSA P-256) is reachable behind the opaque token without codec changes. The
+  replaceability requirement gates dependency selection and is not deferrable (ADR-0004 "FIPS posture").
 - **Signed-URL TTL (§4.5).** Two knobs: a **short default issuance TTL** (`default_url_ttl`, 15 min in P1) applied to
   every minted URL to bound the stale-permission window, and a **hard ceiling** `max_url_ttl` (≤ 7 days) the control
   plane refuses to exceed at signing. The sidecar only checks `now ≤ exp`.
