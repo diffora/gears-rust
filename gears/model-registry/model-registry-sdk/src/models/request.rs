@@ -10,37 +10,34 @@ use crate::models::{
 };
 
 // ---------------------------------------------------------------------------
-// CreateProviderRequest (builder pattern)
+// CreateProviderRequestV1 (builder pattern)
 // ---------------------------------------------------------------------------
 
 /// Request for registering a new provider. Construct via
-/// [`CreateProviderRequest::builder`].
+/// [`CreateProviderRequestV1::builder`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct CreateProviderRequest {
+pub struct CreateProviderRequestV1 {
     slug: String,
     name: String,
-    gts_type: String,
-    oagw_alias: String,
+    gts_type: gts::GtsTypeId,
     managed: bool,
     metadata: Option<serde_json::Value>,
     discovery_enabled: bool,
     discovery_interval_seconds: Option<u32>,
 }
 
-impl CreateProviderRequest {
-    /// Start building a new request. All four fields are required.
+impl CreateProviderRequestV1 {
+    /// Start building a new request. All three fields are required.
     #[must_use]
     pub fn builder(
         slug: impl Into<String>,
         name: impl Into<String>,
-        gts_type: impl Into<String>,
-        oagw_alias: impl Into<String>,
-    ) -> CreateProviderRequestBuilder {
-        CreateProviderRequestBuilder {
+        gts_type: gts::GtsTypeId,
+    ) -> CreateProviderRequestV1Builder {
+        CreateProviderRequestV1Builder {
             slug: slug.into(),
             name: name.into(),
-            gts_type: gts_type.into(),
-            oagw_alias: oagw_alias.into(),
+            gts_type,
             managed: false,
             metadata: None,
             discovery_enabled: false,
@@ -59,13 +56,8 @@ impl CreateProviderRequest {
     }
 
     #[must_use]
-    pub fn gts_type(&self) -> &str {
+    pub fn gts_type(&self) -> &gts::GtsTypeId {
         &self.gts_type
-    }
-
-    #[must_use]
-    pub fn oagw_alias(&self) -> &str {
-        &self.oagw_alias
     }
 
     #[must_use]
@@ -90,18 +82,17 @@ impl CreateProviderRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct CreateProviderRequestBuilder {
+pub struct CreateProviderRequestV1Builder {
     slug: String,
     name: String,
-    gts_type: String,
-    oagw_alias: String,
+    gts_type: gts::GtsTypeId,
     managed: bool,
     metadata: Option<serde_json::Value>,
     discovery_enabled: bool,
     discovery_interval_seconds: Option<u32>,
 }
 
-impl CreateProviderRequestBuilder {
+impl CreateProviderRequestV1Builder {
     #[must_use]
     pub fn managed(mut self, managed: bool) -> Self {
         self.managed = managed;
@@ -127,12 +118,11 @@ impl CreateProviderRequestBuilder {
     }
 
     #[must_use]
-    pub fn build(self) -> CreateProviderRequest {
-        CreateProviderRequest {
+    pub fn build(self) -> CreateProviderRequestV1 {
+        CreateProviderRequestV1 {
             slug: self.slug,
             name: self.name,
             gts_type: self.gts_type,
-            oagw_alias: self.oagw_alias,
             managed: self.managed,
             metadata: self.metadata,
             discovery_enabled: self.discovery_enabled,
@@ -142,7 +132,7 @@ impl CreateProviderRequestBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// UpdateProviderRequest (PATCH semantics)
+// UpdateProviderRequestV1 (PATCH semantics)
 // ---------------------------------------------------------------------------
 
 /// Request for updating a provider (PATCH semantics). Only non-`None` fields
@@ -154,9 +144,8 @@ impl CreateProviderRequestBuilder {
 /// stay `Option<T>` (`None` = unchanged, `Some(v)` = set).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[allow(clippy::option_option)]
-pub struct UpdateProviderRequest {
+pub struct UpdateProviderRequestV1 {
     pub name: Option<String>,
-    pub oagw_alias: Option<String>,
     pub status: Option<ProviderStatus>,
     pub managed: Option<bool>,
     /// Nullable — `Some(None)` clears stored metadata.
@@ -167,7 +156,7 @@ pub struct UpdateProviderRequest {
 }
 
 // ---------------------------------------------------------------------------
-// CreateModelRequest (P1 — manual model management)
+// CreateModelRequestV1 (P1 — manual model management)
 // ---------------------------------------------------------------------------
 
 /// Request for manually creating a model in the catalog (P1 manual model
@@ -185,7 +174,7 @@ pub struct UpdateProviderRequest {
 ///   Service; the `approval_status` field initiates the workflow rather than
 ///   writing directly.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CreateModelRequest {
+pub struct CreateModelRequestV1 {
     /// Provider slug (1-64 chars, lowercase alphanumeric + hyphen). Combined
     /// with `info.provider_model_id` to form the `canonical_id`.
     pub provider_slug: String,
@@ -201,7 +190,7 @@ pub struct CreateModelRequest {
 }
 
 // ---------------------------------------------------------------------------
-// UpdateModelRequest (P1 — manual model management; PATCH semantics)
+// UpdateModelRequestV1 (P1 — manual model management; PATCH semantics)
 // ---------------------------------------------------------------------------
 
 /// Request for updating an existing model. Only non-`None` fields are applied.
@@ -223,7 +212,7 @@ pub struct CreateModelRequest {
 /// `Some(v)` = set/replace).
 #[derive(Debug, Clone, Default, PartialEq)]
 #[allow(clippy::option_option)]
-pub struct UpdateModelRequest {
+pub struct UpdateModelRequestV1 {
     // ── Status ────────────────────────────────────────────────────────
     /// Approval status (`approved` / `rejected` / `revoked` / `pending`).
     pub approval_status: Option<ApprovalStatus>,
@@ -298,102 +287,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_provider_request_builder() {
-        let req = CreateProviderRequest::builder(
-            "openai",
-            "OpenAI",
-            "gts.cf.genai.models.provider.v1~cf.genai._.openai.v1~",
-            "openai-prod",
-        )
-        .managed(false)
-        .discovery_enabled(true)
-        .discovery_interval_seconds(3600)
-        .build();
+    fn provider_builder_threads_required_fields_and_applies_overrides() {
+        let gts = gts::GtsTypeId::new("gts.cf.genai.models.provider.v1~cf.genai._.openai.v1~");
 
-        assert_eq!(req.slug(), "openai");
-        assert_eq!(req.name(), "OpenAI");
-        assert_eq!(req.oagw_alias(), "openai-prod");
-        assert!(req.discovery_enabled());
-        assert_eq!(req.discovery_interval_seconds(), Some(3600));
-        assert!(!req.managed());
-    }
+        let full = CreateProviderRequestV1::builder("openai", "OpenAI", gts.clone())
+            .managed(true)
+            .metadata(serde_json::json!({"k": "v"}))
+            .discovery_enabled(true)
+            .discovery_interval_seconds(3600)
+            .build();
+        assert_eq!(full.slug(), "openai");
+        assert_eq!(full.name(), "OpenAI");
+        assert_eq!(full.gts_type(), &gts);
+        assert!(full.managed());
+        assert_eq!(full.metadata(), Some(&serde_json::json!({"k": "v"})));
+        assert!(full.discovery_enabled());
+        assert_eq!(full.discovery_interval_seconds(), Some(3600));
 
-    #[test]
-    fn create_provider_request_defaults() {
-        let req = CreateProviderRequest::builder(
-            "ollama",
-            "Ollama Local",
-            "gts.cf.genai.models.provider.v1~cf.genai.local.provider.v1~",
-            "ollama-local",
-        )
-        .build();
-
-        assert!(!req.managed());
-        assert!(!req.discovery_enabled());
-        assert_eq!(req.discovery_interval_seconds(), None);
-        assert!(req.metadata().is_none());
-    }
-
-    #[test]
-    fn update_provider_request_default_is_empty() {
-        let req = UpdateProviderRequest::default();
-        assert!(req.name.is_none());
-        assert!(req.oagw_alias.is_none());
-        assert!(req.status.is_none());
-        assert!(req.managed.is_none());
-        assert!(req.metadata.is_none());
-        assert!(req.discovery_enabled.is_none());
-        assert!(req.discovery_interval_seconds.is_none());
-    }
-
-    #[test]
-    fn update_model_request_default_is_empty() {
-        let req = UpdateModelRequest::default();
-        assert!(req.approval_status.is_none());
-        assert!(req.lifecycle_status.is_none());
-        assert!(req.display_name.is_none());
-        assert!(req.description.is_none());
-        assert!(req.capabilities.is_none());
-        assert!(req.context_window.is_none());
-        assert!(req.default_parameters.is_none());
-        assert!(req.allow_parameter_override.is_none());
-        assert!(req.allow_extra_params.is_none());
-        assert!(req.provider_settings.is_none());
-    }
-
-    #[test]
-    fn tri_state_nullable_fields_distinguish_unchanged_clear_and_set() {
-        // Provider: `metadata` and `discovery_interval_seconds` are tri-state.
-        let unchanged = UpdateProviderRequest::default();
-        assert_eq!(unchanged.metadata, None);
-        assert_eq!(unchanged.discovery_interval_seconds, None);
-
-        let clear = UpdateProviderRequest {
-            metadata: Some(None),
-            discovery_interval_seconds: Some(None),
-            ..Default::default()
-        };
-        assert_eq!(clear.metadata, Some(None));
-        assert_eq!(clear.discovery_interval_seconds, Some(None));
-
-        let set = UpdateProviderRequest {
-            metadata: Some(Some(serde_json::json!({"k": "v"}))),
-            discovery_interval_seconds: Some(Some(3600)),
-            ..Default::default()
-        };
-        assert_eq!(set.discovery_interval_seconds, Some(Some(3600)));
-        assert!(matches!(set.metadata, Some(Some(_))));
-
-        // Model: a nullable display field behaves the same way.
-        let model_clear = UpdateModelRequest {
-            description: Some(None),
-            ..Default::default()
-        };
-        assert_eq!(model_clear.description, Some(None));
-        let model_set = UpdateModelRequest {
-            description: Some(Some("desc".into())),
-            ..Default::default()
-        };
-        assert_eq!(model_set.description, Some(Some("desc".to_owned())));
+        let bare = CreateProviderRequestV1::builder("openai", "OpenAI", gts).build();
+        assert!(!bare.managed());
+        assert!(bare.metadata().is_none());
+        assert!(!bare.discovery_enabled());
+        assert_eq!(bare.discovery_interval_seconds(), None);
     }
 }

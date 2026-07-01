@@ -1,6 +1,6 @@
 // Created: 2026-05-06 by Constructor Tech
 // Updated: 2026-05-07 by Constructor Tech
-//! Domain entities — generic [`Model<P>`] plus the non-generic [`Provider`].
+//! Domain entities — generic [`ModelV1<P>`] plus the non-generic [`ProviderV1`].
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -8,20 +8,20 @@ use uuid::Uuid;
 use crate::models::{ApprovalStatus, LifecycleStatus, ModelInfoV1, ProviderStatus};
 
 // ---------------------------------------------------------------------------
-// Model<P>
+// ModelV1<P>
 // ---------------------------------------------------------------------------
 
 /// An AI model in the catalog, scoped to a tenant.
 ///
 /// Generic over `P: gts::GtsSchema` so that consumers narrowed to a
-/// specific provider can carry `Model<OpenAiSettingsV1>` etc. The default
+/// specific provider can carry `ModelV1<OpenAiSettingsV1>` etc. The default
 /// `P = serde_json::Value` (which implements `gts::GtsSchema` upstream) is
 /// what the public [`crate::api::ModelRegistryClientV1`] trait returns — the
 /// provider settings ride as opaque JSON until the consumer narrows via
-/// [`Model::try_into_typed`], which reads `info.gts_type` for dispatch.
+/// [`ModelV1::try_into_typed`], which reads `info.gts_type` for dispatch.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-pub struct Model<P: gts::GtsSchema = serde_json::Value> {
+pub struct ModelV1<P: gts::GtsSchema = serde_json::Value> {
     pub id: Uuid,
     /// Format: `{provider_slug}::{provider_model_id}`.
     pub canonical_id: String,
@@ -33,19 +33,19 @@ pub struct Model<P: gts::GtsSchema = serde_json::Value> {
     pub info: ModelInfoV1<P>,
 }
 
-impl Model<serde_json::Value> {
+impl ModelV1<serde_json::Value> {
     /// Narrow a raw-JSON-payload model to a typed view by validating
     /// `info.gts_type` against `Q::TYPE_ID` and deserializing
     /// `info.provider_settings` into `Q`.
     ///
     /// Thin wrapper over [`gts::try_narrow`] that rebuilds the full
-    /// `Model<Q>` from the narrowed payload, preserving the common fields.
+    /// `ModelV1<Q>` from the narrowed payload, preserving the common fields.
     ///
     /// ```ignore
-    /// use model_registry_sdk::{Model, OpenAiSettingsV1};
+    /// use model_registry_sdk::{ModelV1, OpenAiSettingsV1};
     ///
-    /// let model: Model = client.get_tenant_model(&ctx, "openai::gpt-4o").await?;
-    /// let typed: Model<OpenAiSettingsV1> = model.try_into_typed()?;
+    /// let model: ModelV1 = client.get_tenant_model(&ctx, "openai::gpt-4o").await?;
+    /// let typed: ModelV1<OpenAiSettingsV1> = model.try_into_typed()?;
     /// // now `typed.info.provider_settings.parameters.temperature` is typed
     /// ```
     ///
@@ -55,14 +55,14 @@ impl Model<serde_json::Value> {
     ///   `Q::TYPE_ID`.
     /// - [`gts::NarrowError::Deserialize`] when the JSON payload can't be
     ///   deserialized into `Q`.
-    pub fn try_into_typed<Q>(self) -> Result<Model<Q>, gts::NarrowError>
+    pub fn try_into_typed<Q>(self) -> Result<ModelV1<Q>, gts::NarrowError>
     where
         Q: gts::GtsSchema,
         for<'de> Q: gts::GtsDeserialize<'de>,
     {
         let typed_settings =
             gts::try_narrow::<Q>(self.info.gts_type.as_ref(), self.info.provider_settings)?;
-        Ok(Model {
+        Ok(ModelV1 {
             id: self.id,
             canonical_id: self.canonical_id,
             lifecycle_status: self.lifecycle_status,
@@ -102,22 +102,20 @@ impl Model<serde_json::Value> {
 }
 
 // ---------------------------------------------------------------------------
-// Provider
+// ProviderV1
 // ---------------------------------------------------------------------------
 
 /// A configured AI provider instance for a tenant.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-pub struct Provider {
+pub struct ProviderV1 {
     pub id: Uuid,
     /// Human-readable identifier (immutable after creation).
     /// Format: 1-64 chars, lowercase alphanumeric + hyphen.
     pub slug: String,
     pub name: String,
     /// GTS type identifier for the provider.
-    pub gts_type: String,
-    /// OAGW upstream alias for provider API access (credentials, routing).
-    pub oagw_alias: String,
+    pub gts_type: gts::GtsTypeId,
     pub status: ProviderStatus,
     /// Whether the platform can manage this provider (e.g. install/unload
     /// models on ollama, `lm_studio`).
@@ -172,11 +170,11 @@ mod tests {
         }
     }
 
-    /// Build a raw-JSON `Model` for the given GTS schema id and provider
+    /// Build a raw-JSON `ModelV1` for the given GTS schema id and provider
     /// JSON payload. This is the shape consumers see coming out of
     /// `list_tenant_models`.
-    fn raw_model(gts_type: &str, provider_settings_json: serde_json::Value) -> Model {
-        Model {
+    fn raw_model(gts_type: &str, provider_settings_json: serde_json::Value) -> ModelV1 {
+        ModelV1 {
             id: Uuid::nil(),
             canonical_id: "openai::gpt-4o".into(),
             lifecycle_status: LifecycleStatus::Production,
@@ -276,7 +274,7 @@ mod tests {
     #[test]
     fn try_into_typed_succeeds_on_matching_schema_id() {
         let m = raw_model(OpenAiSettingsV1::TYPE_ID, openai_payload());
-        let typed: Model<OpenAiSettingsV1> = m.try_into_typed().expect("openai schema matches");
+        let typed: ModelV1<OpenAiSettingsV1> = m.try_into_typed().expect("openai schema matches");
         assert_eq!(typed.canonical_id, "openai::gpt-4o");
         assert_eq!(typed.info.provider_model_id, "gpt-4o");
         // Flat access: no `.connection.` / `.parameters.` namespacing.
@@ -345,7 +343,7 @@ mod tests {
             "architecture".into(),
             serde_json::Value::String("transformer".into()),
         );
-        let typed: Model<OpenAiSettingsV1> = m.try_into_typed().expect("openai matches");
+        let typed: ModelV1<OpenAiSettingsV1> = m.try_into_typed().expect("openai matches");
         assert_eq!(
             typed.info.additional_info.get("architecture"),
             Some(&serde_json::Value::String("transformer".into()))

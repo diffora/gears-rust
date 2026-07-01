@@ -13,7 +13,7 @@
 //! `P` defaults to `serde_json::Value` (which implements `gts::GtsSchema`
 //! upstream) so heterogeneous lists carry an opaque JSON blob; consumers
 //! route on [`ModelInfoV1::gts_type`] and narrow to a typed view via
-//! [`crate::models::Model::try_into_typed`].
+//! [`crate::models::ModelV1::try_into_typed`].
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,7 +33,7 @@ use crate::models::{
 /// `P` defaults to `serde_json::Value` (which implements `gts::GtsSchema`
 /// upstream) so heterogeneous lists (e.g. `list_tenant_models`) carry an
 /// opaque JSON blob; consumers route on [`ModelInfoV1::gts_type`] and narrow
-/// to a typed view via [`crate::models::Model::try_into_typed`].
+/// to a typed view via [`crate::models::ModelV1::try_into_typed`].
 ///
 /// # GTS schema
 ///
@@ -52,9 +52,15 @@ pub struct ModelInfoV1<P: gts::GtsSchema = serde_json::Value> {
     // ── GTS schema identity ───────────────────────────────────────────
     /// Full GTS schema chain identifying this model's settings shape — e.g.
     /// `gts.cf.genai.model.info.v1~cf.genai._.openai.v1~`. Mirrors
-    /// `Provider.gts_type` and is the canonical key for resolving the
+    /// `ProviderV1.gts_type` and is the canonical key for resolving the
     /// concrete shape of `provider_settings` (which is a raw JSON blob —
     /// `serde_json::Value` — by default).
+    ///
+    /// **This field is the authoritative source of truth for provider identity
+    /// at runtime.** The generic parameter `P` on `ModelInfoV1<P>` /
+    /// `ModelV1<P>` is only a compile-time view of the payload. Any code that
+    /// dispatches on the provider — routing, storage, serialization — must read
+    /// `gts_type`, never infer the provider from `P`.
     pub gts_type: gts::GtsTypeId,
 
     // ── Display / discovery ────────────────────────────────────────────
@@ -70,7 +76,7 @@ pub struct ModelInfoV1<P: gts::GtsSchema = serde_json::Value> {
     /// Infrastructure field (for local/managed LLMs): whether Gears can
     /// load/unload **this model** (e.g. install/pull/unload weights on a local
     /// runtime such as Ollama or LM Studio). This is a **per-model** flag and
-    /// is distinct from the **per-provider** [`Provider::managed`] flag, which
+    /// is distinct from the **per-provider** [`crate::models::ProviderV1::managed`] flag, which
     /// records whether Gears can manage the *provider* at all; a model can only
     /// be `managed` when its provider is also managed. Defaults to `false`
     /// (e.g. for API-only models).

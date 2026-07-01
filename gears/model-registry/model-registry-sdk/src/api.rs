@@ -14,8 +14,8 @@ use toolkit_odata::{ODataQuery, Page};
 
 use crate::errors::ModelRegistryError;
 use crate::models::{
-    CreateModelRequest, CreateProviderRequest, Model, Provider, UpdateModelRequest,
-    UpdateProviderRequest,
+    CreateModelRequestV1, CreateProviderRequestV1, ModelV1, ProviderV1, UpdateModelRequestV1,
+    UpdateProviderRequestV1,
 };
 
 /// Public API trait for the Model Registry (Version 1).
@@ -40,7 +40,7 @@ pub trait ModelRegistryClientV1: Send + Sync {
         &self,
         ctx: &SecurityContext,
         canonical_id: &str,
-    ) -> Result<Model, ModelRegistryError>;
+    ) -> Result<ModelV1, ModelRegistryError>;
 
     /// List models available to the caller's tenant with `OData` filtering.
     ///
@@ -51,23 +51,23 @@ pub trait ModelRegistryClientV1: Send + Sync {
     /// parameter and cost fields are not filterable in v1 — see
     /// `docs/DESIGN.md` §3.3.
     ///
-    /// Returns `Model` (the default `P = serde_json::Value` for
+    /// Returns `ModelV1` (the default `P = serde_json::Value` for
     /// heterogeneous lists). Consumers narrowed to a specific provider (e.g.
     /// when they've already filtered on
     /// `info.gts_type eq 'gts.cf.genai.model.info.v1~cf.genai._.openai.v1~'`)
-    /// can call [`Model::try_into_typed`] on each result.
+    /// can call [`ModelV1::try_into_typed`] on each result.
     async fn list_tenant_models(
         &self,
         ctx: &SecurityContext,
         query: ODataQuery,
-    ) -> Result<Page<Model>, ModelRegistryError>;
+    ) -> Result<Page<ModelV1>, ModelRegistryError>;
 
     // ==================== Models — manual management (P1) ====================
     //
     // P1 admin catalog management without auto-discovery
     // (`cpt-cf-model-registry-fr-manual-model-management`). Status changes
     // (`approve` / `reject` / `revoke`) flow through `update_model` with
-    // `UpdateModelRequest::approval_status` — no dedicated action endpoints.
+    // `UpdateModelRequestV1::approval_status` — no dedicated action endpoints.
     //
     // Same SDK methods continue to work in P2; only the implementation of
     // status writes shifts from a direct DB update to an Approval Service
@@ -86,8 +86,8 @@ pub trait ModelRegistryClientV1: Send + Sync {
     async fn create_model(
         &self,
         ctx: &SecurityContext,
-        req: CreateModelRequest,
-    ) -> Result<Model, ModelRegistryError>;
+        req: CreateModelRequestV1,
+    ) -> Result<ModelV1, ModelRegistryError>;
 
     /// Update an existing model's mutable fields (PATCH semantics).
     ///
@@ -104,8 +104,8 @@ pub trait ModelRegistryClientV1: Send + Sync {
         &self,
         ctx: &SecurityContext,
         canonical_id: &str,
-        req: UpdateModelRequest,
-    ) -> Result<Model, ModelRegistryError>;
+        req: UpdateModelRequestV1,
+    ) -> Result<ModelV1, ModelRegistryError>;
 
     /// Soft-delete a model by canonical ID (sets `lifecycle_status` to
     /// [`crate::models::LifecycleStatus::Deprecated`]).
@@ -126,29 +126,29 @@ pub trait ModelRegistryClientV1: Send + Sync {
         &self,
         ctx: &SecurityContext,
         id: Uuid,
-    ) -> Result<Provider, ModelRegistryError>;
+    ) -> Result<ProviderV1, ModelRegistryError>;
 
     /// List providers for the caller's tenant with `OData` filtering.
     async fn list_providers(
         &self,
         ctx: &SecurityContext,
         query: ODataQuery,
-    ) -> Result<Page<Provider>, ModelRegistryError>;
+    ) -> Result<Page<ProviderV1>, ModelRegistryError>;
 
     /// Register a new provider for the caller's tenant.
     async fn create_provider(
         &self,
         ctx: &SecurityContext,
-        req: CreateProviderRequest,
-    ) -> Result<Provider, ModelRegistryError>;
+        req: CreateProviderRequestV1,
+    ) -> Result<ProviderV1, ModelRegistryError>;
 
     /// Update a provider (PATCH semantics).
     async fn update_provider(
         &self,
         ctx: &SecurityContext,
         id: Uuid,
-        req: UpdateProviderRequest,
-    ) -> Result<Provider, ModelRegistryError>;
+        req: UpdateProviderRequestV1,
+    ) -> Result<ProviderV1, ModelRegistryError>;
 
     /// Delete a provider by ID.
     async fn delete_provider(

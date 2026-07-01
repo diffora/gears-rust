@@ -24,9 +24,7 @@
 
 use gts_macros::struct_to_gts_schema;
 
-use crate::models::{
-    ModelInfoV1, ProviderSettings, ReasoningSummary, TextVerbosity, TruncationStrategy,
-};
+use crate::models::{ModelInfoV1, ReasoningSummary, TextVerbosity, TruncationStrategy};
 
 // ---------------------------------------------------------------------------
 // Endpoint
@@ -317,8 +315,6 @@ pub struct OpenAiSettingsV1 {
     // ── Cost (nested) ─────────────────────────────────────────────────
     pub cost: OpenAiCost,
 }
-
-impl ProviderSettings for OpenAiSettingsV1 {}
 
 // ---------------------------------------------------------------------------
 // Tests

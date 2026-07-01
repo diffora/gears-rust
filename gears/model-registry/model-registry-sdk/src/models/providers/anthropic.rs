@@ -18,7 +18,7 @@
 
 use gts_macros::struct_to_gts_schema;
 
-use crate::models::{ModelInfoV1, ProviderSettings};
+use crate::models::ModelInfoV1;
 
 // ---------------------------------------------------------------------------
 // Service Tier
@@ -238,10 +238,11 @@ pub struct AnthropicSettingsV1 {
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub top_k: Option<u32>,
-    /// **Required** by `Anthropic` on every request. The SDK default of
-    /// `0` is treated as "unset" by callers, forcing them to use max
-    /// context size.
-    pub max_tokens: u32,
+    /// Default `max_tokens` for the request. `Anthropic` requires this field
+    /// on every request; `None` here signals "no registry default" and the
+    /// caller supplies it (or falls back to the model's max context size).
+    /// `0` is a distinct, valid value and is preserved as-is.
+    pub max_tokens: Option<u32>,
     pub stop_sequences: Option<Vec<String>>,
     /// Default system prompt. The wire surface also accepts a sequence of
     /// text blocks; the registry default is the simpler string form, and
@@ -264,8 +265,6 @@ pub struct AnthropicSettingsV1 {
     pub cost: AnthropicCost,
 }
 
-impl ProviderSettings for AnthropicSettingsV1 {}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -275,9 +274,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn max_tokens_default_is_zero_sentinel() {
+    fn max_tokens_default_is_none() {
         let s = AnthropicSettingsV1::default();
-        assert_eq!(s.max_tokens, 0);
+        assert_eq!(s.max_tokens, None);
+    }
+
+    #[test]
+    fn max_tokens_zero_is_preserved_distinct_from_none() {
+        // `0` is a valid Anthropic value, distinct from "no default".
+        let s = AnthropicSettingsV1 {
+            max_tokens: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(s.max_tokens, Some(0));
     }
 
     #[test]

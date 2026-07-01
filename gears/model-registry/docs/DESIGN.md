@@ -182,7 +182,7 @@ All provider API calls for model discovery must route through Outbound API Gatew
 
 **ID**: `cpt-cf-model-registry-constraint-no-credentials`
 
-Model Registry does not store provider credentials. Provider configuration includes slug, name, GTS type, OAGW alias, and discovery settings. All provider access routes through OAGW upstreams referenced by `oagw_alias`. Credential management is OAGW responsibility.
+Model Registry does not store provider credentials. Provider configuration includes slug, name, GTS type, and discovery settings. All provider access routes through OAGW upstreams; the routing alias (`oagw_alias`) is **not** a provider-level field — it lives on each model's per-provider settings (`provider_settings.oagw_alias`, e.g. `OpenAiSettingsV1` / `AnthropicSettingsV1`), because it is provider-specific and some providers may not need it. Credential management is OAGW responsibility.
 
 #### Approval Service Integration
 
@@ -263,7 +263,7 @@ TruncationStrategy = auto | disabled
 TextFormatKind = text | json_object | json_schema
 TextVerbosity = low | medium | high
 ToolChoice = auto | required | none | function{name}
-GtsSchemaId (ModelInfoV1 chain — extensible; the providers shipped in the SDK today are listed below):
+GtsTypeId (ModelInfoV1 chain — extensible; the providers shipped in the SDK today are listed below):
     gts.cf.genai.model.info.v1~                              (base envelope)
     gts.cf.genai.model.info.v1~cf.genai._.openai.v1~         (OpenAI leaf)
     gts.cf.genai.model.info.v1~cf.genai._.anthropic.v1~      (Anthropic leaf)
@@ -275,12 +275,12 @@ The split between `default_parameters` (on the envelope) and per-provider parame
 
 Common (provider-independent) fields:
 
-- **gts_type** (`gts::GtsSchemaId`) — full GTS schema chain identifying this model's settings shape (e.g. `gts.cf.genai.model.info.v1~cf.genai._.openai.v1~`). Mirrors `Provider.gts_type` and is the **canonical key for resolving** the concrete shape of `provider_settings` at runtime
+- **gts_type** (`gts::GtsTypeId`) — full GTS schema chain identifying this model's settings shape (e.g. `gts.cf.genai.model.info.v1~cf.genai._.openai.v1~`). Mirrors `ProviderV1.gts_type` and is the **canonical key for resolving** the concrete shape of `provider_settings` at runtime
 - **display_name** (`String`) — display name shown in UI
 - **description** (`Option<String>`) — model description
 - **family** (`Option<String>`) — model family (e.g. `"gpt-4"`, `"claude"`, `"llama"`)
 - **vendor** (`Option<String>`) — organization that produced the model weights (e.g. `"OpenAI"`, `"Meta"`); free-form string, independent of which provider serves the model
-- **managed** (`bool`) — infrastructure field for local/managed LLMs: whether Gears can load/unload **this model** (e.g. install/pull/unload weights on a local runtime such as Ollama or LM Studio). This is a **per-model** flag and is distinct from the **per-provider** `Provider.managed` flag (§3.6 `providers` table), which records whether Gears can manage the *provider* at all; a model can only be `managed` when its provider is also managed. Defaults to `false` (e.g. for API-only models). Lives on the common envelope (not `provider_settings`) so the catalog UI and OData `$filter` can read it without narrowing the provider variant
+- **managed** (`bool`) — infrastructure field for local/managed LLMs: whether Gears can load/unload **this model** (e.g. install/pull/unload weights on a local runtime such as Ollama or LM Studio). This is a **per-model** flag and is distinct from the **per-provider** `ProviderV1.managed` flag (§3.6 `providers` table), which records whether Gears can manage the *provider* at all; a model can only be `managed` when its provider is also managed. Defaults to `false` (e.g. for API-only models). Lives on the common envelope (not `provider_settings`) so the catalog UI and OData `$filter` can read it without narrowing the provider variant
 - **architecture** (`Option<String>`) — infrastructure field for local/managed LLMs: model architecture classifier (e.g. `"qwen"`, `"llama"`, `"mistral"`, `"gpt"`). Distinct from the free-form `family`/`vendor` labels above, which are descriptive marketing/origin labels rather than an architecture taxonomy
 - **size_bytes** (`Option<u64>`) — infrastructure field for local/managed LLMs: on-disk model size in bytes, used for capacity planning of local/managed weights; `None` for models whose weights are not locally hosted (e.g. API-only)
 - **format** (`Option<String>`) — infrastructure field for local/managed LLMs: model weight/serving format (e.g. `"gguf"`, `"mlx"`, `"safetensors"`, `"api-only"`)
@@ -375,19 +375,18 @@ Common (provider-independent) fields:
 - **allow_extra_params** (`Vec<String>`) — which extra (non-default) parameter names callers may pass alongside the request. Flat field on the envelope
 - **provider_settings** (`P: gts::GtsSchema`) — provider-specific connection routing, **provider-wire** default parameters, and token pricing. The default `P = serde_json::Value` (which implements `gts::GtsSchema` upstream in the `gts` crate); typed views (e.g. `OpenAiSettingsV1`, `AnthropicSettingsV1`; the shipped set is open-ended and lives in `models/providers/`) plug in here once the consumer has narrowed via `gts_type`. **Not** present in the published JSON schema for the base envelope (the per-provider shape is published instead in each leaf's schema — see "Provider Settings" below)
 
-`Model<P: gts::GtsSchema = serde_json::Value>` carries `info: ModelInfoV1<P>`. The [`ModelRegistryClientV1`](../model-registry-sdk/src/api.rs) trait returns the default `Model` (i.e. `Model<serde_json::Value>`) on its public surface — the provider settings ride as opaque JSON until the consumer narrows. Narrowing is by GTS schema id: `Model::try_into_typed::<OpenAiSettingsV1>()` is a thin wrapper over `gts::try_narrow` that checks `info.gts_type` against `OpenAiSettingsV1::TYPE_ID` and deserializes the JSON payload into the typed shape, returning `Result<Model<OpenAiSettingsV1>, gts::NarrowError>`.
+`ModelV1<P: gts::GtsSchema = serde_json::Value>` carries `info: ModelInfoV1<P>`. The [`ModelRegistryClientV1`](../model-registry-sdk/src/api.rs) trait returns the default `ModelV1` (i.e. `ModelV1<serde_json::Value>`) on its public surface — the provider settings ride as opaque JSON until the consumer narrows. Narrowing is by GTS schema id: `ModelV1::try_into_typed::<OpenAiSettingsV1>()` is a thin wrapper over `gts::try_narrow` that checks `info.gts_type` against `OpenAiSettingsV1::TYPE_ID` and deserializes the JSON payload into the typed shape, returning `Result<ModelV1<OpenAiSettingsV1>, gts::NarrowError>`.
 
-#### Provider Settings Trait & Default Carrier
+#### Provider Settings Default Carrier
 
-The SDK layer exposes one building block for typed-narrowing — the `ProviderSettings` marker trait — and reuses the default carrier and narrowing error from the upstream `gts` crate. See [`model-registry-sdk/src/models/`](../model-registry-sdk/src/models/) for the concrete declarations:
+The SDK layer reuses the default carrier and narrowing error from the upstream `gts` crate for typed-narrowing; there is no bespoke provider-settings trait. Each typed per-provider settings leaf is bound by `gts::GtsSchema` directly (via `#[struct_to_gts_schema]`), so every leaf publishes a GTS schema id; one struct exists per provider, versioned independently — the current generation uses the `V1` suffix and future generations may coexist as `V2`, `V3`, … See [`model-registry-sdk/src/models/`](../model-registry-sdk/src/models/) for the concrete declarations:
 
-- **`ProviderSettings`** is the marker trait every typed per-provider settings leaf implements. It carries no required methods; its bounds are the standard SDK domain-model bounds (`Debug + Clone + PartialEq + Send + Sync + 'static`) plus `gts::GtsSchema`, so every leaf publishes a GTS schema id. One struct exists per provider, versioned independently — the current generation uses the `V1` suffix and future generations may coexist as `V2`, `V3`, …
-- **`serde_json::Value`** is the default `P` on `ModelInfoV1` / `Model`. It implements `gts::GtsSchema` upstream in the `gts` crate (no hand-written newtype carrier in this SDK) and rides as a bare JSON value over the wire. Consumers see this shape before they have narrowed to a typed leaf.
-- **`gts::NarrowError`** is the error returned by `Model::try_into_typed` (via `gts::try_narrow`). It distinguishes a `SchemaId` mismatch (expected vs actual GTS id, both surfaced as strings) from a `Deserialize` failure (a wrapped `serde_json::Error` while shaping the JSON payload into the typed struct).
+- **`serde_json::Value`** is the default `P` on `ModelInfoV1` / `ModelV1`. It implements `gts::GtsSchema` upstream in the `gts` crate (no hand-written newtype carrier in this SDK) and rides as a bare JSON value over the wire. Consumers see this shape before they have narrowed to a typed leaf.
+- **`gts::NarrowError`** is the error returned by `ModelV1::try_into_typed` (via `gts::try_narrow`). It distinguishes a `SchemaId` mismatch (expected vs actual GTS id, both surfaced as strings) from a `Deserialize` failure (a wrapped `serde_json::Error` while shaping the JSON payload into the typed struct).
 
 The override policy is **not** part of the per-provider settings — and is **not** a struct: `allow_parameter_override` (`bool`) and `allow_extra_params` (`Vec<String>`) are flat fields on `ModelInfoV1`, applied uniformly to a model regardless of provider variant.
 
-There is **no** tagged enum mirroring the shipped providers. The provider family is identified solely by `info.gts_type` (a `gts::GtsSchemaId` whose value is the leaf schema id of one of the providers shipped in the SDK — or any other GTS id an operator chooses to use). Forward compat for unknown providers is automatic: a model with a `gts_type` the SDK doesn't recognize still carries its `provider_settings` as raw JSON (`serde_json::Value`), and operators can wire up routing without an SDK release.
+There is **no** tagged enum mirroring the shipped providers. The provider family is identified solely by `info.gts_type` (a `gts::GtsTypeId` whose value is the leaf schema id of one of the providers shipped in the SDK — or any other GTS id an operator chooses to use). Forward compat for unknown providers is automatic: a model with a `gts_type` the SDK doesn't recognize still carries its `provider_settings` as raw JSON (`serde_json::Value`), and operators can wire up routing without an SDK release.
 
 #### Provider-specific settings (flat composition with nested `cost`)
 
@@ -446,7 +445,7 @@ Connection / auth (OpenAI-specific routing):
 - **temperature** (`Option<f64>`) — Anthropic accepts `0.0..=1.0`; SDK does not range-check
 - **top_p** (`Option<f64>`)
 - **top_k** (`Option<u32>`)
-- **max_tokens** (`u32`) — **required** by Anthropic on every request. The SDK default of `0` is treated as "unset" by callers, forcing them to use max context size
+- **max_tokens** (`Option<u32>`) — Anthropic requires this on every request; `None` here means "no registry default" (the caller supplies it, or falls back to the model's max context size). `0` is a distinct, valid value and is preserved as-is
 - **stop_sequences** (`Option<Vec<String>>`)
 - **system** (`Option<String>`) — default system prompt. The wire surface also accepts a sequence of text blocks; the registry default is the simpler string form, and the gateway may translate to a block sequence per request when needed
 - **inference_geo** (`Option<String>`) — geographic region hint for inference processing (e.g. `"us"`, `"eu"`); the workspace's `default_inference_geo` is used when this is unset
@@ -475,11 +474,11 @@ Connection / auth (OpenAI-specific routing):
 
 #### Polymorphism Strategy
 
-The chosen shape is `ModelInfoV1<P: gts::GtsSchema = serde_json::Value>` — a generic GTS-typed envelope with a JSON-shaped default carrier. The discriminator is `info.gts_type: GtsSchemaId`, which is the same schema chain registered via `#[struct_to_gts_schema]` on each leaf and the same string written to the polymorphic JSONB column on disk (see §3.6). Heterogeneous list endpoints ride the default `Model` shape (`P = serde_json::Value`); consumers that have already narrowed to a provider get the typed view via `Model<OpenAiSettingsV1>` etc.
+The chosen shape is `ModelInfoV1<P: gts::GtsSchema = serde_json::Value>` — a generic GTS-typed envelope with a JSON-shaped default carrier. The discriminator is `info.gts_type: GtsTypeId`, which is the same schema chain registered via `#[struct_to_gts_schema]` on each leaf and the same string written to the polymorphic JSONB column on disk (see §3.6). Heterogeneous list endpoints ride the default `ModelV1` shape (`P = serde_json::Value`); consumers that have already narrowed to a provider get the typed view via `ModelV1<OpenAiSettingsV1>` etc.
 
 The trade-off comparison against the rejected alternatives — a tagged enum (`AnyProviderSettings`) and a `Box<dyn ProviderSettings>` trait object — together with the decision drivers and consequences lives in the ADR and is intentionally not duplicated here: see [`cpt-cf-model-registry-adr-gts-typed-provider-settings`](./ADR/0005-cpt-cf-model-registry-adr-gts-typed-provider-settings.md).
 
-**Resolving the typed shape at runtime.** The default `Model` (`P = serde_json::Value`) is the public return shape from `ModelRegistryClientV1`. Consumers narrow to a provider by calling `Model::try_into_typed::<P>()`, which delegates to `gts::try_narrow` — checking `info.gts_type == <P>::TYPE_ID` and shaping the JSON payload into the typed view. Field access on the narrowed model is flat — there is no `connection.` / `parameters.` / `overrides.` namespacing; provider-wire defaults sit on `info.provider_settings`, user-facing defaults on `info.default_parameters`, override policy as flat fields on `info`, and only `cost` remains nested under `info.provider_settings.cost`. `try_into_typed` returns `Result<Model<Q>, gts::NarrowError>`; the error carries the expected and actual schema ids on `SchemaId` mismatch, or wraps a `serde_json::Error` on `Deserialize` failure. See [`model-registry-sdk/src/models/entity.rs`](../model-registry-sdk/src/models/entity.rs) for the concrete `try_into_typed` implementation and per-leaf narrowing tests.
+**Resolving the typed shape at runtime.** The default `ModelV1` (`P = serde_json::Value`) is the public return shape from `ModelRegistryClientV1`. Consumers narrow to a provider by calling `ModelV1::try_into_typed::<P>()`, which delegates to `gts::try_narrow` — checking `info.gts_type == <P>::TYPE_ID` and shaping the JSON payload into the typed view. Field access on the narrowed model is flat — there is no `connection.` / `parameters.` / `overrides.` namespacing; provider-wire defaults sit on `info.provider_settings`, user-facing defaults on `info.default_parameters`, override policy as flat fields on `info`, and only `cost` remains nested under `info.provider_settings.cost`. `try_into_typed` returns `Result<ModelV1<Q>, gts::NarrowError>`; the error carries the expected and actual schema ids on `SchemaId` mismatch, or wraps a `serde_json::Error` on `Deserialize` failure. See [`model-registry-sdk/src/models/entity.rs`](../model-registry-sdk/src/models/entity.rs) for the concrete `try_into_typed` implementation and per-leaf narrowing tests.
 
 > **SDK serde policy.** GTS adoption forces the SDK layer to participate in serde — the `#[struct_to_gts_schema]` macro emits `Serialize`/`Deserialize` impls (via `GtsSerialize`/`GtsDeserialize` for nested leaves) plus `schemars::JsonSchema` derives. Inner field types referenced from the GTS-decorated structs (`*Cost`, `DefaultInferenceParametersV1`, `TextFormat`, `ReasoningConfig`, `ToolChoice`, `TruncationStrategy`, `ModelCapabilities`, `DisabledCapabilities` (and its `DisabledMediaCapability` / `DisabledReasoningCapability` / `DisabledWebSearchCapability` sub-types), `ContextWindow`, …) therefore also derive `serde::Serialize + serde::Deserialize + schemars::JsonSchema`. This is an explicit exception to the project rule "no serde on contract types" — GTS by design needs serde for runtime schema reflection. REST DTO layering still applies for any HTTP-specific shapes (different headers, alternate field names, etc.) in `api/rest/dto.rs`.
 
@@ -488,7 +487,7 @@ The trade-off comparison against the rejected alternatives — a tagged enum (`A
 - **Provider slug immutability**: once a provider is created, its `slug` cannot change — changing it would invalidate every `canonical_id = {provider_slug}::{provider_model_id}` referencing it. Enforced at the application layer in the service.
 - **Canonical model ID format**: `{provider_slug}::{provider_model_id}` is the only canonical form; aliases resolve to canonical IDs but never to other aliases.
 - **`info.gts_type` discriminator immutability**: once a model is created, `gts_type` cannot change without a model replacement — it determines the on-disk shape of `provider_settings` and the typed view consumers narrow to.
-- **Approval status not stored on `models`**: `Model::approval_status` is resolved on read from Approval Service per §2.1 "Approval Service Delegation". The discovery write path never writes approval state.
+- **Approval status not stored on `models`**: `ModelV1::approval_status` is resolved on read from Approval Service per §2.1 "Approval Service Delegation". The discovery write path never writes approval state.
 - **Tenant-scoped uniqueness**: `(tenant_id, slug)` is unique per provider, `(tenant_id, canonical_id)` is unique per model, `(tenant_id, name)` is unique per alias, `(tenant_id, lower(name))` is unique per tag (case-insensitive), and `(tenant_id, model_id, tag_id)` is unique per tag assignment.
 - **Tag managed independently of models**: a tag's lifecycle (create/update/delete) is decoupled from the catalog; deleting a tag cascades only to its `model_tags` rows within the owning tenant scope and never mutates `models`.
 - **Cache-key tenant prefix**: every cache key is prefixed with `mr:{tenant_id}:` — no tenantless keys exist.
@@ -596,7 +595,7 @@ The module exposes three deliberate extension points and two API stability zones
 
 **API stability zones**:
 
-- **Public-stable**: `model-registry-sdk` crate (`ModelRegistryClient` trait, `Model<P>`, `ModelInfoV1<P>`, error types). Breaking changes ship as an SDK major version with a deprecation window.
+- **Public-stable**: `model-registry-sdk` crate (`ModelRegistryClient` trait, `ModelV1<P>`, `ModelInfoV1<P>`, error types). Breaking changes ship as an SDK major version with a deprecation window.
 - **Internal**: everything in `model-registry/` (handlers, repository, service internals). Free to evolve without external coordination.
 
 ### 3.3 API Contracts
@@ -752,6 +751,8 @@ sequenceDiagram
 
 **Actors**: `cpt-cf-model-registry-actor-platform-admin`
 
+**Open design question — provider-level discovery routing.** Specific calls made to the specific provider should be handled by provider-specific discovery plugin. Discovery plugins design is an open question to be addressed later.
+
 ```mermaid
 sequenceDiagram
     actor Admin
@@ -765,7 +766,7 @@ sequenceDiagram
     Admin->>MR: trigger_discovery(provider_id)
     MR->>DB: SELECT provider WHERE id
     DB-->>MR: provider config
-    MR->>OAGW: GET /models (via oagw_alias)
+    MR->>OAGW: GET /models 
     OAGW->>Provider: GET /models (with credentials)
     Provider-->>OAGW: models list
     OAGW-->>MR: models list
@@ -871,7 +872,7 @@ sequenceDiagram
     Admin->>MR: trigger_discovery(provider_id)
     MR->>DB: SELECT provider WHERE id
     DB-->>MR: provider config
-    MR->>OAGW: GET /models (via oagw_alias)
+    MR->>OAGW: GET /models
     OAGW->>Provider: GET /models (with credentials)
     Provider--xOAGW: timeout / 5xx / circuit open
     OAGW-->>MR: error (ProviderUnreachable | RateLimited | Timeout)
@@ -949,7 +950,6 @@ Producers own the event schemas; Model Registry treats them as upstream contract
 | slug | VARCHAR(64) | NOT NULL | Human-readable identifier |
 | name | VARCHAR(255) | NOT NULL | Display name |
 | gts_type | VARCHAR(255) | NOT NULL | GTS type identifier |
-| oagw_alias | VARCHAR(255) | NOT NULL | OAGW upstream alias for provider API access |
 | status | VARCHAR(20) | NOT NULL, DEFAULT 'active' | active, disabled |
 | managed | BOOLEAN | NOT NULL, DEFAULT false | Whether Gears can manage this provider (e.g. install/unload models on ollama, lm_studio) |
 | metadata | JSONB | | Provider-specific metadata, GTS-typed (e.g. `gts.cf.genai.models.provider.v1~x.genai.local.provider.v1~` for local providers with capabilities like `install_model`, `import_model`, `streaming`) |
@@ -968,18 +968,18 @@ Producers own the event schemas; Model Registry treats them as upstream contract
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
-| id | UUID | PK | Primary key (matches `Model::id`) |
+| id | UUID | PK | Primary key (matches `ModelV1::id`) |
 | provider_id | UUID | FK, NOT NULL | Foreign key to providers |
 | tenant_id | UUID | NOT NULL, INDEX | Owner tenant (denormalized for query performance) |
-| canonical_id | VARCHAR(512) | NOT NULL | Format: `{provider_slug}::{provider_model_id}` (matches `Model::canonical_id`) |
-| lifecycle_status | VARCHAR(20) | NOT NULL | `production` / `preview` / `experimental` / `deprecated` / `sunset` (matches `Model::lifecycle_status`) |
+| canonical_id | VARCHAR(512) | NOT NULL | Format: `{provider_slug}::{provider_model_id}` (matches `ModelV1::canonical_id`) |
+| lifecycle_status | VARCHAR(20) | NOT NULL | `production` / `preview` / `experimental` / `deprecated` / `sunset` (matches `ModelV1::lifecycle_status`) |
 | deprecated_at | TIMESTAMPTZ | | Soft-delete timestamp |
 | created_at | TIMESTAMPTZ | NOT NULL | Creation timestamp |
 | updated_at | TIMESTAMPTZ | NOT NULL | Last update timestamp |
 | info | JSONB | NOT NULL | Serialized `ModelInfoV1` common envelope — **`gts_type`** (the GTS schema chain that discriminates `provider_settings`), `display_name`, `description`, `family`, `vendor`, the infrastructure fields **`managed`** (`bool`, per-model — distinct from the per-provider `providers.managed` column) / **`architecture`** / **`size_bytes`** / **`format`**, `region`, `hosted_by`, `last_release_at`, `reasoning_level`, `version`, UI hints (`sort_order`, `icon`, `multiplier_display`), `performance`, `additional_info`, the promoted `supported_api` and `provider_model_id`, the structured `capabilities` / `disabled_capabilities` / `context_window` sub-objects, the user-facing **`default_parameters`** (`DefaultInferenceParametersV1`, mirroring the inference-knob subset of `gts.cf.llmgw.core.create_response_body.v1~`), and the flat per-model override fields **`allow_parameter_override`** (`bool`) and **`allow_extra_params`** (array of strings) |
 | provider_settings | JSONB | NOT NULL | Polymorphic provider settings JSON whose shape is identified by the row's `info.gts_type`. Concrete shape is one of the per-provider settings types shipped in the SDK (e.g. `OpenAiSettingsV1`, `AnthropicSettingsV1`; the shipped set is open-ended and lives in `models/providers/`). The shape is **flat** — connection routing (`oagw_alias`, endpoint/variant/version, etc.) and provider-wire parameter defaults (`temperature`, provider-specific knobs, …) sit at the top level; only `cost` is nested. The override policy is **not** stored here — it lives as flat fields (`allow_parameter_override`, `allow_extra_params`) on `info`. For unknown / not-yet-modeled providers the column is the raw JSON the operator provided (the SDK reads it as the default `serde_json::Value` carrier). Replaces the pre-GTS `api_resolution` + `parameters` + `cost` columns — the shape varies per provider, so one polymorphic blob is the smallest sensible storage |
 
-`Model::approval_status` is **not** stored on this table — it's resolved on read from the Approval Service per the §2.1 "Approval Service Delegation" principle.
+`ModelV1::approval_status` is **not** stored on this table — it's resolved on read from the Approval Service per the §2.1 "Approval Service Delegation" principle.
 
 **Indexes**: (tenant_id), (tenant_id, canonical_id) UNIQUE, (provider_id), (lifecycle_status)
 
@@ -1087,7 +1087,8 @@ Error codes follow RFC 9457 Problem Details standard. Domain errors map to SDK e
 | ProviderDisabled | ProviderDisabled | 404 | provider_disabled |
 | InvalidTransition | InvalidTransition | 409 | invalid_transition |
 | ValidationError | ValidationError | 400 | validation_error |
-| Unauthorized | Unauthorized | 403 | unauthorized |
+| Unauthenticated | Unauthenticated | 401 | unauthenticated |
+| Forbidden | Forbidden | 403 | forbidden |
 | TagNotFound | TagNotFound | 404 | tag_not_found |
 | TagAlreadyExists | TagAlreadyExists | 409 | tag_already_exists |
 

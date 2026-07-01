@@ -16,11 +16,6 @@
 //!   ([`TextFormat`], [`TextFormatKind`], [`TextVerbosity`],
 //!   [`ReasoningConfig`], [`ReasoningSummary`], [`ToolChoice`],
 //!   [`TruncationStrategy`]).
-//! - [`provider_settings`] — the [`ProviderSettings`] marker trait. The
-//!   default `P` for `ModelInfoV1` / `Model` is `serde_json::Value` (raw
-//!   JSON); typed narrowing goes through [`gts::try_narrow`] and surfaces
-//!   [`gts::NarrowError`]. Provider family is identified solely by
-//!   `info.gts_type`.
 //! - [`providers`] — **extension point**: one file per provider, defining
 //!   its flat provider-settings aggregate plus the nested cost struct.
 //!   Per-provider types are versioned independently of the envelope (current
@@ -31,14 +26,13 @@
 //!   new provider".
 //! - [`info`] — [`ModelInfoV1<P>`], including the flat per-model override
 //!   fields (`allow_parameter_override`, `allow_extra_params`).
-//! - [`entity`] — [`Model<P>`] and [`Provider`].
-//! - [`request`] — request DTOs ([`CreateProviderRequest`], …).
+//! - [`entity`] — [`ModelV1<P>`] and [`ProviderV1`].
+//! - [`request`] — request DTOs ([`CreateProviderRequestV1`], …).
 
 pub mod common;
 pub mod default_parameters;
 pub mod entity;
 pub mod info;
-pub mod provider_settings;
 pub mod providers;
 pub mod request;
 
@@ -56,8 +50,6 @@ pub use default_parameters::{
     TextFormatKind, TextVerbosity, ToolChoice, ToolChoiceMode, TruncationStrategy,
 };
 
-pub use provider_settings::ProviderSettings;
-
 pub use providers::{
     AnthropicCost, AnthropicJsonOutputFormat, AnthropicOutputConfig, AnthropicOutputEffort,
     AnthropicServiceTier, AnthropicSettingsV1, AnthropicThinking, AnthropicThinkingDisplay,
@@ -68,9 +60,9 @@ pub use providers::{
 
 pub use info::ModelInfoV1;
 
-pub use entity::{Model, Provider};
+pub use entity::{ModelV1, ProviderV1};
 
 pub use request::{
-    CreateModelRequest, CreateProviderRequest, CreateProviderRequestBuilder, UpdateModelRequest,
-    UpdateProviderRequest,
+    CreateModelRequestV1, CreateProviderRequestV1, CreateProviderRequestV1Builder,
+    UpdateModelRequestV1, UpdateProviderRequestV1,
 };

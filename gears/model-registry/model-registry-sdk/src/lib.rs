@@ -4,17 +4,17 @@
 //!
 //! This crate provides the public API for the `model-registry` module:
 //! - [`ModelRegistryClientV1`] trait for inter-module communication
-//! - Generic [`Model<P>`] / [`ModelInfoV1<P>`] parameterized over a provider's
+//! - Generic [`ModelV1<P>`] / [`ModelInfoV1<P>`] parameterized over a provider's
 //!   typed settings (e.g. [`OpenAiSettingsV1`]); the set of shipped
 //!   provider settings types is open-ended and lives in [`models::providers`]
 //! - Default `P = serde_json::Value` for heterogeneous lists; typed
-//!   narrowing via `Model::try_into_typed::<P>()` resolves by GTS schema id
+//!   narrowing via `ModelV1::try_into_typed::<P>()` resolves by GTS schema id
 //!   (`info.gts_type` vs `P::TYPE_ID`)
 //! - User-facing default inference parameters
 //!   ([`DefaultInferenceParametersV1`]) plus supporting types
 //!   ([`TextFormat`], [`ReasoningConfig`], [`ToolChoice`],
 //!   [`TruncationStrategy`])
-//! - Domain entities ([`Model`], [`Provider`])
+//! - Domain entities ([`ModelV1`], [`ProviderV1`])
 //! - Error type ([`ModelRegistryError`])
 //!
 //! Consumers obtain the client from `ClientHub`:
@@ -56,9 +56,9 @@ pub use models::{
     ApprovalStatus,
     // common types
     ContextWindow,
-    CreateModelRequest,
-    CreateProviderRequest,
-    CreateProviderRequestBuilder,
+    CreateModelRequestV1,
+    CreateProviderRequestV1,
+    CreateProviderRequestV1Builder,
     // default inference parameters (user-facing)
     DefaultInferenceParametersV1,
     DisabledCapabilities,
@@ -69,11 +69,11 @@ pub use models::{
     // shared media-typed capability (vision, file_input, image_generation,
     // audio_input, audio_output)
     MediaCapability,
-    Model,
     ModelCapabilities,
     // info / entities
     ModelInfoV1,
     ModelPerformance,
+    ModelV1,
     // tagged-object form of `ToolChoice` (`{"type":"function","name":"…"}`)
     NamedToolChoice,
     // openai provider — shipped today
@@ -85,10 +85,8 @@ pub use models::{
     OpenAiResponseFormat,
     OpenAiServiceTier,
     OpenAiSettingsV1,
-    Provider,
-    // provider settings core
-    ProviderSettings,
     ProviderStatus,
+    ProviderV1,
     ReasoningCapability,
     ReasoningConfig,
     ReasoningEffort,
@@ -102,7 +100,7 @@ pub use models::{
     // bare-string mode form of `ToolChoice` (`"auto"`/`"required"`/`"none"`)
     ToolChoiceMode,
     TruncationStrategy,
-    UpdateModelRequest,
-    UpdateProviderRequest,
+    UpdateModelRequestV1,
+    UpdateProviderRequestV1,
     WebSearchCapability,
 };

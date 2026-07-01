@@ -39,16 +39,10 @@
 //!    pub struct <Name>SettingsV<n> { /* … */ }
 //!    ```
 //!
-//! 3. Implement the marker trait:
-//!
-//!    ```ignore
-//!    impl crate::models::ProviderSettings for <Name>SettingsV<n> {}
-//!    ```
-//!
-//! 4. Wire it up in this `mod.rs`: add `pub mod <name>;` below and re-export
+//! 3. Wire it up in this `mod.rs`: add `pub mod <name>;` below and re-export
 //!    the public types via `pub use <name>::{ … };`.
 //!
-//! 5. Add the new GTS schema id to the `GtsSchemaId` chain in
+//! 4. Add the new GTS schema id to the `GtsSchemaId` chain in
 //!    [`docs/DESIGN.md`](../../../../docs/DESIGN.md) §3.1 (Key Domain Types
 //!    fence) and add a sub-section under "Provider-specific settings".
 //!

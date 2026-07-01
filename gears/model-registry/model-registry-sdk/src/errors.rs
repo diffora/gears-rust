@@ -32,20 +32,14 @@ pub enum ModelRegistryError {
     #[error("validation error: {message}")]
     Validation { message: String },
 
-    #[error("unauthorized: {detail}")]
-    Unauthorized { detail: String },
+    #[error("unauthenticated: {detail}")]
+    Unauthenticated { detail: String },
 
-    #[error("alias not found: {name}")]
-    AliasNotFound { name: String },
-
-    #[error("alias already exists: {name}")]
-    AliasConflict { name: String },
+    #[error("forbidden: {detail}")]
+    Forbidden { detail: String },
 
     #[error("provider slug already exists: {slug}")]
     ProviderConflict { slug: String },
-
-    #[error("discovery failed for provider {provider_id}: {detail}")]
-    DiscoveryFailed { provider_id: Uuid, detail: String },
 
     /// Catch-all for unexpected failures (DB/cache/OAGW/etc.). `detail` is a
     /// short human-readable summary; `source` carries the underlying error
@@ -105,33 +99,22 @@ impl ModelRegistryError {
     }
 
     #[must_use]
-    pub fn unauthorized(detail: impl Into<String>) -> Self {
-        Self::Unauthorized {
+    pub fn unauthenticated(detail: impl Into<String>) -> Self {
+        Self::Unauthenticated {
             detail: detail.into(),
         }
     }
 
     #[must_use]
-    pub fn alias_not_found(name: impl Into<String>) -> Self {
-        Self::AliasNotFound { name: name.into() }
-    }
-
-    #[must_use]
-    pub fn alias_conflict(name: impl Into<String>) -> Self {
-        Self::AliasConflict { name: name.into() }
+    pub fn forbidden(detail: impl Into<String>) -> Self {
+        Self::Forbidden {
+            detail: detail.into(),
+        }
     }
 
     #[must_use]
     pub fn provider_conflict(slug: impl Into<String>) -> Self {
         Self::ProviderConflict { slug: slug.into() }
-    }
-
-    #[must_use]
-    pub fn discovery_failed(provider_id: Uuid, detail: impl Into<String>) -> Self {
-        Self::DiscoveryFailed {
-            provider_id,
-            detail: detail.into(),
-        }
     }
 
     /// Construct an `Internal` error with a free-form detail string and no
