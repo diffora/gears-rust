@@ -61,7 +61,7 @@ Sequencing:
 
 1. **First phase — K8s ServiceAccount tokens (steady state, not just enrollment).** A gear attaches its projected SA
    token as `X-ToolKit-Internal-Token`; the receiver validates it via the k8s TokenReview API (cached TTL) and builds a
-   `PlatformIdentity::ServiceAccount`. Zero new infrastructure, K8s-native, auto-rotated. This ships the first OoP gear
+   `PlatformIdentity::KubernetesServiceAccount`. Zero new infrastructure, K8s-native, auto-rotated. This ships the first OoP gear
    without any PKI. Profile 2 single-node uses a bootstrap token (or plain UDS when all gears share a uid).
 2. **Next phase — mTLS + SPIFFE.** cert-manager (K8s) / an embedded CA (on-prem) mints a workload certificate
    (`SAN URI = spiffe://<trust_domain>/gear/<gear>/<version>`). The TLS handshake establishes peer identity *before* any
@@ -110,9 +110,9 @@ pub enum InternalCredential {
 #[non_exhaustive]
 pub enum PlatformIdentity {
     /// First phase: from a validated projected SA token (TokenReview).
-    ServiceAccount { namespace: String, service_account: String, pod: Option<String> },
+    KubernetesServiceAccount { namespace: String, service_account: String, pod: Option<String> },
     /// Next phase: mTLS + SPIFFE, parsed from the X.509 SAN.
-    Spiffe { trust_domain: String, gear: String, version: String },
+    Spiffe { trust_domain: String, name: String, version: String },
 }
 ```
 
@@ -135,8 +135,8 @@ platform-plane call to `Authorization`.
 ### Consequences
 
 * **Phase 1 validates a per-request token.** Each inbound system call carries `X-ToolKit-Internal-Token` (SA token),
-  validated via TokenReview (cached). `InternalAuthMiddleware` builds `PlatformIdentity::ServiceAccount` and sets
-  `PeerAuthenticated { gear }` for workload-policy decisions only.
+  validated via TokenReview (cached). `InternalAuthMiddleware` builds `PlatformIdentity::KubernetesServiceAccount` and sets
+  `PeerAuthenticated { name }` for workload-policy decisions only.
 * **The end state removes the per-request token from the hot path.** Once mTLS lands, peer identity is established by
   the TLS handshake (the cert-derived `PlatformIdentity::Spiffe`), and `InternalAuthMiddleware` becomes a thin
   shim asserting the connection-level identity — there is no per-request token to validate.
@@ -148,7 +148,7 @@ platform-plane call to `Authorization`.
   rotated certs from a well-known path (Profile 2: file watched by `notify`; Profile 3: projected volume).
 * Flight Control validates inbound `RegisterInstance` / `DeregisterInstance` / `Heartbeat` by the validated
   `PlatformIdentity` (the `ServiceAccount` variant in phase 1; the `Spiffe` variant from mTLS next), not by a bespoke token scheme.
-* `InternalAuthMiddleware` inserts two values from the validated credential: `PeerAuthenticated { gear }` — a
+* `InternalAuthMiddleware` inserts two values from the validated credential: `PeerAuthenticated { name }` — a
   lightweight marker for **workload-policy** checks — and `PlatformSecurityContext { identity }` — the identity object
   that AuthZ-exempt platform handlers consume. Neither is ever passed to the tenant `PolicyEnforcer`, and neither
   substitutes for tenant-plane JWT validation.

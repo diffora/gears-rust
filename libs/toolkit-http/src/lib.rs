@@ -72,4 +72,5 @@ pub use layers::{
 };
 pub use request::{RequestBuilder, RequestType};
 pub use response::{HttpResponse, LimitedBody, ResponseBody};
+pub use security::{attach_bearer_http, attach_internal_token_http};
 pub use tls::TlsConfigError;

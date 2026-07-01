@@ -2454,6 +2454,7 @@ dependencies = [
  "bytes",
  "cf-gears-rustls-corecrypto-provider",
  "cf-gears-rustls-fips-shim",
+ "cf-gears-toolkit-security",
  "flate2",
  "http",
  "http-body",
@@ -2472,6 +2473,7 @@ dependencies = [
  "rustls-cng-crypto",
  "rustls-native-certs 0.8.3",
  "rustls-pki-types",
+ "secrecy",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -2483,7 +2485,23 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "url",
+ "uuid",
  "webpki-roots 1.0.7",
+]
+
+[[package]]
+name = "cf-gears-toolkit-http-middleware"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-security",
+ "http",
+ "secrecy",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -2581,6 +2599,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "trybuild",
  "uuid",
 ]
 
@@ -2591,6 +2610,7 @@ dependencies = [
  "anyhow",
  "cf-gears-toolkit-security",
  "rand 0.10.1",
+ "secrecy",
  "tokio",
  "tokio-stream",
  "tokio-util",

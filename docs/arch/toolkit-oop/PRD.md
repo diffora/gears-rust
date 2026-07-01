@@ -342,10 +342,10 @@ of `PlatformSecurityContext` — it is only another way to populate it, dispatch
 
 - **First phase (K8s)**: projected K8s ServiceAccount tokens (audience: `toolkit-internal`), validated via the
   TokenReview API. Builds the `PlatformSecurityContext` from the validated SA identity and sets
-  `PeerAuthenticated { gear }` for workload-policy decisions only.
+  `PeerAuthenticated { name }` for workload-policy decisions only.
 - **Next phase**: mTLS + SPIFFE issued by cert-manager (embedded CA / boot-token on-prem), populating the same
   `PlatformSecurityContext` with the SPIFFE variant of the tenant-less, method-agnostic `PlatformIdentity` enum
-  (`ServiceAccount` from phase 1, `Spiffe { trust_domain, gear, version }` added here from the X.509 SAN
+  (`ServiceAccount` from phase 1, `Spiffe { trust_domain, name, version }` added here from the X.509 SAN
   `spiffe://<trust_domain>/gear/<gear>/<version>`; `#[non_exhaustive]` for future methods).
 - **Profile 2 (single-node)**: ephemeral bootstrap token, or plain UDS when all gears share one uid.
 

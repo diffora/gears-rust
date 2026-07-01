@@ -55,6 +55,15 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# SecurityContext propagation. `toolkit-security` is transport-agnostic and owns
+# both `SecurityContext` and the `BearerAuthenticator` trait, so it can be the
+# only auth dependency here. Do NOT add authn-resolver-sdk: it would pull the
+# whole ToolKit framework into this transport crate and invert the layering —
+# the concrete AuthNResolverClient is adapted to BearerAuthenticator at the
+# gear/bootstrap layer instead.
+toolkit-security = { workspace = true }
+secrecy = { workspace = true }
+
 # HTTP stack
 hyper = { workspace = true, features = ["client", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "tokio"] }
@@ -107,3 +116,4 @@ tempfile = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 flate2 = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

@@ -37,6 +37,7 @@ members = [
     "libs/toolkit-gts",
     "libs/toolkit-gts-macros",
     "libs/toolkit-http",
+    "libs/toolkit-http-middleware",
     "libs/toolkit-sdk",
     "libs/toolkit-odata-macros",
     "libs/toolkit-security",

@@ -99,6 +99,35 @@ genuinely non-tenant (platform-level) work is on the platform plane.
   [ADR-0006 (Platform-Plane Authentication)](0006-cpt-cf-adr-platform-plane-auth.md).**
 * Ideally served on a **separate listener** from business endpoints.
 
+### Extensibility — how each plane is customized (vendor-agnostic)
+
+Both planes keep the **authentication mechanism behind a trait**, so the transport and middleware never change
+when the mechanism does. *How that implementation is selected* differs by plane — and the difference is forced by
+**layering**, not preference:
+
+* **Tenant plane → GTS-discovered AuthN Resolver plugin.** The transport and middleware depend only on the
+  `BearerAuthenticator` trait (`toolkit-security`); the concrete adapter wraps `AuthNResolverClient`, which
+  dispatches to whatever `AuthNResolverPluginClient` a vendor registers and the Types Registry discovers at
+  runtime. The tenant plane sits *above* the discovery machinery, so GTS-based plugin discovery is available to
+  it. Customizing tenant authentication means bringing your own AuthN Resolver plugin — no change to the
+  transport, middleware, or this model.
+* **Platform plane → bootstrap-selected `InternalAuthenticator`.** The middleware depends only on the
+  `InternalAuthenticator` trait — the structural twin of `BearerAuthenticator` — but its implementation is
+  **selected at bootstrap by deployment profile/config and linked in locally, *not* discovered via GTS.** The
+  platform plane sits *below* the discovery machinery it secures: platform auth protects DirectoryService
+  registration, heartbeats, and global GTS registration — the calls a gear makes *before* its ClientHub/plugin
+  chain exists. With a shared Types Registry, discovering the platform validator over the network would itself
+  be a platform-plane call to authenticate the platform plane — a bootstrapping cycle. It is therefore wired
+  in-process at startup, and its validation backend is an **external trust anchor** (K8s SA `TokenReview`,
+  mTLS+SPIFFE next), never a call routed back through the platform plane.
+
+The platform plane is **still vendor-extensible** — a vendor can supply its own `InternalAuthenticator`
+implementation (e.g. a bespoke workload-identity validator) — but selection is bootstrap/config-driven and
+compiled in, not GTS-discovered. `InternalCredential` and `PlatformIdentity` stay framework-owned,
+method-agnostic, and `#[non_exhaustive]`, so new methods never change the shape of `PlatformSecurityContext`.
+Mechanism details for the built-in platform validators are owned by
+[ADR-0006](0006-cpt-cf-adr-platform-plane-auth.md).
+
 ### Plane selection by call type
 
 A request carries exactly one plane. Note that *system-initiated* does not imply *platform plane* — tenant-scoped
