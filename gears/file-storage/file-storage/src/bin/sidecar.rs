@@ -250,11 +250,10 @@ async fn finalize_with_control_plane(
     }
 
     let url = format!(
-        "{}/api/file-storage/v1/files/{}/versions/{}/finalize?fs-token={}",
+        "{}/api/file-storage/v1/files/{}/versions/{}/finalize",
         state.control_base_url.trim_end_matches('/'),
         file_id,
         version_id,
-        token,
     );
 
     let body_bytes = finalize_body(size, hash_hex)?;
@@ -263,6 +262,7 @@ async fn finalize_with_control_plane(
         .http
         .post(&url)
         .header("content-type", "application/json")
+        .header("x-fs-token", token)
         .body(body_bytes)
         .send()
         .await

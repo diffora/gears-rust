@@ -328,7 +328,7 @@ def require_file_storage_mounted():
     The parent ``file_storage/conftest.py`` declares this fixture as
     ``autouse=True`` to skip seam tests when the CI shared server isn't
     running.  The lifecycle sub-package runs its OWN private server (via
-    ``gear_test_env`` → ``test_env``), so the probe against ``localhost:8086``
+    ``_lifecycle_test_env``), so the probe against ``localhost:8086``
     is irrelevant here.  Overriding with a no-op prevents the inherited
     fixture from skipping the entire lifecycle suite.
     """
@@ -377,25 +377,31 @@ def fs_signing_seed() -> str:
 
 
 @pytest.fixture(scope="session")
-def gear_test_env(fs_storage_root, fs_signing_seed):
-    """Override the default GearTestEnv to launch a private server + sidecar.
+def _lifecycle_test_env(fs_storage_root, fs_signing_seed):
+    """Private, lifecycle-scoped server+sidecar orchestration.
 
-    Overrides ``gear_test_env`` (the hook consumed by ``lib.orchestrator.test_env``)
-    so the lifecycle sub-package gets its own isolated server instance with:
-    * a session-scoped temp dir as the LocalFsBackend root
-    * a dedicated sidecar process on a dynamically assigned port
-    * a fixed Ed25519 signing seed shared between the control plane and sidecar
+    This fixture is intentionally named with a leading underscore and does NOT
+    override the root-level ``test_env`` / ``gear_test_env`` fixtures.  Keeping
+    it separate prevents the lifecycle suite from clobbering the session-global
+    ``test_env`` that other gears (e.g. mini-chat) rely on for their own
+    ``gear_test_env`` override.
 
-    The seam tests in the parent package don't use ``test_env`` and are not
-    affected by this override.
+    Duplicates the orchestration logic from ``lib.orchestrator.test_env`` so
+    the lifecycle suite is fully self-contained:
+
+    1. Start the sidecar (so its port is known).
+    2. Patch the config (inject sidecar URL, storage root, signing seed, port).
+    3. Resolve the server binary (E2E_BINARY env var).
+    4. Start the server.
+    5. Wait for health.
+    6. Yield a RunningTestEnv-compatible namespace.
+    7. Teardown: stop server and sidecar.
     """
-    from lib.orchestrator import GearTestEnv
+    from lib.orchestrator import GearTestEnv, RunningTestEnv, _log_path, _wait_healthy
 
     pub_key_b64 = _derive_sidecar_public_key_b64(fs_signing_seed)
     print(f"[file-storage lifecycle] sidecar public key: {pub_key_b64}")
 
-    # The sidecar must call back to the control plane's finalize endpoint after
-    # each successful PUT.  The control plane listens on _SERVER_PORT (localhost).
     control_base_url = f"http://localhost:{_SERVER_PORT}"
 
     sidecar = FileStorageSidecar(
@@ -404,7 +410,7 @@ def gear_test_env(fs_storage_root, fs_signing_seed):
         control_base_url=control_base_url,
     )
 
-    return GearTestEnv(
+    env = GearTestEnv(
         config_patch=_patch_file_storage_config,
         port=_SERVER_PORT,
         health_path="/healthz",
@@ -414,17 +420,69 @@ def gear_test_env(fs_storage_root, fs_signing_seed):
         log_suffix="file-storage-lifecycle",
     )
 
+    # 1. Start sidecar
+    sidecar.start()
+    sidecar_handles = {sidecar.name: sidecar}
+
+    # 2. Prepare config
+    from lib.orchestrator import _prepare_config
+    config_path = _prepare_config(env)
+
+    # 3. Resolve binary from E2E_BINARY env var
+    binary_str = os.environ.get("E2E_BINARY")
+    if not binary_str:
+        pytest.fail(
+            "E2E_BINARY not set — lifecycle tests need a binary built with\n"
+            "  --features file-storage"
+        )
+    binary_path = Path(binary_str)
+    if not binary_path.exists():
+        pytest.fail(f"E2E_BINARY={binary_str!r} does not exist")
+
+    # 4. Start server (private process — does NOT write to the global _server_proc)
+    log = _log_path(env)
+    log_fh = open(log, "w")
+    proc_env = {**os.environ, **env.env}
+    proc = subprocess.Popen(
+        [str(binary_path), "--config", str(config_path), "run"],
+        cwd=str(_REPO_ROOT),
+        stdout=log_fh,
+        stderr=subprocess.STDOUT,
+        env=proc_env,
+    )
+    print(f"[lifecycle] server started (pid={proc.pid}, port={_SERVER_PORT}, log={log})")
+
+    # 5. Health check
+    _wait_healthy(env)
+
+    running = RunningTestEnv(
+        base_url=f"http://localhost:{_SERVER_PORT}",
+        env=env,
+        sidecars=sidecar_handles,
+    )
+
+    yield running
+
+    # 6. Teardown
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=3)
+    sidecar.stop()
+
 
 @pytest.fixture(scope="session")
-def lifecycle_base_url(test_env) -> str:
+def lifecycle_base_url(_lifecycle_test_env) -> str:
     """Base URL of the private lifecycle server."""
-    return test_env.base_url
+    return _lifecycle_test_env.base_url
 
 
 @pytest.fixture(scope="session")
-def lifecycle_sidecar(test_env) -> FileStorageSidecar:
+def lifecycle_sidecar(_lifecycle_test_env) -> FileStorageSidecar:
     """The running sidecar instance."""
-    return test_env.sidecars["file-storage-sidecar"]
+    return _lifecycle_test_env.sidecars["file-storage-sidecar"]
 
 
 @pytest.fixture(scope="session")

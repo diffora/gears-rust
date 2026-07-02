@@ -498,13 +498,6 @@ pub async fn transfer_ownership(
 
 // ── data-plane finalize (s2s, token-authenticated) ────────────────────────────
 
-/// Query params for the token-authenticated data-plane finalize endpoint.
-#[derive(Debug, Deserialize)]
-pub struct FinalizeTokenQuery {
-    #[serde(rename = "fs-token")]
-    pub fs_token: Option<String>,
-}
-
 /// Request body for the data-plane finalize endpoint.
 ///
 /// The sidecar posts the measured size and SHA-256 hash after a successful PUT.
@@ -518,9 +511,9 @@ pub struct FinalizeUploadReq {
 
 /// `POST /files/{file_id}/versions/{version_id}/finalize`
 ///
-/// Token-authenticated: the request must carry the same signed upload token the
-/// sidecar received from the control plane. No user JWT is required — the token
-/// proves the upload was pre-authorized by the control plane.
+/// Token-authenticated: the request must carry the signed upload token in the
+/// `x-fs-token` request header. No user JWT is required — the token proves the
+/// upload was pre-authorized by the control plane.
 ///
 /// Called by the sidecar immediately after a successful `PUT` to report the
 /// measured size + hash and transition the version from `pending` to `available`.
@@ -530,20 +523,15 @@ pub async fn finalize_version(
     Extension(svc): Svc,
     Extension(verifier): Extension<Arc<Verifier>>,
     Path((file_id, version_id)): Path<(Uuid, Uuid)>,
-    Query(q): Query<FinalizeTokenQuery>,
     headers: HeaderMap,
     Json(req): Json<FinalizeUploadReq>,
 ) -> ApiResult<impl IntoResponse> {
-    // Extract the token from query param or header (same convention as the sidecar).
-    let token = q
-        .fs_token
-        .or_else(|| {
-            headers
-                .get("x-fs-token")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| DomainError::token_invalid("missing fs-token"))?;
+    // Extract the token from the x-fs-token header.
+    let token = headers
+        .get("x-fs-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .ok_or_else(|| DomainError::token_invalid("missing x-fs-token header"))?;
 
     let claims = verifier
         .verify(&token, OffsetDateTime::now_utc())
