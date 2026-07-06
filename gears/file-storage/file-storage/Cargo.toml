@@ -51,6 +51,9 @@ base64 = { workspace = true }
 infer = "0.19"
 ring = "0.17"
 
+# HTTP client — used by the sidecar binary to call the control-plane finalize callback.
+reqwest = { workspace = true }
+
 # Database - SeaORM (driver features come from toolkit-db)
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }

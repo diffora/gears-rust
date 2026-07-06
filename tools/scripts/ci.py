@@ -293,6 +293,8 @@ def cmd_e2e(args):
 
     docker_env_started = False
     server_process = None
+    release_bin = None
+    release_sidecar_bin = None
 
     if args.docker:
         step("Running E2E tests in Docker mode")
@@ -379,6 +381,19 @@ def cmd_e2e(args):
             build_cmd.extend(["--features", e2e_features])
         run_cmd(build_cmd)
 
+        # Also build the file-storage sidecar binary (no feature flags needed —
+        # it is a standalone binary in the cf-gears-file-storage package).
+        step("Building release sidecar binary for local E2E")
+        run_cmd([
+            "cargo",
+            "build",
+            "--release",
+            "-p",
+            "cf-gears-file-storage",
+            "--bin",
+            "sidecar",
+        ])
+
         # Use the release binary produced by the cargo build above
         release_bin = str(find_binary(
             Path(PROJECT_ROOT) / "target", "release", "cf-gears-example-server"
@@ -389,6 +404,10 @@ def cmd_e2e(args):
             print("Build it first with:")
             print("  make cargo-build")
             sys.exit(1)
+
+        release_sidecar_bin = str(find_binary(
+            Path(PROJECT_ROOT) / "target", "release", "sidecar"
+        ))
 
         # Create logs directory if it doesn't exist
         logs_dir = os.path.join(PROJECT_ROOT, "testing", "e2e", "logs")
@@ -457,6 +476,21 @@ def cmd_e2e(args):
     step("Running pytest")
     env = os.environ.copy()
     env["E2E_BASE_URL"] = base_url
+
+    # Export the release server + sidecar paths so the orchestrator-based
+    # lifecycle suite (testing/e2e/gears/file_storage/lifecycle/) can start
+    # its own private server+sidecar pair.
+    #
+    # NOTE: we deliberately use DEDICATED vars (FS_E2E_BINARY / FS_SIDECAR_BINARY)
+    # rather than the shared E2E_BINARY.  Other gears (e.g. mini-chat) gate their
+    # own suites on E2E_BINARY and expect a scoped invocation (make e2e-mini-chat);
+    # setting E2E_BINARY here would un-skip them under generic e2e-local and they
+    # would fail/time-out without their bespoke fixtures.  The lifecycle conftest
+    # reads FS_E2E_BINARY for the server and FS_SIDECAR_BINARY for the sidecar.
+    if release_bin is not None:
+        env.setdefault("FS_E2E_BINARY", release_bin)
+    if release_sidecar_bin is not None:
+        env.setdefault("FS_SIDECAR_BINARY", release_sidecar_bin)
 
     # Set E2E_DOCKER_MODE flag for the tests to know which mode they're in
     if args.docker:

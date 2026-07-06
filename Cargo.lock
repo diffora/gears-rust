@@ -1694,6 +1694,7 @@ dependencies = [
  "http",
  "infer",
  "inventory",
+ "reqwest 0.13.3",
  "ring",
  "sea-orm",
  "sea-orm-migration",

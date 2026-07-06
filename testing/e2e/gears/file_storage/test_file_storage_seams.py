@@ -64,7 +64,13 @@ async def test_create_file_returns_signed_upload_url(base_url, api_base, auth_he
     The control plane must return ``{file_id, version_id, upload_url}`` and the
     upload_url must point at the sidecar, never a backend (backend opacity).
     """
-    body = {"name": f"e2e-{uuid.uuid4()}.txt", "gts_file_type": gts_file_type}
+    body = {
+        "owner_kind": "user",
+        "owner_id": str(uuid.uuid4()),
+        "name": f"e2e-{uuid.uuid4()}.txt",
+        "gts_file_type": gts_file_type,
+        "mime_type": "text/plain",
+    }
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         r = await client.post(f"{base_url}{api_base}/files", json=body, headers=auth_headers)
     assert r.status_code == 201, f"expected 201, got {r.status_code}: {r.text}"
