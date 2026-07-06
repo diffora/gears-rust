@@ -744,7 +744,7 @@ intended decomposition. Their detailed designs live in P2/P3 FEATURE artifacts (
 |-------------------------------------------------------|-------|--------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
 | `multipart-coordinator`                               | P2    | Owns the multipart-upload lifecycle (initiate / part / complete / abort) and the per-part hash combiner from ADR-0002    | PRD `cpt-cf-file-storage-fr-multipart-upload`                                                  |
 | `policy-engine`                                       | P2    | Evaluates tenant/user policies (allowed types, size limits, custom-metadata limits)                                      | PRD `cpt-cf-file-storage-fr-allowed-types-policy`, `…fr-size-limits-policy`                    |
-| `cleanup-engine`                                      | P2    | Unified background process: version-retention pruning (≤ X / age T) + orphan reconciliation; deletes version rows + backend objects via the sidecar; internal-only, audited | PRD `cpt-cf-file-storage-fr-retention-policies`, `…fr-orphan-reconciliation`                   |
+| `cleanup-engine`                                      | P2    | Unified background process: whole-file retention pruning (age / inactivity / metadata) + orphan reconciliation; deletes files/version rows + backend objects via the sidecar; internal-only, audited. Per-version pruning of superseded (non-current) versions (≤ X versions / age T) is **P3** — deferred pending a versioning-policy schema | PRD `cpt-cf-file-storage-fr-retention-policies`, `…fr-orphan-reconciliation`                   |
 | `audit-publisher`                                     | P2    | Transactional outbox writer + async worker that drains to the platform audit sink                                        | PRD `cpt-cf-file-storage-fr-audit-trail`                                                       |
 | `event-publisher`                                     | P2    | EventBroker emitter for upload/update/delete events, gated by owner policy                                               | PRD `cpt-cf-file-storage-fr-file-events`                                                       |
 | `quota-adapter`                                       | P2    | Synchronous quota check before storage-consuming operations; usage reports asynchronously                                | PRD `cpt-cf-file-storage-fr-storage-quota`, `…fr-usage-reporting`                              |
@@ -1189,7 +1189,12 @@ and is immutable.
 `(file_id, content_id)` and is never stored.
 
 **Additional info**: `ON DELETE CASCADE` from `files` removes all versions; the sidecar deletes the backend objects
-best-effort afterwards. No automatic pruning in P1 — versions accumulate (the P2 cleanup engine prunes by retention).
+best-effort afterwards. No automatic pruning in P1 — versions accumulate. The P2 cleanup engine prunes whole **files**
+by retention rule (age / inactivity / metadata, `cpt-cf-file-storage-fr-retention-policies`), which removes all of a
+file's versions when the file itself expires. **Superseded (non-current) version reclamation is deferred to P3**:
+`RetentionRuleBody` carries no per-version criterion (no `keep_last_n` / `max_non_current_age_days`) to drive it, so a
+non-current version that is never superseded by a whole-file expiry currently accumulates indefinitely — a known P3
+gap, not a P2 bug (P2 remediation 2.9).
 
 #### Table: `files_custom_metadata`
 

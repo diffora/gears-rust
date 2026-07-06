@@ -16,6 +16,19 @@ use crate::domain::error::DomainError;
 use crate::infra::storage::db::db_err;
 use crate::infra::storage::store::{Store, pending_version};
 
+/// Sentinel "no limit" passed to [`crate::infra::storage::repo::VersionRepo::list_by_file`]
+/// by callers that must see a file's **complete** version set (cascade
+/// delete, backend migration, ownership-transfer usage accounting, and the
+/// retention/orphan-reconciliation sweeps — see [`Store::list_versions`]).
+/// Capping any of those at a page size would silently under-delete backend
+/// blobs or under/over-count usage bytes, so they stay unbounded; only the
+/// REST-facing [`Store::list_versions_page`] is capped (P2 2.2).
+///
+/// Kept within `i64::MAX` (rather than `u64::MAX`) so it binds safely as a
+/// SQL `LIMIT` literal on every backend — `LIMIT`/`OFFSET` are signed 64-bit
+/// on SQLite and Postgres, and a `u64::MAX` literal overflows that.
+const UNBOUNDED_VERSIONS: u64 = i64::MAX as u64;
+
 impl Store {
     // ── version management ───────────────────────────────────────────────────
 
@@ -57,12 +70,38 @@ impl Store {
             .await
     }
 
-    /// List all versions of a file, newest first.
+    /// List **all** versions of a file, newest first — internal/unbounded,
+    /// for callers that need the complete version set (see
+    /// [`UNBOUNDED_VERSIONS`]). The paginated, REST-facing counterpart is
+    /// [`Self::list_versions_page`] (P2 2.2).
     pub async fn list_versions(&self, file_id: Uuid) -> Result<Vec<FileVersion>, DomainError> {
         let conn = self.db.conn().map_err(db_err)?;
         self.repos
             .versions
-            .list_by_file(&conn, &AccessScope::allow_all(), file_id)
+            .list_by_file(
+                &conn,
+                &AccessScope::allow_all(),
+                file_id,
+                UNBOUNDED_VERSIONS,
+                0,
+            )
+            .await
+    }
+
+    /// List a page of a file's versions, newest first — backs
+    /// `GET /files/{id}/versions` (P2 2.2). `limit`/`offset` are expected to
+    /// already be clamped by the caller (see
+    /// `FileService::list_versions`/`ServiceConfig::max_page_size`).
+    pub async fn list_versions_page(
+        &self,
+        file_id: Uuid,
+        limit: u64,
+        offset: u64,
+    ) -> Result<Vec<FileVersion>, DomainError> {
+        let conn = self.db.conn().map_err(db_err)?;
+        self.repos
+            .versions
+            .list_by_file(&conn, &AccessScope::allow_all(), file_id, limit, offset)
             .await
     }
 
@@ -130,6 +169,20 @@ impl Store {
     /// Delete a single version row and record an audit row in the same
     /// transaction.
     ///
+    /// Returns `true` if the row was removed, `false` if it does not exist or
+    /// is the file's current version (P2 2.7 — a version cannot be deleted
+    /// while it is current, whether that was already true when the caller
+    /// checked or became true concurrently between the caller's check and
+    /// this call).
+    ///
+    /// The "is this the current version?" check is re-read **inside** this
+    /// transaction (`versions.get`) rather than trusted from a pre-transaction
+    /// snapshot, and [`crate::infra::storage::repo::VersionRepo::delete`]'s own
+    /// predicate additionally guards `is_current = false` at the DB level —
+    /// so even a concurrent `bind` that commits between the read below and the
+    /// delete statement cannot leave `files.content_id` dangling: the delete
+    /// simply removes 0 rows and this returns `false`.
+    ///
     /// @cpt-cf-file-storage-fr-audit-trail
     /// @cpt-cf-file-storage-nfr-audit-completeness
     pub async fn delete_version(
@@ -144,14 +197,30 @@ impl Store {
             .db()
             .transaction_ref_mapped(move |tx| {
                 Box::pin(async move {
-                    let removed = versions
-                        .delete(tx, &AccessScope::allow_all(), file_id, version_id)
-                        .await?;
-                    if removed {
-                        // @cpt-cf-file-storage-nfr-audit-completeness
-                        audit_repo.insert(tx, &audit).await?;
+                    let scope = AccessScope::allow_all();
+                    // Transactional re-read: `is_current` mirrors
+                    // `files.content_id` (both flip together in `bind_atomic`'s
+                    // transaction), so this is equivalent to re-checking
+                    // `content_id == version_id` without a second query against
+                    // `files`.
+                    let Some(existing) = versions.get(tx, &scope, file_id, version_id).await?
+                    else {
+                        return Ok::<bool, DomainError>(false);
+                    };
+                    if existing.is_current {
+                        return Ok(false);
                     }
-                    Ok::<bool, DomainError>(removed)
+                    let rows_affected = versions.delete(tx, &scope, file_id, version_id).await?;
+                    if rows_affected == 0 {
+                        // Raced: a concurrent bind promoted this version to
+                        // current between the read above and the delete
+                        // statement — the DB-level guard in `VersionRepo::delete`
+                        // caught it.
+                        return Ok(false);
+                    }
+                    // @cpt-cf-file-storage-nfr-audit-completeness
+                    audit_repo.insert(tx, &audit).await?;
+                    Ok(true)
                 })
             })
             .await
@@ -319,21 +388,30 @@ impl Store {
     }
 
     /// Transactionally update `backend_id` and `backend_path` for a version row,
-    /// and write a `BackendMigrate` audit row in the same transaction.
+    /// CAS-gated on `expected_backend_id`/`expected_backend_path`, and write a
+    /// `BackendMigrate` audit row in the same transaction.
     ///
-    /// Returns `true` if the version row was found and updated.
+    /// Returns `true` if the version row matched the expected pointer and was
+    /// updated. `false` means either the version is gone or a concurrent
+    /// migration already moved the pointer away from the expected value —
+    /// the caller must re-fetch to tell these apart.
     ///
     /// @cpt-cf-file-storage-fr-backend-migration
+    #[allow(clippy::too_many_arguments)]
     pub async fn rebind_version_backend(
         &self,
         file_id: Uuid,
         version_id: Uuid,
+        expected_backend_id: &str,
+        expected_backend_path: &str,
         new_backend_id: &str,
         new_backend_path: &str,
         audit: AuditEntry,
     ) -> Result<bool, DomainError> {
         let versions = self.repos.versions.clone();
         let audit_repo = self.repos.audit.clone();
+        let expected_backend_id = expected_backend_id.to_owned();
+        let expected_backend_path = expected_backend_path.to_owned();
         let new_backend_id = new_backend_id.to_owned();
         let new_backend_path = new_backend_path.to_owned();
         self.db
@@ -346,6 +424,8 @@ impl Store {
                             &AccessScope::allow_all(),
                             file_id,
                             version_id,
+                            &expected_backend_id,
+                            &expected_backend_path,
                             &new_backend_id,
                             &new_backend_path,
                         )

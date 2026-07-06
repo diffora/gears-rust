@@ -132,7 +132,7 @@ pub(crate) fn register_routes(
         .authenticated()
         .require_license_features::<License>([])
         .summary("Bind/rebind the content pointer under optimistic CAS")
-        .description("If-Match carries the current content ETag; 412 on conflict.")
+        .description("If-Match carries the current content ETag; 400 on conflict.")
         .tag(API_TAG)
         .path_param("id", "File UUID")
         .json_request::<dto::BindReq>(openapi, "Version to bind")
@@ -143,12 +143,11 @@ pub(crate) fn register_routes(
         .error_404(openapi)
         // 409: the target version's upload is not finalized yet.
         .error_409(openapi)
-        // 412: the If-Match / CAS precondition failed (or is required and absent).
-        .problem_response(
-            openapi,
-            StatusCode::PRECONDITION_FAILED,
-            "Precondition Failed",
-        )
+        // 400: the If-Match / CAS precondition failed (or is required and absent).
+        // `FailedPrecondition` collapses to 400 by house convention
+        // (toolkit-canonical-errors has no 412 variant; see AM's
+        // `failed_precondition` → 400 mapping for precedent).
+        .error_400(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
@@ -177,6 +176,8 @@ pub(crate) fn register_routes(
         .summary("List all versions of a file")
         .tag(API_TAG)
         .path_param("id", "File UUID")
+        .query_param_typed("limit", false, "Page size", "integer")
+        .query_param_typed("offset", false, "Offset", "integer")
         .handler(handlers::list_versions)
         .json_response_with_schema::<dto::VersionDtoList>(openapi, StatusCode::OK, "Versions")
         .error_401(openapi)
@@ -245,7 +246,7 @@ pub(crate) fn register_routes(
         .require_license_features::<License>([])
         .summary("Delete a file and all its versions")
         .description(
-            "If-Match (content ETag or \"*\") is required; 412 on mismatch or when absent.",
+            "If-Match (content ETag or \"*\") is required; 400 on mismatch or when absent.",
         )
         .tag(API_TAG)
         .path_param("id", "File UUID")
@@ -254,12 +255,11 @@ pub(crate) fn register_routes(
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
-        // 412: If-Match absent or does not match the current content ETag.
-        .problem_response(
-            openapi,
-            StatusCode::PRECONDITION_FAILED,
-            "Precondition Failed",
-        )
+        // 400: If-Match absent or does not match the current content ETag.
+        // `FailedPrecondition` collapses to 400 by house convention
+        // (toolkit-canonical-errors has no 412 variant; see AM's
+        // `failed_precondition` → 400 mapping for precedent).
+        .error_400(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
@@ -458,7 +458,6 @@ pub(crate) fn register_routes(
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
-        .error_422(openapi)
         .error_500(openapi)
         .register(router, openapi);
 

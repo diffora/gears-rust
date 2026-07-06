@@ -106,7 +106,7 @@ P2-5. GET  /files/{id}/multipart/{upload_id}            list uploaded parts (int
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `declared_mime` | `string` | yes | MIME type of the file being uploaded (e.g. `video/mp4`). Validated against the effective allowed-types policy. |
-| `declared_size` | `uint64` | yes | Total file size in bytes. The control plane validates this against the effective policy size limit and storage quota at initiate time — exactly like single-part upload does at presign time — so that oversized or quota-exceeding uploads are rejected before any bytes are transferred. `413` if it exceeds the limit; `507` if it would exceed the storage quota. |
+| `declared_size` | `uint64` | yes | Total file size in bytes. The control plane validates this against the effective policy size limit and storage quota at initiate time — exactly like single-part upload does at presign time — so that oversized or quota-exceeding uploads are rejected before any bytes are transferred. `400` if it exceeds the policy size limit; `429` if it would exceed the storage quota. |
 
 **`P2-1` initiate response** (`application/json`) — the server-computed plan:
 
@@ -280,19 +280,26 @@ X-FS-Meta-<key>: <value>                               # one header per custom m
 - `206 Partial Content` — successful range read (sidecar).
 - `304 Not Modified` — `If-None-Match` matched the current ETag.
 - `400 Bad Request` — malformed request (invalid JSON, missing required fields); an `exact_size` upload whose final
-  length is short; or a malformed token minted at presign (e.g. both `max_size` and `exact_size` claims).
+  length is short; a malformed token minted at presign (e.g. both `max_size` and `exact_size` claims); the declared
+  file size exceeds the effective policy size limit (control plane, `create_file`/`presign_version`/multipart
+  `initiate`); or an `If-Match`/`If-Match-Metadata` precondition mismatch on control-plane `bind`/`DELETE`/`PATCH`
+  (`FailedPrecondition` collapses to `400` on this platform — there is no `412`-mapped canonical-error variant).
 - `403 Forbidden` — authorization denied (control), or token verification failed at the sidecar: bad signature,
   expired (`now > exp`), `ip` mismatch, method ≠ the `op` claim, missing/invalid JWT or unmatched token-claim predicate,
   or a malformed (mutually-exclusive) claim set. (The `max_url_ttl` cap is enforced at signing, not re-checked here.)
 - `404 Not Found` — file or version does not exist.
 - `409 Conflict` — multipart state conflicts (e.g., complete on an aborted upload) (P2).
-- `412 Precondition Failed` — `If-Match` (content ETag) mismatch on bind/delete, or `If-Match-Metadata` mismatch
-  against the current `meta_version`. On a bind `412` the response carries the uploaded `version_id` for rebind.
+- `412 Precondition Failed` — **not used by the control plane** (this platform's canonical-error taxonomy has no
+  `412`-mapped variant; `FailedPrecondition` collapses to `400`, see above). The design narrative below ("Upload,
+  bind, and the conflict retry", "Conditional headers") describes the sidecar's own data-plane `If-Match` check on
+  the embedded pre-register/bind as `412`; that data-plane behavior is out of scope for this table and has not been
+  re-verified against the control-plane fix above — tracked as a follow-up doc pass.
 - `413 Payload Too Large` — upload exceeds the `max_size` / `exact_size` claim (sidecar; aborted mid-stream).
 - `415 Unsupported Media Type` — declared mime does not match magic-bytes detection (sidecar, on upload).
 - `416 Range Not Satisfiable` — a well-formed `Range` that cannot be satisfied against the size (sidecar). An
   unparseable `Range` is **not** a `416` — it is ignored and the full body is served with `200`.
 - `422 Unprocessable Entity` — semantic validation failure (e.g., invalid GTS file type format), or an upload whose
   content does not match the `expected_hash` claim (sidecar; not bound).
-- `429 Too Many Requests` — (P2) the `max_conns` claim for this `(file_id, op)` is exceeded.
-- `507 Insufficient Storage` — backend or quota limit exceeded.
+- `429 Too Many Requests` — the `max_conns` claim for this `(file_id, op)` is exceeded (sidecar, P2); or the
+  control-plane storage quota would be exceeded on `create_file`/`presign_version`/multipart `initiate`
+  (`QuotaExceeded`).

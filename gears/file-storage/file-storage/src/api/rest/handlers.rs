@@ -52,6 +52,13 @@ pub struct DownloadQuery {
     pub version_id: Option<Uuid>,
 }
 
+/// Query params for `GET /files/{id}/versions`.
+#[derive(Debug, Deserialize)]
+pub struct ListVersionsQuery {
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+}
+
 fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -187,8 +194,11 @@ pub async fn list_versions(
     Extension(ctx): Ctx,
     Extension(svc): Svc,
     Path(file_id): Path<Uuid>,
+    Query(q): Query<ListVersionsQuery>,
 ) -> ApiResult<JsonBody<VersionDtoList>> {
-    let versions = svc.list_versions(&ctx, file_id).await?;
+    let versions = svc
+        .list_versions(&ctx, file_id, q.limit, q.offset.unwrap_or(0))
+        .await?;
     Ok(Json(VersionDtoList(
         versions.into_iter().map(VersionDto::from).collect(),
     )))
@@ -217,8 +227,12 @@ pub async fn update_metadata(
     headers: HeaderMap,
     Json(req): Json<UpdateMetadataReq>,
 ) -> ApiResult<JsonBody<FileDto>> {
-    let expected_meta_version = header_str(&headers, "if-match-metadata")
-        .and_then(|s| s.trim().trim_matches('"').parse::<i64>().ok());
+    let expected_meta_version = match header_str(&headers, "if-match-metadata") {
+        Some(s) => Some(s.trim().trim_matches('"').parse::<i64>().map_err(|_| {
+            DomainError::validation("if-match-metadata", "must be an integer version")
+        })?),
+        None => None,
+    };
     let patch = CustomMetadataPatch {
         entries: req.custom_metadata.into_iter().collect(),
     };
@@ -564,6 +578,13 @@ pub async fn finalize_version(
 
     let hash_value = hex::decode(&req.hash_hex)
         .map_err(|_| DomainError::validation("hash_hex", "must be valid hex-encoded SHA-256"))?;
+    if hash_value.len() != 32 {
+        return Err(DomainError::validation(
+            "hash_hex",
+            "must decode to exactly 32 bytes (SHA-256)",
+        )
+        .into());
+    }
 
     svc.finalize_upload_by_token(&claims, req.size, hash_value)
         .await?;

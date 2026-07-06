@@ -26,7 +26,7 @@ use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use file_storage::domain::audit::{AuditEntry, FileEvent};
+use file_storage::domain::audit::{AuditEntry, AuditOperation, FileEvent};
 use file_storage::domain::authz::TenantOnlyAuthorizer;
 use file_storage::domain::cleanup::{CleanupConfig, CleanupEngine};
 use file_storage::domain::data_plane::DataPlaneService;
@@ -292,6 +292,16 @@ impl CleanupStore for FaultyListVersionsStore {
         }
     }
 
+    async fn get_file(&self, file_id: Uuid) -> Result<Option<File>, DomainError> {
+        self.inner
+            .get_file(&toolkit_security::AccessScope::allow_all(), file_id)
+            .await
+    }
+
+    async fn has_in_progress_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError> {
+        self.inner.has_in_progress_multipart_for_file(file_id).await
+    }
+
     async fn delete_file_with_event(
         &self,
         scope: &toolkit_security::AccessScope,
@@ -301,6 +311,17 @@ impl CleanupStore for FaultyListVersionsStore {
     ) -> Result<bool, DomainError> {
         self.inner
             .delete_file_with_event(scope, file_id, audit, event)
+            .await
+    }
+
+    async fn delete_orphan_file_with_event(
+        &self,
+        file_id: Uuid,
+        audit: AuditEntry,
+        event: Option<FileEvent>,
+    ) -> Result<bool, DomainError> {
+        self.inner
+            .delete_orphan_file_with_event(file_id, audit, event)
             .await
     }
 
@@ -394,6 +415,124 @@ async fn recent_pending_version_is_not_swept_within_grace_window() {
         v.is_some(),
         "pending version must still exist after grace-protected sweep"
     );
+}
+
+/// P2 remediation 2.8: a file created by `POST /files` whose upload is
+/// abandoned leaves a `files` row with no versions and `content_id IS NULL`.
+/// Once the sweep reclaims that last (only) pending version, it must also
+/// delete the now-permanently-orphaned parent `files` row -- otherwise it
+/// lingers forever in `GET /files`, unable to ever serve content.
+///
+/// @cpt-cf-file-storage-fr-orphan-reconciliation
+#[tokio::test]
+async fn sweep_deletes_abandoned_zero_version_file() {
+    // grace = 0 → the file's only pending version is immediately eligible.
+    let (svc, _psvc, _msvc, _dp, store, engine, _backend) = build_all(0).await;
+    let tenant = Uuid::now_v7();
+    let ctx = ctx(tenant);
+
+    // create_file leaves exactly one pending version and content_id = NULL.
+    let ticket = svc.create_file(&ctx, new_file(), None).await.unwrap();
+
+    let result = engine.run_sweep().await;
+    assert_eq!(
+        result.abandoned_pending_deleted, 1,
+        "sweep should have deleted the abandoned pending version"
+    );
+    assert_eq!(
+        result.abandoned_files_deleted, 1,
+        "sweep should also have deleted the now-orphaned parent file row"
+    );
+
+    // The version row must be gone.
+    let version_after = store
+        .get_version(ticket.file_id, ticket.version_id)
+        .await
+        .unwrap();
+    assert!(
+        version_after.is_none(),
+        "pending version row should be deleted after sweep"
+    );
+
+    // The parent `files` row must be gone too -- not lingering as a
+    // permanent zero-version orphan.
+    let file_after = store
+        .get_file(&toolkit_security::AccessScope::allow_all(), ticket.file_id)
+        .await
+        .unwrap();
+    assert!(
+        file_after.is_none(),
+        "orphaned zero-version file row must be deleted by the sweep"
+    );
+
+    // A `file.deleted` event must have been enqueued for downstream consumers.
+    let events = store.list_file_events(ticket.file_id).await.unwrap();
+    assert!(
+        events.iter().any(|e| e.event_type == "file.deleted"),
+        "expected a file.deleted event for the orphan-reconciled file"
+    );
+}
+
+/// Negative control for P2 2.8: a file with one abandoned pending version AND
+/// one bound `Available` version must keep its parent `files` row -- the
+/// sweep may only reclaim the abandoned version, never the file itself, once
+/// real content still exists.
+///
+/// @cpt-cf-file-storage-fr-orphan-reconciliation
+#[tokio::test]
+async fn sweep_keeps_file_with_other_versions() {
+    let (svc, _psvc, _msvc, dp, store, engine, _backend) = build_all(0).await;
+    let tenant = Uuid::now_v7();
+    let ctx = ctx(tenant);
+
+    // v1: created, then immediately abandoned (never uploaded/finalized).
+    let v1 = svc.create_file(&ctx, new_file(), None).await.unwrap();
+
+    // v2: a second version on the same file, uploaded and bound as current.
+    let v2 = svc.presign_version(&ctx, v1.file_id).await.unwrap();
+    dp.put_content(
+        &ctx,
+        v1.file_id,
+        v2.version_id,
+        "text/plain",
+        Bytes::from_static(b"real content"),
+    )
+    .await
+    .unwrap();
+    svc.bind(&ctx, v1.file_id, v2.version_id, None)
+        .await
+        .unwrap();
+
+    // Sanity: two versions exist before the sweep.
+    let before = store.list_versions(v1.file_id).await.unwrap();
+    assert_eq!(before.len(), 2, "file should have 2 versions before sweep");
+
+    let result = engine.run_sweep().await;
+    assert_eq!(
+        result.abandoned_pending_deleted, 1,
+        "sweep should reclaim the one abandoned pending version (v1)"
+    );
+    assert_eq!(
+        result.abandoned_files_deleted, 0,
+        "the file must NOT be deleted -- it still has a real, bound version"
+    );
+
+    // v1's pending version row is gone.
+    let v1_after = store.get_version(v1.file_id, v1.version_id).await.unwrap();
+    assert!(
+        v1_after.is_none(),
+        "the abandoned pending version must still be reclaimed"
+    );
+
+    // The file row and its bound version must survive untouched.
+    let file_after = svc.get_file(&ctx, v1.file_id).await.unwrap();
+    assert_eq!(file_after.content_id, Some(v2.version_id));
+    let v2_after = store
+        .get_version(v1.file_id, v2.version_id)
+        .await
+        .unwrap()
+        .expect("bound version must survive the sweep");
+    assert_eq!(v2_after.status, VersionStatus::Available);
 }
 
 // ── test 2: expired multipart session sweep ────────────────────────────────────
@@ -1522,11 +1661,18 @@ async fn run_sweep_deletes_expired_idempotency_rows() {
     let backends = BackendRegistry::new(vec![Arc::clone(&backend)], "mem").expect("registry");
     let store = Store::new(Arc::clone(&db));
     let sweep_store: Arc<dyn CleanupStore> = Arc::new(store.clone());
+    // `orphan_grace_secs: 86400` (not `0`) -- these files exist purely to
+    // satisfy `idempotency_keys.file_id`'s FK, never bind real content, and
+    // are created moments before the sweep runs. A `0` grace window would
+    // make step 1 (P2 2.8) treat them as immediately-abandoned zero-version
+    // orphans and delete them, cascading away the very `idempotency_keys`
+    // rows this test seeds (`ON DELETE CASCADE`) before step 4 even runs --
+    // unrelated to what this test actually exercises.
     let engine = CleanupEngine::new(
         sweep_store,
         backends.clone(),
         CleanupConfig {
-            orphan_grace_secs: 0,
+            orphan_grace_secs: 86400,
         },
     );
 
@@ -1573,6 +1719,7 @@ async fn run_sweep_deletes_expired_idempotency_rows() {
         201,
         "{}",
         "etag-expired",
+        b"expired-hash",
         now - time::Duration::hours(1),
         now - time::Duration::hours(2),
     )
@@ -1594,6 +1741,7 @@ async fn run_sweep_deletes_expired_idempotency_rows() {
         201,
         "{\"ok\":true}",
         "etag-live",
+        b"live-hash",
         now + time::Duration::days(1),
         now,
     )
@@ -1714,5 +1862,498 @@ async fn run_sweep_does_not_touch_unpublished_outbox_rows() {
     assert!(
         event_rows.iter().any(|r| r.event_id == event_event_id),
         "unpublished events_outbox row must survive the sweep regardless of age"
+    );
+}
+
+// ── P2 remediation 2.3: migrate_backend CAS on backend pointer ─────────────────
+//
+// `VersionRepo::rebind_backend`'s `UPDATE` used to be keyed only on
+// `(file_id, version_id)`, with no predicate on the version's *current*
+// `backend_id`/`backend_path`. Two concurrent `migrate_backend` calls that
+// both read the same starting pointer would therefore both report success,
+// and whichever committed last would silently win with no way for the loser
+// to detect it. The CAS predicate added here
+// (`backend_id = expected AND backend_path = expected`) makes the loser's
+// `UPDATE` affect zero rows, so `migrate_backend` can detect and correctly
+// react to the race -- see the three-way branch below.
+//
+// @cpt-cf-file-storage-fr-backend-migration
+
+/// Two racers that both captured the SAME pre-migration `(backend_id,
+/// backend_path)` call `VersionRepo::rebind_backend` directly with that
+/// identical CAS predicate (simulating two `migrate_backend` calls that both
+/// read the same starting state before either commits): the first call must
+/// win (`rows_affected == 1`) and the second must lose (`rows_affected ==
+/// 0`) because the row no longer matches the predicate once the first call
+/// has committed. The version row must end up reflecting only the first
+/// call's target.
+///
+/// Fails against the pre-fix code (no `backend_id`/`backend_path` predicate
+/// on the CAS): both calls would report `rows_affected == 1` there.
+#[tokio::test]
+async fn concurrent_migrate_backend_second_racer_is_rejected() {
+    use toolkit_security::AccessScope;
+
+    use file_storage::infra::storage::repo::VersionRepo;
+
+    let db = build_db().await;
+    let backend: Arc<dyn StorageBackend> = Arc::new(InMemoryBackend::new("mem"));
+    let backends = BackendRegistry::new(vec![Arc::clone(&backend)], "mem").expect("registry");
+    let issuer = Arc::new(Issuer::generate(3600).expect("issuer"));
+    let authorizer: Arc<dyn file_storage::domain::authz::Authorizer> =
+        Arc::new(TenantOnlyAuthorizer);
+    let cfg = ServiceConfig {
+        default_url_ttl_secs: 3600,
+        sidecar_base_url: "http://sidecar.test".to_owned(),
+        default_page_size: 50,
+        max_page_size: 1000,
+        idempotency_ttl_secs: 86400,
+    };
+    let store = Store::new(Arc::clone(&db));
+    let svc = FileService::new(store.clone(), backends, issuer, authorizer, cfg, None, None);
+
+    let ctx = ctx(Uuid::now_v7());
+    let ticket = svc.create_file(&ctx, new_file(), None).await.unwrap();
+
+    let before = store
+        .get_version(ticket.file_id, ticket.version_id)
+        .await
+        .unwrap()
+        .expect("pending version row must exist");
+    assert_eq!(before.backend_id, "mem");
+
+    let conn = db.conn().expect("conn");
+    let scope = AccessScope::allow_all();
+    let repo = VersionRepo::new();
+
+    // Both racers read the SAME pre-migration state before either commits.
+    let expected_backend_id = before.backend_id.clone();
+    let expected_backend_path = before.backend_path.clone();
+
+    let first = repo
+        .rebind_backend(
+            &conn,
+            &scope,
+            ticket.file_id,
+            ticket.version_id,
+            &expected_backend_id,
+            &expected_backend_path,
+            "alt",
+            "/alt/racer-a",
+        )
+        .await
+        .expect("first racer's CAS call");
+    assert!(first, "first racer's CAS must win");
+
+    let second = repo
+        .rebind_backend(
+            &conn,
+            &scope,
+            ticket.file_id,
+            ticket.version_id,
+            &expected_backend_id,
+            &expected_backend_path,
+            "other",
+            "/other/racer-b",
+        )
+        .await
+        .expect("second racer's CAS call");
+    assert!(
+        !second,
+        "second racer's CAS must lose: the pointer already changed"
+    );
+
+    let after = store
+        .get_version(ticket.file_id, ticket.version_id)
+        .await
+        .unwrap()
+        .expect("version row must still exist");
+    assert_eq!(
+        after.backend_id, "alt",
+        "version must reflect only the FIRST racer's target"
+    );
+    assert_eq!(after.backend_path, "/alt/racer-a");
+}
+
+/// `(file_id, version_id, expected_backend_id, expected_backend_path)`,
+/// populated once the file/version under test exist and read by an injected
+/// racer hook once `migrate_backend`'s own `dest.put()` fires (see
+/// `RacingBackend` below).
+type RaceIds = Arc<std::sync::Mutex<Option<(Uuid, Uuid, String, String)>>>;
+
+/// A `StorageBackend` wrapper whose `put` runs a caller-supplied `FnOnce`
+/// hook exactly once -- immediately before delegating to the real backend --
+/// then never fires again. Used to model a second `migrate_backend` racer
+/// committing its own CAS write in the narrow real-world window between this
+/// call's destination `put()` and its own CAS attempt, deterministically and
+/// in-process: the "other racer" runs synchronously as a side effect of this
+/// call's own backend write, with no `sleep`/real concurrency involved.
+struct RacingBackend {
+    inner: Arc<dyn StorageBackend>,
+    #[allow(clippy::type_complexity)]
+    on_put: std::sync::Mutex<
+        Option<Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send>>,
+    >,
+}
+
+#[async_trait]
+impl StorageBackend for RacingBackend {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn capabilities(&self) -> file_storage::infra::backend::BackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    async fn put(&self, path: &str, bytes: Bytes) -> Result<(), DomainError> {
+        let hook = self.on_put.lock().expect("on_put mutex").take();
+        if let Some(hook) = hook {
+            hook().await;
+        }
+        self.inner.put(path, bytes).await
+    }
+
+    async fn get(&self, path: &str) -> Result<Bytes, DomainError> {
+        self.inner.get(path).await
+    }
+
+    async fn delete(&self, path: &str) -> Result<(), DomainError> {
+        self.inner.delete(path).await
+    }
+
+    async fn exists(&self, path: &str) -> Result<bool, DomainError> {
+        self.inner.exists(path).await
+    }
+}
+
+/// Regression for the P2 2.3 loser-cleanup path: a concurrent migration to a
+/// **different** target commits while this call is mid-flight. This call's
+/// own CAS must then lose and, because the winner's target differs from
+/// ours, our own destination write is safe to clean up -- it is never the
+/// live pointer.
+///
+/// Modeled deterministically: a `RacingBackend` wraps the monitored call's
+/// destination ("alt1") and, on its own `put()` (i.e. exactly in the window
+/// between writing the destination blob and attempting the CAS), commits a
+/// second migration to a DIFFERENT target ("alt2") using the version's
+/// ORIGINAL pre-migration pointer as the CAS predicate -- precisely what a
+/// genuine concurrent racer that read the same starting state would do.
+#[tokio::test]
+async fn migrate_backend_loser_target_blob_cleaned_up() {
+    let db = build_db().await;
+    let store = Store::new(Arc::clone(&db));
+
+    let mem_backend: Arc<dyn StorageBackend> = Arc::new(InMemoryBackend::new("mem"));
+    let alt1_inner: Arc<dyn StorageBackend> = Arc::new(InMemoryBackend::new("alt1"));
+    let alt2_backend: Arc<dyn StorageBackend> = Arc::new(InMemoryBackend::new("alt2"));
+
+    let tenant = Uuid::now_v7();
+    let content = Bytes::from_static(b"loser cleanup content");
+
+    // Populated once the file/version exist, read by the injected racer hook
+    // when `migrate_backend`'s own `dest.put()` fires.
+    let ids_cell: RaceIds = Arc::new(std::sync::Mutex::new(None));
+
+    let hook_ids_cell = Arc::clone(&ids_cell);
+    let hook_store = store.clone();
+    let hook_alt2 = Arc::clone(&alt2_backend);
+    let hook_bytes = content.clone();
+    let hook: Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send> =
+        Box::new(move || {
+            Box::pin(async move {
+                let (file_id, version_id, orig_backend_id, orig_backend_path) = hook_ids_cell
+                    .lock()
+                    .expect("ids_cell mutex")
+                    .clone()
+                    .expect("ids must be set before migrate_backend runs");
+                let dest_path = format!("/{file_id}/{version_id}");
+                hook_alt2
+                    .put(&dest_path, hook_bytes.clone())
+                    .await
+                    .expect("racer's own blob write");
+                let audit = AuditEntry::success(
+                    tenant,
+                    "system",
+                    Uuid::nil(),
+                    Some(file_id),
+                    AuditOperation::BackendMigrate,
+                    serde_json::json!({ "racer": "concurrent-winner-different-target" }),
+                );
+                let won = hook_store
+                    .rebind_version_backend(
+                        file_id,
+                        version_id,
+                        &orig_backend_id,
+                        &orig_backend_path,
+                        "alt2",
+                        &dest_path,
+                        audit,
+                    )
+                    .await
+                    .expect("racer's CAS call");
+                assert!(
+                    won,
+                    "the injected racer's CAS must win: nothing else has touched the row yet"
+                );
+            })
+        });
+
+    let racing_alt1: Arc<dyn StorageBackend> = Arc::new(RacingBackend {
+        inner: alt1_inner.clone(),
+        on_put: std::sync::Mutex::new(Some(hook)),
+    });
+
+    let backends = BackendRegistry::new(
+        vec![
+            Arc::clone(&mem_backend),
+            Arc::clone(&racing_alt1),
+            Arc::clone(&alt2_backend),
+        ],
+        "mem",
+    )
+    .expect("registry");
+
+    let issuer = Arc::new(Issuer::generate(3600).expect("issuer"));
+    let authorizer: Arc<dyn file_storage::domain::authz::Authorizer> =
+        Arc::new(TenantOnlyAuthorizer);
+    let cfg = ServiceConfig {
+        default_url_ttl_secs: 3600,
+        sidecar_base_url: "http://sidecar.test".to_owned(),
+        default_page_size: 50,
+        max_page_size: 1000,
+        idempotency_ttl_secs: 86400,
+    };
+    let svc = Arc::new(FileService::new(
+        store.clone(),
+        backends,
+        issuer,
+        authorizer,
+        cfg,
+        None,
+        None,
+    ));
+    let dp = DataPlaneService::new(Arc::clone(&svc) as Arc<dyn DataPlanePort>);
+
+    let ctx = ctx(tenant);
+    let ticket = svc.create_file(&ctx, new_file(), None).await.unwrap();
+    dp.put_content(
+        &ctx,
+        ticket.file_id,
+        ticket.version_id,
+        "text/plain",
+        content.clone(),
+    )
+    .await
+    .unwrap();
+    svc.bind(&ctx, ticket.file_id, ticket.version_id, None)
+        .await
+        .unwrap();
+
+    let before = store
+        .get_version(ticket.file_id, ticket.version_id)
+        .await
+        .unwrap()
+        .expect("version must exist before migration");
+    assert_eq!(before.backend_id, "mem");
+    *ids_cell.lock().expect("ids_cell mutex") = Some((
+        ticket.file_id,
+        ticket.version_id,
+        before.backend_id.clone(),
+        before.backend_path.clone(),
+    ));
+
+    let expected_dest_path = format!("/{}/{}", ticket.file_id, ticket.version_id);
+
+    let err = svc
+        .migrate_backend(&ctx, ticket.file_id, "alt1")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DomainError::Conflict { .. }),
+        "expected Conflict from the losing CAS, got {err:?}"
+    );
+
+    // The loser's own destination write must be cleaned up -- it is not the
+    // live pointer.
+    assert!(
+        !alt1_inner.exists(&expected_dest_path).await.unwrap(),
+        "loser's target blob must be cleaned up after the CAS loses"
+    );
+
+    // The winner's commit (to "alt2") must be untouched and must be the live
+    // pointer.
+    let after = store
+        .get_version(ticket.file_id, ticket.version_id)
+        .await
+        .unwrap()
+        .expect("version must still exist");
+    assert_eq!(after.backend_id, "alt2");
+    assert_eq!(after.backend_path, expected_dest_path);
+    let winner_bytes = alt2_backend.get(&expected_dest_path).await.unwrap();
+    assert_eq!(winner_bytes, content, "winner's blob must be untouched");
+}
+
+/// Regression for the P2 2.3 data-loss trap: a concurrent migration to the
+/// **SAME** target commits while this call is mid-flight. Because
+/// `Self::backend_path` is deterministic (`/{file_id}/{version_id}`), both
+/// racers write to the identical path on the identical backend. This call's
+/// own CAS must then lose, but -- critically -- it must recognize that the
+/// live pointer now equals its OWN destination and must return `Ok(())` as a
+/// no-op WITHOUT deleting the destination blob, since that blob is the
+/// winner's live content. A naive "always clean up my own destination on CAS
+/// failure" fix would destroy it here.
+///
+/// Modeled deterministically the same way as
+/// `migrate_backend_loser_target_blob_cleaned_up`, but the injected racer
+/// commits to the SAME target ("alt1") as the monitored call.
+#[tokio::test]
+async fn migrate_backend_same_target_race_preserves_winner_blob() {
+    let db = build_db().await;
+    let store = Store::new(Arc::clone(&db));
+
+    let mem_backend: Arc<dyn StorageBackend> = Arc::new(InMemoryBackend::new("mem"));
+    let alt1_inner: Arc<dyn StorageBackend> = Arc::new(InMemoryBackend::new("alt1"));
+
+    let tenant = Uuid::now_v7();
+    let content = Bytes::from_static(b"same target race content");
+
+    let ids_cell: RaceIds = Arc::new(std::sync::Mutex::new(None));
+
+    let hook_ids_cell = Arc::clone(&ids_cell);
+    let hook_store = store.clone();
+    let hook_alt1 = Arc::clone(&alt1_inner);
+    let hook_bytes = content.clone();
+    let hook: Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send> =
+        Box::new(move || {
+            Box::pin(async move {
+                let (file_id, version_id, orig_backend_id, orig_backend_path) = hook_ids_cell
+                    .lock()
+                    .expect("ids_cell mutex")
+                    .clone()
+                    .expect("ids must be set before migrate_backend runs");
+                let dest_path = format!("/{file_id}/{version_id}");
+                // The winner commits its own blob to the SAME path/backend
+                // the monitored call is about to write to.
+                hook_alt1
+                    .put(&dest_path, hook_bytes.clone())
+                    .await
+                    .expect("racer's own blob write");
+                let audit = AuditEntry::success(
+                    tenant,
+                    "system",
+                    Uuid::nil(),
+                    Some(file_id),
+                    AuditOperation::BackendMigrate,
+                    serde_json::json!({ "racer": "concurrent-winner-same-target" }),
+                );
+                let won = hook_store
+                    .rebind_version_backend(
+                        file_id,
+                        version_id,
+                        &orig_backend_id,
+                        &orig_backend_path,
+                        "alt1",
+                        &dest_path,
+                        audit,
+                    )
+                    .await
+                    .expect("racer's CAS call");
+                assert!(
+                    won,
+                    "the injected racer's CAS must win: nothing else has touched the row yet"
+                );
+            })
+        });
+
+    let racing_alt1: Arc<dyn StorageBackend> = Arc::new(RacingBackend {
+        inner: alt1_inner.clone(),
+        on_put: std::sync::Mutex::new(Some(hook)),
+    });
+
+    let backends = BackendRegistry::new(
+        vec![Arc::clone(&mem_backend), Arc::clone(&racing_alt1)],
+        "mem",
+    )
+    .expect("registry");
+
+    let issuer = Arc::new(Issuer::generate(3600).expect("issuer"));
+    let authorizer: Arc<dyn file_storage::domain::authz::Authorizer> =
+        Arc::new(TenantOnlyAuthorizer);
+    let cfg = ServiceConfig {
+        default_url_ttl_secs: 3600,
+        sidecar_base_url: "http://sidecar.test".to_owned(),
+        default_page_size: 50,
+        max_page_size: 1000,
+        idempotency_ttl_secs: 86400,
+    };
+    let svc = Arc::new(FileService::new(
+        store.clone(),
+        backends,
+        issuer,
+        authorizer,
+        cfg,
+        None,
+        None,
+    ));
+    let dp = DataPlaneService::new(Arc::clone(&svc) as Arc<dyn DataPlanePort>);
+
+    let ctx = ctx(tenant);
+    let ticket = svc.create_file(&ctx, new_file(), None).await.unwrap();
+    dp.put_content(
+        &ctx,
+        ticket.file_id,
+        ticket.version_id,
+        "text/plain",
+        content.clone(),
+    )
+    .await
+    .unwrap();
+    svc.bind(&ctx, ticket.file_id, ticket.version_id, None)
+        .await
+        .unwrap();
+
+    let before = store
+        .get_version(ticket.file_id, ticket.version_id)
+        .await
+        .unwrap()
+        .expect("version must exist before migration");
+    assert_eq!(before.backend_id, "mem");
+    *ids_cell.lock().expect("ids_cell mutex") = Some((
+        ticket.file_id,
+        ticket.version_id,
+        before.backend_id.clone(),
+        before.backend_path.clone(),
+    ));
+
+    let expected_dest_path = format!("/{}/{}", ticket.file_id, ticket.version_id);
+
+    // The CAS loses, but the same-target race must be treated as a
+    // successful no-op, not an error.
+    svc.migrate_backend(&ctx, ticket.file_id, "alt1")
+        .await
+        .expect("same-target race must be a no-op, not an error");
+
+    // The version row must reflect the winner's commit (which happens to be
+    // the same target this call also wrote to).
+    let after = store
+        .get_version(ticket.file_id, ticket.version_id)
+        .await
+        .unwrap()
+        .expect("version must still exist");
+    assert_eq!(after.backend_id, "alt1");
+    assert_eq!(after.backend_path, expected_dest_path);
+
+    // Critically: the destination blob must still exist and hold the
+    // winner's content -- a naive unconditional cleanup would have deleted
+    // it here, destroying the winner's live data.
+    assert!(
+        alt1_inner.exists(&expected_dest_path).await.unwrap(),
+        "winner's destination blob must NOT be deleted by the loser's cleanup"
+    );
+    let stored_bytes = alt1_inner.get(&expected_dest_path).await.unwrap();
+    assert_eq!(
+        stored_bytes, content,
+        "surviving blob must match the winner's bytes"
     );
 }

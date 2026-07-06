@@ -173,6 +173,9 @@ impl FileService {
         v: &VersionRef,
         constraints: UploadConstraints,
     ) -> Result<String, DomainError> {
+        // P2 2.13: resolve (and validate) the path segment before doing any
+        // signing work, so a rejected `op` never wastes a token mint.
+        let verb = content_verb(op)?;
         let now = OffsetDateTime::now_utc();
         // P2 1.8: mint a fresh correlation id per signed URL. The sidecar
         // echoes it back as `x-request-id` on its finalize callback so both
@@ -189,11 +192,6 @@ impl FileService {
             request_id: Uuid::now_v7().to_string(),
         };
         let token = self.issuer.issue(claims, now)?;
-        let verb = match op {
-            Op::Get => "download",
-            Op::Put => "upload",
-            Op::MultipartPart => "multipart-part",
-        };
         Ok(format!(
             "{}/api/file-storage-data/v1/{}/{}/{}?fs-token={}",
             self.cfg.sidecar_base_url.trim_end_matches('/'),
@@ -264,6 +262,30 @@ impl FileService {
             event_type: event_type.to_owned(),
             payload,
         }
+    }
+}
+
+/// Map a [`sign_url`](FileService::sign_url) [`Op`] to its sidecar path
+/// segment (`/api/file-storage-data/v1/{verb}/{file}/{version}`).
+///
+/// P2 2.13: `Op::MultipartPart` is rejected rather than mapped. A multipart
+/// *part* upload lives at a distinct sidecar route —
+/// `/api/file-storage-data/v1/multipart/{file}/{version}/parts/{part}`
+/// (`sidecar.rs`'s `upload_multipart_part` route) — and needs part-specific
+/// claims (`upload_id`, `part_number`, `offset`, exact `size`) that this
+/// generic two-segment template has no way to carry. Mapping it to
+/// `"multipart-part"` here previously produced
+/// `/api/file-storage-data/v1/multipart-part/{file}/{version}`, a URL the
+/// sidecar does not serve (would 404). `MultipartService::initiate` already
+/// mints correct part URLs directly against the real route and is the single
+/// source of truth for that shape, so `sign_url` must never be asked to mint
+/// one — reject instead of re-deriving (and risking re-breaking) that
+/// mapping here.
+fn content_verb(op: Op) -> Result<&'static str, DomainError> {
+    match op {
+        Op::Get => Ok("download"),
+        Op::Put => Ok("upload"),
+        Op::MultipartPart => Err(DomainError::InternalError),
     }
 }
 

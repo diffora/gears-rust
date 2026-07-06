@@ -31,6 +31,7 @@ pub struct FileStorageMetricsMeter {
     backend_error: Counter<u64>,
     quota_denied: Counter<u64>,
     sweep_abandoned_pending_deleted: Counter<u64>,
+    sweep_abandoned_files_deleted: Counter<u64>,
     sweep_expired_multipart_aborted: Counter<u64>,
     sweep_retention_expired_deleted: Counter<u64>,
     sweep_idempotency_keys_deleted: Counter<u64>,
@@ -60,6 +61,12 @@ impl FileStorageMetricsMeter {
             sweep_abandoned_pending_deleted: meter
                 .u64_counter(format!("{prefix}_sweep_abandoned_pending_deleted"))
                 .with_description("Abandoned pending version rows deleted by the cleanup sweep")
+                .build(),
+            sweep_abandoned_files_deleted: meter
+                .u64_counter(format!("{prefix}_sweep_abandoned_files_deleted"))
+                .with_description(
+                    "Permanent zero-version orphan `files` rows deleted by the cleanup sweep",
+                )
                 .build(),
             sweep_expired_multipart_aborted: meter
                 .u64_counter(format!("{prefix}_sweep_expired_multipart_aborted"))
@@ -122,12 +129,15 @@ impl FileStorageMetricsPort for FileStorageMetricsMeter {
     fn record_sweep_result(
         &self,
         abandoned_pending_deleted: u64,
+        abandoned_files_deleted: u64,
         expired_multipart_aborted: u64,
         retention_expired_deleted: u64,
         idempotency_keys_deleted: u64,
     ) {
         self.sweep_abandoned_pending_deleted
             .add(abandoned_pending_deleted, &[]);
+        self.sweep_abandoned_files_deleted
+            .add(abandoned_files_deleted, &[]);
         self.sweep_expired_multipart_aborted
             .add(expired_multipart_aborted, &[]);
         self.sweep_retention_expired_deleted
@@ -174,6 +184,7 @@ impl FileStorageMetricsPort for NoopMetrics {
     fn record_sweep_result(
         &self,
         _abandoned_pending_deleted: u64,
+        _abandoned_files_deleted: u64,
         _expired_multipart_aborted: u64,
         _retention_expired_deleted: u64,
         _idempotency_keys_deleted: u64,

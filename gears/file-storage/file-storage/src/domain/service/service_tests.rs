@@ -6,6 +6,8 @@
 
 use crate::domain::error::DomainError;
 use crate::domain::policy::{EffectivePolicy, MetadataLimits, MimeSizeOverride, PolicyResolver};
+use crate::domain::service::content_verb;
+use crate::infra::signed_url::Op;
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -270,4 +272,21 @@ fn check_metadata_limits_total_bytes_ok() {
 fn check_metadata_limits_empty_entries_always_ok() {
     let policy = policy_with_meta_limits(Some(0), Some(0), Some(0), Some(0));
     assert!(PolicyResolver::check_metadata_limits(&policy, &[]).is_ok());
+}
+
+// ── P2 2.13: `sign_url`'s op → sidecar-path-segment mapping ─────────────────
+
+#[test]
+fn sign_url_rejects_or_correctly_maps_multipart_part() {
+    // `Op::MultipartPart` has no correct two-segment mapping under
+    // `/api/file-storage-data/v1/{verb}/{file}/{version}` — the real sidecar
+    // route for a part is `/api/file-storage-data/v1/multipart/{file}/{version}/parts/{part}`,
+    // which `MultipartService` mints directly. `sign_url` must reject it
+    // rather than mint a URL that would 404 against the sidecar.
+    let err = content_verb(Op::MultipartPart).unwrap_err();
+    assert!(matches!(err, DomainError::InternalError), "got {err:?}");
+
+    // The two verbs `sign_url` is actually used for must still map correctly.
+    assert_eq!(content_verb(Op::Get).unwrap(), "download");
+    assert_eq!(content_verb(Op::Put).unwrap(), "upload");
 }

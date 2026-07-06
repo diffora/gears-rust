@@ -11,14 +11,20 @@ fn gear_provides_p1_and_p2_migrations() {
     //   3. P2 multipart plan columns (declared_size + part_size on multipart_uploads)
     //   4. P2 remediation 0.10: idempotency_keys.subject_id (binds a replay to
     //      the authenticated caller, not just the request-body owner)
+    //   5. P2 remediation 2.1: idempotency_keys.request_hash (binds a replay to
+    //      the request body that created it, not just the caller)
+    //   6. P2 remediation 2.4: policies partial unique indexes (at most one row
+    //      per (tenant_id, scope, scope_owner_id), closing the upsert race)
     // (init()/register_rest() need a live GearCtx — those seams are covered by
     // the E2E suite, not here.)
     let gear = FileStorageGear::default();
     assert_eq!(
         gear.migrations().len(),
-        4,
-        "gear must provide the P1, P2 initial, P2 multipart plan columns, and \
-         P2 remediation 0.10 idempotency subject_id migrations"
+        6,
+        "gear must provide the P1, P2 initial, P2 multipart plan columns, P2 \
+         remediation 0.10 idempotency subject_id, P2 remediation 2.1 \
+         idempotency request_hash, and P2 remediation 2.4 policies unique \
+         scope migrations"
     );
 }
 

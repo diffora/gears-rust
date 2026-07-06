@@ -77,6 +77,7 @@ impl IdempotencyRepo {
         response_status: i32,
         response_body: &str,
         response_etag: &str,
+        request_hash: &[u8],
         expires_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
@@ -110,6 +111,7 @@ impl IdempotencyRepo {
             response_status: Set(response_status),
             response_body: Set(response_body.to_owned()),
             response_etag: Set(response_etag.to_owned()),
+            request_hash: Set(request_hash.to_vec()),
             created_at: Set(now),
             expires_at: Set(expires_at),
         };
@@ -148,5 +150,6 @@ fn record_from_model(m: Model) -> IdempotencyRecord {
         response_status: u16::try_from(m.response_status).unwrap_or(201),
         response_body: m.response_body,
         response_etag: m.response_etag,
+        request_hash: m.request_hash,
     }
 }

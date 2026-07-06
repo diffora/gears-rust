@@ -97,11 +97,34 @@ pub trait CleanupStore: Send + Sync {
     /// List all versions of a file, newest first.
     async fn list_versions(&self, file_id: Uuid) -> Result<Vec<FileVersion>, DomainError>;
 
+    /// Fetch a file by id (unscoped -- the sweep runs across all tenants).
+    async fn get_file(&self, file_id: Uuid) -> Result<Option<File>, DomainError>;
+
+    /// Whether `file_id` currently has at least one `in_progress` multipart
+    /// upload session (regardless of `expires_at`). Guards the P2 2.8
+    /// orphan-file delete against racing a not-yet-expired multipart session
+    /// whose pending version was just reclaimed by `sweep_abandoned_pending`
+    /// (keyed only on version age, not multipart session state) -- without
+    /// this check, deleting the file would `ON DELETE CASCADE` the still
+    /// live session out from under the upload.
+    async fn has_in_progress_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError>;
+
     /// Delete a file row, optionally enqueue a file-event, and audit — all in
     /// one transaction. Returns `true` if a row was removed.
     async fn delete_file_with_event(
         &self,
         scope: &AccessScope,
+        file_id: Uuid,
+        audit: AuditEntry,
+        event: Option<FileEvent>,
+    ) -> Result<bool, DomainError>;
+
+    /// Delete the parent `files` row of an abandoned-pending-version orphan
+    /// (P2 2.8), re-verifying **inside the same transaction** that the file
+    /// still has zero versions and a `NULL` `content_id` before deleting it.
+    /// Returns `true` if the row was removed.
+    async fn delete_orphan_file_with_event(
+        &self,
         file_id: Uuid,
         audit: AuditEntry,
         event: Option<FileEvent>,
@@ -374,11 +397,12 @@ pub trait FileStorageMetricsPort: Send + Sync {
     fn record_quota_denied(&self, op: &str);
 
     /// Record one background cleanup sweep's tallies — mirrors
-    /// `cleanup::SweepResult`'s four counters (the fourth,
-    /// `idempotency_keys_deleted`, landed in the P2 1.9 remediation).
+    /// `cleanup::SweepResult`'s counters (`idempotency_keys_deleted` landed
+    /// in the P2 1.9 remediation; `abandoned_files_deleted` in P2 2.8).
     fn record_sweep_result(
         &self,
         abandoned_pending_deleted: u64,
+        abandoned_files_deleted: u64,
         expired_multipart_aborted: u64,
         retention_expired_deleted: u64,
         idempotency_keys_deleted: u64,

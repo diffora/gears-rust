@@ -26,7 +26,8 @@ use crate::domain::audit::{AuditEntry, AuditOperation};
 use crate::domain::authz::{Authorizer, actions};
 use crate::domain::error::DomainError;
 use crate::domain::multipart::{
-    MultipartPartPlan, MultipartPlan, MultipartUploadState, compute_plan,
+    DEFAULT_MIN_PART_SIZE, MAX_PART_SIZE, MultipartPartPlan, MultipartPlan, MultipartUploadState,
+    compute_plan,
 };
 use crate::domain::policy::{PolicyResolver, PolicyScope};
 use crate::domain::ports::{FileStorageMetricsPort, MultipartStore};
@@ -278,6 +279,25 @@ impl MultipartService {
             return Err(DomainError::multipart_not_supported(backend.id()));
         }
 
+        // Validate the client-supplied `preferred_part_size` hint against a
+        // sane range *before* it can reach `compute_plan` (P2 remediation
+        // 2.11). Left unchecked, a near-`u64::MAX` value risks an arithmetic
+        // overflow in `compute_plan`/`round_up_to` and, on backends that
+        // don't hit that overflow, a huge `Vec::with_capacity` allocation.
+        // Rejecting is preferred over silently clamping so the client gets
+        // an explicit, actionable error.
+        if let Some(preferred) = preferred_part_size
+            && !(DEFAULT_MIN_PART_SIZE..=MAX_PART_SIZE).contains(&preferred)
+        {
+            return Err(DomainError::validation(
+                "preferred_part_size",
+                format!(
+                    "must be between {DEFAULT_MIN_PART_SIZE} and {MAX_PART_SIZE} bytes \
+                     (got {preferred})"
+                ),
+            ));
+        }
+
         // Policy checks: allowed mime type and size (at initiate, against the
         // declared total size — DESIGN §4.6 server-authoritative gate).
         //
@@ -324,7 +344,7 @@ impl MultipartService {
         // Compute the server-authoritative parts plan (FEATURE §3).
         // `backend_min_part_size` is not yet exposed by the BackendCapabilities
         // API so we fall back to the `DEFAULT_MIN_PART_SIZE` constant.
-        let (chosen_part_size, raw_parts) = compute_plan(declared_size, preferred_part_size, None);
+        let (chosen_part_size, raw_parts) = compute_plan(declared_size, preferred_part_size, None)?;
 
         // Pre-register the pending file_versions row.
         self.store

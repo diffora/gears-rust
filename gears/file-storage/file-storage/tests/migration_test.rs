@@ -330,6 +330,150 @@ async fn custom_metadata_rejects_duplicate_key_per_file() {
     );
 }
 
+// ── idempotency_keys additive columns (P2 remediation) ───────────────────────
+
+/// P2 remediation 2.1: `request_hash` binds a replay to the request body that
+/// created it. The column must be additive-safe — an INSERT that omits it
+/// (as every pre-2.1 write path effectively did) must succeed and default to
+/// an empty blob, never a constraint violation, and never NULL (a NULL would
+/// compare unequal to itself in a naive check, and more importantly could
+/// never legitimately match a freshly computed 32-byte SHA-256 either way —
+/// but `NOT NULL DEFAULT` is the deliberate choice so a pre-migration/omitted
+/// row fails closed on any future replay rather than silently passing).
+#[tokio::test]
+async fn idempotency_keys_request_hash_column_exists_with_default() {
+    let db = migrated_db().await;
+    insert_file(&db, FILE).await;
+    db.execute(stmt(
+        &db,
+        format!(
+            "INSERT INTO idempotency_keys \
+             (tenant_id, owner_kind, owner_id, idempotency_key, file_id, \
+              response_status, response_body, response_etag, expires_at) \
+             VALUES ('{TENANT}', 'user', '{OWNER}', 'k1', '{FILE}', \
+                     201, '{{}}', 'etag', '2999-01-01T00:00:00Z')"
+        ),
+    ))
+    .await
+    .expect("insert idempotency row omitting request_hash must succeed");
+
+    let hash_len = db
+        .query_one(stmt(
+            &db,
+            format!(
+                "SELECT LENGTH(request_hash) AS c FROM idempotency_keys \
+                 WHERE tenant_id = '{TENANT}' AND idempotency_key = 'k1'"
+            ),
+        ))
+        .await
+        .expect("select request_hash length")
+        .expect("one row")
+        .try_get::<i64>("", "c")
+        .expect("i64 column c");
+    assert_eq!(
+        hash_len, 0,
+        "request_hash must default to an empty blob, not a populated/garbage value"
+    );
+}
+
+// ── policies partial unique indexes (P2 remediation 2.4) ─────────────────────
+
+/// P2 remediation 2.4: `policies_user_scope_unique_idx` enforces at most one
+/// row per `(tenant_id, 'user', scope_owner_id)`. Two concurrent `PUT
+/// /policy` calls for the same user scope used to be able to leave two rows
+/// (delete-then-insert with no transaction and no unique constraint); this
+/// index turns the second writer's insert into a hard constraint violation
+/// instead. `policies.tenant_id` / `scope_owner_id` are declared `TEXT` in
+/// this gear's SQLite DDL (see `m20260701_000001_p2_initial.rs`), not
+/// `BLOB`, so plain quoted UUID string literals are the correct raw-SQL
+/// representation here (unlike `hash_value`/`request_hash`, which are
+/// declared `BLOB` and need `X'...'` literals).
+#[tokio::test]
+async fn policies_unique_index_rejects_duplicate_scope_tuple() {
+    let db = migrated_db().await;
+    let owner2 = "00000000-0000-0000-0000-0000000000b2";
+    db.execute(stmt(
+        &db,
+        format!(
+            "INSERT INTO policies (policy_id, tenant_id, scope, scope_owner_id, body) \
+             VALUES ('00000000-0000-0000-0000-0000000000e1', '{TENANT}', 'user', '{owner2}', '{{}}')"
+        ),
+    ))
+    .await
+    .expect("first user-scope policy insert");
+
+    let res = db
+        .execute(stmt(
+            &db,
+            format!(
+                "INSERT INTO policies (policy_id, tenant_id, scope, scope_owner_id, body) \
+                 VALUES ('00000000-0000-0000-0000-0000000000e2', '{TENANT}', 'user', '{owner2}', '{{}}')"
+            ),
+        ))
+        .await;
+    assert!(
+        res.is_err(),
+        "duplicate (tenant_id, 'user', scope_owner_id) must violate \
+         policies_user_scope_unique_idx: {res:?}"
+    );
+}
+
+/// P2 remediation 2.4: `policies_tenant_scope_unique_idx` enforces at most
+/// one row per `(tenant_id, 'tenant')` (i.e. `scope_owner_id IS NULL`). A
+/// plain `UNIQUE (tenant_id, scope, scope_owner_id)` index would NOT catch
+/// this — Postgres/SQLite both treat every `NULL` as distinct — hence the
+/// dedicated partial index scoped to `scope_owner_id IS NULL`.
+#[tokio::test]
+async fn policies_unique_index_rejects_duplicate_tenant_scope() {
+    let db = migrated_db().await;
+    db.execute(stmt(
+        &db,
+        format!(
+            "INSERT INTO policies (policy_id, tenant_id, scope, scope_owner_id, body) \
+             VALUES ('00000000-0000-0000-0000-0000000000e3', '{TENANT}', 'tenant', NULL, '{{}}')"
+        ),
+    ))
+    .await
+    .expect("first tenant-scope policy insert");
+
+    let res = db
+        .execute(stmt(
+            &db,
+            format!(
+                "INSERT INTO policies (policy_id, tenant_id, scope, scope_owner_id, body) \
+                 VALUES ('00000000-0000-0000-0000-0000000000e4', '{TENANT}', 'tenant', NULL, '{{}}')"
+            ),
+        ))
+        .await;
+    assert!(
+        res.is_err(),
+        "duplicate (tenant_id, 'tenant') with NULL scope_owner_id must \
+         violate policies_tenant_scope_unique_idx: {res:?}"
+    );
+}
+
+/// Sanity check that the partial indexes don't over-constrain: two different
+/// tenants can each have their own user-scope row for the same owner id, and
+/// a tenant-scope row coexists fine with user-scope rows for the same
+/// tenant.
+#[tokio::test]
+async fn policies_unique_index_allows_distinct_scopes() {
+    let db = migrated_db().await;
+    let tenant2 = "00000000-0000-0000-0000-0000000000a2";
+    db.execute(stmt(
+        &db,
+        format!(
+            "INSERT INTO policies (policy_id, tenant_id, scope, scope_owner_id, body) VALUES \
+             ('00000000-0000-0000-0000-0000000000e5', '{TENANT}', 'tenant', NULL, '{{}}'), \
+             ('00000000-0000-0000-0000-0000000000e6', '{TENANT}', 'user', '{OWNER}', '{{}}'), \
+             ('00000000-0000-0000-0000-0000000000e7', '{tenant2}', 'user', '{OWNER}', '{{}}')"
+        ),
+    ))
+    .await
+    .expect("distinct scopes must not collide across the partial indexes");
+    assert_eq!(count(&db, "SELECT COUNT(*) AS c FROM policies").await, 3);
+}
+
 // ── cascade delete (FK enforcement enabled) ──────────────────────────────────
 
 #[tokio::test]

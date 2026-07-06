@@ -44,6 +44,9 @@ pub struct CleanupConfig {
 pub struct SweepResult {
     /// Number of abandoned pending version rows deleted (and their blobs).
     pub abandoned_pending_deleted: usize,
+    /// Number of permanent zero-version orphan `files` rows deleted after
+    /// their last abandoned pending version was reclaimed (P2 2.8).
+    pub abandoned_files_deleted: usize,
     /// Number of expired in-progress multipart sessions aborted.
     pub expired_multipart_aborted: usize,
     /// Number of files deleted because a retention rule triggered.
@@ -113,8 +116,11 @@ impl CleanupEngine {
             time::Duration::seconds(i64::try_from(self.config.orphan_grace_secs).unwrap_or(3600));
         let grace_cutoff = now - grace;
 
-        // Step 1 -- abandoned pending versions.
-        result.abandoned_pending_deleted += self.sweep_abandoned_pending(grace_cutoff).await;
+        // Step 1 -- abandoned pending versions (+ the parent `files` row, if
+        // reclaiming the version leaves it a permanent zero-version orphan).
+        let (pending_deleted, files_deleted) = self.sweep_abandoned_pending(grace_cutoff).await;
+        result.abandoned_pending_deleted += pending_deleted;
+        result.abandoned_files_deleted += files_deleted;
 
         // Step 2 -- expired multipart sessions.
         result.expired_multipart_aborted += self.sweep_expired_multipart(now).await;
@@ -143,7 +149,9 @@ impl CleanupEngine {
 
     /// Delete pending version rows that were never finalised and are older than
     /// `grace_cutoff`. Blob bytes are cleaned up on a best-effort basis.
-    async fn sweep_abandoned_pending(&self, grace_cutoff: OffsetDateTime) -> usize {
+    ///
+    /// Returns `(pending_versions_deleted, orphan_files_deleted)`.
+    async fn sweep_abandoned_pending(&self, grace_cutoff: OffsetDateTime) -> (usize, usize) {
         let versions = match self
             .store
             .list_abandoned_pending_versions(grace_cutoff)
@@ -155,13 +163,14 @@ impl CleanupEngine {
                     error = ?e,
                     "cleanup: failed to list abandoned pending versions"
                 );
-                return 0;
+                return (0, 0);
             }
         };
 
-        let mut count = 0_usize;
+        let mut pending_count = 0_usize;
+        let mut files_count = 0_usize;
         for v in versions {
-            count += self
+            let (pending, files) = self
                 .delete_abandoned_pending_version(
                     v.file_id,
                     v.version_id,
@@ -169,18 +178,26 @@ impl CleanupEngine {
                     &v.backend_path,
                 )
                 .await;
+            pending_count += pending;
+            files_count += files;
         }
-        count
+        (pending_count, files_count)
     }
 
-    /// Delete one abandoned pending version row and clean up its backend blob.
+    /// Delete one abandoned pending version row, clean up its backend blob,
+    /// and -- if that leaves the parent file with no versions and a `NULL`
+    /// `content_id` -- delete the now-permanently-orphaned `files` row too
+    /// (P2 2.8).
+    ///
+    /// Returns `(pending_versions_deleted, orphan_files_deleted)`, each `0`
+    /// or `1`.
     async fn delete_abandoned_pending_version(
         &self,
         file_id: Uuid,
         version_id: Uuid,
         backend_id: &str,
         backend_path: &str,
-    ) -> usize {
+    ) -> (usize, usize) {
         let audit = AuditEntry {
             tenant_id: Uuid::nil(),
             actor_kind: "system".to_owned(),
@@ -199,11 +216,12 @@ impl CleanupEngine {
                 // Best-effort blob cleanup -- a failure here leaves an unreachable
                 // orphan blob which is acceptable in P2.
                 self.best_effort_delete(backend_id, backend_path).await;
-                1
+                let files_deleted = self.maybe_delete_orphaned_file(file_id).await;
+                (1, files_deleted)
             }
             Ok(false) => {
                 // Already removed by a concurrent sweep -- fine.
-                0
+                (0, 0)
             }
             Err(e) => {
                 tracing::warn!(
@@ -212,7 +230,148 @@ impl CleanupEngine {
                     %version_id,
                     "cleanup: failed to delete abandoned pending version"
                 );
+                (0, 0)
+            }
+        }
+    }
+
+    /// After deleting a file's last abandoned pending version, check whether
+    /// the parent `files` row is now a permanent zero-version orphan (no
+    /// versions left **and** `content_id IS NULL`) and delete it too if so.
+    ///
+    /// The checks here are a cheap pre-filter run against a fresh (but
+    /// pre-transaction) snapshot -- to skip the extra round-trip on the
+    /// common case where the file still has other versions or content. The
+    /// authoritative guard re-runs the same two checks fresh **inside** the
+    /// same transaction as the file delete
+    /// ([`crate::domain::ports::CleanupStore::delete_orphan_file_with_event`]),
+    /// so a version inserted or bound in the gap between this pre-check and
+    /// that call cannot cause data loss: the delete simply aborts and the
+    /// file (with its new version) is left untouched.
+    ///
+    /// Returns `1` if the file row was deleted, `0` otherwise.
+    ///
+    /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    async fn maybe_delete_orphaned_file(&self, file_id: Uuid) -> usize {
+        let Some(file) = self.orphan_candidate_file(file_id).await else {
+            return 0;
+        };
+
+        let audit = orphan_reconcile_audit(
+            file_id,
+            serde_json::json!({
+                "reason": "abandoned_pending_version_orphan_file",
+            }),
+        );
+        let event = Some(FileEvent {
+            tenant_id: file.tenant_id,
+            owner_id: file.owner_id,
+            file_id: file.file_id,
+            event_type: "file.deleted".to_owned(),
+            payload: serde_json::json!({
+                "reason": "abandoned_pending_version_orphan_file",
+            }),
+        });
+
+        match self
+            .store
+            .delete_orphan_file_with_event(file_id, audit, event)
+            .await
+        {
+            Ok(true) => 1,
+            Ok(false) => {
+                // Guard failed inside the transaction (a version now exists
+                // / is bound) or a concurrent sweep already removed it --
+                // both fine.
                 0
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    %file_id,
+                    "cleanup: failed to delete orphaned zero-version file"
+                );
+                0
+            }
+        }
+    }
+
+    /// Pre-check (fresh, but pre-transaction) whether `file_id` looks like a
+    /// permanent zero-version orphan: no remaining versions and a `NULL`
+    /// `content_id`. Returns the `File` row to delete if so, `None` if it is
+    /// not (or no longer) an orphan, or a lookup failed (logged).
+    ///
+    /// Extracted from [`Self::maybe_delete_orphaned_file`] to keep its
+    /// cognitive complexity down; see that method's docs for why this being
+    /// a pre-transaction snapshot is safe.
+    async fn orphan_candidate_file(&self, file_id: Uuid) -> Option<file_storage_sdk::File> {
+        let remaining = match self.store.list_versions(file_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    %file_id,
+                    "cleanup: failed to list versions while checking for orphaned file"
+                );
+                return None;
+            }
+        };
+        if !remaining.is_empty() {
+            return None;
+        }
+
+        let file = match self.store.get_file(file_id).await {
+            Ok(Some(f)) => f,
+            Ok(None) => return None, // Already gone -- fine.
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    %file_id,
+                    "cleanup: failed to fetch file while checking for orphaned file"
+                );
+                return None;
+            }
+        };
+        if file.content_id.is_some() {
+            // Bound content means a version exists (the `remaining` snapshot
+            // above must be stale) -- leave the file alone.
+            return None;
+        }
+
+        if self.has_blocking_multipart_session(file_id).await {
+            return None;
+        }
+
+        Some(file)
+    }
+
+    /// Whether `file_id` has a not-yet-expired multipart session that should
+    /// block orphan-file deletion (P2 2.8).
+    ///
+    /// `sweep_abandoned_pending` keys only on a pending version's age, so a
+    /// multipart session that has legitimately not expired yet can still have
+    /// its backing version aged past the orphan grace window and reclaimed
+    /// earlier in the same sweep pass. If [`Self::orphan_candidate_file`]'s
+    /// caller went on to delete the file here too, the `files` FK's
+    /// `ON DELETE CASCADE` would take the still-`in_progress`
+    /// `multipart_uploads` row with it, destroying a live upload with no
+    /// error surfaced to the caller. Returning `true` leaves the file for a
+    /// later sweep instead -- once the session is aborted/completed (by
+    /// `sweep_expired_multipart` or the user), a subsequent pass will find
+    /// zero versions and no in-progress session, and finish reclaiming it
+    /// then. A lookup failure is treated as blocking (logged), erring toward
+    /// not deleting.
+    async fn has_blocking_multipart_session(&self, file_id: Uuid) -> bool {
+        match self.store.has_in_progress_multipart_for_file(file_id).await {
+            Ok(blocking) => blocking,
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    %file_id,
+                    "cleanup: failed to check in-progress multipart sessions while \
+                     checking for orphaned file"
+                );
+                true
             }
         }
     }

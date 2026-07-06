@@ -200,6 +200,67 @@ impl Store {
             .await
     }
 
+    /// Delete the parent `files` row left behind by an abandoned
+    /// pending-version orphan (P2 2.8), re-verifying **inside this
+    /// transaction** that the file still has zero remaining versions and a
+    /// `NULL` `content_id` before deleting it.
+    ///
+    /// Unlike [`Self::delete_file_with_event`] (unconditional -- used by the
+    /// retention-expiry sweep, which has already decided the file must go
+    /// regardless of its version count), this method re-reads `files`/
+    /// `versions` fresh inside the same transaction that performs the
+    /// delete, so a version inserted or bound between the caller's
+    /// pre-check (`list_versions` + `get_file`) and this call is guaranteed
+    /// to be seen and aborts the deletion -- the DELETE simply matches zero
+    /// intent and the file (with its new version) is left untouched.
+    ///
+    /// Returns `true` if the file row was removed; `false` if the guard
+    /// failed (a version now exists or content is bound) or the row was
+    /// already gone (e.g. a concurrent sweep).
+    ///
+    /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    /// @cpt-cf-file-storage-fr-file-events
+    pub async fn delete_orphan_file_with_event(
+        &self,
+        file_id: Uuid,
+        audit: AuditEntry,
+        event: Option<FileEvent>,
+    ) -> Result<bool, DomainError> {
+        let files = self.repos.files.clone();
+        let versions = self.repos.versions.clone();
+        let audit_repo = self.repos.audit.clone();
+        let events_repo = self.repos.events_outbox.clone();
+        self.db
+            .db()
+            .transaction_ref_mapped(move |tx| {
+                Box::pin(async move {
+                    let scope = AccessScope::allow_all();
+                    // Re-check both halves of the orphan guard fresh, inside
+                    // this transaction, rather than trusting the caller's
+                    // pre-transaction snapshot.
+                    let Some(file) = files.get(tx, &scope, file_id).await? else {
+                        return Ok::<bool, DomainError>(false);
+                    };
+                    if file.content_id.is_some() {
+                        return Ok(false);
+                    }
+                    let remaining = versions.list_by_file(tx, &scope, file_id, 1, 0).await?;
+                    if !remaining.is_empty() {
+                        return Ok(false);
+                    }
+                    let removed = files.delete(tx, &scope, file_id).await?;
+                    if removed {
+                        audit_repo.insert(tx, &audit).await?;
+                        if let Some(ev) = event {
+                            events_repo.enqueue(tx, &ev).await?;
+                        }
+                    }
+                    Ok(removed)
+                })
+            })
+            .await
+    }
+
     /// Create a new file + pending version + initial metadata + optional event,
     /// all in one transaction.
     ///
@@ -289,6 +350,7 @@ impl Store {
                                 idem.response_status,
                                 &idem.response_body,
                                 &idem.response_etag,
+                                &idem.request_hash,
                                 idem.expires_at,
                                 now,
                             )

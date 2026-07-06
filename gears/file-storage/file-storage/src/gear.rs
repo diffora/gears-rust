@@ -207,6 +207,7 @@ impl Gear for FileStorageGear {
                     // counters at the point they are already logged.
                     sweep_metrics.record_sweep_result(
                         u64::try_from(result.abandoned_pending_deleted).unwrap_or(u64::MAX),
+                        u64::try_from(result.abandoned_files_deleted).unwrap_or(u64::MAX),
                         u64::try_from(result.expired_multipart_aborted).unwrap_or(u64::MAX),
                         u64::try_from(result.retention_expired_deleted).unwrap_or(u64::MAX),
                         result.idempotency_keys_deleted,

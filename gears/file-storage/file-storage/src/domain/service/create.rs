@@ -111,6 +111,25 @@ impl FileService {
         let owner_kind_str = new.owner_kind.as_str().to_owned();
 
         // @cpt-cf-file-storage-fr-upload-idempotency
+        // Canonicalize the current request into a comparable hash up front —
+        // both the replay-comparison path (below) and the fresh-insert path
+        // (further down) must hash the exact same encoding of the same
+        // request, so this is computed exactly once.
+        let initial_meta: Vec<(String, String)> = new
+            .custom_metadata
+            .iter()
+            .map(|e| (e.key.clone(), e.value.clone()))
+            .collect();
+        let request_hash = crate::domain::idempotency::compute_request_hash(
+            &owner_kind_str,
+            owner_id,
+            &new.name,
+            &new.gts_file_type,
+            &new.mime_type,
+            &initial_meta,
+        );
+
+        // @cpt-cf-file-storage-fr-upload-idempotency
         // Authorize the write BEFORE consulting any stored idempotency
         // record. The idempotency lookup used to run first and return early
         // with a live signed upload URL — a caller whose WRITE grant was
@@ -140,6 +159,17 @@ impl FileService {
             {
                 if record.subject_id != ctx.subject_id() {
                     return Err(DomainError::Forbidden);
+                }
+                // @cpt-cf-file-storage-fr-upload-idempotency
+                // P2 remediation 2.1: a retried request with the same key but
+                // a materially different body (owner, name, gts_file_type,
+                // mime_type, custom_metadata) must never silently replay the
+                // original ticket — that would surface a response for a
+                // request the caller never actually made.
+                if record.request_hash != request_hash {
+                    return Err(DomainError::conflict(
+                        "idempotency key reused with a different request body",
+                    ));
                 }
                 let ticket: UploadTicket =
                     serde_json::from_str::<IdempotencyTicket>(&record.response_body)
@@ -171,12 +201,8 @@ impl FileService {
             backend.capabilities().max_size_bytes,
         );
 
-        // Validate initial custom metadata against limits.
-        let initial_meta: Vec<(String, String)> = new
-            .custom_metadata
-            .iter()
-            .map(|e| (e.key.clone(), e.value.clone()))
-            .collect();
+        // Validate initial custom metadata against limits (`initial_meta` was
+        // already collected above, for `request_hash`).
         PolicyResolver::check_metadata_limits(&policy, &initial_meta)?;
 
         // Quota preflight — pessimistic: check whether max allowed size fits quota.
@@ -252,6 +278,7 @@ impl FileService {
                 response_status: 201,
                 response_body,
                 response_etag: String::new(),
+                request_hash: request_hash.clone(),
                 expires_at,
             }
         });

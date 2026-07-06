@@ -86,6 +86,14 @@ impl CleanupStore for Store {
         Store::list_versions(self, file_id).await
     }
 
+    async fn get_file(&self, file_id: Uuid) -> Result<Option<File>, DomainError> {
+        Store::get_file(self, &toolkit_security::AccessScope::allow_all(), file_id).await
+    }
+
+    async fn has_in_progress_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError> {
+        Store::has_in_progress_multipart_for_file(self, file_id).await
+    }
+
     async fn delete_file_with_event(
         &self,
         scope: &toolkit_security::AccessScope,
@@ -94,6 +102,15 @@ impl CleanupStore for Store {
         event: Option<crate::domain::audit::FileEvent>,
     ) -> Result<bool, DomainError> {
         Store::delete_file_with_event(self, scope, file_id, audit, event).await
+    }
+
+    async fn delete_orphan_file_with_event(
+        &self,
+        file_id: Uuid,
+        audit: crate::domain::audit::AuditEntry,
+        event: Option<crate::domain::audit::FileEvent>,
+    ) -> Result<bool, DomainError> {
+        Store::delete_orphan_file_with_event(self, file_id, audit, event).await
     }
 
     async fn delete_expired_idempotency_keys(

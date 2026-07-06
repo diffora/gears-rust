@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use sea_orm::{ConnectionTrait, Database, Statement};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -27,6 +28,7 @@ use uuid::Uuid;
 use file_storage::domain::authz::TenantOnlyAuthorizer;
 use file_storage::domain::data_plane::DataPlaneService;
 use file_storage::domain::error::DomainError;
+use file_storage::domain::idempotency::compute_request_hash;
 use file_storage::domain::multipart::MultipartPlan;
 use file_storage::domain::multipart_service::MultipartService;
 use file_storage::domain::policy::{PolicyBody, PolicyScope, SizeLimits};
@@ -39,11 +41,17 @@ use file_storage::infra::backend::{
 use file_storage::infra::signed_url::Issuer;
 use file_storage::infra::storage::Store;
 use file_storage::infra::storage::migrations::Migrator;
-use file_storage_sdk::{NewFile, OwnerKind};
+use file_storage_sdk::{CustomMetadataEntry, NewFile, OwnerKind};
 
 const GTS: &str = "gts.cf.fstorage.file.type.v1~x.test.v1~";
 
-async fn build_db() -> Arc<DBProvider<DbError>> {
+/// Build a fresh migrated SQLite DB, returning both the pooled `DBProvider`
+/// (for the service under test) and the raw DSN (for the idempotency
+/// mismatch tests below, which need a second, independent raw connection to
+/// inspect/tamper with `idempotency_keys` rows directly — there is no
+/// production API for either, by design: a stored record is immutable once
+/// written).
+async fn build_db_with_dsn() -> (Arc<DBProvider<DbError>>, String) {
     let mut path = std::env::temp_dir();
     path.push(format!("cf-fs-mp-test-{}.db", Uuid::now_v7().simple()));
     let mut file = path.to_string_lossy().replace('\\', "/");
@@ -60,7 +68,11 @@ async fn build_db() -> Arc<DBProvider<DbError>> {
     run_migrations_for_testing(&db, Migrator::migrations())
         .await
         .expect("migrations");
-    Arc::new(DBProvider::new(db))
+    (Arc::new(DBProvider::new(db)), dsn)
+}
+
+async fn build_db() -> Arc<DBProvider<DbError>> {
+    build_db_with_dsn().await.0
 }
 
 /// Build both `FileService` and `MultipartService` sharing the same store,
@@ -106,6 +118,98 @@ async fn build_service_with_config(
 
 async fn build_service() -> (Arc<FileService>, Arc<MultipartService>, DataPlaneService) {
     build_service_with_config(86400).await
+}
+
+/// Build a `FileService` alone (no `MultipartService`) plus the raw SQLite
+/// DSN, for the idempotency-replay body-mismatch tests (P2 remediation 2.1)
+/// below.
+async fn build_file_service_with_dsn(idempotency_ttl_secs: u64) -> (Arc<FileService>, String) {
+    let (db, dsn) = build_db_with_dsn().await;
+    let backend: Arc<dyn StorageBackend> = Arc::new(InMemoryBackend::new("mem"));
+    let backends = BackendRegistry::new(vec![backend], "mem").expect("registry");
+    let issuer = Arc::new(Issuer::generate(3600).expect("issuer"));
+    let authorizer: Arc<dyn file_storage::domain::authz::Authorizer> =
+        Arc::new(TenantOnlyAuthorizer);
+    let cfg = ServiceConfig {
+        default_url_ttl_secs: 3600,
+        sidecar_base_url: "http://sidecar.test".to_owned(),
+        default_page_size: 50,
+        max_page_size: 1000,
+        idempotency_ttl_secs,
+    };
+    let store = Store::new(Arc::clone(&db));
+    let svc = Arc::new(FileService::new(
+        store, backends, issuer, authorizer, cfg, None, None,
+    ));
+    (svc, dsn)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::new(), |mut acc, b| {
+        write!(acc, "{b:02x}").expect("writing to a String cannot fail");
+        acc
+    })
+}
+
+/// Raw-SQL row count over `files`, bypassing the service/store layer —
+/// used to assert that a rejected idempotency replay never creates a second
+/// file (P2 remediation 2.1).
+async fn count_files_rows(dsn: &str) -> i64 {
+    let conn = Database::connect(dsn).await.expect("raw connect");
+    let row = conn
+        .query_one(Statement::from_string(
+            conn.get_database_backend(),
+            "SELECT COUNT(*) AS c FROM files".to_owned(),
+        ))
+        .await
+        .expect("count query")
+        .expect("one row");
+    row.try_get::<i64>("", "c").expect("i64 column c")
+}
+
+/// Overwrite the `request_hash` of a live idempotency row directly via raw
+/// SQL — there is no production API to do this (a stored record is
+/// immutable once written). Used only to simulate a hash computed for a
+/// different owner than the row's own primary key, to exercise the "owner is
+/// covered by the hash" leg of the mismatch check: `owner_kind`/`owner_id`
+/// are themselves part of `idempotency_keys`' composite primary key, so an
+/// ordinary replay with a genuinely different owner can never even find the
+/// original row (see `idempotency_different_owner_different_file`, which is
+/// the correct, already-covered behavior for that case — a fresh,
+/// independent file gets created, not a conflict).
+async fn tamper_request_hash(
+    dsn: &str,
+    tenant_id: Uuid,
+    owner_kind: &str,
+    owner_id: Uuid,
+    key: &str,
+    request_hash: &[u8],
+) {
+    let conn = Database::connect(dsn).await.expect("raw connect");
+    // `sea_orm`'s sqlite driver binds `Uuid` columns as a raw 16-byte BLOB
+    // (not a hyphenated TEXT string), unlike the plain single-quoted string
+    // literals `migration_test.rs` uses against its own hand-written DDL
+    // inserts — so the composite-key match here must use `X'...'` blob
+    // literals for `tenant_id`/`owner_id`, built from `Uuid::as_bytes()`, to
+    // agree with what the entity layer actually persisted.
+    let tenant_hex = hex_encode(tenant_id.as_bytes());
+    let owner_hex = hex_encode(owner_id.as_bytes());
+    let hash_hex = hex_encode(request_hash);
+    let sql = format!(
+        "UPDATE idempotency_keys SET request_hash = X'{hash_hex}' \
+             WHERE tenant_id = X'{tenant_hex}' AND owner_kind = '{owner_kind}' \
+             AND owner_id = X'{owner_hex}' AND idempotency_key = '{key}'"
+    );
+    let res = conn
+        .execute(Statement::from_string(conn.get_database_backend(), sql))
+        .await
+        .expect("tamper request_hash");
+    assert_eq!(
+        res.rows_affected(),
+        1,
+        "tamper UPDATE must hit exactly the one row created by the test setup"
+    );
 }
 
 /// Like `build_service` but also returns a `PolicyService` so tests can
@@ -532,7 +636,7 @@ async fn multipart_full_lifecycle_create_to_delete() {
         .await
         .expect("file must exist before delete");
     assert!(
-        svc.list_versions(&ctx, ticket.file_id)
+        svc.list_versions(&ctx, ticket.file_id, None, 0)
             .await
             .unwrap()
             .iter()
@@ -629,9 +733,13 @@ async fn initiate_returns_coherent_parts_plan() {
     let ctx = ctx(Uuid::now_v7());
     let ticket = svc.create_file(&ctx, new_file(), None).await.unwrap();
 
-    // Use a small preferred_part_size to force multiple parts.
-    let declared_size = 13u64;
-    let preferred_part_size = Some(5u64); // forces plan: [5, 5, 3]
+    // Use the minimum valid preferred_part_size to force multiple parts.
+    // (P2 remediation 2.11 rejects any preferred_part_size below
+    // `DEFAULT_MIN_PART_SIZE`, so this can no longer use tiny byte values —
+    // scale everything up by the same 5:5:3 ratio the original test used.)
+    let part_size = 5 * 1024 * 1024u64; // DEFAULT_MIN_PART_SIZE
+    let declared_size = 2 * part_size + 3;
+    let preferred_part_size = Some(part_size); // forces plan: [part_size, part_size, 3]
     let plan = msvc
         .initiate_multipart_upload(
             &ctx,
@@ -703,6 +811,129 @@ async fn idempotency_same_key_returns_same_file() {
         "idempotent retry must return the same file_id"
     );
     assert_eq!(t1.version_id, t2.version_id);
+}
+
+// -- 4b. Idempotency replay body-match verification (P2 remediation 2.1) -----
+
+/// A retry with the same `idempotency_key` but a different `name` must be
+/// rejected with `409 Conflict` instead of silently replaying the original
+/// ticket, and must never create a second file.
+///
+/// @cpt-cf-file-storage-fr-upload-idempotency
+#[tokio::test]
+async fn idempotency_replay_with_diverging_name_returns_conflict() {
+    let (svc, dsn) = build_file_service_with_dsn(86400).await;
+    let ctx = ctx(Uuid::now_v7());
+    let key = "diverging-name-key".to_owned();
+
+    let mut nf = new_file();
+    nf.name = "original.bin".to_owned();
+    svc.create_file(&ctx, nf.clone(), Some(key.clone()))
+        .await
+        .unwrap();
+
+    nf.name = "different.bin".to_owned();
+    let err = svc.create_file(&ctx, nf, Some(key)).await.unwrap_err();
+    assert!(
+        matches!(err, DomainError::Conflict { .. }),
+        "expected Conflict on a diverging name, got {err:?}"
+    );
+    assert_eq!(
+        count_files_rows(&dsn).await,
+        1,
+        "a rejected replay must not create a second file"
+    );
+}
+
+/// Same as above, but the divergence is in `custom_metadata` — proving the
+/// canonicalization actually covers metadata and not just the scalar fields.
+///
+/// @cpt-cf-file-storage-fr-upload-idempotency
+#[tokio::test]
+async fn idempotency_replay_with_diverging_metadata_returns_conflict() {
+    let (svc, dsn) = build_file_service_with_dsn(86400).await;
+    let ctx = ctx(Uuid::now_v7());
+    let key = "diverging-metadata-key".to_owned();
+
+    let mut nf = new_file();
+    nf.custom_metadata = vec![CustomMetadataEntry {
+        key: "tag".to_owned(),
+        value: "a".to_owned(),
+    }];
+    svc.create_file(&ctx, nf.clone(), Some(key.clone()))
+        .await
+        .unwrap();
+
+    nf.custom_metadata = vec![CustomMetadataEntry {
+        key: "tag".to_owned(),
+        value: "b".to_owned(),
+    }];
+    let err = svc.create_file(&ctx, nf, Some(key)).await.unwrap_err();
+    assert!(
+        matches!(err, DomainError::Conflict { .. }),
+        "expected Conflict on diverging metadata, got {err:?}"
+    );
+    assert_eq!(
+        count_files_rows(&dsn).await,
+        1,
+        "a rejected replay must not create a second file"
+    );
+}
+
+/// `owner_kind`/`owner_id` are themselves part of `idempotency_keys`'
+/// composite primary key `(tenant_id, owner_kind, owner_id,
+/// idempotency_key)`, so an ordinary replay with a genuinely different owner
+/// can never even find the original row — it takes the already-covered
+/// "different owner -> different file" path (see
+/// `idempotency_different_owner_different_file`), not this conflict path.
+/// To still exercise the owner leg of the hash comparison itself (guarding
+/// against a future regression that silently drops `owner_id` from the
+/// canonicalization), this test tampers the stored `request_hash` directly
+/// to look as if it had been computed for a different owner than the row's
+/// own primary key, then replays with the row's *actual* owner and expects
+/// the recomputed (correct) hash to disagree with the tampered one.
+///
+/// @cpt-cf-file-storage-fr-upload-idempotency
+#[tokio::test]
+async fn idempotency_replay_with_diverging_owner_returns_conflict() {
+    let (svc, dsn) = build_file_service_with_dsn(86400).await;
+    let ctx = ctx(Uuid::now_v7());
+    let key = "diverging-owner-key".to_owned();
+
+    let nf = new_file();
+    svc.create_file(&ctx, nf.clone(), Some(key.clone()))
+        .await
+        .unwrap();
+
+    let other_owner = Uuid::now_v7();
+    let tampered_hash = compute_request_hash(
+        nf.owner_kind.as_str(),
+        other_owner,
+        &nf.name,
+        &nf.gts_file_type,
+        &nf.mime_type,
+        &[],
+    );
+    tamper_request_hash(
+        &dsn,
+        ctx.subject_tenant_id(),
+        nf.owner_kind.as_str(),
+        nf.owner_id,
+        &key,
+        &tampered_hash,
+    )
+    .await;
+
+    let err = svc.create_file(&ctx, nf, Some(key)).await.unwrap_err();
+    assert!(
+        matches!(err, DomainError::Conflict { .. }),
+        "expected Conflict when the stored hash reflects a different owner, got {err:?}"
+    );
+    assert_eq!(
+        count_files_rows(&dsn).await,
+        1,
+        "a rejected replay must not create a second file"
+    );
 }
 
 // -- 5. Different owner -> different file -------------------------------------
@@ -889,6 +1120,38 @@ async fn initiate_multipart_allowed_when_declared_size_within_policy_limit() {
     assert!(!plan.upload_id.is_nil());
 }
 
+// -- 7b. `preferred_part_size` range validation (P2 remediation 2.11) --------
+
+/// A client-controlled `preferred_part_size` near `u64::MAX` must be
+/// rejected up front with `DomainError::Validation`, not passed through to
+/// `compute_plan` where it could overflow the part-size arithmetic or drive
+/// a huge `Vec::with_capacity` allocation.
+///
+/// @cpt-cf-file-storage-fr-multipart-upload
+#[tokio::test]
+async fn initiate_multipart_rejects_absurd_preferred_part_size() {
+    let (svc, msvc, _dp) = build_service().await;
+    let ctx = ctx(Uuid::now_v7());
+    let ticket = svc.create_file(&ctx, new_file(), None).await.unwrap();
+
+    let err = msvc
+        .initiate_multipart_upload(
+            &ctx,
+            ticket.file_id,
+            "application/octet-stream",
+            1024,
+            Some(u64::MAX),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, DomainError::Validation { .. }),
+        "expected Validation for an absurd preferred_part_size, got {err:?}"
+    );
+}
+
 // -- 8. Per-part signed URLs carry valid multipart tokens ---------------------
 
 /// Each upload_url in the plan must be a valid fs-token-bearing sidecar URL
@@ -937,14 +1200,18 @@ async fn initiate_plan_urls_carry_valid_multipart_tokens() {
     let ctx = ctx(Uuid::now_v7());
     let ticket = svc.create_file(&ctx, new_file(), None).await.unwrap();
 
-    let declared_size = 13u64;
+    // P2 remediation 2.11 rejects any preferred_part_size below
+    // `DEFAULT_MIN_PART_SIZE`, so this uses the minimum valid part size
+    // scaled up from the original tiny-byte example (5:5:3 ratio).
+    let part_size = 5 * 1024 * 1024u64; // DEFAULT_MIN_PART_SIZE
+    let declared_size = 2 * part_size + 3;
     let plan = msvc
         .initiate_multipart_upload(
             &ctx,
             ticket.file_id,
             "application/octet-stream",
             declared_size,
-            Some(5u64),
+            Some(part_size),
             None,
         )
         .await

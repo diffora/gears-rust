@@ -106,6 +106,10 @@ impl FileService {
         size: i64,
         hash_value: Vec<u8>,
     ) -> Result<(), DomainError> {
+        if size < 0 {
+            return Err(DomainError::validation("size", "must be non-negative"));
+        }
+
         let prefetch = Self::tenant_scope(ctx);
         let file = self.store.require_file(&prefetch, file_id).await?;
         let _scope = self
@@ -426,6 +430,23 @@ impl FileService {
     /// An audit row (`TransferOwnership`) and a file event (`file.owner_transferred`)
     /// are enqueued in the same transaction as the update.
     ///
+    /// `new_owner_id` is rejected if it is the nil UUID. This gear has no
+    /// principal directory (no account-management SDK is wired into
+    /// `cf-gears-file-storage`), so it cannot verify that `new_owner_id` names
+    /// a real, same-tenant principal — only that it is not an obviously
+    /// malformed sentinel. Note that a *cross-tenant* transfer is already
+    /// structurally impossible through this endpoint: `tenant_id` on the
+    /// updated row always comes from the existing file (scoped to
+    /// `ctx.subject_tenant_id()` via [`Self::tenant_scope`]), never from the
+    /// request, so `new_owner_id` can only ever be recorded under the
+    /// caller's own tenant. Full existence/same-tenant-*membership*
+    /// validation of an arbitrary `new_owner_id` (i.e. "is this UUID actually
+    /// a principal in my tenant?") would require a cross-gear
+    /// account-management lookup and is a follow-up (🛑, also ties into
+    /// whether this action should require a distinct privileged-transfer
+    /// grant rather than reusing the file WRITE grant — see 0.7's
+    /// admin-scope decision).
+    ///
     /// @cpt-cf-file-storage-fr-ownership-transfer
     /// @cpt-cf-file-storage-fr-usage-reporting
     /// @cpt-cf-file-storage-fr-file-events
@@ -437,6 +458,13 @@ impl FileService {
         new_owner_kind: file_storage_sdk::OwnerKind,
         new_owner_id: Uuid,
     ) -> Result<File, DomainError> {
+        if new_owner_id.is_nil() {
+            return Err(DomainError::validation(
+                "new_owner_id",
+                "must not be the nil UUID",
+            ));
+        }
+
         let prefetch = Self::tenant_scope(ctx);
         let file = self.store.require_file(&prefetch, file_id).await?;
         let scope = self
@@ -545,6 +573,10 @@ impl FileService {
         size: i64,
         hash_value: Vec<u8>,
     ) -> Result<(), DomainError> {
+        if size < 0 {
+            return Err(DomainError::validation("size", "must be non-negative"));
+        }
+
         let file_id = claims.file_id;
         let version_id = claims.version_id;
 

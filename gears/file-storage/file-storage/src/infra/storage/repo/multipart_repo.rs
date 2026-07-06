@@ -225,6 +225,36 @@ impl MultipartRepo {
             .map_err(db_err)?;
         rows.into_iter().map(session_from_model).collect()
     }
+
+    /// Whether `file_id` has at least one `in_progress` multipart upload
+    /// session, regardless of its `expires_at`.
+    ///
+    /// Used by the P2 2.8 orphan-file-reconciliation guard: a file's pending
+    /// version can look "abandoned" to [`Self::list_expired`]'s sibling sweep
+    /// step (`sweep_abandoned_pending`, keyed only on the version's age) even
+    /// while it is the live target of a *not-yet-expired* multipart session --
+    /// deleting the parent `files` row in that window would `ON DELETE
+    /// CASCADE` the still-`in_progress` session out from under the upload.
+    ///
+    /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    pub async fn has_in_progress_for_file<C: DBRunner>(
+        &self,
+        conn: &C,
+        file_id: Uuid,
+    ) -> Result<bool, DomainError> {
+        let count = UploadEntity::find()
+            .filter(
+                sea_orm::Condition::all()
+                    .add(UploadColumn::FileId.eq(file_id))
+                    .add(UploadColumn::State.eq("in_progress")),
+            )
+            .secure()
+            .scope_with(&AccessScope::allow_all())
+            .count(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(count > 0)
+    }
 }
 
 fn session_from_model(m: UploadModel) -> Result<MultipartUploadSession, DomainError> {

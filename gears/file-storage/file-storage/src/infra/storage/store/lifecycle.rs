@@ -1,8 +1,15 @@
 //! Lifecycle / cleanup / sweep intent methods and idempotency key queries.
 //!
-//! Covers: abandoned pending versions, non-current version sweeps, expired
-//! multipart sessions, audit outbox query, retention-rule sweep helpers,
-//! sweep file-list pagination, and idempotency-key lookup.
+//! Covers: abandoned pending versions, expired multipart sessions, audit
+//! outbox query, retention-rule sweep helpers, sweep file-list pagination,
+//! and idempotency-key lookup.
+//!
+//! Superseded (non-current) version reclamation is **not** part of the P2
+//! sweep -- see the "Superseded version retention" note in `DESIGN.md`
+//! (§3.7, `file_versions` table) for the deferral rationale. It is deferred
+//! to P3 pending a versioning-policy schema (e.g. `keep_last_n` /
+//! `max_non_current_age_days`); no such field exists on `RetentionRuleBody`
+//! today (`crate::domain::policy`).
 
 use time::OffsetDateTime;
 use toolkit_security::AccessScope;
@@ -64,20 +71,6 @@ impl Store {
         self.repos
             .versions
             .list_pending_older_than(&conn, &AccessScope::allow_all(), older_than)
-            .await
-    }
-
-    /// List all non-current version rows older than `older_than` (system scope).
-    ///
-    /// @cpt-cf-file-storage-fr-retention-policies
-    pub async fn list_non_current_versions_older_than(
-        &self,
-        older_than: OffsetDateTime,
-    ) -> Result<Vec<FileVersion>, DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
-        self.repos
-            .versions
-            .list_non_current_older_than(&conn, &AccessScope::allow_all(), older_than)
             .await
     }
 

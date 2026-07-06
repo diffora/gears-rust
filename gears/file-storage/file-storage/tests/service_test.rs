@@ -14,6 +14,7 @@ use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use file_storage::domain::audit::{AuditEntry, AuditOperation};
 use file_storage::domain::authz::TenantOnlyAuthorizer;
 use file_storage::domain::data_plane::DataPlaneService;
 use file_storage::domain::error::DomainError;
@@ -29,6 +30,21 @@ use file_storage_sdk::{CustomMetadataEntry, CustomMetadataPatch, NewFile, OwnerF
 const GTS: &str = "gts.cf.fstorage.file.type.v1~x.test.v1~";
 
 async fn build_service() -> (Arc<FileService>, DataPlaneService) {
+    let (svc, dp, _store) = build_service_with_page_sizes(50, 1000).await;
+    (svc, dp)
+}
+
+/// Like [`build_service`], but with caller-chosen `default_page_size`/
+/// `max_page_size` — used by pagination tests that need a small
+/// `max_page_size` to keep version-seeding fast (P2 2.2) — and also returns
+/// the [`Store`] handle, for tests (P2 2.7) that need to drive the
+/// store/repo layer directly to simulate a race the service's own
+/// pre-transaction checks cannot reach deterministically in a single-threaded
+/// test.
+async fn build_service_with_page_sizes(
+    default_page_size: u64,
+    max_page_size: u64,
+) -> (Arc<FileService>, DataPlaneService, Store) {
     // A unique temp *file* DB: the service opens a connection per call, so every
     // connection must see the same database. A bare `sqlite::memory:` gives each
     // pooled connection its own empty DB; a temp file is shared by construction.
@@ -61,16 +77,22 @@ async fn build_service() -> (Arc<FileService>, DataPlaneService) {
     let cfg = ServiceConfig {
         default_url_ttl_secs: 3600,
         sidecar_base_url: "http://sidecar.test".to_owned(),
-        default_page_size: 50,
-        max_page_size: 1000,
+        default_page_size,
+        max_page_size,
         idempotency_ttl_secs: 86400,
     };
     let store = Store::new(Arc::clone(&db));
     let svc = Arc::new(FileService::new(
-        store, backends, issuer, authorizer, cfg, None, None,
+        store.clone(),
+        backends,
+        issuer,
+        authorizer,
+        cfg,
+        None,
+        None,
     ));
     let dp = DataPlaneService::new(Arc::clone(&svc) as Arc<dyn DataPlanePort>);
-    (svc, dp)
+    (svc, dp, store)
 }
 
 fn ctx(tenant: Uuid) -> SecurityContext {
@@ -144,7 +166,10 @@ async fn full_upload_bind_download_lifecycle() {
     assert_eq!(bytes, Bytes::from_static(b"hello world"));
 
     // Versions: exactly one, current, available.
-    let versions = svc.list_versions(&ctx, ticket.file_id).await.unwrap();
+    let versions = svc
+        .list_versions(&ctx, ticket.file_id, None, 0)
+        .await
+        .unwrap();
     assert_eq!(versions.len(), 1);
     assert!(versions[0].is_current);
     assert_eq!(versions[0].size, 11);
@@ -452,4 +477,223 @@ async fn list_files_filters_by_owner() {
         .await
         .unwrap();
     assert!(empty.is_empty());
+}
+
+/// `GET /files/{id}/versions` must cap at `ServiceConfig::max_page_size` even
+/// when a file has more versions than that — both with no explicit `limit`
+/// (clamped to `max_page_size`) and with an explicit `limit` above
+/// `max_page_size` — and must return the newest page (P2 2.2).
+#[tokio::test]
+async fn list_versions_caps_at_max_page_size() {
+    // `default_page_size == max_page_size` so the no-explicit-limit case
+    // below exercises the `max_page_size` cap directly (per the plan: "call
+    // `list_versions` with no explicit limit, assert the returned length
+    // equals `max_page_size`").
+    let max_page_size = 10u64;
+    let (svc, dp, _store) = build_service_with_page_sizes(max_page_size, max_page_size).await;
+    let ctx = ctx(Uuid::now_v7());
+
+    let total = max_page_size + 5;
+    let mut created = Vec::with_capacity(usize::try_from(total).expect("total fits usize"));
+
+    let t0 = svc.create_file(&ctx, new_file(), None).await.unwrap();
+    dp.put_content(
+        &ctx,
+        t0.file_id,
+        t0.version_id,
+        "text/plain",
+        Bytes::from_static(b"v0"),
+    )
+    .await
+    .unwrap();
+    created.push(t0.version_id);
+
+    for i in 1..total {
+        let t = svc.presign_version(&ctx, t0.file_id).await.unwrap();
+        dp.put_content(
+            &ctx,
+            t0.file_id,
+            t.version_id,
+            "text/plain",
+            Bytes::from(format!("v{i}")),
+        )
+        .await
+        .unwrap();
+        created.push(t.version_id);
+    }
+    assert_eq!(
+        created.len() as u64,
+        total,
+        "sanity: seeded max_page_size + 5"
+    );
+
+    // No explicit limit → clamps to max_page_size (primary outcome).
+    let page = svc.list_versions(&ctx, t0.file_id, None, 0).await.unwrap();
+    assert_eq!(page.len() as u64, max_page_size);
+
+    // Secondary artifact: the page is exactly the newest `max_page_size`
+    // versions, newest-first — the last `max_page_size` created ids, in
+    // reverse creation order.
+    let expected: Vec<Uuid> = created
+        .iter()
+        .rev()
+        .take(usize::try_from(max_page_size).expect("max_page_size fits usize"))
+        .copied()
+        .collect();
+    let actual: Vec<Uuid> = page.iter().map(|v| v.version_id).collect();
+    assert_eq!(actual, expected, "must be the newest-first page");
+
+    // A caller-supplied limit above max_page_size is still clamped.
+    let clamped = svc
+        .list_versions(&ctx, t0.file_id, Some(max_page_size + 100), 0)
+        .await
+        .unwrap();
+    assert_eq!(clamped.len() as u64, max_page_size);
+}
+
+// ── P2 2.7: delete_version vs bind race cannot dangle `files.content_id` ────
+
+/// Deleting the version `content_id` currently points at must be rejected
+/// (`Conflict`/`version_not_found`), and the row must survive.
+///
+/// @cpt-cf-file-storage-fr-audit-trail
+#[tokio::test]
+async fn delete_current_version_is_rejected() {
+    let (svc, dp) = build_service().await;
+    let ctx = ctx(Uuid::now_v7());
+
+    // v1 = A, bound as current.
+    let t1 = svc.create_file(&ctx, new_file(), None).await.unwrap();
+    dp.put_content(
+        &ctx,
+        t1.file_id,
+        t1.version_id,
+        "text/plain",
+        Bytes::from_static(b"v1"),
+    )
+    .await
+    .unwrap();
+    svc.bind(&ctx, t1.file_id, t1.version_id, None)
+        .await
+        .unwrap();
+
+    // v2 = B, a second version, so the file is multi-version but A stays current.
+    let t2 = svc.presign_version(&ctx, t1.file_id).await.unwrap();
+    dp.put_content(
+        &ctx,
+        t1.file_id,
+        t2.version_id,
+        "text/plain",
+        Bytes::from_static(b"v2"),
+    )
+    .await
+    .unwrap();
+
+    // Deleting A (current) must be rejected, not silently succeed.
+    let err = svc
+        .delete_version(&ctx, t1.file_id, t1.version_id)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            DomainError::Conflict { .. } | DomainError::VersionNotFound { .. }
+        ),
+        "expected Conflict or VersionNotFound, got {err:?}"
+    );
+
+    // The row must survive and content_id must still resolve.
+    let versions = svc.list_versions(&ctx, t1.file_id, None, 0).await.unwrap();
+    assert!(
+        versions.iter().any(|v| v.version_id == t1.version_id),
+        "current version must survive the rejected delete"
+    );
+    let file = svc.get_file(&ctx, t1.file_id).await.unwrap();
+    assert_eq!(file.content_id, Some(t1.version_id));
+}
+
+/// Deterministic reproduction of the pre-fix dangle: a version's "is this
+/// current?" check (as `delete_version` performs it, against a pre-transaction
+/// snapshot) can go stale if a concurrent `bind` promotes that exact version
+/// to current afterwards. This drives the store/repo layer directly, in the
+/// exact order such a race would leave things, to prove the DB-level guard
+/// (P2 2.7) refuses the delete instead of leaving `files.content_id` dangling
+/// — the outer service call cannot reach this window in a single-threaded
+/// test, since its own checks are always freshly re-read.
+#[tokio::test]
+async fn delete_version_then_bind_cannot_dangle() {
+    let (svc, dp, store) = build_service_with_page_sizes(50, 1000).await;
+    let ctx = ctx(Uuid::now_v7());
+
+    // v1 = A, bound as current.
+    let t1 = svc.create_file(&ctx, new_file(), None).await.unwrap();
+    dp.put_content(
+        &ctx,
+        t1.file_id,
+        t1.version_id,
+        "text/plain",
+        Bytes::from_static(b"v1"),
+    )
+    .await
+    .unwrap();
+    svc.bind(&ctx, t1.file_id, t1.version_id, None)
+        .await
+        .unwrap();
+
+    // v2 = B, uploaded but not yet current — this is the version a would-be
+    // "T1" observed as non-current before racing ahead to delete it.
+    let t2 = svc.presign_version(&ctx, t1.file_id).await.unwrap();
+    dp.put_content(
+        &ctx,
+        t1.file_id,
+        t2.version_id,
+        "text/plain",
+        Bytes::from_static(b"v2"),
+    )
+    .await
+    .unwrap();
+    let pre_bind = store.get_version(t1.file_id, t2.version_id).await.unwrap();
+    assert_eq!(pre_bind.map(|v| v.is_current), Some(false));
+
+    // "T2" wins the race: bind promotes B to current before T1's delete lands.
+    let cur = svc.get_file(&ctx, t1.file_id).await.unwrap();
+    svc.bind(
+        &ctx,
+        t1.file_id,
+        t2.version_id,
+        etag::etag_for(&cur).as_deref(),
+    )
+    .await
+    .unwrap();
+
+    // "T1"'s delete of B now executes, against the store directly (bypassing
+    // FileService::delete_version's own — necessarily fresh, in this
+    // single-threaded test — pre-check) to simulate the delete landing after
+    // the interleaved bind. Pre-fix this deleted the row unconditionally;
+    // post-fix the DB-level `is_current = false` guard refuses it.
+    let audit = AuditEntry::success(
+        ctx.subject_tenant_id(),
+        "user",
+        ctx.subject_id(),
+        Some(t1.file_id),
+        AuditOperation::DeleteVersion,
+        serde_json::json!({ "version_id": t2.version_id }),
+    );
+    let removed = store
+        .delete_version(t1.file_id, t2.version_id, audit)
+        .await
+        .unwrap();
+    assert!(
+        !removed,
+        "guarded delete of the (now-current) version must not remove the row"
+    );
+
+    // content_id must always resolve to an existing version row.
+    let file = svc.get_file(&ctx, t1.file_id).await.unwrap();
+    assert_eq!(file.content_id, Some(t2.version_id));
+    let still_there = store.get_version(t1.file_id, t2.version_id).await.unwrap();
+    assert!(
+        still_there.is_some(),
+        "content_id must never dangle at a deleted version"
+    );
 }

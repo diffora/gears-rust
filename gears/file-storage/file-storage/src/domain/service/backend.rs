@@ -95,7 +95,11 @@ impl FileService {
         let dest_path = Self::backend_path(file_id, version.version_id);
         dest.put(&dest_path, bytes).await?;
 
-        // Transactionally update the version row and emit the audit row.
+        // Transactionally update the version row and emit the audit row. The
+        // CAS predicate is the pre-migration snapshot captured above (before
+        // the source read / destination write), so a concurrent migration
+        // that already moved the pointer is detected rather than silently
+        // overwritten.
         let audit = Self::audit_ok(
             ctx,
             Some(file_id),
@@ -111,17 +115,51 @@ impl FileService {
             .rebind_version_backend(
                 file_id,
                 version.version_id,
+                &version.backend_id,
+                &version.backend_path,
                 target_backend_id,
                 &dest_path,
                 audit,
             )
             .await?;
         if !updated {
-            // Concurrent operation removed the version before we could rebind —
-            // the blob we just wrote to the destination is now an orphan; clean
-            // it up best-effort and return not-found.
-            self.best_effort_blob_delete(dest.id(), &dest_path).await;
-            return Err(DomainError::version_not_found(file_id, version.version_id));
+            // The CAS lost: either the version is gone, or a concurrent
+            // migration already moved the pointer away from the snapshot we
+            // started from. Re-fetch to tell these apart — the destination
+            // blob we just wrote may or may not be safe to clean up depending
+            // on which case this is.
+            let current = self.store.get_version(file_id, version.version_id).await?;
+            return match current {
+                None => {
+                    // Version gone: the blob we wrote is genuinely orphaned.
+                    self.best_effort_blob_delete(dest.id(), &dest_path).await;
+                    Err(DomainError::version_not_found(file_id, version.version_id))
+                }
+                Some(now)
+                    if now.backend_id == target_backend_id && now.backend_path == dest_path =>
+                {
+                    // A concurrent migration to the SAME target already
+                    // committed this exact pointer as the live one (dest_path
+                    // is deterministic, so racers to the same backend collide
+                    // on the same path). Treat as a successful no-op and, above
+                    // all, do NOT delete the destination blob -- it is the
+                    // winner's live content, not ours to clean up.
+                    Ok(())
+                }
+                Some(now) => {
+                    // A different concurrent migration won. Our destination
+                    // write is not the live pointer, so it is safe to clean up
+                    // -- guarded by the belt-and-suspenders check below in
+                    // case the live pointer ever coincides with it for some
+                    // other reason.
+                    if !(now.backend_id == dest.id() && now.backend_path == dest_path) {
+                        self.best_effort_blob_delete(dest.id(), &dest_path).await;
+                    }
+                    Err(DomainError::conflict(
+                        "concurrent backend migration in progress",
+                    ))
+                }
+            };
         }
 
         // Best-effort delete the source blob.

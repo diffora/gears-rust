@@ -6,6 +6,8 @@ mod m20260624_000001_p1_initial;
 mod m20260701_000001_p2_initial;
 mod m20260701_000002_multipart_plan_columns;
 mod m20260706_000001_idempotency_subject_id;
+mod m20260706_000002_idempotency_request_hash;
+mod m20260706_000003_policies_unique_scope;
 
 /// File-storage migrator. P1 ships the initial control-plane metadata tables;
 /// P2 adds the policy store, retention rules, multipart uploads + idempotency
@@ -14,6 +16,11 @@ mod m20260706_000001_idempotency_subject_id;
 /// to `multipart_uploads` for the server-authoritative parts-plan model.
 /// P2-remediation-0.10 adds `subject_id` to `idempotency_keys` so a replay can
 /// be bound to the authenticated caller, not just the request-body owner.
+/// P2-remediation-2.1 adds `request_hash` to `idempotency_keys` so a replay
+/// can be bound to the request body that created it, not just the caller.
+/// P2-remediation-2.4 adds two partial unique indexes on `policies` so at
+/// most one row can exist per `(tenant_id, scope, scope_owner_id)`, closing
+/// the upsert delete-then-insert race.
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -24,6 +31,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260701_000001_p2_initial::Migration),
             Box::new(m20260701_000002_multipart_plan_columns::Migration),
             Box::new(m20260706_000001_idempotency_subject_id::Migration),
+            Box::new(m20260706_000002_idempotency_request_hash::Migration),
+            Box::new(m20260706_000003_policies_unique_scope::Migration),
         ]
     }
 }

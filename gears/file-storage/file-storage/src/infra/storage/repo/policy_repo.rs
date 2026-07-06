@@ -58,6 +58,15 @@ impl PolicyRepo {
     /// Since there is at most one policy per `(tenant_id, scope, scope_owner_id)`,
     /// this first deletes any existing row for that combination, then inserts the
     /// new one.
+    ///
+    /// P2 remediation 2.4: callers (`Store::upsert_policy`) run this inside an
+    /// explicit DB transaction so the delete+insert pair is atomic, and the
+    /// `policies_user_scope_unique_idx` / `policies_tenant_scope_unique_idx`
+    /// partial unique indexes (migration `m20260706_000003`) act as a
+    /// backstop against the remaining no-existing-row race between two
+    /// concurrent first-time upserts for the same scope — the losing
+    /// writer's insert fails with a constraint violation rather than
+    /// silently duplicating the row.
     #[allow(clippy::too_many_arguments)]
     pub async fn upsert<C: DBRunner>(
         &self,

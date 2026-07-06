@@ -34,6 +34,13 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub response_body: String,
     pub response_etag: String,
+    /// SHA-256 over a canonicalized, length-prefixed encoding of the
+    /// identity-relevant request fields (`owner_kind`, `owner_id`, `name`,
+    /// `gts_file_type`, `mime_type`, sorted `custom_metadata`) at insert time
+    /// (P2 remediation 2.1: `domain::idempotency::compute_request_hash`). A
+    /// replay recomputes this hash from the current request and rejects a
+    /// mismatch with `409 Conflict` before returning the stored ticket.
+    pub request_hash: Vec<u8>,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
 }

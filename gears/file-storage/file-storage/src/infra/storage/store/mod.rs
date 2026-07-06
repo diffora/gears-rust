@@ -96,6 +96,11 @@ pub struct IdempotencyInsert {
     pub response_status: i32,
     pub response_body: String,
     pub response_etag: String,
+    /// SHA-256 over `domain::idempotency::compute_request_hash`'s
+    /// canonicalized encoding of the request — compared against on replay so
+    /// a caller can never surface a stored ticket for a materially different
+    /// request body (P2 remediation 2.1).
+    pub request_hash: Vec<u8>,
     pub expires_at: OffsetDateTime,
 }
 

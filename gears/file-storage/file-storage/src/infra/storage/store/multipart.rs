@@ -85,6 +85,24 @@ impl Store {
             .await
     }
 
+    /// Whether `file_id` currently has at least one `in_progress` multipart
+    /// upload session (regardless of `expires_at`).
+    ///
+    /// P2 2.8 orphan-file-reconciliation guard -- see
+    /// `MultipartRepo::has_in_progress_for_file`.
+    ///
+    /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    pub async fn has_in_progress_multipart_for_file(
+        &self,
+        file_id: Uuid,
+    ) -> Result<bool, DomainError> {
+        let conn = self.db.conn().map_err(db_err)?;
+        self.repos
+            .multipart
+            .has_in_progress_for_file(&conn, file_id)
+            .await
+    }
+
     /// Force-set a session's `expires_at`. Test-support only -- see
     /// `MultipartRepo::set_expires_at` for why this exists.
     pub async fn set_multipart_expires_at_for_test(

@@ -136,11 +136,15 @@ impl FileService {
         })
     }
 
-    /// List all versions of a file.
+    /// `GET /files/{id}/versions`: list a page of a file's versions, newest
+    /// first, offset-paginated and capped at `ServiceConfig::max_page_size`
+    /// (P2 2.2 — closes the unbounded-listing amplification surface).
     pub async fn list_versions(
         &self,
         ctx: &SecurityContext,
         file_id: Uuid,
+        limit: Option<u64>,
+        offset: u64,
     ) -> Result<Vec<FileVersion>, DomainError> {
         let prefetch = Self::tenant_scope(ctx);
         let file = self.store.require_file(&prefetch, file_id).await?;
@@ -148,7 +152,10 @@ impl FileService {
             .authorizer
             .authorize(ctx, actions::READ, &file.gts_file_type, Some(file_id))
             .await?;
-        self.store.list_versions(file_id).await
+        let limit = limit
+            .unwrap_or(self.cfg.default_page_size)
+            .min(self.cfg.max_page_size);
+        self.store.list_versions_page(file_id, limit, offset).await
     }
 
     /// Restore a prior version as current (a rebind: pointer swap, no re-upload).
@@ -321,9 +328,26 @@ impl FileService {
             serde_json::json!({ "version_id": version_id }),
         );
 
-        self.store
+        let removed = self
+            .store
             .delete_version(file_id, version_id, audit)
             .await?;
+        if !removed {
+            // P2 2.7: our `content_id == version_id` check above ran against a
+            // pre-transaction snapshot; the store re-checks transactionally and
+            // guards the delete at the DB level, so `false` here means a
+            // concurrent `bind` promoted this exact version to current (or
+            // deleted it outright) in the window between that snapshot and the
+            // transactional delete. Re-fetch (outside the tx, for error-message
+            // purposes only — the dangle itself was already prevented by the
+            // DB-level guard) to report the more accurate error.
+            return Err(match self.store.get_version(file_id, version_id).await? {
+                Some(_) => DomainError::conflict(
+                    "cannot delete the current version; bind another version first",
+                ),
+                None => DomainError::version_not_found(file_id, version_id),
+            });
+        }
         self.best_effort_blob_delete(&version.backend_id, &version.backend_path)
             .await;
         self.metrics.record_operation("delete_version", "ok");
