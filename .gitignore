@@ -372,3 +372,6 @@ testing/e2e/logs/
 
 # Cached checkout of sibling docs sources (e.g. cargo-gears) for `make docs-preview`
 .web-docs-sources/
+
+# Superpowers brainstorming/spec scratch (local design docs; not tracked)
+docs/superpowers/

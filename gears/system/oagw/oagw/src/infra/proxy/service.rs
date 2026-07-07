@@ -1892,7 +1892,10 @@ mod tests {
             AuthZResolverClient, AuthZResolverError, EvaluationRequest, EvaluationResponse,
             EvaluationResponseContext, PolicyEnforcer,
         };
-        use credstore_sdk::{CredStoreClientV1, CredStoreError, GetSecretResponse, SecretRef};
+        use credstore_sdk::{
+            CredStoreClientV1, CredStoreError, GetSecretResponse, SecretRef, SecretValue,
+            SharingMode,
+        };
         use toolkit_security::SecurityContext;
 
         struct AllowAllAuthZ;
@@ -1921,6 +1924,34 @@ mod tests {
                 _key: &SecretRef,
             ) -> Result<Option<GetSecretResponse>, CredStoreError> {
                 Ok(None)
+            }
+
+            async fn put(
+                &self,
+                _ctx: &SecurityContext,
+                _key: &SecretRef,
+                _value: SecretValue,
+                _sharing: SharingMode,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
+            }
+
+            async fn create(
+                &self,
+                _ctx: &SecurityContext,
+                _key: &SecretRef,
+                _value: SecretValue,
+                _sharing: SharingMode,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
+            }
+
+            async fn delete(
+                &self,
+                _ctx: &SecurityContext,
+                _key: &SecretRef,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
             }
         }
 

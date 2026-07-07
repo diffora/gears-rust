@@ -8,6 +8,7 @@ use uuid::Uuid;
 use zeroize::Zeroize;
 
 use crate::error::CredStoreError;
+use crate::types::SecretTypeRef;
 
 /// Re-export from tenant-resolver-sdk for cross-gear type consistency.
 pub use tenant_resolver_sdk::TenantId;
@@ -151,7 +152,14 @@ impl fmt::Display for SecretValue {
 }
 
 /// Controls the visibility scope of a stored secret.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// Also part of the GTS trait vocabulary: `SecretTypeTraits::allow_sharing`
+/// lists the modes a secret type permits, so the derived `x-gts-traits-schema`
+/// constrains trait values to this enum (schemars follows the serde
+/// `snake_case` renames).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SharingMode {
     /// Only the owner can access the secret.
@@ -163,12 +171,32 @@ pub enum SharingMode {
     Shared,
 }
 
+/// Options for typed writes ([`CredStoreClientV1::put_opts`](crate::CredStoreClientV1::put_opts) /
+/// [`create_opts`](crate::CredStoreClientV1::create_opts)).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WriteOptions {
+    /// Secret type reference (catalog type, full GTS id, or type UUID —
+    /// see [`SecretTypeRef`]); `None` keeps the existing secret's type on
+    /// overwrite and defaults to the generic type on create.
+    pub secret_type: Option<SecretTypeRef>,
+    /// Expiry instant; only permitted for types whose traits are
+    /// `expirable`. An overwrite replaces the stored expiry with this value
+    /// (including clearing it when `None`).
+    pub expires_at: Option<time::OffsetDateTime>,
+}
+
 /// Response returned by [`CredStoreClientV1::get`](crate::CredStoreClientV1::get)
 /// containing the secret value and access metadata.
 #[derive(Debug)]
 pub struct GetSecretResponse {
     /// The decrypted secret value.
     pub value: SecretValue,
+    /// Generation id of the resolved secret — the metadata row's UUID, minted
+    /// fresh for every recreated secret. Combined with `version` it forms the
+    /// gateway's strong `ETag` (`"<id>.<version>"`), so a validator from a
+    /// deleted-and-recreated secret's earlier generation can never match the
+    /// current one even when the version counters coincide.
+    pub id: uuid::Uuid,
     /// The tenant that owns this secret (may differ from the requesting tenant
     /// when the secret is inherited via hierarchical resolution).
     pub owner_tenant_id: TenantId,
@@ -177,17 +205,88 @@ pub struct GetSecretResponse {
     /// `true` if the secret was retrieved from an ancestor tenant via
     /// hierarchical resolution, `false` if owned by the requesting tenant.
     pub is_inherited: bool,
-}
-
-/// Metadata returned by plugins alongside the secret value.
-#[derive(Debug)]
-pub struct SecretMetadata {
-    pub value: SecretValue,
-    pub owner_id: OwnerId,
-    pub sharing: SharingMode,
-    pub owner_tenant_id: TenantId,
+    /// Monotonic version of the resolved secret within its generation;
+    /// surfaced as the HTTP `ETag` together with `id`.
+    pub version: i64,
+    /// The secret's full GTS type id, as resolved from the types-registry
+    /// (covers dynamically registered custom types; use
+    /// [`crate::types::SecretType::from_gts_id`] to recover a catalog type
+    /// when needed).
+    pub secret_type: String,
+    /// Expiry instant, when the type is expirable and one was set.
+    pub expires_at: Option<time::OffsetDateTime>,
 }
 
 #[cfg(test)]
-#[path = "models_tests.rs"]
-mod models_tests;
+mod models_tests {
+    use super::*;
+
+    #[test]
+    fn secret_ref_accepts_valid_shapes() {
+        for ok in ["partner-openai-key", "api_key_v2", "ABC123", "ok-key_1"] {
+            assert!(SecretRef::new(ok).is_ok(), "{ok} should be valid");
+        }
+    }
+
+    #[test]
+    fn secret_ref_rejects_invalid_chars_and_empty() {
+        assert!(SecretRef::new("").is_err());
+        for bad in ["has:colon", "my key", "key/path"] {
+            assert!(SecretRef::new(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn secret_ref_length_boundary() {
+        // 255 is the inclusive max; 256 is rejected (boundary both sides).
+        assert!(SecretRef::new("a".repeat(255)).is_ok());
+        assert!(SecretRef::new("a".repeat(256)).is_err());
+    }
+
+    #[test]
+    fn secret_ref_deserialize_validates() {
+        // The custom Deserialize is the real wire path (a raw JSON string must
+        // go through the same validation as `SecretRef::new`).
+        let valid: Result<SecretRef, _> = serde_json::from_str("\"valid-key_1\"");
+        assert_eq!(valid.expect("valid").as_ref(), "valid-key_1");
+        assert!(serde_json::from_str::<SecretRef>("\"my:evil/key\"").is_err());
+        assert!(serde_json::from_str::<SecretRef>("\"\"").is_err());
+        assert!(serde_json::from_str::<SecretRef>(&format!("\"{}\"", "a".repeat(256))).is_err());
+    }
+
+    #[test]
+    fn secret_ref_serde_round_trips() {
+        let r = SecretRef::new("round-trip").expect("valid");
+        let json = serde_json::to_string(&r).expect("serialize");
+        assert_eq!(json, "\"round-trip\"");
+        let back: SecretRef = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.as_ref(), "round-trip");
+    }
+
+    #[test]
+    fn secret_value_redacts() {
+        let v = SecretValue::from("supersecret");
+        assert_eq!(format!("{v:?}"), "[REDACTED]");
+        assert_eq!(format!("{v}"), "[REDACTED]");
+        assert_eq!(v.as_bytes(), b"supersecret");
+    }
+
+    #[test]
+    fn sharing_mode_default_is_tenant() {
+        assert_eq!(SharingMode::default(), SharingMode::Tenant);
+    }
+
+    #[test]
+    fn sharing_mode_serde_round_trips() {
+        for (mode, expected) in [
+            (SharingMode::Private, "\"private\""),
+            (SharingMode::Tenant, "\"tenant\""),
+            (SharingMode::Shared, "\"shared\""),
+        ] {
+            let json = serde_json::to_string(&mode).expect("serialize");
+            assert_eq!(json, expected);
+            let back: SharingMode = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, mode);
+        }
+    }
+}

@@ -330,15 +330,33 @@ gears:
           parent_id: "00000000-0000-0000-0000-000000000005"
           status: active
 
-  static-credstore-plugin:
+  credstore:
+    database:
+      server: "sqlite_users"
+      file: "credstore.db"
     config:
-      secrets:
-        - tenant_id: "00000000-df51-5b42-9538-d2b56b7ee953"
-          key: "openai-key"
-          value: "sk-test-e2e-fake-key"
-        - tenant_id: "00000000-df51-5b42-9538-d2b56b7ee953"
-          key: "azure-openai-key"
-          value: "REPLACE_WITH_AZURE_KEY"
+      # Gateway selects its value-store backend plugin by GTS vendor;
+      # must match static-credstore-plugin (default "constructorfabric").
+      vendor: "constructorfabric"
+
+  static-credstore-plugin:
+    # Value-store backend for the credstore gateway (selected by the `vendor`
+    # above). With the stateful gateway a secret is reachable only once a
+    # metadata row exists in the credstore DB, and that row is created by
+    # writing the secret THROUGH the gateway API. A config-only static seed here
+    # has no metadata row, so it is no longer resolvable on its own — provision
+    # the provider keys at runtime instead, e.g.:
+    #
+    #   curl -X PUT localhost:8080/cf/credstore/v1/secrets/openai-key \
+    #        -H 'content-type: application/json' \
+    #        -H 'authorization: Bearer <token>' \
+    #        -d '{"value":"sk-...","sharing":"tenant"}'
+    #
+    # mini-chat registers its OAGW upstreams at boot and retries in the
+    # background (with backoff, no restart needed) until the referenced secret
+    # (`openai-key`, and `azure-openai-key` if enabled above) is provisioned.
+    config:
+      secrets: []
 
   file-storage:
     # SQLite backend — no Postgres required for local / quickstart runs.

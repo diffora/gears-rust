@@ -483,10 +483,42 @@ mod tests {
             ) -> Result<Option<GetSecretResponse>, CredStoreError> {
                 Ok(Some(GetSecretResponse {
                     value: SecretValue::new(vec![0xFF, 0xFE]),
+                    id: uuid::Uuid::nil(),
                     owner_tenant_id: CredstoreTenantId::nil(),
                     sharing: SharingMode::default(),
                     is_inherited: false,
+                    version: 1,
+                    secret_type: credstore_sdk::SecretType::generic().gts_id().to_owned(),
+                    expires_at: None,
                 }))
+            }
+
+            async fn put(
+                &self,
+                _ctx: &toolkit_security::SecurityContext,
+                _key: &SecretRef,
+                _value: SecretValue,
+                _sharing: SharingMode,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
+            }
+
+            async fn create(
+                &self,
+                _ctx: &toolkit_security::SecurityContext,
+                _key: &SecretRef,
+                _value: SecretValue,
+                _sharing: SharingMode,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
+            }
+
+            async fn delete(
+                &self,
+                _ctx: &toolkit_security::SecurityContext,
+                _key: &SecretRef,
+            ) -> Result<(), CredStoreError> {
+                Ok(())
             }
         }
 
