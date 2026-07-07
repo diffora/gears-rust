@@ -15,7 +15,7 @@ Stores, retrieves, and deletes secrets scoped to tenants and owners. Secrets are
 
 Full API documentation: <http://127.0.0.1:8087/cf/docs>
 
-The example server uses the gateway prefix `/cf`. This comes from `gearss.api-gateway.config.prefix_path` and is configurable.
+The example server uses the gear prefix `/cf`. This comes from `gears.api-gateway.config.prefix_path` and is configurable.
 
 ## Configuration
 
@@ -30,13 +30,27 @@ gears:
 ### Store a Secret
 
 ```bash
+curl -s -X POST "http://127.0.0.1:8087/cf/credstore/v1/secrets" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reference": "partner-openai-key", "value": "sk-abc123", "sharing": "tenant"}'
+```
+
+Response: **201 Created** (`Location: …/credstore/v1/secrets/partner-openai-key`)
+
+### Update (Rotate) a Secret
+
+Updates require an `If-Match` precondition: the current `ETag` from GET for a guarded compare-and-set, or `*` for an explicit last-writer-wins overwrite. A `PUT` never creates — use `POST` above.
+
+```bash
 curl -s -X PUT "http://127.0.0.1:8087/cf/credstore/v1/secrets/partner-openai-key" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"value": "sk-abc123", "sharing": "tenant"}'
+  -H 'If-Match: *' \
+  -d '{"value": "sk-def456", "sharing": "tenant"}'
 ```
 
-Response: **204 No Content**
+Response: **204 No Content** (missing `If-Match` → **400** `IF_MATCH_REQUIRED`; stale `ETag` → **409** `OPTIMISTIC_LOCK_FAILURE`)
 
 ### Retrieve a Secret
 
@@ -61,9 +75,10 @@ curl -s "http://127.0.0.1:8087/cf/credstore/v1/secrets/partner-openai-key" \
 
 ```bash
 curl -s -X DELETE "http://127.0.0.1:8087/cf/credstore/v1/secrets/partner-openai-key" \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'If-Match: *'
 ```
 
-Response: **204 No Content**
+Response: **204 No Content** (`If-Match` is mandatory here too: an `ETag` for a guarded delete, `*` to delete whatever is there)
 
 For additional endpoints, see <http://127.0.0.1:8087/cf/docs>.
