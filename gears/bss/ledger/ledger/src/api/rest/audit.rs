@@ -642,6 +642,8 @@ async fn audit_reidentify(
     CanonicalJson(body): CanonicalJson<ReidentifyRequestDto>,
 ) -> Result<Json<ReidentifyResponseDto>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // Cap the machine `reason_code` at the boundary (400) before any work.
+    body.validate().map_err(CanonicalError::from)?;
     let caller_tenant = ctx.subject_tenant_id();
     // The free-text reason is the `X-Investigation-Reason` header (§5), the same
     // source as the other three cross-tenant endpoints; `reason_code` is in the
@@ -728,6 +730,8 @@ async fn audit_pack(
     CanonicalJson(body): CanonicalJson<AuditPackRequestDto>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // Cap the machine `reason_code` at the boundary (400) before any work.
+    body.validate().map_err(CanonicalError::from)?;
     // PEP `(entry, audit_read)` gate against the caller's HOME tenant (a deny is a
     // 403 here, before any read).
     let _home_scope = audit_read_scope(&enforcer, &ctx).await?;

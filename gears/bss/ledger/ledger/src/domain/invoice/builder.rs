@@ -253,7 +253,14 @@ pub fn build_invoice_entry(inv: &PostedInvoice, mapped: &[MappedLine]) -> PostEn
         // negative recognized-now credit (which would unbalance the entry) — the
         // orchestrator validates the invariant before calling, and the
         // foundation unbalanced guard is the backstop.
-        let deferred_minor = item.deferred_minor.clamp(0, item.amount_minor_ex_tax);
+        //
+        // `.max(0)` on the upper bound so a (rejected-at-the-boundary but
+        // domain-constructible) negative `amount_minor_ex_tax` cannot make this
+        // `clamp(0, negative)` panic with `min > max`; a negative amount then
+        // clamps deferred to 0 and the unbalanced guard rejects the entry.
+        let deferred_minor = item
+            .deferred_minor
+            .clamp(0, item.amount_minor_ex_tax.max(0));
         let recognized_now = item.amount_minor_ex_tax - deferred_minor;
 
         // Key on the stored string forms (the SDK enums are not `Ord`, and a

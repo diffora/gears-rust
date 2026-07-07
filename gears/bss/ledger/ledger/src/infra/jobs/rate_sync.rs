@@ -198,6 +198,23 @@ impl RateSyncJob {
         provider_id: &str,
     ) -> anyhow::Result<()> {
         for rate in rates {
+            // Never poison the local store with a non-positive quote: a rate
+            // `<= 0` is never valid and would flip the sign of (or zero out)
+            // every downstream translation. The REST ingest DTO rejects it; the
+            // provider feed has no such gate, so drop the pair here (the tenant's
+            // other pairs still sync) rather than upserting corrupt data.
+            if rate.rate_micro <= 0 {
+                tracing::warn!(
+                    target: "bss-ledger.rate-sync",
+                    tenant = %tenant,
+                    provider = provider_id,
+                    base = %rate.base,
+                    quote = %rate.quote,
+                    rate_micro = rate.rate_micro,
+                    "bss-ledger: dropping non-positive FX quote from provider feed"
+                );
+                continue;
+            }
             self.repo
                 .upsert_rate(&NewFxRate {
                     tenant_id: tenant,

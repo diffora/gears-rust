@@ -27,6 +27,7 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::error::authz_error_to_canonical;
+use crate::domain::error::DomainError;
 use crate::domain::model::{EntryRecord, LineRecord, NewEntry, NewLine};
 use crate::infra::currency_scale::CurrencyScaleResolver;
 use crate::infra::period_close::PeriodCloseService;
@@ -286,7 +287,12 @@ impl LedgerClientV1 for LedgerLocalClient {
             posted_at_utc,
             effective_at: entry.effective_at,
             origin: ORIGIN_SYSTEM.to_owned(),
-            posted_by_actor_id: entry.posted_by_actor_id,
+            // Audit actor is the authenticated subject, stamped server-side —
+            // NEVER the caller-supplied `entry.posted_by_actor_id`. The REST DTO
+            // already lowers with `ctx.subject_id()`, but an in-process ClientHub
+            // caller could otherwise attribute a post to an arbitrary subject;
+            // clamp it to the security context here so no path can spoof it.
+            posted_by_actor_id: ctx.subject_id(),
             correlation_id: entry.correlation_id,
             rounding_evidence: serde_json::Value::Null,
             // Slice 5: this direct-post path is same-currency in v1 (no FX lock).
@@ -295,6 +301,20 @@ impl LedgerClientV1 for LedgerLocalClient {
 
         let mut new_lines: Vec<NewLine> = Vec::with_capacity(entry.lines.len());
         for line in entry.lines {
+            // Functional FX columns must be a consistent pair on this direct
+            // in-process post path: there is no RateLocker here to derive one
+            // from the other (`rate_snapshot_ref` is `None`), so a `Some` amount
+            // with a `None` currency (or vice versa) would persist a
+            // half-populated, unauditable dual column the projector then reads
+            // inconsistently. Reject the mismatch as a 400.
+            if line.functional_amount_minor.is_some() != line.functional_currency.is_some() {
+                return Err(DomainError::InvalidRequest(
+                    "functional_amount_minor and functional_currency must both be set or both be \
+                     null on a direct post"
+                        .to_owned(),
+                )
+                .into());
+            }
             let scale = self
                 .resolver
                 .resolve(&scope, entry.tenant_id, &line.currency)

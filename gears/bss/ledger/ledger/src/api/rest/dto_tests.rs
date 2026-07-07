@@ -143,6 +143,33 @@ fn invoice_item_bad_account_class_is_invalid_request() {
     );
 }
 
+/// Regression: a negative ex-tax amount is rejected at the boundary as
+/// `InvalidRequest` (a 400) rather than reaching the recognition split's
+/// `deferred.clamp(0, amount)` downstream, where `min > max` would panic.
+#[test]
+fn invoice_item_negative_amount_is_invalid_request() {
+    let dto = InvoiceItemDto {
+        amount_minor_ex_tax: -1,
+        currency: "USD".to_owned(),
+        revenue_stream: "subscription".to_owned(),
+        catalog_class: None,
+        contract_class: None,
+        gl_code: None,
+        recognition: None,
+        invoice_item_ref: None,
+        sku_or_plan_ref: None,
+        price_id: None,
+        pricing_snapshot_ref: None,
+    };
+    let err = dto
+        .into_domain()
+        .expect_err("a negative amount must reject");
+    assert!(
+        matches!(err, DomainError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+}
+
 /// The mapping-correction body lowers its `corrected_items` the same way (bad
 /// literal ⇒ `InvalidRequest`).
 #[test]
@@ -315,6 +342,105 @@ fn mixed_currency_invoice_is_invalid_request() {
     assert!(
         matches!(err, DomainError::InvalidRequest(_)),
         "expected InvalidRequest, got {err:?}"
+    );
+}
+
+/// A malformed currency code is rejected at the boundary as `InvalidRequest` (a
+/// 400) rather than reaching a persisted line where it would match zero
+/// currency-scale rows.
+#[test]
+fn invoice_item_invalid_currency_is_invalid_request() {
+    let dto = InvoiceItemDto {
+        amount_minor_ex_tax: 100,
+        currency: "NOT-A-CURRENCY".to_owned(), // > 10 chars ⇒ over the code cap
+        revenue_stream: "subscription".to_owned(),
+        catalog_class: None,
+        contract_class: None,
+        gl_code: None,
+        recognition: None,
+        invoice_item_ref: None,
+        sku_or_plan_ref: None,
+        price_id: None,
+        pricing_snapshot_ref: None,
+    };
+    let err = dto
+        .into_domain()
+        .expect_err("a malformed currency must reject");
+    assert!(
+        matches!(err, DomainError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+}
+
+/// A wholly-empty invoice (no items AND no tax) is rejected at the boundary as
+/// `InvalidRequest` — a zero-line invoice has nothing to post.
+#[test]
+fn empty_invoice_is_invalid_request() {
+    let tenant = uuid::uuid!("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    let actor = uuid::uuid!("99999999-8888-7777-6666-555555555555");
+    let body = serde_json::json!({
+        "tenant_id": tenant,
+        "invoice_id": "INV-EMPTY",
+        "payer_tenant_id": tenant,
+        "effective_at": "2026-06-01",
+        "period_id": "202606",
+        "items": [],
+        "tax": [],
+        "correlation_id": actor
+    });
+    let dto: PostInvoiceRequestDto =
+        serde_json::from_value(body).expect("snake_case body must deserialize");
+    let err = dto
+        .into_domain(actor)
+        .expect_err("a zero-line invoice must reject");
+    assert!(
+        matches!(err, DomainError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+}
+
+/// An over-long persisted free-text field is capped at the boundary as
+/// `InvalidRequest` (a 400) rather than blowing past its storage column as a 500.
+#[test]
+fn over_long_free_text_is_rejected_at_the_boundary() {
+    let dto = MappingCorrectionRequestDto {
+        reason: "X".repeat(MAX_FREE_TEXT_LEN + 1), // one over the free-text cap
+        period_id: None,
+        effective_at: None,
+        corrected_items: vec![],
+    };
+    let err = dto
+        .corrected_items_into_domain()
+        .expect_err("an over-long reason must reject");
+    assert!(
+        matches!(err, DomainError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+}
+
+/// The handler-lowered DTOs (no `into_domain`) cap their free text via a
+/// `validate()` the handler calls: an over-long reversal `reason` and an
+/// over-long re-identify `reason_code` both reject as `InvalidRequest`.
+#[test]
+fn handler_lowered_dtos_cap_free_text_via_validate() {
+    let reversal = ReversalRequestDto {
+        reason: "X".repeat(MAX_FREE_TEXT_LEN + 1),
+        period_id: None,
+        effective_at: None,
+    };
+    assert!(
+        matches!(reversal.validate(), Err(DomainError::InvalidRequest(_))),
+        "an over-long reversal reason must reject"
+    );
+
+    let reidentify = ReidentifyRequestDto {
+        payer_tenant_id: uuid::Uuid::now_v7(),
+        reason_code: "X".repeat(MAX_REASON_CODE_LEN + 1),
+        target_scope: None,
+    };
+    assert!(
+        matches!(reidentify.validate(), Err(DomainError::InvalidRequest(_))),
+        "an over-long reason_code must reject"
     );
 }
 

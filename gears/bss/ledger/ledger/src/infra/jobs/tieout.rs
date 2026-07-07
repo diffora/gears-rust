@@ -1036,30 +1036,6 @@ impl SubGrainAcc {
     }
 }
 
-/// Whole-slice reference wrapper over [`SubGrainAcc`] — retained for the
-/// pure-function unit tests that lock the fold/finalize semantics the paginated
-/// production path relies on.
-#[cfg(test)]
-fn recompute_sub_grain_variances(
-    lines: &[journal_line::Model],
-    normal_side_map: &HashMap<Uuid, String>,
-    ar_payer_cache: &[ar_payer_balance::Model],
-    ar_invoice_cache: &[ar_invoice_balance::Model],
-    tax_cache: &[tax_subbalance::Model],
-    unallocated_cache: &[unallocated_balance::Model],
-    reusable_credit_cache: &[reusable_credit_subbalance::Model],
-) -> Vec<SubGrainVariance> {
-    let mut acc = SubGrainAcc::default();
-    acc.fold(lines, normal_side_map);
-    acc.finalize(
-        ar_payer_cache,
-        ar_invoice_cache,
-        tax_cache,
-        unallocated_cache,
-        reusable_credit_cache,
-    )
-}
-
 /// Build the `entry_id -> payment_id` index for PAYMENT_SETTLE entries plus the
 /// tenant-wide SETTLEMENT_RETURN flag (its presence makes journal-recomputed
 /// `settled_minor` AND `fee_minor` un-reconcilable — see
@@ -1295,22 +1271,6 @@ impl PaymentCounterAcc {
     }
 }
 
-/// Whole-slice reference wrapper over [`PaymentCounterAcc`] — retained for the
-/// pure-function unit tests that lock the fold/finalize semantics the paginated
-/// production path relies on.
-#[cfg(test)]
-fn recompute_payment_counter_variances(
-    entries: &[journal_entry::Model],
-    lines: &[journal_line::Model],
-    allocations: &[payment_allocation::Model],
-    settlement_cache: &[payment_settlement::Model],
-) -> Vec<PaymentCounterVariance> {
-    let (settle_payment_by_entry, has_settlement_return) = settle_index(entries);
-    let mut acc = PaymentCounterAcc::default();
-    acc.fold(lines, &settle_payment_by_entry);
-    acc.finalize(allocations, settlement_cache, has_settlement_return)
-}
-
 /// Per-entry running tally for the entry-balance backstop.
 #[derive(Default)]
 struct EntryAgg {
@@ -1366,17 +1326,6 @@ impl EntryBackstopAcc {
         }
         imbalanced
     }
-}
-
-/// Group lines by `(entry_id, currency, currency_scale)` and flag any group
-/// whose net (`sum(DR) - sum(CR)`) is non-zero, that has no lines, or that
-/// spans more than one payer. Independent of the commit trigger — catches a
-/// malformed entry committed with a missing/buggy trigger.
-#[cfg(test)]
-fn entry_backstop(lines: &[journal_line::Model]) -> Vec<ImbalancedEntry> {
-    let mut acc = EntryBackstopAcc::default();
-    acc.fold(lines);
-    acc.finalize()
 }
 
 /// Re-check the no-negative invariant: an `account_balance` row whose balance is

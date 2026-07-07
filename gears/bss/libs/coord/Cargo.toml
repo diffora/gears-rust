@@ -40,6 +40,16 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
-# Integration tests drive the real `LeaseManager`/`LeaseGuard` against an
-# in-memory SQLite `Db`; raw setup SQL goes through sea-orm `Statement`.
-tokio = { workspace = true, features = ["time", "macros", "rt", "sync"] }
+# Integration tests drive the real `LeaseManager`/`LeaseGuard`. The SQLite
+# in-crate tests run on an in-memory `Db`; the Postgres fence test
+# (`tests/postgres_fence.rs`) needs a real backend (SSI/snapshot semantics
+# SQLite cannot model) via testcontainers, plus the multi-thread runtime to
+# drive the held ack tx and the peer steal concurrently.
+tokio = { workspace = true, features = [
+  "time",
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+] }
+testcontainers-modules = { workspace = true }

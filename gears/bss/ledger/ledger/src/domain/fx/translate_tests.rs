@@ -91,6 +91,23 @@ fn non_positive_rate_is_rejected() {
 }
 
 #[test]
+fn translate_amount_rejects_non_positive_rate() {
+    // The single-amount path (used by the unrealized-revaluation run) must reject
+    // a `<= 0` rate too — a zero rate would zero out the position and a negative
+    // rate would flip its sign, posting a wrong FX entry instead of erroring.
+    assert_eq!(
+        translate_amount(10_000, 0),
+        Err(FxTranslateError::RateNonPositive)
+    );
+    assert_eq!(
+        translate_amount(10_000, -1_100_000),
+        Err(FxTranslateError::RateNonPositive)
+    );
+    // A valid positive rate still translates ($100.00 × 1.1 = $110.00).
+    assert_eq!(translate_amount(10_000, 1_100_000), Ok(11_000));
+}
+
+#[test]
 fn anchor_out_of_bounds_is_rejected() {
     let lines = [dr(1000), cr(1000)];
     assert_eq!(

@@ -9,20 +9,24 @@
 //! Time anchors on the **DB clock**: the steal/renew filters use `WHERE
 //! locked_until < NOW()` (DB-side), so a worker that misreads expiry under NTP
 //! drift simply gets `rows_affected == 0` and returns `LeaseHeld` — a
-//! false-negative on acquire, never a false-positive steal. The only worker
-//! clock used is the `locked_until` written on the free-slot INSERT, and drift
-//! there can only *shorten* our own lease versus the DB's view, never extend it
-//! past it.
+//! false-negative on acquire, never a false-positive steal. `locked_until` is
+//! *written* on the DB clock too: the steal / renew paths bump it via
+//! `dialect.ttl_expr` (`NOW() + INTERVAL`), and the free-slot path INSERTs the
+//! epoch sentinel (a fixed `1970-01-01T00:00:00Z`, no worker clock) then claims
+//! the row it just created with the same DB-clock steal-UPDATE. So no
+//! worker-clock value ever lands in `locked_until`; a worker whose clock runs
+//! *ahead* can no longer stamp an expiry into the future and block peers past
+//! the intended TTL.
 
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::{Expr, SimpleExpr};
 use sea_orm::{ActiveValue, ColumnTrait, EntityTrait, QueryFilter};
-use toolkit_db::Db;
 use toolkit_db::secure::{
     ScopeError, SecureEntityExt, SecureUpdateExt, TxConfig, is_unique_violation, secure_insert,
 };
+use toolkit_db::{Db, DbTx};
 use toolkit_security::AccessScope;
 use uuid::Uuid;
 
@@ -80,25 +84,18 @@ impl LeaseManager {
 
                         match existing {
                             None => {
-                                // Free slot — INSERT. `locked_until` is written
-                                // worker-clock; the steal-path filter is
-                                // DB-clock, so drift only shortens our own
-                                // lease, never extends it past the DB's view.
+                                // Free slot — INSERT the epoch sentinel
+                                // (`locked_until` in 1970, `locked_by = NULL`),
+                                // which carries NO worker-clock value, then claim
+                                // the row we just created on the DB clock via the
+                                // same steal-UPDATE the expired arm uses. A peer
+                                // that races the INSERT loses on the PK
+                                // unique-violation → `LeaseHeld`.
                                 let row = coord_leases::ActiveModel {
                                     key: ActiveValue::Set(key.clone()),
-                                    locked_by: ActiveValue::Set(Some(my_uuid)),
-                                    // Checked: `chrono::Duration::seconds` and
-                                    // `DateTime + Duration` both panic on overflow,
-                                    // and `acquire(key, ttl)` is library-public. A
-                                    // pathological `ttl` clamps to the representable
-                                    // max instead of panicking; the DB-clock steal
-                                    // filter stays authoritative regardless.
-                                    locked_until: ActiveValue::Set(
-                                        chrono::TimeDelta::try_seconds(ttl_secs)
-                                            .and_then(|d| Utc::now().checked_add_signed(d))
-                                            .unwrap_or(DateTime::<Utc>::MAX_UTC),
-                                    ),
-                                    attempts: ActiveValue::Set(1),
+                                    locked_by: ActiveValue::Set(None),
+                                    locked_until: ActiveValue::Set(DateTime::<Utc>::UNIX_EPOCH),
+                                    attempts: ActiveValue::Set(0),
                                 };
                                 match secure_insert::<coord_leases::Entity>(
                                     row,
@@ -107,45 +104,34 @@ impl LeaseManager {
                                 )
                                 .await
                                 {
-                                    Ok(_) => Ok(()),
+                                    Ok(_) => {}
                                     Err(ScopeError::Db(db)) if is_unique_violation(&db) => {
                                         // A peer raced us between SELECT and
                                         // INSERT and committed first; their row
                                         // is live → `LeaseHeld`.
-                                        Err(CoordError::LeaseHeld)
+                                        return Err(CoordError::LeaseHeld);
                                     }
-                                    Err(err) => Err(map_scope_err(err)),
+                                    Err(err) => return Err(map_scope_err(err)),
                                 }
+                                // Claim the epoch row on the DB clock. Within our
+                                // own SERIALIZABLE txn this always matches the row
+                                // we just inserted (epoch < NOW()); the zero-rows
+                                // guard stays as a belt.
+                                if claim_expired_slot(tx, dialect, &key, my_uuid, ttl_secs).await?
+                                    == 0
+                                {
+                                    return Err(CoordError::LeaseHeld);
+                                }
+                                Ok(())
                             }
                             Some(row) if row.locked_until <= Utc::now() => {
                                 // Read side says expired; the UPDATE re-checks
                                 // DB-side via `locked_until < NOW()`. If the row
                                 // is in fact still live (drift), zero rows →
                                 // `LeaseHeld`.
-                                let result = coord_leases::Entity::update_many()
-                                    .col_expr(
-                                        coord_leases::Column::LockedBy,
-                                        Expr::value(my_uuid),
-                                    )
-                                    .col_expr(
-                                        coord_leases::Column::LockedUntil,
-                                        dialect.ttl_expr(ttl_secs),
-                                    )
-                                    .col_expr(
-                                        coord_leases::Column::Attempts,
-                                        Expr::col(coord_leases::Column::Attempts).add(1),
-                                    )
-                                    .filter(
-                                        coord_leases::Column::Key
-                                            .eq(key.as_str())
-                                            .and(dialect.expired_filter()),
-                                    )
-                                    .secure()
-                                    .scope_with(&AccessScope::allow_all())
-                                    .exec(tx)
-                                    .await
-                                    .map_err(map_scope_err)?;
-                                if result.rows_affected == 0 {
+                                if claim_expired_slot(tx, dialect, &key, my_uuid, ttl_secs).await?
+                                    == 0
+                                {
                                     // Belt: under PG SERIALIZABLE a concurrent
                                     // steal normally aborts as 40001 (and
                                     // retries); this arm is reached only when
@@ -175,6 +161,46 @@ impl LeaseManager {
             ttl,
         ))
     }
+}
+
+/// Claim a slot whose `locked_until` is DB-side expired: set the holder and push
+/// `locked_until` to `NOW() + ttl` on the **DB clock** (`dialect.ttl_expr`),
+/// bumping the forensic `attempts` streak. Returns the affected row count — `0`
+/// means the row was re-taken (or renewed) between the caller's read and this
+/// write, which the caller surfaces as [`CoordError::LeaseHeld`].
+///
+/// Shared by both acquire paths: the expired-lease steal and the free-slot claim
+/// of the epoch sentinel the caller just inserted. Anchoring the write on the DB
+/// clock (never the worker clock) keeps a skewed worker from stamping an expiry
+/// into the future.
+async fn claim_expired_slot(
+    tx: &DbTx<'_>,
+    dialect: Dialect,
+    key: &str,
+    my_uuid: Uuid,
+    ttl_secs: i64,
+) -> Result<u64, CoordError> {
+    let result = coord_leases::Entity::update_many()
+        .col_expr(coord_leases::Column::LockedBy, Expr::value(my_uuid))
+        .col_expr(
+            coord_leases::Column::LockedUntil,
+            dialect.ttl_expr(ttl_secs),
+        )
+        .col_expr(
+            coord_leases::Column::Attempts,
+            Expr::col(coord_leases::Column::Attempts).add(1),
+        )
+        .filter(
+            coord_leases::Column::Key
+                .eq(key)
+                .and(dialect.expired_filter()),
+        )
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .exec(tx)
+        .await
+        .map_err(map_scope_err)?;
+    Ok(result.rows_affected)
 }
 
 /// Supported SQL dialects for the DB-clock lease arithmetic.
@@ -228,12 +254,31 @@ impl Dialect {
         }
     }
 
-    /// The "lease still live" predicate (`locked_until > now`) for the fence + renew
-    /// filters — the same `datetime()` normalization on `SQLite` as
+    /// The "lease still live" predicate (`locked_until > now`) for the renew
+    /// filter — the same `datetime()` normalization on `SQLite` as
     /// [`Self::expired_filter`].
     pub(super) fn live_filter(self) -> SimpleExpr {
         match self {
             Self::Postgres => Expr::col(coord_leases::Column::LockedUntil).gt(self.now_expr()),
+            Self::Sqlite => Expr::cust("datetime(locked_until) > datetime('now')"),
+        }
+    }
+
+    /// The "lease still live" predicate anchored on the **wall clock**
+    /// (`clock_timestamp()`), for the `with_ack_in_tx` fence.
+    ///
+    /// The fence runs inside a long-lived `SERIALIZABLE` transaction, so `NOW()`
+    /// / `transaction_timestamp()` (used by [`Self::live_filter`]) reads the
+    /// transaction's *start* time — a lease that lapsed while the ack work ran
+    /// would still test live against it, defeating the fence. `clock_timestamp()`
+    /// re-evaluates at statement execution, so an expiry that elapsed since the
+    /// snapshot is caught. On `SQLite` `datetime('now')` is already wall-clock
+    /// (no transaction snapshot to skew it), so the two filters coincide.
+    pub(super) fn live_filter_clock(self) -> SimpleExpr {
+        match self {
+            Self::Postgres => {
+                Expr::col(coord_leases::Column::LockedUntil).gt(Expr::cust("clock_timestamp()"))
+            }
             Self::Sqlite => Expr::cust("datetime(locked_until) > datetime('now')"),
         }
     }

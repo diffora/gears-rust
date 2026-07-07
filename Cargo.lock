@@ -3192,6 +3192,7 @@ dependencies = [
  "chrono",
  "sea-orm",
  "sea-orm-migration",
+ "testcontainers-modules",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

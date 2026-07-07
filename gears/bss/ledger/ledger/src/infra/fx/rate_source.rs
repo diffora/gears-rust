@@ -174,6 +174,14 @@ impl RateSource {
         // First non-stale candidate wins; its precedence rank is the result's
         // `fallback_order` (0 = primary).
         for row in &candidates {
+            // Defence in depth: a rate `<= 0` is never a valid quote. The REST
+            // ingest DTO rejects it, but the provider-sync upsert and the raw
+            // store have no such gate, so a corrupt/zero feed row could otherwise
+            // be picked here and flip the sign of (or zero out) every downstream
+            // translation. Skip it like a stale row so a valid fallback can win.
+            if row.rate_micro <= 0 {
+                continue;
+            }
             let age = now - row.as_of;
             if !is_stale(base, quote, age, &self.cfg) {
                 let rank = order_index(&row.provider, &self.cfg.provider_order);

@@ -27,7 +27,7 @@ use std::time::Duration;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use toolkit_db::Db;
-use toolkit_db::secure::{DbTx, ScopeError, SecureEntityExt, SecureUpdateExt, TxConfig};
+use toolkit_db::secure::{DbTx, ScopeError, SecureUpdateExt, TxConfig};
 use toolkit_security::AccessScope;
 use uuid::Uuid;
 
@@ -158,9 +158,20 @@ impl LeaseGuard {
     }
 
     /// Run `f` inside a `SERIALIZABLE` transaction (with retry on transient
-    /// contention) and append a fence SELECT against `coord_leases` as the last
+    /// contention) and append a fence UPDATE against `coord_leases` as the last
     /// DB call of the tx. Zero matched rows → [`AckError::LeaseLost`] (rollback,
     /// **not** retried).
+    ///
+    /// The fence is an UPDATE (a no-op self-touch of the holder's own row), not a
+    /// SELECT, on purpose. A plain SELECT reads the transaction's frozen
+    /// `SERIALIZABLE` snapshot: a peer steal that committed *after* the ack tx
+    /// took its snapshot stays invisible, the pre-steal row still tests
+    /// "mine + live", and the commit is NOT guaranteed to abort (a lone
+    /// read-only rw-antidependency does not trip Postgres SSI). Writing the row
+    /// instead makes the fence a ww-conflict: Postgres first-updater-wins raises
+    /// `40001` at the fence when a peer already committed a steal, and the
+    /// [`Dialect::live_filter_clock`] wall-clock predicate catches a
+    /// lapsed-but-unstolen lease — closing the window a SELECT fence left open.
     ///
     /// `extract_work_db_err` lets the retry helper classify `Work(E)` failures:
     /// `Some(&DbErr)` for retryable contention causes a retry; anything else (or
@@ -171,7 +182,7 @@ impl LeaseGuard {
     /// reset by `f` itself before re-running).
     ///
     /// # Errors
-    /// * [`AckError::LeaseLost`] — fence SELECT found the row stolen / expired.
+    /// * [`AckError::LeaseLost`] — fence UPDATE found the row stolen / expired.
     /// * [`AckError::Work`] — `f` returned `Err(E)`.
     /// * [`AckError::Db`] — DB transport / serialisation / fence-SELECT failure
     ///   the retry helper did not classify as retryable, or an unsupported
@@ -216,25 +227,33 @@ impl LeaseGuard {
                     let user_future = f(tx);
                     Box::pin(async move {
                         let work_result = user_future.await.map_err(AckError::Work)?;
-                        // Fence SELECT — last DB call inside the tx. A peer steal
-                        // that committed mid-flight normally aborts here as 40001
-                        // (read-set conflict) and retries; the explicit
-                        // zero-rows check covers a steal that committed BEFORE
-                        // this tx began. The `locked_until > NOW()` clause also
-                        // fences a lapsed-but-unstolen lease.
-                        let still_mine = coord_leases::Entity::find()
+                        // Fence UPDATE — last DB call inside the tx. A no-op
+                        // self-touch of the holder's row (`locked_until =
+                        // locked_until`) so it is a WRITE, not a snapshot read:
+                        // a peer steal committed mid-flight then forces a `40001`
+                        // here via Postgres first-updater-wins (the retry helper
+                        // re-runs and observes the steal → zero rows → lost),
+                        // while a lone SELECT could commit against a stale
+                        // snapshot. The `locked_by` clause catches a takeover and
+                        // the wall-clock `live_filter_clock` catches a
+                        // lapsed-but-unstolen lease. Zero rows → `LeaseLost`.
+                        let fenced = coord_leases::Entity::update_many()
+                            .col_expr(
+                                coord_leases::Column::LockedUntil,
+                                Expr::col(coord_leases::Column::LockedUntil).into(),
+                            )
                             .filter(
                                 coord_leases::Column::Key
                                     .eq(key.as_str())
                                     .and(coord_leases::Column::LockedBy.eq(locked_by))
-                                    .and(dialect.live_filter()),
+                                    .and(dialect.live_filter_clock()),
                             )
                             .secure()
                             .scope_with(&AccessScope::allow_all())
-                            .one(tx)
+                            .exec(tx)
                             .await
                             .map_err(map_fence_scope_err)?;
-                        if still_mine.is_none() {
+                        if fenced.rows_affected == 0 {
                             return Err(AckError::LeaseLost);
                         }
                         Ok(work_result)

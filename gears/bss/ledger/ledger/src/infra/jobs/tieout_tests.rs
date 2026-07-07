@@ -14,6 +14,7 @@
     clippy::inconsistent_struct_constructor
 )]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bss_ledger_sdk::{AccountClass, MappingStatus, Side, SourceDocType};
@@ -28,9 +29,9 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use super::{
-    NegativeGrain, TieOutReport, cache_baseline_rows, cache_grains, entry_backstop, fold_grains,
-    key_account, negative_grains, recompute_payment_counter_variances,
-    recompute_sub_grain_variances, verify_incremental,
+    EntryBackstopAcc, ImbalancedEntry, NegativeGrain, PaymentCounterAcc, PaymentCounterVariance,
+    SubGrainAcc, SubGrainVariance, TieOutReport, cache_baseline_rows, cache_grains, fold_grains,
+    key_account, negative_grains, settle_index, verify_incremental,
 };
 use crate::domain::model::{AccountRow, CurrencyScaleRow, NewEntry, NewLine};
 use crate::domain::money::DEFAULT_PLAUSIBLE_MAX_MAJOR;
@@ -1078,4 +1079,51 @@ async fn incremental_tie_out_equals_full_across_periods() {
     // And it agrees with the full all-time fold.
     let full = job.tie_out_on(&conn, f.tenant).await.unwrap();
     assert!(full.is_clean(), "the full fold is clean too");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Whole-slice reference wrappers over the streaming accumulators. Test-only
+// (DE1101: test code lives in the companion, not the production file); they lock
+// the fold/finalize semantics the paginated production path relies on.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Whole-slice reference wrapper over [`SubGrainAcc`].
+fn recompute_sub_grain_variances(
+    lines: &[journal_line::Model],
+    normal_side_map: &HashMap<Uuid, String>,
+    ar_payer_cache: &[ar_payer_balance::Model],
+    ar_invoice_cache: &[ar_invoice_balance::Model],
+    tax_cache: &[tax_subbalance::Model],
+    unallocated_cache: &[unallocated_balance::Model],
+    reusable_credit_cache: &[reusable_credit_subbalance::Model],
+) -> Vec<SubGrainVariance> {
+    let mut acc = SubGrainAcc::default();
+    acc.fold(lines, normal_side_map);
+    acc.finalize(
+        ar_payer_cache,
+        ar_invoice_cache,
+        tax_cache,
+        unallocated_cache,
+        reusable_credit_cache,
+    )
+}
+
+/// Whole-slice reference wrapper over [`PaymentCounterAcc`].
+fn recompute_payment_counter_variances(
+    entries: &[journal_entry::Model],
+    lines: &[journal_line::Model],
+    allocations: &[payment_allocation::Model],
+    settlement_cache: &[payment_settlement::Model],
+) -> Vec<PaymentCounterVariance> {
+    let (settle_payment_by_entry, has_settlement_return) = settle_index(entries);
+    let mut acc = PaymentCounterAcc::default();
+    acc.fold(lines, &settle_payment_by_entry);
+    acc.finalize(allocations, settlement_cache, has_settlement_return)
+}
+
+/// Whole-slice reference wrapper over [`EntryBackstopAcc`].
+fn entry_backstop(lines: &[journal_line::Model]) -> Vec<ImbalancedEntry> {
+    let mut acc = EntryBackstopAcc::default();
+    acc.fold(lines);
+    acc.finalize()
 }

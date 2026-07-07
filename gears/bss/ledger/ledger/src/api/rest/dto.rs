@@ -249,6 +249,20 @@ impl InvoiceItemDto {
     /// when the `recognition` block carries an invalid timing (see
     /// [`RecognitionInputDto::into_domain`]).
     fn into_domain(self) -> Result<InvoiceItem, DomainError> {
+        // Money invariant: an ex-tax line amount is non-negative. A negative
+        // value is not just wrong accounting — it drives the recognition split's
+        // `deferred.clamp(0, amount)` into `min > max` (a panic) downstream, so
+        // reject it here at the wire boundary as a 400, never deeper.
+        if self.amount_minor_ex_tax < 0 {
+            return Err(DomainError::InvalidRequest(format!(
+                "invoice item amount_minor_ex_tax must be non-negative, got {}",
+                self.amount_minor_ex_tax
+            )));
+        }
+        // The line currency is stamped verbatim on the journal line and never
+        // re-parsed downstream; screen a malformed code here (a 400) rather than let
+        // it silently match zero currency-scale rows / land in a persisted column.
+        check_currency_code("currency", &self.currency)?;
         let catalog_class = parse_opt_account_class("catalog_class", self.catalog_class)?;
         let contract_class = parse_opt_account_class("contract_class", self.contract_class)?;
         let recognition = self
@@ -436,7 +450,29 @@ impl PostInvoiceRequestDto {
             .into_iter()
             .map(InvoiceItemDto::into_domain)
             .collect::<Result<Vec<_>, DomainError>>()?;
+        // Tax amounts are non-negative for the same reason (the AR gross folds
+        // `Σ items + Σ tax`; a negative tax line understates the receivable).
+        if let Some(bad) = self.tax.iter().find(|t| t.amount_minor < 0) {
+            return Err(DomainError::InvalidRequest(format!(
+                "tax amount_minor must be non-negative, got {}",
+                bad.amount_minor
+            )));
+        }
+        // Each tax component's currency is stamped on its own line but lowers via a
+        // plain `From` (no per-field guard), so this is the one place its code is
+        // screened before it reaches a persisted line.
+        for t in &self.tax {
+            check_currency_code("tax.currency", &t.currency)?;
+        }
         let tax: Vec<TaxBreakdown> = self.tax.into_iter().map(TaxBreakdown::from).collect();
+        // A zero-line invoice (no items AND no tax) has nothing to post — the builder
+        // would emit an empty entry. Reject it at the boundary as a 400 (an
+        // items-empty-but-tax-present invoice is a legitimate tax-only posting).
+        if items.is_empty() && tax.is_empty() {
+            return Err(DomainError::InvalidRequest(
+                "invoice must carry at least one item or tax line".to_owned(),
+            ));
+        }
         // Single-currency invariant: the builder stamps the reference currency on
         // every line, so a differing item/tax currency would be silently
         // misattributed. Reject it at the boundary (the reference = first item's
@@ -484,6 +520,17 @@ pub struct ReversalRequestDto {
     pub effective_at: Option<NaiveDate>,
 }
 
+impl ReversalRequestDto {
+    /// Cap the persisted audit `reason` free text at the boundary (this DTO has
+    /// no lowering method — the handler calls this before the write).
+    ///
+    /// # Errors
+    /// [`DomainError::InvalidRequest`] when `reason` exceeds [`MAX_FREE_TEXT_LEN`].
+    pub(crate) fn validate(&self) -> Result<(), DomainError> {
+        check_free_text("reason", &self.reason, MAX_FREE_TEXT_LEN)
+    }
+}
+
 /// The `POST /journal-entries/{entryId}/mapping-corrections` request body: a
 /// strict reversal of the mis-mapped original immediately followed by a
 /// corrected re-post (`corrected_items` re-mapped to the right accounts). The
@@ -509,6 +556,10 @@ impl MappingCorrectionRequestDto {
     /// [`DomainError::InvalidRequest`] when an item's class literal does not
     /// parse.
     pub fn corrected_items_into_domain(&self) -> Result<Vec<InvoiceItem>, DomainError> {
+        // The audit `reason` is persisted on the secured-audit record; cap the
+        // unbounded free text at the boundary (this is the DTO's only lowering
+        // method, so it is where the field is screened).
+        check_free_text("reason", &self.reason, MAX_FREE_TEXT_LEN)?;
         self.corrected_items
             .iter()
             .cloned()
@@ -532,6 +583,21 @@ pub struct EntryAnnotationRequestDto {
     pub target_line_id: Option<Uuid>,
     /// Audit reason for the change (recorded on the secured-audit record).
     pub reason: String,
+}
+
+impl EntryAnnotationRequestDto {
+    /// Cap the persisted `description` note and audit `reason` free text at the
+    /// boundary (this DTO has no lowering method — the handler calls this before
+    /// the write; PII screening of `description` runs separately downstream).
+    ///
+    /// # Errors
+    /// [`DomainError::InvalidRequest`] when either exceeds [`MAX_FREE_TEXT_LEN`].
+    pub(crate) fn validate(&self) -> Result<(), DomainError> {
+        if let Some(description) = &self.description {
+            check_free_text("description", description, MAX_FREE_TEXT_LEN)?;
+        }
+        check_free_text("reason", &self.reason, MAX_FREE_TEXT_LEN)
+    }
 }
 
 // ── Audit-retrieval response DTOs (Group 2C, AC #8) ──────────────────────────
@@ -671,6 +737,21 @@ pub struct AuditPackRequestDto {
     /// Machine-readable investigation reason code (required for a cross-tenant
     /// pack).
     pub reason_code: Option<String>,
+}
+
+impl AuditPackRequestDto {
+    /// Cap the machine `reason_code` at the boundary (this DTO has no lowering
+    /// method — the handler calls this before the export).
+    ///
+    /// # Errors
+    /// [`DomainError::InvalidRequest`] when `reason_code` exceeds
+    /// [`MAX_REASON_CODE_LEN`].
+    pub(crate) fn validate(&self) -> Result<(), DomainError> {
+        if let Some(reason_code) = &self.reason_code {
+            check_free_text("reason_code", reason_code, MAX_REASON_CODE_LEN)?;
+        }
+        Ok(())
+    }
 }
 
 /// Audit-pack export resource (Slice 6 §5/§10). `POST …/audit/packs` returns
@@ -1055,6 +1136,7 @@ impl SettlePaymentRequest {
     /// [`MAX_BUSINESS_ID_LEN`].
     pub fn into_sdk(self) -> Result<bss_ledger_sdk::SettlePayment, DomainError> {
         validate_business_id("payment_id", &self.payment_id)?;
+        check_currency_code("currency", &self.currency)?;
         Ok(bss_ledger_sdk::SettlePayment {
             tenant_id: self.tenant_id,
             payer_tenant_id: self.payer_tenant_id,
@@ -1127,6 +1209,7 @@ impl ReturnPaymentRequest {
     ) -> Result<bss_ledger_sdk::ReturnPayment, DomainError> {
         validate_business_id("payment_id", &payment_id)?;
         validate_business_id("psp_return_id", &self.psp_return_id)?;
+        check_currency_code("currency", &self.currency)?;
         Ok(bss_ledger_sdk::ReturnPayment {
             tenant_id: self.tenant_id,
             payer_tenant_id: self.payer_tenant_id,
@@ -1223,6 +1306,7 @@ impl RecordDisputePhaseRequest {
         if let Some(invoice_id) = &self.invoice_id {
             validate_business_id("invoice_id", invoice_id)?;
         }
+        check_currency_code("currency", &self.currency)?;
         // The DB CHECK (cycle >= 1) is authoritative; reject a non-positive cycle
         // at the boundary with a clear `InvalidRequest` rather than letting it hit
         // the constraint and surface as a generic 500.
@@ -1383,6 +1467,7 @@ impl AllocatePaymentRequest {
                 validate_business_id("splits.invoice_id", &split.invoice_id)?;
             }
         }
+        check_currency_code("currency", &self.currency)?;
         Ok(bss_ledger_sdk::AllocatePayment {
             tenant_id: self.tenant_id,
             payer_tenant_id: self.payer_tenant_id,
@@ -1585,6 +1670,10 @@ impl CreditApplicationRequest {
                 format!("must be 1..={MAX_BUSINESS_ID_LEN} bytes"),
             ));
         }
+        // Screen the currency at the boundary; the `DomainError` 400 flows through
+        // the existing `From<DomainError> for CanonicalError` ladder so it renders
+        // the same InvalidArgument shape as the kind-specific violations below.
+        check_currency_code("currency", &self.currency).map_err(CanonicalError::from)?;
         match self.kind.as_str() {
             "grant" => {
                 let amount_minor = self.amount_minor.ok_or_else(|| {
@@ -2202,6 +2291,18 @@ pub struct ReidentifyRequestDto {
     pub target_scope: Option<Uuid>,
 }
 
+impl ReidentifyRequestDto {
+    /// Cap the machine `reason_code` at the boundary (this DTO has no lowering
+    /// method — the handler calls this before the re-identify).
+    ///
+    /// # Errors
+    /// [`DomainError::InvalidRequest`] when `reason_code` exceeds
+    /// [`MAX_REASON_CODE_LEN`].
+    pub(crate) fn validate(&self) -> Result<(), DomainError> {
+        check_free_text("reason_code", &self.reason_code, MAX_REASON_CODE_LEN)
+    }
+}
+
 /// `POST …/audit/reidentify` response: the recovered opaque `pii_ref` (the
 /// pointer into the external PII store; never the PII itself).
 #[derive(Debug, Clone)]
@@ -2314,6 +2415,8 @@ impl CreditNoteRequest {
         if let Some(item) = &self.origin_invoice_item_ref {
             validate_business_id("origin_invoice_item_ref", item)?;
         }
+        check_currency_code("currency", &self.currency)?;
+        check_free_text("reason_code", &self.reason_code, MAX_REASON_CODE_LEN)?;
         Ok(crate::domain::adjustment::credit_note::CreditNoteRequest {
             tenant_id: self.tenant_id,
             payer_tenant_id: self.payer_tenant_id,
@@ -2439,6 +2542,8 @@ impl ManualAdjustmentRequest {
         preparer_actor_id: Uuid,
     ) -> Result<crate::domain::adjustment::manual::ManualAdjustmentRequest, DomainError> {
         validate_business_id("adjustment_id", &self.adjustment_id)?;
+        check_currency_code("currency", &self.currency)?;
+        check_free_text("reason_code", &self.reason_code, MAX_REASON_CODE_LEN)?;
         let action = crate::domain::adjustment::manual::ManualAdjustmentAction::parse(&self.action)
             .ok_or_else(|| {
                 DomainError::InvalidRequest(format!(
@@ -2591,6 +2696,8 @@ impl DebitNoteRequest {
         if let Some(item) = &self.origin_invoice_item_ref {
             validate_business_id("origin_invoice_item_ref", item)?;
         }
+        check_currency_code("currency", &self.currency)?;
+        check_free_text("reason_code", &self.reason_code, MAX_REASON_CODE_LEN)?;
         let recognition = self
             .recognition
             .map(RecognitionInputDto::into_domain)
@@ -2754,6 +2861,7 @@ impl RefundRequest {
         if let Some(rel) = &self.relates_to_refund_id {
             validate_business_id("relates_to_refund_id", rel)?;
         }
+        check_currency_code("currency", &self.currency)?;
         let phase = RefundPhase::parse(&self.phase).ok_or_else(|| {
             DomainError::InvalidRequest(format!(
                 "unknown refund phase {:?} (expected initiated|confirmed|rejected|voided|\
@@ -3314,6 +3422,24 @@ fn check_currency_code(field: &str, code: &str) -> Result<(), DomainError> {
     if code.is_empty() || code.len() > 10 || !code.is_ascii() {
         return Err(DomainError::InvalidRequest(format!(
             "{field} must be a non-empty ASCII code of at most 10 chars, got {code:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// Max bytes of a machine `reason_code` (a short enumerated-style token).
+const MAX_REASON_CODE_LEN: usize = 64;
+/// Max bytes of a human free-text `reason` / `description` note.
+const MAX_FREE_TEXT_LEN: usize = 4096;
+
+/// Light boundary cap for a persisted free-text field: reject a value whose byte
+/// length exceeds `max` (mirrors [`check_currency_code`]). An unbounded note would
+/// otherwise blow past its storage column as a 500 instead of a clean 400 here.
+fn check_free_text(field: &str, value: &str, max: usize) -> Result<(), DomainError> {
+    if value.len() > max {
+        return Err(DomainError::InvalidRequest(format!(
+            "{field} must be at most {max} bytes, got {}",
+            value.len()
         )));
     }
     Ok(())

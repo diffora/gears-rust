@@ -591,6 +591,8 @@ async fn reverse_entry(
     CanonicalJson(body): CanonicalJson<ReversalRequestDto>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // Cap the unbounded audit `reason` free text at the boundary (400) before any work.
+    body.validate().map_err(CanonicalError::from)?;
     // Tenant from the auth context; the scoped `get_entry` read enforces BOLA
     // (a foreign entry resolves to None ⇒ 404, no existence leak).
     let tenant_id = ctx.subject_tenant_id();
@@ -857,6 +859,8 @@ async fn set_entry_annotation(
     CanonicalJson(body): CanonicalJson<EntryAnnotationRequestDto>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // Cap the unbounded `description` / `reason` free text at the boundary (400).
+    body.validate().map_err(CanonicalError::from)?;
 
     let caller_tenant = ctx.subject_tenant_id();
     let entry = state

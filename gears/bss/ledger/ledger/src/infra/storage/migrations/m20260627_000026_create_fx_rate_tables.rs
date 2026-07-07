@@ -31,6 +31,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
         fallback_order   integer      NOT NULL DEFAULT 0,
         triangulated_via varchar(128),
         PRIMARY KEY (tenant_id, rate_id),
+        CONSTRAINT ck_fx_rate_snapshot_rate_positive CHECK (rate_micro > 0),
         CONSTRAINT uq_fx_rate_snapshot_lock UNIQUE
             (tenant_id, base_currency, quote_currency, provider, as_of, fallback_order)
     )",
@@ -52,7 +53,8 @@ const PG_UP_STATEMENTS: &[&str] = &[
         as_of          timestamptz  NOT NULL,
         fallback_order integer      NOT NULL DEFAULT 0,
         updated_at     timestamptz  NOT NULL DEFAULT now(),
-        PRIMARY KEY (tenant_id, base_currency, quote_currency, provider)
+        PRIMARY KEY (tenant_id, base_currency, quote_currency, provider),
+        CONSTRAINT ck_fx_rate_rate_positive CHECK (rate_micro > 0)
     )",
 ];
 
@@ -80,6 +82,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         fallback_order   integer      NOT NULL DEFAULT 0,
         triangulated_via varchar(128),
         PRIMARY KEY (tenant_id, rate_id),
+        CONSTRAINT ck_fx_rate_snapshot_rate_positive CHECK (rate_micro > 0),
         CONSTRAINT uq_fx_rate_snapshot_lock UNIQUE
             (tenant_id, base_currency, quote_currency, provider, as_of, fallback_order)
     )",
@@ -94,7 +97,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         as_of          text         NOT NULL,
         fallback_order integer      NOT NULL DEFAULT 0,
         updated_at     text         NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        PRIMARY KEY (tenant_id, base_currency, quote_currency, provider)
+        PRIMARY KEY (tenant_id, base_currency, quote_currency, provider),
+        CONSTRAINT ck_fx_rate_rate_positive CHECK (rate_micro > 0)
     )",
 ];
 

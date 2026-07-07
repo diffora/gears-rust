@@ -13,6 +13,8 @@ import uuid
 import httpx
 import pytest
 
+from .conftest import TENANT_A_ID, TENANT_B_ID
+
 REQUEST_TIMEOUT = 10.0
 
 # The tenant the standard E2E token (`e2e-token-tenant-a`) authenticates as —
@@ -21,7 +23,10 @@ REQUEST_TIMEOUT = 10.0
 # the seam tests pass this (in-scope) id: an absent resource then reads as a
 # clean 404 (not a scope miss), and list/read surfaces resolve to the caller's
 # own — possibly empty — data.
-TENANT_A = "00000000-df51-5b42-9538-d2b56b7ee953"
+TENANT_A = TENANT_A_ID
+# The foreign tenant used by the cross-tenant no-existence-leak tests — a
+# different root the token `e2e-token-tenant-b` authenticates as (see conftest).
+TENANT_B = TENANT_B_ID
 
 # Write surfaces (POST) whose route presence + auth gate we probe. Full paths
 # under the gear's `/bss-ledger/v1` base (design §3.3 / the axum routers).
@@ -57,20 +62,67 @@ def test_accounts_read_is_reachable(base_url, auth_headers, api_base):
     assert isinstance(r.json(), (dict, list))
 
 
-def test_unknown_journal_entry_is_404(base_url, auth_headers, api_base):
-    """An absent (or foreign-scoped) journal entry reads as 404, not 500/leak.
+def test_journal_entry_not_leaked_across_tenants(
+    base_url, auth_headers, auth_headers_tenant_b, api_base, seeded_entry
+):
+    """A journal entry seeded in TENANT_A's ledger is invisible to TENANT_B.
 
-    A random entry id the caller's tenant never posted must be indistinguishable
-    from one outside its authorized subtree — the same 404 either way (no
-    existence leak / BOLA).
+    Genuine cross-tenant BOLA / no-existence-leak. The `seeded_entry` fixture
+    posts a REAL entry as TENANT_A; TENANT_B then reads that SAME id and MUST get
+    the same 404 it gets for a random id — existence is not leaked across tenants.
+
+    This replaces the earlier check that issued a random uuid under a SINGLE
+    tenant and asserted 404: that proved the absent→404 mapping but nothing about
+    cross-tenant isolation (a random id is trivially absent for everyone). Here
+    the id demonstrably EXISTS (the owner baseline below is 200), so TENANT_B's
+    404 is a true isolation signal.
     """
-    entry_id = uuid.uuid4()
     with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-        r = client.get(
-            f"{base_url}{api_base}/journal-entries/{entry_id}?tenant_id={TENANT_A}",
+        # Baseline: the owner (TENANT_A) DOES see the entry — it genuinely exists,
+        # so the cross-tenant 404 below cannot be an accident of an absent id.
+        owner = client.get(
+            f"{base_url}{api_base}/journal-entries/{seeded_entry}?tenant_id={TENANT_A}",
             headers=auth_headers,
         )
-    assert r.status_code == 404, f"expected 404, got {r.status_code}: {r.text}"
+        assert owner.status_code == 200, (
+            f"owner (TENANT_A) must see the seeded entry, "
+            f"got {owner.status_code}: {owner.text}"
+        )
+
+        # Cross-tenant: TENANT_B reads the SAME real id within its own scope — the
+        # foreign entry resolves to None ⇒ 404 (no existence leak).
+        cross = client.get(
+            f"{base_url}{api_base}/journal-entries/{seeded_entry}?tenant_id={TENANT_B}",
+            headers=auth_headers_tenant_b,
+        )
+        assert cross.status_code == 404, (
+            f"TENANT_B must NOT see TENANT_A's entry (expected 404), "
+            f"got {cross.status_code}: {cross.text}"
+        )
+
+        # Impersonation: TENANT_B explicitly targets TENANT_A's scope by passing
+        # tenant_id=TENANT_A. The PEP subtree clamp still hides the row — either a
+        # 404 (no-existence-leak) or a 403 (hard scope deny) is acceptable; a 200
+        # would be the BOLA break.
+        impersonate = client.get(
+            f"{base_url}{api_base}/journal-entries/{seeded_entry}?tenant_id={TENANT_A}",
+            headers=auth_headers_tenant_b,
+        )
+        assert impersonate.status_code in (403, 404), (
+            f"TENANT_B targeting TENANT_A's scope must be denied (403/404), "
+            f"got {impersonate.status_code}: {impersonate.text}"
+        )
+
+        # Equivalence: a random id under TENANT_B is ALSO a 404 — proving the
+        # foreign REAL id is indistinguishable from a never-existed one.
+        random_404 = client.get(
+            f"{base_url}{api_base}/journal-entries/{uuid.uuid4()}?tenant_id={TENANT_B}",
+            headers=auth_headers_tenant_b,
+        )
+        assert random_404.status_code == cross.status_code == 404, (
+            "a foreign real id and a random id must both read as 404 "
+            f"(random={random_404.status_code}, cross={cross.status_code})"
+        )
 
 
 def test_post_journal_entry_requires_auth(base_url, api_base):
@@ -154,10 +206,14 @@ def test_write_routes_are_mounted(base_url, auth_headers, api_base, path):
 
 @pytest.mark.parametrize("path", GET_BY_ID_PATHS)
 def test_get_by_id_absent_is_404(base_url, auth_headers, api_base, path):
-    """A random id on each read-by-id surface reads as a scoped 404.
+    """An id the caller's own tenant never created reads as a scoped 404.
 
-    Absent and foreign-scoped are indistinguishable — the same 404 either way
-    (no existence leak / BOLA).
+    A route-contract check: each read-by-id surface is mounted and maps an absent
+    id to a clean 404 (not a 500 or a router-miss). This does NOT by itself prove
+    cross-tenant isolation — a random id is trivially absent for everyone. The
+    genuine no-existence-leak (BOLA) property is covered by
+    ``test_journal_entry_not_leaked_across_tenants``, which seeds a REAL entry as
+    one tenant and asserts another tenant gets the same 404.
     """
     url = f"{base_url}{api_base}{path.format(id=uuid.uuid4())}?tenant_id={TENANT_A}"
     with httpx.Client(timeout=REQUEST_TIMEOUT) as client:

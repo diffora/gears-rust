@@ -44,9 +44,21 @@ pub enum FxTranslateError {
 /// balance at the period-end rate without going through [`translate_entry`]
 /// (which closes a multi-line residual it does not need).
 ///
+/// Rejects a non-positive `rate_micro` up front: a rate `<= 0` is never a valid
+/// FX quote, and letting it through would flip the sign of (or zero out) the
+/// translated amount and post a wrong revaluation/allocation entry. The
+/// [`translate_entry`] path already guards this; guarding here closes the same
+/// hole for the direct single-amount callers (e.g. the revaluation run), which
+/// resolve a rate straight from the local store that the provider-sync path
+/// upserts.
+///
 /// # Errors
-/// [`FxTranslateError::Overflow`] if the translated amount exceeds `i64`.
+/// - [`FxTranslateError::RateNonPositive`] if `rate_micro <= 0`.
+/// - [`FxTranslateError::Overflow`] if the translated amount exceeds `i64`.
 pub fn translate_amount(amount_minor: i64, rate_micro: i64) -> Result<i64, FxTranslateError> {
+    if rate_micro <= 0 {
+        return Err(FxTranslateError::RateNonPositive);
+    }
     let raw = round_half_even(i128::from(amount_minor) * i128::from(rate_micro), MICRO);
     checked_minor(raw).map_err(|_| FxTranslateError::Overflow(raw))
 }
