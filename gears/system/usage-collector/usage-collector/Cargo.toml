@@ -26,6 +26,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -35,6 +36,12 @@ time = { workspace = true }
 axum = { workspace = true, features = ["macros"] }
 utoipa = { workspace = true, features = ["time", "decimal"] }
 rust_decimal = { workspace = true }
+
+# Operational metrics: instruments are declared on a scoped `Meter` from
+# ToolKit's global `SdkMeterProvider` (OTLP push; no gear-local exporter or
+# `/metrics` scrape endpoint) per
+# `cpt-cf-usage-collector-principle-otlp-push-emission`.
+opentelemetry = { workspace = true }
 
 toolkit = { workspace = true }
 toolkit-odata = { workspace = true, features = ["with-utoipa"] }
@@ -54,4 +61,10 @@ inventory = { workspace = true }
 
 [dev-dependencies]
 types-registry-sdk = { workspace = true, features = ["test-util"] }
-tokio-util = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]` so the bounded
+# gauge-refresh timeout can be exercised without a wall-clock delay.
+tokio = { workspace = true, features = ["test-util"] }
+# In-memory metric exporter + `SdkMeterProvider` for asserting emitted
+# instrument names / labels / buckets against DESIGN §3.11.5. Test-only —
+# the gear never constructs an exporter at runtime (ToolKit owns it).
+opentelemetry_sdk = { workspace = true, features = ["testing"] }

@@ -530,7 +530,7 @@ The system **MUST** sustain the following ingestion and query workload profile a
 
 #### Operational Visibility
 
-- [ ] `p2` - **ID**: `cpt-cf-usage-collector-nfr-operational-visibility`
+- [x] `p2` - **ID**: `cpt-cf-usage-collector-nfr-operational-visibility`
 
 Usage Collector domain metrics **MUST** be integrated into shared platform dashboards and alert routing. At minimum, operator treatment **MUST** exist for ingestion latency, ingestion error rate, query latency, PDP error rate, and storage-plugin readiness. Every accepted and rejected API operation **MUST** emit a structured log record carrying the `correlation_id` propagated unchanged from the inbound platform-resolved `SecurityContext` so gear activity reconciles with platform gateway access logs.
 

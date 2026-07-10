@@ -11,7 +11,6 @@
   - [Trait declaration shape](#trait-declaration-shape)
   - [Two-trait split](#two-trait-split)
 - [Domain Model](#domain-model)
-  - [Core ingestion and identity types](#core-ingestion-and-identity-types)
   - [Query types and views](#query-types-and-views)
   - [Internal authorization types (not part of the SDK signature)](#internal-authorization-types-not-part-of-the-sdk-signature)
   - [Method-specific output types](#method-specific-output-types)
@@ -129,7 +128,7 @@ either the SDK trait or the REST API. The SDK trait does not implement
 authentication, authorization, storage, cursor token generation, or
 aggregation pushdown — authentication is owned by the ToolKit gateway
 upstream of the collector, PDP enforcement is allocated to the
-per-component `authz_scope` helper inside the trait implementation,
+per-component `access_scope_with` helper inside the trait implementation,
 and storage/aggregation pushdown are allocated to the
 ClientHub-resolved Plugin SPI. Per
 `cpt-cf-usage-collector-adr-0012-unified-plugin-catalog-and-gts-id-reference`
@@ -290,7 +289,7 @@ by position from the caller-supplied `group_by`. SDK-specific aspects:
 ### Internal authorization types (not part of the SDK signature)
 
 `PdpDecision` and `PdpConstraint` are
-authorization-internal types used by the per-component `authz_scope`
+authorization-internal types used by the per-component `access_scope_with`
 helper invoked inside `UsageCollectorClientV1` (ingestion gateway,
 query gateway, deactivation handler, and usage-type catalog). They are
 not declared on the public SDK trait surface
@@ -478,7 +477,7 @@ components (`cpt-cf-usage-collector-component-ingestion-gateway`,
 `cpt-cf-usage-collector-component-deactivation-handler`,
 `cpt-cf-usage-collector-component-usage-type-catalog`) — each realized
 as a service-layer component inside the trait implementation that
-calls the shared `authz_scope` helper (a thin wrapper over
+calls the shared `access_scope_with` helper (a thin wrapper over
 `PolicyEnforcer::access_scope_with`), not as Tower /
 `OperationBuilder` middleware.
 
@@ -546,7 +545,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
   `cpt-cf-usage-collector-fr-usage-compensation`,
   `cpt-cf-usage-collector-seq-emit-usage`.
 - SecurityContext: required and passed (as the leading `&SecurityContext`
-  argument) to the per-component `authz_scope` helper invoked by
+  argument) to the per-component `access_scope_with` helper invoked by
   `cpt-cf-usage-collector-component-ingestion-gateway` for ingestion
   authorization against the caller-supplied attribution tuple
   `(tenant_id, resource_ref, UsageType)` (and additionally `subject_ref`
@@ -736,7 +735,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
 - Realizes: `cpt-cf-usage-collector-fr-query-aggregation`,
   `cpt-cf-usage-collector-seq-query-aggregated`.
 - SecurityContext: required; passed (as the leading `&SecurityContext`
-  argument) to the per-component `authz_scope` helper invoked by
+  argument) to the per-component `access_scope_with` helper invoked by
   `cpt-cf-usage-collector-component-query-gateway` for read
   authorization; PDP-returned constraints are intersected with the
   caller-supplied filters before plugin dispatch.
@@ -817,7 +816,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
 - Realizes: `cpt-cf-usage-collector-fr-query-raw`,
   `cpt-cf-usage-collector-seq-query-raw`.
 - SecurityContext: required; the trait implementation invokes the
-  per-component `authz_scope` helper inside
+  per-component `access_scope_with` helper inside
   `cpt-cf-usage-collector-component-query-gateway` (passing
   `&SecurityContext` first) for read authorization and intersects
   PDP-returned constraints with the caller-supplied filters before
@@ -927,7 +926,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
 - Realizes: `cpt-cf-usage-collector-fr-event-deactivation`,
   `cpt-cf-usage-collector-seq-deactivate-event`.
 - SecurityContext: required; passed (as the leading `&SecurityContext`
-  argument) to the per-component `authz_scope` helper invoked by
+  argument) to the per-component `access_scope_with` helper invoked by
   `cpt-cf-usage-collector-component-deactivation-handler` for
   operator authorization.
 - Structural inputs: the target `UsageRecord.uuid`. Deactivation applies
@@ -986,7 +985,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
   `cpt-cf-usage-collector-adr-0012-unified-plugin-catalog-and-gts-id-reference`
   (ADR 0012).
 - SecurityContext: required; passed (as the leading `&SecurityContext`
-  argument) to the per-component `authz_scope` helper invoked by
+  argument) to the per-component `access_scope_with` helper invoked by
   `cpt-cf-usage-collector-component-usage-type-catalog` for operator
   authorization. The trait implementation performs the same PDP call
   reached by the REST handler — there is one authorization site, not
@@ -1061,7 +1060,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
 - Realizes: `cpt-cf-usage-collector-fr-usage-type-existence-and-semantics`,
   `cpt-cf-usage-collector-adr-0012-unified-plugin-catalog-and-gts-id-reference`
   (ADR 0012).
-- SecurityContext: required; passed to `authz_scope` for read
+- SecurityContext: required; passed to `access_scope_with` for read
   authorization. Usage types are platform-global, so PDP narrowing is
   applied at the read-permission granularity, not per-tenant.
 - Canonical Rust signature:
@@ -1091,7 +1090,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
 - Realizes: `cpt-cf-usage-collector-fr-usage-type-existence-and-semantics`,
   `cpt-cf-usage-collector-adr-0012-unified-plugin-catalog-and-gts-id-reference`
   (ADR 0012).
-- SecurityContext: required; passed to `authz_scope` for read
+- SecurityContext: required; passed to `access_scope_with` for read
   authorization.
 - Canonical Rust signature:
 
@@ -1127,7 +1126,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
   `cpt-cf-usage-collector-adr-0012-unified-plugin-catalog-and-gts-id-reference`
   (ADR 0012).
 - SecurityContext: required; passed (as the leading `&SecurityContext`
-  argument) to `authz_scope` inside
+  argument) to `access_scope_with` inside
   `cpt-cf-usage-collector-component-usage-type-catalog`.
 - Canonical Rust signature:
 
@@ -1172,7 +1171,7 @@ Plugin SPI (no dedicated `compensate` SPI call).
   `cpt-cf-usage-collector-fr-event-deactivation` (attribution prefetch
   for `cpt-cf-usage-collector-algo-event-deactivation-operator-pdp-authorization`).
 - SecurityContext: required; passed (as the leading `&SecurityContext`
-  argument) to `authz_scope` inside the
+  argument) to `access_scope_with` inside the
   `cpt-cf-usage-collector-component-deactivation-handler` and the
   point-read REST handler. PDP attributes include the loaded record's
   full attribution tuple (`tenant_id`, `gts_id`, `resource_ref`,
@@ -1632,7 +1631,7 @@ the SDK trait:
   `cpt-cf-usage-collector-component-query-gateway`,
   `cpt-cf-usage-collector-component-deactivation-handler`,
   `cpt-cf-usage-collector-component-usage-type-catalog`. Each component
-  performs PDP enforcement inline via the shared `authz_scope` helper
+  performs PDP enforcement inline via the shared `access_scope_with` helper
   inside the trait implementation. Source: phase-01 §"Component
   allocation relevant to SDK trait (DESIGN section 3.2)".
 

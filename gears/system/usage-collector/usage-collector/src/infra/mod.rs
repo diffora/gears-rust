@@ -4,4 +4,5 @@
 //! `toolkit-canonical-errors`-free; the RFC-9457 `Problem` envelope is
 //! produced exclusively in this host crate.
 
+pub mod metrics;
 pub mod sdk_error_mapping;

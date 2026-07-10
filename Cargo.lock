@@ -2869,6 +2869,8 @@ dependencies = [
  "futures",
  "gts",
  "inventory",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "rust_decimal",
  "serde",
  "serde_json",

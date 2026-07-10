@@ -3,6 +3,7 @@
 pub mod authz;
 pub mod error;
 pub mod local_client;
+pub mod ports;
 pub mod query;
 pub mod service;
 #[cfg(test)]

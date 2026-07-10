@@ -62,7 +62,7 @@ impl UsageCollectorClientV1 for UsageCollectorLocalClient {
         self.svc.get_usage_record(ctx, uuid).await
     }
 
-    // @cpt-begin:cpt-cf-usage-collector-flow-usage-query-query-aggregated:p1:inst-aggregated-submit
+    // @cpt-begin:cpt-cf-usage-collector-flow-usage-query-query-aggregated:p1:inst-aggregated-request-received
     async fn query_aggregated_usage_records(
         &self,
         ctx: &SecurityContext,
@@ -75,9 +75,9 @@ impl UsageCollectorClientV1 for UsageCollectorLocalClient {
             .query_aggregated_usage_records(ctx, gts_id, query, metadata_filter, aggregation)
             .await
     }
-    // @cpt-end:cpt-cf-usage-collector-flow-usage-query-query-aggregated:p1:inst-aggregated-submit
+    // @cpt-end:cpt-cf-usage-collector-flow-usage-query-query-aggregated:p1:inst-aggregated-request-received
 
-    // @cpt-begin:cpt-cf-usage-collector-flow-usage-query-query-raw:p1:inst-raw-submit
+    // @cpt-begin:cpt-cf-usage-collector-flow-usage-query-query-raw:p1:inst-raw-request-received
     async fn list_usage_records(
         &self,
         ctx: &SecurityContext,
@@ -89,7 +89,7 @@ impl UsageCollectorClientV1 for UsageCollectorLocalClient {
             .list_usage_records(ctx, gts_id, query, metadata_filter)
             .await
     }
-    // @cpt-end:cpt-cf-usage-collector-flow-usage-query-query-raw:p1:inst-raw-submit
+    // @cpt-end:cpt-cf-usage-collector-flow-usage-query-query-raw:p1:inst-raw-request-received
 
     async fn deactivate_usage_record(
         &self,

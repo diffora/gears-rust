@@ -120,3 +120,36 @@ fn register_rest_fails_when_service_not_initialized() {
         "register_rest error should report the missing Service, got: {msg}"
     );
 }
+
+#[tokio::test]
+async fn serve_returns_when_cancelled() {
+    let hub = Arc::new(ClientHub::new());
+    let resolver: Arc<dyn AuthZResolverClient> = CountingAllowAllResolver::new();
+    hub.register::<dyn AuthZResolverClient>(resolver);
+
+    let ctx = make_ctx(hub);
+    let module = UsageCollectorModule::default();
+    module.init(&ctx).await.expect("init must succeed");
+
+    // A pre-cancelled token: the biased select observes cancellation before the
+    // first tick, so serve returns Ok promptly with no wall-clock wait.
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    module
+        .serve(cancel)
+        .await
+        .expect("serve must return Ok when cancelled");
+}
+
+#[tokio::test]
+async fn serve_fails_before_init() {
+    let module = UsageCollectorModule::default();
+    let err = module
+        .serve(CancellationToken::new())
+        .await
+        .expect_err("serve must fail when init has not run");
+    assert!(
+        format!("{err}").contains("serve invoked before init"),
+        "unexpected error: {err}"
+    );
+}

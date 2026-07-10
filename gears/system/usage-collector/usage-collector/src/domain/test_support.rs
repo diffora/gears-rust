@@ -556,6 +556,263 @@ pub fn service_with_counting_permit(
     (service, resolver)
 }
 
+// ── Metrics-instrumented Service builders + in-memory readback ──────────────
+//
+// These wire a `Service` with a real [`UcMetricsMeter`] bound to a local
+// `SdkMeterProvider` + `InMemoryMetricExporter`, so emission tests can call a
+// service method, `force_flush()` the returned provider, and read back the
+// exported instruments. `opentelemetry_sdk` is a dev-dependency; this module
+// is test-only.
+
+use opentelemetry::metrics::MeterProvider as _;
+use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+use crate::infra::metrics::UcMetricsMeter;
+
+/// Build a fresh local `SdkMeterProvider` + `InMemoryMetricExporter` and a
+/// `UcMetricsMeter` (prefix `uc`) bound to it.
+#[must_use]
+pub fn local_metrics() -> (
+    Arc<UcMetricsMeter>,
+    SdkMeterProvider,
+    InMemoryMetricExporter,
+) {
+    let exporter = InMemoryMetricExporter::default();
+    let provider = SdkMeterProvider::builder()
+        .with_reader(PeriodicReader::builder(exporter.clone()).build())
+        .build();
+    let metrics = Arc::new(UcMetricsMeter::new(
+        &provider.meter("usage-collector"),
+        "uc",
+    ));
+    (metrics, provider, exporter)
+}
+
+/// A [`Service`] wired against `resolver` + `plugin` (under `cyberfabric`) with
+/// a real metrics adapter bound to the returned provider/exporter.
+#[must_use]
+pub fn service_with_metrics(
+    plugin: Arc<dyn UsageCollectorPluginV1>,
+    suffix: &str,
+    resolver: Arc<dyn AuthZResolverClient>,
+) -> (Arc<Service>, SdkMeterProvider, InMemoryMetricExporter) {
+    let hub = hub_with_plugin(plugin, suffix, "cyberfabric");
+    let (metrics, provider, exporter) = local_metrics();
+    let service = Arc::new(Service::new_with_metrics(
+        hub,
+        "cyberfabric".to_owned(),
+        enforcer_for(resolver),
+        metrics,
+    ));
+    (service, provider, exporter)
+}
+
+/// Wire a [`ClientHub`] whose types-registry advertises one usage-collector
+/// plugin instance but does **not** register a scoped client under it, so
+/// `Service::get_plugin` resolves an instance id yet fails with
+/// `PluginUnavailable` — the structural-unready path.
+#[must_use]
+pub fn hub_registry_only(suffix: &str, vendor: &str) -> Arc<ClientHub> {
+    let hub = Arc::new(ClientHub::default());
+    let instance_id = usage_collector_instance_id(suffix);
+    let instance = make_test_instance(&instance_id, plugin_instance_content(&instance_id, vendor));
+    let registry: Arc<dyn TypesRegistryClient> =
+        Arc::new(MockTypesRegistryClient::new().with_instances([instance]));
+    hub.register::<dyn TypesRegistryClient>(registry);
+    hub
+}
+
+/// A metrics-instrumented [`Service`] whose plugin binding is structurally
+/// unready (registry advertises an instance, no scoped client registered).
+#[must_use]
+pub fn service_with_metrics_unready_plugin(
+    suffix: &str,
+    resolver: Arc<dyn AuthZResolverClient>,
+) -> (Arc<Service>, SdkMeterProvider, InMemoryMetricExporter) {
+    let hub = hub_registry_only(suffix, "cyberfabric");
+    let (metrics, provider, exporter) = local_metrics();
+    let service = Arc::new(Service::new_with_metrics(
+        hub,
+        "cyberfabric".to_owned(),
+        enforcer_for(resolver),
+        metrics,
+    ));
+    (service, provider, exporter)
+}
+
+/// Total summed value of a `u64` counter series, filtered to the data points
+/// carrying `label_key == label_value`. Returns `0` when the instrument or
+/// label is absent.
+#[must_use]
+pub fn counter_sum_with_label(
+    exporter: &InMemoryMetricExporter,
+    name: &str,
+    label_key: &str,
+    label_value: &str,
+) -> u64 {
+    let metrics = exporter.get_finished_metrics().expect("finished metrics");
+    for rm in &metrics {
+        for sm in rm.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == name
+                    && let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data()
+                {
+                    return sum
+                        .data_points()
+                        .filter(|dp| {
+                            dp.attributes().any(|kv| {
+                                kv.key.as_str() == label_key && kv.value.as_str() == label_value
+                            })
+                        })
+                        .map(opentelemetry_sdk::metrics::data::SumDataPoint::value)
+                        .sum();
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Total sample count across all data points of an `f64` histogram. Returns
+/// `0` when the instrument is absent.
+#[must_use]
+pub fn histogram_count(exporter: &InMemoryMetricExporter, name: &str) -> u64 {
+    let metrics = exporter.get_finished_metrics().expect("finished metrics");
+    for rm in &metrics {
+        for sm in rm.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == name
+                    && let AggregatedMetrics::F64(MetricData::Histogram(h)) = metric.data()
+                {
+                    return h
+                        .data_points()
+                        .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
+                        .sum();
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Total sample count across the `f64` histogram data points carrying
+/// `label_key == label_value`. Returns `0` when the instrument or label is
+/// absent. Use this (rather than [`histogram_count`]) when a single call drives
+/// several dispatches through the same instrument and the assertion must pin the
+/// per-`operation` sample — e.g. proving the emit-path SPI calls contribute a
+/// `uc_plugin_call_duration_seconds{operation="create_usage_record"}` sample.
+#[must_use]
+pub fn histogram_count_with_label(
+    exporter: &InMemoryMetricExporter,
+    name: &str,
+    label_key: &str,
+    label_value: &str,
+) -> u64 {
+    let metrics = exporter.get_finished_metrics().expect("finished metrics");
+    for rm in &metrics {
+        for sm in rm.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == name
+                    && let AggregatedMetrics::F64(MetricData::Histogram(h)) = metric.data()
+                {
+                    return h
+                        .data_points()
+                        .filter(|dp| {
+                            dp.attributes().any(|kv| {
+                                kv.key.as_str() == label_key && kv.value.as_str() == label_value
+                            })
+                        })
+                        .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
+                        .sum();
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Sum of every value recorded into an `f64` histogram (across all data
+/// points). Returns `0.0` when the instrument is absent. Use this — not
+/// [`histogram_count`] (sample count) — to pin the observed *magnitude*, e.g.
+/// the total bytes recorded into `uc_record_metadata_bytes`.
+#[must_use]
+pub fn histogram_sum(exporter: &InMemoryMetricExporter, name: &str) -> f64 {
+    let metrics = exporter.get_finished_metrics().expect("finished metrics");
+    for rm in &metrics {
+        for sm in rm.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == name
+                    && let AggregatedMetrics::F64(MetricData::Histogram(h)) = metric.data()
+                {
+                    return h
+                        .data_points()
+                        .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::sum)
+                        .sum();
+                }
+            }
+        }
+    }
+    0.0
+}
+
+/// Sum of the values recorded into the `f64` histogram data points carrying
+/// `label_key == label_value`. Returns `0.0` when the instrument or label is
+/// absent. Use this to pin the observed magnitude for a single label series —
+/// e.g. the row count recorded into
+/// `uc_query_result_rows{query_kind="raw"}` — which
+/// [`histogram_count_with_label`] (sample count) cannot.
+#[must_use]
+pub fn histogram_sum_with_label(
+    exporter: &InMemoryMetricExporter,
+    name: &str,
+    label_key: &str,
+    label_value: &str,
+) -> f64 {
+    let metrics = exporter.get_finished_metrics().expect("finished metrics");
+    for rm in &metrics {
+        for sm in rm.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == name
+                    && let AggregatedMetrics::F64(MetricData::Histogram(h)) = metric.data()
+                {
+                    return h
+                        .data_points()
+                        .filter(|dp| {
+                            dp.attributes().any(|kv| {
+                                kv.key.as_str() == label_key && kv.value.as_str() == label_value
+                            })
+                        })
+                        .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::sum)
+                        .sum();
+                }
+            }
+        }
+    }
+    0.0
+}
+
+/// Last recorded value of an `i64` gauge series. `None` when absent.
+#[must_use]
+pub fn gauge_last(exporter: &InMemoryMetricExporter, name: &str) -> Option<i64> {
+    let metrics = exporter.get_finished_metrics().expect("finished metrics");
+    for rm in &metrics {
+        for sm in rm.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == name
+                    && let AggregatedMetrics::I64(MetricData::Gauge(g)) = metric.data()
+                {
+                    return g
+                        .data_points()
+                        .next()
+                        .map(opentelemetry_sdk::metrics::data::GaugeDataPoint::value);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Build an authenticated [`SecurityContext`] sufficient for PDP requests
 /// composed from a [`UsageRecord`]'s attribution tuple.
 #[must_use]
@@ -600,6 +857,13 @@ pub struct HappyPathPlugin {
     /// not-found projection on the batch path.
     get_usage_type_not_found: Mutex<std::collections::BTreeSet<UsageTypeGtsId>>,
     list_usage_types_response: Mutex<Option<ODataPage<UsageType>>>,
+    /// When set, `list_usage_types` never completes (returns a pending future),
+    /// so tests can drive the bounded gauge-refresh timeout under paused time.
+    list_usage_types_hang: Mutex<bool>,
+    /// FIFO of pages returned by successive `list_usage_types` calls; when
+    /// non-empty it takes precedence over `list_usage_types_response`, popping
+    /// one page per call so tests can exercise full cursor pagination.
+    list_usage_types_pages: Mutex<std::collections::VecDeque<ODataPage<UsageType>>>,
     list_usage_records_response: Mutex<Option<ODataPage<UsageRecord>>>,
     query_aggregated_usage_records_response: Mutex<Option<AggregationResult>>,
     delete_usage_type_response: Mutex<Option<()>>,
@@ -638,6 +902,8 @@ impl HappyPathPlugin {
             get_usage_type_response: Mutex::new(None),
             get_usage_type_not_found: Mutex::new(std::collections::BTreeSet::new()),
             list_usage_types_response: Mutex::new(None),
+            list_usage_types_hang: Mutex::new(false),
+            list_usage_types_pages: Mutex::new(std::collections::VecDeque::new()),
             list_usage_records_response: Mutex::new(None),
             query_aggregated_usage_records_response: Mutex::new(None),
             delete_usage_type_response: Mutex::new(None),
@@ -717,6 +983,20 @@ impl HappyPathPlugin {
     }
     pub fn set_list_usage_types(&self, page: ODataPage<UsageType>) {
         *self.list_usage_types_response.lock().expect("mutex") = Some(page);
+    }
+    /// Program a FIFO sequence of pages returned by successive
+    /// `list_usage_types` calls. Takes precedence over the single-page
+    /// `set_list_usage_types` response; used to exercise full cursor
+    /// pagination (and its best-effort exhaustion) in the gauge refresh.
+    pub fn set_list_usage_types_pages(&self, pages: Vec<ODataPage<UsageType>>) {
+        *self.list_usage_types_pages.lock().expect("mutex") = pages.into();
+    }
+    /// Make every subsequent `list_usage_types` call hang forever (a
+    /// never-completing future). Used to drive the bounded gauge-refresh
+    /// timeout in `refresh_usage_types_gauge` without a wall-clock delay
+    /// (pair with `#[tokio::test(start_paused = true)]`).
+    pub fn set_list_usage_types_hang(&self) {
+        *self.list_usage_types_hang.lock().expect("mutex") = true;
     }
     pub fn set_list_usage_records_response(&self, page: ODataPage<UsageRecord>) {
         *self.list_usage_records_response.lock().expect("mutex") = Some(page);
@@ -869,6 +1149,20 @@ impl UsageCollectorPluginV1 for HappyPathPlugin {
             .lock()
             .expect("mutex")
             .push(query.clone());
+        if *self.list_usage_types_hang.lock().expect("mutex") {
+            // Never resolves — under a timeout the caller sees `Elapsed`.
+            std::future::pending::<()>().await;
+        }
+        // Multi-page queue takes precedence (full-pagination tests); pop one
+        // page per call. Falls back to the single programmable response.
+        if let Some(page) = self
+            .list_usage_types_pages
+            .lock()
+            .expect("mutex")
+            .pop_front()
+        {
+            return Ok(page);
+        }
         self.list_usage_types_response
             .lock()
             .expect("mutex")

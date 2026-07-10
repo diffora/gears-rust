@@ -175,7 +175,7 @@ structurally validated by the core (`cpt-cf-usage-collector-component-ingestion-
 `cpt-cf-usage-collector-component-deactivation-handler`, and
 `cpt-cf-usage-collector-component-usage-type-catalog`), each of which
 performs PDP enforcement inside its own service via the shared
-`authz_scope` helper (calling `PolicyEnforcer::access_scope_with`).
+`access_scope_with` helper (calling `PolicyEnforcer::access_scope_with`).
 
 The SPI does not own REST wire shapes, OpenAPI generation, RFC-9457
 `Problem` mapping, CORS, TLS termination, or output encoding; those
@@ -239,7 +239,7 @@ authoring team.
   none of which carry a `TraceContext` parameter).
 - The SPI does not accept a `SecurityContext` either, because
   authorization is already enforced upstream inside each domain
-  component's `authz_scope` helper call.
+  component's `access_scope_with` helper call.
 - Methods return a `Result` whose `Err` variant is the
   `UsageCollectorPluginError` enum declared in
   `usage-collector-sdk/src/error.rs` (see §"Error Taxonomy"); the
@@ -372,7 +372,7 @@ round-trip happens only on the cold path (first call after bootstrap).
 When no matching instance is registered, the host returns the
 `plugin-unavailable` outcome documented in §"Error Taxonomy"; the
 same structural fact (selector cached AND `try_get_scoped is Some`)
-governs whether dispatch proceeds. A `usage_collector.plugin.ready`
+governs whether dispatch proceeds. A `uc_plugin_ready`
 gauge surfacing this fact via OTLP is specified by the foundation
 feature but is **not yet wired** in gear source.
 
@@ -569,7 +569,7 @@ UsageCollectorPluginError>` in the same length and order as the input
 - Tracing is propagated via the ambient `tracing::Span` /
   OpenTelemetry context — no explicit `TraceContext` parameter is
   declared on any SPI method. The W3C Trace Context propagation values
-  required by DESIGN §3.11.5 Distributed Tracing (`traceparent`,
+  required by DESIGN §3.11.4 Observability Architecture (`traceparent`,
   required, and `tracestate`, optional, per
   [W3C Trace Context Level 1](https://www.w3.org/TR/trace-context/))
   are carried by the active span / OpenTelemetry context that the
@@ -741,7 +741,7 @@ paths. The two-method form (single + batched) mirrors the SDK trait's
 two ingestion methods and matches the per-record acceptance
 acknowledgement promise of `cpt-cf-usage-collector-component-ingestion-gateway`.
 
-Note on trace-context propagation: DESIGN §3.11.5 requires
+Note on trace-context propagation: DESIGN §3.11.4 requires
 trace-context propagation on every SPI call so end-to-end traces span
 gateway → core → plugin → backend. Propagation is carried by the
 ambient `tracing::Span` / OpenTelemetry context opened by the Plugin
@@ -1231,7 +1231,7 @@ UsageType Catalog is the sole usage-type catalog.
 
 The Plugin Host also projects each variant onto the operational-metric
 `error_category` label set documented for
-`usage_collector.plugin.accept_errors` in DESIGN §3.11.6 (`unready`,
+`uc_plugin_accept_errors_total` in DESIGN §3.11.5 (`unready`,
 `backend_error`, `timeout`). The mapping is host-side and lives in
 `usage-collector/src/domain/service.rs`: `Transient` projects onto
 `backend_error` (with `timeout` reserved for the host-side dispatch
@@ -1368,7 +1368,7 @@ Behavioural notes:
   `cpt-cf-usage-collector-component-query-gateway`,
   `cpt-cf-usage-collector-component-deactivation-handler`, and
   `cpt-cf-usage-collector-component-usage-type-catalog` (each performing
-  PDP enforcement inline via the `authz_scope` helper) before any SPI
+  PDP enforcement inline via the `access_scope_with` helper) before any SPI
   call. A plugin that observed such a failure has, by definition,
   observed a host-contract breach and SHOULD return `Internal(detail)`
   rather than inventing a new error class.
@@ -1383,7 +1383,7 @@ Behavioural notes:
   add per-variant context fields (such as a stable error code or
   operational trace pointer) as long as the public taxonomy
   preserves the domain classification above and the
-  `usage_collector.plugin.accept_errors` label mapping.
+  `uc_plugin_accept_errors_total` label mapping.
 
 ## Consistency profile
 
@@ -1566,7 +1566,7 @@ The Plugin SPI does not expose REST-handling concerns:
 - CORS, TLS termination, output encoding, and HTTP-level rate
   limiting are platform API gateway responsibilities per DESIGN
   §3.9.3.
-- Platform liveness and readiness probes are handled by the ToolKit host above the gear boundary; the collector exposes no gear-local health endpoints. Operational telemetry is pushed via OTLP from ToolKit's global `SdkMeterProvider` (no in-gear `/metrics` scrape endpoint exists). The SPI contributes no `ready` or `flush` operation; the structural readiness fact (selector cached AND `ClientHub::try_get_scoped` returns `Some`) is composed by the Plugin Host and surfaced via the `usage_collector.plugin.ready` gauge.
+- Platform liveness and readiness probes are handled by the ToolKit host above the gear boundary; the collector exposes no gear-local health endpoints. Operational telemetry is pushed via OTLP from ToolKit's global `SdkMeterProvider` (no in-gear `/metrics` scrape endpoint exists). The SPI contributes no `ready` or `flush` operation; the structural readiness fact (selector cached AND `ClientHub::try_get_scoped` returns `Some`) is composed by the Plugin Host and surfaced via the `uc_plugin_ready` gauge.
 
 ### Gear non-goals reaffirmed on the Plugin SPI
 
@@ -1697,7 +1697,7 @@ Vec<String>` (the closed, declared list of allowed metadata key
   [`./ADR/0012-unified-plugin-catalog-and-gts-id-reference.md`](./ADR/0012-unified-plugin-catalog-and-gts-id-reference.md).
 - Readiness and graceful shutdown:
   `cpt-cf-usage-collector-nfr-availability`. Source: DESIGN
-  §3.11.6 `usage_collector.plugin.ready` gauge (the structural
+  §3.11.5 `uc_plugin_ready` gauge (the structural
   readiness fact pushed via OTLP).
 
 ### Domain entities
@@ -1852,7 +1852,7 @@ the conservative default this reference adopts.
   host outside the gear surface (the collector exposes no
   gear-local liveness endpoint). Plugins MAY expose
   backend-internal liveness through backend-specific metrics under
-  their own `usage_collector_*` prefix per §3.11.6.
+  their own prefix (for example `uc_clickhouse_*`) per §3.11.5.
 - OQ-5 — Whether `flush` accepts a deadline parameter or relies on
   the Plugin Host's operator-tuned drain timeout. **Resolved (no
   flush)**: this reference exposes no plugin-side flush hook;
@@ -1870,7 +1870,7 @@ the conservative default this reference adopts.
   `#[tracing::instrument(...)]` on its own `Service::*` methods before
   dispatching to the trait method; the SPI implementation runs inside
   that ambient span and continues it over the backend dispatch so the
-  DESIGN §3.11.5 propagation invariant is satisfied without a
+  DESIGN §3.11.4 propagation invariant is satisfied without a
   syntactic parameter.
 - OQ-7 — Whether DESIGN §3.11.2 should carve formal Plugin-SPI
   sub-allocations for the batched-ingestion (Method 2) and

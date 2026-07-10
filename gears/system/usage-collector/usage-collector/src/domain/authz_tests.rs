@@ -30,6 +30,7 @@ use uuid::Uuid;
 use super::{
     AttributionTupleKey, authorize_attribution_tuple, authorize_usage_record, usage_record,
 };
+use crate::domain::ports::metrics::{NoopMetrics, PdpOp};
 use crate::domain::test_support::{CapturingTenantPermitResolver, enforcer_for};
 
 const SAMPLE_GTS_ID: &str = "gts.cf.core.uc.usage_record.v1~cf.mini_chat._.tokens_consumed.v1";
@@ -76,13 +77,20 @@ async fn captured_requests_for(record: &UsageRecord) -> (serde_json::Value, serd
     let enforcer =
         enforcer_for(Arc::clone(&resolver) as Arc<dyn authz_resolver_sdk::AuthZResolverClient>);
 
-    authorize_usage_record(&enforcer, &ctx(), record, usage_record::actions::CREATE)
-        .await
-        .expect("permit");
+    authorize_usage_record(
+        &enforcer,
+        &NoopMetrics,
+        PdpOp::Ingest,
+        &ctx(),
+        record,
+        usage_record::actions::CREATE,
+    )
+    .await
+    .expect("permit");
     let from_record = resolver.take_last_request().expect("first call captured");
 
     let key = AttributionTupleKey::from_record(record, usage_record::actions::CREATE);
-    authorize_attribution_tuple(&enforcer, &ctx(), &key)
+    authorize_attribution_tuple(&enforcer, &NoopMetrics, PdpOp::Ingest, &ctx(), &key)
         .await
         .expect("permit");
     let from_key = resolver.take_last_request().expect("second call captured");
@@ -185,14 +193,28 @@ async fn equal_tuple_keys_produce_equal_pdp_requests_even_when_non_tuple_fields_
     let enforcer =
         enforcer_for(Arc::clone(&resolver) as Arc<dyn authz_resolver_sdk::AuthZResolverClient>);
 
-    authorize_usage_record(&enforcer, &ctx(), &record_a, usage_record::actions::CREATE)
-        .await
-        .expect("permit");
+    authorize_usage_record(
+        &enforcer,
+        &NoopMetrics,
+        PdpOp::Ingest,
+        &ctx(),
+        &record_a,
+        usage_record::actions::CREATE,
+    )
+    .await
+    .expect("permit");
     let req_a = json(&resolver.take_last_request().expect("captured A"));
 
-    authorize_usage_record(&enforcer, &ctx(), &record_b, usage_record::actions::CREATE)
-        .await
-        .expect("permit");
+    authorize_usage_record(
+        &enforcer,
+        &NoopMetrics,
+        PdpOp::Ingest,
+        &ctx(),
+        &record_b,
+        usage_record::actions::CREATE,
+    )
+    .await
+    .expect("permit");
     let req_b = json(&resolver.take_last_request().expect("captured B"));
 
     assert_eq!(
@@ -248,7 +270,9 @@ async fn authorize_attribution_tuple_denies_record_outside_granted_tenant() {
         &record_with_tenant(foreign),
         usage_record::actions::CREATE,
     );
-    let denied = authorize_attribution_tuple(&enforcer, &ctx(), &foreign_key).await;
+    let denied =
+        authorize_attribution_tuple(&enforcer, &NoopMetrics, PdpOp::Ingest, &ctx(), &foreign_key)
+            .await;
     assert!(
         matches!(denied, Err(DomainError::AuthorizationDenied { .. })),
         "a record owned by a tenant outside the PDP-granted scope MUST be denied, got {denied:?}",
@@ -258,7 +282,7 @@ async fn authorize_attribution_tuple_denies_record_outside_granted_tenant() {
         &record_with_tenant(granted),
         usage_record::actions::CREATE,
     );
-    authorize_attribution_tuple(&enforcer, &ctx(), &granted_key)
+    authorize_attribution_tuple(&enforcer, &NoopMetrics, PdpOp::Ingest, &ctx(), &granted_key)
         .await
         .expect("a record owned by the granted tenant is permitted");
 }

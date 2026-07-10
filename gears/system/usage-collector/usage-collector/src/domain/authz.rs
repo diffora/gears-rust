@@ -19,8 +19,8 @@
 //! compile-failed → `AuthorizationDenied`) lives here so it cannot drift
 //! between call sites.
 
-use authz_resolver_sdk::PolicyEnforcer;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
+use authz_resolver_sdk::{EnforcerError, PolicyEnforcer};
 use toolkit_macros::domain_model;
 use toolkit_odata::ast;
 use toolkit_security::{
@@ -29,7 +29,104 @@ use toolkit_security::{
 use usage_collector_sdk::UsageRecord;
 use uuid::Uuid;
 
+use crate::domain::ports::metrics::{AuthzDecision, PdpFailureCause, PdpOp, UsageCollectorMetrics};
+
 use super::error::DomainError;
+
+/// Single shared instrumentation point around
+/// [`PolicyEnforcer::access_scope_with`] — the sole realization site for the
+/// four PDP-helper instruments in DESIGN §3.11.5
+/// (`uc_pdp_ready`, `uc_pdp_duration_seconds`, `uc_authz_decisions_total`,
+/// `uc_pdp_failures_total`). Every `domain/authz.rs` helper routes through
+/// this wrapper so instrumentation cannot drift between the catalog,
+/// per-record, and query PDP call sites.
+///
+/// **`uc_authz_decisions_total` records the EFFECTIVE gear decision, not the
+/// raw `access_scope_with` return.** Under `require_constraints(true)` a permit
+/// comes back as a permit-with-constraints (`Ok(scope)`) that the SDK does NOT
+/// auto-match against the request; the gear then applies a per-call `gate`
+/// (the per-record attribution gate, or the LIST scope→OData projection) that
+/// can turn that constrained permit into a fail-closed deny. Recording the
+/// decision off the raw `Ok` would count a cross-tenant attribution attempt —
+/// the very reconnaissance signal the deny-anomaly alert (DESIGN §3.11.6) keys
+/// off — as a `permit`. So the `permit` sample is emitted only after `gate`
+/// admits; a gate rejection records `deny`. The catalog surface (no row scope)
+/// passes an always-admitting gate, so its permit is final at the PDP boundary.
+///
+/// Classification (matches `cpt-cf-usage-collector-algo-foundation-pdp-authorize`),
+/// each case also observing duration: `Ok(scope)` with `gate` admitting → permit
+/// decision; `Ok(scope)` with `gate` rejecting → deny decision; `Denied` /
+/// `CompileFailed` → deny decision (a fail-closed compile failure is a deny, not
+/// a failure); `EvaluationFailed` → `uc_pdp_failures_total{cause="unreachable"}`
+/// (a failure completion is still a completion). Exactly one of the two
+/// decision/failure counters fires per call, so the deny-anomaly ratio can never
+/// double-count a single authorization.
+///
+/// `gate` is a synchronous post-permit predicate mapping the granted
+/// [`AccessScope`] to the caller's success value, or to a
+/// [`DomainError::AuthorizationDenied`] when the record / query falls outside
+/// the grant. The wrapper owns the `EnforcerError` → [`DomainError`] mapping so
+/// call sites no longer thread `map_err`.
+// The wrapper mirrors `PolicyEnforcer::access_scope_with`'s parameter list
+// (ctx, resource, action, resource_id, request) plus the metrics sink,
+// operation label, and post-permit gate — bundling them into a struct would
+// obscure the 1:1 mapping to the wrapped call, so the arity is intentional.
+#[allow(clippy::too_many_arguments)]
+async fn pdp_scope_with<T>(
+    enforcer: &PolicyEnforcer,
+    metrics: &dyn UsageCollectorMetrics,
+    op: PdpOp,
+    ctx: &SecurityContext,
+    resource: &ResourceType,
+    action: &str,
+    resource_id: Option<Uuid>,
+    request: &AccessRequest,
+    gate: impl FnOnce(AccessScope) -> Result<T, DomainError>,
+) -> Result<T, DomainError> {
+    // @cpt-begin:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-ready-gauge
+    // The authz-resolver client is bound once at bootstrap inside the
+    // `PolicyEnforcer`, so this is a constant post-bootstrap readiness fact;
+    // reflecting it here keeps the gauge live even if bootstrap seeding is
+    // ever removed. The monotonic start instant scopes `uc_pdp_duration_seconds`.
+    metrics.set_pdp_ready(true);
+    let start = std::time::Instant::now();
+    // @cpt-end:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-ready-gauge
+    let result = enforcer
+        .access_scope_with(ctx, resource, action, resource_id, request)
+        .await;
+    // `seconds` is the PDP round-trip only — captured before `gate` runs, so the
+    // cheap CPU-side gate never inflates `uc_pdp_duration_seconds`.
+    let seconds = start.elapsed().as_secs_f64();
+    match result {
+        // @cpt-begin:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-decision-metrics
+        Ok(scope) => match gate(scope) {
+            // The effective decision: a permit is recorded only once the gear's
+            // post-permit gate has admitted the record / query.
+            Ok(value) => {
+                metrics.record_pdp_decision(op, AuthzDecision::Permit, seconds);
+                Ok(value)
+            }
+            // A constrained permit the gate rejects (cross-tenant attribution,
+            // an un-projectable row scope) is a fail-closed deny.
+            Err(denied) => {
+                metrics.record_pdp_decision(op, AuthzDecision::Deny, seconds);
+                Err(denied)
+            }
+        },
+        Err(err @ (EnforcerError::Denied { .. } | EnforcerError::CompileFailed(_))) => {
+            metrics.record_pdp_decision(op, AuthzDecision::Deny, seconds);
+            Err(DomainError::from(err))
+        }
+        // @cpt-end:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-decision-metrics
+        // @cpt-begin:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-failure-metrics
+        // v1: `AuthZResolverError` carries no timeout discriminator and no
+        // host-side PDP deadline exists, so every failure is `unreachable`.
+        Err(err @ EnforcerError::EvaluationFailed(_)) => {
+            metrics.record_pdp_failure(op, PdpFailureCause::Unreachable, seconds);
+            Err(DomainError::from(err))
+        } // @cpt-end:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-failure-metrics
+    }
+}
 
 /// The full attribution tuple that determines a `UsageRecord` PDP request
 /// under a fixed `(SecurityContext, action)` pair.
@@ -187,6 +284,8 @@ pub(crate) mod usage_record {
 // @cpt-dod:cpt-cf-usage-collector-dod-foundation-adr-pdp-centric-authorization:p2
 pub(crate) async fn authorize(
     enforcer: &PolicyEnforcer,
+    metrics: &dyn UsageCollectorMetrics,
+    op: PdpOp,
     // @cpt-begin:cpt-cf-usage-collector-flow-foundation-pdp-authorize:p1:inst-pdp-input
     ctx: &SecurityContext,
     resource_type: &ResourceType,
@@ -199,17 +298,22 @@ pub(crate) async fn authorize(
     // @cpt-begin:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-call
     // @cpt-begin:cpt-cf-usage-collector-flow-foundation-pdp-authorize:p1:inst-pdp-return
     // @cpt-begin:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-return
-    enforcer
-        .access_scope_with(
-            ctx,
-            resource_type,
-            action,
-            None,
-            &AccessRequest::new().require_constraints(false),
-        )
-        .await
-        .map(|_| ())
-        .map_err(DomainError::from)
+    pdp_scope_with(
+        enforcer,
+        metrics,
+        op,
+        ctx,
+        resource_type,
+        action,
+        None,
+        &AccessRequest::new().require_constraints(false),
+        // Subject-only authz opts out of `require_constraints`, so an
+        // unconstrained (`allow_all`) permit is the legitimate happy-path
+        // outcome: the gate always admits, and the PDP permit is the final
+        // decision recorded by the wrapper.
+        |_scope| Ok(()),
+    )
+    .await
     // @cpt-end:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-return
     // @cpt-end:cpt-cf-usage-collector-flow-foundation-pdp-authorize:p1:inst-pdp-return
     // @cpt-end:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-call
@@ -257,12 +361,14 @@ pub(crate) async fn authorize(
 // @cpt-dod:cpt-cf-usage-collector-dod-usage-emission-adr-caller-supplied-attribution:p1
 pub(crate) async fn authorize_usage_record(
     enforcer: &PolicyEnforcer,
+    metrics: &dyn UsageCollectorMetrics,
+    op: PdpOp,
     ctx: &SecurityContext,
     record: &UsageRecord,
     action: &'static str,
 ) -> Result<(), DomainError> {
     let key = AttributionTupleKey::from_record(record, action);
-    authorize_attribution_tuple(enforcer, ctx, &key).await
+    authorize_attribution_tuple(enforcer, metrics, op, ctx, &key).await
 }
 
 /// PDP-evaluate an [`AttributionTupleKey`] directly, bypassing
@@ -282,6 +388,8 @@ pub(crate) async fn authorize_usage_record(
 /// * [`DomainError::AuthorizationUnavailable`] on PDP transport failure.
 pub(crate) async fn authorize_attribution_tuple(
     enforcer: &PolicyEnforcer,
+    metrics: &dyn UsageCollectorMetrics,
+    op: PdpOp,
     ctx: &SecurityContext,
     key: &AttributionTupleKey,
 ) -> Result<(), DomainError> {
@@ -315,33 +423,45 @@ pub(crate) async fn authorize_attribution_tuple(
     // @cpt-begin:cpt-cf-usage-collector-algo-event-deactivation-operator-pdp-authorization:p1:inst-algo-pdp-deny
     // @cpt-begin:cpt-cf-usage-collector-algo-event-deactivation-operator-pdp-authorization:p1:inst-algo-pdp-fail-closed
     // @cpt-begin:cpt-cf-usage-collector-algo-event-deactivation-operator-pdp-authorization:p1:inst-algo-pdp-allow
-    let scope = enforcer
-        .access_scope_with(ctx, &usage_record::RESOURCE, key.action, None, &request)
-        .await
-        .map_err(DomainError::from)?;
-
-    // Per-record attribution gate (see [`scope_admits_attribution_tuple`]). A
-    // permit that narrows the grant (to the caller's tenant closure, and
-    // possibly other attribution predicates) comes back as `Ok(scope)`, not a
-    // bare yes — the record's attribution tuple must satisfy that scope or this
-    // is cross-tenant / out-of-grant attribution / access and we fail closed.
-    if scope_admits_attribution_tuple(&scope, key) {
-        Ok(())
-    } else {
-        tracing::warn!(
-            target: "authz",
-            tenant_id = %key.tenant_id,
-            action = key.action,
-            "PDP permit did not authorize the record's owning tenant; \
-             denying cross-tenant usage_record attribution"
-        );
-        Err(DomainError::AuthorizationDenied {
-            reason: Some(format!(
-                "caller is not authorized for usage_record owning tenant {}",
-                key.tenant_id
-            )),
-        })
-    }
+    // Per-record attribution gate (see [`scope_admits_attribution_tuple`]),
+    // applied as the wrapper's post-permit gate. A permit that narrows the grant
+    // (to the caller's tenant closure, and possibly other attribution
+    // predicates) comes back as `Ok(scope)`, not a bare yes — the record's
+    // attribution tuple must satisfy that scope or this is cross-tenant /
+    // out-of-grant attribution / access and we fail closed. Because the gate
+    // runs inside `pdp_scope_with`, a rejection here records
+    // `uc_authz_decisions_total{decision="deny"}` (the effective decision), not
+    // the raw PDP permit.
+    pdp_scope_with(
+        enforcer,
+        metrics,
+        op,
+        ctx,
+        &usage_record::RESOURCE,
+        key.action,
+        None,
+        &request,
+        |scope| {
+            if scope_admits_attribution_tuple(&scope, key) {
+                Ok(())
+            } else {
+                tracing::warn!(
+                    target: "authz",
+                    tenant_id = %key.tenant_id,
+                    action = key.action,
+                    "PDP permit did not authorize the record's owning tenant; \
+                     denying cross-tenant usage_record attribution"
+                );
+                Err(DomainError::AuthorizationDenied {
+                    reason: Some(format!(
+                        "caller is not authorized for usage_record owning tenant {}",
+                        key.tenant_id
+                    )),
+                })
+            }
+        },
+    )
+    .await
     // @cpt-end:cpt-cf-usage-collector-algo-event-deactivation-operator-pdp-authorization:p1:inst-algo-pdp-allow
     // @cpt-end:cpt-cf-usage-collector-algo-event-deactivation-operator-pdp-authorization:p1:inst-algo-pdp-fail-closed
     // @cpt-end:cpt-cf-usage-collector-algo-event-deactivation-operator-pdp-authorization:p1:inst-algo-pdp-deny
@@ -592,18 +712,33 @@ fn value_matches(tuple_value: TupleValue, kind: OdataFieldKind, scope_value: &Sc
 // @cpt-algo:cpt-cf-usage-collector-algo-usage-query-attribution-and-pdp-authorization-on-read:p2
 pub(crate) async fn authorize_list_usage_records(
     enforcer: &PolicyEnforcer,
+    metrics: &dyn UsageCollectorMetrics,
+    op: PdpOp,
     ctx: &SecurityContext,
 ) -> Result<AccessScope, DomainError> {
-    enforcer
-        .access_scope_with(
-            ctx,
-            &usage_record::RESOURCE,
-            usage_record::actions::LIST,
-            None,
-            &AccessRequest::new().require_constraints(true),
-        )
-        .await
-        .map_err(DomainError::from)
+    pdp_scope_with(
+        enforcer,
+        metrics,
+        op,
+        ctx,
+        &usage_record::RESOURCE,
+        usage_record::actions::LIST,
+        None,
+        &AccessRequest::new().require_constraints(true),
+        // LIST authorizes in two stages like the per-record path: the PDP permit
+        // must ALSO yield a projectable row scope (tenant-pinned, no tree
+        // predicates, known properties) or it fails closed. Running
+        // `scope_to_odata_filter` as the gate classifies the effective decision
+        // for `uc_authz_decisions_total` — an un-projectable scope records
+        // `deny`, not the raw PDP `permit`. The projected `Expr` is discarded
+        // here and recomputed by `compose_query_with_scope` at the call site;
+        // it is the same pure projection, so the decision recorded here and the
+        // filter composed there cannot disagree (the alternative — threading the
+        // `Expr` out — would ripple the composition path and its fail-closed
+        // tests for no behavioral gain).
+        |scope| scope_to_odata_filter(&scope).map(|_| scope),
+    )
+    .await
 }
 
 /// Project an [`AccessScope`] into an `OData` filter expression over the
