@@ -77,13 +77,23 @@ echo "==> cargo-gears docs source: $CARGO_GEARS_PATH"
 
 cd "$CACHE_DIR"
 
-# --- Install deps and run dev against the local content ---
-if command -v pnpm >/dev/null 2>&1; then
-  pnpm install
-  echo "==> Starting docs site at http://localhost:4321 (content from $REPO_ROOT/docs/web-docs)"
-  GEARS_RUST_PATH="$REPO_ROOT" CARGO_GEARS_PATH="$CARGO_GEARS_PATH" BASE=/ pnpm dev
+# Mode: "dev" (default) serves the site; "build" produces a static build in
+# dist/ (used by `make lychee-web-docs` for offline link checking).
+MODE="${1:-dev}"
+
+PKG="npm"
+command -v pnpm >/dev/null 2>&1 && PKG="pnpm"
+
+$PKG install
+
+# Sync the local content into the site (the `predev` hook only runs for dev).
+GEARS_RUST_PATH="$REPO_ROOT" CARGO_GEARS_PATH="$CARGO_GEARS_PATH" BASE=/ $PKG run sync
+
+if [ "$MODE" = "build" ]; then
+  echo "==> Building docs site (content from $REPO_ROOT/docs/web-docs)"
+  GEARS_RUST_PATH="$REPO_ROOT" CARGO_GEARS_PATH="$CARGO_GEARS_PATH" BASE=/ $PKG run build
+  echo "==> Build complete: $CACHE_DIR/dist"
 else
-  npm install
   echo "==> Starting docs site at http://localhost:4321 (content from $REPO_ROOT/docs/web-docs)"
-  GEARS_RUST_PATH="$REPO_ROOT" CARGO_GEARS_PATH="$CARGO_GEARS_PATH" BASE=/ npm run dev
+  GEARS_RUST_PATH="$REPO_ROOT" CARGO_GEARS_PATH="$CARGO_GEARS_PATH" BASE=/ $PKG run dev
 fi
