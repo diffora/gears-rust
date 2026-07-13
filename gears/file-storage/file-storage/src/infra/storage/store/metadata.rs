@@ -34,8 +34,8 @@ impl Store {
     /// same transaction on a successful patch.
     ///
     /// Returns `false` when `expected_meta_version` does not match the current
-    /// row (caller maps to 412 PreconditionFailed with "metadata revision
-    /// changed concurrently").
+    /// row (caller maps to PreconditionFailed with "metadata revision changed
+    /// concurrently"; REST maps that canonical error to HTTP 400).
     ///
     /// @cpt-cf-file-storage-fr-audit-trail
     /// @cpt-cf-file-storage-nfr-audit-completeness

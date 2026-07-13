@@ -78,6 +78,18 @@ pub struct MultipartClaims {
     /// **Exact** byte length the sidecar will accept for this part.
     /// The sidecar rejects with `413` if `body.len() ≠ size` (FEATURE §4, point 2).
     pub size: u64,
+    /// The backend's own multipart handle (e.g. an S3 `UploadId`), as
+    /// returned by `StorageBackend::initiate_multipart` at plan-mint time.
+    ///
+    /// Empty for backends that don't support native multipart at all (never
+    /// reached in practice: `initiate_multipart_upload` rejects such a
+    /// backend before minting any per-part token) — the sidecar uses an
+    /// empty value as the signal to fall back to the local-fs-style
+    /// offset-object model instead of calling `StorageBackend::upload_part`.
+    /// `#[serde(default)]` keeps verification tolerant of a token minted
+    /// before this field existed.
+    #[serde(default)]
+    pub backend_handle: String,
 }
 
 /// The signed token's claim set (AND-combined; `exp` is mandatory).
@@ -97,6 +109,35 @@ pub struct Claims {
     /// Non-empty only when `op = multipart_part`.
     #[serde(default, skip_serializing_if = "is_default_multipart")]
     pub multipart: MultipartClaims,
+    /// Opaque correlation id minted at issuance time (P2 1.8 remediation).
+    ///
+    /// Carried end-to-end through the signed token so the sidecar can echo it
+    /// back as the `x-request-id` header on its finalize/report-part callback
+    /// to the control plane, letting both planes' logs be correlated by the
+    /// same id even though the callback arrives on a disconnected HTTP
+    /// request from the one that issued the token. `#[serde(default)]` keeps
+    /// verification tolerant of a token minted before this field existed.
+    #[serde(default)]
+    pub request_id: String,
+    /// Stored MIME of the version (`op = get` tokens only; P2 1.11).
+    ///
+    /// The sidecar has no DB access, so this is the only way it can emit a
+    /// real `Content-Type` on a download response instead of a generic
+    /// `application/octet-stream` fallback. `#[serde(default)]` keeps
+    /// verification tolerant of tokens minted before this field existed
+    /// (old sidecars ignore the new field; new sidecars tolerate old tokens
+    /// by falling back).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_type: String,
+    /// Opaque content `ETag` of the (file, version) pair (`op = get` tokens
+    /// only; P2 1.11), the same value returned in `DownloadTicket::etag` —
+    /// one source of truth (`domain::etag::content_etag`).
+    ///
+    /// Lets the sidecar emit a real `ETag` header without a DB lookup.
+    /// `#[serde(default)]` keeps verification tolerant of tokens minted
+    /// before this field existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub etag: String,
 }
 
 fn is_default_constraints(c: &UploadConstraints) -> bool {

@@ -126,7 +126,7 @@ Gears security and governance model.
 | Version ID          | A uuid assigned by FileStorage (control plane) identifying one immutable content blob; the backend object lives at `/{file_id}/{version_id}` and is never mutated in place                                                                                                                |
 | Content Pointer (`content_id`) | The `version_id` currently bound as a file's live content; changing content is a pointer swap, not an in-place mutation. The content-only ETag derives from `(file_id, content_id)`                                                                                            |
 | Metadata Revision (`meta_version`) | A monotonic counter bumped on metadata-only writes; the validator for `If-Match-Metadata`                                                                                                                                                                          |
-| Bind                | The control-plane operation that swaps a file's `content_id` to a (`pending` → `available`) version under optimistic CAS (`If-Match`). A conflict (`412`) is retried by re-binding the already-uploaded `version_id` — never by re-uploading bytes                                       |
+| Bind                | The control-plane operation that swaps a file's `content_id` to a (`pending` → `available`) version under optimistic CAS (`If-Match`). A conflict (`400 failed_precondition`) is retried by re-binding the already-uploaded `version_id` — never by re-uploading bytes                                       |
 | Metadata            | File properties: system-managed (name, size, mime_type, GTS file type, dates, owner) and user-defined custom key-value pairs                                                                                                                                                            |
 | Custom Metadata     | User-defined key-value pairs attached to a file, analogous to S3 object metadata                                                                                                                                                                                                        |
 | Owner               | The principal that owns a file: `owner_kind ∈ {user, app}` plus `owner_id`. Every file also has a separate immutable `tenant_id`                                                                                                                                                       |
@@ -226,10 +226,10 @@ new **immutable** content blob to the backend object `/{file_id}/{version_id}`; 
 **not** supported.
 
 Binding the pointer is an optimistic compare-and-swap guarded by `If-Match` (`cpt-cf-file-storage-fr-conditional-requests`):
-if the file's content changed concurrently the bind returns `412`, and the client **MUST** be able to retry the bind
+if the file's content changed concurrently the bind returns `400 failed_precondition`, and the client **MUST** be able to retry the bind
 against the already-uploaded `version_id` **without re-uploading the bytes**. Rebinding is a **control-plane** operation
 independent of the signed upload URL — the upload URL's expiry does **not** affect the retry and the client does **not**
-re-presign; the `412` returns the current content ETag for the fresh `If-Match`. (Re-presigning instead would upload a
+re-presign; the failed-precondition response returns the current content ETag for the fresh `If-Match`. (Re-presigning instead would upload a
 new sibling version, later reconciled by `cpt-cf-file-storage-fr-orphan-reconciliation`.)
 
 **Rationale**: All platform gears and users need to store files — gears store generated content, documents, and
@@ -535,6 +535,11 @@ exhaustion for the platform. Quota checks must cover all storage-consuming opera
 prevent quota bypass through versioned overwrites.
 **Actors**: `cpt-cf-file-storage-actor-platform-user`, `cpt-cf-file-storage-actor-cf-gears`
 
+**Implementation status (P2)**: not met yet; the requirement remains open. Storage quota is
+**not enforced in any deployment** — the Quota Enforcement service this depends on does not exist yet.
+`file-storage` has built its side and is ready to consume the check once that service ships. Technical detail in
+[DESIGN.md](./DESIGN.md) (`quota-adapter`) and [operations.md](./operations.md).
+
 ### 5.5 Metadata
 
 #### Rich Metadata Storage
@@ -655,7 +660,7 @@ Because content is uploaded to the sidecar and the version is only later **bound
 are not atomic), several edge cases produce orphans:
 
 - A version was **pre-registered** (`status = pending`) and the bytes uploaded to the sidecar, but the **bind** never
-  happened — the client abandoned the upload, or dropped after a `412` without retrying. The `pending` version row
+  happened — the client abandoned the upload, or dropped after a failed-precondition response without retrying. The `pending` version row
   and its backend object are left dangling
 - A backend object was written (`/{file_id}/{version_id}`) but no version row exists for it (the pre-register itself
   was lost)
@@ -749,6 +754,9 @@ capacity rebalancing across buckets, and disaster recovery from a degraded backe
 immutability at the service layer only (not as a DB constraint) keeps this a behavioural change in P2 with no schema
 migration.
 **Actors**: `cpt-cf-file-storage-actor-cf-gears`
+
+A content-hash-modes design (multipart offset-manifest composite hashing, computed on-the-fly) is recorded in
+[ADR-0006](./ADR/0006-cpt-cf-file-storage-adr-content-hash-modes.md).
 
 #### File Encryption
 
@@ -951,15 +959,16 @@ system **MUST**:
   `(file_id, content_id)`, and **MUST NOT** equal the content hash (which is exposed separately). Because `content_id`
   is the current version pointer, the ETag changes exactly when content is (re)bound
 - Support `If-None-Match` on download/metadata reads — return `304 Not Modified` when the ETag matches
-- Support `If-Match` on reads — return `412 Precondition Failed` when the ETag does not match
+- Support `If-Match` on reads — return `400 failed_precondition` when the ETag does not match
 - Require `If-Match` on every content **bind** (the optimistic CAS that swaps `content_id`) and on `DELETE` —
-  `412 Precondition Failed` on mismatch. The `412` retry re-binds the already-uploaded `version_id` without re-upload
+  `400 failed_precondition` on mismatch. The retry re-binds the already-uploaded `version_id` without re-upload
 
 **ETag is content-only.** Metadata-only updates bump `meta_version` and `last_modified_at` but **MUST NOT** change the
 ETag or content hash — both remain tied to the content. Consequently `If-Match` on a metadata-only update protects
 against concurrent **content** writes but does **not** detect concurrent metadata writes. To give callers lost-update
 protection for metadata without coupling it to the content ETag, the system **MUST** support an optional
-metadata-revision precondition on metadata-only updates (matched against `meta_version`, returning `412` on mismatch);
+metadata-revision precondition on metadata-only updates (matched against `meta_version`, returning
+`400 failed_precondition` on mismatch);
 when the caller omits it, metadata updates remain last-write-wins (S3-style) for back-compatibility. See DESIGN
 `cpt-cf-file-storage-principle-content-only-etag`.
 
@@ -1187,6 +1196,9 @@ debits/credits per `cpt-cf-file-storage-fr-usage-reporting`)
 (per `cpt-cf-file-storage-fr-storage-quota`)
 **Compatibility**: Contract follows platform quota enforcement protocol; changes require coordinated release.
 
+**Implementation status (P2)**: not satisfied yet — the Quota Enforcement counterparty does not
+exist, so this contract is not exercised in any deployment. `file-storage`'s side is ready. See [DESIGN.md](./DESIGN.md).
+
 #### EventBroker Contract
 
 - [ ] `p2` - **ID**: `cpt-cf-file-storage-contract-eventbroker`
@@ -1227,7 +1239,7 @@ debits/credits per `cpt-cf-file-storage-fr-usage-reporting`)
    `/{file_id}/{version_id}`, computes the hash, and (on behalf of the user) **binds** the new version as current
    under optimistic CAS
 6. *(Phase 2)* Audit record emitted for the upload
-7. The client holds the `file_id` and the bound `version_id`; on a bind conflict (`412`) it re-binds without
+7. The client holds the `file_id` and the bound `version_id`; on a bind conflict (`400 failed_precondition`) it re-binds without
    re-uploading
 
 **Postconditions**:
@@ -1417,7 +1429,7 @@ debits/credits per `cpt-cf-file-storage-fr-usage-reporting`)
 - [ ] Content is mutable through dedicated content-replacement operations; ETag (content-derived) changes on every
   content write; metadata-only updates do not change ETag or content hash
 - [ ] Content replacement uploads a new immutable version and **binds** it as current under `If-Match` CAS; a
-  conflicting bind returns `412` and is retried by re-binding the already-uploaded `version_id` without re-uploading
+  conflicting bind returns `400 failed_precondition` and is retried by re-binding the already-uploaded `version_id` without re-uploading
   the bytes; backend content is never mutated in place
 - [ ] `custom_metadata` is updatable by any actor authorized for the **write** action on the file's GTS type;
   system-managed metadata is not user-updatable
@@ -1449,8 +1461,8 @@ debits/credits per `cpt-cf-file-storage-fr-usage-reporting`)
 - [ ] Download and metadata responses include `ETag` header derived from `(file_id, content_id)` and not equal
   to the content hash
 - [ ] Conditional download with `If-None-Match` returns `304 Not Modified` when file is unchanged
-- [ ] `If-Match` is required on content **bind** and on `DELETE`; missing or mismatching `If-Match` returns `412`
-- [ ] An optional metadata-revision precondition on metadata-only updates returns `412` on mismatch, giving
+- [ ] `If-Match` is required on content **bind** and on `DELETE`; missing or mismatching `If-Match` returns `400 failed_precondition`
+- [ ] An optional metadata-revision precondition on metadata-only updates returns `400 failed_precondition` on mismatch, giving
   lost-update protection for concurrent metadata writers; when omitted, metadata updates remain last-write-wins
 - [ ] An upload whose bind never completes leaves no current pointer to it; the orphan `pending` version and its blob
   are reconciled by the P2 cleanup engine (`cpt-cf-file-storage-fr-orphan-reconciliation`)

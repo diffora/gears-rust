@@ -1,6 +1,25 @@
 //! Content hashing. P1 is locked to SHA-256 (ADR-0002); the hash backs version
 //! identity checks, the `expected_hash` upload constraint, and the opaque `ETag`.
 //!
+//! **Not a cryptographic security control** (with one exception). This hash's
+//! job is integrity — catching storage/transport corruption and confirming a
+//! file was split into parts and uploaded/reassembled correctly — plus
+//! content-addressed identity/dedup. It is not used for signatures, key
+//! derivation, or password storage. The one exception is the `expected_hash`
+//! upload-verification path, which *is* security-relevant (it defends against
+//! a client falsely claiming a different object than it actually uploaded)
+//! and stays on SHA-256. Because the purpose is non-adversarial integrity/
+//! identity rather than a defended security boundary, it is **excluded from
+//! the FIPS claim** per `SECURITY.md §9` / file-storage ADR-0006 — not
+//! because of any non-Approved algorithm (there isn't one; both modes are
+//! SHA-256), but because it isn't a FIPS-scoped security function in the
+//! first place.
+//!
+//! Per ADR-0006, content hashing has two modes, both SHA-256: (1) whole-object
+//! `sha256(whole object)` for single-part uploads, and (2) a multipart
+//! offset-manifest composite over per-part SHA-256 digests. This module
+//! implements the whole-object mode.
+//!
 //! This is the **single** SHA-256 call site in the gear: it is on the DE0708
 //! FIPS-hasher allow-list (see `SECURITY.md §9`), so all `sha2` usage is
 //! confined here and reviewable in one place. Content addressing/integrity is
@@ -36,6 +55,22 @@ pub fn sha256_parts(parts: &[&[u8]]) -> Vec<u8> {
         hasher.update(part);
     }
     hasher.finalize().to_vec()
+}
+
+/// Convert a SHA-256 digest (`sha256`/`sha256_parts`/`Hasher::finalize` all
+/// return a `Vec<u8>` for historical/allocation reasons) into a fixed-size
+/// array, for call sites (e.g. `StorageBackend::put_stream`) that want a
+/// `Copy`-able, statically-sized digest type instead.
+///
+/// # Panics
+/// Panics if `digest` is not exactly 32 bytes. This is an internal-invariant
+/// check, not a reachable runtime condition: every digest producer in this
+/// module is SHA-256, which always yields 32 bytes.
+#[must_use]
+pub fn digest_to_array(digest: Vec<u8>) -> [u8; 32] {
+    digest
+        .try_into()
+        .unwrap_or_else(|v: Vec<u8>| panic!("SHA-256 digest must be 32 bytes, got {}", v.len()))
 }
 
 /// A streaming SHA-256 accumulator for chunked uploads.

@@ -348,6 +348,10 @@ gears:
     config:
       sidecar_base_url: "http://localhost:8099"
       storage_root: "./.file-storage-data"
+      signing_key_seed: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      # Quickstart exercises the production default: sweep the orphan/expired
+      # backlog in the background.
+      enable_background_sweep: true
 
   # File parser gear configuration (no database needed)
   file-parser:

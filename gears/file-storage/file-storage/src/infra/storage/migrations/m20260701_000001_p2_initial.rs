@@ -23,6 +23,7 @@
 //! @cpt-cf-file-storage-fr-upload-idempotency
 //! @cpt-cf-file-storage-fr-audit-trail
 //! @cpt-cf-file-storage-nfr-audit-completeness
+//! @cpt-dod:cpt-cf-file-storage-dod-audit-trail-schema:p2
 //! @cpt-cf-file-storage-fr-file-events
 
 use sea_orm_migration::prelude::*;

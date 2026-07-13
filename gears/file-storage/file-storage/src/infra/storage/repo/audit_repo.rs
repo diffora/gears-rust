@@ -43,6 +43,7 @@ impl AuditRepo {
         conn: &C,
         entry: &AuditEntry,
     ) -> Result<(), DomainError> {
+        // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-insert
         let am = ActiveModel {
             event_id: Set(Uuid::now_v7()),
             tenant_id: Set(entry.tenant_id),
@@ -59,7 +60,10 @@ impl AuditRepo {
         secure_insert::<Entity>(am, &AccessScope::allow_all(), conn)
             .await
             .map_err(db_err)?;
+        // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-insert
+        // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-return
         Ok(())
+        // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-return
     }
 
     /// List unpublished audit rows for a specific file — useful in tests to

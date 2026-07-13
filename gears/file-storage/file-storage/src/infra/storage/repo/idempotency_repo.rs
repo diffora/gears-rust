@@ -14,6 +14,7 @@ use crate::domain::error::DomainError;
 use crate::domain::idempotency::IdempotencyRecord;
 use crate::infra::storage::db::db_err;
 use crate::infra::storage::entity::idempotency_key::{ActiveModel, Column, Entity, Model};
+use crate::infra::storage::store::IdempotencyInsert;
 
 /// Repository for idempotency key records.
 #[derive(Clone, Default)]
@@ -64,19 +65,15 @@ impl IdempotencyRepo {
     /// racing the same key therefore also rolls that creation back; the client
     /// retries and replays the winner's record via [`get`] instead of creating a
     /// second file.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// Takes the bundled [`IdempotencyInsert`] plus the two fields it does not
+    /// carry (`file_id`, produced by the caller's create-file flow, and `now`)
+    /// instead of a long positional-argument list.
     pub async fn insert<C: DBRunner>(
         &self,
         conn: &C,
-        tenant_id: Uuid,
-        owner_kind: &str,
-        owner_id: Uuid,
-        key: &str,
+        idem: &IdempotencyInsert,
         file_id: Uuid,
-        response_status: i32,
-        response_body: &str,
-        response_etag: &str,
-        expires_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
         // Remove only a lapsed row for this key first (insert-or-replace on an
@@ -87,10 +84,10 @@ impl IdempotencyRepo {
         Entity::delete_many()
             .filter(
                 Condition::all()
-                    .add(Column::TenantId.eq(tenant_id))
-                    .add(Column::OwnerKind.eq(owner_kind.to_owned()))
-                    .add(Column::OwnerId.eq(owner_id))
-                    .add(Column::IdempotencyKey.eq(key.to_owned()))
+                    .add(Column::TenantId.eq(idem.tenant_id))
+                    .add(Column::OwnerKind.eq(idem.owner_kind.clone()))
+                    .add(Column::OwnerId.eq(idem.owner_id))
+                    .add(Column::IdempotencyKey.eq(idem.key.clone()))
                     .add(Column::ExpiresAt.lte(now)),
             )
             .secure()
@@ -100,29 +97,54 @@ impl IdempotencyRepo {
             .map_err(db_err)?;
 
         let am = ActiveModel {
-            tenant_id: Set(tenant_id),
-            owner_kind: Set(owner_kind.to_owned()),
-            owner_id: Set(owner_id),
-            idempotency_key: Set(key.to_owned()),
+            tenant_id: Set(idem.tenant_id),
+            owner_kind: Set(idem.owner_kind.clone()),
+            owner_id: Set(idem.owner_id),
+            idempotency_key: Set(idem.key.clone()),
+            subject_id: Set(idem.subject_id),
             file_id: Set(file_id),
-            response_status: Set(response_status),
-            response_body: Set(response_body.to_owned()),
-            response_etag: Set(response_etag.to_owned()),
+            response_status: Set(idem.response_status),
+            response_body: Set(idem.response_body.clone()),
+            response_etag: Set(idem.response_etag.clone()),
+            request_hash: Set(idem.request_hash.clone()),
             created_at: Set(now),
-            expires_at: Set(expires_at),
+            expires_at: Set(idem.expires_at),
         };
         secure_insert::<Entity>(am, &AccessScope::allow_all(), conn)
             .await
             .map_err(db_err)?;
         Ok(())
     }
+
+    /// Bulk-delete all rows whose `expires_at` is at or before `now`.
+    ///
+    /// Called by the cleanup sweep (P2 remediation 1.9) so the
+    /// `idempotency_keys` table doesn't grow unboundedly — previously only a
+    /// lapsed row *for the same key* was ever removed (in [`Self::insert`]),
+    /// never a table-wide sweep. Returns the number of rows removed.
+    pub async fn delete_expired<C: DBRunner>(
+        &self,
+        conn: &C,
+        now: OffsetDateTime,
+    ) -> Result<u64, DomainError> {
+        let res = Entity::delete_many()
+            .filter(Column::ExpiresAt.lte(now))
+            .secure()
+            .scope_with(&AccessScope::allow_all())
+            .exec(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(res.rows_affected)
+    }
 }
 
 fn record_from_model(m: Model) -> IdempotencyRecord {
     IdempotencyRecord {
         file_id: m.file_id,
+        subject_id: m.subject_id,
         response_status: u16::try_from(m.response_status).unwrap_or(201),
         response_body: m.response_body,
         response_etag: m.response_etag,
+        request_hash: m.request_hash,
     }
 }

@@ -1,13 +1,16 @@
 //! Policy domain types and the `PolicyResolver`.
 //!
-//! M1 stores and resolves policy; it does NOT yet enforce it on uploads (that is
-//! M2). The resolver computes the **effective policy = most-restrictive across
-//! tenant + user** per aspect, as required by the PRD:
+//! The resolver computes the **effective policy = most-restrictive across
+//! tenant + user** per aspect, as required by the PRD. Enforcement on uploads
+//! (allowed-MIME check, effective size limit, metadata limits, quota) is
+//! active in `domain/service/create.rs`; this module only stores and resolves
+//! the policy itself.
 //!
 //! @cpt-cf-file-storage-fr-allowed-types-policy
 //! @cpt-cf-file-storage-fr-size-limits-policy
 //! @cpt-cf-file-storage-fr-metadata-limits
 //! @cpt-cf-file-storage-fr-retention-policies
+//! @cpt-dod:cpt-cf-file-storage-dod-policy-types-resolver:p1
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -175,7 +178,13 @@ pub struct AgeRetention {
 #[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct InactivityRetention {
-    /// Delete files not accessed (read or written) in this many days.
+    /// Delete files not **modified** in this many days, evaluated against
+    /// `last_modified_at` (bumped only by writes — bind/patch/transfer).
+    /// Downloads do not reset this clock: a file read frequently but never
+    /// rewritten is still eligible for deletion after `inactivity_days`.
+    /// Follow-up: track a `last_accessed_at` timestamp updated on download if
+    /// read-awareness becomes a requirement (needs a throttled/coarse update
+    /// to avoid a hot-path write on every read).
     pub inactivity_days: u32,
 }
 
@@ -310,34 +319,44 @@ impl PolicyResolver {
         // Empty allowed_mime_types in a PolicyBody means "no restriction at this
         // level" — not "nothing allowed". A level is "restricted" only when its
         // allowed_mime_types is non-empty.
+        // @cpt-begin:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-mime
         let allowed_mime_types = Self::merge_allowed_mimes(
             tenant_policy.map(|p| &p.allowed_mime_types),
             user_policy.map(|p| &p.allowed_mime_types),
         );
+        // @cpt-end:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-mime
 
         // ── Global size limit ─────────────────────────────────────────────────
         // Most-restrictive = smallest non-None value.
+        // @cpt-begin:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-size
         let tenant_max = tenant_policy.and_then(|p| p.size_limits.max_bytes);
         let user_max = user_policy.and_then(|p| p.size_limits.max_bytes);
         let max_bytes = Self::min_option(tenant_max, user_max);
+        // @cpt-end:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-size
 
         // ── Per-mime size overrides ───────────────────────────────────────────
+        // @cpt-begin:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-per-mime
         let empty: &[MimeSizeOverride] = &[];
         let tenant_per_mime = tenant_policy.map_or(empty, |p| p.size_limits.per_mime.as_slice());
         let user_per_mime = user_policy.map_or(empty, |p| p.size_limits.per_mime.as_slice());
         let per_mime_max_bytes = Self::merge_per_mime(tenant_per_mime, user_per_mime);
+        // @cpt-end:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-per-mime
 
         // ── Metadata limits ───────────────────────────────────────────────────
+        // @cpt-begin:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-metadata
         let t_meta = tenant_policy.map(|p| &p.metadata_limits);
         let u_meta = user_policy.map(|p| &p.metadata_limits);
         let metadata_limits = Self::merge_metadata_limits(t_meta, u_meta);
+        // @cpt-end:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-metadata
 
+        // @cpt-begin:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-return
         EffectivePolicy {
             allowed_mime_types,
             max_bytes,
             per_mime_max_bytes,
             metadata_limits,
         }
+        // @cpt-end:cpt-cf-file-storage-algo-resolve-effective-policy:p1:inst-resolve-return
     }
 
     /// Intersection of allowed mime types.
@@ -527,6 +546,7 @@ impl PolicyResolver {
     /// - `Some(list)` → must match a pattern in the list.
     ///
     /// @cpt-cf-file-storage-fr-allowed-types-policy
+    // @cpt-begin:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-mime
     pub(crate) fn check_allowed_mime(
         policy: &EffectivePolicy,
         mime_type: &str,
@@ -542,6 +562,7 @@ impl PolicyResolver {
             ))
         }
     }
+    // @cpt-end:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-mime
 
     /// Compute the effective maximum blob size for `mime_type`, taking the most
     /// restrictive of:
@@ -552,6 +573,7 @@ impl PolicyResolver {
     /// `None` means unbounded from all sources.
     ///
     /// @cpt-cf-file-storage-fr-size-limits-policy
+    // @cpt-begin:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-size-compute
     #[must_use]
     pub(crate) fn compute_effective_max_bytes(
         policy: &EffectivePolicy,
@@ -574,6 +596,7 @@ impl PolicyResolver {
             .flatten()
             .reduce(u64::min)
     }
+    // @cpt-end:cpt-cf-file-storage-algo-enforce-policy-at-upload:p1:inst-enforce-size-compute
 
     /// Validate `entries` against the metadata limits in `policy`.
     ///

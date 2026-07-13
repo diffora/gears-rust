@@ -33,6 +33,28 @@ impl Store {
 
     /// Upsert (replace) the policy for a given `(policy_scope, scope_owner_id)`.
     /// Returns the new `policy_id`.
+    ///
+    /// P2 remediation 2.4: `PolicyRepo::upsert` internally does a
+    /// `delete_many()` followed by an independent `insert` — two statements
+    /// that used to run outside any transaction, leaving a window where two
+    /// concurrent callers for the same scope could each see nothing to
+    /// delete and both insert, corrupting the at-most-one-row-per-scope
+    /// invariant. Wrapping the pair in an explicit DB transaction here (same
+    /// `self.db.db().transaction_ref_mapped(...)` pattern
+    /// `rebind_version_backend` uses in `store/versions.rs`) serializes
+    /// concurrent upserts for an *existing* row via the DELETE's row lock: a
+    /// blocked concurrent DELETE re-evaluates its `WHERE` clause once the
+    /// first transaction commits and ends up deleting the just-inserted row
+    /// instead of matching nothing, so exactly one row survives. The
+    /// remaining gap — two concurrent *first-time* upserts, where neither
+    /// transaction's DELETE has anything to lock — is closed by the new
+    /// `policies_user_scope_unique_idx` / `policies_tenant_scope_unique_idx`
+    /// partial unique indexes (migration `m20260706_000003`): the losing
+    /// writer's `INSERT` now fails with a unique-constraint violation
+    /// (`DomainError::Database`) instead of silently creating a duplicate
+    /// row. This keeps `PolicyRepo::upsert` itself, and its existing
+    /// `SecureORM` scope validation on both the delete and the insert,
+    /// completely unchanged.
     pub async fn upsert_policy(
         &self,
         scope: &AccessScope,
@@ -42,18 +64,27 @@ impl Store {
         body: &PolicyBody,
         now: OffsetDateTime,
     ) -> Result<Uuid, DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
-        self.repos
-            .policies
-            .upsert(
-                &conn,
-                scope,
-                tenant_id,
-                policy_scope,
-                scope_owner_id,
-                body,
-                now,
-            )
+        let policies = self.repos.policies.clone();
+        let scope = scope.clone();
+        let policy_scope = policy_scope.clone();
+        let body = body.clone();
+        self.db
+            .db()
+            .transaction_ref_mapped(move |tx| {
+                Box::pin(async move {
+                    policies
+                        .upsert(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            &policy_scope,
+                            scope_owner_id,
+                            &body,
+                            now,
+                        )
+                        .await
+                })
+            })
             .await
     }
 

@@ -103,6 +103,16 @@ pub struct FileVersion {
     pub size: i64,
     pub hash_algorithm: String,
     pub hash_value: Vec<u8>,
+    /// ADR-0006 content-hash mode discriminator: `"whole-sha256"` (the
+    /// default for every version written before ADR-0006, and for every
+    /// non-multipart upload) or `"multipart-composite-sha256"`. Together
+    /// with `hash_value` this is the sole ground truth for "how do I verify
+    /// this version": for `whole-sha256`, `hash_value` is `sha256(bytes)`;
+    /// for `multipart-composite-sha256`, `hash_value` is `sha256(manifest)`.
+    pub hash_mode: String,
+    /// Number of parts for a `multipart-composite-sha256` version; `None`
+    /// for `whole-sha256`.
+    pub part_count: Option<i32>,
     pub status: VersionStatus,
     pub is_current: bool,
     pub backend_id: String,

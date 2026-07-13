@@ -311,6 +311,8 @@ gears:
       storage_root: "./.file-storage-data"
       # Fixed Ed25519 seed (32-byte base64url) for deterministic signed URLs.
       signing_key_seed: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      # Shared-server e2e run — no non-deterministic background activity.
+      enable_background_sweep: false
 
   account-management:
     database:

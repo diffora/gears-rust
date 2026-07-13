@@ -139,6 +139,7 @@ impl AuditEntry {
     /// Create an audit entry for a successful write.
     ///
     /// @cpt-cf-file-storage-fr-audit-trail
+    // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-construct
     pub fn success(
         tenant_id: Uuid,
         actor_kind: impl Into<String>,
@@ -158,6 +159,7 @@ impl AuditEntry {
             occurred_at: OffsetDateTime::now_utc(),
         }
     }
+    // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-construct
 
     /// Create an audit entry for a failed write attempt.
     pub fn failure(

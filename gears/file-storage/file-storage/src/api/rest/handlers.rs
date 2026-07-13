@@ -19,13 +19,14 @@ use file_storage_sdk::{CustomMetadataPatch, NewFile, OwnerFilter, OwnerKind};
 
 use super::dto::{
     BindReq, CreateFileReq, CreateRetentionRuleReq, DownloadTicketDto, EffectivePolicyDto, FileDto,
-    FileDtoList, InitiateMultipartReq, MigrateBackendReq, MultipartPartPlanDto, MultipartPlanDto,
-    PolicyDto, RetentionRuleDto, RetentionRuleDtoList, SetPolicyReq, StorageDto, StorageDtoList,
+    FileDtoList, InitiateMultipartReq, MigrateBackendReq, MissingPartDto, MultipartCompleteDto,
+    MultipartPartPlanDto, MultipartPlanDto, MultipartStatusDto, PolicyDto, ReceivedPartDto,
+    RetentionRuleDto, RetentionRuleDtoList, SetPolicyReq, StorageDto, StorageDtoList,
     TransferOwnershipReq, UpdateMetadataReq, UploadTicketDto, VersionDto, VersionDtoList,
 };
 use crate::domain::error::DomainError;
 use crate::domain::etag;
-use crate::domain::multipart::MultipartPlan;
+use crate::domain::multipart::{MultipartPlan, MultipartUploadStatus};
 use crate::domain::multipart_service::MultipartService;
 use crate::domain::policy::{PolicyScope, RetentionScope};
 use crate::domain::policy_service::PolicyService;
@@ -52,11 +53,73 @@ pub struct DownloadQuery {
     pub version_id: Option<Uuid>,
 }
 
+/// Query params for `GET /files/{id}/versions`.
+#[derive(Debug, Deserialize)]
+pub struct ListVersionsQuery {
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+}
+
 fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
+}
+
+/// Interim gear-local shared-secret credential for the s2s finalize/
+/// report-part callback routes (P2 0.1 remaining — see
+/// `docs/ADR/0003-…-sidecar-data-plane.md`'s trust-model section). This is a
+/// stop-gap until the platform's `toolkit-security::internal_auth` profiles
+/// are deployable in this gear; swap the comparator below for
+/// `InternalAuthenticator` when that lands.
+///
+/// When `secret` is `None` (the default — `FileStorageConfig::finalize_internal_secret`
+/// unset), [`FinalizeAuth::verify`] is a no-op: the signed upload token
+/// (already verified by the caller) remains the sole authorization,
+/// preserving pre-0.1 behavior. When `Some`, callers must additionally
+/// present a matching `x-fs-internal-token` header.
+pub struct FinalizeAuth {
+    secret: Option<String>,
+}
+
+impl FinalizeAuth {
+    #[must_use]
+    pub fn new(secret: Option<String>) -> Self {
+        Self { secret }
+    }
+
+    /// Verify the `x-fs-internal-token` header against the configured
+    /// secret. No-op `Ok(())` when no secret is configured. Comparison is
+    /// constant-time to avoid leaking the secret through response-timing
+    /// side channels.
+    pub fn verify(&self, headers: &HeaderMap) -> Result<(), DomainError> {
+        let Some(expected) = self.secret.as_deref() else {
+            return Ok(());
+        };
+        let provided = headers
+            .get("x-fs-internal-token")
+            .and_then(|v| v.to_str().ok());
+        let matches = provided.is_some_and(|provided| {
+            // `ring::constant_time::verify_slices_are_equal` is ring 0.17's
+            // constant-time byte-slice comparator (this crate already
+            // depends on `ring` via `infra::signed_url`). It lives under a
+            // `#[deprecated]` re-export with no non-deprecated replacement
+            // for a bare secret comparison, so the deprecation warning is
+            // suppressed locally rather than adding a new crate (e.g.
+            // `subtle`) for this one call.
+            #[allow(deprecated)]
+            ring::constant_time::verify_slices_are_equal(expected.as_bytes(), provided.as_bytes())
+                .is_ok()
+        });
+        if matches {
+            Ok(())
+        } else {
+            Err(DomainError::token_invalid(
+                "finalize requires internal credential",
+            ))
+        }
+    }
 }
 
 // ── create + presign ─────────────────────────────────────────────────────────
@@ -187,8 +250,11 @@ pub async fn list_versions(
     Extension(ctx): Ctx,
     Extension(svc): Svc,
     Path(file_id): Path<Uuid>,
+    Query(q): Query<ListVersionsQuery>,
 ) -> ApiResult<JsonBody<VersionDtoList>> {
-    let versions = svc.list_versions(&ctx, file_id).await?;
+    let versions = svc
+        .list_versions(&ctx, file_id, q.limit, q.offset.unwrap_or(0))
+        .await?;
     Ok(Json(VersionDtoList(
         versions.into_iter().map(VersionDto::from).collect(),
     )))
@@ -217,8 +283,12 @@ pub async fn update_metadata(
     headers: HeaderMap,
     Json(req): Json<UpdateMetadataReq>,
 ) -> ApiResult<JsonBody<FileDto>> {
-    let expected_meta_version = header_str(&headers, "if-match-metadata")
-        .and_then(|s| s.trim().trim_matches('"').parse::<i64>().ok());
+    let expected_meta_version = match header_str(&headers, "if-match-metadata") {
+        Some(s) => Some(s.trim().trim_matches('"').parse::<i64>().map_err(|_| {
+            DomainError::validation("if-match-metadata", "must be an integer version")
+        })?),
+        None => None,
+    };
     let patch = CustomMetadataPatch {
         entries: req.custom_metadata.into_iter().collect(),
     };
@@ -289,49 +359,67 @@ pub struct EffectivePolicyQuery {
 /// `GET /policy` — return the raw own policy for a scope.
 ///
 /// @cpt-cf-file-storage-usecase-configure-policy
+/// @cpt-dod:cpt-cf-file-storage-dod-policy-get-put-endpoints:p1
+// @cpt-begin:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-request
 pub async fn get_policy(
     Extension(ctx): Ctx,
     Extension(svc): PolicySvc,
     Query(q): Query<GetPolicyQuery>,
 ) -> ApiResult<impl axum::response::IntoResponse> {
+    // @cpt-end:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-request
+    // @cpt-begin:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-parse-scope
     let policy_scope = PolicyScope::parse(&q.scope)
         .ok_or_else(|| DomainError::validation("scope", "must be 'tenant' or 'user'"))?;
+    // @cpt-end:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-parse-scope
     let stored = svc
         .get_own_policy(&ctx, policy_scope, q.scope_owner_id)
         .await?;
+    // @cpt-begin:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-return
     match stored {
         Some(p) => Ok((StatusCode::OK, Json(PolicyDto::from(p))).into_response()),
         None => Ok(StatusCode::NO_CONTENT.into_response()),
     }
+    // @cpt-end:cpt-cf-file-storage-flow-policy-get-own:p1:inst-policy-get-return
 }
 
 /// `PUT /policy` — upsert the policy for a scope.
 ///
 /// @cpt-cf-file-storage-usecase-configure-policy
+// @cpt-begin:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-request
 pub async fn set_policy(
     Extension(ctx): Ctx,
     Extension(svc): PolicySvc,
     Json(req): Json<SetPolicyReq>,
 ) -> ApiResult<JsonBody<PolicyDto>> {
+    // @cpt-end:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-request
+    // @cpt-begin:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-parse-scope
     let policy_scope = PolicyScope::parse(&req.scope)
         .ok_or_else(|| DomainError::validation("scope", "must be 'tenant' or 'user'"))?;
+    // @cpt-end:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-parse-scope
     let body = req.body.into();
     let stored = svc
         .set_policy(&ctx, policy_scope, req.scope_owner_id, body)
         .await?;
+    // @cpt-begin:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-return
     Ok(Json(PolicyDto::from(stored)))
+    // @cpt-end:cpt-cf-file-storage-flow-policy-set:p1:inst-policy-set-return
 }
 
 /// `GET /policy/effective` — compute the effective (most-restrictive) policy.
 ///
 /// @cpt-cf-file-storage-usecase-configure-policy
+/// @cpt-dod:cpt-cf-file-storage-dod-policy-effective-endpoint:p1
+// @cpt-begin:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-request
 pub async fn get_effective_policy(
     Extension(ctx): Ctx,
     Extension(svc): PolicySvc,
     Query(q): Query<EffectivePolicyQuery>,
 ) -> ApiResult<JsonBody<EffectivePolicyDto>> {
+    // @cpt-end:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-request
     let ep = svc.get_effective_policy(&ctx, q.user_owner_id).await?;
+    // @cpt-begin:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-return
     Ok(Json(EffectivePolicyDto::from(ep)))
+    // @cpt-end:cpt-cf-file-storage-flow-policy-get-effective:p1:inst-policy-eff-return
 }
 
 // ── retention rules (P2-M1) ────────────────────────────────────────────────────
@@ -339,25 +427,32 @@ pub async fn get_effective_policy(
 /// `GET /retention-rules` — list all retention rules for the caller's tenant.
 ///
 /// @cpt-cf-file-storage-fr-retention-policies
+/// @cpt-dod:cpt-cf-file-storage-dod-retention-rule-endpoints:p1
+// @cpt-begin:cpt-cf-file-storage-flow-retention-list:p1:inst-retention-list-request
 pub async fn list_retention_rules(
     Extension(ctx): Ctx,
     Extension(svc): PolicySvc,
 ) -> ApiResult<JsonBody<RetentionRuleDtoList>> {
+    // @cpt-end:cpt-cf-file-storage-flow-retention-list:p1:inst-retention-list-request
     let rules = svc.list_retention_rules(&ctx).await?;
+    // @cpt-begin:cpt-cf-file-storage-flow-retention-list:p1:inst-retention-list-return
     Ok(Json(RetentionRuleDtoList(
         rules.into_iter().map(RetentionRuleDto::from).collect(),
     )))
+    // @cpt-end:cpt-cf-file-storage-flow-retention-list:p1:inst-retention-list-return
 }
 
 /// `POST /retention-rules` — create a new retention rule.
 ///
 /// @cpt-cf-file-storage-fr-retention-policies
+// @cpt-begin:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-request
 pub async fn create_retention_rule(
     uri: Uri,
     Extension(ctx): Ctx,
     Extension(svc): PolicySvc,
     Json(req): Json<CreateRetentionRuleReq>,
 ) -> ApiResult<impl axum::response::IntoResponse> {
+    // @cpt-end:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-request
     let retention_scope = RetentionScope::parse(&req.scope)
         .ok_or_else(|| DomainError::validation("scope", "must be 'tenant', 'user', or 'file'"))?;
     let body = req.body.into();
@@ -365,23 +460,29 @@ pub async fn create_retention_rule(
         .create_retention_rule(&ctx, retention_scope, req.scope_target_id, body)
         .await?;
     let id = rule.rule_id.to_string();
+    // @cpt-begin:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-return
     Ok(created_json(RetentionRuleDto::from(rule), &uri, &id).into_response())
+    // @cpt-end:cpt-cf-file-storage-flow-retention-create:p1:inst-retention-create-return
 }
 
 /// `DELETE /retention-rules/{rule_id}` — delete a retention rule.
 ///
 /// @cpt-cf-file-storage-fr-retention-policies
+// @cpt-begin:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-request
 pub async fn delete_retention_rule(
     Extension(ctx): Ctx,
     Extension(svc): PolicySvc,
     Path(rule_id): Path<Uuid>,
 ) -> ApiResult<impl axum::response::IntoResponse> {
+    // @cpt-end:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-request
     let removed = svc.delete_retention_rule(&ctx, rule_id).await?;
+    // @cpt-begin:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-return
     if removed {
         Ok(no_content().into_response())
     } else {
-        Err(DomainError::file_not_found(rule_id).into())
+        Err(DomainError::retention_rule_not_found(rule_id).into())
     }
+    // @cpt-end:cpt-cf-file-storage-flow-retention-delete:p1:inst-retention-delete-return
 }
 
 // ── multipart upload (multipart-coordinator feature) ──────────────────────────
@@ -433,16 +534,85 @@ pub async fn initiate_multipart(
 
 /// `POST /files/{id}/multipart/{upload_id}/complete` — finalize all parts.
 ///
+/// Returns the bound version's id, size, and ADR-0006 composite hash (item
+/// 3.3) instead of the previous bare `204`. `If-Match` is optional: a
+/// concrete value is checked against the file's current content `ETag`; `*`
+/// (or omission) is unconditional.
+///
 /// @cpt-cf-file-storage-fr-multipart-upload
 pub async fn complete_multipart(
     Extension(ctx): Ctx,
     Extension(svc): MultiSvc,
     Path((file_id, upload_id)): Path<(Uuid, Uuid)>,
-) -> ApiResult<impl IntoResponse> {
-    svc.complete_multipart_upload(&ctx, file_id, upload_id)
+    headers: HeaderMap,
+) -> ApiResult<JsonBody<MultipartCompleteDto>> {
+    let if_match = header_str(&headers, "if-match");
+    let completed = svc
+        .complete_multipart_upload(&ctx, file_id, upload_id, if_match.as_deref())
         .await?;
-    Ok(no_content().into_response())
+    // @cpt-begin:cpt-cf-file-storage-flow-multipart-complete:p1:inst-complete-return
+    Ok(Json(MultipartCompleteDto {
+        version_id: completed.version_id,
+        size: completed.size,
+        hash_algorithm: completed.hash_algorithm.to_owned(),
+        content_hash: hex::encode(&completed.content_hash),
+        hash_mode: completed.hash_mode.as_str().to_owned(),
+        part_count: completed.part_count,
+        manifest: completed.manifest,
+    }))
+    // @cpt-end:cpt-cf-file-storage-flow-multipart-complete:p1:inst-complete-return
 }
+
+fn status_to_dto(s: MultipartUploadStatus) -> MultipartStatusDto {
+    MultipartStatusDto {
+        upload_id: s.upload_id,
+        version_id: s.version_id,
+        state: s.state.as_str().to_owned(),
+        declared_mime: s.declared_mime,
+        declared_size: s.declared_size,
+        part_size: s.part_size,
+        created_at: s.created_at,
+        expires_at: s.expires_at,
+        received: s
+            .received
+            .into_iter()
+            .map(|p| ReceivedPartDto {
+                part_number: p.part_number,
+                size: p.size,
+                uploaded_at: p.uploaded_at,
+            })
+            .collect(),
+        missing: s
+            .missing
+            .into_iter()
+            .map(|p| MissingPartDto {
+                part_number: p.part_number,
+                offset: p.offset,
+                size: p.size,
+                upload_url: p.upload_url,
+            })
+            .collect(),
+    }
+}
+
+/// `GET /files/{id}/multipart/{upload_id}` — introspect a multipart upload
+/// (item 3.4): current state, received parts, and (while resumable) fresh
+/// resume URLs for the missing parts.
+///
+/// @cpt-cf-file-storage-fr-multipart-upload
+/// @cpt-dod:cpt-cf-file-storage-dod-multipart-introspect:p2
+// @cpt-begin:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-request
+pub async fn introspect_multipart(
+    Extension(ctx): Ctx,
+    Extension(svc): MultiSvc,
+    Path((file_id, upload_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<JsonBody<MultipartStatusDto>> {
+    let status = svc
+        .introspect_multipart_upload(&ctx, file_id, upload_id)
+        .await?;
+    Ok(Json(status_to_dto(status)))
+}
+// @cpt-end:cpt-cf-file-storage-flow-multipart-introspect:p1:inst-introspect-request
 
 /// `DELETE /files/{id}/multipart/{upload_id}` — abort a multipart upload.
 ///
@@ -479,23 +649,31 @@ pub async fn migrate_backend(
 /// `POST /files/{id}/transfer` — transfer ownership of a file to a new owner.
 ///
 /// @cpt-cf-file-storage-fr-ownership-transfer
+// @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-request
 pub async fn transfer_ownership(
     Extension(ctx): Ctx,
     Extension(svc): Svc,
     Path(file_id): Path<Uuid>,
     Json(req): Json<TransferOwnershipReq>,
 ) -> ApiResult<JsonBody<FileDto>> {
+    // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-request
+    // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-kind-parse
     let new_owner_kind = file_storage_sdk::OwnerKind::parse(&req.new_owner_kind)
         .ok_or_else(|| DomainError::validation("new_owner_kind", "must be 'user' or 'app'"))?;
+    // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-kind-parse
     // Capture metadata BEFORE the transfer. A transfer does not change custom
     // metadata, but afterwards the caller may no longer have read access under
     // the new owner — re-reading then and defaulting on failure would return a
     // 200 with empty `custom_metadata` for a file that actually has some.
+    // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-capture-meta
     let (_, meta) = svc.get_file_with_metadata(&ctx, file_id).await?;
+    // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-capture-meta
     let file = svc
         .transfer_ownership(&ctx, file_id, new_owner_kind, req.new_owner_id)
         .await?;
+    // @cpt-begin:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-return
     Ok(Json(FileDto::from_parts(file, meta)))
+    // @cpt-end:cpt-cf-file-storage-flow-ownership-transfer:p1:inst-transfer-return
 }
 
 // ── data-plane finalize (s2s, token-authenticated) ────────────────────────────
@@ -524,6 +702,7 @@ pub struct FinalizeUploadReq {
 pub async fn finalize_version(
     Extension(svc): Svc,
     Extension(verifier): Extension<Arc<Verifier>>,
+    Extension(finalize_auth): Extension<Arc<FinalizeAuth>>,
     Path((file_id, version_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
     Json(req): Json<FinalizeUploadReq>,
@@ -547,10 +726,118 @@ pub async fn finalize_version(
         .into());
     }
 
+    // P2 0.1 remaining: interim gear-local shared-secret credential gate —
+    // AFTER token verification, additionally require a matching
+    // `x-fs-internal-token` header when a secret is configured. `None`
+    // (the default) preserves the token-only trust model above.
+    finalize_auth.verify(&headers)?;
+
+    // P2 1.8 remediation: log the sidecar-propagated `x-request-id` (echoed
+    // from `claims.request_id`, minted at signed-URL issuance) so this
+    // control-plane log line can be joined with the sidecar's own log lines
+    // for the same upload.
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    tracing::info!(
+        request_id,
+        %file_id,
+        %version_id,
+        "finalize_version: sidecar callback received"
+    );
+
+    let hash_value = hex::decode(&req.hash_hex)
+        .map_err(|_| DomainError::validation("hash_hex", "must be valid hex-encoded SHA-256"))?;
+    if hash_value.len() != 32 {
+        return Err(DomainError::validation(
+            "hash_hex",
+            "must decode to exactly 32 bytes (SHA-256)",
+        )
+        .into());
+    }
+
+    svc.finalize_upload_by_token(&claims, req.size, hash_value)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Request body for the data-plane report-part endpoint.
+///
+/// The sidecar posts this after successfully writing a part's bytes to the
+/// backend (P2 0.2 group B — the "report part" callback).
+#[derive(Debug, serde::Deserialize)]
+pub struct ReportPartReq {
+    /// Backend-assigned `ETag` for this part (opaque, backend-specific).
+    pub backend_etag: String,
+    /// SHA-256 hash of the part's bytes, hex-encoded.
+    pub hash_hex: String,
+    /// Byte length of the part.
+    pub size: i64,
+}
+
+/// `POST /files/{file_id}/versions/{version_id}/multipart/{upload_id}/parts/{part_number}/report`
+///
+/// Token-authenticated (mirrors `finalize_version`): the request must carry
+/// the signed `multipart_part` upload token in the `x-fs-token` request
+/// header. Called by the sidecar immediately after a successful part write to
+/// record the part row that `complete_multipart_upload` assembles from.
+///
+/// @cpt-cf-file-storage-fr-multipart-upload
+pub async fn report_multipart_part(
+    Extension(msvc): MultiSvc,
+    Extension(verifier): Extension<Arc<Verifier>>,
+    Extension(finalize_auth): Extension<Arc<FinalizeAuth>>,
+    Path((file_id, version_id, upload_id, part_number)): Path<(Uuid, Uuid, Uuid, u32)>,
+    headers: HeaderMap,
+    Json(req): Json<ReportPartReq>,
+) -> ApiResult<impl IntoResponse> {
+    // Extract the token from the x-fs-token header.
+    let token = headers
+        .get("x-fs-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .ok_or_else(|| DomainError::token_invalid("missing x-fs-token header"))?;
+
+    let claims = verifier
+        .verify(&token, OffsetDateTime::now_utc())
+        .map_err(|e| DomainError::token_invalid(e.to_string()))?;
+
+    // The token must authorize a report for exactly this
+    // (file_id, version_id, upload_id, part_number).
+    if claims.op != Op::MultipartPart
+        || claims.file_id != file_id
+        || claims.version_id != version_id
+        || claims.multipart.upload_id != upload_id
+        || claims.multipart.part_number != part_number
+    {
+        return Err(
+            DomainError::token_invalid("token does not authorize reporting this part").into(),
+        );
+    }
+
+    // P2 0.1 remaining: same interim shared-secret gate as `finalize_version`.
+    finalize_auth.verify(&headers)?;
+
+    // P2 1.8 remediation: same correlation-id logging as `finalize_version`.
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    tracing::info!(
+        request_id,
+        %file_id,
+        %version_id,
+        %upload_id,
+        part_number,
+        "report_multipart_part: sidecar callback received"
+    );
+
     let hash_value = hex::decode(&req.hash_hex)
         .map_err(|_| DomainError::validation("hash_hex", "must be valid hex-encoded SHA-256"))?;
 
-    svc.finalize_upload_by_token(&claims, req.size, hash_value)
+    msvc.report_part(&claims, req.backend_etag, hash_value, req.size)
         .await?;
 
     Ok(StatusCode::NO_CONTENT.into_response())

@@ -10,5 +10,6 @@ pub mod authz;
 pub mod backend;
 pub mod content;
 pub mod external_clients;
+pub mod metrics;
 pub mod signed_url;
 pub mod storage;

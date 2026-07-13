@@ -37,6 +37,7 @@ pub(crate) fn register_routes(
     service: Arc<FileService>,
     multipart_service: Arc<MultipartService>,
     policy_service: Arc<PolicyService>,
+    finalize_auth: Arc<handlers::FinalizeAuth>,
 ) -> Router {
     // ── Data-plane finalize (s2s, token-authenticated) ──────────────────────
     // This endpoint is NOT authenticated via the end-user JWT middleware; the
@@ -45,6 +46,10 @@ pub(crate) fn register_routes(
     // Registered as `.public()` so the api-gateway's route-policy does NOT
     // require a user JWT for this path (the fs-token carries the authorization).
     // The Verifier extension is added to the whole router at the bottom.
+    //
+    // P2 0.1 remaining: `finalize_auth` layers an optional interim
+    // gear-local shared-secret second factor on top of the fs-token for
+    // both routes below (see `handlers::FinalizeAuth`'s doc comment).
     let verifier: Arc<Verifier> = Arc::new(service.verifier());
     router = OperationBuilder::post(format!(
         "{BASE}/files/{{file_id}}/versions/{{version_id}}/finalize"
@@ -54,13 +59,43 @@ pub(crate) fn register_routes(
     .summary("Finalize a pending version (token-authenticated, sidecar s2s callback)")
     .description(
         "Called by the sidecar after a successful PUT to mark the version `available`. \
-         Authorized by the signed upload token (fs-token) \u{2014} no user JWT required.",
+         Authorized by the signed upload token (fs-token) \u{2014} no user JWT required. \
+         Requires internal credential (x-fs-internal-token) when configured (P2 0.1).",
     )
     .tag(API_TAG)
     .path_param("file_id", "File UUID")
     .path_param("version_id", "Version UUID")
     .handler(handlers::finalize_version)
     .json_response(StatusCode::NO_CONTENT, "Version finalized")
+    .error_403(openapi)
+    .error_404(openapi)
+    .error_500(openapi)
+    .register(router, openapi);
+
+    // ── Data-plane report-part (s2s, token-authenticated) ───────────────────
+    // Same trust model as finalize above: the signed `multipart_part` token is
+    // the sole authorization, no user JWT required (P2 0.2 group B — the
+    // "report part" callback that closes the structural gap where nothing
+    // ever populated `multipart_upload_parts` in a real deployment).
+    router = OperationBuilder::post(format!(
+        "{BASE}/files/{{file_id}}/versions/{{version_id}}/multipart/{{upload_id}}/parts/{{part_number}}/report"
+    ))
+    .operation_id("file_storage.report_multipart_part")
+    .public()
+    .summary("Report a successfully-written multipart part (token-authenticated, sidecar s2s callback)")
+    .description(
+        "Called by the sidecar after a successful part write to record the part's backend \
+         ETag, hash, and size so `complete` can assemble from real reported parts. \
+         Authorized by the signed upload token (fs-token) \u{2014} no user JWT required. \
+         Requires internal credential (x-fs-internal-token) when configured (P2 0.1).",
+    )
+    .tag(API_TAG)
+    .path_param("file_id", "File UUID")
+    .path_param("version_id", "Version UUID")
+    .path_param("upload_id", "Upload session UUID")
+    .path_param("part_number", "1-based part number")
+    .handler(handlers::report_multipart_part)
+    .json_response(StatusCode::NO_CONTENT, "Part reported")
     .error_403(openapi)
     .error_404(openapi)
     .error_500(openapi)
@@ -104,7 +139,7 @@ pub(crate) fn register_routes(
         .authenticated()
         .require_license_features::<License>([])
         .summary("Bind/rebind the content pointer under optimistic CAS")
-        .description("If-Match carries the current content ETag; 412 on conflict.")
+        .description("If-Match carries the current content ETag; 400 on conflict.")
         .tag(API_TAG)
         .path_param("id", "File UUID")
         .json_request::<dto::BindReq>(openapi, "Version to bind")
@@ -115,12 +150,11 @@ pub(crate) fn register_routes(
         .error_404(openapi)
         // 409: the target version's upload is not finalized yet.
         .error_409(openapi)
-        // 412: the If-Match / CAS precondition failed (or is required and absent).
-        .problem_response(
-            openapi,
-            StatusCode::PRECONDITION_FAILED,
-            "Precondition Failed",
-        )
+        // 400: the If-Match / CAS precondition failed (or is required and absent).
+        // `FailedPrecondition` collapses to 400 by house convention
+        // (toolkit-canonical-errors has no 412 variant; see AM's
+        // `failed_precondition` → 400 mapping for precedent).
+        .error_400(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
@@ -149,6 +183,8 @@ pub(crate) fn register_routes(
         .summary("List all versions of a file")
         .tag(API_TAG)
         .path_param("id", "File UUID")
+        .query_param_typed("limit", false, "Page size", "integer")
+        .query_param_typed("offset", false, "Offset", "integer")
         .handler(handlers::list_versions)
         .json_response_with_schema::<dto::VersionDtoList>(openapi, StatusCode::OK, "Versions")
         .error_401(openapi)
@@ -217,7 +253,7 @@ pub(crate) fn register_routes(
         .require_license_features::<License>([])
         .summary("Delete a file and all its versions")
         .description(
-            "If-Match (content ETag or \"*\") is required; 412 on mismatch or when absent.",
+            "If-Match (content ETag or \"*\") is required; 400 on mismatch or when absent.",
         )
         .tag(API_TAG)
         .path_param("id", "File UUID")
@@ -226,12 +262,11 @@ pub(crate) fn register_routes(
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
-        // 412: If-Match absent or does not match the current content ETag.
-        .problem_response(
-            openapi,
-            StatusCode::PRECONDITION_FAILED,
-            "Precondition Failed",
-        )
+        // 400: If-Match absent or does not match the current content ETag.
+        // `FailedPrecondition` collapses to 400 by house convention
+        // (toolkit-canonical-errors has no 412 variant; see AM's
+        // `failed_precondition` → 400 mapping for precedent).
+        .error_400(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
@@ -430,7 +465,6 @@ pub(crate) fn register_routes(
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
-        .error_422(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
@@ -447,17 +481,58 @@ pub(crate) fn register_routes(
     .authenticated()
     .require_license_features::<License>([])
     .summary("Finalize a multipart upload (assemble all parts)")
+    .description(
+        "Returns the bound version id, size, and ADR-0006 composite hash/manifest (item \
+         3.3). Optional If-Match carries the current content ETag; `*`/absent is \
+         unconditional, a mismatch is a 400.",
+    )
     .tag(API_TAG)
     .path_param("id", "File UUID")
     .path_param("upload_id", "Upload session UUID")
     .handler(handlers::complete_multipart)
-    .json_response(StatusCode::NO_CONTENT, "Completed")
+    .json_response_with_schema::<dto::MultipartCompleteDto>(
+        openapi,
+        StatusCode::OK,
+        "Completed \u{2014} version id, size, composite hash, manifest",
+    )
     .error_401(openapi)
     .error_403(openapi)
     .error_404(openapi)
+    // 409 also covers `MultipartPartsMissing` (unreported parts) and the
+    // residual assembled-size mismatch guard.
     .error_409(openapi)
+    // 400: the If-Match precondition failed. `FailedPrecondition` collapses
+    // to 400 by house convention (mirrors `bind`'s route above).
+    .error_400(openapi)
     .error_500(openapi)
     .register(router, openapi);
+
+    // GET /files/{id}/multipart/{upload_id} — introspect/resume (item 3.4)
+    router = OperationBuilder::get(format!("{BASE}/files/{{id}}/multipart/{{upload_id}}"))
+        .operation_id("file_storage.introspect_multipart")
+        .authenticated()
+        .require_license_features::<License>([])
+        .summary("Introspect a multipart upload session (status + resume URLs)")
+        .description(
+            "Returns the session state, the parts already reported, and the parts still \
+             missing. While the session is in_progress and unexpired, each missing part also \
+             gets a freshly-minted resume upload_url (capped at the session's own expires_at, \
+             not a fresh TTL); a terminal or expired session reports state/accounting only.",
+        )
+        .tag(API_TAG)
+        .path_param("id", "File UUID")
+        .path_param("upload_id", "Upload session UUID")
+        .handler(handlers::introspect_multipart)
+        .json_response_with_schema::<dto::MultipartStatusDto>(
+            openapi,
+            StatusCode::OK,
+            "Multipart upload status",
+        )
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .register(router, openapi);
 
     // DELETE /files/{id}/multipart/{upload_id} — abort
     router = OperationBuilder::delete(format!("{BASE}/files/{{id}}/multipart/{{upload_id}}"))
@@ -528,6 +603,7 @@ pub(crate) fn register_routes(
 
     router
         .layer(axum::Extension(verifier))
+        .layer(axum::Extension(finalize_auth))
         .layer(axum::Extension(policy_service))
         .layer(axum::Extension(multipart_service))
         .layer(axum::Extension(service))

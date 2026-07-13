@@ -32,8 +32,10 @@ use uuid::Uuid;
 use crate::domain::audit::{AuditEntry, AuditOperation, FileEvent};
 use crate::domain::authz::Authorizer;
 use crate::domain::error::DomainError;
+use crate::domain::ports::FileStorageMetricsPort;
 use crate::infra::backend::BackendRegistry;
 use crate::infra::external_clients::{QuotaClient, UsageDelta, UsageReporter};
+use crate::infra::metrics::NoopMetrics;
 use crate::infra::signed_url::{Claims, Issuer, MultipartClaims, Op, UploadConstraints};
 use crate::infra::storage::Store;
 
@@ -101,6 +103,10 @@ pub struct FileService {
     ///
     /// @cpt-cf-file-storage-fr-usage-reporting
     pub(super) usage_reporter: Option<Arc<dyn UsageReporter>>,
+    /// Metrics port (P2 1.8 remediation). Defaults to a no-op implementation
+    /// (see [`Self::new`]); `gear.rs` opts into the real OTel-backed meter via
+    /// [`Self::with_metrics`].
+    pub(super) metrics: Arc<dyn FileStorageMetricsPort>,
 }
 
 impl FileService {
@@ -121,7 +127,18 @@ impl FileService {
             cfg,
             quota_client,
             usage_reporter,
+            metrics: Arc::new(NoopMetrics),
         }
+    }
+
+    /// Install a real metrics port (P2 1.8 remediation). Kept as a builder
+    /// step rather than a `new()` parameter so the ~40 existing
+    /// `FileService::new(...)` call sites across the integration-test suite
+    /// keep compiling unchanged; only `gear.rs` needs to opt in.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<dyn FileStorageMetricsPort>) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
@@ -150,13 +167,32 @@ impl FileService {
         self.issuer.verifier()
     }
 
+    /// Mint a signed URL for `op` against `v`.
+    ///
+    /// `download_meta` is `Some((content_type, etag))` for `Op::Get` tokens
+    /// only (P2 1.11) — the version's stored MIME and content ETag, so the
+    /// sidecar can emit real `Content-Type`/`ETag` response headers without a
+    /// DB lookup. It is silently ignored (never populated in the claims) for
+    /// any other `op`; non-GET call sites pass `None`.
     pub(super) fn sign_url(
         &self,
         op: Op,
         v: &VersionRef,
         constraints: UploadConstraints,
+        download_meta: Option<(String, String)>,
     ) -> Result<String, DomainError> {
+        // P2 2.13: resolve (and validate) the path segment before doing any
+        // signing work, so a rejected `op` never wastes a token mint.
+        let verb = content_verb(op)?;
         let now = OffsetDateTime::now_utc();
+        // P2 1.11: only a GET (download) token ever carries content_type/etag.
+        let (content_type, etag) = match op {
+            Op::Get => download_meta.unwrap_or_default(),
+            Op::Put | Op::MultipartPart => (String::new(), String::new()),
+        };
+        // P2 1.8: mint a fresh correlation id per signed URL. The sidecar
+        // echoes it back as `x-request-id` on its finalize callback so both
+        // planes' logs can be joined on the same id.
         let claims = Claims {
             op,
             file_id: v.file_id,
@@ -166,13 +202,11 @@ impl FileService {
             exp: now.unix_timestamp() + self.cfg.default_url_ttl_secs,
             upload: constraints,
             multipart: MultipartClaims::default(),
+            request_id: Uuid::now_v7().to_string(),
+            content_type,
+            etag,
         };
         let token = self.issuer.issue(claims, now)?;
-        let verb = match op {
-            Op::Get => "download",
-            Op::Put => "upload",
-            Op::MultipartPart => "multipart-part",
-        };
         Ok(format!(
             "{}/api/file-storage-data/v1/{}/{}/{}?fs-token={}",
             self.cfg.sidecar_base_url.trim_end_matches('/'),
@@ -186,16 +220,20 @@ impl FileService {
     // ── audit helpers (P2-M4) ────────────────────────────────────────────────
 
     /// Extract a stable actor kind string from the `SecurityContext`.
+    // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-actor-kind
     pub(super) fn actor_kind(ctx: &SecurityContext) -> &'static str {
         match ctx.subject_type() {
             Some("app") => "app",
             _ => "user",
         }
     }
+    // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-actor-kind
 
     /// Build a success audit entry for a file-scoped write operation.
     ///
     /// @cpt-cf-file-storage-fr-audit-trail
+    /// @cpt-dod:cpt-cf-file-storage-dod-audit-trail-transactional-write:p1
+    // @cpt-begin:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-identity
     pub(super) fn audit_ok(
         ctx: &SecurityContext,
         file_id: Option<Uuid>,
@@ -211,6 +249,7 @@ impl FileService {
             detail,
         )
     }
+    // @cpt-end:cpt-cf-file-storage-algo-audit-trail-build-entry:p1:inst-buildentry-identity
 
     // ── usage reporting helpers (P2-M5) ──────────────────────────────────────
 
@@ -218,6 +257,7 @@ impl FileService {
     /// propagated — a failing usage reporter must not block file operations.
     ///
     /// @cpt-cf-file-storage-fr-usage-reporting
+    // @cpt-begin:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-noop-if-unwired
     pub(super) fn report_usage(&self, delta: UsageDelta) {
         if let Some(reporter) = self.usage_reporter.clone() {
             tokio::spawn(async move {
@@ -225,6 +265,7 @@ impl FileService {
             });
         }
     }
+    // @cpt-end:cpt-cf-file-storage-algo-ownership-transfer-usage-rebalance:p1:inst-rebalance-noop-if-unwired
 
     /// Build a [`FileEvent`] for a write operation.
     ///
@@ -243,6 +284,30 @@ impl FileService {
             event_type: event_type.to_owned(),
             payload,
         }
+    }
+}
+
+/// Map a [`sign_url`](FileService::sign_url) [`Op`] to its sidecar path
+/// segment (`/api/file-storage-data/v1/{verb}/{file}/{version}`).
+///
+/// P2 2.13: `Op::MultipartPart` is rejected rather than mapped. A multipart
+/// *part* upload lives at a distinct sidecar route —
+/// `/api/file-storage-data/v1/multipart/{file}/{version}/parts/{part}`
+/// (`sidecar.rs`'s `upload_multipart_part` route) — and needs part-specific
+/// claims (`upload_id`, `part_number`, `offset`, exact `size`) that this
+/// generic two-segment template has no way to carry. Mapping it to
+/// `"multipart-part"` here previously produced
+/// `/api/file-storage-data/v1/multipart-part/{file}/{version}`, a URL the
+/// sidecar does not serve (would 404). `MultipartService::initiate` already
+/// mints correct part URLs directly against the real route and is the single
+/// source of truth for that shape, so `sign_url` must never be asked to mint
+/// one — reject instead of re-deriving (and risking re-breaking) that
+/// mapping here.
+fn content_verb(op: Op) -> Result<&'static str, DomainError> {
+    match op {
+        Op::Get => Ok("download"),
+        Op::Put => Ok("upload"),
+        Op::MultipartPart => Err(DomainError::InternalError),
     }
 }
 

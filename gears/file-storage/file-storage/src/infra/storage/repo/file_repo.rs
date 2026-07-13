@@ -97,7 +97,7 @@ impl FileRepo {
     ///
     /// Sets `content_id := new_content` only if the current `content_id` equals
     /// `expected` (or both are NULL for the first bind). Returns `true` on a
-    /// successful swap, `false` on an `If-Match` conflict (412).
+    /// successful swap, `false` on an `If-Match` conflict.
     pub async fn bind_content_cas<C: DBRunner>(
         &self,
         conn: &C,

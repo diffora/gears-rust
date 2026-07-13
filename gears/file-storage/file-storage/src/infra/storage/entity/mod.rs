@@ -10,3 +10,4 @@ pub mod multipart_upload;
 pub mod multipart_upload_part;
 pub mod policy;
 pub mod retention_rule;
+pub mod version_hash_manifest;

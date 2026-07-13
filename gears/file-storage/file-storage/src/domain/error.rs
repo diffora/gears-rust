@@ -15,6 +15,9 @@ pub enum DomainError {
     #[error("Version not found: {file_id}/{version_id}")]
     VersionNotFound { file_id: Uuid, version_id: Uuid },
 
+    #[error("Retention rule not found: {rule_id}")]
+    RetentionRuleNotFound { rule_id: Uuid },
+
     #[error("Database error: {message}")]
     Database { message: String },
 
@@ -25,7 +28,8 @@ pub enum DomainError {
     #[error("Conflict: {message}")]
     Conflict { message: String },
 
-    /// 412 — a conditional-request precondition (`If-Match`/CAS) failed.
+    /// A conditional-request precondition (`If-Match`/CAS) failed.
+    /// The REST layer maps this canonical error to HTTP 400.
     #[error("Precondition failed: {message}")]
     PreconditionFailed { message: String },
 
@@ -84,6 +88,11 @@ pub enum DomainError {
     #[error("Multipart upload session {upload_id} is not in progress (state: {state})")]
     MultipartUploadNotInProgress { upload_id: Uuid, state: String },
 
+    /// 409 — `complete` was called while one or more planned parts have not
+    /// been reported yet.
+    #[error("Multipart upload {upload_id}: parts missing: {missing:?}")]
+    MultipartPartsMissing { upload_id: Uuid, missing: Vec<u32> },
+
     /// 409 — backend migration was requested for a versioned file (>1 version).
     ///
     /// @cpt-cf-file-storage-fr-backend-migration
@@ -103,6 +112,11 @@ impl DomainError {
             file_id,
             version_id,
         }
+    }
+
+    #[must_use]
+    pub fn retention_rule_not_found(rule_id: Uuid) -> Self {
+        Self::RetentionRuleNotFound { rule_id }
     }
 
     pub fn database(message: impl Into<String>) -> Self {
@@ -216,6 +230,12 @@ impl DomainError {
             upload_id,
             state: state.into(),
         }
+    }
+
+    /// 409 — `complete` was called with one or more planned parts unreported.
+    #[must_use]
+    pub fn multipart_parts_missing(upload_id: Uuid, missing: Vec<u32>) -> Self {
+        Self::MultipartPartsMissing { upload_id, missing }
     }
 
     /// 409 — the file has multiple versions and cannot be migrated between backends.

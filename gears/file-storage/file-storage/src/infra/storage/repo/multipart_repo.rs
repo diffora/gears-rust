@@ -92,16 +92,30 @@ impl MultipartRepo {
     /// `new_state` only if the row is currently in `expected_state`. Returns
     /// `true` if a row matched and was updated, `false` on a stale transition
     /// (e.g. a `complete`/`abort` race where another writer already moved it).
+    ///
+    /// `mime_validated`, when `Some`, is set in the **same** UPDATE statement
+    /// (P2 remediation item 1.10) — used by the `in_progress` → `completed`
+    /// transition to flip `mime_validated` to `true` alongside the state
+    /// change, since `complete_multipart_upload` only reaches this call after
+    /// the assembled object's content has already been sniffed and validated
+    /// against the declared MIME type. The `in_progress` → `aborted`
+    /// transition passes `None` — an aborted upload's content was never
+    /// validated.
     pub async fn update_state<C: DBRunner>(
         &self,
         conn: &C,
         upload_id: Uuid,
         expected_state: &str,
         new_state: &str,
+        mime_validated: Option<bool>,
     ) -> Result<bool, DomainError> {
         use sea_orm::sea_query::Expr;
-        let res = UploadEntity::update_many()
-            .col_expr(UploadColumn::State, Expr::value(new_state))
+        let mut update =
+            UploadEntity::update_many().col_expr(UploadColumn::State, Expr::value(new_state));
+        if let Some(validated) = mime_validated {
+            update = update.col_expr(UploadColumn::MimeValidated, Expr::value(validated));
+        }
+        let res = update
             .filter(
                 sea_orm::Condition::all()
                     .add(UploadColumn::UploadId.eq(upload_id))
@@ -113,6 +127,46 @@ impl MultipartRepo {
             .await
             .map_err(db_err)?;
         Ok(res.rows_affected > 0)
+    }
+
+    /// Force-set a session's `expires_at`, unconditionally.
+    ///
+    /// **Test-support only; do not call in production.** Production code
+    /// never mutates `expires_at` after a session is created — calling this
+    /// bypasses that invariant. This exists so unit tests can
+    /// deterministically simulate "time passing" on an already-created
+    /// (possibly already-completed) session without a real sleep or
+    /// concurrency, per the unit-testing doctrine (P2 0.3 --
+    /// `sweep_after_complete_wins_does_not_delete_bound_version` in
+    /// `cleanup_test.rs` backdates a session's `expires_at` *after* a
+    /// successful `complete_multipart_upload`, which the P2 0.3 step-3
+    /// defense-in-depth check would otherwise reject if the session were
+    /// built with a past `expires_at` from the start).
+    ///
+    /// `#[doc(hidden)]` rather than a `test-support` Cargo feature: this
+    /// method is called from the external integration-test crate
+    /// `tests/cleanup_test.rs`, so `#[cfg(test)]` alone would not reach it,
+    /// and gating it behind a non-default feature would make the standard
+    /// `cargo test -p cf-gears-file-storage` command fail to compile that
+    /// test (or silently skip it via `required-features`) unless every
+    /// caller — including CI — also passed `--features test-support`.
+    #[doc(hidden)]
+    pub async fn set_expires_at<C: DBRunner>(
+        &self,
+        conn: &C,
+        upload_id: Uuid,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        use sea_orm::sea_query::Expr;
+        UploadEntity::update_many()
+            .col_expr(UploadColumn::ExpiresAt, Expr::value(expires_at))
+            .filter(UploadColumn::UploadId.eq(upload_id))
+            .secure()
+            .scope_with(&AccessScope::allow_all())
+            .exec(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(())
     }
 
     /// Insert or replace a multipart upload part. If `part_number` already exists,
@@ -194,6 +248,36 @@ impl MultipartRepo {
             .await
             .map_err(db_err)?;
         rows.into_iter().map(session_from_model).collect()
+    }
+
+    /// Whether `file_id` has at least one `in_progress` multipart upload
+    /// session, regardless of its `expires_at`.
+    ///
+    /// Used by the P2 2.8 orphan-file-reconciliation guard: a file's pending
+    /// version can look "abandoned" to [`Self::list_expired`]'s sibling sweep
+    /// step (`sweep_abandoned_pending`, keyed only on the version's age) even
+    /// while it is the live target of a *not-yet-expired* multipart session --
+    /// deleting the parent `files` row in that window would `ON DELETE
+    /// CASCADE` the still-`in_progress` session out from under the upload.
+    ///
+    /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    pub async fn has_in_progress_for_file<C: DBRunner>(
+        &self,
+        conn: &C,
+        file_id: Uuid,
+    ) -> Result<bool, DomainError> {
+        let count = UploadEntity::find()
+            .filter(
+                sea_orm::Condition::all()
+                    .add(UploadColumn::FileId.eq(file_id))
+                    .add(UploadColumn::State.eq("in_progress")),
+            )
+            .secure()
+            .scope_with(&AccessScope::allow_all())
+            .count(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(count > 0)
     }
 }
 

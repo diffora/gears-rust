@@ -39,6 +39,7 @@ Gears take a **defense-in-depth** approach to security, combining Rust's compile
     - [Runtime failure modes](#runtime-failure-modes)
     - [TLS configuration knobs](#tls-configuration-knobs)
     - [Non-cryptographic `sha2` and `rand` usage](#non-cryptographic-sha2-and-rand-usage)
+    - [File-storage content hashing is out of FIPS scope](#file-storage-content-hashing-is-out-of-fips-scope)
     - [Approved-only deployment checklist](#approved-only-deployment-checklist)
     - [Enabling OS FIPS mode (Windows)](#enabling-os-fips-mode-windows)
     - [How to verify a build is FIPS-conformant](#how-to-verify-a-build-is-fips-conformant)
@@ -491,6 +492,16 @@ The HTTP client (`cf-gears-toolkit-http`) exposes the following transport knobs 
 Any residual `sha2` / `rand` usage in the tree is **non-cryptographic** and is **not part of the FIPS claim**. Non-cryptographic fingerprints use inline FNV-1a (OData pagination cursor consistency in `libs/toolkit-odata/src/pagination.rs`; the OIDC token-cache key in `oidc-authn-plugin`), and the `rand` ecosystem is pulled in transitively rather than used for key material on the TLS data plane. New `sha2`/`sha1`/`md5` imports are rejected at compile time by Dylint **DE0708** (`no_non_fips_hasher`) outside an explicit allow-list. See the [Non-FIPS hasher guard](#build-time-dependency-graph-policy) note above and [What this does NOT claim](#what-this-does-not-claim) below for the transitive-dependency posture.
 
 **DE0708 allow-list entry — file-storage content hashing.** `gears/file-storage/file-storage/src/infra/content/hash.rs` is the single SHA-256 call site in the file-storage gear and is on the DE0708 allow-list. It is used for **content addressing/integrity** — the `expected_hash` upload constraint and version-identity check (SHA-256 is mandated by file-storage ADR-0002) — and to derive the opaque content ETag. It is **not** used for signatures, key derivation, or password storage: the signed-URL signing primitive runs behind a replaceable `SignatureProvider` abstraction (file-storage ADR-0004), so a FIPS deployment swaps the signing module without touching this hasher. All `sha2` usage in the gear is confined to this one reviewable module.
+
+### File-storage content hashing is out of FIPS scope
+
+File-storage's **content hash is excluded from the FIPS claim** — but the exclusion turns on the hash's **purpose**, not on its algorithm. Both content-hash modes are **SHA-256 throughout** (a FIPS-Approved algorithm), so there is no non-Approved-algorithm question to carve out in the first place: single-part uploads use `sha256(whole object)`; multipart uploads use a bespoke SHA-256 composite — a one-level Merkle over per-part SHA-256 digests (`root = sha256` of a `"v1,{offset}:{sha256(part)},…"` manifest). Neither mode is a FIPS-scoped security function: the job of this hash is to verify that a stored file was not corrupted and was split into parts and uploaded/reassembled correctly (content-addressed identity/dedup), not to defend a security boundary against deliberate tampering. That non-adversarial purpose — not an algorithm-approval exception — is what places it outside the FIPS-Approved-algorithm list in [Algorithm scope on the wire](#algorithm-scope-on-the-wire). This sits on top of the existing decoupling described above: content hashing already runs through a plain `sha2` crate call site, outside the FIPS-validated TLS module.
+
+The one exception is the **`expected_hash` upload-verification path**, which is security-relevant: it defends against a client falsely claiming a different object than it actually uploaded, so it remains SHA-256 and is not covered by this exclusion.
+
+Because both modes are already 100% SHA-256, there is no build-time Cargo feature gating and no config-time rejection to enforce on FIPS builds — the exclusion is a scoping clarification, not a runtime guardrail.
+
+Recorded in file-storage **ADR-0006** (`cpt-cf-file-storage-adr-content-hash-modes`), which supersedes ADR-0002 for the content-hash-modes decision and records the two-mode, SHA-256-only design. This is an additive clarification of scope, not a change to the TLS/signing FIPS-module claims described elsewhere in this section.
 
 ### Approved-only deployment checklist
 

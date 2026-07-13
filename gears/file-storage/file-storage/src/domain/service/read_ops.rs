@@ -55,6 +55,21 @@ impl FileService {
         self.authorizer
             .authorize(ctx, actions::READ, "", None)
             .await?;
+        // Ownership gate: the coarse READ check above is resource-less (see
+        // module docs) — it only answers "may this subject read files at
+        // all," not "whose files." `owner` is attacker-controlled (built from
+        // the request query), so without this gate any tenant member could
+        // enumerate another subject's file listing via
+        // `?owner_kind=user&owner_id=<victim>`. A caller listing their own
+        // files (`owner.owner_id == ctx.subject_id()`, whether `owner_kind`
+        // is `user` or another kind the caller itself holds) proceeds
+        // unconditionally; any other owner requires `ADMIN_POLICY` — on
+        // `Forbidden` this propagates via `?` instead of listing.
+        if owner.owner_id != ctx.subject_id() {
+            self.authorizer
+                .authorize(ctx, actions::ADMIN_POLICY, "", None)
+                .await?;
+        }
         let limit = limit
             .unwrap_or(self.cfg.default_page_size)
             .min(self.cfg.max_page_size);
@@ -79,6 +94,7 @@ impl FileService {
 
     /// `GET /files/{id}/download-url`: issue a signed download URL pinned to the
     /// current content (or a specific `version_id`).
+    #[tracing::instrument(skip_all)]
     pub async fn download_url(
         &self,
         ctx: &SecurityContext,
@@ -110,20 +126,35 @@ impl FileService {
             ));
         }
 
-        let download_url =
-            self.build_download_url(file_id, target, version.backend_id, version.backend_path)?;
+        // P2 1.11: the content ETag is computed once and threaded both into
+        // the GET token's claims (so the sidecar can echo it as a real
+        // `ETag` header with no DB lookup) and into the ticket returned here
+        // — one source of truth (`etag::content_etag`).
+        let content_etag = etag::content_etag(file_id, target);
+        let download_url = self.build_download_url(
+            file_id,
+            target,
+            version.backend_id,
+            version.backend_path,
+            Some((version.mime_type, content_etag.clone())),
+        )?;
+        self.metrics.record_operation("download_url", "ok");
         Ok(DownloadTicket {
             download_url,
-            etag: etag::content_etag(file_id, target),
+            etag: content_etag,
             version_id: target,
         })
     }
 
-    /// List all versions of a file.
+    /// `GET /files/{id}/versions`: list a page of a file's versions, newest
+    /// first, offset-paginated and capped at `ServiceConfig::max_page_size`
+    /// (P2 2.2 — closes the unbounded-listing amplification surface).
     pub async fn list_versions(
         &self,
         ctx: &SecurityContext,
         file_id: Uuid,
+        limit: Option<u64>,
+        offset: u64,
     ) -> Result<Vec<FileVersion>, DomainError> {
         let prefetch = Self::tenant_scope(ctx);
         let file = self.store.require_file(&prefetch, file_id).await?;
@@ -131,7 +162,10 @@ impl FileService {
             .authorizer
             .authorize(ctx, actions::READ, &file.gts_file_type, Some(file_id))
             .await?;
-        self.store.list_versions(file_id).await
+        let limit = limit
+            .unwrap_or(self.cfg.default_page_size)
+            .min(self.cfg.max_page_size);
+        self.store.list_versions_page(file_id, limit, offset).await
     }
 
     /// Restore a prior version as current (a rebind: pointer swap, no re-upload).
@@ -155,6 +189,7 @@ impl FileService {
     /// to delete unconditionally when the ETag is unknown.
     ///
     /// @cpt-cf-file-storage-fr-audit-trail
+    #[tracing::instrument(skip_all)]
     pub async fn delete_file(
         &self,
         ctx: &SecurityContext,
@@ -186,7 +221,9 @@ impl FileService {
             }
         }
 
-        self.delete_file_inner(ctx, file_id).await
+        self.delete_file_inner(ctx, file_id).await?;
+        self.metrics.record_operation("delete_file", "ok");
+        Ok(())
     }
 
     /// Inner (unconditional) file deletion: authorization and If-Match must have
@@ -258,6 +295,7 @@ impl FileService {
     /// is equivalent to deleting the file.
     ///
     /// @cpt-cf-file-storage-fr-audit-trail
+    #[tracing::instrument(skip_all)]
     pub async fn delete_version(
         &self,
         ctx: &SecurityContext,
@@ -273,10 +311,15 @@ impl FileService {
 
         let all = self.store.list_versions(file_id).await?;
         if all.len() <= 1 {
+            if !all.iter().any(|v| v.version_id == version_id) {
+                return Err(DomainError::version_not_found(file_id, version_id));
+            }
             // Last version → delete the whole file. Authorization has already been
             // checked above; skip the If-Match gate (delete_version has its own
             // contract — no If-Match on DELETE /files/{id}/versions/{vid}).
-            return self.delete_file_inner(ctx, file_id).await;
+            self.delete_file_inner(ctx, file_id).await?;
+            self.metrics.record_operation("delete_version", "ok");
+            return Ok(());
         }
         let Some(version) = all.into_iter().find(|v| v.version_id == version_id) else {
             return Err(DomainError::version_not_found(file_id, version_id));
@@ -295,11 +338,41 @@ impl FileService {
             serde_json::json!({ "version_id": version_id }),
         );
 
-        self.store
+        let removed = self
+            .store
             .delete_version(file_id, version_id, audit)
             .await?;
+        if !removed {
+            // P2 2.7: our `content_id == version_id` check above ran against a
+            // pre-transaction snapshot; the store re-checks transactionally and
+            // guards the delete at the DB level, so `false` here means a
+            // concurrent `bind` promoted this exact version to current (or
+            // deleted it outright) in the window between that snapshot and the
+            // transactional delete. Re-fetch (outside the tx, for error-message
+            // purposes only — the dangle itself was already prevented by the
+            // DB-level guard) to report the more accurate error.
+            return Err(match self.store.get_version(file_id, version_id).await? {
+                Some(_) => DomainError::conflict(
+                    "cannot delete the current version; bind another version first",
+                ),
+                None => DomainError::version_not_found(file_id, version_id),
+            });
+        }
+        // @cpt-cf-file-storage-fr-usage-reporting
+        // Debit this non-current version's bytes. The `all.len() <= 1` branch
+        // above already delegated to `delete_file_inner` (which reports its
+        // own whole-file debit), so this arm only runs when at least one
+        // other version remains -- no double-count with that path.
+        self.report_usage(UsageDelta {
+            tenant_id: file.tenant_id,
+            owner_id: file.owner_id,
+            bytes_delta: -version.size,
+            file_count_delta: 0,
+        });
+
         self.best_effort_blob_delete(&version.backend_id, &version.backend_path)
             .await;
+        self.metrics.record_operation("delete_version", "ok");
         Ok(())
     }
 }

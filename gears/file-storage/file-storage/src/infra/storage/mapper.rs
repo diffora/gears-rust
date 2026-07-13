@@ -42,6 +42,8 @@ impl From<file_version::Model> for FileVersion {
             size: e.size,
             hash_algorithm: e.hash_algorithm,
             hash_value: e.hash_value,
+            hash_mode: e.hash_mode,
+            part_count: e.part_count,
             status,
             is_current: e.is_current,
             backend_id: e.backend_id,

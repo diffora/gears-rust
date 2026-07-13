@@ -1564,6 +1564,8 @@ The two halves are independently actionable; do the sweep-default half regardles
 
 ### 1.7 — No durable/distributed storage backend (S3) despite doc claims
 
+**S3 client decision (see ADR-0005):** primary = rusty-s3 + quick-xml (lightest real-S3-API, reuses existing reqwest 0.13, +11.7% binary); fallback = object_store if rusty-s3 is insufficient (becomes size-competitive once it ships reqwest 0.13). Still gated on the external-SDK security review.
+
 This is the largest item — four sub-items plus a dedicated test strategy. Re-verified: `src/infra/backend/mod.rs:11` does say "S3/GCS/etc. are deferred (they require an external SDK + security review)"; `src/bin/sidecar.rs:95` does hardcode a single `Arc::new(LocalFsBackend::new("local-fs", root))` into `SidecarState.backend` with **no** `BackendRegistry` on the sidecar at all; `Claims` (`src/infra/signed_url/mod.rs:85-92`) does carry `pub backend_id: String` (confirmed line 91) which the sidecar never reads today (`rg -n "claims.backend_id" src/bin/sidecar.rs` → no matches, confirmed).
 
 #### 1.7.1 — `S3Backend: StorageBackend` implementation
@@ -3529,3 +3531,133 @@ only has to happen once against the final schema rather than twice.
 
 
 ---
+
+## EXECUTION LOG — remediation run (2026-07-06/07, updated 2026-07-07)
+
+> Appended after executing this plan. Branch: `feat/file-storage-p2-remediation`
+> (cut from `main` after P2 merge #4170; P2 is fully in `main`). Each step was
+> implemented as an isolated agent with build/clippy/test verification between
+> steps. Eight DCO-signed commits. Working tree clean.
+>
+> NOTE: the Cargo package is `cf-gears-file-storage` (+ `-sdk`), not
+> `file-storage` — every `-p file-storage` command in this plan must use
+> `-p cf-gears-file-storage`.
+
+### Commits (branch `feat/file-storage-p2-remediation`, off `main`)
+- `eb8b293f9` — Tier 0 (11/11): correctness & security showstoppers
+- `cd36794f6` — Tier 1 (11 of 14): production-readiness (blocked items excluded)
+- `f8d53f095` — Tier 2 (13/13): correctness hardening
+- `b66ff2573` — Tier 3 (11/11): documentation reconciliation
+- `1af3e1cb6` — PR #4184 review fixes (CodeRabbit)
+- `bd0ea1fd9` — 1.12 usage-accounting symmetry (credit stored bytes on
+  finalize/multipart-complete, debit on delete/sweep; zero-sum invariant test)
+- `587fc8079` — quota implementation-status docs + this execution log
+- `3153fd13c` — S3 storage backend (rusty-s3), item 1.7
+- Total: 77 files, +11025 / -669 through `587fc8079` (S3 commit adds further
+  files/lines on top). Full gear suite green (119 lib + integration + sdk),
+  `cargo fmt --check` + `cargo clippy --all-targets -D warnings` clean,
+  sidecar builds, OpenAPI (`docs/api/api.json`) regenerated via `make openapi`.
+
+### DONE — Tier 0 (all)
+0.7, 0.9, 0.10, 0.11, 0.1, 0.4, 0.8, 0.3, 0.6, 0.5, 0.2.
+Migrations added: `m20260706_000001_idempotency_subject_id` (0.10).
+
+### DONE — Tier 1 (cleanly-implementable subset)
+1.1, 1.2(a), 1.2(b), 1.3, 1.4(sweep half), 1.5, 1.6, 1.8, 1.9, 1.10(option b), 1.11.
+
+### DONE — 1.7 (S3 backend, landed after Tier 1-3 in commit `3153fd13c`)
+S3 client chosen: **rusty-s3** (+ `quick-xml`), with `object_store` kept as the
+documented fallback (ADR-0005). Fully implemented: `S3Backend` covering all
+`StorageBackend` ops including multipart and `put_stream`;
+`S3BackendConfig`/`s3_backends` config plus `default_backend_id`; `gear.rs`
+registry wiring; sidecar `claims.backend_id` dispatch to the S3 backend;
+s3s-fs-backed unit tests plus an optional live-s3s-fs e2e suite. Caveats that
+REMAIN open: the external-SDK security review of rusty-s3/quick-xml (ADR-0005
+stays `proposed`, not `accepted`), and Tier-4 real-object-store load/perf
+validation (unaffected by this landing).
+
+### DONE — Tier 2 (all, with 2.12 partial — see below)
+2.1 … 2.13. Migrations added: `m20260706_000002_idempotency_request_hash` (2.1),
+`m20260706_000003_policies_unique_scope` (2.4). New guardrail:
+`tests/error_mapping_test.rs` (exhaustive DomainError→status; adding a variant
+without a row is a compile error). `2.4` used the transaction + partial-unique-index
+backstop (not raw ON CONFLICT) to avoid bypassing SecureORM scope validation, and
+now also includes dedup/backfill of pre-existing duplicates: the migration's `UP`
+SQL deletes all-but-one row from every `(tenant_id, scope, scope_owner_id)` group
+before creating the unique indexes, so it doesn't fail against existing data.
+Note: **2.12 is PARTIAL, not fully done** — see the blocked-items list below.
+
+### DONE — Tier 3 (all shipped code, with 3.3/3.4 partial — see below)
+3.1 … 3.11. New `docs/operations.md`; `docs/migration.sql` synced; api.md /
+DESIGN.md / ADR-0003 / ADR-0004 / multipart-coordinator.md / README.md /
+DECOMPOSITION.md reconciled to the shipped code. New `DomainError::RetentionRuleNotFound`
+(3.10). InactivityRetention re-documented as "not modified" (3.11). **3.3 and 3.4
+are PARTIAL**: docs were reconciled to reality, but 3.3's richer multipart-`complete`
+code contract and 3.4's GET-multipart-introspect endpoint remain deferred/tracked,
+not implemented — see the deferred-sub-parts list below.
+
+### NOT DONE — blocked, needs a team decision / external dependency
+- **1.4 — quota half**: no `QuotaClient` SDK crate exists in the workspace.
+  `gear.rs`'s `None, // quota_client` left as-is.
+- **1.12 — usage accounting, wiring half only**: the delta-symmetry fix itself
+  is DONE (commit `bd0ea1fd9`: credit stored bytes on finalize/multipart-complete,
+  debit on delete/sweep, zero-sum invariant test). What remains blocked is only
+  wiring `usage_reporter` off `None` — the usage-collector-sdk is not instantiated
+  in `gear.rs` yet; needs a wiring decision.
+- **2.12 — transfer_ownership, PARTIAL**: only nil-UUID target rejection was
+  implemented (cross-tenant transfer is already structurally impossible). The
+  item's DoD — reject nonexistent/unauthorized target owners — is NOT fully met:
+  full principal-existence/tenant-membership validation is blocked on an
+  account-management SDK, and whether transfer needs a distinct privileged
+  authorization action is an open 🛑 team decision (ties to 0.7's admin-scope).
+
+### NOT DONE — Tier 4 (4.1–4.11): deferred/P3 by design
+Deliverable is a tracking ticket per item, not code — not filed by this run.
+
+### DEFERRED sub-parts inside completed tiers (flagged in commits/code)
+- **E2E tests** across Tier 0–3: skipped (need `FS_E2E_BINARY` / running server /
+  `E2E_AUTH_TOKEN_USER_B`). Unit coverage added everywhere; each plan step lists
+  the specific E2E case to add when the harness/env exists.
+- 0.1: streaming read-back on finalize; retiring client-driven finalize (option 1,
+  internal-auth) — the returned upload token is still plaintext to the client.
+- 1.6: `/readyz` (needs a cheap backend-readiness hook or 1.7.2's registry).
+- 1.8: control-plane per-route latency uses api-gateway's existing http_metrics
+  (not duplicated); backend-error metric hooked only at the clearest points.
+- 1.10: option (a) ingress MIME-sniff (Claims `declared_mime` + sidecar stream
+  sniff); multipart-complete path does not validate MIME.
+- 1.11: real MIME + ETag threading into the download (GET) token/claims (currently
+  `application/octet-stream`, no ETag).
+- 2.2: `VersionRepo::get` direct predicate landed (the "unreliable secure layer"
+  claim did not reproduce); internal full-version-set callers keep an explicit
+  unbounded path (`i64::MAX` limit).
+- 2.7: the stronger `content_id → file_versions(version_id)` FK
+  (`ON DELETE RESTRICT`) — needs cross-backend verification (circular composite FK);
+  predicate guard shipped instead.
+- 2.8: `sweep_abandoned_pending` selects the pending version by age only, not by
+  multipart-session state — it can still delete an active session's backing version
+  (pre-existing; 2.8 only stopped the new FK-cascade file deletion). Worth a
+  dedicated item.
+- 2.12: principal-existence validation of the transfer target + a privileged
+  transfer action (both need account-management SDK / 0.7 admin-scope decision);
+  minimal fix shipped (reject nil UUID; cross-tenant already structurally impossible).
+- 3.3: multipart `complete` richer contract (200 `{version_id, content_hash, size}`,
+  `If-Match`/412, 409-with-missing-parts) — code enhancements, doc marks as tracked.
+- 3.4: `GET /files/{id}/multipart/{upload_id}` (introspect/resume) — ship-or-defer
+  team decision; documented as a gap.
+- 3.6: five per-feature FEATURE docs (policy-engine, retention-cleanup, audit-trail,
+  ownership-transfer, backend-migration) — minimal scope-correction done instead
+  (compliance-weight recommendation to author them).
+
+### Design 🛑 to confirm with the team before merge
+- 0.7/0.5/0.9/0.11: `actions::ADMIN_POLICY` is a new gear-local action authorized
+  via the existing `file_storage.file` resource type — confirm no platform-wide
+  admin scope already exists.
+- 2.5: routes corrected 412→400 because `FailedPrecondition→400` is the platform's
+  canonical convention (confirmed against account-management). If 412 is required,
+  that's a `toolkit-canonical-errors` change (cross-cutting), not local.
+
+### Process left
+- Everything through `587fc8079` (Tier 0–3, PR-review fixes, 1.12 symmetry,
+  quota docs + this log) is already pushed to the fork and reflected on
+  PR #4184. Only the S3 commit `3153fd13c` remains unpushed.
+- Delete this file once the work is split into tracked tickets/PRs.

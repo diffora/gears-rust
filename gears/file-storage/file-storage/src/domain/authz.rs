@@ -21,6 +21,16 @@ pub mod actions {
     pub const READ: &str = "read";
     pub const WRITE: &str = "write";
     pub const DELETE: &str = "delete";
+    /// Cross-owner / tenant-wide policy & retention-rule administration.
+    ///
+    /// Distinct from `WRITE` so the PDP can grant ordinary file access without
+    /// also granting the ability to read/mutate another subject's policy or
+    /// retention rules. Authorized via the same resource type
+    /// (`file_storage.file`, see module docs) with a distinct action string —
+    /// contained to this gear, no new PDP resource type required. If the
+    /// platform later grows a shared tenant-admin scope, swap this string for
+    /// that action; the ownership-comparison call sites are unaffected.
+    pub const ADMIN_POLICY: &str = "admin_policy";
 }
 
 /// Resolves an access decision into the [`AccessScope`] used for tenant-scoped

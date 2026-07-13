@@ -7,6 +7,9 @@ use crate::domain::error::DomainError;
 #[resource_error("gts.cf.fstorage.file.object.v1~")]
 struct FileResourceError;
 
+#[resource_error("gts.cf.fstorage.retention_rule.object.v1~")]
+struct RetentionRuleResourceError;
+
 impl From<DomainError> for CanonicalError {
     #[allow(clippy::cognitive_complexity)]
     fn from(e: DomainError) -> Self {
@@ -22,6 +25,11 @@ impl From<DomainError> for CanonicalError {
             } => FileResourceError::not_found(format!("Version {file_id}/{version_id} not found"))
                 .with_resource(version_id.to_string())
                 .create(),
+            DomainError::RetentionRuleNotFound { rule_id } => {
+                RetentionRuleResourceError::not_found(format!("Retention rule {rule_id} not found"))
+                    .with_resource(rule_id.to_string())
+                    .create()
+            }
             DomainError::Validation { field, message } => FileResourceError::invalid_argument()
                 .with_field_violation(field, message, "VALIDATION")
                 .create(),
@@ -134,6 +142,13 @@ impl From<DomainError> for CanonicalError {
                     "Multipart upload session {upload_id} is not in progress (state: {state})"
                 ))
                 .with_reason("MULTIPART_NOT_IN_PROGRESS")
+                .create()
+            }
+            DomainError::MultipartPartsMissing { upload_id, missing } => {
+                FileResourceError::aborted(format!(
+                    "multipart upload {upload_id}: parts missing: {missing:?}"
+                ))
+                .with_reason("MULTIPART_PARTS_MISSING")
                 .create()
             }
             DomainError::VersionedFileMigrationNotSupported { file_id } => {

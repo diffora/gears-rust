@@ -136,6 +136,11 @@ pub struct UpdateMetadataReq {
 }
 
 /// One content version (`GET /files/{id}/versions`).
+///
+/// Wire shape documented in `docs/api.md` (`hash_mode`/`part_count`/`manifest`
+/// fields, ADR-0006).
+///
+/// @cpt-dod:cpt-cf-file-storage-dod-content-hash-modes-docs:p2
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct VersionDto {
@@ -144,6 +149,14 @@ pub struct VersionDto {
     pub size: i64,
     pub hash_algorithm: String,
     pub hash: String,
+    /// ADR-0006 content-hash mode: `"whole-sha256"` (`hash` is
+    /// `sha256(object bytes)`) or `"multipart-composite-sha256"` (`hash` is
+    /// `sha256(manifest)`, the offset-manifest composite root).
+    pub hash_mode: String,
+    /// Number of parts for a `multipart-composite-sha256` version; omitted
+    /// (`null`) for `whole-sha256`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_count: Option<i32>,
     pub status: String,
     pub is_current: bool,
     #[serde(with = "time::serde::rfc3339")]
@@ -158,6 +171,8 @@ impl From<FileVersion> for VersionDto {
             size: v.size,
             hash_algorithm: v.hash_algorithm,
             hash: hex::encode(&v.hash_value),
+            hash_mode: v.hash_mode,
+            part_count: v.part_count,
             status: v.status.as_str().to_owned(),
             is_current: v.is_current,
             created_at: v.created_at,
@@ -681,6 +696,87 @@ pub struct MultipartPlanDto {
     /// Expiry of all per-part URLs (RFC 3339).
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: time::OffsetDateTime,
+}
+
+/// Response of `POST /files/{id}/multipart/{upload_id}/complete` (item 3.3).
+///
+/// Carries everything the ADR-0006 assembly step already computes — the
+/// bound version id, its size, and the composite content hash — instead of
+/// the previous bare `204 No Content`. `manifest` lets a client independently
+/// re-verify the composite hash (`docs/features/content-hash-modes.md`
+/// §"Client-Side Manifest Re-Verification") without a second round-trip.
+///
+/// @cpt-cf-file-storage-fr-multipart-upload
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct MultipartCompleteDto {
+    pub version_id: Uuid,
+    pub size: i64,
+    /// Always `"SHA-256"`.
+    pub hash_algorithm: String,
+    /// Hex-encoded ADR-0006 composite root (`sha256(manifest)`).
+    pub content_hash: String,
+    /// Always `"multipart-composite-sha256"` for this endpoint.
+    pub hash_mode: String,
+    pub part_count: i32,
+    /// Wire-format manifest text (`Manifest::to_wire_string`).
+    pub manifest: String,
+}
+
+/// One already-uploaded part (`GET /files/{id}/multipart/{upload_id}`, item 3.4).
+///
+/// @cpt-cf-file-storage-fr-multipart-upload
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct ReceivedPartDto {
+    pub part_number: u32,
+    pub size: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub uploaded_at: OffsetDateTime,
+}
+
+/// One part not yet uploaded (item 3.4).
+///
+/// `upload_url` is present only while the session is still `in_progress` and
+/// unexpired; a terminal or expired session omits it.
+///
+/// @cpt-cf-file-storage-fr-multipart-upload
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct MissingPartDto {
+    pub part_number: u32,
+    pub offset: u64,
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_url: Option<String>,
+}
+
+/// Response of `GET /files/{id}/multipart/{upload_id}` — introspect/resume
+/// (item 3.4).
+///
+/// Mirrors [`crate::domain::multipart::MultipartUploadStatus`]. `received`
+/// covers parts already reported by the sidecar; `missing` covers the rest,
+/// each carrying a fresh resume `upload_url` when the session can still be
+/// resumed (`in_progress` and unexpired) — a terminal or expired session
+/// reports state and part accounting only, with no URLs to act on.
+///
+/// @cpt-cf-file-storage-fr-multipart-upload
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct MultipartStatusDto {
+    pub upload_id: Uuid,
+    pub version_id: Uuid,
+    /// `"in_progress"`, `"completed"`, or `"aborted"`.
+    pub state: String,
+    pub declared_mime: String,
+    pub declared_size: u64,
+    pub part_size: u64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+    pub received: Vec<ReceivedPartDto>,
+    pub missing: Vec<MissingPartDto>,
 }
 
 // ── Backend migration DTOs (P2-M4) ─────────────────────────────────────────────

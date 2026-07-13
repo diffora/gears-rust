@@ -56,12 +56,16 @@ impl FileService {
     /// propagated and the request is denied. A failing quota service is safer
     /// than silently allowing unbounded storage growth.
     ///
+    /// `op` labels the caller (`"create_file"` / `"presign_version"`) for the
+    /// `quota_denied` metric (P2 1.8 remediation).
+    ///
     /// @cpt-cf-file-storage-fr-storage-quota
     pub(super) async fn check_quota(
         &self,
         tenant_id: Uuid,
         owner_id: Uuid,
         effective_max_bytes: Option<u64>,
+        op: &str,
     ) -> Result<(), DomainError> {
         use crate::infra::external_clients::QuotaDecision;
         let Some(qc) = &self.quota_client else {
@@ -81,7 +85,10 @@ impl FileService {
             .await?
         {
             QuotaDecision::Allowed => Ok(()),
-            QuotaDecision::Denied { reason } => Err(DomainError::quota_exceeded(reason)),
+            QuotaDecision::Denied { reason } => {
+                self.metrics.record_quota_denied(op);
+                Err(DomainError::quota_exceeded(reason))
+            }
         }
     }
 
@@ -92,6 +99,7 @@ impl FileService {
     ///
     /// @cpt-cf-file-storage-fr-upload-idempotency
     /// @cpt-cf-file-storage-fr-audit-trail
+    #[tracing::instrument(skip_all)]
     pub async fn create_file(
         &self,
         ctx: &SecurityContext,
@@ -103,7 +111,45 @@ impl FileService {
         let owner_kind_str = new.owner_kind.as_str().to_owned();
 
         // @cpt-cf-file-storage-fr-upload-idempotency
-        // Check for an existing idempotency record before doing any work.
+        // Canonicalize the current request into a comparable hash up front —
+        // both the replay-comparison path (below) and the fresh-insert path
+        // (further down) must hash the exact same encoding of the same
+        // request, so this is computed exactly once.
+        let initial_meta: Vec<(String, String)> = new
+            .custom_metadata
+            .iter()
+            .map(|e| (e.key.clone(), e.value.clone()))
+            .collect();
+        let request_hash = crate::domain::idempotency::compute_request_hash(
+            &owner_kind_str,
+            owner_id,
+            &new.name,
+            &new.gts_file_type,
+            &new.mime_type,
+            &initial_meta,
+        );
+
+        // @cpt-cf-file-storage-fr-upload-idempotency
+        // Authorize the write BEFORE consulting any stored idempotency
+        // record. The idempotency lookup used to run first and return early
+        // with a live signed upload URL — a caller whose WRITE grant was
+        // revoked (or was never authorized) could still replay a stored
+        // ticket. Every replay must now clear the caller's *current* grants,
+        // exactly like a fresh request would.
+        Self::validate_gts_type(&new.gts_file_type)?;
+        let _scope = self
+            .authorizer
+            .authorize(ctx, actions::WRITE, &new.gts_file_type, None)
+            .await?;
+
+        // @cpt-cf-file-storage-fr-upload-idempotency
+        // Now that the caller is authorized, consult the idempotency store.
+        // The stored record is bound to the subject that created it
+        // (`subject_id`); a caller can never surface another caller's ticket
+        // by reusing/guessing their `(owner_kind, owner_id, key)` tuple —
+        // a subject mismatch is treated as `Forbidden` rather than silently
+        // falling through to a fresh create (which would otherwise race the
+        // still-live row on insert).
         if let Some(ref key) = idempotency_key {
             let now = OffsetDateTime::now_utc();
             if let Some(record) = self
@@ -111,26 +157,36 @@ impl FileService {
                 .get_idempotency_key(tenant_id, &owner_kind_str, owner_id, key, now)
                 .await?
             {
+                if record.subject_id != ctx.subject_id() {
+                    return Err(DomainError::Forbidden);
+                }
+                // @cpt-cf-file-storage-fr-upload-idempotency
+                // P2 remediation 2.1: a retried request with the same key but
+                // a materially different body (owner, name, gts_file_type,
+                // mime_type, custom_metadata) must never silently replay the
+                // original ticket — that would surface a response for a
+                // request the caller never actually made.
+                if record.request_hash != request_hash {
+                    return Err(DomainError::conflict(
+                        "idempotency key reused with a different request body",
+                    ));
+                }
                 let ticket: UploadTicket =
                     serde_json::from_str::<IdempotencyTicket>(&record.response_body)
                         .map(Into::into)
                         .map_err(|_| {
                             DomainError::database("failed to deserialize idempotency body")
                         })?;
+                self.metrics.record_operation("create_file", "replayed");
                 return Ok(ticket);
             }
         }
-
-        Self::validate_gts_type(&new.gts_file_type)?;
-        let _scope = self
-            .authorizer
-            .authorize(ctx, actions::WRITE, &new.gts_file_type, None)
-            .await?;
 
         // @cpt-cf-file-storage-fr-allowed-types-policy
         // @cpt-cf-file-storage-fr-size-limits-policy
         // @cpt-cf-file-storage-fr-metadata-limits
         // @cpt-cf-file-storage-fr-storage-quota
+        // @cpt-dod:cpt-cf-file-storage-dod-policy-enforcement-wiring:p1
         let policy = self
             .get_effective_policy_internal(tenant_id, owner_id)
             .await?;
@@ -146,16 +202,13 @@ impl FileService {
             backend.capabilities().max_size_bytes,
         );
 
-        // Validate initial custom metadata against limits.
-        let initial_meta: Vec<(String, String)> = new
-            .custom_metadata
-            .iter()
-            .map(|e| (e.key.clone(), e.value.clone()))
-            .collect();
+        // Validate initial custom metadata against limits (`initial_meta` was
+        // already collected above, for `request_hash`).
         PolicyResolver::check_metadata_limits(&policy, &initial_meta)?;
 
         // Quota preflight — pessimistic: check whether max allowed size fits quota.
-        self.check_quota(tenant_id, owner_id, effective_max).await?;
+        self.check_quota(tenant_id, owner_id, effective_max, "create_file")
+            .await?;
 
         let now = OffsetDateTime::now_utc();
         let file_id = Uuid::now_v7();
@@ -195,6 +248,7 @@ impl FileService {
                 max_size: effective_max,
                 ..UploadConstraints::default()
             },
+            None,
         )?;
         let ticket = UploadTicket {
             file_id,
@@ -222,9 +276,11 @@ impl FileService {
                 owner_kind: owner_kind_str.clone(),
                 owner_id,
                 key: key.clone(),
+                subject_id: ctx.subject_id(),
                 response_status: 201,
                 response_body,
                 response_etag: String::new(),
+                request_hash: request_hash.clone(),
                 expires_at,
             }
         });
@@ -253,6 +309,7 @@ impl FileService {
             file_count_delta: 1,
         });
 
+        self.metrics.record_operation("create_file", "ok");
         Ok(ticket)
     }
 
@@ -295,7 +352,8 @@ impl FileService {
             backend.capabilities().max_size_bytes,
         );
 
-        self.check_quota(tenant_id, owner_id, effective_max).await?;
+        self.check_quota(tenant_id, owner_id, effective_max, "presign_version")
+            .await?;
 
         let now = OffsetDateTime::now_utc();
         let version_id = Uuid::now_v7();
@@ -325,6 +383,7 @@ impl FileService {
                 max_size: effective_max,
                 ..UploadConstraints::default()
             },
+            None,
         )?;
         Ok(UploadTicket {
             file_id,

@@ -93,9 +93,10 @@ patterns = [
 ]
 
 [[ignore]]
-reason = "Ignore file-storage companion docs — api.md is a reference summary supplementary to DESIGN.md, not a standalone SDLC artifact."
+reason = "Ignore file-storage companion docs — api.md is a reference summary supplementary to DESIGN.md, and operations.md is an operator-facing config/runbook reference (P2 remediation item 3.8), not standalone SDLC artifacts."
 patterns = [
   "gears/file-storage/docs/api.md",
+  "gears/file-storage/docs/operations.md",
 ]
 
 [[ignore]]
@@ -160,6 +161,34 @@ extensions = [".rs"]
 [[systems.autodetect.codebase]]
 name = "Tests"
 path = "{system_root}/tests"
+extensions = [".rs"]
+
+# Some gears/$system modules (e.g. file-storage) nest the crate a level deeper
+# (gears/file-storage/file-storage/src, plus a sibling *-sdk crate) instead of
+# putting the crate directly at gears/$system/src — mirrors the equivalent
+# "Nested Gears"/"Nested Tests"/"Nested SDK"/"Nested SDK Tests" entries already
+# used below for gears/system/$system. Without these, code under a nested
+# crate layout is never scanned for @cpt traceability markers, so any to_code
+# CDSL instruction there can never be satisfied regardless of the markers
+# actually present in the code.
+[[systems.autodetect.codebase]]
+name = "Nested Gears"
+path = "{system_root}/{system}/src"
+extensions = [".rs"]
+
+[[systems.autodetect.codebase]]
+name = "Nested Tests"
+path = "{system_root}/{system}/tests"
+extensions = [".rs"]
+
+[[systems.autodetect.codebase]]
+name = "Nested SDK"
+path = "{system_root}/{system}-sdk/src"
+extensions = [".rs"]
+
+[[systems.autodetect.codebase]]
+name = "Nested SDK Tests"
+path = "{system_root}/{system}-sdk/tests"
 extensions = [".rs"]
 
 [[systems.autodetect]]

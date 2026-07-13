@@ -328,6 +328,81 @@ async fn delete_version_leaves_audit_row() {
     assert_eq!(del_ver_rows[0].outcome, "success");
 }
 
+// ── 6b. delete_version on a single-version file with a non-matching id ───────
+
+/// A file with exactly one version must 404 on a random/non-existent
+/// `version_id` instead of silently deleting the whole file.
+///
+/// @cpt-cf-file-storage-fr-audit-trail
+#[tokio::test]
+async fn delete_version_single_version_file_wrong_id_returns_not_found() {
+    let (svc, _msvc, dp, store) = build_service().await;
+    let ctx = ctx(Uuid::now_v7());
+
+    let t1 = svc.create_file(&ctx, new_file(), None).await.unwrap();
+    dp.put_content(
+        &ctx,
+        t1.file_id,
+        t1.version_id,
+        "text/plain",
+        Bytes::from_static(b"v1"),
+    )
+    .await
+    .unwrap();
+
+    let wrong_version_id = Uuid::now_v7();
+    let err = svc
+        .delete_version(&ctx, t1.file_id, wrong_version_id)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DomainError::VersionNotFound { .. }),
+        "expected VersionNotFound, got {err:?}"
+    );
+
+    // The file and its only version must be untouched.
+    let file = store
+        .get_file(&toolkit_security::AccessScope::allow_all(), t1.file_id)
+        .await
+        .unwrap();
+    assert!(file.is_some(), "files row must still exist");
+    let version = store.get_version(t1.file_id, t1.version_id).await.unwrap();
+    assert!(version.is_some(), "file_versions row must still exist");
+}
+
+// ── 6c. delete_version on a single-version file with the matching id ─────────
+
+/// Positive control: deleting the only version by its real id still deletes
+/// the whole file (today's intended behavior).
+///
+/// @cpt-cf-file-storage-fr-audit-trail
+#[tokio::test]
+async fn delete_version_single_version_file_matching_id_deletes_whole_file() {
+    let (svc, _msvc, dp, store) = build_service().await;
+    let ctx = ctx(Uuid::now_v7());
+
+    let t1 = svc.create_file(&ctx, new_file(), None).await.unwrap();
+    dp.put_content(
+        &ctx,
+        t1.file_id,
+        t1.version_id,
+        "text/plain",
+        Bytes::from_static(b"v1"),
+    )
+    .await
+    .unwrap();
+
+    svc.delete_version(&ctx, t1.file_id, t1.version_id)
+        .await
+        .unwrap();
+
+    let file = store
+        .get_file(&toolkit_security::AccessScope::allow_all(), t1.file_id)
+        .await
+        .unwrap();
+    assert!(file.is_none(), "files row must be gone");
+}
+
 // -- 7. multipart complete leaves audit rows ----------------------------------
 
 /// @cpt-cf-file-storage-fr-audit-trail
@@ -402,7 +477,13 @@ async fn multipart_complete_leaves_audit_rows() {
     let backend_path = format!("/{}/{}", ticket.file_id, plan.version_id);
 
     let (backend_etag, part_hash) = backend
-        .upload_part(&backend_path, &session.backend_upload_handle, 1, part_data)
+        .upload_part(
+            &backend_path,
+            &session.backend_upload_handle,
+            1,
+            0,
+            part_data,
+        )
         .await
         .unwrap();
     let size = i64::try_from(declared_size).unwrap();
@@ -418,7 +499,7 @@ async fn multipart_complete_leaves_audit_rows() {
         .await
         .unwrap();
 
-    msvc.complete_multipart_upload(&ctx, ticket.file_id, plan.upload_id)
+    msvc.complete_multipart_upload(&ctx, ticket.file_id, plan.upload_id, None)
         .await
         .unwrap();
 

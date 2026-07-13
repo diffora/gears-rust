@@ -19,8 +19,9 @@ impl CleanupStore for Store {
     async fn list_abandoned_pending_versions(
         &self,
         older_than: OffsetDateTime,
+        now: OffsetDateTime,
     ) -> Result<Vec<FileVersion>, DomainError> {
-        Store::list_abandoned_pending_versions(self, older_than).await
+        Store::list_abandoned_pending_versions(self, older_than, now).await
     }
 
     async fn delete_version(
@@ -30,6 +31,15 @@ impl CleanupStore for Store {
         audit: crate::domain::audit::AuditEntry,
     ) -> Result<bool, DomainError> {
         Store::delete_version(self, file_id, version_id, audit).await
+    }
+
+    async fn delete_pending_version(
+        &self,
+        file_id: Uuid,
+        version_id: Uuid,
+        audit: crate::domain::audit::AuditEntry,
+    ) -> Result<bool, DomainError> {
+        Store::delete_pending_version(self, file_id, version_id, audit).await
     }
 
     async fn list_expired_multipart_uploads(
@@ -77,6 +87,14 @@ impl CleanupStore for Store {
         Store::list_versions(self, file_id).await
     }
 
+    async fn get_file(&self, file_id: Uuid) -> Result<Option<File>, DomainError> {
+        Store::get_file(self, &toolkit_security::AccessScope::allow_all(), file_id).await
+    }
+
+    async fn has_in_progress_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError> {
+        Store::has_in_progress_multipart_for_file(self, file_id).await
+    }
+
     async fn delete_file_with_event(
         &self,
         scope: &toolkit_security::AccessScope,
@@ -85,6 +103,22 @@ impl CleanupStore for Store {
         event: Option<crate::domain::audit::FileEvent>,
     ) -> Result<bool, DomainError> {
         Store::delete_file_with_event(self, scope, file_id, audit, event).await
+    }
+
+    async fn delete_orphan_file_with_event(
+        &self,
+        file_id: Uuid,
+        audit: crate::domain::audit::AuditEntry,
+        event: Option<crate::domain::audit::FileEvent>,
+    ) -> Result<bool, DomainError> {
+        Store::delete_orphan_file_with_event(self, file_id, audit, event).await
+    }
+
+    async fn delete_expired_idempotency_keys(
+        &self,
+        now: OffsetDateTime,
+    ) -> Result<u64, DomainError> {
+        Store::delete_expired_idempotency_keys(self, now).await
     }
 }
 
@@ -199,15 +233,36 @@ impl MultipartStore for Store {
         Store::list_multipart_parts(self, upload_id).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn finalize_version(
         &self,
         file_id: Uuid,
         version_id: Uuid,
         size: i64,
         hash_value: Vec<u8>,
+        hash_mode: crate::infra::content::hash_mode::HashMode,
+        part_count: Option<i32>,
+        manifest: Option<String>,
+        validated_mime: Option<String>,
         audit: crate::domain::audit::AuditEntry,
     ) -> Result<bool, DomainError> {
-        Store::finalize_version(self, file_id, version_id, size, hash_value, audit).await
+        // `validated_mime` is the sniffed/canonical type computed by
+        // `complete_multipart_upload` from the assembled object's leading
+        // bytes (P2 remediation item 1.10) — persisted in place of the
+        // client's declared type, mirroring the single-part finalize paths.
+        Store::finalize_version(
+            self,
+            file_id,
+            version_id,
+            size,
+            hash_value,
+            hash_mode,
+            part_count,
+            manifest,
+            validated_mime,
+            audit,
+        )
+        .await
     }
 
     async fn complete_multipart_upload(
@@ -238,6 +293,14 @@ impl MultipartStore for Store {
 
 #[async_trait]
 impl crate::domain::ports::PolicyStore for Store {
+    async fn require_file(
+        &self,
+        scope: &toolkit_security::AccessScope,
+        file_id: Uuid,
+    ) -> Result<File, DomainError> {
+        Store::require_file(self, scope, file_id).await
+    }
+
     async fn get_policy(
         &self,
         scope: &toolkit_security::AccessScope,
@@ -304,5 +367,13 @@ impl crate::domain::ports::PolicyStore for Store {
         rule_id: Uuid,
     ) -> Result<bool, DomainError> {
         Store::delete_retention_rule(self, scope, rule_id).await
+    }
+
+    async fn get_retention_rule(
+        &self,
+        scope: &toolkit_security::AccessScope,
+        rule_id: Uuid,
+    ) -> Result<Option<crate::domain::policy::StoredRetentionRule>, DomainError> {
+        Store::get_retention_rule(self, scope, rule_id).await
     }
 }

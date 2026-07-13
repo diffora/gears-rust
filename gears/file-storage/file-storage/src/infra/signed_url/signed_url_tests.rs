@@ -15,6 +15,9 @@ fn sample_claims(op: Op, exp: i64) -> Claims {
         exp,
         upload: UploadConstraints::default(),
         multipart: MultipartClaims::default(),
+        request_id: "test-request-id".to_owned(),
+        content_type: String::new(),
+        etag: String::new(),
     }
 }
 
@@ -147,4 +150,39 @@ fn upload_constraints_round_trip() {
     let token = issuer.issue(claims.clone(), now()).unwrap();
     let got = issuer.verifier().verify(&token, now()).unwrap();
     assert_eq!(got.upload, claims.upload);
+}
+
+// ── P2 1.11: `content_type` / `etag` claims (GET download tokens) ───────────
+
+#[test]
+fn content_type_and_etag_round_trip() {
+    let issuer = Issuer::generate(3600).unwrap();
+    let mut claims = sample_claims(Op::Get, now().unix_timestamp() + 60);
+    claims.content_type = "image/png".to_owned();
+    claims.etag = "\"abc123\"".to_owned();
+
+    let token = issuer.issue(claims.clone(), now()).unwrap();
+    let got = issuer.verifier().verify(&token, now()).unwrap();
+    assert_eq!(got.content_type, "image/png");
+    assert_eq!(got.etag, "\"abc123\"");
+    assert_eq!(got, claims);
+}
+
+#[test]
+fn claims_without_content_type_and_etag_deserialize_with_empty_defaults() {
+    // Simulates verifying a token minted before these fields existed: a
+    // JSON payload with no `content_type`/`etag` keys at all must still
+    // deserialize, defaulting both to the empty string (version-skew
+    // tolerance, same pattern as `request_id`/`backend_handle`).
+    let json = serde_json::json!({
+        "op": "get",
+        "file_id": Uuid::now_v7(),
+        "version_id": Uuid::now_v7(),
+        "backend_id": "local",
+        "backend_path": "/f/v",
+        "exp": now().unix_timestamp() + 60,
+    });
+    let claims: Claims = serde_json::from_value(json).expect("deserialize old-shape claims");
+    assert_eq!(claims.content_type, "");
+    assert_eq!(claims.etag, "");
 }

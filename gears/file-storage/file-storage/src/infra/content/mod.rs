@@ -3,5 +3,6 @@
 //! streaming bytes (`cpt-cf-file-storage-component-content-pipeline`).
 
 pub mod hash;
+pub mod hash_mode;
 pub mod mime;
 pub mod range;

@@ -85,6 +85,42 @@ impl Store {
             .await
     }
 
+    /// Whether `file_id` currently has at least one `in_progress` multipart
+    /// upload session (regardless of `expires_at`).
+    ///
+    /// P2 2.8 orphan-file-reconciliation guard -- see
+    /// `MultipartRepo::has_in_progress_for_file`.
+    ///
+    /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    pub async fn has_in_progress_multipart_for_file(
+        &self,
+        file_id: Uuid,
+    ) -> Result<bool, DomainError> {
+        let conn = self.db.conn().map_err(db_err)?;
+        self.repos
+            .multipart
+            .has_in_progress_for_file(&conn, file_id)
+            .await
+    }
+
+    /// Force-set a session's `expires_at`. **Test-support only; do not call
+    /// in production** -- see `MultipartRepo::set_expires_at` for why this
+    /// exists and why it is `#[doc(hidden)]` rather than gated behind a
+    /// Cargo feature (it is called from the external integration-test crate
+    /// `tests/cleanup_test.rs`).
+    #[doc(hidden)]
+    pub async fn set_multipart_expires_at_for_test(
+        &self,
+        upload_id: Uuid,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let conn = self.db.conn().map_err(db_err)?;
+        self.repos
+            .multipart
+            .set_expires_at(&conn, upload_id, expires_at)
+            .await
+    }
+
     /// List all parts for a multipart upload.
     ///
     /// @cpt-cf-file-storage-fr-multipart-upload
@@ -98,6 +134,13 @@ impl Store {
 
     /// Mark a multipart upload session as `completed` and record the audit row
     /// in the same transaction.
+    ///
+    /// Also flips `mime_validated` to `true` in the same UPDATE (P2
+    /// remediation item 1.10): by the time `MultipartService::complete_multipart_upload`
+    /// calls this, it has already sniffed the assembled object's leading
+    /// bytes and validated them against `session.declared_mime` (bailing out
+    /// with `DomainError::mime_mismatch` before ever reaching this call on a
+    /// mismatch) — so reaching this point means the content is validated.
     ///
     /// @cpt-cf-file-storage-fr-multipart-upload
     /// @cpt-cf-file-storage-fr-audit-trail
@@ -114,7 +157,7 @@ impl Store {
             .transaction_ref_mapped(move |tx| {
                 Box::pin(async move {
                     let updated = multipart
-                        .update_state(tx, upload_id, "in_progress", "completed")
+                        .update_state(tx, upload_id, "in_progress", "completed", Some(true))
                         .await?;
                     if updated {
                         // @cpt-cf-file-storage-nfr-audit-completeness
@@ -144,7 +187,7 @@ impl Store {
             .transaction_ref_mapped(move |tx| {
                 Box::pin(async move {
                     let updated = multipart
-                        .update_state(tx, upload_id, "in_progress", "aborted")
+                        .update_state(tx, upload_id, "in_progress", "aborted", None)
                         .await?;
                     if updated {
                         // @cpt-cf-file-storage-nfr-audit-completeness

@@ -22,6 +22,13 @@ pub struct Model {
     pub size: i64,
     pub hash_algorithm: String,
     pub hash_value: Vec<u8>,
+    /// ADR-0006 content-hash mode: `'whole-sha256'` (non-multipart, the
+    /// default for every pre-existing row) or `'multipart-composite-sha256'`.
+    pub hash_mode: String,
+    /// Number of parts, `Some` only for `multipart-composite-sha256`
+    /// versions (enforced by the DB cross-column presence CHECK); `None`
+    /// for `whole-sha256`.
+    pub part_count: Option<i32>,
     pub status: String,
     pub is_current: bool,
     pub backend_id: String,

@@ -41,10 +41,14 @@ gears and users. It replaces ad-hoc per-gear file handling with a centralized, t
 
 - [PRD.md](docs/PRD.md) — Product requirements document
 - [DESIGN.md](docs/DESIGN.md) — Architecture and design
+- [DECOMPOSITION.md](docs/DECOMPOSITION.md) — Feature decomposition strategy
 - [api.md](docs/api.md) — HTTP API reference
 - [ADR/](docs/ADR/) — Architecture decision records
+- [features/](docs/features/) — Per-feature specs (multipart coordinator, …)
 
-## Implementation status (P1)
+## Implementation status
+
+### P1 (foundation)
 
 The **P1 control plane** is implemented and tested. Highlights:
 
@@ -53,11 +57,60 @@ The **P1 control plane** is implemented and tested. Highlights:
   versions, storages) — JSON only; content never transits the control plane.
 - Immutable-blob + content-pointer model with optimistic-CAS bind, FileStorage-level versioning, tenant isolation,
   Authorization-Service per-type checks, conditional requests (ETag / `If-Match` / `If-None-Match`).
-- Pluggable backends (trait + `local-fs` + `in-memory`); Ed25519 signed URLs; SHA-256 + magic-byte content-type
-  validation; HTTP `Range`. Data-plane **sidecar** binary verifies tokens and streams bytes.
+- Pluggable backends (trait + `local-fs` + `in-memory`); Ed25519 signed URLs (codec-equivalent to, but not literal,
+  PASETO `v4.public` — see [ADR-0004](docs/ADR/0004-cpt-cf-file-storage-adr-signed-url-transport.md)'s
+  Implementation note); SHA-256 + magic-byte content-type validation; HTTP `Range`. Data-plane **sidecar** binary
+  verifies tokens and streams bytes, then calls a token-authenticated `finalize` callback back to the control plane
+  (`pending → available`); binding a version as the file's live content (`content_id`) is always a separate,
+  client-issued request (see [DESIGN.md](docs/DESIGN.md) §3.6 and
+  [ADR-0003](docs/ADR/0003-cpt-cf-file-storage-adr-sidecar-data-plane.md)).
 
-P2/P3 features above (sharing, S3/WebDAV facades, policies, audit, multipart, quotas, …) are declared in the
-PRD/DESIGN but not implemented in P1.
+### P2 (this branch)
+
+Built on top of P1, the following shipped:
+
+- **Policy engine** — allowed-types / size / custom-metadata-limit policies, resolved at tenant and user scope
+  (`GET`/`PUT /policy`, `GET /policy/effective`). See
+  [docs/features/policy-engine.md](docs/features/policy-engine.md).
+- **Retention rules + background cleanup sweep** — per-tenant retention rules (`/retention-rules`) plus a background
+  process that prunes expired files and reconciles orphaned backend objects. See
+  [docs/features/retention-cleanup.md](docs/features/retention-cleanup.md).
+- **Idempotent create** — `POST /files` is safe to retry.
+- **Audit outbox** — a transactional outbox recording write operations (create, finalize, bind, metadata update,
+  delete, ownership transfer, backend migration, …) for downstream audit consumption. The write side is fully
+  shipped and tested; **the drain/relay side is not implemented** — see
+  [docs/features/audit-trail.md](docs/features/audit-trail.md) for the tracked gap.
+- **Events outbox** — file lifecycle events (`file.content_updated`, `file.owner_transferred`, …) are written
+  transactionally alongside the mutation. **Not yet drained** to the platform EventBroker — see Tier 4 item 4.1 in
+  the P2 remediation plan (same undrained-relay gap as the audit outbox above).
+- **Ownership transfer** — `POST /files/{id}/transfer`, atomic owner swap with audit + event + usage-delta reporting.
+  Target-owner validation is **partial** — only the nil-UUID sentinel is rejected; see
+  [docs/features/ownership-transfer.md](docs/features/ownership-transfer.md) for the tracked gap.
+- **Backend migration** — `POST /files/{id}/migrate`, relocates a non-versioned file's content to a different backend
+  with a verified, mode-aware content-hash check before committing. See
+  [docs/features/backend-migration.md](docs/features/backend-migration.md).
+- **Multipart upload** — server-authoritative parts plan, per-part signed URLs, and the sidecar's report-part
+  callback are wired end-to-end. **Functional only against a `multipart_native` backend** (today: the non-durable
+  in-memory backend for dev/test, and configured S3 backends) — the default `local-fs` backend does not declare
+  `multipart_native`, so `POST /files/{id}/multipart` is rejected against the real default topology. S3 remains
+  opt-in and merge/release-gated by the ADR-0005 external-dependency security review. See
+  [docs/features/multipart-coordinator.md](docs/features/multipart-coordinator.md) for the tracked gap and current
+  vs. intended `complete` contract.
+- **Storage quota — consumer scaffolding only, not enforced.** `check_quota`/`check_quota_bytes` gate every
+  storage-increasing operation (`create_file`, `presign_version`, multipart initiate) via the `QuotaClient` port
+  (`src/infra/external_clients.rs`), and are designed to fail **closed** once a real client is wired (a client
+  error is propagated and denies the request — see `tests/enforce_test.rs`). **But `gear.rs` always constructs both
+  services with `quota_client: None`** (`TODO(P2)`, Tier 1 item 1.4), and `None` makes the check a no-op
+  (`Ok(())`) — so **storage quota is not enforced in any deployment today**; the effective default is permissive /
+  fail-**open**, the opposite of the fail-closed design intent. This is blocked on a Quota Enforcement SDK crate,
+  which does not exist yet: `gears/system/quota-enforcement/` is docs-only (PRD/DESIGN/ADRs, no Rust crate).
+  Contrast with usage reporting, which is further along — a `usage-collector-sdk` crate exists (P2 1.12), even
+  though `usage_reporter` is also still wired as `None` pending its own integration work.
+
+**Not yet implemented**: sharing (shareable links), WebDAV, and quota enforcement wiring (Tier 1 item 1.4, see the P2
+storage-quota status above). The S3 backend (Tier 1 item 1.7) is implemented and wired as an opt-in backend for the
+control plane and sidecar, but it remains gated by the ADR-0005 external-dependency security review before merge or
+release use.
 
 ### Run
 
