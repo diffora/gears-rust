@@ -25,6 +25,10 @@ path = "ui/macro_markers.rs"
 name = "hardcoded_prefix_in_macros"
 path = "ui/hardcoded_prefix_in_macros.rs"
 
+[[example]]
+name = "hardcoded_prefix_in_attributes"
+path = "ui/hardcoded_prefix_in_attributes.rs"
+
 [dependencies]
 clippy_utils.workspace = true
 dylint_linting.workspace = true

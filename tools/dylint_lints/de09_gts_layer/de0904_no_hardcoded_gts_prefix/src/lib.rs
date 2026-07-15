@@ -37,16 +37,7 @@ impl EarlyLintPass for De0904NoHardcodedGtsPrefix {
     }
 
     fn check_attribute(&mut self, cx: &EarlyContext<'_>, attr: &Attribute) {
-        let AttrKind::Normal(normal) = &attr.kind else {
-            return;
-        };
-        let Some(last) = normal.item.path.segments.last() else {
-            return;
-        };
-        if !matches!(
-            last.ident.name.as_str(),
-            "gts_type_schema" | "struct_to_gts_schema" | "resource_error"
-        ) {
+        if !matches!(attr.kind, AttrKind::Normal(_)) {
             return;
         }
 
@@ -64,6 +55,12 @@ impl<'ast, 'a, 'cx> visit::Visitor<'ast> for HardcodedPrefixVisitor<'a, 'cx> {
     fn visit_item(&mut self, _item: &'ast Item) {
         // `EarlyLintPass::check_item` is invoked for every item. Do not walk
         // nested items here, otherwise they are visited repeatedly.
+    }
+
+    fn visit_attribute(&mut self, _attr: &'ast Attribute) {
+        // `EarlyLintPass::check_attribute` checks the complete source span of
+        // every ordinary attribute. Avoid walking attribute values here, which
+        // would report their string literals a second time.
     }
 
     fn visit_expr(&mut self, expr: &'ast Expr) {
