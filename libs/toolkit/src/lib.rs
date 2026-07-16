@@ -57,7 +57,7 @@
 //! use toolkit::{gear, Gear, DbGear, RestfulGear, StatefulGear};
 //!
 //! #[derive(Default)]
-//! #[gear(name = "user", deps = ["database"], capabilities = [db, rest, stateful])]
+//! #[gear(name = "user", deps = [database], capabilities = [db, rest, stateful])]
 //! pub struct UserGear;
 //!
 //! // Implement the declared capabilities...

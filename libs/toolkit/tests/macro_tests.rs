@@ -106,7 +106,7 @@ impl RunnableCapability for FullFeaturedGear {
 }
 
 #[derive(Default)]
-#[gear(name = "dependent", deps = ["basic", "full-featured"])]
+#[gear(name = "dependent", deps = [basic, full_featured])]
 struct DependentGear;
 
 #[async_trait]

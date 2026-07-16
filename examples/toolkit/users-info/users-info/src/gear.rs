@@ -38,7 +38,7 @@ pub(crate) type ConcreteAppServices =
 /// Main gear struct with DDD-light layout and proper `ClientHub` integration
 #[toolkit::gear(
     name = "users-info",
-    deps = ["authz-resolver"],
+    deps = [authz_resolver],
     capabilities = [db, rest]
 )]
 pub struct UsersInfo {

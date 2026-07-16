@@ -23,7 +23,7 @@ use crate::domain::Service;
 #[toolkit::gear(
     name = "calculator-gateway",
     capabilities = [rest],
-    deps = ["calculator"]
+    deps = [calculator]
 )]
 pub struct CalculatorGateway;
 
