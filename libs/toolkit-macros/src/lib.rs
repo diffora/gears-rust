@@ -18,7 +18,7 @@ mod utils;
 /// Configuration parsed from #[gear(...)] attribute
 struct GearConfig {
     name: String,
-    deps: Vec<String>,
+    deps: Vec<Ident>,
     caps: Vec<Capability>,
     ctor: Option<Expr>,           // arbitrary constructor expression
     client: Option<Path>,         // trait path for client DX helpers
@@ -197,9 +197,10 @@ impl Default for LcGearCfg {
 }
 
 impl Parse for GearConfig {
+    #[allow(clippy::too_many_lines)]
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut name: Option<String> = None;
-        let mut deps: Vec<String> = Vec::new();
+        let mut deps: Vec<Ident> = Vec::new();
         let mut caps: Vec<Capability> = Vec::new();
         let mut ctor: Option<Expr> = None;
         let mut client: Option<Path> = None;
@@ -304,15 +305,20 @@ impl Parse for GearConfig {
                         Expr::Array(arr) => {
                             for elem in arr.elems {
                                 match elem {
-                                    Expr::Lit(syn::ExprLit {
-                                        lit: Lit::Str(s), ..
-                                    }) => {
-                                        deps.push(s.value());
+                                    Expr::Path(ref path) => {
+                                        if let Some(ident) = path.path.get_ident() {
+                                            deps.push(ident.clone());
+                                        } else {
+                                            return Err(syn::Error::new_spanned(
+                                                path,
+                                                "deps must be crate identifiers, e.g. deps = [authn_resolver, types_registry]",
+                                            ));
+                                        }
                                     }
                                     other => {
                                         return Err(syn::Error::new_spanned(
                                             other,
-                                            "deps must be an array of string literals, e.g. deps = [\"db\", \"auth\"]",
+                                            "deps must be crate identifiers, e.g. deps = [authn_resolver, types_registry]",
                                         ));
                                     }
                                 }
@@ -321,7 +327,7 @@ impl Parse for GearConfig {
                         other => {
                             return Err(syn::Error::new_spanned(
                                 other,
-                                "deps must be an array, e.g. deps = [\"db\", \"auth\"]",
+                                "deps must be an array, e.g. deps = [authn_resolver, types_registry]",
                             ));
                         }
                     }
@@ -488,7 +494,7 @@ pub fn gear(attr: TokenStream, item: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = generics_clone.split_for_impl();
 
     let name_owned: String = config.name.clone();
-    let deps_owned: Vec<String> = config.deps.clone();
+    let deps_idents: Vec<Ident> = config.deps.clone();
     let caps_for_asserts: Vec<Capability> = config.caps.clone();
     let caps_for_regs: Vec<Capability> = config.caps.clone();
     let ctor_expr_opt: Option<Expr> = config.ctor.clone();
@@ -497,9 +503,10 @@ pub fn gear(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Prepare string literals for name/deps
     let name_lit = LitStr::new(&name_owned, Span::call_site());
-    let deps_lits: Vec<LitStr> = deps_owned
+    // Derive runtime dep names from crate identifiers: authn_resolver -> "authn-resolver"
+    let deps_lits: Vec<LitStr> = deps_idents
         .iter()
-        .map(|s| LitStr::new(s, Span::call_site()))
+        .map(|ident| LitStr::new(&ident.to_string().replace('_', "-"), Span::call_site()))
         .collect();
 
     // Constructor expression (provided or Default::default())
@@ -770,14 +777,10 @@ pub fn gear(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate re-exports for gear dependencies so their `inventory::submit!`
     // registrations survive linking when this gear is pulled in transitively.
-    let dep_reexports: Vec<_> = deps_owned
+    let dep_reexports: Vec<_> = deps_idents
         .iter()
-        .map(|dep| {
-            let crate_ident = Ident::new(&dep.replace('-', "_"), Span::call_site());
-            let alias_ident = Ident::new(
-                &format!("_gear_dep_{}", dep.replace('-', "_")),
-                Span::call_site(),
-            );
+        .map(|crate_ident| {
+            let alias_ident = format_ident!("_gear_dep_{}", crate_ident);
             quote! {
                 #[cfg(not(test))]
                 #[doc(hidden)]
