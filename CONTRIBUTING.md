@@ -89,6 +89,23 @@ Follow the coding standards and guidelines:
 
 Gear directories under `gears/` must use kebab-case (validated by `tools/scripts/validate_gear_names.py` and enforced in CI).
 
+#### Gear dependencies and `cargo-shear`
+
+When a gear declares dependencies via `#[gear(deps = [...])]`, the dep entries are
+**crate identifiers** (snake_case). The runtime gear name is derived by replacing
+underscores with hyphens (`authn_resolver` → `"authn-resolver"`), matching the
+convention that `lib-name == gear-name` across the workspace.
+
+The macro generates hidden `pub use` re-exports that force the linker to keep each
+dependency's `inventory::submit!` registration alive. Because these re-exports only
+exist in macro-expanded code, `cargo-shear` cannot see them and will flag the
+dependency crates as unused.
+
+**When adding a new gear dependency**, add the crate name to the
+`[workspace.metadata.cargo-shear] ignored` list in the workspace `Cargo.toml`.
+Forgetting this will cause the `shear` CI job to fail with an error unrelated to
+your actual change.
+
 Always include unit tests when introducing new code.
 
 ### 2.4. Run Code Quality Checks

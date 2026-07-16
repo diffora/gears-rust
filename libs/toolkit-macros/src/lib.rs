@@ -482,6 +482,22 @@ fn parse_lifecycle_list(list: &MetaList) -> syn::Result<LcGearCfg> {
 ///
 /// `ctor` must be a Rust expression that evaluates to the gear instance,
 /// e.g. `ctor = MyGear::new()` or `ctor = Default::default()`.
+///
+/// # Gear dependencies (`deps`)
+///
+/// `deps` lists the **crate identifiers** (`snake_case`) of gears that this gear
+/// depends on.  The runtime gear name is derived by replacing underscores with
+/// hyphens (`authn_resolver` → `"authn-resolver"`), which matches the universal
+/// convention that `lib-name == gear-name` across the workspace.
+///
+/// The macro generates hidden `pub use` re-exports so the linker keeps each
+/// dependency's `inventory::submit!` registration alive.  Because these
+/// re-exports only exist in macro-expanded code, `cargo-shear` cannot see
+/// them and will flag the dependency crates as unused.
+///
+/// **When adding a new gear dependency** you must also add the crate name to
+/// the `[workspace.metadata.cargo-shear] ignored` list in the workspace
+/// `Cargo.toml`, otherwise the `shear` CI job will fail.
 #[proc_macro_attribute]
 #[allow(clippy::too_many_lines)]
 pub fn gear(attr: TokenStream, item: TokenStream) -> TokenStream {
