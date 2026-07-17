@@ -34,7 +34,7 @@ const PERMISSION_DENIED_TYPE: &str =
 const INTERNAL_TYPE: &str = gts_uri!("cf.core.errors.err.v1~cf.core.err.internal.v1~");
 
 /// Resource-group GTS prefix (matches `RgError`'s `#[resource_error(...)]`).
-const RG_GTS: &str = gts_id!("cf.core.resource_group.group.v1~");
+const RG_GTS: &str = gts_id!("cf.core.rg.group.v1~");
 
 // ── validate_type_code ──────────────────────────────────────────────────
 

@@ -63,7 +63,15 @@ pub struct ResourceGroupTypeV1 {
 /// Match it against the resource-scoped projection variants
 /// ([`crate::ResourceGroupError::NotFound`] /
 /// [`crate::ResourceGroupError::AlreadyExists`]).
-pub const GROUP_RESOURCE_TYPE: &str = gts_id!("cf.core.resource_group.group.v1~");
+// `rg` namespace, NOT the crate-name-derived `resource_group`: this
+// string is the PEP-evaluated resource type for every group CRUD gate,
+// and every deployed role grant is written against the documented
+// `gts.cf.core.rg.*` family (siblings: `rg.group_membership.v1~`,
+// `rg.type.v1~`). The gts-rust v0.11.0 migration mechanically swapped
+// the literal for a crate-derived id and silently renamed the type —
+// which 403'd every existing grant (tenant members could no longer
+// create groups, AM's ownership probe on tenant delete failed closed).
+pub const GROUP_RESOURCE_TYPE: &str = gts_id!("cf.core.rg.group.v1~");
 
 /// Canonical GTS resource type for a resource-group membership link.
 pub const GROUP_MEMBERSHIP_RESOURCE_TYPE: &str = gts_id!("cf.core.rg.group_membership.v1~");
