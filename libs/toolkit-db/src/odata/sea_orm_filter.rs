@@ -89,14 +89,15 @@ pub trait FieldToColumn<F: FilterField> {
 
     /// Whether `field` is admissible in `$orderby` (and therefore as
     /// a key in cursor-based pagination). Default `true`. Implementors
-    /// override with `false` when the wire shape of the field differs
-    /// from its storage shape — there is no consistent ordering
-    /// between the two shapes (alphabetical strings vs ordinal
-    /// integers), and the cursor encoding path relies on
-    /// `field.kind()` to read tokens back, which would fail to decode
-    /// a storage-encoded value. The framework checks this in
-    /// `paginate_odata_collect` before composing the effective order
-    /// and rejects the `$orderby` clause as
+    /// override with `false` when the field has no honest ordering at
+    /// all (e.g. a derived-UUID comparison column). When the field IS
+    /// meaningfully orderable but its storage shape differs from its
+    /// wire shape (e.g. a SMALLINT-backed enum exposed as a string),
+    /// keep it orderable and override
+    /// [`ODataFieldMapping::cursor_kind`] instead, so the cursor codec
+    /// round-trips the storage-shaped token. The framework checks this
+    /// in `paginate_odata_collect` before composing the effective
+    /// order and rejects the `$orderby` clause as
     /// [`ODataError::InvalidOrderByField`] — keeping the diagnostic
     /// at the same site as unknown-field rejections.
     fn is_orderable(_field: F) -> bool {
@@ -143,6 +144,22 @@ pub trait ODataFieldMapping<F: FilterField>: FieldToColumn<F> {
         model: &<Self::Entity as EntityTrait>::Model,
         field: F,
     ) -> sea_orm::Value;
+
+    /// The [`FieldKind`] the cursor codec uses to encode/parse this
+    /// field's cursor token. Defaults to the field's declared wire
+    /// kind (`field.kind()`).
+    ///
+    /// Override for fields whose cursor value (what
+    /// [`Self::extract_cursor_value`] returns, i.e. the storage shape
+    /// that `$orderby` actually sorts by) differs from the wire filter
+    /// shape — e.g. a SMALLINT-backed lifecycle enum exposed as a
+    /// string on the API surface but ordered by its storage ordinal:
+    /// return [`FieldKind::I64`] and extract `sea_orm::Value::BigInt`
+    /// so `encode_cursor_value` / `parse_cursor_value` round-trip the
+    /// ordinal instead of failing on the wire/storage mismatch.
+    fn cursor_kind(field: F) -> FieldKind {
+        field.kind()
+    }
 
     /// Extract cursor values for all fields in an order.
     ///
@@ -665,14 +682,12 @@ where
     };
 
     // Reject `$orderby` keys against fields the mapper has flagged as
-    // non-orderable (typically: filter columns whose wire shape
-    // differs from their storage shape — e.g. a SMALLINT-backed enum
-    // exposed as a string on the API surface). Without this guard the
-    // cursor codec would round-trip through `field.kind()` and either
-    // misinterpret the encoded token or hand `SeaORM` a value with
-    // the wrong SQL type. Tiebreakers go through the same gate so a
-    // caller cannot smuggle a non-orderable column in via
-    // `ensure_tiebreaker`.
+    // non-orderable (fields with no honest ordering at all, e.g. a
+    // derived-UUID comparison column; wire-vs-storage shape mismatches
+    // are instead handled by the mapper's `cursor_kind` override, which
+    // keeps the cursor codec on the storage shape). Tiebreakers go
+    // through the same gate so a caller cannot smuggle a non-orderable
+    // column in via `ensure_tiebreaker`.
     for order_key in &effective_order.0 {
         let field = F::from_name(&order_key.field)
             .ok_or_else(|| ODataError::InvalidOrderByField(order_key.field.clone()))?;
@@ -837,7 +852,10 @@ where
         let field = F::from_name(&order_key.field)
             .ok_or(ODataError::InvalidOrderByField(order_key.field.clone()))?;
         let column = M::map_field(field);
-        let kind = field.kind();
+        // Cursor tokens carry the storage-shaped value the mapper
+        // extracted, so decode with the mapper's cursor kind (which may
+        // differ from the wire filter kind — see `cursor_kind`).
+        let kind = M::cursor_kind(field);
         let value = parse_cursor_value(kind, key_str).map_err(|_| ODataError::InvalidCursor)?;
         cursor_values.push((field, column, value, order_key.dir));
     }
@@ -892,7 +910,9 @@ where
 
     let mut cursor_keys = Vec::new();
     for (field, value) in field_values {
-        let kind = field.kind();
+        // Encode with the mapper's cursor kind, matching what
+        // `extract_cursor_value` produced (see `cursor_kind`).
+        let kind = M::cursor_kind(field);
         let key_str = encode_cursor_value(&value, kind).map_err(|_| ODataError::InvalidCursor)?;
         cursor_keys.push(key_str);
     }
