@@ -151,6 +151,31 @@ pub enum DomainError {
     #[error("already exists: {detail}")]
     AlreadyExists { detail: String },
 
+    /// The `IdP` reported a uniqueness collision on a user attribute
+    /// during a user operation (VHP-2158: duplicate username in the
+    /// realm, duplicate email realm-wide). Distinct from
+    /// [`Self::AlreadyExists`] (tenant-flavoured, DB-classifier
+    /// produced) so the canonical envelope rides the `user` resource
+    /// type. `resource` carries the stable colliding-field token
+    /// (`"username"` / `"email"`), NOT the caller-supplied value —
+    /// the redaction posture of the `IdP` boundary keeps provider
+    /// echoes out of public envelopes. Surfaces as HTTP 409
+    /// `already_exists`.
+    #[error("user already exists: {detail}")]
+    UserAlreadyExists { detail: String, resource: String },
+
+    /// The `IdP` rejected the supplied password against its configured
+    /// password policy (VHP-2158). Distinct from [`Self::Validation`]
+    /// so the canonical envelope carries the structured
+    /// `password` / `PASSWORD_POLICY` field-violation tokens instead
+    /// of the generic `request` / `VALIDATION` pair — clients can
+    /// attribute the failure to the password input. The raw policy
+    /// text is redacted upstream (digest in `am.idp` logs); `detail`
+    /// is the curated public summary. Surfaces as HTTP 400
+    /// `invalid_argument`.
+    #[error("password rejected by IdP policy: {detail}")]
+    IdpPasswordPolicy { detail: String },
+
     // ---- Aborted (HTTP 409) ----
     /// Retry-budget-exhausted serialization failure surfaced by
     /// [`crate::infra::storage::repo_impl::helpers::with_serializable_retry`]

@@ -108,3 +108,73 @@ fn provision_ambiguous_chains_redacted_cause_without_leaking_raw_detail() {
         "DomainError::Internal::cause MUST be reachable via Error::source"
     );
 }
+
+// ---------------------------------------------------------------------------
+// VHP-2158: classified user-operation rejections.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn user_duplicate_username_maps_to_user_already_exists() {
+    let err = IdpUserOperationFailure::DuplicateUser {
+        field: account_management_sdk::IdpUserDuplicateField::Username,
+        detail: "User exists with same username".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    let DomainError::UserAlreadyExists { detail, resource } = err else {
+        panic!("expected UserAlreadyExists, got a different variant");
+    };
+    assert_eq!(resource, "username");
+    // Public detail is a curated fixed string carrying the field
+    // token; the raw provider text MUST NOT leak.
+    assert!(detail.contains("username"), "field token missing: {detail}");
+    assert!(
+        !detail.contains("User exists"),
+        "raw provider string leaked into public detail: {detail}"
+    );
+}
+
+#[test]
+fn user_duplicate_email_maps_to_user_already_exists() {
+    let err = IdpUserOperationFailure::DuplicateUser {
+        field: account_management_sdk::IdpUserDuplicateField::Email,
+        detail: "User exists with same email".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    let DomainError::UserAlreadyExists { resource, .. } = err else {
+        panic!("expected UserAlreadyExists, got a different variant");
+    };
+    assert_eq!(resource, "email");
+}
+
+#[test]
+fn user_password_policy_maps_to_structured_password_violation() {
+    let err = IdpUserOperationFailure::PasswordPolicy {
+        detail: "invalidPasswordMinLengthMessage: 12".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    let DomainError::IdpPasswordPolicy { detail } = err else {
+        panic!("expected IdpPasswordPolicy, got a different variant");
+    };
+    // Curated public summary only — the raw KC policy text stays in
+    // the digest-only log line.
+    assert!(
+        !detail.contains("invalidPasswordMinLengthMessage"),
+        "raw provider policy text leaked into public detail: {detail}"
+    );
+}
+
+// The unclassified catch-all keeps its historical shape: a provider
+// rejection the plugin could not attribute still collapses to the
+// redacted generic Validation (no accidental behavior change for
+// legacy plugins that only emit `Rejected`).
+#[test]
+fn user_rejected_still_maps_to_redacted_validation() {
+    let err = IdpUserOperationFailure::Rejected {
+        detail: "something vendor-specific".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    let DomainError::Validation { detail } = err else {
+        panic!("expected Validation, got a different variant");
+    };
+    assert!(detail.contains("detail redacted"), "got: {detail}");
+}

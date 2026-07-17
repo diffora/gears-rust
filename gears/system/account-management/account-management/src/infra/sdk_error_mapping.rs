@@ -141,6 +141,17 @@ impl From<DomainError> for CanonicalError {
                     account_management_sdk::field::IDP_INVALID_INPUT,
                 )
                 .create(),
+            // IdP password-policy reject (VHP-2158): structured
+            // `password` / `PASSWORD_POLICY` tokens on the `user`
+            // resource, so clients attribute the 400 to the password
+            // input instead of the generic `request` / `VALIDATION`.
+            DomainError::IdpPasswordPolicy { detail } => UserResource::invalid_argument()
+                .with_field_violation(
+                    account_management_sdk::field::PASSWORD_FIELD,
+                    detail,
+                    account_management_sdk::field::PASSWORD_POLICY,
+                )
+                .create(),
 
             // ---- NotFound (HTTP 404) — one resource per variant ----
             DomainError::NotFound { detail, resource } => TenantResource::not_found(detail)
@@ -184,6 +195,14 @@ impl From<DomainError> for CanonicalError {
             DomainError::AlreadyExists { detail } => TenantResource::already_exists(detail)
                 .with_resource("tenant")
                 .create(),
+            // IdP-reported user uniqueness collision (VHP-2158):
+            // `resource` is the stable colliding-field token
+            // ("username" / "email"), never the caller-supplied value.
+            DomainError::UserAlreadyExists { detail, resource } => {
+                UserResource::already_exists(detail)
+                    .with_resource(resource)
+                    .create()
+            }
             // Duplicate-on-create per AIP-193: the at-most-one-pending
             // invariant surfaces as HTTP 409 with the existing
             // `request_id` as the structural resource identifier.

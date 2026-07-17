@@ -169,9 +169,7 @@ impl ODataFieldMapping<TenantInfoFilterField> for TenantODataMapper {
             // through the cursor codec under the `cursor_kind = I64`
             // override below; SQL comparison against the SMALLINT column
             // stays numeric either way.
-            TenantInfoFilterField::Status => {
-                sea_orm::Value::BigInt(Some(i64::from(model.status)))
-            }
+            TenantInfoFilterField::Status => sea_orm::Value::BigInt(Some(i64::from(model.status))),
             // `TenantType` is filter-only (not orderable), so it never reaches
             // the cursor path; map it identically to the raw-UUID field for
             // exhaustiveness.

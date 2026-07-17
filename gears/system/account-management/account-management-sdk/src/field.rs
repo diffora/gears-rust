@@ -45,6 +45,12 @@ pub const ROOT_TENANT_CANNOT_CHANGE_STATUS: &str = "ROOT_TENANT_CANNOT_CHANGE_ST
 /// `provisioning_metadata.realm_name`) — see [`PROVISIONING_METADATA_FIELD`].
 pub const IDP_INVALID_INPUT: &str = "IDP_INVALID_INPUT";
 
+/// The `IdP` rejected the supplied password against its configured
+/// password policy (VHP-2158). Carried on the [`PASSWORD_FIELD`]
+/// field-violation so clients can attribute the failure to the
+/// password input; the raw policy text stays provider-side.
+pub const PASSWORD_POLICY: &str = "PASSWORD_POLICY";
+
 // ---------------------------------------------------------------------------
 // `field_violations[].field` attribution keys.
 //
@@ -68,6 +74,10 @@ pub const METADATA_FIELD: &str = "metadata";
 /// ([`ROOT_TENANT_CANNOT_DELETE`] / [`ROOT_TENANT_CANNOT_CONVERT`] /
 /// [`ROOT_TENANT_CANNOT_CHANGE_STATUS`]).
 pub const TENANT_ID_FIELD: &str = "tenant_id";
+
+/// `password` field for `IdP` password-policy rejects (carries
+/// [`PASSWORD_POLICY`]).
+pub const PASSWORD_FIELD: &str = "password";
 
 /// Shared fallback field for [`IDP_INVALID_INPUT`] when the `IdP`
 /// plugin cannot localise the violation to a specific sub-key — the
