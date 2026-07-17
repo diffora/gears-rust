@@ -361,7 +361,7 @@ impl UserOperationFailureExt for IdpUserOperationFailure {
             }
             // @cpt-end:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-provider-error-return
             // @cpt-end:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-provider-error
-            // Classified uniqueness collision (VHP-2158): surface HTTP
+            // Classified uniqueness collision: surface HTTP
             // 409 `already_exists` with the stable colliding-field
             // token, instead of collapsing into the redacted generic
             // Validation. The provider detail is still digest-only in
@@ -379,7 +379,7 @@ impl UserOperationFailureExt for IdpUserOperationFailure {
                 );
                 DomainError::UserAlreadyExists { field }
             }
-            // Classified password-policy reject (VHP-2158): surface
+            // Classified password-policy reject: surface
             // the structured `password` / `PASSWORD_POLICY` violation
             // instead of the generic `request` / `VALIDATION`. Raw
             // policy text stays digest-only in logs.

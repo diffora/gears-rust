@@ -267,7 +267,7 @@ fn already_exists_maps_to_409() {
     );
 }
 
-/// VHP-2158: an `IdP`-reported user uniqueness collision surfaces as
+/// An `IdP`-reported user uniqueness collision surfaces as
 /// 409 `already_exists` on the USER resource type, with the stable
 /// colliding-field token as `resource_name` and a detail derived from
 /// the typed field — never the caller-supplied value and never the raw
@@ -306,7 +306,7 @@ fn user_already_exists_maps_to_409_with_user_resource() {
     }
 }
 
-/// VHP-2158: an `IdP` password-policy reject carries the structured
+/// An `IdP` password-policy reject carries the structured
 /// `password` / `PASSWORD_POLICY` field-violation tokens (not the
 /// generic `request` / `VALIDATION` pair) so clients can attribute
 /// the 400 to the password input without parsing `detail`.

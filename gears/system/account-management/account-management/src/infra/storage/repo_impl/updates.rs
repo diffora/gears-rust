@@ -487,7 +487,7 @@ pub(super) async fn schedule_deletion(
                 // un-contended retry path; this guard is the
                 // authoritative correctness boundary.
                 if existing.status == TenantStatus::Deleted.as_smallint() {
-                    // VHP-1729 heal-on-retry: tenants soft-deleted BEFORE
+                    // Heal-on-retry: tenants soft-deleted BEFORE
                     // the conversion cascade existed can still carry a
                     // pending conversion row, and retrying the DELETE is
                     // the natural operator remediation — so the
@@ -610,7 +610,7 @@ pub(super) async fn schedule_deletion(
                 }
                 // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-closure-maintenance:p1:inst-algo-closmnt-repo-soft-delete-status
 
-                // VHP-1729: a pending mode-conversion request whose
+                // A pending mode-conversion request whose
                 // subject is this tenant must not outlive it — resolve
                 // (cancel) it in the SAME transaction as the status
                 // flip, so a committed soft-delete can never leave a

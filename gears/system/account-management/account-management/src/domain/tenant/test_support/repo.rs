@@ -1324,7 +1324,7 @@ impl TenantRepo for FakeTenantRepo {
     }
 
     // `_deleted_by` is unused: the in-memory fake models the `tenants`
-    // table only — the conversion auto-cancel cascade (VHP-1729) is a
+    // table only — the conversion auto-cancel cascade is a
     // real-repo TX concern covered by the sqlite integration tests.
     async fn schedule_deletion(
         &self,

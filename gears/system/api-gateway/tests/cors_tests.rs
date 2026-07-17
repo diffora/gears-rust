@@ -205,7 +205,7 @@ async fn test_cors_disabled() {
     // Verify router builds without CORS layer
 }
 
-// VHP-2193 regression guard: the RBAC/AM write contract is ETag-guarded
+// Regression guard: the RBAC/AM write contract is ETag-guarded
 // (`If-Match`), and browsers may only read non-safelisted response headers
 // when the server sends `Access-Control-Expose-Headers`. The gateway used to
 // emit no expose-headers at all, so cross-origin JS saw every `ETag` as

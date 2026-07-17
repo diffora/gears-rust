@@ -1116,7 +1116,7 @@ async fn approve_recomputes_barrier_for_closure_rows_referencing_soft_deleted_de
 }
 
 // ---------------------------------------------------------------------------
-// VHP-1729: tenant soft-delete auto-cancels the pending conversion in-TX.
+// Tenant soft-delete auto-cancels the pending conversion in-TX.
 // ---------------------------------------------------------------------------
 
 /// Seed a pending conversion for `child` and return its id.

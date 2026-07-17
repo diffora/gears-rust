@@ -141,7 +141,7 @@ impl From<DomainError> for CanonicalError {
                     account_management_sdk::field::IDP_INVALID_INPUT,
                 )
                 .create(),
-            // IdP password-policy reject (VHP-2158): structured
+            // IdP password-policy reject: structured
             // `password` / `PASSWORD_POLICY` tokens on the `user`
             // resource, so clients attribute the 400 to the password
             // input instead of the generic `request` / `VALIDATION`.
@@ -195,7 +195,7 @@ impl From<DomainError> for CanonicalError {
             DomainError::AlreadyExists { detail } => TenantResource::already_exists(detail)
                 .with_resource("tenant")
                 .create(),
-            // IdP-reported user uniqueness collision (VHP-2158): both
+            // IdP-reported user uniqueness collision: both
             // the curated public detail and the stable `resource_name`
             // token derive from the typed field here — the single
             // source of the wording; the caller-supplied value is

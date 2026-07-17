@@ -495,7 +495,7 @@ async fn find_pending_for_tenant(
 /// return the post-transition snapshot to the caller.
 /// Terminal-resolve (cancel) every still-pending conversion request
 /// whose subject tenant is being soft-deleted, INSIDE the caller's
-/// transaction (VHP-1729). Called by the tenant repo's
+/// transaction. Called by the tenant repo's
 /// `schedule_deletion` SERIALIZABLE TX so the tenant flip and the
 /// conversion resolution commit or roll back together — a `204` from
 /// DELETE `/tenants/{id}` can never leave a `pending` row dangling on

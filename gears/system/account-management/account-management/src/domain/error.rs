@@ -152,7 +152,7 @@ pub enum DomainError {
     AlreadyExists { detail: String },
 
     /// The `IdP` reported a uniqueness collision on a user attribute
-    /// during a user operation (VHP-2158: duplicate username in the
+    /// during a user operation (duplicate username in the
     /// realm, duplicate email realm-wide, or KC's combined
     /// "username or email" constant). Distinct from
     /// [`Self::AlreadyExists`] (tenant-flavoured, DB-classifier
@@ -169,7 +169,7 @@ pub enum DomainError {
     },
 
     /// The `IdP` rejected the supplied password against its configured
-    /// password policy (VHP-2158). Distinct from [`Self::Validation`]
+    /// password policy. Distinct from [`Self::Validation`]
     /// so the canonical envelope carries the structured
     /// `password` / `PASSWORD_POLICY` field-violation tokens instead
     /// of the generic `request` / `VALIDATION` pair — clients can

@@ -46,7 +46,7 @@ pub fn validate_cors_config(cfg: &ApiGatewayConfig) -> Result<(), String> {
 /// silently. A silently-dropped entry is how a config typo turns into a
 /// hard-to-diagnose behavioral hole — e.g. an unparseable
 /// `exposed_headers` entry silently suppresses `Access-Control-Expose-Headers`
-/// and breaks every ETag-guarded browser write (VHP-2193).
+/// and breaks every ETag-guarded browser write.
 fn parse_list<T: std::str::FromStr>(list_name: &'static str, items: &[String]) -> Vec<T> {
     items
         .iter()

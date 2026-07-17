@@ -140,7 +140,7 @@ impl FieldToColumn<TenantInfoFilterField> for TenantODataMapper {
     /// Suspended = 2 < Deleted = 3`), NOT alphabetically by the wire
     /// string — a deliberate categorical order (healthy first,
     /// tombstones last, and inverted via `desc`) that operator UIs sort
-    /// their Status column by (VHP-2084). Cursor pages are safe: both
+    /// their Status column by. Cursor pages are safe: both
     /// the effective-order comparison and `extract_cursor_value` speak
     /// the storage `SMALLINT`, so the codec never sees a
     /// translated-shape value.
@@ -184,7 +184,7 @@ impl ODataFieldMapping<TenantInfoFilterField> for TenantODataMapper {
 
     /// `status` is a wire string but sorts (and therefore cursors) by
     /// its storage lifecycle ordinal — encode/parse its cursor token as
-    /// an integer, not with the wire `String` kind (VHP-2084). Every
+    /// an integer, not with the wire `String` kind. Every
     /// other field's cursor shape matches its wire kind.
     fn cursor_kind(field: TenantInfoFilterField) -> FieldKind {
         match field {
@@ -657,7 +657,7 @@ mod tenant_type_filter_tests {
         ));
     }
 
-    // VHP-2084 regression guard: the Tenants-page Status column sorts via
+    // Regression guard: the Tenants-page Status column sorts via
     // `$orderby=status`; the field must be orderable (lifecycle-ordinal
     // order — see `is_orderable` docs), not rejected with
     // `InvalidOrderByField` → 400 as it used to be.

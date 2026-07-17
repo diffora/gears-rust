@@ -243,7 +243,7 @@ pub struct TenantInfoQuery {
     /// are mapped to a domain error downstream. `$orderby=status` is
     /// supported and sorts by the lifecycle ordinal (`active` <
     /// `suspended` < `deleted`), not alphabetically — operator UIs sort
-    /// their Status column with it (VHP-2084); filter comparisons stay
+    /// their Status column with it; filter comparisons stay
     /// membership-only (`eq` / `ne` / `in`).
     #[odata(filter(kind = "String"))]
     pub status: String,

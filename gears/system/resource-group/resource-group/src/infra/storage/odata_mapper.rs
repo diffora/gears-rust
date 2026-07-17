@@ -83,7 +83,7 @@ impl ODataFieldMapping<GroupFilterField> for GroupODataMapper {
     /// `SMALLINT` gts ordinal — without this override the cursor codec
     /// would try to encode the `SmallInt` under the wire `String` kind
     /// and fail with `InvalidCursor` on any `$orderby=type` page
-    /// overflow (same wire-vs-storage seam as AM's `status`, VHP-2084).
+    /// overflow (same wire-vs-storage seam as AM's `status`).
     fn cursor_kind(field: GroupFilterField) -> FieldKind {
         match field {
             GroupFilterField::Type => FieldKind::I64,

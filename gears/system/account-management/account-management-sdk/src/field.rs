@@ -46,7 +46,7 @@ pub const ROOT_TENANT_CANNOT_CHANGE_STATUS: &str = "ROOT_TENANT_CANNOT_CHANGE_ST
 pub const IDP_INVALID_INPUT: &str = "IDP_INVALID_INPUT";
 
 /// The `IdP` rejected the supplied password against its configured
-/// password policy (VHP-2158). Carried on the [`PASSWORD_FIELD`]
+/// password policy. Carried on the [`PASSWORD_FIELD`]
 /// field-violation so clients can attribute the failure to the
 /// password input; the raw policy text stays provider-side.
 pub const PASSWORD_POLICY: &str = "PASSWORD_POLICY";

@@ -720,7 +720,7 @@ pub enum IdpUserOperationFailure {
     /// the fallback for genuinely unattributable rejections.
     Rejected { detail: String },
     /// Provider rejected the operation because a uniqueness invariant
-    /// on `field` is already taken (VHP-2158: duplicate username in
+    /// on `field` is already taken (duplicate username in
     /// the realm, duplicate email realm-wide). AM maps this to the
     /// canonical `already_exists` envelope (HTTP 409) — the create
     /// contract already declares a Conflict response and documents
@@ -734,7 +734,7 @@ pub enum IdpUserOperationFailure {
     /// to the canonical validation envelope with the structured
     /// `password` / `PASSWORD_POLICY` field-violation tokens so
     /// clients can attribute the failure to the password field
-    /// (VHP-2158); the raw policy text stays provider-side.
+    ///; the raw policy text stays provider-side.
     PasswordPolicy { detail: String },
 }
 

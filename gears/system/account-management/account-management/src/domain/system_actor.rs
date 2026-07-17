@@ -154,7 +154,7 @@ pub(crate) fn for_retention_sweep(tenant_id: Uuid) -> SecurityContext {
 /// `tenant_id` is the tenant being deleted; it rides the audit log
 /// line only.
 ///
-/// Platform-scoped (VHP-2376), NOT scoped to `tenant_id`: the subject
+/// Platform-scoped, NOT scoped to `tenant_id`: the subject
 /// tenant here is by definition a `Deleted` row mid-purge, and the
 /// `AuthZ` resolver's system-actor grant would root a tenant-subtree
 /// scope at it — deleted roots are clamped out of scope
@@ -223,7 +223,7 @@ mod tests {
         }
     }
 
-    // VHP-2376: the cascade hook's subject tenant is a Deleted row
+    // The cascade hook's subject tenant is a Deleted row
     // mid-purge — a subtree grant rooted at it materializes to zero
     // tenants and fails the whole reaper closed. The factory MUST be
     // platform-scoped (nil tenant → Global grant at the resolver).

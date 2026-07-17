@@ -409,7 +409,7 @@ pub trait TenantRepo: Send + Sync {
     /// `tenant_closure.descendant_status`, and terminal-resolve
     /// (cancel) any still-pending mode-conversion request whose
     /// subject is this tenant — all in the same transaction
-    /// (VHP-1729: a committed soft-delete must never leave a
+    /// (a committed soft-delete must never leave a
     /// `pending` conversion row referencing the tombstone).
     /// `deleted_by` is stamped as the auto-cancelled request's
     /// `cancelled_by`.

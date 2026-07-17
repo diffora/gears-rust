@@ -426,7 +426,7 @@ async fn list_children_rejects_ordered_comparison_on_status() {
     );
 }
 
-/// VHP-2084: `$orderby=status` sorts children by the lifecycle ordinal
+/// `$orderby=status` sorts children by the lifecycle ordinal
 /// (`Active = 1 < Suspended = 2 < Deleted = 3`), the order the
 /// Tenants-page Status column uses. Insertion (`created_at`) order is
 /// deliberately NOT the ordinal order, so a passing assertion proves
@@ -453,7 +453,7 @@ async fn list_children_orderby_status_sorts_by_lifecycle_ordinal() {
         .repo
         .list_children(&allow_all(), root, &query)
         .await
-        .expect("$orderby=status must be accepted (VHP-2084)");
+        .expect("$orderby=status must be accepted");
 
     // Effective order is (status ASC, id ASC): active first, then the
     // two suspended rows tie-broken by id.
@@ -464,7 +464,7 @@ async fn list_children_orderby_status_sorts_by_lifecycle_ordinal() {
     );
 }
 
-/// VHP-2084 cursor guard: ordering by `status` must survive the cursor
+/// Cursor guard: ordering by `status` must survive the cursor
 /// round-trip. The cursor token carries the storage ordinal
 /// (`cursor_kind = I64` on the AM mapper), so page 2+ predicates
 /// compare SMALLINT-to-integer — the exact wire-vs-storage mismatch

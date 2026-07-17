@@ -110,7 +110,7 @@ fn provision_ambiguous_chains_redacted_cause_without_leaking_raw_detail() {
 }
 
 // ---------------------------------------------------------------------------
-// VHP-2158: classified user-operation rejections.
+// Classified user-operation rejections.
 // ---------------------------------------------------------------------------
 
 #[test]
