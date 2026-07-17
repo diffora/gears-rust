@@ -468,6 +468,7 @@ async fn hard_delete_cascades_metadata_rows_for_target_tenant_only() {
         .schedule_deletion(
             &allow_all(),
             target,
+            Uuid::nil(),
             now,
             Some(Duration::ZERO.unsigned_abs()),
         )

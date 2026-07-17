@@ -405,8 +405,14 @@ pub trait TenantRepo: Send + Sync {
     /// Flip the tenant from its current SDK-visible state to
     /// `Deleted`, stamp `deleted_at = now` (which also starts the
     /// retention timer — eligibility for hard-delete becomes
-    /// `deleted_at + retention_window`), and rewrite
-    /// `tenant_closure.descendant_status` in the same transaction.
+    /// `deleted_at + retention_window`), rewrite
+    /// `tenant_closure.descendant_status`, and terminal-resolve
+    /// (cancel) any still-pending mode-conversion request whose
+    /// subject is this tenant — all in the same transaction
+    /// (a committed soft-delete must never leave a
+    /// `pending` conversion row referencing the tombstone).
+    /// `deleted_by` is stamped as the auto-cancelled request's
+    /// `cancelled_by`.
     ///
     /// **Idempotent.** Calling on a row that is already in `Deleted`
     /// status returns the existing tombstone without re-stamping
@@ -421,6 +427,7 @@ pub trait TenantRepo: Send + Sync {
         &self,
         scope: &AccessScope,
         id: Uuid,
+        deleted_by: Uuid,
         now: OffsetDateTime,
         retention: Option<Duration>,
     ) -> Result<TenantModel, DomainError>;

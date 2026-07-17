@@ -1877,7 +1877,7 @@ impl<R: TenantRepo> TenantService<R> {
         };
         let updated = self
             .repo
-            .schedule_deletion(&scope, tenant_id, now, retention)
+            .schedule_deletion(&scope, tenant_id, ctx.subject_id(), now, retention)
             .await?;
         // TODO(events): emit AM event when platform event-bus lands.
         tracing::info!(

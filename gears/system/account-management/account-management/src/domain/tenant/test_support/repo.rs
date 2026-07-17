@@ -1323,10 +1323,14 @@ impl TenantRepo for FakeTenantRepo {
         Ok(u64::try_from(state.closure.len()).unwrap_or(u64::MAX))
     }
 
+    // `_deleted_by` is unused: the in-memory fake models the `tenants`
+    // table only — the conversion auto-cancel cascade is a
+    // real-repo TX concern covered by the sqlite integration tests.
     async fn schedule_deletion(
         &self,
         _scope: &AccessScope,
         id: Uuid,
+        _deleted_by: Uuid,
         now: OffsetDateTime,
         retention: Option<Duration>,
     ) -> Result<TenantModel, DomainError> {
@@ -1735,6 +1739,7 @@ mod repo_contract_tests {
             .schedule_deletion(
                 &AccessScope::allow_all(),
                 parent,
+                Uuid::nil(),
                 ts(1_700_000_100),
                 Some(Duration::from_secs(0)),
             )
@@ -1767,6 +1772,7 @@ mod repo_contract_tests {
             .schedule_deletion(
                 &AccessScope::allow_all(),
                 leaf,
+                Uuid::nil(),
                 ts(1_700_000_100),
                 Some(Duration::from_secs(0)),
             )
@@ -1792,6 +1798,7 @@ mod repo_contract_tests {
             .schedule_deletion(
                 &AccessScope::allow_all(),
                 leaf,
+                Uuid::nil(),
                 ts(1_700_000_500),
                 Some(Duration::from_secs(0)),
             )

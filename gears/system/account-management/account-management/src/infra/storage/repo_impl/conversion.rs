@@ -493,6 +493,66 @@ async fn find_pending_for_tenant(
 /// [`DomainError::NotFound`] from [`DomainError::AlreadyResolved`] per
 /// the trait contract; on `rows_affected == 1` re-reads the row to
 /// return the post-transition snapshot to the caller.
+/// Terminal-resolve (cancel) every still-pending conversion request
+/// whose subject tenant is being soft-deleted, INSIDE the caller's
+/// transaction. Called by the tenant repo's
+/// `schedule_deletion` SERIALIZABLE TX so the tenant flip and the
+/// conversion resolution commit or roll back together — a `204` from
+/// DELETE `/tenants/{id}` can never leave a `pending` row dangling on
+/// a tombstoned tenant. Lives here (not in `updates.rs`) so ownership
+/// of the `conversion_requests` guarded-transition shape stays with
+/// the conversion repo.
+///
+/// Only rows keyed by `tenant_id = :id` can exist at this point: a
+/// parent with non-deleted children is rejected by the
+/// `TenantHasChildren` guard before the TX, so inbound conversions of
+/// live children never reach this path.
+///
+/// `allow_all`: this is a structural cascade inside an
+/// already-authorized delete (PDP gate at the service layer), same
+/// rationale as the closure rewrite in the same TX. The
+/// `status = Pending AND deleted_at IS NULL` fence makes the cascade
+/// idempotent — a soft-delete retry finds no pending row and affects
+/// zero rows. Returns `rows_affected`.
+pub(super) async fn cancel_pending_on_tenant_delete_tx(
+    tx: &DbTx<'_>,
+    tenant_id: Uuid,
+    cancelled_by: Uuid,
+    resolved_at: OffsetDateTime,
+) -> Result<u64, TxError> {
+    let res = conversion_requests::Entity::update_many()
+        .col_expr(
+            conversion_requests::Column::Status,
+            Expr::value(ConversionStatus::Cancelled.as_smallint()),
+        )
+        .col_expr(
+            conversion_requests::Column::CancelledBy,
+            Expr::value(Some(cancelled_by)),
+        )
+        .col_expr(
+            conversion_requests::Column::ResolvedAt,
+            Expr::value(Some(resolved_at)),
+        )
+        .col_expr(
+            conversion_requests::Column::CancelledComment,
+            Expr::value(Some("subject tenant deleted".to_owned())),
+        )
+        .filter(
+            Condition::all()
+                .add(conversion_requests::Column::TenantId.eq(tenant_id))
+                .add(
+                    conversion_requests::Column::Status.eq(ConversionStatus::Pending.as_smallint()),
+                )
+                .add(conversion_requests::Column::DeletedAt.is_null()),
+        )
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .exec(tx)
+        .await
+        .map_err(map_scope_to_tx)?;
+    Ok(res.rows_affected)
+}
+
 async fn run_guarded_transition<F>(
     repo: &ConversionRepoImpl,
     scope: &AccessScope,

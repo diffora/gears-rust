@@ -435,6 +435,7 @@ pub(super) async fn schedule_deletion(
     repo: &TenantRepoImpl,
     scope: &AccessScope,
     id: Uuid,
+    deleted_by: Uuid,
     now: OffsetDateTime,
     retention: Option<Duration>,
 ) -> Result<TenantModel, DomainError> {
@@ -486,7 +487,21 @@ pub(super) async fn schedule_deletion(
                 // un-contended retry path; this guard is the
                 // authoritative correctness boundary.
                 if existing.status == TenantStatus::Deleted.as_smallint() {
-                    return entity_to_model(existing).map_err(TxError::Domain);
+                    // Heal-on-retry: tenants soft-deleted BEFORE
+                    // the conversion cascade existed can still carry a
+                    // pending conversion row, and retrying the DELETE is
+                    // the natural operator remediation — so the
+                    // (idempotent, Pending-fenced) cancel runs on this
+                    // path too instead of returning early past it. For
+                    // post-fix tombstones the fence matches zero rows and
+                    // this is a no-op.
+                    let healed = super::conversion::cancel_pending_on_tenant_delete_tx(
+                        tx, id, deleted_by, now,
+                    )
+                    .await?;
+                    return entity_to_model(existing)
+                        .map(|m| (m, healed))
+                        .map_err(TxError::Domain);
                 }
                 // `Provisioning` rows have no closure entries by
                 // construction; flipping them straight to `Deleted`
@@ -595,6 +610,22 @@ pub(super) async fn schedule_deletion(
                 }
                 // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-closure-maintenance:p1:inst-algo-closmnt-repo-soft-delete-status
 
+                // A pending mode-conversion request whose
+                // subject is this tenant must not outlive it — resolve
+                // (cancel) it in the SAME transaction as the status
+                // flip, so a committed soft-delete can never leave a
+                // `pending` row referencing a tombstone. The guarded
+                // UPDATE's `status = Pending` fence keeps concurrent /
+                // repeated deletes from re-stamping resolved rows. The
+                // count rides the closure's return value: the
+                // `am.events` emission happens AFTER the TX commits —
+                // logging in here would double-count on a serialization
+                // retry and emit a phantom event if the TX ultimately
+                // rolled back.
+                let cancelled =
+                    super::conversion::cancel_pending_on_tenant_delete_tx(tx, id, deleted_by, now)
+                        .await?;
+
                 let fresh = tenants::Entity::find()
                     .secure()
                     .scope_with(&scope)
@@ -606,9 +637,25 @@ pub(super) async fn schedule_deletion(
                         diagnostic: format!("tenant {id} disappeared after schedule_deletion"),
                         cause: None,
                     })?;
-                entity_to_model(fresh).map_err(TxError::Domain)
+                entity_to_model(fresh)
+                    .map(|m| (m, cancelled))
+                    .map_err(TxError::Domain)
             })
         })
     })
     .await
+    .map(|(model, cancelled)| {
+        if cancelled > 0 {
+            tracing::info!(
+                target: "am.events",
+                kind = "conversionStateChanged",
+                tenant_id = %id,
+                cancelled_by = %deleted_by,
+                rows = cancelled,
+                event = "conversion_auto_cancelled_on_tenant_delete",
+                "am conversion request auto-cancelled by tenant soft-delete"
+            );
+        }
+        model
+    })
 }

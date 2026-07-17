@@ -287,7 +287,7 @@ async fn schedule_deletion_not_found() {
     let h = setup_sqlite().await.expect("setup");
     let err = h
         .repo
-        .schedule_deletion(&allow_all(), Uuid::new_v4(), now(), None)
+        .schedule_deletion(&allow_all(), Uuid::new_v4(), Uuid::nil(), now(), None)
         .await
         .expect_err("missing");
     assert!(matches!(err, DomainError::NotFound { .. }), "got {err:?}");
@@ -315,7 +315,7 @@ async fn schedule_deletion_idempotent_on_already_deleted() {
 
     let out = h
         .repo
-        .schedule_deletion(&allow_all(), id, now(), None)
+        .schedule_deletion(&allow_all(), id, Uuid::nil(), now(), None)
         .await
         .expect("idempotent");
     assert_eq!(out.status, TenantStatus::Deleted);
@@ -341,7 +341,7 @@ async fn schedule_deletion_rejects_provisioning() {
 
     let err = h
         .repo
-        .schedule_deletion(&allow_all(), id, now(), None)
+        .schedule_deletion(&allow_all(), id, Uuid::nil(), now(), None)
         .await
         .expect_err("provisioning cannot be soft-deleted");
     assert!(matches!(err, DomainError::Conflict { .. }), "got {err:?}");
@@ -361,7 +361,7 @@ async fn schedule_deletion_rejects_when_live_children_present() {
 
     let err = h
         .repo
-        .schedule_deletion(&allow_all(), parent, now(), None)
+        .schedule_deletion(&allow_all(), parent, Uuid::nil(), now(), None)
         .await
         .expect_err("parent with a live child cannot be soft-deleted");
     assert!(matches!(err, DomainError::TenantHasChildren), "got {err:?}");
@@ -383,6 +383,7 @@ async fn schedule_deletion_stamps_deleted_at_and_retention_window() {
         .schedule_deletion(
             &allow_all(),
             id,
+            Uuid::nil(),
             now(),
             Some(std::time::Duration::from_mins(15)),
         )
