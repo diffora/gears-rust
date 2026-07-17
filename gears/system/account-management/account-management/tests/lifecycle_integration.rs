@@ -442,7 +442,7 @@ async fn schedule_deletion_rewrites_closure_to_deleted() {
     let now = OffsetDateTime::now_utc();
     let outcome = h
         .repo
-        .schedule_deletion(&allow_all(), leaf, now, None)
+        .schedule_deletion(&allow_all(), leaf, Uuid::nil(), now, None)
         .await
         .expect("schedule_deletion");
     assert_eq!(outcome.status, TenantStatus::Deleted);
@@ -598,6 +598,7 @@ async fn hard_delete_one_cleans_tenant_and_closure_rows() {
         .schedule_deletion(
             &allow_all(),
             leaf,
+            Uuid::nil(),
             scheduled_at,
             Some(Duration::from_secs(1)),
         )
@@ -680,6 +681,7 @@ async fn hard_delete_one_rejects_lost_claim() {
         .schedule_deletion(
             &allow_all(),
             leaf,
+            Uuid::nil(),
             scheduled_at,
             Some(Duration::from_secs(1)),
         )

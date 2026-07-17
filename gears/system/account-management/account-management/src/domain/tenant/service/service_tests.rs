@@ -1924,6 +1924,7 @@ async fn hard_delete_batch_skips_rows_already_claimed_by_another_worker() {
             .schedule_deletion(
                 &AccessScope::allow_all(),
                 id,
+                Uuid::nil(),
                 now,
                 Some(StdDuration::from_secs(0)),
             )

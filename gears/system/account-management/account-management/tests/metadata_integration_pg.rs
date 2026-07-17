@@ -267,6 +267,7 @@ async fn pg_hard_delete_one_clears_metadata_via_combined_path() {
         .schedule_deletion(
             &allow_all(),
             target,
+            Uuid::nil(),
             now,
             Some(Duration::ZERO.unsigned_abs()),
         )

@@ -1114,3 +1114,160 @@ async fn approve_recomputes_barrier_for_closure_rows_referencing_soft_deleted_de
         .expect("(mid, leaf) row");
     assert_eq!(row_mid_leaf.barrier, 0);
 }
+
+// ---------------------------------------------------------------------------
+// VHP-1729: tenant soft-delete auto-cancels the pending conversion in-TX.
+// ---------------------------------------------------------------------------
+
+/// Seed a pending conversion for `child` and return its id.
+async fn seed_pending_conversion(
+    conv_repo: &ConversionRepoImpl,
+    child: Uuid,
+    parent: Uuid,
+    now: OffsetDateTime,
+) -> Uuid {
+    let new = NewConversionRequest {
+        id: Uuid::new_v4(),
+        tenant_id: child,
+        parent_id: Some(parent),
+        child_tenant_name: "c".into(),
+        initiator_side: ConversionSide::Parent,
+        target_mode: TargetMode::SelfManaged,
+        requested_by: Uuid::new_v4(),
+        requested_at: now,
+        expires_at: now + TimeDuration::days(7),
+        requested_comment: None,
+    };
+    conv_repo
+        .insert_pending(&allow_all(), &new)
+        .await
+        .expect("seed pending conversion")
+        .id
+}
+
+/// DELETE `/tenants/{id}` with an open conversion used to return 204 and
+/// leave the row `pending` with a dangling FK onto the tombstone. The
+/// cascade now runs inside `schedule_deletion`'s SERIALIZABLE TX: the
+/// tenant flip and the cancel commit together.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn soft_delete_cancels_pending_conversion_in_same_tx() {
+    let h = setup_sqlite().await.expect("harness");
+    let conv_repo = Arc::new(ConversionRepoImpl::new(Arc::clone(&h.provider)));
+    let root = Uuid::from_u128(0x9100);
+    let child = Uuid::from_u128(0x9101);
+    seed_root(&h, root).await;
+    create_active_child(&h, child, root, "vhp1729-c", false, 1).await;
+
+    let now = fixed_now();
+    let request_id = seed_pending_conversion(&conv_repo, child, root, now).await;
+    let deleter = Uuid::from_u128(0x00DE_1E7E);
+
+    let tombstone = h
+        .repo
+        .schedule_deletion(&allow_all(), child, deleter, now, None)
+        .await
+        .expect("soft delete");
+    assert_eq!(tombstone.status, TenantStatus::Deleted);
+
+    let resolved = conv_repo
+        .find_by_id(&allow_all(), request_id)
+        .await
+        .expect("find")
+        .expect("row still exists (resolved, not removed)");
+    assert_eq!(
+        resolved.status,
+        ConversionStatus::Cancelled,
+        "pending conversion MUST be terminal-resolved by the delete TX"
+    );
+    assert_eq!(resolved.cancelled_by, Some(deleter));
+    assert_eq!(resolved.resolved_at, Some(now));
+    // No pending row survives for the tombstoned tenant.
+    assert!(
+        conv_repo
+            .find_pending_for_tenant(&allow_all(), child)
+            .await
+            .expect("query")
+            .is_none(),
+        "no pending conversion may reference a tombstoned tenant"
+    );
+}
+
+/// Idempotent delete retry must not re-stamp the resolved row, and an
+/// already-resolved (cancelled) conversion is left untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn soft_delete_retry_leaves_resolved_conversion_untouched() {
+    let h = setup_sqlite().await.expect("harness");
+    let conv_repo = Arc::new(ConversionRepoImpl::new(Arc::clone(&h.provider)));
+    let root = Uuid::from_u128(0x9200);
+    let child = Uuid::from_u128(0x9201);
+    seed_root(&h, root).await;
+    create_active_child(&h, child, root, "vhp1729-r", false, 1).await;
+
+    let now = fixed_now();
+    let request_id = seed_pending_conversion(&conv_repo, child, root, now).await;
+    let first_deleter = Uuid::from_u128(0xD1);
+
+    h.repo
+        .schedule_deletion(&allow_all(), child, first_deleter, now, None)
+        .await
+        .expect("first delete");
+    // Retry with a DIFFERENT actor and later timestamp: the idempotent
+    // short-circuit + the `status = Pending` fence must preserve the
+    // first resolution verbatim.
+    let later = now + TimeDuration::hours(1);
+    h.repo
+        .schedule_deletion(&allow_all(), child, Uuid::from_u128(0xD2), later, None)
+        .await
+        .expect("idempotent retry");
+
+    let resolved = conv_repo
+        .find_by_id(&allow_all(), request_id)
+        .await
+        .expect("find")
+        .expect("row");
+    assert_eq!(resolved.status, ConversionStatus::Cancelled);
+    assert_eq!(
+        resolved.cancelled_by,
+        Some(first_deleter),
+        "retry must not re-stamp cancelled_by"
+    );
+    assert_eq!(
+        resolved.resolved_at,
+        Some(now),
+        "retry must not move resolved_at"
+    );
+}
+
+/// The cascade is keyed by `tenant_id`: deleting one child must not
+/// touch a sibling's pending conversion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn soft_delete_does_not_touch_other_tenants_conversions() {
+    let h = setup_sqlite().await.expect("harness");
+    let conv_repo = Arc::new(ConversionRepoImpl::new(Arc::clone(&h.provider)));
+    let root = Uuid::from_u128(0x9300);
+    let doomed = Uuid::from_u128(0x9301);
+    let sibling = Uuid::from_u128(0x9302);
+    seed_root(&h, root).await;
+    create_active_child(&h, doomed, root, "vhp1729-d", false, 1).await;
+    create_active_child(&h, sibling, root, "vhp1729-s", false, 1).await;
+
+    let now = fixed_now();
+    seed_pending_conversion(&conv_repo, doomed, root, now).await;
+    let sibling_request = seed_pending_conversion(&conv_repo, sibling, root, now).await;
+
+    h.repo
+        .schedule_deletion(&allow_all(), doomed, Uuid::nil(), now, None)
+        .await
+        .expect("delete doomed");
+
+    let untouched = conv_repo
+        .find_by_id(&allow_all(), sibling_request)
+        .await
+        .expect("find")
+        .expect("row");
+    assert_eq!(
+        untouched.status,
+        ConversionStatus::Pending,
+        "sibling's pending conversion MUST survive"
+    );
+}

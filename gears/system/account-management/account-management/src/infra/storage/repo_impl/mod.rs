@@ -225,10 +225,11 @@ impl TenantRepo for TenantRepoImpl {
         &self,
         scope: &AccessScope,
         id: Uuid,
+        deleted_by: Uuid,
         now: OffsetDateTime,
         retention: Option<Duration>,
     ) -> Result<TenantModel, DomainError> {
-        updates::schedule_deletion(self, scope, id, now, retention).await
+        updates::schedule_deletion(self, scope, id, deleted_by, now, retention).await
     }
 
     async fn check_hard_delete_eligibility(

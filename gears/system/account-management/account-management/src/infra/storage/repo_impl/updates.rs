@@ -435,6 +435,7 @@ pub(super) async fn schedule_deletion(
     repo: &TenantRepoImpl,
     scope: &AccessScope,
     id: Uuid,
+    deleted_by: Uuid,
     now: OffsetDateTime,
     retention: Option<Duration>,
 ) -> Result<TenantModel, DomainError> {
@@ -594,6 +595,30 @@ pub(super) async fn schedule_deletion(
                     .into());
                 }
                 // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-closure-maintenance:p1:inst-algo-closmnt-repo-soft-delete-status
+
+                // VHP-1729: a pending mode-conversion request whose
+                // subject is this tenant must not outlive it — resolve
+                // (cancel) it in the SAME transaction as the status
+                // flip, so a committed soft-delete can never leave a
+                // `pending` row referencing a tombstone. The guarded
+                // UPDATE's `status = Pending` fence keeps idempotent
+                // delete retries from re-stamping resolved rows (the
+                // already-Deleted short-circuit above returns before
+                // reaching here anyway).
+                let cancelled =
+                    super::conversion::cancel_pending_on_tenant_delete_tx(tx, id, deleted_by, now)
+                        .await?;
+                if cancelled > 0 {
+                    tracing::info!(
+                        target: "am.events",
+                        kind = "conversionStateChanged",
+                        tenant_id = %id,
+                        cancelled_by = %deleted_by,
+                        rows = cancelled,
+                        event = "conversion_auto_cancelled_on_tenant_delete",
+                        "am conversion request auto-cancelled by tenant soft-delete"
+                    );
+                }
 
                 let fresh = tenants::Entity::find()
                     .secure()
