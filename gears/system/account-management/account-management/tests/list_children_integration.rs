@@ -35,6 +35,9 @@ use time::{Duration, OffsetDateTime};
 use toolkit_odata::ast::{CompareOperator, Expr, Value as OdataValue};
 use toolkit_odata::filter::FilterField;
 use toolkit_odata::{CursorV1, ODataOrderBy, ODataQuery, OrderKey, SortDir};
+use toolkit_security::{
+    AccessScope, InTenantSubtreeScopeFilter, ScopeConstraint, ScopeFilter, pep_properties,
+};
 use uuid::Uuid;
 
 use account_management::infra::storage::entity::tenants;
@@ -341,6 +344,134 @@ async fn count_children_grouped_excludes_provisioning_includes_deleted() {
     );
 }
 
+/// Build a Respect-barriers `InTenantSubtree` scope rooted at `root`,
+/// keyed on the tenant row's own id — the exact shape AM's PDP emits
+/// for a tenant read (`tenants` maps `resource_col = "id"`).
+fn respect_scope_rooted_at(root: Uuid) -> AccessScope {
+    AccessScope::single(ScopeConstraint::new(vec![ScopeFilter::InTenantSubtree(
+        InTenantSubtreeScopeFilter::new(pep_properties::RESOURCE_ID, root),
+    )]))
+}
+
+/// Regression: a Respect-scoped caller counting a *reachable* parent's
+/// direct children MUST include a `self_managed` direct child.
+///
+/// A `self_managed` tenant's inbound closure edges carry `barrier = 1`
+/// even from its own parent, so clamping each child by the caller's
+/// barrier-respecting scope silently dropped the `self_managed` direct
+/// child from `child_count` — while `list_children` still surfaced it
+/// (the direct-child carve-out). The count must gate on the PARENT's
+/// reachability, then count all direct children. The existing
+/// `count_children_grouped_excludes_provisioning_includes_deleted`
+/// test runs under `allow_all` (barriers off) and cannot catch this.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn count_children_grouped_respect_scope_counts_self_managed_direct_child() {
+    let h = setup_sqlite().await.expect("harness");
+    let root = Uuid::from_u128(ROOT_ID);
+    seed_root(&h, root).await;
+    let type_a = Uuid::from_u128(0xAA);
+
+    // P: an ordinary (non-barrier) direct child of root — Respect-reachable.
+    let p = Uuid::from_u128(0x401);
+    seed_tenant_at(&h, p, root, ACTIVE, false, type_a, ts_at(1)).await;
+    insert_closure(&h.provider, root, p, 0, ACTIVE)
+        .await
+        .expect("(root,P) barrier 0");
+    insert_closure(&h.provider, p, p, 0, ACTIVE)
+        .await
+        .expect("(P,P) self-row");
+
+    // c1: ordinary active direct child of P.
+    let c1 = Uuid::from_u128(0x402);
+    seed_tenant_at(&h, c1, p, ACTIVE, false, type_a, ts_at(2)).await;
+    insert_closure(&h.provider, root, c1, 0, ACTIVE)
+        .await
+        .expect("(root,c1)");
+    insert_closure(&h.provider, p, c1, 0, ACTIVE)
+        .await
+        .expect("(P,c1)");
+    insert_closure(&h.provider, c1, c1, 0, ACTIVE)
+        .await
+        .expect("(c1,c1)");
+
+    // c2: self_managed direct child of P — inbound edges barrier = 1
+    // (even from P), self-row barrier = 0. This is the row the old
+    // barrier clamp dropped from P's count.
+    let c2 = Uuid::from_u128(0x403);
+    seed_tenant_at(&h, c2, p, ACTIVE, true, type_a, ts_at(3)).await;
+    insert_closure(&h.provider, root, c2, 1, ACTIVE)
+        .await
+        .expect("(root,c2) barrier 1");
+    insert_closure(&h.provider, p, c2, 1, ACTIVE)
+        .await
+        .expect("(P,c2) barrier 1");
+    insert_closure(&h.provider, c2, c2, 0, ACTIVE)
+        .await
+        .expect("(c2,c2) self-row");
+
+    let scope = respect_scope_rooted_at(root);
+    let counts = h
+        .repo
+        .count_children_grouped(&scope, &[p])
+        .await
+        .expect("grouped count");
+    assert_eq!(
+        counts.get(&p).copied(),
+        Some(2),
+        "P is Respect-reachable, so its child_count must include the \
+         self_managed direct child c2 (active c1 + self_managed c2 = 2), \
+         not drop c2 to 1 under the barrier clamp"
+    );
+}
+
+/// The parent gate must not leak a subtree below a barrier: counting the
+/// children of a `self_managed` tenant the caller can only reach past
+/// the barrier collapses to `0` (absent from the map).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn count_children_grouped_respect_scope_hides_past_barrier_subtree() {
+    let h = setup_sqlite().await.expect("harness");
+    let root = Uuid::from_u128(ROOT_ID);
+    seed_root(&h, root).await;
+    let type_a = Uuid::from_u128(0xAA);
+
+    // s: self_managed tenant directly under root — reachable to the
+    // caller only via the identity-level carve-out, NOT under Respect.
+    let s = Uuid::from_u128(0x411);
+    seed_tenant_at(&h, s, root, ACTIVE, true, type_a, ts_at(1)).await;
+    insert_closure(&h.provider, root, s, 1, ACTIVE)
+        .await
+        .expect("(root,s) barrier 1");
+    insert_closure(&h.provider, s, s, 0, ACTIVE)
+        .await
+        .expect("(s,s) self-row");
+
+    // gc: a child of s, strictly below s's barrier.
+    let gc = Uuid::from_u128(0x412);
+    seed_tenant_at(&h, gc, s, ACTIVE, false, type_a, ts_at(2)).await;
+    insert_closure(&h.provider, root, gc, 1, ACTIVE)
+        .await
+        .expect("(root,gc) barrier 1");
+    insert_closure(&h.provider, s, gc, 0, ACTIVE)
+        .await
+        .expect("(s,gc)");
+    insert_closure(&h.provider, gc, gc, 0, ACTIVE)
+        .await
+        .expect("(gc,gc)");
+
+    let scope = respect_scope_rooted_at(root);
+    let counts = h
+        .repo
+        .count_children_grouped(&scope, &[s])
+        .await
+        .expect("grouped count");
+    assert_eq!(
+        counts.get(&s).copied(),
+        None,
+        "s is not Respect-reachable (past its own barrier from root), so \
+         its subtree must not be counted - child_count collapses to 0"
+    );
+}
+
 /// Empty input short-circuits to an empty map (no query, no panic on an
 /// empty `IN ()` predicate).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -519,7 +650,7 @@ async fn list_children_orderby_status_cursor_roundtrip() {
         if let Some(c) = cursor.take() {
             assert!(
                 seen_cursors.insert(c.clone()),
-                "cursor walk returned a repeated cursor — pagination is not advancing"
+                "cursor walk returned a repeated cursor - pagination is not advancing"
             );
             q = q.with_cursor(CursorV1::decode(&c).expect("decode status cursor"));
         } else {

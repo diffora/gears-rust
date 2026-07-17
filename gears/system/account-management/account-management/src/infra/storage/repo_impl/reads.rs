@@ -455,18 +455,29 @@ pub(super) async fn count_children(
 /// different from [`count_children`], which is an internal
 /// delete-saga guard (`allow_all`, always counts `Provisioning`):
 ///
-/// * **Scope-filtered** — bounded by the caller's `scope` through
-///   `SecureORM`, so direct children behind a self-managed barrier the
-///   caller cannot penetrate collapse to `0`. This matches the
-///   visibility rule the rest of the public read surface obeys.
+/// * **Gated on the PARENT's Respect-reachability, then counts every
+///   direct child** — including a `self_managed` direct child. This is
+///   the direct-child carve-out (see `service::scope_util`): a
+///   `self_managed` tenant sits behind a `barrier = 1` closure edge
+///   even from its own parent, so clamping each *child* by the caller's
+///   barrier-respecting scope would silently drop a Respect-reachable
+///   parent's `self_managed` direct child from its `child_count` (while
+///   `list_children` still shows it — the two must agree). Instead we
+///   check which requested parents the caller can Respect-reach, then
+///   count all their direct children. The `parent_id` predicate keeps
+///   the count strictly depth-1, so nothing below a barrier leaks: a
+///   parent the caller can only reach via the identity-level carve-out
+///   (i.e. a `self_managed` tenant past the barrier) is NOT
+///   Respect-reachable, so its subtree count collapses to `0`.
 /// * **`Provisioning` excluded** — those rows have no public
 ///   representation anywhere on the SDK boundary. `Deleted` rows are
 ///   *included*, mirroring that they stay reachable via
 ///   `$filter=status eq 'deleted'`.
 ///
-/// One grouped `COUNT ... GROUP BY parent_id` for the whole batch — no
-/// N+1 across the page. Parents with no matching child are absent from
-/// the returned map; callers default those to `0`.
+/// Two indexed queries for the whole batch (parent reachability, then
+/// one grouped `COUNT ... GROUP BY parent_id`) — no N+1 across the page.
+/// Parents with no matching child are absent from the returned map;
+/// callers default those to `0`.
 pub(super) async fn count_children_grouped(
     repo: &TenantRepoImpl,
     scope: &AccessScope,
@@ -477,18 +488,53 @@ pub(super) async fn count_children_grouped(
         parent_id: Uuid,
         cnt: i64,
     }
+    #[derive(FromQueryResult)]
+    struct IdRow {
+        id: Uuid,
+    }
 
     if parent_ids.is_empty() {
         return Ok(HashMap::new());
     }
     let connection = repo.db.conn()?;
 
-    let rows = tenants::Entity::find()
+    // Step 1 — of the requested parents, which can the caller
+    // Respect-reach? This is the access-control boundary: only children
+    // of parents the caller can genuinely see are counted. A parent
+    // reachable to the caller only via the identity-level direct-child
+    // carve-out (a self_managed tenant past its barrier) is absent from
+    // this Respect-scoped read, so its children are never counted.
+    let reachable: Vec<Uuid> = tenants::Entity::find()
         .secure()
         .scope_with(scope)
+        .filter(Condition::all().add(tenants::Column::Id.is_in(parent_ids.iter().copied())))
+        .project_all(&connection, |q| {
+            q.select_only()
+                .column(tenants::Column::Id)
+                .into_model::<IdRow>()
+        })
+        .await
+        .map_err(map_scope_err)?
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    if reachable.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Step 2 — count every direct child of each Respect-reachable
+    // parent, INCLUDING self_managed direct children. The parent gate
+    // above is the access boundary and the `parent_id` predicate pins
+    // this to depth 1, so the count runs unclamped (`allow_all`) rather
+    // than re-applying the caller's barrier=0 subtree clamp — which
+    // would otherwise drop a self_managed direct child of a reachable
+    // parent. `Provisioning` is excluded; `Deleted` is included.
+    let rows = tenants::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
         .filter(
             Condition::all()
-                .add(tenants::Column::ParentId.is_in(parent_ids.iter().copied()))
+                .add(tenants::Column::ParentId.is_in(reachable.iter().copied()))
                 .add(tenants::Column::Status.ne(TenantStatus::Provisioning.as_smallint())),
         )
         .project_all(&connection, |q| {
