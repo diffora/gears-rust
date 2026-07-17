@@ -679,6 +679,10 @@ impl ApiGateway {
 impl toolkit::Gear for ApiGateway {
     async fn init(&self, ctx: &toolkit::context::GearCtx) -> anyhow::Result<()> {
         let cfg = ctx.config_or_default::<crate::config::ApiGatewayConfig>()?;
+        // Fail init on invalid CORS combinations (wildcard+credentials):
+        // tower-http would otherwise assert-panic during eager router
+        // layering — a startup crash-loop with no pointer at the config.
+        crate::cors::validate_cors_config(&cfg).map_err(|e| anyhow::anyhow!(e))?;
         self.config.store(Arc::new(cfg.clone()));
 
         debug!(
