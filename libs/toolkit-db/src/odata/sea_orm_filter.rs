@@ -152,11 +152,12 @@ pub trait ODataFieldMapping<F: FilterField>: FieldToColumn<F> {
     /// Override for fields whose cursor value (what
     /// [`Self::extract_cursor_value`] returns, i.e. the storage shape
     /// that `$orderby` actually sorts by) differs from the wire filter
-    /// shape — e.g. a SMALLINT-backed lifecycle enum exposed as a
-    /// string on the API surface but ordered by its storage ordinal:
-    /// return [`FieldKind::I64`] and extract `sea_orm::Value::BigInt`
-    /// so `encode_cursor_value` / `parse_cursor_value` round-trip the
-    /// ordinal instead of failing on the wire/storage mismatch.
+    /// shape — e.g. a SMALLINT-backed enum exposed as a string on the
+    /// API surface but ordered by its storage ordinal: return
+    /// [`FieldKind::I64`] and extract the natural storage value
+    /// (`SmallInt` / `Int` / `BigInt` all round-trip under `I64`) so
+    /// `encode_cursor_value` / `parse_cursor_value` carry the ordinal
+    /// instead of failing on the wire/storage mismatch.
     fn cursor_kind(field: F) -> FieldKind {
         field.kind()
     }
@@ -409,6 +410,13 @@ pub fn encode_cursor_value(value: &sea_orm::Value, kind: FieldKind) -> Result<St
     let result: Result<String, String> = match (kind, value) {
         (FieldKind::String, V::String(Some(s))) => Ok(s.to_string()),
         (FieldKind::I64, V::BigInt(Some(i))) => Ok(i.to_string()),
+        // Storage-shaped integer narrower than i64 (e.g. a SMALLINT
+        // lifecycle ordinal a mapper exposes under `cursor_kind = I64`):
+        // accept the natural extracted width so mappers need not widen
+        // by hand. `parse_cursor_value(I64, ..)` yields BigInt, and the
+        // SQL comparison against the narrow column stays numeric.
+        (FieldKind::I64, V::SmallInt(Some(i))) => Ok(i.to_string()),
+        (FieldKind::I64, V::Int(Some(i))) => Ok(i.to_string()),
         (FieldKind::F64, V::Double(Some(f))) => Ok(ryu::Buffer::new().format(*f).to_owned()),
         (FieldKind::Bool, V::Bool(Some(b))) => Ok(b.to_string()),
         (FieldKind::Uuid, V::Uuid(Some(u))) => Ok(u.to_string()),
@@ -927,4 +935,37 @@ where
         f: filter_hash.map(str::to_owned),
         d: direction.to_owned(),
     })
+}
+
+#[cfg(test)]
+mod cursor_codec_tests {
+    use super::*;
+
+    // Pin the storage-shaped integer arms: a mapper exposing a
+    // SMALLINT/INT column under `cursor_kind = I64` must round-trip its
+    // natural extracted width without hand-widening to BigInt.
+    #[test]
+    fn i64_kind_accepts_narrow_integer_values() {
+        for value in [
+            sea_orm::Value::SmallInt(Some(2)),
+            sea_orm::Value::Int(Some(2)),
+            sea_orm::Value::BigInt(Some(2)),
+        ] {
+            let token = encode_cursor_value(&value, FieldKind::I64)
+                .expect("narrow integer must encode under I64");
+            assert_eq!(token, "2");
+            let parsed = parse_cursor_value(FieldKind::I64, &token).expect("token must parse back");
+            assert!(matches!(parsed, sea_orm::Value::BigInt(Some(2))));
+        }
+    }
+
+    // The wire/storage mismatch that motivated `cursor_kind`: a
+    // SmallInt extracted under the wire String kind still fails loudly
+    // rather than producing a corrupt token.
+    #[test]
+    fn string_kind_rejects_integer_values() {
+        assert!(
+            encode_cursor_value(&sea_orm::Value::SmallInt(Some(2)), FieldKind::String).is_err()
+        );
+    }
 }

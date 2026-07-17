@@ -165,11 +165,7 @@ impl ODataFieldMapping<TenantInfoFilterField> for TenantODataMapper {
             TenantInfoFilterField::Name => {
                 sea_orm::Value::String(Some(Box::new(model.name.clone())))
             }
-            // `BigInt` (not the raw `SmallInt`) so the token round-trips
-            // through the cursor codec under the `cursor_kind = I64`
-            // override below; SQL comparison against the SMALLINT column
-            // stays numeric either way.
-            TenantInfoFilterField::Status => sea_orm::Value::BigInt(Some(i64::from(model.status))),
+            TenantInfoFilterField::Status => sea_orm::Value::SmallInt(Some(model.status)),
             // `TenantType` is filter-only (not orderable), so it never reaches
             // the cursor path; map it identically to the raw-UUID field for
             // exhaustiveness.

@@ -120,16 +120,17 @@ fn user_duplicate_username_maps_to_user_already_exists() {
         detail: "User exists with same username".into(),
     }
     .into_domain_error(fixture_tenant_id());
-    let DomainError::UserAlreadyExists { detail, resource } = err else {
-        panic!("expected UserAlreadyExists, got a different variant");
-    };
-    assert_eq!(resource, "username");
-    // Public detail is a curated fixed string carrying the field
-    // token; the raw provider text MUST NOT leak.
-    assert!(detail.contains("username"), "field token missing: {detail}");
+    // The typed field survives verbatim; the curated public wording is
+    // derived (once) at the canonical boundary, so raw provider text
+    // cannot leak from here by construction.
     assert!(
-        !detail.contains("User exists"),
-        "raw provider string leaked into public detail: {detail}"
+        matches!(
+            err,
+            DomainError::UserAlreadyExists {
+                field: account_management_sdk::IdpUserDuplicateField::Username
+            }
+        ),
+        "expected UserAlreadyExists(Username), got {err:?}"
     );
 }
 
@@ -140,10 +141,37 @@ fn user_duplicate_email_maps_to_user_already_exists() {
         detail: "User exists with same email".into(),
     }
     .into_domain_error(fixture_tenant_id());
-    let DomainError::UserAlreadyExists { resource, .. } = err else {
-        panic!("expected UserAlreadyExists, got a different variant");
-    };
-    assert_eq!(resource, "email");
+    assert!(
+        matches!(
+            err,
+            DomainError::UserAlreadyExists {
+                field: account_management_sdk::IdpUserDuplicateField::Email
+            }
+        ),
+        "expected UserAlreadyExists(Email), got {err:?}"
+    );
+}
+
+// KC's ModelDuplicateException path emits the combined constant "User
+// exists with same username or email" (on KC 26 it is the only 409
+// `createUser` produces directly) — the unattributable classification
+// must survive to the domain error, not collapse into Username.
+#[test]
+fn user_duplicate_combined_maps_to_username_or_email() {
+    let err = IdpUserOperationFailure::DuplicateUser {
+        field: account_management_sdk::IdpUserDuplicateField::UsernameOrEmail,
+        detail: "User exists with same username or email".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    assert!(
+        matches!(
+            err,
+            DomainError::UserAlreadyExists {
+                field: account_management_sdk::IdpUserDuplicateField::UsernameOrEmail
+            }
+        ),
+        "expected UserAlreadyExists(UsernameOrEmail), got {err:?}"
+    );
 }
 
 #[test]

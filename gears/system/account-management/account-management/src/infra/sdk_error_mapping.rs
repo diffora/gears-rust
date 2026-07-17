@@ -195,14 +195,17 @@ impl From<DomainError> for CanonicalError {
             DomainError::AlreadyExists { detail } => TenantResource::already_exists(detail)
                 .with_resource("tenant")
                 .create(),
-            // IdP-reported user uniqueness collision (VHP-2158):
-            // `resource` is the stable colliding-field token
-            // ("username" / "email"), never the caller-supplied value.
-            DomainError::UserAlreadyExists { detail, resource } => {
-                UserResource::already_exists(detail)
-                    .with_resource(resource)
-                    .create()
-            }
+            // IdP-reported user uniqueness collision (VHP-2158): both
+            // the curated public detail and the stable `resource_name`
+            // token derive from the typed field here — the single
+            // source of the wording; the caller-supplied value is
+            // never echoed.
+            DomainError::UserAlreadyExists { field } => UserResource::already_exists(format!(
+                "a user with this {} already exists",
+                field.as_human_phrase()
+            ))
+            .with_resource(field.as_field_token())
+            .create(),
             // Duplicate-on-create per AIP-193: the at-most-one-pending
             // invariant surfaces as HTTP 409 with the existing
             // `request_id` as the structural resource identifier.

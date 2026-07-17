@@ -153,16 +153,20 @@ pub enum DomainError {
 
     /// The `IdP` reported a uniqueness collision on a user attribute
     /// during a user operation (VHP-2158: duplicate username in the
-    /// realm, duplicate email realm-wide). Distinct from
+    /// realm, duplicate email realm-wide, or KC's combined
+    /// "username or email" constant). Distinct from
     /// [`Self::AlreadyExists`] (tenant-flavoured, DB-classifier
     /// produced) so the canonical envelope rides the `user` resource
-    /// type. `resource` carries the stable colliding-field token
-    /// (`"username"` / `"email"`), NOT the caller-supplied value —
-    /// the redaction posture of the `IdP` boundary keeps provider
-    /// echoes out of public envelopes. Surfaces as HTTP 409
-    /// `already_exists`.
-    #[error("user already exists: {detail}")]
-    UserAlreadyExists { detail: String, resource: String },
+    /// type. Carries the typed colliding field — the boundary mapping
+    /// derives both the stable `resource_name` token and the curated
+    /// public detail from it, so the wording lives in exactly one
+    /// place and no caller can pair an inconsistent detail/resource.
+    /// The caller-supplied value is never echoed (redaction posture of
+    /// the `IdP` boundary). Surfaces as HTTP 409 `already_exists`.
+    #[error("user already exists ({})", field.as_field_token())]
+    UserAlreadyExists {
+        field: account_management_sdk::IdpUserDuplicateField,
+    },
 
     /// The `IdP` rejected the supplied password against its configured
     /// password policy (VHP-2158). Distinct from [`Self::Validation`]

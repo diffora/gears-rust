@@ -748,16 +748,39 @@ pub enum IdpUserDuplicateField {
     Username,
     /// Realm-wide email collision.
     Email,
+    /// The provider reported a uniqueness conflict without an
+    /// attributable single field. Keycloak's `ModelDuplicateException`
+    /// path emits the combined constant "User exists with same
+    /// username or email" — on KC 26 that is the ONLY 409 shape
+    /// `createUser` produces directly — and a conflict body the plugin
+    /// cannot parse lands here too: on the user-create endpoint a 409
+    /// has no other cause than a uniqueness collision, so the status
+    /// alone justifies the conflict classification even when the field
+    /// stays unknown.
+    UsernameOrEmail,
 }
 
 impl IdpUserDuplicateField {
     /// Stable wire/field token for canonical `field_violations.field`
-    /// and metric labels.
+    /// / `resource_name` and metric labels.
     #[must_use]
     pub const fn as_field_token(self) -> &'static str {
         match self {
             Self::Username => "username",
             Self::Email => "email",
+            Self::UsernameOrEmail => "username_or_email",
+        }
+    }
+
+    /// Human phrase for curated public error details ("a user with
+    /// this {phrase} already exists"). Centralised here so AM's
+    /// canonical boundary and its tests cannot drift.
+    #[must_use]
+    pub const fn as_human_phrase(self) -> &'static str {
+        match self {
+            Self::Username => "username",
+            Self::Email => "email",
+            Self::UsernameOrEmail => "username or email",
         }
     }
 }

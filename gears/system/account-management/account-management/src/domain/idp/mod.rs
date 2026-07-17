@@ -365,22 +365,19 @@ impl UserOperationFailureExt for IdpUserOperationFailure {
             // 409 `already_exists` with the stable colliding-field
             // token, instead of collapsing into the redacted generic
             // Validation. The provider detail is still digest-only in
-            // logs — the public detail is a curated fixed string.
+            // logs — the public detail is derived from the typed field
+            // at the canonical boundary.
             Self::DuplicateUser { field, detail } => {
                 let (digest, len) = redact_provider_detail(&detail);
-                let field_token = field.as_field_token();
                 tracing::warn!(
                     target: "am.idp",
                     tenant_id = %tenant_id,
-                    field = field_token,
+                    field = field.as_field_token(),
                     provider_detail_digest = digest,
                     provider_detail_len = len,
                     "IdP user operation DuplicateUser; surfacing already_exists, raw detail redacted"
                 );
-                DomainError::UserAlreadyExists {
-                    detail: format!("a user with this {field_token} already exists"),
-                    resource: field_token.to_owned(),
-                }
+                DomainError::UserAlreadyExists { field }
             }
             // Classified password-policy reject (VHP-2158): surface
             // the structured `password` / `PASSWORD_POLICY` violation
