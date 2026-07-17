@@ -104,6 +104,15 @@ pub struct CorsConfig {
     pub allowed_methods: Vec<String>,
     /// Allowed request headers; `["*"]` means any
     pub allowed_headers: Vec<String>,
+    /// Response headers exposed to browser JavaScript via
+    /// `Access-Control-Expose-Headers`; `["*"]` means any (do not combine
+    /// with `allow_credentials` — the wildcard is invalid with credentials).
+    /// Defaults to `["ETag"]`: the optimistic-concurrency write contract
+    /// requires clients to read the `ETag` response header to build
+    /// `If-Match` guarded writes, and `ETag` is not on the CORS safelist —
+    /// without exposing it every ETag-guarded write is impossible from a
+    /// cross-origin browser client.
+    pub exposed_headers: Vec<String>,
     /// Whether to allow credentials
     pub allow_credentials: bool,
     /// Max age for preflight caching in seconds
@@ -123,6 +132,7 @@ impl Default for CorsConfig {
                 "OPTIONS".to_owned(),
             ],
             allowed_headers: vec!["*".to_owned()],
+            exposed_headers: vec!["ETag".to_owned()],
             allow_credentials: false,
             max_age_seconds: 600,
         }

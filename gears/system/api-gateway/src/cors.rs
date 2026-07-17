@@ -47,6 +47,19 @@ pub fn build_cors_layer(cfg: &ApiGatewayConfig) -> CorsLayer {
         }
     }
 
+    if cors_cfg.exposed_headers.iter().any(|h| h == "*") {
+        layer = layer.expose_headers(tower_http::cors::Any);
+    } else {
+        let headers: Vec<axum::http::HeaderName> = cors_cfg
+            .exposed_headers
+            .into_iter()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if !headers.is_empty() {
+            layer = layer.expose_headers(headers);
+        }
+    }
+
     if cors_cfg.allow_credentials {
         layer = layer.allow_credentials(true);
     }
