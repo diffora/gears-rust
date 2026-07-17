@@ -141,6 +141,17 @@ impl From<DomainError> for CanonicalError {
                     account_management_sdk::field::IDP_INVALID_INPUT,
                 )
                 .create(),
+            // IdP password-policy reject: structured
+            // `password` / `PASSWORD_POLICY` tokens on the `user`
+            // resource, so clients attribute the 400 to the password
+            // input instead of the generic `request` / `VALIDATION`.
+            DomainError::IdpPasswordPolicy { detail } => UserResource::invalid_argument()
+                .with_field_violation(
+                    account_management_sdk::field::PASSWORD_FIELD,
+                    detail,
+                    account_management_sdk::field::PASSWORD_POLICY,
+                )
+                .create(),
 
             // ---- NotFound (HTTP 404) — one resource per variant ----
             DomainError::NotFound { detail, resource } => TenantResource::not_found(detail)
@@ -184,6 +195,17 @@ impl From<DomainError> for CanonicalError {
             DomainError::AlreadyExists { detail } => TenantResource::already_exists(detail)
                 .with_resource("tenant")
                 .create(),
+            // IdP-reported user uniqueness collision: both
+            // the curated public detail and the stable `resource_name`
+            // token derive from the typed field here — the single
+            // source of the wording; the caller-supplied value is
+            // never echoed.
+            DomainError::UserAlreadyExists { field } => UserResource::already_exists(format!(
+                "a user with this {} already exists",
+                field.as_human_phrase()
+            ))
+            .with_resource(field.as_field_token())
+            .create(),
             // Duplicate-on-create per AIP-193: the at-most-one-pending
             // invariant surfaces as HTTP 409 with the existing
             // `request_id` as the structural resource identifier.

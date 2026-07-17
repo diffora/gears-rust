@@ -711,11 +711,78 @@ pub enum IdpUserOperationFailure {
     /// `idp_unsupported_operation`. Providers MUST NOT silently no-op
     /// a mutating call.
     UnsupportedOperation { detail: String },
-    /// Provider returned a payload-rejection category (e.g. duplicate
-    /// username, validation failure on email format). AM maps this to
-    /// the canonical validation envelope; the catalog refinement is
-    /// owned by `feature-errors-observability`.
+    /// Provider returned a payload-rejection the plugin could NOT
+    /// classify further. AM maps this to the canonical validation
+    /// envelope with the generic `request`/`VALIDATION` tokens.
+    /// Providers SHOULD emit the classified variants below
+    /// ([`Self::DuplicateUser`], [`Self::PasswordPolicy`]) whenever
+    /// the vendor response identifies the cause — this catch-all is
+    /// the fallback for genuinely unattributable rejections.
     Rejected { detail: String },
+    /// Provider rejected the operation because a uniqueness invariant
+    /// on `field` is already taken (duplicate username in
+    /// the realm, duplicate email realm-wide). AM maps this to the
+    /// canonical `already_exists` envelope (HTTP 409) — the create
+    /// contract already declares a Conflict response and documents
+    /// idempotency keyed by `(tenant_id, username)`.
+    DuplicateUser {
+        field: IdpUserDuplicateField,
+        detail: String,
+    },
+    /// Provider rejected the supplied password against its configured
+    /// password policy (length / complexity / history). AM maps this
+    /// to the canonical validation envelope with the structured
+    /// `password` / `PASSWORD_POLICY` field-violation tokens so
+    /// clients can attribute the failure to the password field
+    ///; the raw policy text stays provider-side.
+    PasswordPolicy { detail: String },
+}
+
+/// Which unique user attribute an [`IdpUserOperationFailure::DuplicateUser`]
+/// rejection collided on. `#[non_exhaustive]`: providers may learn to
+/// classify further unique attributes without a breaking SDK release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum IdpUserDuplicateField {
+    /// Realm-scoped username collision.
+    Username,
+    /// Realm-wide email collision.
+    Email,
+    /// The provider reported a uniqueness conflict without an
+    /// attributable single field. Keycloak's `ModelDuplicateException`
+    /// path emits the combined constant "User exists with same
+    /// username or email" — on KC 26 that is the ONLY 409 shape
+    /// `createUser` produces directly — and a conflict body the plugin
+    /// cannot parse lands here too: on the user-create endpoint a 409
+    /// has no other cause than a uniqueness collision, so the status
+    /// alone justifies the conflict classification even when the field
+    /// stays unknown.
+    UsernameOrEmail,
+}
+
+impl IdpUserDuplicateField {
+    /// Stable wire/field token for canonical `field_violations.field`
+    /// / `resource_name` and metric labels.
+    #[must_use]
+    pub const fn as_field_token(self) -> &'static str {
+        match self {
+            Self::Username => "username",
+            Self::Email => "email",
+            Self::UsernameOrEmail => "username_or_email",
+        }
+    }
+
+    /// Human phrase for curated public error details ("a user with
+    /// this {phrase} already exists"). Centralised here so AM's
+    /// canonical boundary and its tests cannot drift.
+    #[must_use]
+    pub const fn as_human_phrase(self) -> &'static str {
+        match self {
+            Self::Username => "username",
+            Self::Email => "email",
+            Self::UsernameOrEmail => "username or email",
+        }
+    }
 }
 
 impl IdpUserOperationFailure {
@@ -731,6 +798,8 @@ impl IdpUserOperationFailure {
             Self::Unavailable { .. } => "unavailable",
             Self::UnsupportedOperation { .. } => "unsupported_operation",
             Self::Rejected { .. } => "rejected",
+            Self::DuplicateUser { .. } => "duplicate_user",
+            Self::PasswordPolicy { .. } => "password_policy",
         }
     }
 
@@ -743,7 +812,9 @@ impl IdpUserOperationFailure {
         match self {
             Self::Unavailable { detail }
             | Self::UnsupportedOperation { detail }
-            | Self::Rejected { detail } => detail,
+            | Self::Rejected { detail }
+            | Self::DuplicateUser { detail, .. }
+            | Self::PasswordPolicy { detail } => detail,
         }
     }
 }

@@ -108,3 +108,101 @@ fn provision_ambiguous_chains_redacted_cause_without_leaking_raw_detail() {
         "DomainError::Internal::cause MUST be reachable via Error::source"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Classified user-operation rejections.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn user_duplicate_username_maps_to_user_already_exists() {
+    let err = IdpUserOperationFailure::DuplicateUser {
+        field: account_management_sdk::IdpUserDuplicateField::Username,
+        detail: "User exists with same username".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    // The typed field survives verbatim; the curated public wording is
+    // derived (once) at the canonical boundary, so raw provider text
+    // cannot leak from here by construction.
+    assert!(
+        matches!(
+            err,
+            DomainError::UserAlreadyExists {
+                field: account_management_sdk::IdpUserDuplicateField::Username
+            }
+        ),
+        "expected UserAlreadyExists(Username), got {err:?}"
+    );
+}
+
+#[test]
+fn user_duplicate_email_maps_to_user_already_exists() {
+    let err = IdpUserOperationFailure::DuplicateUser {
+        field: account_management_sdk::IdpUserDuplicateField::Email,
+        detail: "User exists with same email".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    assert!(
+        matches!(
+            err,
+            DomainError::UserAlreadyExists {
+                field: account_management_sdk::IdpUserDuplicateField::Email
+            }
+        ),
+        "expected UserAlreadyExists(Email), got {err:?}"
+    );
+}
+
+// KC's ModelDuplicateException path emits the combined constant "User
+// exists with same username or email" (on KC 26 it is the only 409
+// `createUser` produces directly) — the unattributable classification
+// must survive to the domain error, not collapse into Username.
+#[test]
+fn user_duplicate_combined_maps_to_username_or_email() {
+    let err = IdpUserOperationFailure::DuplicateUser {
+        field: account_management_sdk::IdpUserDuplicateField::UsernameOrEmail,
+        detail: "User exists with same username or email".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    assert!(
+        matches!(
+            err,
+            DomainError::UserAlreadyExists {
+                field: account_management_sdk::IdpUserDuplicateField::UsernameOrEmail
+            }
+        ),
+        "expected UserAlreadyExists(UsernameOrEmail), got {err:?}"
+    );
+}
+
+#[test]
+fn user_password_policy_maps_to_structured_password_violation() {
+    let err = IdpUserOperationFailure::PasswordPolicy {
+        detail: "invalidPasswordMinLengthMessage: 12".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    let DomainError::IdpPasswordPolicy { detail } = err else {
+        panic!("expected IdpPasswordPolicy, got a different variant");
+    };
+    // Curated public summary only — the raw KC policy text stays in
+    // the digest-only log line.
+    assert!(
+        !detail.contains("invalidPasswordMinLengthMessage"),
+        "raw provider policy text leaked into public detail: {detail}"
+    );
+}
+
+// The unclassified catch-all keeps its historical shape: a provider
+// rejection the plugin could not attribute still collapses to the
+// redacted generic Validation (no accidental behavior change for
+// legacy plugins that only emit `Rejected`).
+#[test]
+fn user_rejected_still_maps_to_redacted_validation() {
+    let err = IdpUserOperationFailure::Rejected {
+        detail: "something vendor-specific".into(),
+    }
+    .into_domain_error(fixture_tenant_id());
+    let DomainError::Validation { detail } = err else {
+        panic!("expected Validation, got a different variant");
+    };
+    assert!(detail.contains("detail redacted"), "got: {detail}");
+}

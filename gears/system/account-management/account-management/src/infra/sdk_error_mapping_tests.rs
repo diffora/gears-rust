@@ -267,6 +267,77 @@ fn already_exists_maps_to_409() {
     );
 }
 
+/// An `IdP`-reported user uniqueness collision surfaces as
+/// 409 `already_exists` on the USER resource type, with the stable
+/// colliding-field token as `resource_name` and a detail derived from
+/// the typed field — never the caller-supplied value and never the raw
+/// provider text.
+#[test]
+fn user_already_exists_maps_to_409_with_user_resource() {
+    for (field, token, phrase) in [
+        (
+            account_management_sdk::IdpUserDuplicateField::Username,
+            "username",
+            "a user with this username already exists",
+        ),
+        (
+            account_management_sdk::IdpUserDuplicateField::Email,
+            "email",
+            "a user with this email already exists",
+        ),
+        (
+            account_management_sdk::IdpUserDuplicateField::UsernameOrEmail,
+            "username_or_email",
+            "a user with this username or email already exists",
+        ),
+    ] {
+        let canonical = round_trip(DomainError::UserAlreadyExists { field });
+        assert_eq!(canonical.status_code(), 409);
+        assert_eq!(canonical.resource_name(), Some(token));
+        assert_eq!(
+            canonical.resource_type(),
+            Some(account_management_sdk::gts::USER_RESOURCE_TYPE)
+        );
+        assert!(
+            matches!(canonical, CanonicalError::AlreadyExists { .. }),
+            "UserAlreadyExists MUST surface as the AlreadyExists variant"
+        );
+        assert_eq!(canonical.detail(), phrase);
+    }
+}
+
+/// An `IdP` password-policy reject carries the structured
+/// `password` / `PASSWORD_POLICY` field-violation tokens (not the
+/// generic `request` / `VALIDATION` pair) so clients can attribute
+/// the 400 to the password input without parsing `detail`.
+#[test]
+fn idp_password_policy_maps_to_400_with_password_field_violation() {
+    let canonical = round_trip(DomainError::IdpPasswordPolicy {
+        detail: "the supplied password does not meet the identity provider's password policy"
+            .to_owned(),
+    });
+    assert_eq!(canonical.status_code(), 400);
+    assert_eq!(
+        canonical.resource_type(),
+        Some(account_management_sdk::gts::USER_RESOURCE_TYPE)
+    );
+    let CanonicalError::InvalidArgument { ctx, .. } = canonical else {
+        panic!("expected CanonicalError::InvalidArgument");
+    };
+    let InvalidArgument::FieldViolations { field_violations } = ctx else {
+        panic!("expected InvalidArgument::FieldViolations ctx");
+    };
+    assert_eq!(field_violations.len(), 1);
+    assert_eq!(
+        field_violations[0].field,
+        account_management_sdk::field::PASSWORD_FIELD
+    );
+    assert_eq!(
+        field_violations[0].reason,
+        account_management_sdk::field::PASSWORD_POLICY
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Aborted (HTTP 409 with reason)
 // ---------------------------------------------------------------------------

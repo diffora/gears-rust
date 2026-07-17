@@ -316,6 +316,8 @@ impl DomainError {
             Self::MetadataEntryNotFound { .. } => "metadata_entry_not_found",
             Self::MetadataVersionMismatch { .. } => "metadata_version_mismatch",
             Self::AlreadyExists { .. } => "already_exists",
+            Self::UserAlreadyExists { .. } => "user_already_exists",
+            Self::IdpPasswordPolicy { .. } => "idp_password_policy",
             Self::Aborted { .. } => "aborted",
             Self::TypeNotAllowed { .. } => "type_not_allowed",
             Self::TenantDepthExceeded { .. } => "tenant_depth_exceeded",
@@ -365,12 +367,14 @@ impl DomainError {
             | Self::PendingExists { .. }
             | Self::AlreadyResolved
             | Self::Conflict { .. }
+            | Self::IdpPasswordPolicy { .. }
             | Self::FeatureDisabled { .. } => 400,
             Self::NotFound { .. }
             | Self::UserNotFound { .. }
             | Self::ConversionRequestNotFound { .. }
             | Self::MetadataEntryNotFound { .. } => 404,
             Self::AlreadyExists { .. }
+            | Self::UserAlreadyExists { .. }
             | Self::Aborted { .. }
             | Self::MetadataVersionMismatch { .. } => 409,
             Self::CrossTenantDenied { .. } => 403,

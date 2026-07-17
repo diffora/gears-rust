@@ -361,6 +361,42 @@ impl UserOperationFailureExt for IdpUserOperationFailure {
             }
             // @cpt-end:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-provider-error-return
             // @cpt-end:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-provider-error
+            // Classified uniqueness collision: surface HTTP
+            // 409 `already_exists` with the stable colliding-field
+            // token, instead of collapsing into the redacted generic
+            // Validation. The provider detail is still digest-only in
+            // logs — the public detail is derived from the typed field
+            // at the canonical boundary.
+            Self::DuplicateUser { field, detail } => {
+                let (digest, len) = redact_provider_detail(&detail);
+                tracing::warn!(
+                    target: "am.idp",
+                    tenant_id = %tenant_id,
+                    field = field.as_field_token(),
+                    provider_detail_digest = digest,
+                    provider_detail_len = len,
+                    "IdP user operation DuplicateUser; surfacing already_exists, raw detail redacted"
+                );
+                DomainError::UserAlreadyExists { field }
+            }
+            // Classified password-policy reject: surface
+            // the structured `password` / `PASSWORD_POLICY` violation
+            // instead of the generic `request` / `VALIDATION`. Raw
+            // policy text stays digest-only in logs.
+            Self::PasswordPolicy { detail } => {
+                let (digest, len) = redact_provider_detail(&detail);
+                tracing::warn!(
+                    target: "am.idp",
+                    tenant_id = %tenant_id,
+                    provider_detail_digest = digest,
+                    provider_detail_len = len,
+                    "IdP user operation PasswordPolicy; surfacing password field violation, raw detail redacted"
+                );
+                DomainError::IdpPasswordPolicy {
+                    detail: "the supplied password does not meet the identity provider's password policy"
+                        .to_owned(),
+                }
+            }
             // SDK enum is `#[non_exhaustive]`. A new variant added in
             // a future SDK release lands here until the AM-side
             // mapping is updated; surface as `Internal` with a loud
