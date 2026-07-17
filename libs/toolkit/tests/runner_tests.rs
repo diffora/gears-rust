@@ -711,7 +711,7 @@ fn test_config_provider_edge_cases() {
     // Test complex config
     let complex_config = provider.get_gear_config("complex");
     assert!(complex_config.is_some());
-    assert!(complex_config.unwrap()["a"]["b"]["c"] == "deep_value");
+    assert_eq!(complex_config.unwrap()["a"]["b"]["c"], "deep_value");
 
     // Test non-existent config
     let missing_config = provider.get_gear_config("nonexistent");

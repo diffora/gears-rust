@@ -804,7 +804,7 @@ mod tests {
         // This test verifies the typestate markers compile
         // The actual enforcement happens at compile time
         let unscoped = Unscoped;
-        assert!(std::mem::size_of_val(&unscoped) == 0); // Unscoped is zero-sized
+        assert_eq!(std::mem::size_of_val(&unscoped), 0); // Unscoped is zero-sized
 
         // Scoped now requires an AccessScope
         let scope = AccessScope::default();

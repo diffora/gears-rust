@@ -228,7 +228,7 @@ async fn renewal_keeps_lease_alive() {
         .acquire(KEY, ttl)
         .await
         .expect("post-release acquire");
-    assert!(after.locked_by() != Uuid::nil());
+    assert_ne!(after.locked_by(), Uuid::nil());
 }
 
 // ---------------------------------------------------------------------

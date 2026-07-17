@@ -1,5 +1,4 @@
 use heck::ToUpperCamelCase;
-use proc_macro_error2::{abort, emit_error};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, Lit, spanned::Spanned};
@@ -17,8 +16,11 @@ struct FilterableField {
 }
 
 /// Parse #[odata(filter(kind = "..."))] attributes on struct fields
-fn parse_field_attrs(field: &syn::Field) -> Option<FilterableField> {
-    let field_ident = field.ident.as_ref()?.clone();
+fn parse_field_attrs(field: &syn::Field) -> syn::Result<Option<FilterableField>> {
+    let Some(field_ident) = field.ident.as_ref() else {
+        return Ok(None);
+    };
+    let field_ident = field_ident.clone();
     let field_name = field_ident.to_string();
     let span = field.span();
 
@@ -31,7 +33,7 @@ fn parse_field_attrs(field: &syn::Field) -> Option<FilterableField> {
         }
 
         // Parse using syn v2 API
-        let result = attr.parse_nested_meta(|meta| {
+        attr.parse_nested_meta(|meta| {
             // Check for filter(...) nested group
             if meta.path.is_ident("filter") {
                 // Parse the contents of filter(...)
@@ -43,66 +45,71 @@ fn parse_field_attrs(field: &syn::Field) -> Option<FilterableField> {
                         if let Lit::Str(lit_str) = lit {
                             found_kind = Some(lit_str.value());
                         } else {
-                            emit_error!(
+                            return Err(syn::Error::new(
                                 filter_meta.path.span(),
-                                "kind value must be a string literal"
-                            );
+                                "kind value must be a string literal",
+                            ));
                         }
                     }
                     Ok(())
                 })?;
             }
             Ok(())
-        });
-
-        if let Err(e) = result {
-            emit_error!(attr.span(), "Failed to parse #[odata] attribute: {}", e);
-        }
+        })?;
     }
 
-    found_kind.map(|kind| FilterableField {
+    Ok(found_kind.map(|kind| FilterableField {
         field_ident,
         field_name,
         kind,
         span,
-    })
+    }))
 }
 
 #[allow(clippy::needless_pass_by_value)] // DeriveInput is consumed by proc-macro pattern
-pub fn expand_derive_odata_filterable(input: DeriveInput) -> TokenStream {
+pub fn expand_derive_odata_filterable(input: DeriveInput) -> syn::Result<TokenStream> {
     // Verify this is a struct with named fields
     let fields = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
             Fields::Named(fields) => &fields.named,
             _ => {
-                abort!(
+                return Err(syn::Error::new(
                     input.span(),
-                    "#[derive(ODataFilterable)] requires a struct with named fields"
-                );
+                    "#[derive(ODataFilterable)] requires a struct with named fields",
+                ));
             }
         },
         _ => {
-            abort!(
+            return Err(syn::Error::new(
                 input.span(),
-                "#[derive(ODataFilterable)] can only be applied to structs"
-            );
+                "#[derive(ODataFilterable)] can only be applied to structs",
+            ));
         }
     };
 
-    // Extract filterable fields
+    // Extract filterable fields, accumulating any parse errors so all bad fields
+    // are reported in a single pass.
     let mut filterable_fields = Vec::new();
+    let mut errors: Option<syn::Error> = None;
     for field in fields {
-        if let Some(filterable) = parse_field_attrs(field) {
-            filterable_fields.push(filterable);
+        match parse_field_attrs(field) {
+            Ok(Some(filterable)) => filterable_fields.push(filterable),
+            Ok(None) => {}
+            Err(err) => match &mut errors {
+                Some(acc) => acc.combine(err),
+                None => errors = Some(err),
+            },
         }
+    }
+    if let Some(err) = errors {
+        return Err(err);
     }
 
     if filterable_fields.is_empty() {
-        emit_error!(
+        return Err(syn::Error::new(
             input.span(),
-            "No filterable fields found. Add #[odata(filter(kind = \"...\"))] to at least one field."
-        );
-        return quote! {};
+            "No filterable fields found. Add #[odata(filter(kind = \"...\"))] to at least one field.",
+        ));
     }
 
     // Generate the filter field enum name
@@ -144,7 +151,7 @@ pub fn expand_derive_odata_filterable(input: DeriveInput) -> TokenStream {
         });
 
     // Generate the full implementation
-    quote! {
+    Ok(quote! {
         #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
         #[allow(non_camel_case_types)]
         pub enum #filter_enum_name {
@@ -168,5 +175,5 @@ pub fn expand_derive_odata_filterable(input: DeriveInput) -> TokenStream {
                 }
             }
         }
-    }
+    })
 }

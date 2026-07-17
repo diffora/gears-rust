@@ -47,7 +47,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use proc_macro::TokenStream;
-use proc_macro_error2::proc_macro_error;
 use syn::{DeriveInput, parse_macro_input};
 
 mod scopable;
@@ -132,8 +131,9 @@ mod scopable;
 /// }
 /// ```
 #[proc_macro_derive(Scopable, attributes(secure))]
-#[proc_macro_error]
 pub fn derive_scopable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    scopable::expand_derive_scopable(input).into()
+    scopable::expand_derive_scopable(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }

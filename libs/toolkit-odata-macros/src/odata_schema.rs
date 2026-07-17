@@ -1,18 +1,27 @@
 use heck::ToSnakeCase;
-use proc_macro_error2::abort;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, Lit, Meta};
 
-pub fn expand_derive_odata_schema(input: &DeriveInput) -> TokenStream {
+pub fn expand_derive_odata_schema(input: &DeriveInput) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
 
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => &fields.named,
-            _ => abort!(input, "ODataSchema only supports structs with named fields"),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "ODataSchema only supports structs with named fields",
+                ));
+            }
         },
-        _ => abort!(input, "ODataSchema can only be derived for structs"),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                input,
+                "ODataSchema can only be derived for structs",
+            ));
+        }
     };
 
     let mut field_variants = Vec::new();
@@ -22,7 +31,10 @@ pub fn expand_derive_odata_schema(input: &DeriveInput) -> TokenStream {
 
     for field in fields {
         let Some(field_ident) = field.ident.as_ref() else {
-            abort!(field, "ODataSchema requires named fields");
+            return Err(syn::Error::new_spanned(
+                field,
+                "ODataSchema requires named fields",
+            ));
         };
         let field_type = &field.ty;
 
@@ -86,11 +98,11 @@ pub fn expand_derive_odata_schema(input: &DeriveInput) -> TokenStream {
         }
     };
 
-    quote! {
+    Ok(quote! {
         #field_enum
         #schema_impl
         #constructor_gear
-    }
+    })
 }
 
 fn extract_odata_name(attrs: &[syn::Attribute], field_ident: &Ident) -> String {

@@ -551,7 +551,6 @@ syn = { version = "2.0", features = [
 ] }
 heck = "0.5"
 proc-macro-crate = "3"
-proc-macro-error2 = "2.0"
 
 # Testing utilities
 trybuild = "1"

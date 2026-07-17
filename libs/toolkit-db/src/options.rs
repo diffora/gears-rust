@@ -268,7 +268,7 @@ pub(crate) async fn build_db_handle(
 
     // Expand environment variables in params
     if let Some(ref mut params) = cfg.params {
-        for (_, value) in params.iter_mut() {
+        for value in params.values_mut() {
             if value.contains("${") {
                 *value = expand_env_vars(value)?;
             }

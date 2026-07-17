@@ -110,7 +110,7 @@ impl OAuthTokenSource {
                 self.client_secret.expose()
             ));
             let encoded = Zeroizing::new(general_purpose::STANDARD.encode(credentials.as_bytes()));
-            let header_value = Zeroizing::new(format!("Basic {}", &*encoded));
+            let header_value = Zeroizing::new(format!("Basic {}", encoded.as_str()));
             builder = builder.header(AUTHORIZATION.as_str(), &header_value);
         }
 
