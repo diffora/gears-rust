@@ -66,7 +66,7 @@ impl RetentionRuleRepo {
         params: InsertRetentionRule<'_>,
     ) -> Result<Uuid, DomainError> {
         let rule_id = Uuid::now_v7();
-        let body_json = serde_json::to_string(params.body)
+        let body_json = serde_json::to_value(params.body)
             .map_err(|e| DomainError::database(format!("retention body serialization: {e}")))?;
 
         let am = ActiveModel {
@@ -150,7 +150,7 @@ fn map_model(m: Model) -> Result<StoredRetentionRule, DomainError> {
     let scope = RetentionScope::parse(&m.scope).ok_or_else(|| {
         DomainError::database(format!("invalid retention scope in DB: {}", m.scope))
     })?;
-    let body: RetentionRuleBody = serde_json::from_str(&m.body)
+    let body: RetentionRuleBody = serde_json::from_value(m.body)
         .map_err(|e| DomainError::database(format!("retention body deserialization: {e}")))?;
     Ok(StoredRetentionRule {
         rule_id: m.rule_id,

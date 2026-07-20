@@ -25,8 +25,13 @@ pub struct Model {
     /// `None` when `scope = "tenant"`; the user's `owner_id` when `scope = "user"`.
     pub scope_owner_id: Option<Uuid>,
     /// Policy body serialized as JSON (see `PolicyBody`).
-    #[sea_orm(column_type = "Text")]
-    pub body: String,
+    ///
+    /// Stored as `jsonb` on `Postgres` and `TEXT` on `SQLite` (`SeaORM`'s `Json`
+    /// column type maps transparently to both), matching the DDL in
+    /// `migrations::m20260701_000001_p2_initial`. Mirrors the pattern used by
+    /// `audit_outbox::Model::detail` / `events_outbox::Model::payload`.
+    #[sea_orm(column_type = "Json")]
+    pub body: Json,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -35,3 +40,19 @@ pub struct Model {
 pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the entity/DDL type mismatch: the Postgres DDL
+    /// (`migrations::m20260701_000001_p2_initial::POSTGRES_UP`) declares
+    /// `body jsonb NOT NULL`. If this column ever drifts back to
+    /// `ColumnType::Text`, inserts against Postgres fail with "column is of
+    /// type jsonb but expression is of type text" even though the `SQLite`
+    /// test suite (where the column really is `TEXT`) would still pass.
+    #[test]
+    fn body_column_is_json_typed() {
+        assert_eq!(Column::Body.def().get_column_type(), &ColumnType::Json);
+    }
+}

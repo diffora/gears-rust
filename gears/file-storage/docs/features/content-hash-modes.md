@@ -75,7 +75,7 @@ SHA-256 is the only algorithm for both modes and there is no remaining choice to
 
 | Actor | Role in Feature |
 |-------|-----------------|
-| `cpt-cf-file-storage-actor-platform-user` | Receives `hash_mode`, `part_count`, and (for multipart-composite versions) the `manifest` text in complete/metadata responses; may independently re-derive and verify the stored `root` from the object bytes plus the manifest |
+| `cpt-cf-file-storage-actor-platform-user` | Receives `hash_mode`/`part_count` in both the `complete` response and version-metadata (`GET /files/{id}/versions`) responses; the `manifest` text itself is returned **only** by the one-shot `complete` response (not by metadata responses — a tracked API-exposure gap) and must be retained client-side to re-derive and verify the stored `root` from the object bytes plus the manifest later |
 | `cpt-cf-file-storage-actor-cf-gears` | Peer gear / service consuming the same additive metadata fields; also the actor that triggers `migrate_backend`, whose mode-aware verification this feature makes self-contained |
 
 ### 1.4 References
@@ -108,9 +108,9 @@ The one genuinely new actor-facing journey this feature enables is independent c
 **Actor**: `cpt-cf-file-storage-actor-platform-user`
 
 **Success Scenarios**:
-- Client holding the full object bytes plus the API-returned `root` and `manifest` independently re-derives `root`
-  using nothing but a stock SHA-256 implementation and confirms it matches, with no dependency on any
-  multipart-session state or trust in the server's claimed offsets alone
+- Client holding the full object bytes plus the `root` and `manifest` it retained from the multipart `complete`
+  response independently re-derives `root` using nothing but a stock SHA-256 implementation and confirms it matches,
+  with no dependency on any multipart-session state or trust in the server's claimed offsets alone
 
 **Error Scenarios**:
 - Any byte in any part has been tampered with or corrupted — the recomputed per-part digest does not match the
@@ -119,10 +119,14 @@ The one genuinely new actor-facing journey this feature enables is independent c
   error (`whole-sha256` versions carry no manifest; re-verification is a direct `sha256(object bytes)` comparison)
 
 **Steps**:
-1. [ ] - `p2` - Client: fetch version metadata, obtaining `hash_mode`, `hash_value` (`root`), `part_count`, and (for
-   `multipart-composite-sha256` versions only) `manifest` - `inst-reverify-fetch-metadata`
+1. [ ] - `p2` - Client: fetch version metadata (`GET /files/{id}/versions`), obtaining `hash_mode`, the stored hash
+   (wire field `hash` on `VersionDto`; the `root` for a composite version — stored as `hash_value` in the DB), and
+   `part_count`. **`manifest` is NOT available from this or any other GET endpoint** (`VersionDto` has
+   no `manifest` field — a tracked API-exposure gap); for a `multipart-composite-sha256` version the client must
+   already be holding the `manifest` text it retained from the original `POST .../complete` response
+   - `inst-reverify-fetch-metadata`
 2. [ ] - `p2` - **IF** `hash_mode == whole-sha256`: compute `sha256(object bytes)` directly and compare to
-   `hash_value` - `inst-reverify-whole`
+   the fetched hash (`VersionDto.hash`) - `inst-reverify-whole`
 3. [ ] - `p2` - **ELSE** (`hash_mode == multipart-composite-sha256`): Algorithm: re-derive and verify using
    `cpt-cf-file-storage-algo-content-hash-modes-verify` - `inst-reverify-composite`
 4. [ ] - `p2` - **RETURN** verification result (match / mismatch, with the specific diverging part offset when
@@ -568,8 +572,14 @@ never diverge:**
 7. **Part count is implicit but also stored redundantly.** The number of
    `part` entries in the manifest always equals the version row's
    `part_count` column (§5); a manifest whose entry count disagrees with the
-   stored `part_count` is corrupt and MUST be treated as a verification
-   failure, not silently trusted from either source alone.
+   stored `part_count` **should** be treated as corrupt/a verification
+   failure, not silently trusted from either source alone. **Known gap
+   (tracked, not implemented)**: `Store::verify_content_hash` takes no
+   `part_count` parameter and `migrate_backend` never compares the manifest's
+   entry count against the stored column — this cross-check does not
+   actually run anywhere in code today. Do not infer it is enforced from this
+   normative description; treat it as a documented intent pending
+   implementation, not a shipped invariant.
 8. **Empty / degenerate cases.** A multipart upload always has at least one
    part by construction (S3 and this gear's own multipart flow both reject
    zero-part completion), so the manifest always has at least one `part`
@@ -723,7 +733,7 @@ existing session-scoped lifecycle.
 |---|---|---|---|
 | Single-part `finalize_upload[_by_token]` (`write.rs`) | re-read whole object, `hash::sha256`, compare | unchanged | N/A (multipart only) |
 | Multipart `complete_multipart_upload` (`multipart_service.rs`) | `backend.complete_multipart` re-reads + flat SHA-256 | N/A | build manifest from already-collected `(offset, part_hash)` pairs, `root = sha256(manifest)` — **no re-read** |
-| Client-side re-verification | N/A (no multipart mode existed with an independent client check) | re-read/re-fetch the object, `sha256`, compare to `hash_value` — unchanged, always possible from object bytes alone | fetch `root` **and** `manifest` from the metadata API, split the object at the manifest's recorded offsets, `sha256` each part, rebuild the manifest string per §3, `sha256(manifest) == root` — **self-contained given object bytes + manifest; not possible from object bytes alone** |
+| Client-side re-verification | N/A (no multipart mode existed with an independent client check) | re-read/re-fetch the object, `sha256`, compare to `hash_value` — unchanged, always possible from object bytes alone | **retain the composite root (wire field `content_hash` on the `POST .../complete` response) and `manifest`** (they are not re-fetchable later — `VersionDto`/`GET /files/{id}/versions` has no `manifest` field, a tracked API-exposure gap), split the object at the manifest's recorded offsets, `sha256` each part, rebuild the manifest string per §3, `sha256(manifest) == root` — self-contained given object bytes + the retained manifest; not possible from object bytes alone |
 | `migrate_backend` (`backend.rs:35-170`) | `Store::verify_content_hash` = hard-coded `hash::sha256(blob)` | unchanged: re-read + whole-object SHA-256 rehash, compare to `hash_value` | fetch the `version_hash_manifest` row alongside the version; re-read the (already necessarily re-read, since this is a backend copy) object bytes; split at the manifest's offsets, `sha256` each part, rebuild the manifest, compare `sha256(manifest)` to `hash_value` — **fully self-contained from object bytes + the stored manifest row, no dependency on `multipart_upload_parts` surviving** |
 | Any future generic "re-verify a version's integrity" tool | implicit, whole-object | dispatch by `hash_mode`, whole-object rehash | dispatch by `hash_mode`; fetch the manifest row, re-derive per the migrate_backend path above |
 

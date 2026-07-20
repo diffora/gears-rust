@@ -57,13 +57,6 @@ const SIGN_DURATION: Duration = Duration::from_mins(1);
 /// megabytes of data.
 const DEFAULT_MULTIPART_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Backend path probed by `is_ready` (P2 1.6). Deliberately never written by
-/// any real upload (`file_versions.backend_path` is always
-/// `/{file_id}/{version_id}`, a UUID pair, so this literal can never collide)
-/// — the probe only cares whether the round trip to the endpoint succeeds and
-/// is authenticated, not whether the object exists.
-const READYZ_PROBE_PATH: &str = "/__file_storage_readyz_probe__";
-
 /// An S3-compatible storage backend. Talks to any S3-compatible HTTP API
 /// (real AWS S3, `MinIO`, `s3s-fs` in tests) via path-style addressing.
 pub struct S3Backend {
@@ -768,16 +761,31 @@ impl StorageBackend for S3Backend {
         Ok(paths)
     }
 
-    /// Readiness probe: a `HeadObject` against `READYZ_PROBE_PATH`, a
-    /// well-known key no real upload ever writes. Reuses `exists` rather than
-    /// adding a new S3 API surface: `exists` already treats a clean 404 as
-    /// `Ok(false)` (endpoint reachable, credentials valid, object absent —
-    /// exactly the expected outcome here) and any other status
-    /// (auth failure, 5xx) or transport error as `Err`, so mapping its `Ok`
-    /// case to `()` is sufficient — the probed key's actual presence/absence
-    /// is irrelevant to readiness.
+    /// Readiness probe: `ListObjectsV2` (`max-keys=1`) against the bucket
+    /// itself, not a `HeadObject` against a well-known probe key.
+    ///
+    /// `HeadObject` cannot distinguish "bucket exists, probe key absent"
+    /// from "bucket does not exist (or is misconfigured)": both come back as
+    /// a bare `404` with no body — HEAD responses never carry one, so there
+    /// is nothing in the response to tell `NoSuchBucket` apart from
+    /// `NoSuchKey`. `exists`'s 404-means-absent mapping (correct for its own
+    /// contract) previously leaked into readiness via this method, so a
+    /// missing/misconfigured bucket reported `Ok(false)` — "reachable,
+    /// object absent" — same as the expected steady-state, and `/readyz`
+    /// passed while every real read/write against that backend would fail.
+    ///
+    /// `ListObjectsV2` is bucket-scoped: it returns `200` (with an empty
+    /// `<Contents>` list) for *any* existing, accessible bucket regardless of
+    /// its contents, and a genuine error status (404 `NoSuchBucket`, 403
+    /// `AccessDenied`, etc.) only when the bucket itself is missing or
+    /// inaccessible. `send_and_check` already maps any non-2xx status to
+    /// `Err`, so success/failure of this call alone is the bucket-level
+    /// signal readiness needs — the returned listing body is discarded.
     async fn is_ready(&self) -> Result<(), DomainError> {
-        self.exists(READYZ_PROBE_PATH).await.map(|_| ())
+        let mut action = self.bucket.list_objects_v2(Some(&self.credentials));
+        action.with_max_keys(1);
+        let url = action.sign(SIGN_DURATION);
+        self.send_and_check(self.http.get(url)).await.map(|_| ())
     }
 }
 

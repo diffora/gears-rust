@@ -93,7 +93,7 @@ impl PolicyRepo {
             .map_err(db_err)?;
 
         let policy_id = Uuid::now_v7();
-        let body_json = serde_json::to_string(body)
+        let body_json = serde_json::to_value(body)
             .map_err(|e| DomainError::database(format!("policy body serialization: {e}")))?;
 
         let am = ActiveModel {
@@ -116,7 +116,7 @@ impl PolicyRepo {
 fn map_model(m: Model) -> Result<StoredPolicy, DomainError> {
     let scope = PolicyScope::parse(&m.scope)
         .ok_or_else(|| DomainError::database(format!("invalid policy scope in DB: {}", m.scope)))?;
-    let body: PolicyBody = serde_json::from_str(&m.body)
+    let body: PolicyBody = serde_json::from_value(m.body)
         .map_err(|e| DomainError::database(format!("policy body deserialization: {e}")))?;
     Ok(StoredPolicy {
         policy_id: m.policy_id,

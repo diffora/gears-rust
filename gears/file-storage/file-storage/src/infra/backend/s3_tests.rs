@@ -201,8 +201,9 @@ async fn s3_backend_exists_distinguishes_missing_from_error() {
 }
 
 /// P2 1.6: `is_ready` against a reachable, correctly-authenticated `s3s-fs`
-/// endpoint must succeed — the probed key is expected to be absent (a clean
-/// 404), which `is_ready` must still treat as "ready".
+/// endpoint with an existing (empty) bucket must succeed — `ListObjectsV2`
+/// returns `200` with an empty listing, which `is_ready` must treat as
+/// "ready".
 #[tokio::test]
 async fn s3_is_ready_ok_against_s3s_fs() {
     let (addr, dir) = start_s3s_fs().await;
@@ -245,6 +246,36 @@ async fn s3_is_ready_err_against_closed_port() {
         .is_ready()
         .await
         .expect_err("is_ready must fail against an unreachable endpoint");
+}
+
+/// Regression test for the bucket-missing false positive: `is_ready` must
+/// fail against a reachable, correctly-authenticated endpoint whose target
+/// bucket does not exist. Deliberately does NOT go through `make_backend`
+/// (which pre-creates the bucket directory) — `s3s-fs` has no bucket at this
+/// path, so `HeadObject` and `ListObjectsV2` both 404, but only
+/// `ListObjectsV2`'s `NoSuchBucket` can be told apart from a merely-absent
+/// key. Before the `ListObjectsV2`-based probe, this same 404 was folded
+/// into `exists`'s "key absent" `Ok(false)` and `is_ready` reported ready.
+#[tokio::test]
+async fn s3_is_ready_err_against_missing_bucket() {
+    let (addr, _dir) = start_s3s_fs().await;
+    let endpoint: url::Url = format!("http://{addr}")
+        .parse()
+        .expect("valid endpoint url");
+    let backend = S3Backend::new(
+        "s3-test",
+        endpoint,
+        "us-east-1",
+        unique_bucket(),
+        TEST_ACCESS_KEY,
+        TEST_SECRET_KEY,
+    )
+    .expect("construct S3Backend");
+
+    backend
+        .is_ready()
+        .await
+        .expect_err("is_ready must fail when the target bucket does not exist");
 }
 
 #[tokio::test]
