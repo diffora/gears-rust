@@ -8,6 +8,10 @@ on:
       - 'docs/**'
   workflow_dispatch:
 
+# NOTE: workflow-level paths-ignore above still skips the entire workflow for
+# pure doc/markdown changes.  The per-job path filters below provide finer
+# granularity so that, e.g., a Cargo.toml-only change skips FIPS/dylint.
+
 # Concurrency strategy:
 # - On pull_request: group by PR number. New commits cancel the in-flight run.
 # - On push (main/develop): include run_id so pushes never cancel each other,
@@ -27,17 +31,83 @@ env:
   SCCACHE_CACHE_SIZE: "2G"
   # Usually better determinism and smaller cache churn in CI.
   CARGO_INCREMENTAL: "0"
+  # Pinned nightly toolchain used by coverage, dylint, and shear jobs.
+  RUSTUP_TOOLCHAIN_NIGHTLY: nightly-2026-04-16
 
 jobs:
+  # ── Change detection ──────────────────────────────────────────────────
+  # Lightweight first job that classifies which areas of the repo changed.
+  # Downstream jobs use these outputs to skip work that can't be affected.
+  # On workflow_dispatch every filter defaults to true (run everything).
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust:   ${{ steps.filter.outputs.rust }}
+      fips:   ${{ steps.filter.outputs.fips }}
+      dylint: ${{ steps.filter.outputs.dylint }}
+      deps:   ${{ steps.filter.outputs.deps }}
+      ci:     ${{ steps.filter.outputs.ci }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'Makefile'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+            fips:
+              - 'libs/toolkit/**'
+              - 'libs/toolkit-http/**'
+              - 'libs/rustls-*/**'
+            dylint:
+              - 'tools/dylint_lints/**'
+            deps:
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'deny.toml'
+            ci:
+              - '.github/workflows/**'
+
+  # ── Jobs ──────────────────────────────────────────────────────────────
+
   # Fast clippy: ubuntu only, 2-pass strategy (~5-6 min vs 30-40 min before).
   # Linting output is platform-independent; platform-specific paths (fips) are
   # covered by the test-fips job. Full feature matrix runs nightly (clippy-nightly.yml).
   clippy:
     name: Clippy
+    needs: changes
+    if: >-
+      !cancelled()
+      && (needs.changes.result != 'success'
+      || needs.changes.outputs.rust == 'true'
+      || needs.changes.outputs.ci == 'true'
+      || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C debuginfo=0"
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -67,7 +137,7 @@ jobs:
         with:
           cache-bin: false
           cache-targets: false
-          shared-key: pr-clippy-stable-1.95
+          shared-key: pr-clippy-${{ hashFiles('rust-toolchain.toml') }}
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
@@ -87,6 +157,13 @@ jobs:
 
   test:
     name: Test Suite (${{ matrix.os }})
+    needs: changes
+    if: >-
+      !cancelled()
+      && (needs.changes.result != 'success'
+      || needs.changes.outputs.rust == 'true'
+      || needs.changes.outputs.ci == 'true'
+      || github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -95,6 +172,17 @@ jobs:
     env:
       RUSTFLAGS: "-C debuginfo=0"
     steps:
+      - name: Free disk space
+        if: runner.os == 'Linux'
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Force LF in working tree (w/a for Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -135,7 +223,7 @@ jobs:
         with:
           cache-bin: false
           cache-targets: false
-          shared-key: pr-${{ runner.os }}-stable-1.95
+          shared-key: pr-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
 
       # Install sccache (cross-platform)
       - name: Install sccache
@@ -157,10 +245,27 @@ jobs:
 
   integration:
     name: Integration tests
+    needs: changes
+    if: >-
+      !cancelled()
+      && (needs.changes.result != 'success'
+      || needs.changes.outputs.rust == 'true'
+      || needs.changes.outputs.ci == 'true'
+      || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C debuginfo=0"
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -190,7 +295,7 @@ jobs:
         with:
           cache-bin: false
           cache-targets: false
-          shared-key: pr-${{ runner.os }}-integration-stable-1.95
+          shared-key: pr-${{ runner.os }}-integration-${{ hashFiles('rust-toolchain.toml') }}
 
       # Install sccache (cross-platform)
       - name: Install sccache
@@ -224,6 +329,14 @@ jobs:
 
   test-fips:
     name: FIPS verification (${{ matrix.os }})
+    needs: changes
+    if: >-
+      !cancelled()
+      && (needs.changes.result != 'success'
+      || needs.changes.outputs.fips == 'true'
+      || needs.changes.outputs.deps == 'true'
+      || needs.changes.outputs.ci == 'true'
+      || github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -232,6 +345,17 @@ jobs:
     env:
       RUSTFLAGS: "-C debuginfo=0"
     steps:
+      - name: Free disk space
+        if: runner.os == 'Linux'
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Force LF in working tree (w/a for Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -274,7 +398,7 @@ jobs:
         with:
           cache-bin: false
           cache-targets: false
-          shared-key: pr-${{ runner.os }}-stable-1.95-fips
+          shared-key: pr-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-fips
 
       # Install sccache (cross-platform)
       - name: Install sccache
@@ -319,6 +443,13 @@ jobs:
 
   security:
     name: Security (cargo-deny & cargo-audit on Ubuntu)
+    needs: changes
+    if: >-
+      !cancelled()
+      && (needs.changes.result != 'success'
+      || needs.changes.outputs.deps == 'true'
+      || needs.changes.outputs.ci == 'true'
+      || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -341,12 +472,17 @@ jobs:
 
   coverage:
     name: Code Coverage (cargo-llvm-cov)
+    needs: changes
+    if: >-
+      !cancelled()
+      && (needs.changes.result != 'success'
+      || needs.changes.outputs.rust == 'true'
+      || needs.changes.outputs.ci == 'true'
+      || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
-    env:
-      RUSTUP_TOOLCHAIN: nightly-2026-04-16
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
@@ -369,15 +505,20 @@ jobs:
       - name: Install Rust toolchain (with llvm-tools)
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
-          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}
           components: llvm-tools-preview
+
+      # Override rust-toolchain.toml (which pins stable) for all cargo
+      # commands in this job.
+      - name: Pin nightly for all cargo commands
+        run: echo "RUSTUP_TOOLCHAIN=${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}" >> "$GITHUB_ENV"
 
       - name: Cache Cargo/target
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
         with:
           cache-bin: false
           cache-targets: false
-          shared-key: pr-${{ runner.os }}-nightly-${{ env.RUSTUP_TOOLCHAIN }}-llvm-cov
+          shared-key: pr-${{ runner.os }}-nightly-${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}-llvm-cov
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
@@ -404,21 +545,53 @@ jobs:
 
   dylint:
     name: Dylint Tests
+    needs: changes
+    if: >-
+      !cancelled()
+      && (needs.changes.result != 'success'
+      || needs.changes.outputs.dylint == 'true'
+      || needs.changes.outputs.rust == 'true'
+      || needs.changes.outputs.ci == 'true'
+      || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    env:
-      RUSTUP_TOOLCHAIN: nightly-2026-04-16
     steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust nightly toolchain
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
-          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}
           components: llvm-tools-preview,rustc-dev
 
+      # Override rust-toolchain.toml (which pins stable) for all cargo
+      # commands in this job.
+      - name: Pin nightly for all cargo commands
+        run: echo "RUSTUP_TOOLCHAIN=${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}" >> "$GITHUB_ENV"
+
       - name: Set Rust nightly for Dylint temp builds
-        run: rustup override set ${{ env.RUSTUP_TOOLCHAIN }} --path /tmp
+        run: rustup override set ${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }} --path /tmp
+
+      - name: Cache Cargo/target
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          cache-bin: false
+          cache-targets: false
+          shared-key: pr-${{ runner.os }}-nightly-${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}-dylint
+
+      # NOTE: sccache is intentionally omitted here. Dylint compiles lint
+      # crates that link against rustc-dev via dylint-link; wrapping the
+      # compiler with RUSTC_WRAPPER=sccache can break this toolchain.
 
       - name: Install nextest
         uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
@@ -443,9 +616,16 @@ jobs:
 
   shear:
     name: Unused Deps (cargo-shear)
+    needs: changes
+    if: >-
+      !cancelled()
+      && (needs.changes.result != 'success'
+      || needs.changes.outputs.rust == 'true'
+      || needs.changes.outputs.ci == 'true'
+      || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    env:
-      RUSTUP_TOOLCHAIN: nightly-2026-04-16
+    # Advisory only — unused-dep warnings should not block PRs.
+    continue-on-error: true
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
@@ -470,8 +650,33 @@ jobs:
       - name: Install Rust nightly toolchain
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
-          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}
           components: llvm-tools-preview,rustc-dev
+
+      # Override rust-toolchain.toml (which pins stable) for all cargo
+      # commands in this job.
+      - name: Pin nightly for all cargo commands
+        run: echo "RUSTUP_TOOLCHAIN=${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}" >> "$GITHUB_ENV"
+
+      - name: Cache Cargo/target
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          cache-bin: false
+          cache-targets: false
+          shared-key: pr-${{ runner.os }}-nightly-${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}-shear
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+
+      - name: Probe sccache & set RUSTC_WRAPPER
+        shell: bash
+        run: |
+          if sccache --start-server >/dev/null 2>&1; then
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "sccache failed, falling back to plain rustc"
+          fi
 
       - name: Install dylint-link from source
         run: cargo install --locked dylint-link
