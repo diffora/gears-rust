@@ -54,7 +54,7 @@ Catalog-authored).
 
 | Requirement | Design Response |
 |-------------|-----------------|
-| `cpt-cf-bss-subscriptions-fr-trial-provisioning` / `cpt-cf-bss-subscriptions-fr-trial-commercial-pattern` | A trial is created from a Catalog-defined trial offer (trial plan/SKU, promotional PriceWindow, or leading trial phase); trial state is evaluated attributes + `PlanLink`/snapshot pointers; feature access follows the trial-phase grant set (§4.1). |
+| `cpt-cf-bss-subscriptions-fr-trial-provisioning` / `cpt-cf-bss-subscriptions-fr-trial-commercial-pattern` | A trial is created from a Catalog-defined trial offer (trial plan/SKU or a leading trial phase); trial state is evaluated attributes + `PlanLink`/snapshot pointers; feature access follows the trial-phase grant set (§4.1). |
 | `cpt-cf-bss-subscriptions-fr-trial-conversion` | At trial end, convert per `convertsToPhaseId`: advance the phase boundary, authorize payment where required, re-issue entitlements with continuity, emit the composition-changing event; idempotent (zero missed / zero double) (§4.2). |
 | `cpt-cf-bss-subscriptions-fr-trial-early-conversion` | `convertTrial` is a first-class `TransitionRequest` advancing the boundary to `now` (the phase twin of `changePlan`), Policy-gated where resource-affecting, idempotent (§4.3). |
 | `cpt-cf-bss-subscriptions-fr-trial-expiry` | An unconverted trial follows the configured end action via normal transitions (typically `cancel`); entitlements removed; optional win-back hook emitted (§4.4). |
@@ -107,7 +107,7 @@ zero missed, zero double conversions ([`../PRD.md`](../PRD.md) §6.10).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-constraint-catalog-trial-trl`
 
-The trial sellable definition (trial plan/SKU, promotional PriceWindow, leading phase) is
+The trial sellable definition (trial plan/SKU, leading trial phase) is
 Catalog-authored; attribute-only trials are permitted only when Contract records the trial commercial
 terms (SEAMS **SUB-P3**; [`../PRD.md`](../PRD.md) §6.1).
 
@@ -206,13 +206,22 @@ The term-conversion job runs as a coordinated singleton via the lease library; `
 synchronous control-plane transition ([`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md)
 §3.8).
 
+**No double conversion (2026-07-28 review fix, REVIEW F-06-3, flagged for veto):** the two paths are
+made mutually exclusive by a **state guard, not by a shared idempotency key** — the term-conversion
+job **re-reads the phase state inside its commit** and is a **no-op when the trial phase is no longer
+active** (already converted by an early `convertTrial`, or the subscription left `active`); symmetrically
+`convertTrial` fails closed (`guard_violation`) if the boundary has already advanced. The client
+`(subscriptionId, idempotencyKey)` key on `convertTrial` and the job's own scheduling key are
+deliberately **not** coordinated — they key different actors, so only the phase state can arbitrate;
+the `ConversionRecord` remains the single audited outcome either way.
+
 ## 4. Additional Context
 
 ### 4.1 Trial as a Phase, Not a Status (normative)
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-normative-trial-phase-trl`
 
-- A trial subscription is created from a **Catalog-defined trial offer** (trial plan/SKU, promotional PriceWindow, or leading trial **phase**) with configurable duration; **no `trial` status** — evaluated attributes + `PlanLink`/snapshot pointers persist while the subscription occupies a manifest status ([`../PRD.md`](../PRD.md) §6.1, §6.10; SEAMS **SUB-P3**).
+- A trial subscription is created from a **Catalog-defined trial offer** (trial plan/SKU or a leading trial **phase**) with configurable duration; **no `trial` status** — evaluated attributes + `PlanLink`/snapshot pointers persist while the subscription occupies a manifest status ([`../PRD.md`](../PRD.md) §6.1, §6.10; SEAMS **SUB-P3**).
 - Feature access during trial follows the **trial-phase grant set** (slice 05 assignment).
 
 ### 4.2 End-of-Trial Conversion (normative)

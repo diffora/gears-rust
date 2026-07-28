@@ -39,9 +39,9 @@
 This slice owns **bundle composition**: the price basis (`sum_of_parts` referencing component
 **`planId`s** vs `own_price`), component publication + per-`(currency, region)` coverage
 validation (reusing Slice 4's `CurrencyBindingChecker`), **rev-share reconciliation**
-(sum-to-100% per included vendor SKU, explicit platform cut, bundle-level residual absorber
-— default the platform — with ±1 bp authoring tolerance normalized to an exact split at
-publish, D-07), and `invoiceItemization` (`aggregate | itemize`) preserving per-SKU
+(sum-to-100% per included vendor SKU, explicit platform cut, per-`(bundle, vendor SKU)`-group
+`residual_absorber_party` — default the platform sentinel — with ±1 bp authoring tolerance
+normalized to an exact split at publish, D-07), and `invoiceItemization` (`aggregate | itemize`) preserving per-SKU
 rev-share for Marketplace accrual. The `bundle` SKU **type** is registry-owned; this slice
 authors what the bundle *contains and how it prices*.
 
@@ -95,7 +95,7 @@ Inherits Foundation C-set. Slice-8-specific:
 | Name | Meaning |
 |------|---------|
 | `BundleValidator` | Registered rules: basis, component publication, coverage (via `CurrencyBindingChecker`), frequency match |
-| `RevShareReconciler` | The 100%-per-vendor-SKU check + residual **normalization** onto the bundle-level absorber (D-07) |
+| `RevShareReconciler` | The 100%-per-vendor-SKU check + residual **normalization** onto the group's `residual_absorber_party` (D-07) |
 
 ### 1.8 Context & Dependencies
 
@@ -128,7 +128,7 @@ flowchart TB
 - A bundle (on a registry `bundle`-type SKU) declares its basis, published `includedSkuIds`, component `planId`s (`sum_of_parts`), rev-share, and `invoiceItemization`; publish validates coverage + reconciliation; `BundleUpdated` emits
 
 **Error Scenarios**:
-- Unpublished included SKU / component plan → 422; component row missing for a sold `(currency, region)` or mismatched `frequency` → `CURRENCY_NOT_COVERED` / `FREQUENCY_MISMATCH` (422); rev-share off by more than 1 bp per vendor SKU → `RESIDUAL_OVER_TOLERANCE` (422); structurally missing platform cut / malformed shares → `REVSHARE_UNBALANCED` (422)
+- Unpublished included SKU / component plan → 422; component row missing for a sold `(currency, region)` or mismatched `frequency` → `CURRENCY_NOT_COVERED` / `FREQUENCY_MISMATCH` (422); rev-share off by more than 1 bp per vendor SKU → `RESIDUAL_OVER_TOLERANCE` (422); structurally missing platform cut / malformed shares → `REVSHARE_UNBALANCED` (422); rev-share authored on an `own_price` bundle → `REVSHARE_BASIS_UNSUPPORTED` (422, D-55)
 
 **Steps**:
 1. [ ] - `p2` - API: POST/PATCH /v1/pricing/bundles (draft; idempotency key) - `inst-ba-author`
@@ -151,10 +151,10 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-bundle-coverage`
 
 **Steps**:
-1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — the currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule - `inst-bc-coverage`
+1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — the currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule. Coverage/ambiguity evaluates over `priceEligibility = all_subscriptions` (`cohort = none`) rows **only** — grandfathered generations (ADR-0002) are never coverage candidates, so a cutover-touched component's coexisting generation rows neither cover nor count as ambiguous (2026-07-28 review fix, flagged for veto) - `inst-bc-coverage`
 2. [ ] - `p2` - Recurring components MUST match `frequency` (a monthly + annual mix cannot sum onto one invoice line set) - `inst-bc-frequency`
 3. [ ] - `p2` - A missing or ambiguous component row fails publish naming the component + `(currency, region)` - `inst-bc-fail`
-4. [ ] - `p1` - **Bundle sellability (normative):** the Slice 7 gate evaluates a bundle as the **conjunction** over its components — sellable at `t` iff **every** referenced component key passes gate predicates (1)–(5) at `t` (plus the bundle's own `availableFrom`/`availableTo`). Components are **exempt from predicate (6)** — the registry `sellable` flag (D-46) applies to the **bundle SKU itself**, not to component references (`sellable = false` components are exactly the composition-only SKUs bundles exist to package). For `sum_of_parts` there are no own rows, so components are the only inputs; for `own_price` the bundle's **own** rows must pass **and** the component keys too (the matching-currency component set is part of the offer). One unsellable component makes the bundle unsellable, never partially-sellable - `inst-bc-sellability`
+4. [ ] - `p1` - **Bundle sellability (normative):** the Slice 7 gate evaluates a bundle as the **conjunction** over its components — sellable at `t` iff **every** referenced component key passes gate predicates (1)–(5) at `t` (plus the bundle's own `availableFrom`/`availableTo`). Components are **exempt from predicate (6)** — the registry `sellable` flag (D-46) applies to the **bundle SKU itself**, not to component references (`sellable = false` components are exactly the composition-only SKUs bundles exist to package). For `sum_of_parts` there are no own rows, so components are the only inputs; for `own_price` the bundle's **own** rows must pass **and** the component keys too (the matching-currency component set is part of the offer). The frozen component key set spans `priceEligibility = all_subscriptions` (`cohort = none`) keys **only** — grandfathered generations are never gate inputs (2026-07-28 review fix, flagged for veto). One unsellable component makes the bundle unsellable, never partially-sellable - `inst-bc-sellability`
 
 ### Rev-Share Reconciliation
 
@@ -181,7 +181,8 @@ of Slices 2/11 on their `bundle`-type SKU.
 `COMPONENT_IS_BUNDLE` (422 — flat composition at launch; nesting is Future),
 `CURRENCY_NOT_COVERED` (422), `FREQUENCY_MISMATCH` (422), `REVSHARE_UNBALANCED` (422 —
 structurally malformed shares / missing explicit platform cut), `RESIDUAL_OVER_TOLERANCE`
-(422 — `|Σ − 10000| > 1 bp`; D-07).
+(422 — `|Σ − 10000| > 1 bp`; D-07), `REVSHARE_BASIS_UNSUPPORTED` (422 — rev-share on an
+`own_price` bundle; D-55).
 
 ## 6. Data Model
 
@@ -243,22 +244,24 @@ a missing/ambiguous component fails publish naming it.
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-dod-revshare`
 
 Rev-share **MUST** sum to 100% per vendor SKU with an explicit platform cut; authoring
-accepts a residual of ≤ 1 bp, which publish **normalizes** onto the bundle-level absorber
-(default the platform) so published **effective shares sum to exactly 10000 bp** — typed
-values audited, over-tolerance rejected (D-07); `invoiceItemization` **MUST** preserve
+accepts a residual of ≤ 1 bp, which publish **normalizes** onto the group's
+`residual_absorber_party` (default the platform sentinel) so published **effective shares sum
+to exactly 10000 bp** — typed values audited, over-tolerance rejected (D-07); rev-share is
+authorable on **`sum_of_parts`** bundles only (`own_price` + revShare fails publish,
+`REVSHARE_BASIS_UNSUPPORTED` — D-55); `invoiceItemization` **MUST** preserve
 per-SKU rev-share for Marketplace accrual under either layout.
 
 **Implements**: `cpt-cf-bss-pricing-algo-revshare`
 
 **Touches**:
-- DB: `pricing_bundle_revshare`
+- DB: `pricing_bundle_revshare`, `pricing_bundle_revshare_group`
 - Entities: `RevShareReconciler`
 
 ## 9. Acceptance Criteria
 
 Unit:
 
-- [ ] Basis matrix (`sum_of_parts` without component planIds fails; `own_price` without matching-currency components fails); a component `planId` that is itself a `bundle`-type plan fails (`COMPONENT_IS_BUNDLE`); a 33.33%×3 split (9999 bp) publishes with the platform absorber's effective share normalized to an exact 10000 (adjustment recorded); a residual over 1 bp fails (`RESIDUAL_OVER_TOLERANCE`); frequency mismatch fails
+- [ ] Basis matrix (`sum_of_parts` without component planIds fails; `own_price` without matching-currency components fails); a component `planId` that is itself a `bundle`-type plan fails (`COMPONENT_IS_BUNDLE`); a 33.33%×3 split (9999 bp) publishes with the platform absorber's effective share normalized to an exact 10000 (adjustment recorded); a residual over 1 bp fails (`RESIDUAL_OVER_TOLERANCE`); rev-share on an `own_price` bundle fails (`REVSHARE_BASIS_UNSUPPORTED`, D-55); frequency mismatch fails
 
 Integration (testcontainers):
 
@@ -269,4 +272,4 @@ Integration (testcontainers):
 
 - **Performance**: coverage validation is O(components × currencies) at publish; read model exposes the frozen composition flat.
 - **Observability**: `pricing_bundle_validation_failures_total{rule}`.
-- **Risks & open items**: upstream SKU retirement while a bundle references it — joint remediation contract open with the registry (PRD §15); marketplace listing-eligibility rules deferred (§17.8). **Component-retirement guard**: retiring a plan referenced as a bundle component is blocked/reported by Slice 11 (`inst-re-references`) until the bundle is remediated.
+- **Risks & open items**: upstream SKU retirement while a bundle references it — **closed by D-47 (2026-07-28)**: the registry never retires under the referenced (or conservatively-referenced) `SkuReferenceCount` predicate, and pricing flags + blocks new adoption (AC #82); marketplace listing-eligibility rules deferred (§17.8). **Component-retirement guard**: retiring a plan referenced as a bundle component is blocked/reported by Slice 11 (`inst-re-references`) until the bundle is remediated.

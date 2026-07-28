@@ -246,7 +246,7 @@ flowchart TB
 1. [ ] - `p2` - A tiered usage row MAY set **`tierQualificationWindow`** (`current` | `trailing_period`) — a **third, distinct window** from `tierAggregationWindow` (when the in-window `Q` counter resets) and `billingGranularity` (billing cadence). `current` (default) preserves Slice 3 behaviour exactly (tier from this window's own `Q`) - `inst-tt-window`
 2. [ ] - `p2` - `trailing_period`: the **rate tier is qualified by the prior billing period's total** `Q` — the subscription's **anchor-derived period**, not a calendar month (for non-calendar-anchored subscriptions the two differ, and the anchor-derived reading is the normative one; the PRD glossary agrees) — the band the trailing total falls into (single-band **volume**-style selection) sets **one rate for the whole current period**; billing then applies that locked rate to actual usage at `billingGranularity`. Canonical case: PaaS egress where the prior period's volume sets `$/GiB` and the current period is billed hourly on actual traffic - `inst-tt-qualify`
 3. [ ] - `p2` - The qualified rate is a **period rate-lock** frozen into `pricingSnapshotRef` for the current period (the tier analogue of the FX rate-lock): Tariffs applies the locked rate; the catalog authors the window and never computes the qualification or the trailing aggregate (Rating supplies the trailing total) - `inst-tt-lock`
-4. [ ] - `p2` - `trailing_period` is **usage-tiered only** (`graduated`/`volume`); presence on `flat`/`per_unit`/`package` or any non-usage row fails publish (`TIER_QUAL_ON_NON_TIERED`, 422) - `inst-tt-forbidden`
+4. [ ] - `p2` - `tierQualificationWindow` is **usage-tiered only** (`graduated`/`volume`): an **explicit** window of **any** value — `trailing_period` or `current` — on `flat`/`per_unit`/`package` or any non-usage row fails publish (`TIER_QUAL_ON_NON_TIERED`, 422; fail-closed — the field is meaningless there, and an accepted-but-ignored value would mask authoring errors; 2026-07-28 review fix, flagged for veto) - `inst-tt-forbidden`
 5. [ ] - `p2` - **Bootstrap** (first period, no trailing history) resolves to the **lowest tier** unless the plan authors an explicit bootstrap tier; the resolved bootstrap choice freezes in the snapshot so replay is deterministic - `inst-tt-bootstrap`
 6. [ ] - `p2` - The qualification window and the resolved locked rate are part of the **joint Rating contract** (PRD §consumer-contracts): Rating computes the trailing aggregate and re-qualifies at each period boundary; Tariffs reads the locked rate from the pin - `inst-tt-joint`
 
@@ -273,9 +273,13 @@ scoped outside that unit's meters),
 `includedAllowance` on one row), `ALLOWANCE_ON_NON_SUM` (422 — `aggregationFunction ≠ sum`,
 D-44/D-45 launch boundary), `ALLOWANCE_QUANTITY_INVALID` (422 — `quantity ≤ 0`),
 `ALLOWANCE_KIND_UNSUPPORTED` (422 — a `package` row: no band set to compile into),
-`COMPOSITE_CONSTITUENT_UNPUBLISHED` (422), `COMPOSITE_SELF_REFERENCE` (422),
+`COMPOSITE_CONSTITUENT_UNPUBLISHED` (422),
+`COMPOSITE_TOO_FEW_CONSTITUENTS` (422 — fewer than 2 constituent `meteringUnit`s; 2026-07-28
+review fix), `COMPOSITE_SELF_REFERENCE` (422),
 `DISCOUNT_REF_UNRESOLVED` (422), `FLOOR_TYPE_MISSING` (422), `FLOOR_FALLBACK_MISSING` (422),
-`TIER_QUAL_ON_NON_TIERED` (422 — `tierQualificationWindow = trailing_period` on a non-tiered or non-usage row),
+`TIER_QUAL_ON_NON_TIERED` (422 — an **explicit** `tierQualificationWindow` — any value,
+including `current` — on a non-tiered or non-usage row; fail-closed publish, 2026-07-28
+review fix, flagged for veto),
 `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` (422 — `reservationFlavor = consumption` on a
 non-`sum` row; capacity flavor only at launch, D-53); warnings:
 `FLOOR_INSIDE_PRICED_BAND`, `GRANT_PROMO_NO_EXPIRY` (a `promotional` grant with `expiryPolicy = never`).
@@ -436,7 +440,7 @@ distinct from `tierAggregationWindow` and `billingGranularity`. `trailing_period
 rate tier from the **prior billing period's total** (anchor-derived, not calendar-month;
 single-band selection), locks that rate for the
 current period into `pricingSnapshotRef`, and bills actual usage at `billingGranularity`;
-`trailing_period` on a non-tiered/non-usage row fails publish; first-period bootstrap resolves to
+an explicit window (any value) on a non-tiered/non-usage row fails publish (2026-07-28 review fix, flagged for veto); first-period bootstrap resolves to
 the lowest tier (or an authored bootstrap) and freezes. Tariffs applies the locked rate; Rating
 supplies the trailing aggregate and re-qualifies at each period boundary.
 

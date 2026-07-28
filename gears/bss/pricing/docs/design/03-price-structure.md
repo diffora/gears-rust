@@ -174,9 +174,9 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 
 **Steps**:
 1. [ ] - `p1` - `modelKind ∈ {flat, per_unit, graduated, volume, package}` MUST be explicit; a tiered row with no kind MUST NOT publish ("tiered (unspecified)" is not publishable, §17.1); no implicit default exists at rating time - `inst-mk-explicit`
-2. [ ] - `p1` - **Kind-specific required fields**: `per_unit` → unit price + `quantitySource` (`subscription_seat_count | manual`, and the fixed quantity for `manual`); `graduated`/`volume` → ≥ 1 tier band; `package` → `packageSize`/`packagePrice`; `flat` → single amount - `inst-mk-required`
-3. [ ] - `p1` - **Kind-specific forbidden fields**: tier-band fields absent on `flat`/`per_unit`/`package`; `tierAggregationWindow`/`billingGranularity` are **usage-row only** — presence on `flat` non-usage or `per_unit` rows fails publish (§17.4 evaluation-policy placement) - `inst-mk-forbidden`
-3a. [ ] - `p1` - **Kind×chargeKind matrix (D-18)**: `graduated`/`volume`/`package` are valid **only on `chargeKind = usage`** rows — a tiered/package model on a `recurring`/`one_time`/`one_time_setup` row fails publish (`MODEL_KIND_CHARGEKIND_MISMATCH`): the tier machinery presupposes a metered quantity stream, and no `Q` semantics exist for non-usage rows. Tiered per-seat pricing (bands over seat count on recurring rows) is Future scope (§17.8) - `inst-mk-chargekind`
+2. [ ] - `p1` - **Kind-specific required fields**: `per_unit` → unit price + (**non-usage rows**) `quantitySource` (`subscription_seat_count | manual`, and the fixed quantity for `manual`; a `per_unit` **usage** row takes its quantity from the meter — `quantitySource` forbidden, 2026-07-28 review fix, flagged for veto); `graduated`/`volume` → ≥ 1 tier band; `package` → `packageSize`/`packagePrice`; `flat` → single amount - `inst-mk-required`
+3. [ ] - `p1` - **Kind-specific forbidden fields**: tier-band fields absent on `flat`/`per_unit`/`package`; `tierAggregationWindow`/`billingGranularity` are **usage-row only** — presence on `flat` (never a usage row — see 3a) or `per_unit` **non-usage** rows fails publish (§17.4 evaluation-policy placement; a `per_unit` usage row carries `billingGranularity` like every usage row — 2026-07-28 review fix) - `inst-mk-forbidden`
+3a. [ ] - `p1` - **Kind×chargeKind matrix (D-18; completed 2026-07-28 review fix, flagged for veto)** — the full legality matrix: `flat` and `per_unit` are legal on **non-usage** rows; `per_unit`, `graduated`, `volume`, `package` are legal on **`usage`** rows (a `per_unit` usage row is the plain untiered metered rate — unit price × metered `Q`, `billingGranularity` required like every usage row, no `quantitySource`); `flat` on a `usage` row, and `graduated`/`volume`/`package` on a `recurring`/`one_time`/`one_time_setup` row, fail publish (`MODEL_KIND_CHARGEKIND_MISMATCH`): the tier machinery presupposes a metered quantity stream, and no `Q` semantics exist for non-usage rows. Tiered per-seat pricing (bands over seat count on recurring rows) is Future scope (§17.8) - `inst-mk-chargekind`
 4. [ ] - `p1` - The catalog computes **no** charge: kinds are flags Tariffs maps to formulas one-to-one per §17.2; catalog `volume` = Variant A only (Q3) - `inst-mk-nocompute`
 
 ### Tier-Band Validation
@@ -258,17 +258,23 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 **Problem responses (RFC 9457):** `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
 `TIER_BANDS_GAP` (422), `TIER_BAND_EMPTY` (422 — `toQty ≤ fromQty` on a non-open band),
 `TIER_TOP_CLOSED` (422 — the top band must be open; capping belongs to quotas / per-period caps, D-17), `PACKAGE_FIELDS_INVALID` (422),
-`EVAL_POLICY_MISPLACED` (422), `MODEL_KIND_CHARGEKIND_MISMATCH` (422 — `graduated`/`volume`/`package` on a non-usage row, D-18), `EVAL_POLICY_MISSING` (422 — `tierAggregationWindow` unset on a
+`EVAL_POLICY_MISPLACED` (422), `MODEL_KIND_CHARGEKIND_MISMATCH` (422 — `graduated`/`volume`/`package` on a non-usage row, or `flat` on a usage row; D-18 + 2026-07-28 review fix), `EVAL_POLICY_MISSING` (422 — `tierAggregationWindow` unset on a
 tiered usage row, or `billingGranularity` unset on a usage row; the error references the
 allowed values per the PRD Glossary), `QUANTITY_SOURCE_MISSING` (422), `FIXTURE_MISSING` (422),
+`AMOUNT_PLACEMENT_INVALID` (422 — `amount_minor` NULL on `flat`/`per_unit`, or non-NULL on
+`graduated`/`volume`/`package` where the money lives in the band/package column; §6 per-kind
+amount matrix, 2026-07-28 review fix),
 `LEVEL_FIELDS_INVALID` (422 — `aggregationFunction`/`aggregationGranularity` on a non-usage
 row, an unknown value, a non-`sum` row with `maxHold` missing or `< 1`, or `maxHold` present
 on a `sum` row; D-44),
 `LEVEL_UNIT_MISMATCH` (422 — non-`sum` row on a non-gauge meter, or the SKU-declared billable
 unit ≠ level unit × granule; D-44), `LEVEL_COMPOSITE_FORBIDDEN` (422 — non-`sum` on a derived
 (composite) meter; launch, D-44),
-`DUPLICATE_SCOPE_KEY` (409 — Foundation-owned, referenced here), `PRECISION_EXCEEDED` (422).
-The publish-time report enumerates all violations.
+`DUPLICATE_SCOPE_KEY` (409 — Foundation-owned, referenced here), `PRECISION_EXCEEDED` (422 —
+Foundation-owned, referenced here; [`01-foundation.md`](./01-foundation.md) §3.3).
+`ALLOWANCE_DOUBLE_FREE` and `ALLOWANCE_ON_NON_SUM` are **Slice-10-owned** (the
+`AllowanceCompiler`), referenced here from `inst-tb-first`/`inst-la-allowance` — never
+redefined. The publish-time report enumerates all violations.
 
 ## 6. Data Model
 
@@ -280,7 +286,8 @@ SecureORM; published rows append-only per Foundation §4.3):
 | Column | Type | Notes |
 |--------|------|-------|
 | `model_kind` | `enum` | `flat \| per_unit \| graduated \| volume \| package`; NOT NULL on publish |
-| `quantity_source` | `enum` | `subscription_seat_count \| manual`; required for `per_unit` |
+| `amount_minor` | `bigint` | Foundation-declared, **per-kind semantics owned here** (2026-07-28 review fix, flagged for veto): REQUIRED (`≥ 0`, at the currency's ISO 4217 precision) on `flat` — the single amount — and on `per_unit`, where it **is** the unit price; **MUST be NULL** on `graduated`/`volume` (money lives in `pricing_price_tier_band.unit_price_minor`) and on `package` (money lives in `package_price_minor`), so no row carries two competing prices. A non-NULL `amount_minor` on a band/package kind, or a NULL on `flat`/`per_unit`, fails publish (`AMOUNT_PLACEMENT_INVALID`); the "Amount ≥ 0" and precision checks apply to whichever column carries money for the kind |
+| `quantity_source` | `enum` | `subscription_seat_count \| manual`; required for **non-usage** `per_unit`, forbidden on `per_unit` usage rows (the meter supplies `Q` — 2026-07-28 review fix) |
 | `manual_quantity` | `bigint` | required when `quantity_source = manual`; frozen in snapshot |
 | `package_size` | `bigint` | `> 0`; `package` only |
 | `package_price_minor` | `bigint` | `≥ 0`; `package` only |
@@ -290,7 +297,7 @@ SecureORM; published rows append-only per Foundation §4.3):
 | `aggregation_granularity` | `enum` | `hour (default) \| day`; non-`sum` rows only (D-44); the granule of the rating-side fold |
 | `max_hold_granules` | `int` | `≥ 1`; REQUIRED on non-`sum` rows, forbidden otherwise (D-44 `hold_last` bound — beyond it the level reads 0 + operator signal, rating-side); frozen in snapshot |
 | `meter` | `ref` | the published `meteringUnit` a usage row prices; feeds the Slice-2 injectivity rule |
-| `dimension_key` | `text` | nullable dimension discriminator on the `(meter, dimensionKey)` line (Slice-2 injectivity). Launch posture (SEAMS M6 joint wording, closed 2026-07-28): *declaration + freeze are in scope now (the catalog persists `dimension_key` structurally, Rating freezes the declared set in the snapshot); pricing dimension **values** are OSS-emission-gated* — rating design/03 §4.2 carries the same sentence |
+| `dimension_key` | `text` | dimension discriminator on the `(meter, dimensionKey)` line (Slice-2 injectivity); **`NOT NULL DEFAULT ''`** — the empty string is the "empty tuple" sentinel, so the Slice-2 injectivity partial `UNIQUE` collides undimensioned rows instead of treating them as distinct NULLs (2026-07-28 review fix, flagged for veto). Launch posture (SEAMS M6 joint wording, closed 2026-07-28): *declaration + freeze are in scope now (the catalog persists `dimension_key` structurally, Rating freezes the declared set in the snapshot); pricing dimension **values** are OSS-emission-gated* — rating design/03 §4.2 carries the same sentence |
 
 **`pricing_price_tier_band`** (FK `price_id`; `graduated`/`volume` rows only):
 
@@ -307,7 +314,15 @@ SecureORM; published rows append-only per Foundation §4.3):
 publish. The `variant` axis also keys **cross-cutting scenario fixtures** (e.g.
 `variant = supersession_continuity` on the tiered kinds, per `inst-tb-window-continuity`);
 the continuity fixture **gates the first publish of any tiered usage kind** (alongside that
-kind's own fixture) — ratified, D-22.
+kind's own fixture) — ratified, D-22. This table is **tenant-global** — an explicit,
+documented carve-out from the SecureORM tenant-binding rule (Foundation §3.1): the fixture
+corpus is a property of the *gear build*, not of any tenant, so the gate must read the same
+rows for every tenant (a tenant-scoped copy would let one tenant's missing fixture pass
+another's publish). It is therefore **read-only to all API paths** — no tenant-facing write
+endpoint exists; rows are populated by **`FixtureRegistrySync`**, a gear background task
+(Foundation §3.4) that reconciles the table against the shared fixtures repo at startup and
+on refresh, marking a fixture `stale` when its `fixture_ref` no longer matches the corpus
+(2026-07-28 review fix, flagged for veto).
 
 Key constraints: `CHECK (package_size > 0)`; `CHECK (unit_price_minor >= 0)`;
 `CHECK (to_qty IS NULL OR to_qty > from_qty)` (no zero-width bands); structural exclusivity —
@@ -417,6 +432,7 @@ Unit:
 - [ ] Band-edge cases: adjacent bands share the boundary exactly once (`[0,100) [100,null)`); overlap and gap both fail; a zero-width band (`toQty = fromQty`) fails (`TIER_BAND_EMPTY`); a closed top band fails (`TIER_TOP_CLOSED`); `$0` first band passes; a band whose effective unit price exceeds the previous band's emits the advisory warning (publish succeeds)
 - [ ] Band units follow `billingGranularity` quantization (a `per_hour` row's bands count hours; a raw-seconds band definition is rejected/normalized per the documented unit)
 - [ ] Kind field matrices: each kind's required/forbidden set; `per_unit` without `quantitySource` fails; `manual` without quantity fails; eval-policy fields on a `flat` non-usage row fail; `graduated` on a `recurring` row fails (`MODEL_KIND_CHARGEKIND_MISMATCH`)
+- [ ] Amount placement: a `flat` row without `amountMinor` and a `graduated` row carrying one both fail (`AMOUNT_PLACEMENT_INVALID`); a `per_unit` row's `amountMinor` is its unit price; a `package` row prices only via `packagePriceMinor`
 - [ ] Package exclusivity: bands + package fields together fail; `packageSize = 0` fails
 - [ ] Level fields (D-44): `aggregationFunction` on a recurring row fails (`LEVEL_FIELDS_INVALID`); a `peak` row without `maxHold` (or `maxHold = 0`) fails; `maxHold` on a `sum` row fails; a `time_weighted` row on a counter (non-gauge) meter fails (`LEVEL_UNIT_MISMATCH`); a SKU billable unit of `GB` on a `peak`+`hour` row fails (expected `GB·h`); `peak` on a composite meter fails (`LEVEL_COMPOSITE_FORBIDDEN`)
 

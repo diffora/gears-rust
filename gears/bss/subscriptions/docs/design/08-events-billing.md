@@ -46,7 +46,7 @@ and Billing to stay aligned and idempotent ([`../PRD.md`](../PRD.md) §6.7, §6.
 the event naming registry and the field matrix** (§4.1, SUB-D-09);
 [`09-consumer-contracts.md`](./09-consumer-contracts.md) owns only the wire mappings.
 
-Two seams meet here: **SUB-B1** (recurring idempotency `(subscriptionId, billing period)`,
+Two seams meet here: **SUB-B1** (recurring idempotency `(subscriptionId, billing period, lineKey)` — per component, SUB-D-19,
 posted-invoice immutability, `{subscriptionId, skuId, planId, priceId}` + `pricingSnapshotRef`
 traceability) and the ordering half of **SUB-R1** (the pinned `(orderingTenantId, subscriptionId)` key shared
 with rating); it also consumes **SUB-C5** (Contract `PriceOverride` windows).
@@ -60,7 +60,7 @@ with rating); it also consumes **SUB-C5** (Contract `PriceOverride` windows).
 | `cpt-cf-bss-subscriptions-fr-event-producers` | The frozen producer set (`SubscriptionCreated`/`Activated`/`Suspended`/`Resumed`/`Cancelled`/`PlanChanged`, `BillableItemCreated(recurring)`, `EntitlementIssued`/`Revoked`, `OwnershipTransfer*`) emitted via the outbox (§4.1). |
 | `cpt-cf-bss-subscriptions-fr-event-payload-completeness` | Sufficiency rule (not schema): identity/tenancy/correlation/time for route/dedup/replay; snapshot-oriented commercial context on composition-changing events (§4.1). |
 | `cpt-cf-bss-subscriptions-fr-event-ordering` | Ordered within the pinned `(orderingTenantId, subscriptionId)` (SUB-D-06) — the key shared with rating partition ordering (§4.2). |
-| `cpt-cf-bss-subscriptions-fr-recurring-idempotency` / `cpt-cf-bss-subscriptions-fr-no-retro-edit` | `BillableItem(kind=recurring)` idempotent per `(subscriptionId, billing period)`; posted lines never rewritten — corrections are new billable/adjustment artifacts (§4.3). |
+| `cpt-cf-bss-subscriptions-fr-recurring-idempotency` / `cpt-cf-bss-subscriptions-fr-no-retro-edit` | `BillableItem(kind=recurring)` idempotent per `(subscriptionId, billing period, lineKey)` (per billable component — SUB-D-19); posted lines never rewritten — corrections are new billable/adjustment artifacts (§4.3). |
 | `cpt-cf-bss-subscriptions-fr-billing-traceability` / `cpt-cf-bss-subscriptions-fr-dataset-separation` | Every item traces to `{subscriptionId, skuId, planId, priceId}` + `pricingSnapshotRef`; subscription state ≠ posted invoice state (§4.4, §4.5). |
 
 #### NFR Allocation
@@ -112,8 +112,11 @@ composition changes without reorder hazards ([`../PRD.md`](../PRD.md) §6.7; SEA
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-constraint-recurring-idempotent-evt`
 
-At most one recurring `BillableItem` per `(subscriptionId, billing period)` even under bill-run
-retries; posted invoice lines are never rewritten ([`../PRD.md`](../PRD.md) §6.8 AC 5).
+At most one recurring `BillableItem` per **`(subscriptionId, billing period, lineKey)`** even under
+bill-run retries — the key is **per billable component** (SUB-D-19, 2026-07-28 review fix, flagged
+for veto): a subscription is a plan line plus N `AddOn` lines (slice [`02`](./02-composition-versioning.md)),
+each with its own catalog keys, so a subscription-wide key could represent only one of them. Posted
+invoice lines are never rewritten ([`../PRD.md`](../PRD.md) §6.8 AC 5).
 
 #### Outbox is committed with the transition
 
@@ -129,8 +132,9 @@ without a committed transition, no committed transition without its events.
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-domain-model-evt`
 
 - **`LifecycleEvent`** — the producer envelope (type, identity, tenancy, correlation, time, sequence); CloudEvents 1.0, tenant-scoped, minimal PII.
-- **`RecurringBillableItem`** — the recurring handoff keyed `(subscriptionId, billing period)` with the traceability tuple + `pricingSnapshotRef`.
-- **`TraceabilityTuple`** — `{subscriptionId, skuId, planId, priceId}` + `pricingSnapshotRef`.
+- **`RecurringBillableItem`** — the recurring handoff keyed **`(subscriptionId, billing period, lineKey)`** with the per-component traceability tuple + `pricingSnapshotRef` (SUB-D-19).
+- **`lineKey`** — the billable component within the subscription's effective composition at the cut: the plan line and each `AddOn` line (slice [`02`](./02-composition-versioning.md)). It is the **same coordinate rating carries in its period-driven unit key** `(subscription, priceId, chargeKind, lineKey, AnchorPeriod)` (rating T-D-15), which is what lets SUB-D-07's "the priced line inherits the fact's key" hold for a multi-component subscription (SUB-D-19, 2026-07-28 review fix, flagged for veto).
+- **`TraceabilityTuple`** — `{subscriptionId, skuId, planId, priceId}` + `pricingSnapshotRef`, **per component** — each emitted fact carries the catalog keys of its own line, not the plan's (SUB-D-19).
 
 ### 3.2 Component Model
 
@@ -138,7 +142,7 @@ without a committed transition, no committed transition without its events.
 
 - **`EventPublisher`** — assembles the sufficient payload + writes to the outbox in the transition commit.
 - **`OrderingSequencer`** (Foundation) — enforces per-`(orderingTenantId, subscriptionId)` order on emission (the pinned tenant, SUB-D-06).
-- **`RecurringEmitter`** — cuts the **money-free recurring period facts** idempotent per `(subscriptionId, billing period)` with the traceability tuple + pause/intent posture; rating prices them (SUB-D-07, §4.3).
+- **`RecurringEmitter`** — cuts the **money-free recurring period facts**, one per billable component, idempotent per `(subscriptionId, billing period, lineKey)` (SUB-D-19) with the per-component traceability tuple + pause/intent posture; rating prices them (SUB-D-07, §4.3).
 
 ### 3.3 API Contracts
 
@@ -172,16 +176,18 @@ Depends on [`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md) (transac
 **Emit**: on a committed transition, `EventPublisher` writes the sufficient-payload event(s) to the
 outbox in the same commit; `OrderingSequencer` assigns the per-aggregate sequence; the outbox delivers
 at-least-once, dedupable, in order within the pinned `(orderingTenantId, subscriptionId)`. `RecurringEmitter`
-cuts the recurring `BillableItem` idempotent per `(subscriptionId, billing period)` with the
-traceability tuple + `pricingSnapshotRef`.
+cuts one recurring `BillableItem` **per billable component**, idempotent per
+`(subscriptionId, billing period, lineKey)`, each with its own traceability tuple +
+`pricingSnapshotRef` (SUB-D-19).
 
 ### 3.7 Database Schemas and Tables
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-storage-events-evt`
 
 Uses the Foundation `event_outbox` (committed with the transition); the recurring idempotency key
-`(subscriptionId, billing period)` is a unique index on the recurring handoff record. No separate
-owned store. Concrete DDL is Design.
+**`(subscriptionId, billing period, lineKey)`** is a unique index on the recurring handoff record
+(SUB-D-19 — the index is three-part so plan and add-on lines of one period coexist without
+colliding). No separate owned store. Concrete DDL is Design.
 
 ### 3.8 Deployment Topology
 
@@ -233,11 +239,12 @@ delivery target are not funnelled through one global instance
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-normative-recurring-evt`
 
-- `BillableItem(kind=recurring)` MUST be idempotent on `(subscriptionId, billing period)` — at most one recurring item per key even under bill-run retries ([`../PRD.md`](../PRD.md) §6.8 AC 5).
+- `BillableItem(kind=recurring)` MUST be idempotent on `(subscriptionId, billing period, lineKey)` — at most one recurring item per key even under bill-run retries; the `lineKey` component dimension (SUB-D-19) is what lets a plan line and its add-on lines coexist in one period ([`../PRD.md`](../PRD.md) §6.8 AC 5).
 - **What the emitter cuts is the money-free period fact (SUB-D-07):** period identity from the billing anchor, the traceability tuple, `pricingSnapshotRef`, the pause/intent posture, the **suspended interval(s) + suspension-billing posture** (2026-07-28 billing-pass review #3 — each suspension episode overlapping the period as `[suspendedAt, resumedAt)` clipped to the period, plus the explicit `pause_recurring | continue` policy: rating prorates the recurring line from these, this gear computes no money; without them neither gear could price a mid-period suspension), and the **`payerTenantId` snapshotted at cut time** (2026-07-28 review fix — the fact carries its payer axis explicitly: Billing posts the period to the fact's frozen payer, never to a payer re-resolved from the aggregate at posting time, so an ownership transfer between cut and posting cannot land the in-flight period on the new payer; this is what makes the slice-07 "in-flight period stays with the old payer" next-cycle default *representable*, not merely asserted) — **no monetary column** (the Foundation store has none). The **rating gear prices** the recurring component from the frozen snapshot and the priced line **inherits the fact's key** before Billing posts (AC 27; SEAMS **SUB-R6**). This removes the double-producer collision with rating's recurring lines.
 - **Pause marker:** during a `collectionPaused` window the fact is still emitted, marked, so Billing owns the suppress-vs-defer treatment (SUB-D-03/12, AC 24 — "not posted" is Billing's act, emission is ours). This emit-and-mark rule never overrides grace: a next-term fact blocked by the grace ladder (design 04 §4.4) stays un-emitted through any pause window — grace governs **emission**, the pause defers **collection** of emitted facts only (precedence made explicit 2026-07-28).
 - **Period-key stability:** the period identity is the anchor-derived canonical id frozen at emission; a cycle-length change starts a **new period sequence** at its boundary — no retroactive re-keying of already-cut facts. (2026-07-28 review #18: the in-place path that legitimately changes cycle length is a **Contract term change taking effect at renewal** — same plan, new `Renewal` terms; a customer-initiated cross-frequency `changePlan` is **cancel+new** per slice 03 §4.3, whose successor starts its own sequence anyway. The rule covers both.)
 - **Cut-vs-intent race:** the daily cut reads the pending-intent set as of its run; an `unschedule` committed after the cut suppressed a period re-triggers a targeted re-cut via `SubscriptionIntentUnscheduled` (idempotent on the same key), with the §17.1 charge-coverage reconciliation as the backstop.
+- **One-time / setup charges are emitted here, not rated (T-D-18 adoption, 2026-07-28, flagged for veto):** rating synthesizes **no evaluation unit** for `chargeKind ∈ {one_time, one_time_setup}` rows (rating T-D-18; its three unit kinds are exhaustive without them), so this gear MUST emit the one-time billable **at the qualifying instant** — subscription activation, or **trial conversion** (first non-trial phase entry) for a trialed plan — valued from the **frozen `pricingSnapshotRef`** amount, on the same at-sale path as a commitment sale (T-D-14). The **once-per-subscription-lifetime dedup** of a setup charge is owned here: keyed per `(subscriptionId, priceId)` for the lifetime of the subscription, so re-activation, resume, plan change, and `PlanLink` migration never re-emit it. One-time rows still resolve in catalog step-2 selection for coverage/preview/quote — selection without unit synthesis.
 - Posted invoice lines MUST NOT be rewritten; subscription corrections emit **new** billable or adjustment paths ([`../PRD.md`](../PRD.md) §6.8; SEAMS **SUB-B1**).
 - **Mid-term cancellation disposition (SUB-D-18, 2026-07-28 billing-pass review #10):** a `cancel` landing **inside** an already-cut period does **not** retract the fact — the period was contracted and the fact/posted line stand (immutability). The commercial consequence (early-termination fee, refund, or credit) is **Contracts-defined and Billing-materialised**: `SubscriptionCancelled` carries the **cancellation instant, `cancelMode`, reason, and the contract ref**, and Billing derives the ETF/credit artifacts from the Contract terms as **new** artifacts — this gear computes no money and emits no adjustment itself (ownership row SEAMS **SUB-B7**).
 

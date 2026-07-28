@@ -200,11 +200,11 @@ flowchart TB
 
 **Steps**:
 1. [ ] - `p2` - The run journal `(run_id, price_id, state)` is the idempotency spine: re-runs after partial failure resume, never re-apply (O3) - `inst-mp-journal`
-1b. [ ] - `p1` - **Pending-unit conflicts (D-35):** a selector row whose scope key holds a pending interactive unit fails **per-row** (journal `failed`, names the unit); the run's batch approval pins its keys exactly like bulk import - `inst-mp-pending`
 1a. [ ] - `p1` - **Grandfathered rows are excluded:** repricing selectors structurally exclude `existing_grandfathered` rows — they are immutable in price (Foundation §4.3); an explicit attempt to include one fails that row with a per-row validation error, never a silent skip and never a reprice - `inst-mp-grandfathered`
+1b. [ ] - `p1` - **Pending-unit conflicts (D-35):** a selector row whose scope key holds a pending interactive unit fails **per-row** (journal `failed`, names the unit); the run's batch approval pins its keys exactly like bulk import - `inst-mp-pending`
 2. [ ] - `p2` - Every applied row is a **standard** versioned change (new immutable row via the Foundation path — bulk never mutates in place); events carry dedup keys so consumers de-duplicate on redelivery + re-run - `inst-mp-standard`
 3. [ ] - `p2` - Version coalescing (O5): the run requests batched addressability; `pricingSnapshotRef` pins whatever committed batch the registry emits - `inst-mp-coalesce`
-4. [ ] - `p2` - Throughput: provisional ≥ 50 rows/sec, to be back-calculated from the tenant worst-case row count against the agreed maintenance window and **ratified before Design lock** (O3) - `inst-mp-slo`
+4. [ ] - `p2` - Throughput: **≥ 50 rows/sec — the ratified launch default (O3, 2026-07-28)**, perf-test-verified against the tenant worst-case row count vs the agreed maintenance window - `inst-mp-slo`
 
 ### Price History and Export
 
@@ -238,7 +238,7 @@ flowchart TB
 | `POST` | `/v1/pricing/plans/{planId}/clone` | Clone into a new draft plan | client key | `plan × write` |
 | `POST` | `/v1/pricing/bulk-imports` | Two-phase bulk price import | client key (O4) | `plan × write` |
 | `GET` | `/v1/pricing/bulk-imports/{id}` | Batch report (per-row outcomes) | — | `plan × read` |
-| `POST` | `/v1/pricing/bulk-imports/{id}:abort` | Abort a batch before commit (Phase-2 boundary rules in §6) | client key | `plan × write` |
+| `POST` | `/v1/pricing/bulk-imports/{id}:abort` | Abort a stalled mid-commit run (D-37; boundary rules in §6) | client key | `plan × write` |
 | `POST` | `/v1/pricing/repricing-runs` | Idempotent mass adjustment | `run_id` | `plan × write` |
 | `GET` | `/v1/pricing/repricing-runs/{id}` | Run progress / result | — | `plan × read` |
 | `GET` | `/v1/pricing/history` | Immutable price history (filters) | — | `plan × read` (D-12) |
@@ -330,7 +330,7 @@ A mass adjustment **MUST** be re-run-safe via the per-row journal (no re-apply; 
 + journal flip commit in one transaction), structurally exclude `existing_grandfathered` rows
 (an explicit inclusion fails that row per-row, never a silent skip), emit deduplicated
 events, coalesce versions per the registry batching, route materiality once per run, and meet
-the (to-be-ratified) throughput SLO.
+the ratified throughput SLO (≥ 50 rows/sec, O3, 2026-07-28).
 
 **Implements**: `cpt-cf-bss-pricing-flow-mass-repricing`, `cpt-cf-bss-pricing-algo-mass-repricing`
 

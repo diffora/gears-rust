@@ -265,6 +265,7 @@ work queue drained by lane workers with backpressure, distinct from the first-ra
 - **Idempotent per `(subscription, AnchorPeriod)`**: the `period_tick_ledger` records that the tick fired and which units it emitted; a re-fire (restart, retry, coordinated-lease hand-off) is a no-op. A late usage arrival into an already-ticked period does **not** re-fire the tick — it re-resolves the affected usage unit (slice [`08`](./08-retroactivity-corrections.md)); a period-driven true-up whose input aggregate changed re-resolves under its own key, it is not re-synthesized.
 - **Zero-usage period**: capacity-flavor charges and recurring lines still emit (a reservation bills its allocation regardless of usage — core slice [`05`](./05-commitments-reservations.md) §4.2; PRD §12 AC 20).
 - The tick reads the same frozen anchor calendar the Q store uses for window identity (slice [`13`](./13-q-store-attribution.md) §4.1), so period boundaries and tier-window boundaries never drift.
+- **OPEN — recurring period-cut ownership (SEAMS SB1, 2026-07-28):** subscriptions' `RecurringEmitter` claims the same recurring WHEN via its money-free period fact per `(subscriptionId, billing period, lineKey)` — component-keyed since SUB-D-19, so only the period coordinate still differs from this slice's key (subscriptions SUB-D-07, flagged for veto); resolution + joint fixture required before `billingAnchorPolicy` is implemented on this path — see [`../SEAMS.md`](../SEAMS.md) §K.
 
 ### 4.3 Frozen-Context Assembly and Pin Discipline (normative)
 

@@ -27,18 +27,27 @@ solid. The findings cluster into five themes; fix in this order:
    transition version model, entitlement changes bound to the status-edge commit, and transfer
    guards reordered before OSS re-homing. A momentary Policy/OSS blip can no longer drop a scheduled
    cancel/change, strand a cancel+new saga, or leave revoked entitlements on an active subscription.
-2. **Pause × grace × quota interactions:** F-04-1, F-04-2, F-05-2 — `collectionPaused` layered on the
-   grace ladder and on quota-cycle reset is under-specified; `resume` can be trapped by an overlap
-   acquired during suspension.
+2. **Pause × grace × quota interactions. ✅ MOSTLY FIXED 2026-07-28.** F-04-1 (grace vs pause emission
+   precedence) and F-04-2 (`resume` trapped by an overlap acquired during suspension) were both closed by
+   the 2026-07-28 billing pass — grace governs emission, the pause defers only collection, and a resume
+   collision now fails closed naming its blocker with an operator remediation path. **F-05-2** (quota-cycle
+   reset under a pause) remains open.
 3. **Brand source (contested seam):** F-08-2 (root), F-02-3, F-07-2 — SUB-R5 is unresolved (per-sale
    vs Plan/SKU brand) and slice 02 overstates it as settled; AC 20 is blocked until reconciled.
-4. **Multi-component billing model:** F-08-1 — the recurring key + singular traceability tuple cannot
-   represent plan + add-ons.
+4. **Multi-component billing model. ✅ FIXED 2026-07-28 (SUB-D-19).** F-08-1 — the recurring key gains a
+   component dimension: `(subscriptionId, billing period, lineKey)` with a per-component traceability
+   tuple, matching the coordinate rating already carries in its period-driven unit key. This was the one
+   finding whose effect was S1-grade (every add-on-bearing subscription mis-billed), though filed S2.
 5. **Tenancy/RLS after transfer:** F-07-3 — partitioning by the immutable `orderingTenantId` vs
    post-transfer access by the new `resourceTenantId`.
 
 The remaining S3s are wording/precision and unvalidated-NFR items. Two findings were closed on review
 (F-02-5 cohort sourcing; the rating-stranding half of F-01-1, addressed by slice 03).
+
+> **Status sync 2026-07-28.** A cross-gear review pass found this register lagging the design: F-04-1 and
+> F-04-2 had been fixed by the 2026-07-28 billing pass while still marked `open` here, and F-08-1 was
+> resolved the same day as SUB-D-19. Running tally after the sync: **15 fixed / 1 closed / 22 open** of 38.
+> When a decision closes a finding, update both the finding's Status line and the theme list above.
 
 ---
 
@@ -280,7 +289,10 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
   `(subscriptionId, billing period)` key (§4.3 late success).
 - **Suggested fix**: State explicitly which rule wins in the merged state — recommend: while frozen,
   the recurring stays suppressed (grace semantics dominate), no paused-marked emission.
-- **Status**: open.
+- **Status**: **fixed** (2026-07-28, recorded 2026-07-28 review sync) — precedence pinned as recommended:
+  slice 08 §4.3 "grace governs **emission**, the pause defers **collection** of emitted facts only", so a
+  grace-blocked next-term fact stays un-emitted through any pause window; slice 04 §4.4 carries the same
+  rule. Recorded in SUB-D-07's 2026-07-28 amendment.
 
 ### F-04-2 (S2) — `resume` can be permanently blocked by an overlap acquired during suspension
 - **Where**: `design/04-suspension-renewal-grace.md` §4.1 (resume re-runs overlap check); slice 03 §4.4.
@@ -292,7 +304,11 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
   rejected because B took the overlap slot during suspension. No defined resolution.
 - **Suggested fix**: Define precedence (e.g. a suspended subscription reserves its overlap slot, or
   an operator-mediated resolution path); do not silently trap the resume.
-- **Status**: open.
+- **Status**: **fixed** (2026-07-28, recorded 2026-07-28 review sync) — slice 04 §4.1 "Collision on resume
+  (explicit, 2026-07-28)": the resume fails **closed** (`guard_violation`) with the conflicting
+  subscription(s) **enumerated in the problem response**, remediation is operator-driven (cancel/re-scope
+  the conflicting acquisition, or cancel+new), and the resume retries cleanly afterwards — so the trap is
+  never silent, which is what the finding required. No auto-rebind, no silent supersession of either side.
 
 ### F-04-3 (S2, confirms F-03-2) — Scheduled non-renewal (opt-out) vs `RenewalJob` sequencing at term end is undefined
 - **Where**: `design/04-suspension-renewal-grace.md` §4.5 (opt-out) and §4.3 (`RenewalJob`).
@@ -383,7 +399,11 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
   no-method conversion and unbounded re-trials, is a free-tier exploit.
 - **Suggested fix**: Add an anchor — serial-re-trial limiting (tenant/identity level), and/or
   no-method conversion grants reduced access rather than full paid entitlements for the grace window.
-- **Status**: open.
+- **Status**: **open — escalated and now tracked** (2026-07-28). Deliberately *not* decided in design: each
+  candidate anchor (re-trial limiting / reduced no-method access / payment method required before the
+  boundary advances) trades conversion funnel against revenue leakage, which is a Product/Finance call. The
+  composed exploit loop is now written up explicitly as its own PRD §15 row (owner Product / Finance, due
+  before trial GA) rather than living only as three separately-innocuous open legs.
 
 ### F-06-2 (S2, cross-slice) — Grace late-success is undefined for a first-time trial→paid conversion
 - **Where**: `design/06-trials.md` §4.2 vs slice 04 §4.3.
@@ -403,7 +423,11 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
   the mechanism against "convertTrial, then the term-job fires" is not stated.
 - **Suggested fix**: Specify that the term-conversion job guards on an active trial phase (no-op if
   already converted), rather than relying on an uncoordinated idempotency key.
-- **Status**: open.
+- **Status**: **fixed** (2026-07-28) — slice 06 §3.8 adopts the suggested fix: a **state guard**, not a
+  shared key. The job re-reads phase state inside its commit and no-ops when the trial phase is no longer
+  active; `convertTrial` fails closed if the boundary already advanced. The two keys stay deliberately
+  uncoordinated because they key different actors — only the phase state can arbitrate. *(Not to be
+  confused with the separate 2026-07-28 pending-intent fix in §3.6, which addresses cancel-before-conversion.)*
 
 ### F-06-4 (S3) — Trial draft-vs-active status is ambiguous and couples to "entitlements issue on activate"
 - **Where**: `design/06-trials.md` §1.1, §4.1; slice 05 §4.1.
@@ -489,7 +513,13 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
   `priceId`) or there are multiple facts per period, which breaks "at most one per key."
 - **Suggested fix**: Add a component/line dimension to the recurring key and traceability, or state
   that add-ons are separately-keyed recurring facts.
-- **Status**: open.
+- **Status**: **fixed** (2026-07-28) — **SUB-D-19** takes the first option: the fact is cut **per billable
+  component**, key `(subscriptionId, billing period, lineKey)` with a per-component traceability tuple.
+  `lineKey` is deliberately the coordinate rating already carries in its period-driven unit key
+  `(subscription, priceId, chargeKind, lineKey, AnchorPeriod)`, so SUB-D-07's "the priced line inherits the
+  fact's key" becomes well-defined for plan + add-ons. Propagated across slice 08 (§3.1/§3.6/§3.7/§4.3 +
+  constraint), PRD §6.8/§9.2/AC 5, SEAMS SUB-B1/SUB-R6, and the rating-side SB1 note. Escalated to **S1** in
+  effect: as written the contract mis-billed every add-on-bearing subscription.
 
 ### F-08-2 (S2, root of the brand cluster F-02-3/F-07-2) — Brand-source for overlay matching is contested (SUB-R5) but slice 02 presents it as settled
 - **Where**: SEAMS SUB-R5; `design/02-composition-versioning.md` §4.4; also slices 06/07 brand refs.
@@ -502,7 +532,10 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
   feeds matching at all; the entire brand path rests on an unresolved seam.
 - **Suggested fix**: Reword slice 02 §4.4 to flag SUB-R5 as contested/open (not "so rating matches");
   resolve the source with rating before Design lock, then settle F-02-3/F-07-2 on top.
-- **Status**: open (upgrades the brand cluster).
+- **Status**: **partially fixed** (2026-07-28) — the doc half is done: slice 02 §4.4 (and the
+  `fr-sale-brand-attribution` driver row) now present the per-sale `brandId` as **a candidate** and flag
+  SUB-R5 as an open contested seam with AC 20 blocked, cross-referencing F-02-3/F-07-2. The seam itself is
+  **still open** — pin the source with rating before Design lock, then settle F-02-3/F-07-2 on top.
 
 ### F-08-3 (S3, disclosed risk) — The slice's core recurring handoff (SUB-R6) is an unlocked HIGH Joint seam
 - **Where**: `design/08-events-billing.md` §4.3; SEAMS SUB-R6.

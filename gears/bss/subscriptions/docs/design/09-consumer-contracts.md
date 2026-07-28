@@ -60,7 +60,7 @@ provisioning, entitlement check), **SUB-F1/F2** (Payments signals, Notifications
 |-------------|-----------------|
 | `cpt-cf-bss-subscriptions-interface-control-plane` | The business-operations contract (create/get/list/activate/suspend/resume/cancel/changePlan/add-on/entitlement) with idempotency + optimistic-concurrency requirements; REST mapping is Design (§4.1). |
 | `cpt-cf-bss-subscriptions-contract-rating-read-model` | Composition read models (effective `PlanLink`/`AddOn`, `PlanTier` @ `t`, active phase @ `t`, `(changeEffectiveAt, changeMode)`) on the shared ordering key (§4.2). |
-| `cpt-cf-bss-subscriptions-contract-billing-handoff` | `BillableItemCreated(recurring)` idempotent per `(subscriptionId, billing period)` + traceability tuple; proration only as new/adjusting artifacts (§4.3). |
+| `cpt-cf-bss-subscriptions-contract-billing-handoff` | `BillableItemCreated(recurring)` idempotent per `(subscriptionId, billing period, lineKey)` (per component — SUB-D-19) + per-component traceability tuple; proration only as new/adjusting artifacts (§4.3). |
 | `cpt-cf-bss-subscriptions-contract-contracts-input` | Signed terms, `Renewal`, grace/regional templates, `PriceOverride` via events + read models; evaluated fields stored at evaluation time (§4.4). |
 | `cpt-cf-bss-subscriptions-contract-policy-gate` / `cpt-cf-bss-subscriptions-contract-oss-provisioning` | Pre-commit allow/deny + `reasonCodes`, fail-closed; provision/deprovision/pause confirmed by events (§4.5). |
 | `cpt-cf-bss-subscriptions-contract-payments-signals` | Payment pre-check + retry-exhaustion consumed by the grace ladder; PSP webhooks + dunning payloads are Design (§4.6). |
@@ -216,7 +216,7 @@ rating/Billing reads of already-served state ([`01-foundation-lifecycle.md`](./0
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-normative-billing-contract-con`
 
-- `BillableItemCreated(kind=recurring)` — the **money-free period fact** idempotent per `(subscriptionId, billing period)`, carrying `{subscriptionId, skuId, planId, priceId}` + `pricingSnapshotRef` + the pause/intent posture + the suspended interval(s) with the suspension-billing posture + the cut-time `payerTenantId` (SUB-D-07 as amended 2026-07-28); the rating gear prices it and the priced line inherits the key before Billing posts (SUB-D-07; SEAMS **SUB-R6**); proration materialises only as new billable/adjusting artifacts; posted invoices immutable ([`../PRD.md`](../PRD.md) §9.2, §6.8; SEAMS **SUB-B1**). Billing additionally exposes the **`billedThroughAt`** watermark this gear's backdating guard consumes (SEAMS **SUB-B6**).
+- `BillableItemCreated(kind=recurring)` — the **money-free period fact**, one per billable component, idempotent per `(subscriptionId, billing period, lineKey)` (SUB-D-19), carrying that component's `{subscriptionId, skuId, planId, priceId}` + `pricingSnapshotRef` + the pause/intent posture + the suspended interval(s) with the suspension-billing posture + the cut-time `payerTenantId` (SUB-D-07 as amended 2026-07-28); the rating gear prices it and the priced line inherits the key before Billing posts (SUB-D-07; SEAMS **SUB-R6**); proration materialises only as new billable/adjusting artifacts; posted invoices immutable ([`../PRD.md`](../PRD.md) §9.2, §6.8; SEAMS **SUB-B1**). Billing additionally exposes the **`billedThroughAt`** watermark this gear's backdating guard consumes (SEAMS **SUB-B6**).
 
 ### 4.4 Contracts Input Contract (normative)
 

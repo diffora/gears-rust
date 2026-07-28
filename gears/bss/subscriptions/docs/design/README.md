@@ -37,7 +37,7 @@ normatives, the ADR index, and traceability — is [`../DESIGN.md`](../DESIGN.md
 - [`05-entitlements.md`](./05-entitlements.md) — **Entitlement Lifecycle** — Issue/revoke from transitions, assignment from the pricing published grant set (incl. the per-phase map), the point-of-use check decision state (p95 < 100ms, OSS enforces), and quota soft/hard limits. (PRD §6.9)
 - [`06-trials.md`](./06-trials.md) — **Trial Runtime & Conversion** — Trial provisioning on the phase machinery, end-of-trial conversion (`convertsToPhaseId`), early `convertTrial`, expiry without conversion, and approval-gated extension. (PRD §6.10)
 - [`07-tenancy-transfer.md`](./07-tenancy-transfer.md) — **Multi-Tenant Ownership & Transfer** — The three tenant axes referenced from AMS, delegation-proof enforcement, hierarchy by reference, and the approval-gated ownership-transfer flow. (PRD §6.6)
-- [`08-events-billing.md`](./08-events-billing.md) — **Event Model & Billing Alignment** — The producer inventory + payload-sufficiency rules, ordering, recurring `BillableItem` idempotency per `(subscriptionId, billing period)`, charge-to-catalog traceability, and the event outbox. (PRD §6.7, §6.8)
+- [`08-events-billing.md`](./08-events-billing.md) — **Event Model & Billing Alignment** — The producer inventory + payload-sufficiency rules, ordering, recurring `BillableItem` idempotency per `(subscriptionId, billing period, lineKey)`, charge-to-catalog traceability, and the event outbox. (PRD §6.7, §6.8)
 - [`09-consumer-contracts.md`](./09-consumer-contracts.md) — **Consumer & Integration Contracts** — The integration surface: the Billing handoff, the rating read-model, the Contracts input, the Policy gate, OSS provisioning, and Payments signals. (PRD §9)
 
 ## Slice map (PRD §6 ↔ slice)

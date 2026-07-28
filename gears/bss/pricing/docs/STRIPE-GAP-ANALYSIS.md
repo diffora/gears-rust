@@ -171,7 +171,7 @@ wrapper fields to the rating §15 alignment agenda. Do **not** type `discountRef
 
 ### G-2. Prepaid grant is thinner than a Stripe credit grant
 
-**State today**: the prepaid grant ([10-advanced-primitives.md L174–182](./design/10-advanced-primitives.md))
+**State today**: the prepaid grant ([10-advanced-primitives.md L184–196](./design/10-advanced-primitives.md))
 carries `grantAmount`, `creditUnit` (currency **or** published `meteringUnit`), `expiryPolicy`,
 `autoRechargeAllowed`, and a per-`(currency, region)` `price`. Balance/drawdown are correctly
 GA-gated to Billing/Rating.
@@ -192,13 +192,13 @@ one-off invoices) — a rule set our applicability scoping would need to state.
 grant definition; decide `priority` ownership (catalog default vs Billing). Small, additive
 schema change to `pricing_plan.prepaid_grant` + `GrantValidator`.
 
-**Actioned — D-43 (2026-07-14, flagged for veto)**: `category` (`prepaid | promotional`), a
+**Actioned — D-43 (2026-07-14, confirmed 2026-07-28)**: `category` (`prepaid | promotional`), a
 **materialized** usage-line `applicability`, and `drawdownPriority` as an authored default
 added to the grant definition ([DECISIONS.md](./DECISIONS.md) D-43); the **effective**
 cross-grant order is Billing-owned via a normative tie-break chain (`drawdownPriority` →
 `promotional` first → earlier expiry → earlier issuance → `grantId`). Rating-side check
 passed: the wallet grant is disjoint from step-6 `commitmentPools[]` (rating SEAMS M8), so
-this stays a catalog+Billing concern; where drawdown sits relative to tax remains G-4.
+this stays a catalog+Billing concern; where drawdown sits relative to tax is resolved by D-48 (post-discount / pre-tax).
 **Schema note (D-52, 2026-07-28)**: grants are now rows of the `pricing_plan_grant` table
 (PK `grant_id`; `pricing_grant_price` re-keyed on it) — the `pricing_plan.prepaid_grant`
 jsonb named in the recommendation above is superseded.
@@ -265,7 +265,7 @@ consumer contracts until Billing docs exist; Billing countersigns at its gear PR
 | # | Gap | Effort | Recommended action |
 |---|---|---|---|
 | G-1 | Coupons / promotion codes | Gear PRD (known open) | Application side already designed (rating 06 / §17.2); stand up Promotions PRD from that contract; put Stripe `duration` on the §15 alignment agenda; typed-`discountRef` bridge rejected |
-| G-2 | Prepaid grant `applicability` + `category` (+ `priority`) | Low–Med | **Actioned → D-43** (fields added + materialized at publish; effective order Billing-owned; veto-flagged) |
+| G-2 | Prepaid grant `applicability` + `category` (+ `priority`) | Low–Med | **Actioned → D-43** (fields added + materialized at publish; effective order Billing-owned; confirmed 2026-07-28) |
 | G-3 | Monetary minimum commitment / true-up | — (resolved by inspection) | Already owned: negotiated committed spend = Contracts pools + `TrueUpObligation` (rating T-D-14, step 6); plan-level period floor = conscious §17.8 deferral with `PeriodFloorCapObligation` machinery reserved; no new decision needed |
 | G-4 | Grant-drawdown / tax placement after coupons | Low | **Actioned → D-48** (drawdown post-discount / pre-tax; credit reduces the charge, never pays the invoice; Tax-Engine-GA revisit checkpoint; mirrored pricing design/10 + rating design/11) |
 

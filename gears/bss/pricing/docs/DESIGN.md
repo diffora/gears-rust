@@ -97,9 +97,10 @@ Requirements from [`PRD.md`](./PRD.md) that significantly influence the architec
 
 #### NFR Allocation
 
-Non-functional requirements are specified in [`PRD.md`](./PRD.md) §7. Several load-bearing
-targets are **provisional** and MUST be ratified before Design lock (no bare placeholders may
-ship — [`PRD.md`](./PRD.md) §14); they are surfaced here with that status.
+Non-functional requirements are specified in [`PRD.md`](./PRD.md) §7. All load-bearing
+targets are **ratified as of 2026-07-28** ([`PRD.md`](./PRD.md) §14/§15), with one deliberate
+exception — the audit retention-maximum vs minimum question stays open with Legal; per-row
+statuses below.
 
 | NFR theme | Allocated to | Design Response | Status |
 |-----------|--------------|-----------------|--------|
@@ -510,5 +511,5 @@ zero cross-boundary replication (`nfr-data-residency`; NFR-allocation row above)
 ## 5. Traceability
 
 - **PRD**: [`PRD.md`](./PRD.md)
-- **ADRs**: [`ADR/`](./ADR/) — `cpt-cf-bss-pricing-adr-canonical-scope-key`, `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis`, `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (further ADRs planned as dependent slices land: snapshot/versioning strategy, customer-group ownership, `CatalogVersion` increment/batching, `brand`-as-`PriceOverlay`)
+- **ADRs**: [`ADR/`](./ADR/) — `cpt-cf-bss-pricing-adr-canonical-scope-key`, `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis`, `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (further ADRs planned as dependent slices land: snapshot/versioning strategy, grandfathered-row immutability, customer-group ownership, derived-meter formula-as-data, `CatalogVersion` increment/batching, `brand`-as-`PriceOverlay`)
 - **Design set**: [`design/`](./design/) — Foundation + per-capability slice designs; the phased map and dependency order are in §1.3 and [`design/README.md`](./design/README.md).

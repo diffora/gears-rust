@@ -44,7 +44,8 @@
 
 This slice owns the **end of a plan's life**: **retirement** (block new subscriptions,
 preserve in-flight snapshots, trigger the Slice 7-owned window-cancellation flow for
-not-yet-active windows — never merely marking them invalid), **scheduled migration** to a
+not-yet-active windows **of scope keys with no in-flight subscribers — continuing-coverage
+windows are kept, D-51** — never merely marking them invalid), **scheduled migration** to a
 published target (`PlanMigrationScheduled` → Subscriptions creates effective-dated
 `PlanLink`s; idempotent retry; cancellable before the effective date), **migration safety
 deltas** (contract-locked exclusion, entitlement/add-on blocking deltas), and **legacy
@@ -76,7 +77,7 @@ cutover, without SKU cloning.
 
 ### 1.4 References
 
-- **PRD**: [PRD.md](../PRD.md) — §6.8, §17.5 (change mechanisms), §15 (migration notice-period open item)
+- **PRD**: [PRD.md](../PRD.md) — §6.8, §17.5 (change mechanisms), §15 (migration notice — decided, D-49)
 - **Design**: [01-foundation.md](./01-foundation.md) — versioning/immutability (§4.3); [07-pricewindow-linkage.md](./07-pricewindow-linkage.md) — grandfathering, window mechanics; [05-governance.md](./05-governance.md) — `plan × retire/migrate` authz, `historical_import` grant
 - **Dependencies**: Slices 1–7 (published plans, windows, grandfathering, governance). Retirement invokes Slice 7's window-cancellation flow (windows are gear-owned per D-03).
 
@@ -300,9 +301,11 @@ this counts rejections, not waiting schedules).
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-retirement`
 
 Retirement **MUST** block new subscriptions, preserve existing snapshots, emit `PlanRetired`,
-and trigger Slice 7's gear-owned window-cancellation flow per not-yet-active window (one local transaction, D-03; with `PriceWindowCancelled` +
-cache eviction; never mark-invalid), warning the operator with the cancellation list before
-confirm.
+and trigger Slice 7's gear-owned window-cancellation flow per not-yet-active window **of a
+scope key with no in-flight subscribers — a continuing-coverage window of a key with
+in-flight subscribers is kept, never cancelled (D-51)** (one local transaction, D-03; with
+`PriceWindowCancelled` + cache eviction; never mark-invalid), warning the operator with the
+cancellation list — kept windows labelled distinctly from cancelled ones — before confirm.
 
 **Implements**: `cpt-cf-bss-pricing-flow-plan-retire`, `cpt-cf-bss-pricing-algo-retirement`
 
@@ -364,11 +367,12 @@ missing the frozen `(currency, region)` or frequency row is a **blocking** delta
 
 Unit:
 
-- [ ] Retire blocks new-subscription sellability but leaves existing snapshot resolution; migration target matrix (draft/retired target rejected); delta classification (locked/entitlement/add-on/boundary — a target missing the frozen `(currency, region)`/frequency row is blocking); cancel-after-effective rejected; synthesis provenance completeness
+- [ ] Retire blocks new-subscription sellability but leaves existing snapshot resolution; migration target matrix (draft/retired target rejected); delta classification (locked/entitlement/add-on/boundary — a target missing the frozen `(currency, region)`/frequency row is blocking); cancel of a `completed` run rejected (`MIGRATION_COMPLETED`, D-34); synthesis provenance completeness
 
 Integration (testcontainers):
 
-- [ ] Retirement cancels only not-yet-active windows (active ones run out), emits `PlanRetired`, and the operator dry-run lists exactly the cancelled set
+- [ ] Retirement cancels scheduled windows only for scope keys with no in-flight subscribers (active ones run out), emits `PlanRetired`, and the operator dry-run labels kept vs cancelled windows (D-51)
+- [ ] Retiring a plan whose key has in-flight subscribers keeps the continuing-coverage scheduled window (D-51): the active window expires at its natural end and an arrears charge after it still resolves — no trailing void opens
 - [ ] Retiring a plan with an approved-not-yet-effective cutover unwinds it atomically: the predecessor window's `effectiveTo` is restored, copy/successor windows cancelled, the unit closed as unwound — no instant is left uncovered for in-flight subscribers; the retirement required two-person approval (always material)
 - [ ] A migration re-trigger with the same `migration_id` produces no duplicate `PlanLink` requests (consumer-side dedup contract honored)
 - [ ] Cancel before effective invalidates; cancelling an `in_progress` run halts further processing with the partial sets listed (already-migrated unaffected); cancel of a `completed` run → 409 (D-34)
@@ -383,4 +387,4 @@ Integration (testcontainers):
 - **Performance**: delta analysis is a batch computation at schedule time (not order-time); migration fan-out throughput is bounded by the event pipeline, with progress visible via the schedule state.
 - **Observability**: `pricing_migrations{state}` gauge, `pricing_migration_excluded_locked_total`, `pricing_retirements_total`, stalled-migration alarm.
 - **Security & AuthZ**: `plan × retire` / `plan × migrate` (Slice 5 catalog); retirement and migration are audited governed mutations; synthesis exercises the `historical_import` grant where backdated reference rows are needed.
-- **Risks & open items**: the enforced-migration notice period is **decided** (D-49 — configurable, 60-day default floor, validated at scheduling, M5); Subscriptions' `PlanLink` dedup contract must land jointly (the event carries the key; enforcement is theirs); upstream SKU retirement joint contract (registry) affects retiring plans whose SKU disappears first.
+- **Risks & open items**: the enforced-migration notice period is **decided** (D-49 — configurable, 60-day default floor, validated at scheduling, M5); Subscriptions' `PlanLink` dedup contract must land jointly (the event carries the key; enforcement is theirs); the SKU-retirement joint contract with the registry is **closed** (D-47, 2026-07-28 — registry vendored, no external counterparty: the registry never retires a referenced SKU per its `SkuReferenceCount` predicate; pricing flags + blocks new adoption per AC #82).

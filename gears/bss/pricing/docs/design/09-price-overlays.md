@@ -150,7 +150,8 @@ flowchart TB
 **Steps**:
 1. [ ] - `p1` - API: POST/PATCH /v1/pricing/price-overlays (idempotency key / ETag) - `inst-pl-author`
 2. [ ] - `p1` - `PriceOverlayValidator` runs the L2/L5 + referential + taxonomy rules - `inst-pl-validate`
-3. [ ] - `p1` - **RETURN** 201/200; the commit is **always material** (D-50 — overlay creation, line add/remove, magnitude/kind or audience changes all route through the Slice 5 approval workflow before publishing; an overlay line has no per-currency baseline to threshold, so the G1 no-delta rule applies); the approved overlay is then a **publish unit through the Foundation engine** (D-06): validation → pending `CatalogVersion` ref → read-model warm — consumer-visible only at `CatalogVersionPublished` + warm-completion, the same monotonic pinning as plan content (evaluation downstream) - `inst-pl-return`
+3. [ ] - `p1` - **RETURN** 201/200 — the save lands a **draft** only; nothing publishes from a save (2026-07-28 review fix, flagged for veto) - `inst-pl-return`
+4. [ ] - `p1` - Submit/commit → **202**: the commit is **always material** (D-50 — overlay creation, line add/remove, magnitude/kind or audience changes all route through the Slice 5 approval workflow before publishing; an overlay line has no per-currency baseline to threshold, so the G1 no-delta rule applies) and opens a Slice 5 approval unit under the standard R-13 pin semantics (subject stays draft; mutation voids the unit); the approved overlay is then a **publish unit through the Foundation engine** (D-06): validation → pending `CatalogVersion` ref → read-model warm — consumer-visible only at `CatalogVersionPublished` + warm-completion, the same monotonic pinning as plan content (evaluation downstream) (2026-07-28 review fix, flagged for veto) - `inst-pl-commit`
 
 ### Manage Customer-Group Membership
 
@@ -180,10 +181,10 @@ flowchart TB
 **Steps**:
 1. [ ] - `p1` - Scope ∈ {partner, orgTier, brand, region, customerGroup, global}; scope values validated against their taxonomies (brand → Slice 4; customerGroup → `GroupTaxonomy`) - `inst-plv-scope`
 2. [ ] - `p1` - **Adjustment lines (D-42, CONFIRMED 2026-07-28):** a `PriceOverlay` is a **container of one or more adjustment lines**, each keyed `(planId?, targetSku?)` with its **own** kind ∈ {markup, discount, fixed} + magnitude. The **list-default line** (no `planId`, no `targetSku`) applies to every target of the overlay's `target_ref` — the pre-D-42 single-adjustment overlay is exactly this degenerate one-line case, so nothing existing is lost. Per line the magnitude type is **declared** via `magnitude_kind ∈ {percent_bp, amount}` (NOT NULL — never inferred; `fixed` is always `amount`): a **percent** magnitude is a single basis-points value (currency-neutral); an **amount-based** magnitude (absolute `fixed`/markup/discount) is money and exists only **per currency** (D-08, no-implicit-FX) — the line carries a `pricing_price_overlay_line_amount` value set that MUST cover **every currency the line's resolved target scope sells** (each value at its currency's ISO 4217 minor unit; a missing currency fails save/publish, `ADJUSTMENT_CURRENCY_NOT_COVERED`, naming the line). A base row in a **new** currency published later flags affected amount-based lines `coverage_incomplete` (+ alarm; the uncovered market resolves without that line — normal precedence semantics — until the operator adds the value) - `inst-plv-adjustment`
-2a. [ ] - `p1` - **Line-set rules (D-42):** ≥ 1 line per overlay; a duplicate line key `(planId, targetSku)` within one overlay fails (`OVERLAY_LINE_DUPLICATE`, 422); a `targetSku` line MUST also name its `planId`; every non-default line MUST reference a **published** plan/SKU inside the overlay's `target_ref` scope (`OVERLAY_LINE_TARGET_UNKNOWN`, 422); D-31 dangling-on-retire applies **per line** (a retired target flags the line, remediation = end or retarget it). **Resolution (normative, adopted by Rating step 4):** within one overlay the **most-specific line wins** for the priced row — `(planId, targetSku)` > `(planId)` > list-default — and exactly one line of a list applies per row; **across** overlays nothing changes: class rank + precedence stack as before (`inst-plv-class-tiebreak`). The resolved line set freezes into `pricingSnapshotRef` with the overlay - `inst-plv-lines`
+2a. [ ] - `p1` - **Line-set rules (D-42):** ≥ 1 line per overlay; a duplicate line key `(planId, targetSku)` within one overlay fails (`OVERLAY_LINE_DUPLICATE`, 422); a `targetSku` line MUST also name its `planId`; every non-default line MUST reference a **published** plan/SKU inside the overlay's `target_ref` scope (`OVERLAY_LINE_TARGET_UNKNOWN`, 422); D-31 dangling-on-retire applies **per line** (a retired target flags the line, remediation = end or retarget it). **Resolution (normative, adopted by Rating step 4):** within one overlay the **most-specific line wins** for the priced row — `(planId, targetSku)` > `(planId)` > list-default — and exactly one line of a list applies per row; **across** overlays nothing changes: class rank + precedence stack as before (`inst-plv-class-tiebreak`). **Amount-incomplete fallback (normative, adopted by Tariffs verbatim):** a line flagged `coverage_incomplete` for the priced currency removes **that overlay entirely** from the stack for that currency — no fallback to a less-specific line of the same overlay; the market resolves from the remaining overlays / base (2026-07-28 review fix, flagged for veto). The resolved line set freezes into `pricingSnapshotRef` with the overlay - `inst-plv-lines`
 3. [ ] - `p1` - `precedence` unique within one scope class (L2); duplicate rejected at save - `inst-plv-precedence`
 3a. [ ] - `p1` - **Cross-class tie-break (joint contract):** `precedence` is unique only within a class, so overlays from **different** classes can tie. The read model publishes the normative **class-specificity order** — `customerGroup > partner > orgTier > brand > region > global` — as the tie-break Tariffs MUST adopt verbatim; authoring additionally **warns** on an equal-precedence cross-class pair with overlapping targets so the operator sees the tie before relying on the break. **Application cardinality (normative — SEAMS O3 wording confirmed 2026-07-28):** overlay application is **stack-all, never single-winner** — **every** scope-matching overlay contributes exactly one line (its most-specific per `inst-plv-lines`) to a **sequential stack** applied in the total order `precedence → class order → overlay id`; the class order breaks *ties inside the stack*, it never filters an overlay out (partner + brand + region adjustments legitimately compound). Grandfathering eligibility is the opposite semantics (one row selected) and is **not** an analogue of this rule - `inst-plv-class-tiebreak`
-4. [ ] - `p1` - Optional `[effectiveFrom, effectiveTo)` validated per scope + adjustment target (its own interval — **not** on the canonical price-row key; overlays are not price rows); overlapping intervals for one `(scope, target)` pair are rejected at authoring (`OVERLAY_INTERVAL_OVERLAP`, 409) — the overlay analogue of window non-overlap - `inst-plv-dating`
+4. [ ] - `p1` - Optional `[effectiveFrom, effectiveTo)` validated per scope + adjustment target (its own interval — **not** on the canonical price-row key; overlays are not price rows); overlapping intervals collide per **line key** `(scope_class, scope_value, planId, targetSku)` (null-safe defaults — the collision key is per line since D-42) and are rejected at authoring (`OVERLAY_INTERVAL_OVERLAP`, 409) — the overlay analogue of window non-overlap (2026-07-28 review fix, flagged for veto) - `inst-plv-dating`
 5. [ ] - `p1` - Tax basis declared or explicitly delegated to Tariffs (L5); silence fails - `inst-plv-taxbasis`
 6. [ ] - `p1` - Referential integrity: a scope referencing an unpublished plan/SKU is rejected and never exposed in the read model. **Retirement of a targeted plan does not block on overlays** (D-31): the overlay goes **dangling-and-flagged** — read-model flag + `pricing.priceoverlay.target_retired` (Warn); in-flight subscribers legitimately keep resolving retired plans' rows, so the overlay stays evaluable for them; remediation = end or retarget the overlay - `inst-plv-referential`
 7. [ ] - `p1` - **Disclosure (L6):** `disclosure` defaults to `restricted` — the overlay is excluded from every consumer-facing enumeration and from the base-price preview (Slice 4 returns base + disclaimer only, regardless), and materializes only in the member payer's own Tariffs evaluation/quote/invoice; `public` overlays MAY be disclosed by Presentation / the Tariffs effective-price preview (F-34). Operator/service reads (`price_overlay × read`) are unaffected — the flag governs **consumer-facing** exposure only - `inst-plv-disclosure`
@@ -196,7 +197,7 @@ flowchart TB
 **Steps**:
 1. [ ] - `p1` - `GroupTaxonomy` is BSS-owned and governed like region/brand (values validated at authoring; retire guarded by referential checks) - `inst-cg-taxonomy`
 2. [ ] - `p1` - Membership is an **effective-dated, audited BSS record** on the payer's commercial profile keyed by `payerTenantId` — AMS supplies identity only; tenant topology is never modified - `inst-cg-record`
-3. [ ] - `p1` - Resolution: the group at `t` = the membership interval covering `t` — **at most one active membership per payer across all groups** (D-09): a second enrollment while one is active is rejected (`MEMBERSHIP_CONFLICT`, names the active one), so the resolved group is unique **by construction**; a transfer is the atomic **move** operation (end current + start new in one audited mutation; renewal-aligned by default, immediate = material per `inst-mm-*`); Tariffs resolves the **most-specific line** of the group's `customerGroup` `PriceOverlay` for the priced `(plan, sku)` (D-42 `inst-plv-lines`) and applies it to the resolved (region-scoped) base rows - `inst-cg-resolve`
+3. [ ] - `p1` - Resolution: the group at `t` = the membership interval covering `t` — membership intervals are **non-overlapping per payer across all groups at any instant** (D-09; scheduled sequential future-dated memberships are legal — 2026-07-28 review fix, flagged for veto): an enrollment whose interval overlaps an existing one in any group is rejected (`MEMBERSHIP_CONFLICT`, names the conflicting membership), so the resolved group is unique **by construction**; a transfer is the atomic **move** operation (end current + start new in one audited mutation; renewal-aligned by default, immediate = material per `inst-mm-*`); each scope-matching `customerGroup` overlay contributes its **most-specific line** for the priced `(plan, sku)` (D-42 `inst-plv-lines`, stack-all per `inst-plv-class-tiebreak`) and Tariffs applies them to the resolved (region-scoped) base rows - `inst-cg-resolve`
 4. [ ] - `p1` - **Determinism:** the resolved group freezes into `pricingSnapshotRef`; a pinned subscription keeps its frozen group until renewal re-resolution (L3) - `inst-cg-freeze`
 5. [ ] - `p2` - **Membership scope (L7):** resolution matches the **direct** `payerTenantId` at launch; subtree inheritance (parent membership covering payer-subtenants via a payer-hierarchy walk, nearest-wins, `inherited_via` frozen in the snapshot) is a recorded **needs-decision** — until decided, per-subtenant enrollment is the supported path (automatable off AMS subtenant-creation events as an ops concern) - `inst-cg-subtree`
 6. [ ] - `p1` - **Segment-pricing routing rule (normative):** a segment needing a **price adjustment** (±%, fixed) on the base structure → `customerGroup` overlay (this slice; server-side resolution, no leakable id); a segment needing a **different structure** (other tiers/counts/mechanics) → a **separate plan**, operator-channel only until group-scoped plan eligibility lands (Slice 7 `inst-sg-eligibility-gated`); **negotiated per-account terms** → Contracts (out of catalog). Free-for-internal groups → a separate `$0`-row plan (Slice 3 Q5) - `inst-cg-routing`
@@ -230,23 +231,25 @@ flowchart TB
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `POST/PATCH` | `/v1/pricing/price-overlays` | Author/validate an overlay | idempotency key / ETag |
+| `POST/PATCH` | `/v1/pricing/price-overlays` | Author/validate an overlay (draft; a save never publishes) | idempotency key / ETag |
+| `POST` | `/v1/pricing/price-overlays/{overlayId}/submit` | Submit the draft — always-material Slice 5 approval unit (D-50), then the D-06 publish unit (202; 2026-07-28 review fix, flagged for veto) | per revision |
 | `GET` | `/v1/pricing/price-overlays` | List overlays (admin/Tariffs read) | — |
 | `GET/PUT` | `/v1/pricing/customer-groups/taxonomy` | The BSS group taxonomy | ETag |
 | `POST` | `/v1/pricing/customer-groups/{group}/members` | Create an effective-dated membership | idempotency key |
 | `PATCH` | `/v1/pricing/customer-groups/{group}/members/{id}` | End/adjust an interval (audited) | ETag |
-| `POST` | `/v1/pricing/customer-groups/{group}/members/{payerId}/move` | Atomic transfer from the payer's active group (end + start, one audited mutation; D-09) | idempotency key |
+| `POST` | `/v1/pricing/customer-groups/{group}/members/{payerId}/move` | Atomic transfer of the payer into `{group}` (the **target** group): ends the active membership + starts the new one (one audited mutation; D-09) | idempotency key |
 
 **Problem responses (RFC 9457):** `PRECEDENCE_DUPLICATE` (409), `OVERLAY_INTERVAL_OVERLAP`
-(409 — overlapping effective intervals for one `(scope, target)` pair), `TARGET_UNPUBLISHED`
+(409 — overlapping effective intervals for one line key `(scope_class, scope_value, planId,
+targetSku)`, null-safe — D-42), `TARGET_UNPUBLISHED`
 (422), `TAX_BASIS_UNDECLARED` (422), `ADJUSTMENT_CURRENCY_NOT_COVERED` (422 — an
 amount-based **line** missing a value for a currency its target scope sells, D-08),
 `OVERLAY_LINE_DUPLICATE` (422 — a second line on one `(planId, targetSku)` key, D-42),
 `OVERLAY_LINE_TARGET_UNKNOWN` (422 — a line naming a plan/SKU outside the overlay's
 `target_ref` scope or unpublished, D-42),
 `GROUP_UNKNOWN` (422), `MEMBERSHIP_OVERLAP` (409 — overlapping intervals within one group),
-`MEMBERSHIP_CONFLICT` (409 — the payer already holds an active membership in another group;
-use the move operation — D-09).
+`MEMBERSHIP_CONFLICT` (409 — the enrollment's interval overlaps the payer's membership in
+another group; use the move operation — D-09).
 
 ## 6. Data Model
 
@@ -295,7 +298,7 @@ value)`, `state`, retire guarded.
 |--------|------|-------|
 | `payer_tenant_id` | `uuid` | the payer's commercial profile key |
 | `group_value` | `string` | FK-like to the taxonomy |
-| `effective_from` / `effective_to` | `timestamptz` | `[from, to)`; non-overlap per `(payer, group)` **and at most one active membership per `payer_tenant_id` across all groups** (D-09) enforced at write |
+| `effective_from` / `effective_to` | `timestamptz` | `[from, to)`; non-overlap per `(payer, group)` **and interval non-overlap per `payer_tenant_id` across all groups at any instant** (D-09; scheduled sequential memberships legal — 2026-07-28 review fix, flagged for veto) enforced at write |
 | `reason` / `actor` | — | audit surface (full trail in `pricing_audit_log`) |
 
 ## 7. Events & Alarms
@@ -327,7 +330,8 @@ magnitude (duplicate keys and out-of-scope targets fail; most-specific-wins with
 the published resolution rule), unique precedence per scope class (per list), optional
 own-interval dating, declared tax basis (or explicit delegation), referential integrity to
 published targets per line — with evaluation staying in Tariffs and base rows staying
-`priceOverlay = base`. Every committed
+`priceOverlay = base`. Every overlay mutation is **always material** (D-50): it routes
+through the Slice 5 approval workflow before its publish unit fires. Every committed
 overlay mutation **MUST** be its own publish unit through the Foundation engine
 (version-pinned visibility, D-06). Amount-based lines carry **per-currency** values
 covering every currency of the line's target scope (no implicit FX; fail-closed at authoring,

@@ -66,7 +66,7 @@ stacking, snapshot composition, single governance engine, launch-scope models �
 
 - **Determinism**: a pure-function core over frozen inputs `(window-aggregated Q, pricingSnapshotRef, fxTableVersion)` — identical across replay, recompute, and cross-region batch workers.
 - **Adopt, don't fork**: the canonical scope key, `PriceWindow` machinery, and publish governance are the pricing gear's SoR; Rating consumes them verbatim (no divergent key, no second approval engine) — see ADR `cpt-cf-bss-rating-adr-scope-key-adoption`.
-- **One rating gear (accepted 2026-07-11)**: this design set is the **evaluation core** of the consolidated `rating` gear — the core becomes a no-I/O `rating-core` crate, the operational pipeline (mediation, `Q`, dedup, period tick) joins as pipeline slices, and "tariff" returns to the Pricing vocabulary — see ADR `cpt-cf-bss-rating-adr-rating-gear-consolidation`; migration pending (T-D-16).
+- **One rating gear (accepted 2026-07-11)**: this design set is the **evaluation core** of the consolidated `rating` gear — the core is a no-I/O `rating-core` crate, the operational pipeline (mediation, `Q`, dedup, period tick) joined as pipeline slices 12–16 (authored 2026-07-15), and "tariff" returns to the Pricing vocabulary — see ADR `cpt-cf-bss-rating-adr-rating-gear-consolidation`. The gear-local migration is done; the one open residue is the **pricing-side prose rename** (ADR-0002 Commit C — `tariffs` still appears in the living pricing docs) tracked in [`DECISIONS.md`](./DECISIONS.md).
 - **Snapshot-only hot path**: no mutable catalog re-query at evaluation/correction time; open-period re-resolution replays the pinned snapshot.
 - **Scale**: horizontal per-partition evaluation, no cross-partition locks on the hot path.
 
@@ -227,6 +227,14 @@ Horizontal per-partition evaluation with no cross-partition locks on the hot pat
 - **Governance (G1):** a single pricing Slice 5 approval engine; Rating registers fail-closed validators, never a second workflow; ledger `dual_control` stays a separate bounded context.
 - **Models (M1-M5):** `{flat, per_unit, graduated, volume, package}`; per_unit, package, and composite are in launch; Volume Variant B not authorable; hybrid/committed are compositions.
 - **Enums (P1-P2):** `prorationBasis` (incl. `none`) and `billingAnchorPolicy` adopted verbatim (CI gate `pricing.contracts.enum_drift`).
+
+**Later gear decisions binding every slice** (2026-07-16 / 2026-07-28 — the list above is the frozen 2026-07-10 seam set; full text in [`DECISIONS.md`](./DECISIONS.md)):
+
+- **Level-based aggregation (T-D-17, joint with pricing D-44) — a `p1` launch capability:** `aggregationFunction ∈ {sum, peak, time_weighted}` with `aggregationGranularity ∈ {hour, day}`; for non-`sum` the window `Q` is the **sum of granule folds**, so it stays additive and every counter invariant (M7 key, supersession continuity, `bandOffsetQ`, band/package math, delta-only corrections) is untouched. Supersedes the former "sum-only at launch" posture. No composite co-occurrence at launch.
+- **One-time charges are not rated (T-D-18):** no evaluation unit is synthesized for `one_time` / `one_time_setup`; the three unit kinds remain exhaustive. Subscriptions/Billing bill them at the qualifying instant from the frozen snapshot; one-time rows still resolve in step-2 selection for coverage/preview/quote.
+- **Overage-rate selector (T-D-19):** a frozen `overageRate` on the `commitmentReservation` segment selects flat-rate vs banded pricing of the post-pool residual — the field's **presence** is the selector.
+- **Coupon cross-scope exclusivity (T-D-20) and its launch gate (T-D-22):** with a `line_total` candidate present, `exclusive_best` widens to one coupon per plan per period. **At launch `line_total` fails closed** — step 7 is per-line and every evaluation unit is sub-plan, so no plan-scoped base exists; T-D-20 is inert until that base is pinned with Promotions.
+- **Administrative re-rate (T-D-21):** the one sanctioned exception to strict pin replay — a *policy* correction replays over the **superseding** snapshot; input corrections stay strictly on the pin.
 
 **ADR index:**
 

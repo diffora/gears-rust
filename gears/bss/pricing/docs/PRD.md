@@ -366,6 +366,9 @@ Axis values / defaults: `priceOverlay = base`; `phase =` the plan's **terminal `
 | Customer-group segment pricing (`customerGroup` `PriceOverlay` scope) | `p1` | A per-plan adjustment **line set** per group overlay (D-42; per line percent, or per-currency amounts — D-08) resolved via `payerTenantId`, most-specific line per `(plan, sku)`; region variance via region-scoped base rows; BSS-owned group taxonomy + effective-dated audited membership; resolved group frozen in snapshot; membership changes audited; immediate re-resolution or bulk group moves = material change. Different per-group tier *structures* stay Future |
 | Usage pricing tiers with explicit model kind | `p1` | graduated vs volume; non-overlapping bands |
 | Package (block) pricing (`modelKind=package`) | `p2` | `packageSize`/`packagePrice`; round-up math in Tariffs |
+| Level-based usage aggregation (`aggregationFunction` `sum`\|`peak`\|`time_weighted` + `aggregationGranularity`, `maxHold`) | `p1` | D-44; granule fold evaluated by Rating (T-D-17); non-`sum` publish gated on the joint `level-aggregation` fixture |
+| Included allowance (`includedAllowance {quantity, rolloverPolicy}` on usage rows, publish-compiled) | `p1` | D-45: `none` → `$0` first band + frozen marker; `carry` → D-43 per-period promotional grant (Billing executes drawdown); `sum` rows only |
+| Trailing-tier qualification (`tierQualificationWindow` `current`\|`trailing_period`) | `p2` | D-40; prior anchor-derived period qualifies the rate tier, locked per period in `pricingSnapshotRef`; Rating supplies the trailing aggregate |
 | Prepaid credit grant (catalog definition) | `p2` | Grant fields frozen in snapshot; balance/drawdown owned by Billing/Rating (External dependency, GA gate) |
 | Reserved-capacity price (self-service reserved rate + on-demand) | `p1` | `reservedRate`/`reservationFlavor` on the usage row; Tariffs evaluates (step 6) sourcing the rate from the snapshot |
 | Interim `discountRef` day-1 discount hook | `p2` | Referential-integrity only; external discount instrument; evaluation in Tariffs/Promotions |
@@ -522,6 +525,16 @@ A price amount **MUST** be >= 0 (`0` valid for free tiers, `trial`/`intro` phase
 **Rationale**: Financial correctness requires non-negative, correctly-scaled, FX-free catalog amounts.
 
 **Actors**: `cpt-cf-bss-pricing-actor-finance-manager`
+
+#### Level-based usage aggregation
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-level-aggregation`
+
+A `usage` price row **MAY** author `aggregationFunction` (`sum` (default) | `peak` | `time_weighted`) and, for non-`sum` rows, `aggregationGranularity` (`hour` (default) | `day`) — level-based billing per D-44; Rating owns the granule-fold evaluation (rating T-D-17: `Q` = Σ per-granule folds, additive by construction) and the catalog **MUST NOT** compute a fold. A non-`sum` row **MUST** declare `maxHold` (`max_hold_granules`, integer >= 1 — no default: the sampling-gap bound is a commercial statement, authored explicitly, fail-closed); beyond `maxHold` granules the level reads 0 and an operator signal raises (fail-visible, never guessed — rating-side execution). Publish **MUST** fail on: either field present on a non-usage row or carrying an unknown value, `maxHold` missing/`< 1` on a non-`sum` row, or `maxHold` present on a `sum` row (`LEVEL_FIELDS_INVALID`); a non-`sum` row whose meter is not level-shaped (collector `gauge` kind) or whose SKU-declared billable unit does not match `level unit × granule` for the declared granularity (`LEVEL_UNIT_MISMATCH`); a non-`sum` row on a derived (composite) meter (`LEVEL_COMPOSITE_FORBIDDEN` — composite inputs stay window-sum at launch). All three fields are frozen in `pricingSnapshotRef`, and publish of any non-`sum` row is blocked without the green joint `level-aggregation` fixture (AC #60 mechanics; granule fold, late-sample re-fold, `maxHold` gap).
+
+**Rationale**: The launch product set bills on levels (cloudlet peak-per-hour, storage GB-month); the commercial rule must live in the catalog, not the usage emitter (D-44).
+
+**Actors**: `cpt-cf-bss-pricing-actor-rating`
 
 ### 6.3 Plan Composition, Descriptors, and Phases
 
@@ -821,7 +834,7 @@ Supersession is versioning scoped to one canonical scope key: it **MUST** create
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-plan-retirement`
 
-Retirement **MUST** block **new** subscriptions to that `planId`, preserve existing subscription snapshots, emit `PlanRetired`, and **trigger the window-cancellation flow** (owned by this PRD's design since the consolidation; emitting `PriceWindowCancelled` per cancelled not-yet-active window, driving its cache-eviction path) — it **MUST NOT** merely mark windows invalid. The operator **MUST** be warned of cancelled windows before confirm. Retirement **MUST** be rejected (references enumerated) while the plan is referenced as a bundle component or as an add-on price-override target; the referencing composition is remediated first.
+Retirement **MUST** block **new** subscriptions to that `planId`, preserve existing subscription snapshots, emit `PlanRetired`, and **trigger the window-cancellation flow** (owned by this PRD's design since the consolidation; emitting `PriceWindowCancelled` per cancelled not-yet-active window, driving its cache-eviction path) — **but only for scope keys with no in-flight subscribers (D-51, 2026-07-28)**: a scheduled window that is the **continuing coverage** of a key with in-flight subscribers (e.g. a supersession successor extending past the active window's `effectiveTo`) **MUST** be kept, not cancelled — retirement stops **selling** (via the sellability gate's lifecycle predicate), never **rating** coverage. It **MUST NOT** merely mark windows invalid. The operator dry-run/confirm **MUST** label kept windows distinctly from cancelled ones before confirm. Retirement **MUST** be rejected (references enumerated) while the plan is referenced as a bundle component or as an add-on price-override target; the referencing composition is remediated first.
 
 **Rationale**: Safe retirement blocks new sales while preserving in-flight subscribers and cleaning future windows.
 
@@ -831,7 +844,7 @@ Retirement **MUST** block **new** subscriptions to that `planId`, preserve exist
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-scheduled-migration`
 
-Scheduled migration to a published target Plan **MUST** emit `PlanMigrationScheduled` for Subscriptions to create effective-dated `PlanLink`s without posted invoice mutation. Retry **MUST** be idempotent (no duplicate `PlanLink` requests for already-processed subscriptions). Cancellation **MUST** be possible for a `scheduled` **or partially-executed** migration (halting further processing; already-migrated subscriptions unaffected; only a completed run is uncancellable), and propagation is a **state handshake**: Subscriptions re-reads the schedule state before beginning (and while continuing) execution. At execution start the contract-lock set and boundary deltas **MUST** be re-resolved against fresh state (a lock is never broken however stale the schedule). A migrated subscription enters the target's **first non-trial phase** — a migration never grants a new `trial`.
+Scheduled migration to a published target Plan **MUST** emit `PlanMigrationScheduled` for Subscriptions to create effective-dated `PlanLink`s without posted invoice mutation. Retry **MUST** be idempotent (no duplicate `PlanLink` requests for already-processed subscriptions). Cancellation **MUST** be possible for a `scheduled` **or partially-executed** migration (halting further processing; already-migrated subscriptions unaffected; only a completed run is uncancellable), and propagation is a **state handshake**: Subscriptions re-reads the schedule state before beginning (and while continuing) execution. At execution start the contract-lock set and boundary deltas **MUST** be re-resolved against fresh state (a lock is never broken however stale the schedule). A migrated subscription enters the target's **first non-trial phase** — a migration never grants a new `trial`. Scheduling **MUST** validate the subscriber notice period: `effectiveAt` **MUST NOT** be earlier than the schedule instant plus the tenant's configured enforced-migration notice period, whose **default floor is 60 days** (D-49, 2026-07-28); a shorter lead time is rejected (`MIGRATION_NOTICE_TOO_SHORT`, 422, naming the earliest permissible `effectiveAt`).
 
 **Rationale**: Migration must be re-trigger-safe, cancellable, and free of posted-invoice mutation.
 
@@ -980,6 +993,16 @@ A `minQtyThreshold` **MUST** declare its floor type — `purchase` (Subscription
 **Rationale**: An untyped floor is ambiguous between order-time rejection and downstream eligibility.
 
 **Actors**: `cpt-cf-bss-pricing-actor-finance-manager`
+
+#### Trailing-tier qualification
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-pricing-fr-trailing-tier-qualification`
+
+A tiered `usage` price row **MAY** set `tierQualificationWindow` (`current` (default) | `trailing_period`) — a third window, distinct from `tierAggregationWindow` and `billingGranularity` (D-40). `trailing_period` qualifies the rate tier from the **prior anchor-derived billing period's total** (never a calendar month; single-band volume-style selection), **locks that one rate for the whole current period** into `pricingSnapshotRef`, and bills actual usage at `billingGranularity`; `current` preserves existing tiered behaviour exactly. First-period **bootstrap** (no trailing history) **MUST** resolve to the lowest tier unless the plan authors an explicit bootstrap tier, and the resolved choice **MUST** freeze in the snapshot (deterministic replay). `trailing_period` on a non-tiered or non-usage row **MUST** fail publish (`TIER_QUAL_ON_NON_TIERED`). The catalog authors the window and **MUST NOT** compute the qualification or the trailing aggregate — Rating supplies the trailing total and re-qualifies at each period boundary; Tariffs applies the locked rate.
+
+**Rationale**: Prior-period-qualifies / current-period-billed pricing (canonical: PaaS egress) is inexpressible through the aggregation window alone; the authored commercial choice must live in the catalog and freeze in the snapshot (D-40).
+
+**Actors**: `cpt-cf-bss-pricing-actor-rating`
 
 ### 6.11 Operator Efficiency
 
@@ -1147,7 +1170,7 @@ The system **MUST** support **at least 20 currencies per plan as a guaranteed fl
 
 A mass price adjustment over N rows **MUST** be idempotent (re-run-safe) and emit deduplicated events; the throughput SLO **MUST** be back-calculated from the tenant worst-case row count (plans x currencies x regions) against an agreed maintenance window.
 
-**Threshold**: Provisional >= 50 rows/sec (Design confirms against the worst case, not the provisional figure).
+**Threshold**: >= 50 rows/sec — ratified 2026-07-28 as the launch default; the perf test verifies it against the tenant worst-case row count (an engineering validation, not a re-decision).
 
 **Rationale**: Annual/bulk repricing must complete within a maintenance window and be safe to retry.
 
@@ -1674,7 +1697,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 
 **26. Publish validation fail-closed (aggregate)**
 - **Given** a Plan submitted for publication
-- **When** validation detects any of: ambiguous meter, overlapping tiers, tier coverage gaps, **unspecified `modelKind` on a tiered row**, a `graduated`/`volume`/`package` kind on a non-usage row, evaluation-policy fields present on a non-usage row, a `package` row with non-positive `packageSize`/negative `packagePrice`/tier bands present, a prepaid grant with unset `expiryPolicy` or an unpublished `creditUnit`, a `promotional` grant carrying price rows or `autoRechargeAllowed`, a grant `applicability` naming an unpublished meter or a non-usage line (or, for a metered `creditUnit`, leaving that unit's meters), missing PlanTier, missing descriptors, invalid hybrid, missing evaluation-policy fields, currency precision exceeding the ISO 4217 minor unit, an unknown `region`, an unknown `brand` on a brand-scoped `PriceOverlay`, an add-on dependency cycle, an uncovered gap between scheduled `PriceWindow` rows, a `customEveryN Days` cycle with a `calendar_month`/`fixed_day` anchor, a `PriceOverlay` adjustment with an ambiguous tax basis, an amount-based `PriceOverlay` **line** missing a value for a currency its target scope sells (or a duplicate/out-of-scope overlay line key — D-42), a rev-share reconciliation forcing a negative share, a configuration forcing mixed-currency lines on one invoice, a recurring row missing `billingTiming`, a one-time setup row that is not one-time (has recurrence, `billingTiming`, or tier fields), a `minQtyThreshold` with no declared floor type (or a `usage` floor with no declared fallback), a plan `PlanTier` unequal to its SKU `PlanTier` without an audited override, an `availableFrom`/`availableTo` not covered by an active or scheduled window, a dangling or cyclic `convertsToPhaseId` (or a non-terminal phase without `phaseDurationDays`, or not exactly one terminal phase), a phase with no covering recurring price row for a sold `(currency, region)`, `creditOnDowngrade = true` combined with `prorationBasis = none`, an unresolvable rounding policy (neither row-level nor tenant default), an `allowedChangeTargets` entry that is unpublished or lacks a `comparabilityRank`, an entitlement grant set with an undefined feature/quota/`PlanTier` policy, a `prepaid`-category grant price that is unscoped or does not cover every sold `(currency, region)`, a derived meter with an unpublished constituent or a self-reference, a non-positive custom interval `n`, or a **required** scope key with no covering price row — the *required coverage set* = every canonical scope key that (a) has a scheduled `PriceWindow`, (b) is a `sum_of_parts` bundle component's sell scope, or (c) is an add-on/override target for a scope the base plan sells
+- **When** validation detects any of: ambiguous meter, overlapping tiers, tier coverage gaps, **unspecified `modelKind` on a tiered row**, a `graduated`/`volume`/`package` kind on a non-usage row, evaluation-policy fields present on a non-usage row, a `package` row with non-positive `packageSize`/negative `packagePrice`/tier bands present, a non-`sum` `aggregationFunction` row with invalid level fields (unknown value, `maxHold` missing or < 1 on a non-`sum` row, `maxHold` present on a `sum` row), a non-`sum` row whose meter is not gauge-kind or whose billable unit mismatches `level unit × granule`, a non-`sum` row on a derived (composite) meter (D-44), a prepaid grant with unset `expiryPolicy` or an unpublished `creditUnit`, a `promotional` grant carrying price rows or `autoRechargeAllowed`, a grant `applicability` naming an unpublished meter or a non-usage line (or, for a metered `creditUnit`, leaving that unit's meters), missing PlanTier, missing descriptors, invalid hybrid, missing evaluation-policy fields, currency precision exceeding the ISO 4217 minor unit, an unknown `region`, an unknown `brand` on a brand-scoped `PriceOverlay`, an add-on dependency cycle, an uncovered gap between scheduled `PriceWindow` rows, a `customEveryN Days` cycle with a `calendar_month`/`fixed_day` anchor, a `PriceOverlay` adjustment with an ambiguous tax basis, an amount-based `PriceOverlay` **line** missing a value for a currency its target scope sells (or a duplicate/out-of-scope overlay line key — D-42), a rev-share reconciliation forcing a negative share, a configuration forcing mixed-currency lines on one invoice, a recurring row missing `billingTiming`, a one-time setup row that is not one-time (has recurrence, `billingTiming`, or tier fields), a `minQtyThreshold` with no declared floor type (or a `usage` floor with no declared fallback), a plan `PlanTier` unequal to its SKU `PlanTier` without an audited override, an `availableFrom`/`availableTo` not covered by an active or scheduled window, a dangling or cyclic `convertsToPhaseId` (or a non-terminal phase without `phaseDurationDays`, or not exactly one terminal phase), a phase with no covering recurring price row for a sold `(currency, region)`, `creditOnDowngrade = true` combined with `prorationBasis = none`, an unresolvable rounding policy (neither row-level nor tenant default), an `allowedChangeTargets` entry that is unpublished or lacks a `comparabilityRank`, an entitlement grant set with an undefined feature/quota/`PlanTier` policy, a `prepaid`-category grant price that is unscoped or does not cover every sold `(currency, region)`, a derived meter with an unpublished constituent or a self-reference, a non-positive custom interval `n`, or a **required** scope key with no covering price row — the *required coverage set* = every canonical scope key that (a) has a scheduled `PriceWindow`, (b) is a `sum_of_parts` bundle component's sell scope, or (c) is an add-on/override target for a scope the base plan sells
 - **Then** publication MUST be blocked
 - **And** MUST NOT emit `PlanPublished` or warm Rating read models
 
@@ -1732,7 +1755,8 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 **35. Retirement cancels future price windows**
 - **Given** a Plan with scheduled future `PriceWindow` rows
 - **When** the Plan is retired
-- **Then** the system MUST cancel not-yet-active windows and MUST **run the window-cancellation flow, which emits `PriceWindowCancelled` per cancelled window** (frozen manifest event name; produced by this PRD's design since the consolidation; drives the cache-eviction path, <= 2s NFR) — it MUST NOT merely mark windows invalid without the cancellation flow
+- **Then** the system MUST cancel not-yet-active windows **only for scope keys with no in-flight subscribers (D-51, 2026-07-28)** and MUST **run the window-cancellation flow, which emits `PriceWindowCancelled` per cancelled window** (frozen manifest event name; produced by this PRD's design since the consolidation; drives the cache-eviction path, <= 2s NFR) — it MUST NOT merely mark windows invalid without the cancellation flow
+- **And** a scheduled window that is the **continuing coverage** of a scope key **with** in-flight subscribers MUST be **kept**, not cancelled (D-51) — retirement stops **selling** via the sellability gate's lifecycle predicate, never **rating** coverage (cancelling it would open a trailing void no gap-check can see); the confirm screen MUST label kept vs cancelled windows
 - **And** a pending or approved-not-yet-effective grandfathering cutover on the plan's keys MUST be **unwound** in the same transaction: the predecessor window's `effectiveTo` restored to its pre-cutover value, the scheduled copy/successor windows cancelled, the unit closed as unwound (a merely `submitted` unit is voided per the standard pin semantics) — otherwise the shortened window would strand in-flight subscribers uncovered at the cutover instant
 - **And** retirement of a plan holding a live cutover unit is **always material** (two-person rule)
 - **And** MUST warn the operator of cancelled windows — and of any cutover to be unwound — before confirm
@@ -1862,7 +1886,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 - **Given** a published billing descriptor set
 - **When** Billing/ERP consumes the snapshot to render an invoice line and post to GL
 - **Then** the descriptor set MUST contain the agreed minimum field set (invoice template, tax category, `glCode`, itemization rule) sufficient to post **without re-querying mutable catalog rows**
-- **And** publish MUST fail if any field in that agreed minimum set is absent (field list fixed with Billing/Payments in Design)
+- **And** publish MUST fail if any field in that agreed minimum set is absent (the v1 field list is **pinned — D-48, 2026-07-28**: invoice line template/labels, `taxCategory`, `glCode`, itemization rule, plus `billingTiming` riding each recurring price row; additive extension only)
 
 ### Phases and PriceOverlay authoring
 
@@ -1875,10 +1899,10 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 - **And** usage rows resolve phase-invariantly by default (one usage row covers all phases; an explicit phase-scoped usage row wins for its phase — adopted verbatim by Tariffs)
 
 **55. PriceOverlay authoring and precedence**
-- **Given** a Catalog Admin authoring a `PriceOverlay` row
-- **When** scope (partner/orgTier/brand/region/**customerGroup**/global), adjustment type (markup/discount/fixed), and an explicit `precedence` value are set
-- **Then** the system MUST persist the row and MUST reject a duplicate `precedence` within the same scope class (deterministic ordering for Tariffs)
-- **And** an **amount-based** adjustment MUST carry per-currency values covering every currency its target scope sells (fail-closed at authoring; a later-added currency flags the overlay for remediation while the uncovered market resolves at base price); a percent adjustment is currency-neutral
+- **Given** a Catalog Admin authoring a `PriceOverlay` (an **adjustment-line container**, D-42)
+- **When** scope (partner/orgTier/brand/region/**customerGroup**/global), one or more adjustment **lines** — each keyed `(planId?, targetSku?)` with its own type (markup/discount/fixed) and magnitude — and an explicit `precedence` value are set
+- **Then** the system MUST persist the overlay and its lines, MUST reject a **duplicate line key** or an **out-of-scope line target** (fails publish — D-42), and MUST reject a duplicate `precedence` within the same scope class (deterministic ordering for Tariffs); the **most-specific line wins within a list** (`(planId, targetSku)` > `(planId)` > list-default)
+- **And** an **amount-based** line MUST carry per-currency values covering every currency the line's target scope sells (fail-closed at authoring; a later-added currency flags the **line** for remediation while the uncovered market resolves at base price — D-08, re-attached per line); a percent line is currency-neutral
 - **And** precedence/stacking **evaluation** remains owned by Tariffs (authoring/validation only here)
 - **And** a `PriceOverlay` adjustment MAY be **effective-dated** via its own **adjustment-level effectivity interval** `[effectiveFrom, effectiveTo)` — **outside** the per-plan `PriceWindow` mechanism, since an adjustment is scope-wide and has no single `planId`/`phase`/`priceEligibility`/`chargeKind`; absent an interval it applies whenever the base row is active. Overlap is validated **per `PriceOverlay` scope + adjustment target** at authoring (not on the canonical price-row key). Base price rows always carry `priceOverlay = base` (see §2.2)
 
@@ -1934,7 +1958,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 - **Given** a Plan passing validation and approval
 - **When** `PlanPublished` completes
 - **Then** the plan's content MUST become addressable in a `CatalogVersion`, with the registry as the **sole** incrementer; the registry **MAY batch** multiple approved publishes into **one** discretionary catalog publish (**not** one dedicated version per `PlanPublished`), and `pricingSnapshotRef` MUST pin the exact version containing the plan (a mass repricing MAY coalesce into one/few versions — AC #101)
-- **And** publish-contract sign-off MUST remain blocked until the registry owner confirms the increment-trigger taxonomy (per-publish vs batched; see §15 Open Questions)
+- **And** the increment-trigger taxonomy and the max batching-delay SLO are **confirmed (D-47, 2026-07-28)** — interactive publish increments immediately (coalescing <= 5s), bulk coalesces with a 5-minute hard max, p95 pending→committed <= 60s — so publish-contract sign-off is no longer blocked on this item (see §15 Open Questions)
 
 ### Approval, governance, and access control
 
@@ -2246,7 +2270,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 - **And** absence of `allowedChangeTargets` MUST mean **no self-service change** (fail-safe), not any-to-any; enforcement remains in Subscriptions
 
 **109. Customer-group segment pricing**
-- **Given** an operator-defined customer group (BSS-owned taxonomy) and a `customerGroup`-scoped `PriceOverlay` with an adjustment (`markup`/`discount`/`fixed`) per `(group, region)`
+- **Given** an operator-defined customer group (BSS-owned taxonomy) and a `customerGroup`-scoped `PriceOverlay` carrying a **line set** (D-42) — each line keyed `(planId?, targetSku?)` with its own `markup`/`discount`/`fixed` magnitude; lines carry **no region axis** (region variance comes from the region-scoped base rows a line applies to)
 - **When** the plan is published and a payer's effective-dated group membership is resolved via `payerTenantId`
 - **Then** the read model MUST expose the `customerGroup` `PriceOverlay` and the group taxonomy; Tariffs resolves the payer's group and applies the overlay (§17.7); the **resolved group** MUST be frozen in `pricingSnapshotRef`
 - **And** a membership change is **renewal-aligned by default** (resolved group pinned in the subscription snapshot until renewal; immediate re-resolution is an explicit material change), a group discount/move affecting many payers is a **material change** (two-person rule, AC #28), and all membership changes MUST be audited
@@ -2297,10 +2321,9 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 |------------|-------------|-------------|
 | Catalog registry (Product & SKU) | Published `skuId`, `bundle` SKU type, `meteringUnit` declaration, `PlanTier` value/taxonomy, tax/GL codes, and `CatalogVersion` (sole incrementer); increment taxonomy **Proposed** | `p1` |
 | ~~PriceWindow (effective-dating use case)~~ | **Consolidated into this PRD** (§15 answered): window scheduling/activation/events owned by the pricing gear; the legacy UC doc is scenario source material — no external dependency remains | — |
-| Tariffs / PLAL | Consumes the read model (model kind, tiers, evaluation policy, reserved rate, derived-meter definition, `customerGroup` overlays); evaluates formulas/overlays/FX; composes `pricingSnapshotRef`; adopts the eight-axis scope key and resolves a grandfathered generation by the pinned price id's `cohort` (ADR-0002) | `p1` |
 | Subscriptions | Owns the plan-change boundary/mode + runtime, plan-change classification, trial runtime, entitlement enforcement, `PlanLink` migration, sellability checks from published inputs (proration math = rating gear); proration seam is a GA gate | `p1` |
-| Rating | Consumes events + warmed read models; resolves deterministic inputs; owns Usage -> RatedCharge orchestration | `p1` |
-| Billing / Payments | Consumes descriptors via `CatalogVersion`; derives deferral policy from `billingTiming`; owns refunds/credits and PSP/ERP posting; minimum descriptor field set TBD | `p1` |
+| Rating (incl. the evaluation core — former "Tariffs / PLAL"; §3.2) | Consumes events + warmed read models; resolves deterministic inputs; owns Usage -> RatedCharge orchestration. Its **evaluation core** consumes the read model (model kind, tiers, evaluation policy, reserved rate, derived-meter definition, `customerGroup` overlays), evaluates formulas/overlays/FX, composes `pricingSnapshotRef`, and adopts the eight-axis scope key — resolving a grandfathered generation by the pinned price id's `cohort` (ADR-0002). One counterpart gear, not two (2026-07-28 review fix) | `p1` |
+| Billing / Payments | Consumes descriptors via `CatalogVersion`; derives deferral policy from `billingTiming`; owns refunds/credits and PSP/ERP posting; descriptor v1 field set pinned (D-48: invoice line template/labels, `taxCategory`, `glCode`, itemization rule, `billingTiming`) — Billing countersigns at its gear PRD | `p1` |
 | Tax Engine | Tax-scheme determination + `region` -> jurisdiction mapping; **confirmed post-MVP** (ETA ~8 months) — MVP is tax-exclusive; tax-inclusive plans GA-gated | `p1` |
 | Contracts & Agreements | Contract locks (exclude locked subscriptions from migration); negotiated RI-style reservation rates | `p1` |
 | Promotions / Coupons | Coupon/discount authoring + evaluation (dedicated PRD **TBD — does not yet exist**); `discountRef` resolves to a registered external instrument | `p2` |
@@ -2361,30 +2384,29 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Tax Engine slips beyond its post-MVP ETA | Tax-inclusive rows/markets stay not-sellable-GA; `region`->jurisdiction mapping deferred | MVP sells tax-exclusive; `taxInclusive=true` authorable but GA-gated (AC #18/#19); track Tax Engine GA on the program board |
-| `CatalogVersion` increment taxonomy / batching SLO unconfirmed by Registry | `pricingSnapshotRef` determinism and the AC #95 propagation SLO undefined | Batched/discretionary model adopted now (AC #63); block publish-contract sign-off until Registry confirms taxonomy + SLO value |
+| ~~`CatalogVersion` increment taxonomy / batching SLO unconfirmed by Registry~~ — **resolved (D-47, 2026-07-28)** | `pricingSnapshotRef` determinism and the AC #95 propagation SLO undefined | Closed: taxonomy + SLO ratified (D-47: interactive <= 5s coalescing; bulk <= 5 min hard max; p95 pending→committed <= 60s), mirrored in the products-gear PRD |
 | Proration / plan-change enum drift across Subscriptions and Tariffs | Wrong credits on up/down-grade; divergent proration | Canonical `prorationBasis` enum owned here and adopted verbatim; shared golden fixtures (AC #61) before code |
 | Conformance fixtures (tier-boundary, package, per_unit, proration, reserved, supersession-continuity, level-aggregation) not stood up before implementation | Off-by-one / model-kind mispricing reaches production | Publish blocked for any `modelKind` — or non-`sum` `aggregationFunction` row (D-44) — lacking a joint golden fixture (AC #60); fixtures version-controlled before code |
 | Promotions PRD does not yet exist | No coupon authoring/evaluation owner at launch | `discountRef` committed as the day-1 hook (referential-integrity only, AC #69); full Promotions PRD remains the durable owner |
 | Prepaid balance execution (ledger/drawdown/auto-recharge) absent | Prepaid grants definable but not sellable/consumable | Catalog defines the grant only (frozen in snapshot); GA-gate the sellable path on Billing/Rating balance execution |
 | Read-model availability/DR targets unproven under load | Rating hot-path resilience unproven | Fail-closed on read-model outage (AC #103); targets ratified 2026-07-28 (99.9%/5m/30m), verified by the DR drill + load test |
-| Upstream SKU retirement joint contract open | Draft/published plans may reference a retired SKU | Catalog side specified (AC #82); confirm the joint remediation contract with the Registry |
+| ~~Upstream SKU retirement joint contract open~~ — **closed by cross-reference (D-47, 2026-07-28)** | Draft/published plans may reference a retired SKU | Closed: the registry never retires a SKU with active plan references (products PRD `fr-sku-lifecycle` `SkuReferenceCount` predicate, fail-closed); pricing flags referencing plans and blocks new adoption (AC #82) |
 
 ## 17. Reference Materials
 
 | **Material** | **Link / path** | **Comments** |
 |--------------|-----------------|--------------|
-| BSS Architecture Manifest | `docs/bss/manifest/vz-arch-manifest-bss-only.md` | §4.1 Catalog; §4.2 Rating; §4.3 Subscriptions |
-| Product Catalog & Marketplace PRD | `docs/bss/prd/PRD-product-catalog-marketplace-202601120119/PRD-product-catalog-marketplace-202601120119.md` | Parent catalog; SKU lifecycle |
 | Product & SKU Management PRD (**products** gear) | `gears/bss/products/docs/PRD.md` (vendored 2026-07-16 from upstream PR #4177) | Catalog registry (SoR for Product/SKU/Category/Attribute/`CatalogVersion`, `bundle` SKU type, metering-unit declaration, `PlanTier` taxonomy) this PRD builds on |
-| Tariffs — Commercial Pricing Logic PRD | `docs/bss/prd/PRD-tariffs-pricing-logic-202604011200/PRD-tariffs-pricing-logic-202604011200.md` | Formulas, hierarchy, `pricingSnapshotRef`; promotions/FX boundary |
-| Rating Engine PRD | `docs/bss/prd/PRD-rating-engine-202604031200/PRD-rating-engine-202604031200.md` | Usage -> billable items (draft) |
-| Subscriptions & Entitlements PRD | `docs/bss/prd/PRD-subscriptions-entitlements-202601120119/PRD-subscriptions-entitlements-202601120119.md` | `PlanLink`, migration execution |
-| Contracts & Agreements PRD | `docs/bss/prd/PRD-contracts-agreements-202601120119/PRD-contracts-agreements-202601120119.md` | Contract locks |
-| Metering & Pricing Module PRD | `docs/bss/prd/PRD-metering-pricing-module-202601120119/PRD-metering-pricing-module-202601120119.md` | Usage collection |
-| Billing Ledger & Balances PRD | `docs/bss/prd/PRD-billing-ledger-balances-202604041200/PRD-billing-ledger-balances-202604041200.md` | Posted invoice immutability |
-| Plan & Price Modeling use case | `docs/bss/prd/PRD-product-catalog-marketplace-202601120119/UC-plan-price-modeling-202601121200.md` | Scenario reference; superseded |
-| Effective Dating & Price Windows use case | `docs/bss/prd/PRD-product-catalog-marketplace-202601120119/UC-effective-dating-price-windows-202601121200.md` | Superseded/absorbed (consolidated here); scenario source material |
-| Project glossary | `docs/project-glossary.md` | Canonical terms |
+| Rating PRD (**rating** gear — incl. the evaluation core, former "Tariffs / PLAL") | `gears/bss/rating/docs/PRD.md` | Formulas, hierarchy, `pricingSnapshotRef`, promotions/FX boundary; Usage -> billable items |
+| Subscriptions & Entitlements PRD (**subscriptions** gear) | `gears/bss/subscriptions/docs/PRD.md` | `PlanLink`, migration execution, plan-change runtime |
+| Billing Ledger & Balances PRD (**ledger** gear) | `gears/bss/ledger/docs/PRD.md` | Posted invoice immutability |
+| Usage Collector PRD (**usage-collector** gear) | `gears/system/usage-collector/docs/PRD.md` + `PRD-phase2-usage-event-feed.md` | Usage collection; the phase-2 feed the rating seams consume |
+| BSS Architecture Manifest | `docs/bss/manifest/vz-arch-manifest-bss-only.md` | **Historical — not vendored into this repo**; §4.1 Catalog; §4.2 Rating; §4.3 Subscriptions |
+| Product Catalog & Marketplace PRD | `docs/bss/prd/PRD-product-catalog-marketplace-202601120119/…` | **Historical — not vendored**; parent catalog, SKU lifecycle (superseded by the products gear row above) |
+| Contracts & Agreements PRD | `docs/bss/prd/PRD-contracts-agreements-202601120119/…` | **Historical — not vendored**; contract locks (no gear exists yet) |
+| Plan & Price Modeling use case | `docs/bss/prd/PRD-product-catalog-marketplace-202601120119/UC-plan-price-modeling-202601121200.md` | **Historical — not vendored**; scenario reference, superseded |
+| Effective Dating & Price Windows use case | `docs/bss/prd/PRD-product-catalog-marketplace-202601120119/UC-effective-dating-price-windows-202601121200.md` | **Historical — not vendored**; superseded/absorbed (consolidated here), scenario source material |
+| Project glossary | `docs/project-glossary.md` | **Historical — not vendored**; canonical terms |
 | Trace chain | `AGENTS.md` (repository root) | Manifest -> PRD -> ADR -> Design -> Stories |
 
 ### 17.1 Supported Billing Cycles and Price Structure Kinds (catalog)
@@ -2500,7 +2522,7 @@ On **every** `PlanPublished`, this PRD MUST request that the plan's content beco
 | `prorationBasis` | `calendar_days_actual` \| `calendar_days_30` \| `by_second` \| `whole_unit` \| `none` (canonical enum per Glossary, adopted verbatim by Tariffs); how partial periods are apportioned |
 | `creditOnDowngrade` | Whether a mid-cycle downgrade is eligible for catalog-sanctioned credit (Subscriptions applies it). The governing value on a downgrade is the **source** row's flag, read from the subscription's **frozen snapshot** (never the target row, never the live catalog). `creditOnDowngrade = true` combined with `prorationBasis = none` is contradictory and MUST fail publish |
 
-> **Cross-boundary mid-cycle changes (launch scope)**: Mid-cycle plan changes that **cross currency, region, or billing frequency** are **NOT supported at launch** — the proration input contract publishes **no** cross-currency/cross-frequency credit basis. Such a change MUST be handled as **cancel + new subscription**. Same-currency, same-frequency up/down-grades within one `(currency, region)` are in scope. This launch limitation requires **written sign-off from Subscriptions + Finance + GTM** (Open Questions; operator warning is AC #66).
+> **Cross-boundary mid-cycle changes (launch scope)**: Mid-cycle plan changes that **cross currency, region, or billing frequency** are **NOT supported at launch** — the proration input contract publishes **no** cross-currency/cross-frequency credit basis. Such a change MUST be handled as **cancel + new subscription**. Same-currency, same-frequency up/down-grades within one `(currency, region)` are in scope. This launch limitation is **signed off (D-49, 2026-07-28)**; GTM/customer-facing docs MUST carry the constraint entry ("changing country/currency = a new subscription"); operator warning is AC #66.
 
 **Entitlement grant set (catalog -> Subscriptions)** — the Plan MUST publish its entitlement grant set (feature flags, quotas) or its `PlanTier`-resolved reference into the read model; publish MUST fail if a referenced feature, quota, or `PlanTier` policy is undefined. This PRD does **not** define entitlement semantics:
 
@@ -2513,7 +2535,7 @@ On **every** `PlanPublished`, this PRD MUST request that the plan's content beco
 
 | **Field** | **Requirement** |
 |-----------|-----------------|
-| `allowedChangeTargets` | The target `planId`s a subscription MAY move to — an explicit list **or** a rule. Absence MUST mean **no self-service change** (fail-safe), **not** any-to-any |
+| `allowedChangeTargets` | The target `planId`s a subscription MAY move to — an **explicit list** of published `planId`s (rule-based targets are not authorable at launch — Future scope, D-23; §17.8). Absence MUST mean **no self-service change** (fail-safe), **not** any-to-any |
 | `comparabilityRank` | An integer rank classifying a change as **upgrade** (higher), **downgrade** (lower), or **switch** (equal). `PlanTier` alone is **not** an ordering unless published as authoritative; otherwise `comparabilityRank` is REQUIRED for any plan that participates in self-service change |
 
 **Tenant policy objects (catalog governance)** — both have fail-safe defaults:

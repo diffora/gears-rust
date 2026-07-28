@@ -99,7 +99,7 @@ Inherits Foundation C-set. Slice-6-specific:
 | K1 | Canonical proration enum | `prorationBasis ∈ {calendar_days_actual, calendar_days_30, by_second, whole_unit, none}` — owned here, adopted **verbatim** by Tariffs; any extension is a versioned contract change | PRD §1.4 |
 | K2 | Anchor month-end/UTC | `billingAnchorPolicy ∈ {calendar_month, subscription_start, fixed_day(d)}`; `fixed_day(d)` — and a `subscription_start` anchor under monthly-granular cycles incl. `customEveryN Months(n)` (D-20) — with a day > month length anchors on the **last day of the month**, the **anchor day preserved** across periods (independent per-period clamp: 31→28→31, no drift); all anchor math UTC | PRD §1.4; D-20 |
 | K3 | Cross-boundary changes | Mid-cycle changes crossing currency/region/frequency are **not supported at launch** → cancel + new subscription; the contract publishes **no** cross-boundary credit basis; signed off 2026-07-28 (D-49 — the product owner; the GTM customer-facing constraint entry is owed) | PRD §17.6, D-49 |
-| K4 | Rank vs PlanTier | `PlanTier` alone is **not** an ordering unless published as authoritative; otherwise `comparabilityRank` is REQUIRED for any plan in self-service change | PRD §1.4 |
+| K4 | Rank required | `comparabilityRank` is REQUIRED for **every** plan in self-service change — `PlanTier` is never an ordering at launch; the authoritative-published-`PlanTier`-ordering escape hatch had no defined artifact/API and is cut to §17.8 Future (2026-07-28 review fix, flagged for veto) | PRD §1.4 |
 | K5 | Proration fixture | The joint proration golden fixture (catalog + Subscriptions + Tariffs) exists before code; publish-contract sign-off gates on it | PRD §13 |
 
 ### 1.7 Naming & Design-Introduced Names
@@ -160,7 +160,7 @@ Tariffs/Rating compute from.
 
 **Steps**:
 1. [ ] - `p1` - Consumer resolves via `pricingSnapshotRef` / the read-model API (Foundation `cpt-cf-bss-pricing-interface-catalog-read-model`) - `inst-cr-resolve`
-2. [ ] - `p1` - No default substitution: every REQUIRED field was publish-validated present; optional fields carry defined absence semantics (fail-safe) - `inst-cr-nodefault`
+2. [ ] - `p1` - No default substitution: every REQUIRED field was publish-validated present; optional fields carry defined absence semantics (fail-safe). The presence promise extends to historical-import reference rows: recurring imported rows MUST carry the same contract fields (S5 row-shape subset, D-13), so `migrated-origin` snapshots are never field-less (2026-07-28 review fix, flagged for veto) - `inst-cr-nodefault`
 3. [ ] - `p1` - **RETURN** the frozen contract set, stable for the pinned version - `inst-cr-return`
 
 ## 3. Processes / Business Logic (CDSL)
@@ -189,7 +189,7 @@ Tariffs/Rating compute from.
 
 **Steps**:
 1. [ ] - `p1` - `billingTiming ∈ {in_advance, in_arrears}` REQUIRED on every recurring row; absence fails publish (also enforced in Slice 2's recurring-cycle rule — one rule, registered once, referenced by both) - `inst-bt-required`
-2. [ ] - `p1` - Usage rows are implicitly `in_arrears` (not authored, projected constant); a hybrid MAY mix `in_advance` base + `in_arrears` usage - `inst-bt-usage`
+2. [ ] - `p1` - Usage rows are implicitly `in_arrears` (not authored, projected constant); one-time/setup rows likewise project a constant — charged at event (`in_advance`), never authored; a hybrid MAY mix `in_advance` base + `in_arrears` usage - `inst-bt-usage`
 3. [ ] - `p1` - Frozen in `pricingSnapshotRef`; Billing derives deferral policy from it — never from heuristics - `inst-bt-frozen`
 
 ### Entitlement Grant Set
@@ -202,7 +202,7 @@ Tariffs/Rating compute from.
 **Steps**:
 1. [ ] - `p1` - Publish fails if a referenced feature, quota, or `PlanTier` policy is **undefined in the registry** (`GrantSetResolver` referential check) - `inst-gs-referential`
 2. [ ] - `p1` - Published shape per §17.6: `featureFlag: bool` entries + `quotaKey: value` entries (Subscriptions consumes them as Entitlements); semantics are not defined here - `inst-gs-shape`
-2a. [ ] - `p1` - **Per-phase authoring (D-41):** a phased plan MAY author a grant set (same §17.6 shape) per `phaseId`. Every per-phase key MUST reference a phase of the plan's own phase schedule (Slice 2) — a dangling `phaseId`, or a per-phase entry on a non-phased plan, fails publish (`GRANT_SET_PHASE_UNKNOWN`); each entry passes the same `inst-gs-referential` check as the plan-level set. The projection **materializes the complete map**: every phase of the schedule maps to its effective resolved grant set — the authored per-phase entry where one exists, else the plan-level (`PlanTier`-resolved) set — so Subscriptions resolves the **active phase at `t`** by a single lookup and never merges fallbacks at runtime (the `phase→grant-set map` mirrors `phase→price`; the catalog publishes, never enforces) - `inst-gs-perphase`
+2a. [ ] - `p1` - **Per-phase authoring (D-41):** a phased plan MAY author a grant set (same §17.6 shape) per `phaseId`. Every per-phase key MUST reference a phase of the plan's own phase schedule (Slice 2) — a dangling `phaseId`, or a per-phase entry on a **non-phased** plan — normatively: a plan whose phase schedule is only the D-19 implicit terminal phase; an entry keyed to that sole implicit phase **also fails** (it must be authored as the plan-level set; 2026-07-28 review fix, flagged for veto) — fails publish (`GRANT_SET_PHASE_UNKNOWN`); each entry passes the same `inst-gs-referential` check as the plan-level set. The projection **materializes the complete map**: every phase of the schedule maps to its effective resolved grant set — the authored per-phase entry where one exists, else the plan-level (`PlanTier`-resolved) set — so Subscriptions resolves the **active phase at `t`** by a single lookup and never merges fallbacks at runtime (the `phase→grant-set map` mirrors `phase→price`; the catalog publishes, never enforces) - `inst-gs-perphase`
 3. [ ] - `p1` - A `PlanTier`-resolved reference publishes the **resolved** set (so Subscriptions provisioning does not re-derive from the taxonomy at runtime) plus the reference for auditability - `inst-gs-resolved`
 3a. [ ] - `p1` - **Grant-set drift (D-27):** the registry can change a `PlanTier`'s feature/quota policy after publish — the catalog consumes the registry's tier-policy-change signal and flags every affected **published** plan `grants_divergent` in the read model (+ the `pricing.contracts.grants_divergent` alarm, Warn); remediation is a re-publish (re-resolving the set); consumers keep the frozen resolved set meanwhile — a flag, never a silent retro-change (mirrors S2 `inst-cmp-tier-drift`; the signal scope is part of the registry joint contract, PRD §15) - `inst-gs-drift`
 
@@ -210,14 +210,14 @@ Tariffs/Rating compute from.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plan-change`
 
-**Input**: `allowedChangeTargets` (list or rule) + `comparabilityRank` on plans participating in self-service change
+**Input**: `allowedChangeTargets` (explicit `planId` list) + `comparabilityRank` on plans participating in self-service change
 **Output**: the change contract in the read model; fail-safe absence semantics
 
 **Steps**:
 1. [ ] - `p1` - `allowedChangeTargets` entries MUST be **explicit published `planId`s** — rule-based targets are **not authorable at launch** (D-23: a rule resolves only at read time, defeating every publish-time guarantee below; the designed extension — read-time fail-safe resolution with a `partially_resolvable` marker — is §17.8 Future); a dangling target fails publish. An edge whose target is **later retired** is **inert**: Subscriptions MUST re-check the target's lifecycle state at change time (D-24) - `inst-pc-targets`
-1a. [ ] - `p1` - **Mutual comparability:** for every listed target, publish validates the target carries a `comparabilityRank` (or an authoritative published `PlanTier` ordering covers both) — otherwise the runtime classification A→B is uncomputable; ranks are a single **tenant-wide scale** (authoring discipline: documented on the read model), not per-plan-local numbers. **Reverse guard (D-54, 2026-07-28):** the check also runs on the **target's own re-publish** — a plan referenced by any published `allowedChangeTargets` edge MUST NOT re-publish with its `comparability_rank` dropped to NULL (`COMPARABILITY_RANK_REVOKED`, 422, the referencing plans enumerated): without it a rank-less re-publish leaves already-published edges unclassifiable at read time, the same read-time drift D-23 cut rule-based targets to avoid (D-24 covers only the retirement case; dropping the rank legitimately requires first removing the inbound edges or publishing a covering `PlanTier` ordering) - `inst-pc-mutual`
+1a. [ ] - `p1` - **Mutual comparability:** for every listed target, publish validates the target carries a `comparabilityRank` (K4 — the `PlanTier`-ordering alternative is §17.8 Future) — otherwise the runtime classification A→B is uncomputable; ranks are a single **tenant-wide scale** (authoring discipline: documented on the read model), not per-plan-local numbers. **Reverse guard (D-54, 2026-07-28):** the check also runs on the **target's own re-publish** — a plan referenced by any published `allowedChangeTargets` edge MUST NOT re-publish with its `comparability_rank` dropped to NULL (`COMPARABILITY_RANK_REVOKED`, 422, the referencing plans enumerated): without it a rank-less re-publish leaves already-published edges unclassifiable at read time, the same read-time drift D-23 cut rule-based targets to avoid (D-24 covers only the retirement case; dropping the rank legitimately requires first removing the inbound edges) - `inst-pc-mutual`
 2. [ ] - `p1` - **Absence = no self-service change** (fail-safe), never any-to-any - `inst-pc-failsafe`
-3. [ ] - `p1` - `comparabilityRank` REQUIRED for any plan in self-service change unless an authoritative `PlanTier` ordering is published (K4); rank semantics: higher = upgrade, lower = downgrade, equal = switch (drives proration sign/credit in Subscriptions) - `inst-pc-rank`
+3. [ ] - `p1` - `comparabilityRank` REQUIRED for any plan in self-service change (K4 — no `PlanTier`-ordering alternative at launch; 2026-07-28 review fix, flagged for veto); rank semantics: higher = upgrade, lower = downgrade, equal = switch (drives proration sign/credit in Subscriptions) - `inst-pc-rank`
 4. [ ] - `p1` - **Edge boundary classification (D-25):** publish classifies every change edge as `in_place` (target covers the source's `(currency, region)` set and matches frequency) or `cancel_plus_new` (crosses a K3 boundary) and **publishes the classification on the edge** — Subscriptions and the storefront disclose credit forfeiture on `cancel_plus_new` edges instead of discovering it at execution; the classification re-computes on either side's re-publish - `inst-pc-boundary`
 5. [ ] - `p1` - Change-target edits are plan mutations → versioned, approvable (Slice 5 materiality applies) - `inst-pc-governed`
 
@@ -230,7 +230,7 @@ Tariffs/Rating compute from.
 
 **Steps**:
 1. [ ] - `p1` - Stable `{skuId, planId, priceId}` exposed on all downstream artifacts; ids never re-used across revisions (append-only rows guarantee this structurally, Foundation §4.3) - `inst-rc-ids`
-2. [ ] - `p1` - Completeness cross-check (delegating to the owning slices' rules; this bundle asserts the **union**): `modelKind` + `quantitySource` + `packageSize`/`packagePrice` (Slice 3), `tierAggregationWindow`/`billingGranularity` on usage rows (Slice 3), meter injectivity (Slice 2), descriptors (Slice 2) - `inst-rc-union`
+2. [ ] - `p1` - Completeness cross-check (delegating to the owning slices' rules; this bundle asserts the **union**): `modelKind` + `quantitySource` + `packageSize`/`packagePrice` (Slice 3), `tierAggregationWindow`/`billingGranularity` on usage rows (Slice 3), `tierQualificationWindow` (Slice 10, D-40), `aggregationFunction`/`aggregationGranularity`/`max_hold_granules` on non-`sum` rows (Slice 3, D-44), meter injectivity (Slice 2), descriptors (Slice 2) — the enumeration is illustrative; exhaustiveness delegates to the owning slices' registered rules - `inst-rc-union`
 3. [ ] - `p1` - No monetary charge computed here — the contract is inputs-only (Foundation principle) - `inst-rc-nocompute`
 
 ## 4. States (CDSL)
@@ -255,7 +255,8 @@ plan/price authoring surfaces. This slice contributes:
 `PRORATION_INPUTS_CONTRADICTORY` (422 — `creditOnDowngrade = true` with
 `prorationBasis = none`, `inst-pi-credit-none`), `BILLING_TIMING_MISSING`
 (422), `GRANT_REF_UNDEFINED` (422), `GRANT_SET_PHASE_UNKNOWN` (422 — a per-phase grant-set
-key naming no phase of the plan's schedule, or per-phase entries on a non-phased plan; D-41),
+key naming no phase of the plan's schedule, or per-phase entries on a non-phased plan —
+non-phased = implicit-terminal-phase-only, incl. an entry on that sole phase; D-41, D-19),
 `CHANGE_TARGET_UNPUBLISHED` (422), `COMPARABILITY_RANK_REQUIRED` (422),
 `COMPARABILITY_RANK_REVOKED` (422 — a re-publish dropping the rank while published inbound
 change edges reference the plan; D-54).
@@ -279,7 +280,7 @@ Foundation §3.7):
 | Column | Type | Notes |
 |--------|------|-------|
 | `entitlement_grants` | `jsonb` | `featureFlag`/`quotaKey` entries, or the `PlanTier` reference + the resolved set; optional `perPhase` map keyed by `phase_id` (D-41) — keys referential-validated against the plan's phase schedule, the projection materializes the complete `phase→grant-set map` |
-| `allowed_change_targets` | `jsonb` | explicit `planId` list or rule; NULL = no self-service change (fail-safe) |
+| `allowed_change_targets` | `jsonb` | explicit `planId` list only — rule-based targets are not authorable at launch (D-23; §17.8 Future); entries `[{planId, boundaryClass}]` with the D-25 `in_place \| cancel_plus_new` classification stamped at publish and re-computed on either side's re-publish; NULL = no self-service change (fail-safe) |
 | `comparability_rank` | `int` | required when participating in self-service change (K4) |
 
 Key constraints: `CHECK (billing_timing IS NOT NULL)` enforced at the publish transition (not
@@ -354,8 +355,8 @@ per-phase key naming no phase of the plan's schedule.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-change`
 
 `allowedChangeTargets` **MUST** reference published plans only; absence **MUST** mean no
-self-service change; `comparabilityRank` **MUST** be present for participating plans (unless
-an authoritative `PlanTier` ordering is published); target edits are governed mutations.
+self-service change; `comparabilityRank` **MUST** be present for participating plans (no
+`PlanTier`-ordering alternative at launch — K4); target edits are governed mutations.
 
 **Implements**: `cpt-cf-bss-pricing-algo-plan-change`
 

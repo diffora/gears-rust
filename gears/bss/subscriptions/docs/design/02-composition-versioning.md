@@ -58,7 +58,7 @@ read-only).
 | `cpt-cf-bss-subscriptions-fr-monotonic-version` | Each commercial-meaning change increments `version` and appends an immutable `SubscriptionRevision` (mechanic in slice 01 §3.7); composition changes are the primary version driver (§4.1). |
 | `cpt-cf-bss-subscriptions-fr-snapshot-discipline` | Fee artifacts carry `pricingSnapshotRef`; Subscriptions freezes the `(currency, region)` binding at activation into the composed ref so Billing never re-resolves mutable catalog for posted periods (§4.2). |
 | `cpt-cf-bss-subscriptions-fr-plantier-derivability` | Effective `PlanTier` is a pure function of SKU/Plan @ event time; changes are effective-dated + Policy-gated (§4.3). |
-| `cpt-cf-bss-subscriptions-fr-sale-brand-attribution` | The per-sale `brandId` is a Subscriptions attribute published in the evaluation context for brand-scoped overlay matching in rating (§4.4). |
+| `cpt-cf-bss-subscriptions-fr-sale-brand-attribution` | The per-sale `brandId` is a Subscriptions attribute published in the evaluation context as a brand-context candidate for overlay matching in rating — the authoritative source is the **open** SUB-R5 seam (§4.4). |
 
 #### NFR Allocation
 
@@ -221,8 +221,9 @@ off the commit path ([`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-normative-brand-cmp`
 
-- A subscription created under a storefront brand records the per-sale `brandId` and publishes it in the pricing evaluation context so rating matches **brand-scoped** overlays ([rating PRD](../../../rating/docs/PRD.md) §17.1 step 4).
-- The registry `Product` declares brand *membership*; the **per-sale** `brandId` is a Subscriptions attribute — the one piece of brand context only this gear can supply ([`../PRD.md`](../PRD.md) §6.2).
+- A subscription created under a storefront brand records the per-sale `brandId` and publishes it in the pricing evaluation context as **a** brand-context candidate for step-4 overlay matching ([rating PRD](../../../rating/docs/PRD.md) §17.1 step 4).
+- **Which source actually feeds brand matching is an OPEN contested seam — SUB-R5** (2026-07-28 review fix, REVIEW **F-08-2**): this gear publishes the **per-sale** `brandId`, while rating matches `brand` against **Plan/SKU `brandId` @ `t`**. The two disagree, and **AC 20 is not implementable until they are reconciled** ([`../SEAMS.md`](../SEAMS.md) SUB-R5; [`../PRD.md`](../PRD.md) §15). This slice previously asserted the per-sale source as settled ("so rating matches…"), taking a side on an unresolved seam; it does not. Downstream consequences stay open with it: `brandId` behaviour under ownership transfer (REVIEW F-02-3 / F-07-2, slice [`07`](./07-tenancy-transfer.md) §4.4 defines no rebind).
+- The registry `Product` declares brand *membership*; the **per-sale** `brandId` is a Subscriptions attribute — the one piece of brand context only this gear can supply ([`../PRD.md`](../PRD.md) §6.2). That makes it a *candidate* source, not the decided one.
 
 ## 5. Traceability
 
