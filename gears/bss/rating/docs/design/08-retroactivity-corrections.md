@@ -40,9 +40,9 @@ Retroactivity is **not a step**: this slice is the correction/replay surface tha
 per-line §17.1 flow ([`./01-foundation.md`](./01-foundation.md) §3.4) — late-arriving usage,
 correcting/negative usage, the slice-07 FX close re-rate, and plan-change portion corrections. A
 correction is **the same pure pipeline, run again**: replay steps 1–9 over the **snapshot pinned at
-first rating of that window** with corrected frozen inputs (an administrative re-rate substitutes
+first rating of that unit** with corrected frozen inputs (an administrative re-rate substitutes
 the superseding snapshot — §4.1), diff against the prior rated version, and
-emit **only deltas** under the correction key `(window[, slice], prior-rated-version, snapshot)`. A live catalog
+emit **only deltas** under the correction key `(unitKey[, slice], prior-rated-version, snapshot)`. A live catalog
 read on a correction path is *a defect by definition* (SEAMS W2), identically for open and posted
 periods; pricing guarantees snapshot retention for open windows with no read-model change.
 
@@ -62,7 +62,7 @@ never mutates Usage, counters, balances, or posted financials — the owners app
 | `cpt-cf-bss-rating-fr-posted-period-protection` | `periodState = closed_posted` ⇒ the `PostedPeriodGuard` routes the diff to delta-only Adjustment output (§4.3); posted invoice lines and prior rated outputs are never mutated; every retro delta carries the bitemporal stamps — usage-observation time and pricing-policy decision time (§4.4). |
 | `cpt-cf-bss-rating-fr-late-arriving-usage-reresolve` | For `tierAggregationWindow != per_event` with `periodState = open`, the `ReplayCoordinator` re-runs the **whole window unit** strictly from the pinned snapshot after Rating re-materializes `Q`; the `DiffEngine` emits deltas for already-rated events only (§4.1, §4.3); missing `periodState` fails closed. |
 | `cpt-cf-bss-rating-fr-usage-corrections` | A correcting/negative usage event reverses deterministically: replay over the corrected `Q` re-places tiers and re-runs the step-6 waterfall — the drawdown difference *is* the pool refill; compensating deltas are emitted and no resolved line goes negative (§4.4). Correction ingestion and dedup remain Rating's. |
-| `cpt-cf-bss-rating-fr-idempotency` (delta family) | Every delta carries the correction key `(window[, slice], prior-rated-version, snapshot)` ([`./01-foundation.md`](./01-foundation.md) §4.2); a retry replays to the byte-identical delta set and never double-adjusts; the delta-dedup **owner is Rating** (§2.2, T-D-11). |
+| `cpt-cf-bss-rating-fr-idempotency` (delta family) | Every delta carries the correction key `(unitKey[, slice], prior-rated-version, snapshot)` (`unitKey` = usage counter key or period-driven key — [`./01-foundation.md`](./01-foundation.md) §4.2); a retry replays to the byte-identical delta set and never double-adjusts; the delta-dedup **owner is Rating** (§2.2, T-D-11). |
 | `cpt-cf-bss-rating-fr-separation` | The wrapper is side-effect-free: outcomes leave as deltas via the Adjustment path; Usage is never mutated; balance/counter effects are applied by their owners (Contracts, Rating). |
 
 #### NFR Allocation
@@ -159,7 +159,7 @@ idempotent on the same key (defense in depth).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-domain-model-rtr`
 
-- **`CorrectionKey`** — `(window[, slice], prior-rated-version, snapshot)` ([`./01-foundation.md`](./01-foundation.md) §4.2) — the slice coordinate present iff a slice-09 split partitions the window; the identity of every delta.
+- **`CorrectionKey`** — `(unitKey[, slice], prior-rated-version, snapshot)` ([`./01-foundation.md`](./01-foundation.md) §4.2; `unitKey` = the usage counter key or the period-driven key, matching `rated_output`) — the slice coordinate present iff a slice-09 split partitions a usage window (never on period-driven units); the identity of every delta.
 - **`CorrectionTrigger`** — what entered the wrapper: late usage, correcting/negative usage, FX close re-rate ([`07-currency-fx.md`](./07-currency-fx.md) §3.6), a plan-change portion correction ([`09-period-plan-change.md`](./09-period-plan-change.md)), or an **administrative re-rate** (§4.1 — the one trigger that substitutes a superseding snapshot); all take the same replay path.
 - **`PriorRatedVersion`** — frozen input: the rated output version being corrected (Rating persistence).
 - **`PeriodState`** — frozen Billing input (`open` \| `closed_posted`); the routing key (§4.3).
@@ -207,7 +207,7 @@ replay coupons and FX — and slice 07's invoice-period close re-rate enters her
 
 | Dependency | What arrives frozen | Contract |
 |------------|--------------------|----------|
-| Rating | re-materialized `Q` (single-writer per partition key), prior rated versions, usage dedup, correction ingestion | PRD §9.2 Rating handoff |
+| Rating pipeline (intra-gear — slices 12/13/15) | re-materialized `Q` (single-writer per partition key), prior rated versions, usage dedup, correction ingestion | PRD §9.2 handoff; slices 12–15 |
 | Billing | `periodState` (`open` / `closed_posted`); consumes delta adjustments per immutability rules | PRD §9.2 Billing |
 | Pricing (Product Catalog) | the pinned snapshot, retained for open windows (no live read — W2); window history immutable | [`../SEAMS.md`](../SEAMS.md) W2; pricing [`design/07`](../../../pricing/docs/design/07-pricewindow-linkage.md) |
 | Contracts | the commitment pool set, balances, and draw order frozen in `pricingSnapshotRef` (§17.1 step 6); balance SoR applying refill effects | PRD §6.6, §6.10 |
@@ -221,7 +221,7 @@ replay coupons and FX — and slice 07's invoice-period close re-rate enters her
 1. Late/corrected usage lands in Rating (ingestion + dedup are Rating's); the window's `Q` is re-materialized (single-writer).
 2. `ReplayCoordinator` serializes on `(subscription, meter, dimensionKey, window)`; loads the pinned snapshot ref and prior rated version; either missing ⇒ fail closed.
 3. Foundation `reresolve` replays steps 1–9 for the **whole window unit** over the pinned snapshot — no live catalog read.
-4. `DiffEngine` emits per-line deltas keyed `(window[, slice], prior-rated-version, snapshot)` for already-rated events; an empty diff emits nothing.
+4. `DiffEngine` emits per-line deltas keyed `(unitKey[, slice], prior-rated-version, snapshot)` for already-rated events; an empty diff emits nothing.
 5. `BitemporalStamper` + `EmissionGuard`; deltas leave via the Adjustment path.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-flow-posted-period-correction-rtr`
@@ -274,7 +274,7 @@ Runs in the `rating` gear (rating-core crate) ([`./01-foundation.md`](./01-found
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-correction-key-rtr`
 
-- Every delta carries the correction key `(window[, slice], prior-rated-version, snapshot)` ([`./01-foundation.md`](./01-foundation.md) §4.2): a retry **replays** — same key, byte-identical delta set — and never double-adjusts.
+- Every delta carries the correction key `(unitKey[, slice], prior-rated-version, snapshot)` ([`./01-foundation.md`](./01-foundation.md) §4.2 — `unitKey` = the usage counter key **or** the period-driven key, so recurring-line FX re-rates and true-up recomputes dedup exactly like usage corrections): a retry **replays** — same key, byte-identical delta set — and never double-adjusts.
 - A subsequent correction to the same window diffs against the then-current prior rated version, producing a **new** key: keys never repeat across distinct corrections, and the chain of keys is the window's correction lineage.
 - The key makes dedup *possible*; the dedup **owner is Rating** (§2.2, T-D-11) — enforcement lives with the delta persister.
 

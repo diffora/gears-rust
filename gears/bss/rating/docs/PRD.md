@@ -147,11 +147,11 @@ Industry alignment: usage-based pricing platforms (Metronome, Lago, OpenMeter) a
 | **Name** | **Usage** |
 |----------|-----------|
 | **Rating** | Canonical name of this gear and its domain (manifest §4.2): the evaluation core plus the operational rating pipeline — one gear, one deployable (ADR-0002). |
-| **rating-core** | The pure evaluation core (crate): deterministic price resolution (§6.3 / §17.1 steps 1–9) over frozen inputs, no I/O. Successor of "rating-core"; use at implementation/abstraction boundaries. |
+| **rating-core** | The pure evaluation core (crate): deterministic price resolution (§6.3 / §17.1 steps 1–9) over frozen inputs, no I/O. Successor of "tariff-core"/"PLAL" (the pre-ADR-0002 names); use at implementation/abstraction boundaries. |
 | **Rating pipeline** | The operational half: usage ingestion & normalization, windowed `Q` (single-writer), usage/delta dedup, evaluation-unit synthesis & the period tick, rated-output persistence, `CommitmentBalanceEffect` publication, Billing handoff (design slices 12–16). |
 | **Evaluation** (historically "evaluation") | The deterministic process resolving effective commercial prices and charge formulas for a given context (§6.3). Produces a resolved price outcome + `pricingSnapshotRef`. |
 | **Tariff** | Reserved for the **Pricing gear's rate definitions** (rate-card sense: resource @ price, models, windows). Since ADR-0002 it no longer names this gear or its process. |
-| **Rating / rating-core / rating-core** | Deprecated names for this gear / its core — do not use in new text (ADR-0002); historical occurrences in the evaluation slices read per the terminology bridge in [DESIGN.md](./DESIGN.md). |
+| **Tariffs / PLAL / tariff-core** | Deprecated names for this gear / its core — do not use in new text (ADR-0002); historical occurrences in the evaluation slices read per the terminology bridge in [DESIGN.md](./DESIGN.md). (2026-07-28 fix: the mechanical rename had rewritten this deprecated-names row into "Rating / rating-core / rating-core", making the canonical names self-deprecating.) |
 
 ### 2.2 Predecessor PRDs and Scope Migration
 
@@ -263,7 +263,7 @@ This PRD specializes or supersedes the following scope from predecessor document
 - MUST consume: `PriceWindowScheduled`, `PriceWindowActivated`, `PriceWindowExpired`, `PriceWindowCancelled`, `CatalogVersionPublished` (ordering per stream). `PriceWindowCancelled` retracts a pre-cached not-yet-active window that pricing voided (retirement / cutover unwind, operator DELETE).
 - MUST NOT require Rating to re-query mutable catalog state at bill-post time for posted periods; the snapshot contract remains authoritative.
 
-> **Gating dependency (critical path for IaaS billing)**: the **usage dimension-population contract** (OSS metering → Rating → Rating) is the bottleneck for billing real cloud resources. The BSS side is owned here (Rating admits dimensions via `dimensionKey` and freezes the declared set; Rating passes them through). The external part is **OSS metering emission** of dimension values: until OSS emits them, `dimensionKey` stays the empty tuple and the only workaround is minting a separate meter per dimension combination — exploding catalog cardinality. See §17.3 and §15.
+> **Gating dependency (critical path for IaaS billing)**: the **usage dimension-population contract** (OSS metering → rating pipeline ingestion → rating-core) is the bottleneck for billing real cloud resources. The BSS side is owned here (Rating admits dimensions via `dimensionKey` and freezes the declared set; Rating passes them through). The external part is **OSS metering emission** of dimension values: until OSS emits them, `dimensionKey` stays the empty tuple and the only workaround is minting a separate meter per dimension combination — exploding catalog cardinality. See §17.3 and §15.
 
 ## 5. Scope
 
@@ -276,17 +276,17 @@ This PRD specializes or supersedes the following scope from predecessor document
 | Versioning & UTC effective dating; non-overlapping windows per manifest invariants | `p1` | Aligns with PriceWindow + PriceOverlay; activation ordered per `(tenantId, aggregateId)`. |
 | Multi-currency: price currency, conversion policy, rate-lock hooks | `p1` | rating-core applies Finance FX (step 8); no tax calculation. |
 | Override hierarchy: global → region/brand/orgTier/partner → customerGroup → customer/contract with explicit precedence | `p1` | §6.4 + step 4; class order `customerGroup > partner > orgTier > brand > region > global`. |
-| PriceOverlay scope → tenant-axis mapping (seller/payer/brand/region) | `p1` | §6.3 / §17.1; AC 15. |
-| Tier aggregation window (`Q` reset policy) for tiered/volume models | `p1` | Required on Price/plan policy; AC 14. |
-| Plan phases (trial / intro / evergreen) — price resolution per active phase | `p1` | Subscriptions owns structure; step 1 + AC 16. |
-| Price eligibility / grandfathering (new vs existing subscriptions) | `p1` | `priceEligibility` on PriceWindow; AC 16. |
-| Billing granularity (minimum billable unit per usage price) | `p1` | Round-up before rate; step 3; AC 17. |
-| Dimensional pricing — `(meter, dimensionKey)` lines | `p1` | Critical path for a real IaaS catalog; step 3 + AC 3 + AC 21. Depends on the usage dimension-population contract. |
-| CAPACITY / reservation pricing (provisioned Disks/IOPS, RI-style) | `p1` | Two flavors at step 6 via `reservationMatch`: consumption (AC 22) and capacity (`capacityCharge`, AC 23). |
+| PriceOverlay scope → tenant-axis mapping (seller/payer/brand/region) | `p1` | §6.3 / §17.1; AC 13. |
+| Tier aggregation window (`Q` reset policy) for tiered/volume models | `p1` | Required on Price/plan policy; AC 12. |
+| Plan phases (trial / intro / evergreen) — price resolution per active phase | `p1` | Subscriptions owns structure; step 1 + AC 14. |
+| Price eligibility / grandfathering (new vs existing subscriptions) | `p1` | `priceEligibility` on PriceWindow; AC 14. |
+| Billing granularity (minimum billable unit per usage price) | `p1` | Round-up before rate; step 3; AC 15. |
+| Dimensional pricing — `(meter, dimensionKey)` lines | `p1` | Critical path for a real IaaS catalog; step 3 + AC 3 + AC 18. Depends on the usage dimension-population contract. |
+| CAPACITY / reservation pricing (provisioned Disks/IOPS, RI-style) | `p1` | Two flavors at step 6 via `reservationMatch`: consumption (AC 19) and capacity (`capacityCharge`, AC 20). |
 | Usage dimension-population contract (BSS side owned here; OSS emission external) | `p1` | Gating dependency. Rating declares/freezes; Rating passes `dimensionKey` through; OSS emits values (external). |
 | Composite (derived) meter evaluation | `p1` | Formula-as-data over ≥2 published units; pricing Slice 10 delivers the primitive; §6.7. |
 | Bundle `sum_of_parts` component summing + effective rev-share pass-through | `p1` | Eval-time summing; rev-share normalized at pricing publish (D-07); §9.2. |
-| Coupon application in evaluation (order, stacking, tier/FX interaction) | `p2` | Promotions owns Coupon entity; semantics in §17.2; step 7; AC 18. |
+| Coupon application in evaluation (order, stacking, tier/FX interaction) | `p2` | Promotions owns Coupon entity; semantics in §17.2; step 7; AC 16. |
 | Mid-cycle price changes: bucket split, proration alignment to UTC cutoffs | `p2` | No posted invoice mutation. |
 | Retroactive pricing modes: administrative re-rate → Adjustment deltas only | `p2` | Preserves invoice immutability; ties to Rating `ChargeAdjustment`. |
 | ASC 606 alignment hooks: PO tags, SSP snapshot pointers, allocatable amount fields | `p2` | Recognition schedules remain Billing/Finance; Rating supplies traceable inputs. |
@@ -323,7 +323,7 @@ Tariff evaluation **MUST** expose a conceptual evaluation contract that, for a g
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-fr-single-outcome-determinism`
 
-The determinism contract is stated over the **evaluation unit** (step 3): for `per_event` models a single normalized `UsageRecord`; for any model with `tierAggregationWindow != per_event`, the **window-aggregated quantity `Q`** for the `(subscription, meter, dimensionKey, window)` key — where the aggregation is the row's frozen `aggregationFunction` (`sum`, or the D-44 granule fold `peak`/`time_weighted` summed over granules — additive in every case, `fr-level-aggregation`). Given frozen inputs `(window-aggregated inputs, pricingSnapshotRef, fxTableVersion)`, the monetary outcome **MUST** be identical across replay, recompute, and cross-region batch workers. The windowed `Q` **MUST** be materialized and owned by the Rating `AggregationWindow` (single writer per partition key); Rating receives `Q` as a frozen input and **MUST NOT** aggregate. Concurrent re-resolve **MUST** serialize on the partition key.
+The determinism contract is stated over the **evaluation unit** (step 3): for `per_event` models a single normalized `UsageRecord`; for any model with `tierAggregationWindow != per_event`, the **window-aggregated quantity `Q`** for the `(subscription, meter, dimensionKey, window)` key — where the aggregation is the row's frozen `aggregationFunction` (`sum`, or the D-44 granule fold `peak`/`time_weighted` summed over granules — additive in every case, `fr-level-aggregation`). Given frozen inputs `(window-aggregated inputs, pricingSnapshotRef, fxTableVersion)`, the monetary outcome **MUST** be identical across replay, recompute, and cross-region batch workers. The windowed `Q` **MUST** be materialized and owned by the **rating pipeline's `QMaterializer`** over `windowed_counter` (Design slice 13; single writer per partition key); **rating-core** receives `Q` as a frozen input and **MUST NOT** aggregate (the §2.1 core/pipeline vocabulary — 2026-07-28 review fix: the post-rename sentence had both halves named "Rating"). Concurrent re-resolve **MUST** serialize on the partition key.
 
 **Rationale**: A pure-function core over frozen, window-aggregated inputs is what makes replay and late-arrival handling non-divergent without cross-partition locks.
 
@@ -343,7 +343,7 @@ Every evaluation **MUST** emit identifiers sufficient for manifest `BillableItem
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-fr-idempotency`
 
-Same usage idempotency key + same snapshot **MUST NOT** double-charge (Rating dedup remains authoritative). Deltas from retroactivity / period-FX close are **new commercial events**, not the original usage key; each delta **MUST** carry a stable correction key `(window[, slice], prior-rated-version, snapshot)` (the sub-window slice coordinate present when a §6.11 split partitions the window) so a re-rate retry is idempotent and cannot double-adjust. The owner of delta dedup (Rating or Billing) **MUST** be named in Design before the Adjustment path goes live — **named: Rating** (Design 01 §2.2 / 08 §2.2).
+Same usage idempotency key + same snapshot **MUST NOT** double-charge (Rating dedup remains authoritative). Deltas from retroactivity / period-FX close are **new commercial events**, not the original usage key; each delta **MUST** carry a stable correction key `(unitKey[, slice], prior-rated-version, snapshot)` — `unitKey` = the usage counter key `(subscription, meter, dimensionKey, window)` or the period-driven unit key (both unit families, so a close-time FX re-rate of a recurring line or a true-up recompute dedups exactly like a usage correction — Design 01 §4.2); the sub-window slice coordinate is present when a §6.11 split partitions a usage window — so a re-rate retry is idempotent and cannot double-adjust. The owner of delta dedup (Rating or Billing) **MUST** be named in Design before the Adjustment path goes live — **named: Rating** (Design 01 §2.2 / 08 §2.2).
 
 **Rationale**: Deterministic replay and correction safety require distinct, stable idempotency for usage vs deltas.
 
@@ -353,7 +353,7 @@ Same usage idempotency key + same snapshot **MUST NOT** double-charge (Rating de
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-fr-non-negative-price`
 
-A resolved per-line price **MUST NOT** go negative; evaluation **MUST** clamp to zero or emit the residual as a structured credit (clamp-vs-credit policy TBD — §15). Applies after stacked overlays, commitment, and coupons (steps 4-7) and **before** period-level floor/cap.
+A resolved per-line price **MUST NOT** go negative; evaluation **MUST** clamp to zero or emit the residual as a structured credit (clamp-vs-credit policy TBD — §15). Applies **after step 8 — FX and the billing-currency coupon pass** (a billing-currency `fixed_amount` coupon is the first input that can drive a line negative, so the guard clamps the post-FX amount, never the pre-FX one — Design slices 01 §4.4 / 06 / 07; propagated from the design 2026-07-28) and **before** period-level floor/cap.
 
 **Rationale**: Negative resolved lines corrupt downstream rating and revenue; a floor must not mask a negative line.
 
@@ -481,7 +481,7 @@ Step 2 **MUST** select `Price`/`PriceWindow` such that `t in [effectiveFrom, eff
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-fr-meter-mapping-granularity`
 
-Step 3 **MUST** map `UsageRecord` to a charge line keyed by `(meter, dimensionKey)`; the mapping **MUST** be injective on `(meter, dimensionKey)` per plan revision, or reject as a configuration error (fail-closed). `billingGranularity` round-up **MUST** be applied to the **aggregated/merged measure** of the evaluation unit, **never per raw `UsageRecord`** (twelve 5-minute samples at `per_hour` MUST bill 1 hour, not 12). The merge/aggregation is owned by Rating (single-writer per `(subscription, meter, dimensionKey, window)`); Rating prices the normalized aggregate.
+Step 3 **MUST** map `UsageRecord` to a charge line keyed by `(meter, dimensionKey)`; the mapping **MUST** be injective on `(meter, dimensionKey)` per plan revision, or reject as a configuration error (fail-closed). `billingGranularity` round-up **MUST** be applied to the **aggregated/merged measure** of the evaluation unit, **never per raw `UsageRecord`** (twelve 5-minute samples at `per_hour` MUST bill 1 hour, not 12). The merge/aggregation is owned by the **rating pipeline** (slice 13; single-writer per `(subscription, meter, dimensionKey, window)`); **rating-core** prices the normalized aggregate.
 
 **Rationale**: Injective mapping and aggregate-level round-up prevent line collisions and ephemeral over-charge.
 
@@ -493,7 +493,7 @@ Step 3 **MUST** map `UsageRecord` to a charge line keyed by `(meter, dimensionKe
 
 Step 4 **MUST** resolve `PriceOverlay.scope` against evaluation context: `global` always eligible; `customerGroup` matches the payer's BSS-resolved customer group at `t` (from authenticated caller claims; most-specific class); `partner` / `orgTier` match `sellerTenantId`; `brand` matches Plan/SKU `brandId` at `t`; `region` matches the usage or price-row `region` key. `resourceTenantId` **MUST NOT** alone match partner/orgTier lists; `payerTenantId` / `accountId` are used for contract/account overlays in step 5, not via `PriceOverlay.scope`.
 
-**Rationale**: Correct scope→axis mapping prevents cross-tenant price leakage (AC 15).
+**Rationale**: Correct scope→axis mapping prevents cross-tenant price leakage (AC 13).
 
 **Actors**: `cpt-cf-bss-rating-actor-oss-ams`
 
@@ -537,7 +537,7 @@ The cumulative markup/discount across the full partner → reseller → customer
 
 Tiered/volume models **MUST** use the configured `tierAggregationWindow` (`calendar_month` \| `invoice_period` \| `subscription_lifetime` \| `per_event`) to govern when tier counter `Q` resets. Window boundaries: `calendar_month` in UTC; `invoice_period` anchored to the subscription billing anchor per the catalog `billingAnchorPolicy ∈ {calendar_month, subscription_start, fixed_day(d)}` with the no-drift month-end clamp (31→28→31, anchor day preserved; pricing D-20), frozen in `pricingSnapshotRef`. The active value **MUST** be recorded in evaluation metadata and frozen in `pricingSnapshotRef`.
 
-**Rationale**: Tier-counter reset policy is commercially significant and must be explicit and frozen (AC 14).
+**Rationale**: Tier-counter reset policy is commercially significant and must be explicit and frozen (AC 12).
 
 **Actors**: `cpt-cf-bss-rating-actor-rating`
 
@@ -547,7 +547,7 @@ Tiered/volume models **MUST** use the configured `tierAggregationWindow` (`calen
 
 Step 2 **MUST** apply `priceEligibility` with the class order `existing_grandfathered > new_subscriptions_only > all_subscriptions` (most-specific-wins, pricing `design/07`): `new_subscriptions_only` excludes subscriptions with `activatedAt` before the window `effectiveFrom`; `existing_grandfathered` includes only subscriptions activated before cutover. **Multi-generation grandfathering (pricing `ADR/0002`):** many generations — distinct `cohort`s, each an active window — may coexist on one key; Rating **MUST** select the row whose `cohort` equals the `cohort` of the subscription's **pinned price id** in `pricingSnapshotRef`, never `activatedAt` alone. If no eligible price applies, evaluation **MUST** fail (no silent fallback).
 
-**Rationale**: New-vs-existing eligibility and grandfathering are first-class commercial rules (AC 16).
+**Rationale**: New-vs-existing eligibility and grandfathering are first-class commercial rules (AC 14).
 
 **Actors**: `cpt-cf-bss-rating-actor-subscriptions`
 
@@ -557,7 +557,7 @@ Step 2 **MUST** apply `priceEligibility` with the class order `existing_grandfat
 
 Step 1 **MUST** resolve the active plan **phase** at `t` (trial / intro / evergreen or successor phases per Subscriptions SoR); the phase selects the applicable price schedule within the plan. Distinct phases MAY have schedules that coexist at the same `t` — this is not an overlap, since `phase` is part of the PriceWindow key (a uuid `phase_id`, pricing D-19). **Usage rows are phase-invariant by default (pricing D-15):** one usage row spans all phases; an explicit phase-scoped usage row wins for its phase (most-specific-wins). The no-gap rule applies to the *resolved* set — a phase covered only by a phase-invariant usage row is **not** a gap.
 
-**Rationale**: Phase-correct selection is required for intro/evergreen plans (AC 16).
+**Rationale**: Phase-correct selection is required for intro/evergreen plans (AC 14).
 
 **Actors**: `cpt-cf-bss-rating-actor-subscriptions`
 
@@ -567,7 +567,7 @@ Step 1 **MUST** resolve the active plan **phase** at `t` (trial / intro / evergr
 
 Usage duration/quantity **MUST** be rounded **up** to the configured `billingGranularity` (`per_second` \| `per_minute` \| `per_hour` \| `per_day` \| whole-unit) before rate application, on the **merged/aggregated** measure (not per raw record). `billingGranularity` **MUST** be recorded in evaluation metadata. A per-resource `minimumCharge` MAY be configured to bound ephemeral-resource over-charge (§15).
 
-**Rationale**: Minimum billable unit must be deterministic and applied at the aggregate (AC 17).
+**Rationale**: Minimum billable unit must be deterministic and applied at the aggregate (AC 15).
 
 **Actors**: `cpt-cf-bss-rating-actor-rating`
 
@@ -589,7 +589,7 @@ Step 6 **MUST** apply drawdown/overage per contract over an ordered list of comm
 
 When a consumption-flavor `reservationMatch` is present, the **matched portion** of measured usage **MUST** be priced at the **reserved rate** — self-service reserved rates are sourced from `pricingSnapshotRef` / the catalog snapshot; negotiated RI-style rates from the Contracts overlay at step 5 (pricing `PRD:935`) — and the remainder at on-demand rates resolved in steps 2-5. The reserved portion **MUST** be excluded from `commitmentPools[]` drawdown (reservation precedes pools) **and from the on-demand tier counter `Q`** — the remainder re-bands from zero (pricing `inst-rv-tier-q`); the in-commit pool quantity is **NOT** excluded (pool-vs-reservation asymmetry). The reservation-match identifier **MUST** be recorded in metadata and `pricingSnapshotRef`. With no `reservationMatch`, evaluation prices as pure usage.
 
-**Rationale**: Reserved-rate coverage of measured usage (RI-style) must be deterministic and pool-precedent (AC 22).
+**Rationale**: Reserved-rate coverage of measured usage (RI-style) must be deterministic and pool-precedent (AC 19).
 
 **Actors**: `cpt-cf-bss-rating-actor-contracts`
 
@@ -599,7 +599,7 @@ When a consumption-flavor `reservationMatch` is present, the **matched portion**
 
 When a capacity-flavor `reservationMatch` with `reservedQuantity` is present, evaluation **MUST** emit a `capacityCharge` = reserved rate x `reservedQuantity`, **regardless of measured usage** (zero usage still bills the allocation). The `capacityCharge` **MUST NOT** be reduced by absent usage and **MUST NOT** draw down `commitmentPools[]`. `reservedQuantity`, reserved rate, and flavor **MUST** be frozen in `pricingSnapshotRef`.
 
-**Rationale**: Provisioned disks/IOPS bill on allocation, not consumption (AC 23).
+**Rationale**: Provisioned disks/IOPS bill on allocation, not consumption (AC 20).
 
 **Actors**: `cpt-cf-bss-rating-actor-contracts`
 
@@ -611,7 +611,7 @@ When a capacity-flavor `reservationMatch` with `reservedQuantity` is present, ev
 
 Each distinct `(meter, dimensionKey)` (e.g. S3 storage-class / region / operation; VM instance type) **MUST** resolve to its own charge line and price, with no line collision (injective per the step-3 rule). The declared dimension set **MUST** be frozen in `pricingSnapshotRef`. A plan that declares no dimensions prices as a single empty-tuple line. A record arriving with empty or partial dimension values on a dimension-declaring plan **MUST NOT** be silently priced as a single line; evaluation **MUST** route it to an explicitly published default/catch-all line (if defined) or fail-closed (reject/quarantine) — never guess.
 
-**Rationale**: Real IaaS catalogs require per-dimension pricing without collapsing or guessing dimensions (AC 21).
+**Rationale**: Real IaaS catalogs require per-dimension pricing without collapsing or guessing dimensions (AC 18).
 
 **Actors**: `cpt-cf-bss-rating-actor-rating`
 
@@ -645,7 +645,7 @@ When a plan carries a **derived (composite) meter** — a formula-as-data over �
 
 Coupons are an overlay on resolved commercial price, applied at **step 7** after steps 4-6 (post-commitment line amount). Default: `settlementCurrency = price` coupons apply in price currency before FX (step 8); `settlementCurrency = billing` coupons apply after step 8 on the billing-currency amount (same `fxTableVersion`). The applied coupon id(s) and pre-/post-discount amounts **MUST** be recorded in metadata.
 
-**Rationale**: Deterministic coupon placement relative to overlays, commitment, and FX is required to reproduce charges (AC 18).
+**Rationale**: Deterministic coupon placement relative to overlays, commitment, and FX is required to reproduce charges (AC 16).
 
 **Actors**: `cpt-cf-bss-rating-actor-promotions`
 
@@ -655,7 +655,7 @@ Coupons are an overlay on resolved commercial price, applied at **step 7** after
 
 Default stacking is `exclusive_best` (select the single coupon yielding the largest customer benefit; others MUST NOT apply on the same line). `ordered_stack` applies only when a Promotions campaign explicitly links coupons with `stackSequence` (ascending; each step uses the prior output). Campaign-marked incompatible pairs **MUST** fail-closed at redemption bind time if both would apply. A coupon snapshot omitting `applyScope` (or `stackSequence` under `ordered_stack`) **MUST** fail-closed — Rating **MUST NOT** infer it.
 
-**Rationale**: Winner-takes vs ordered stacking must be unambiguous and fail-closed on missing policy (AC 18).
+**Rationale**: Winner-takes vs ordered stacking must be unambiguous and fail-closed on missing policy (AC 16).
 
 **Actors**: `cpt-cf-bss-rating-actor-promotions`
 
@@ -697,9 +697,9 @@ When `periodState = closed_posted`, a retroactive price change to usage in that 
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-rating-fr-late-arriving-usage-reresolve`
 
-For a graduated/volume model over `tierAggregationWindow != per_event` with `periodState = open`, late usage arriving after some events were rated **MUST** trigger deterministic re-resolution of tier placement for the whole window-aggregated `Q` and emit **DELTA** adjustments for already-rated events (no mutation of prior outputs), re-resolved **strictly from the pinned `pricingSnapshotRef`** (no live catalog read; when a §6.11 split partitions the window, per sub-window slice — each slice replays its **own** pin, coupled to earlier slices only via the frozen band offset). With `periodState = closed_posted`, the correction follows posted-period protection. A missing `periodState` **MUST** fail-closed (no guessing).
+For a graduated/volume model over `tierAggregationWindow != per_event` with `periodState = open`, late usage arriving after some events were rated **MUST** trigger deterministic re-resolution of tier placement for the whole window-aggregated `Q` and emit **DELTA** adjustments for already-rated events (no mutation of prior outputs), re-resolved **strictly from the pinned `pricingSnapshotRef`** (no live catalog read; when a §6.11 split partitions the window, per sub-window slice — each slice replays its **own** pin, coupled to earlier slices only via the frozen band offset). The **one sanctioned exception (T-D-21)** is the **administrative re-rate**: a *policy* correction (corrective publish / historical import — always-material, two-person, pricing-governed) replays over the **superseding** snapshot, because the pin itself is what is being corrected; every *input* correction stays strictly on the pin. With `periodState = closed_posted`, the correction follows posted-period protection. A missing `periodState` **MUST** fail-closed (no guessing).
 
-**Rationale**: Open-window late arrivals must re-resolve deterministically without mutating prior outputs (AC 19).
+**Rationale**: Open-window late arrivals must re-resolve deterministically without mutating prior outputs (AC 10).
 
 **Actors**: `cpt-cf-bss-rating-actor-rating`
 
@@ -743,7 +743,7 @@ When a `PriceWindow` activates during an invoice period, charges **MUST** be com
 
 On a plan change at `changeEffectiveAt`, evaluation **MUST** rate planA over `[periodStart, changeEffectiveAt)` and planB over `[changeEffectiveAt, periodEnd)` (half-open, UTC) against each plan's own revision and snapshot, each at full precision (Billing aggregates). The recurring component **MUST** be prorated on the configured `prorationBasis`. Tier `Q` and commitment-pool carry-vs-reset across the boundary **MUST** follow snapshot-frozen configuration. Corrections to an already-rated portion **MUST** be emitted as deltas. Evaluation **MUST** consume `(changeEffectiveAt, changeMode)` and **MUST NOT** decide the change mode (Subscriptions owns the policy).
 
-**Rationale**: Plan-change splits must be deterministic and consume — not decide — the change mode (AC 20).
+**Rationale**: Plan-change splits must be deterministic and consume — not decide — the change mode (AC 17).
 
 **Actors**: `cpt-cf-bss-rating-actor-subscriptions`
 
@@ -858,7 +858,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-contract-rating-handoff`
 
-**Direction**: provided by Rating to Rating
+**Direction**: provided by the rating pipeline (slice 13 `Q` store) to rating-core — intra-gear since T-D-16
 
 **Protocol/Format**: resolved price outcome + `pricingSnapshotRef` + obligations (`TrueUpObligation`, `PeriodFloorCapObligation`); Rating maps to RatedCharge / BillableItem (Design).
 
@@ -1219,6 +1219,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 | OSS / AMS (tenant identity & hierarchy) | `tenantId`, delegation proofs, OrgTier commercial projection targets | `p1` |
 | Pricing (Product Catalog) | Published `skuId`, `planId`, `priceId`, `PriceWindow`, `PriceOverlay`, `CatalogVersion`; owns PriceWindow store/state-machine/activation + `PriceWindow*` events (D-03); schedule-change events | `p1` |
 | OSS metering / Rating (usage dimension population) | `dimensionKey` values on each UsageRecord; normalized usage quantity (values NOT produced here — declared/frozen here) | `p1` |
+| **Usage-collector emission surface (UC1 — launch-gating)** | The built v1 collector is **pull-only** (sync REST + eventually consistent Query SPI, no accepted-order cursor, no freshness bound) — the durable ordered transport pipeline slice 12 presumes **does not exist yet**; the phase-2 Usage Event Feed proposal (`gears/system/usage-collector/docs/PRD-phase2-usage-event-feed.md`, additive under collector ADR-0006) is the remedy and **gates slice-12 implementation** (SEAMS §J UC1, CRIT) | `p1` |
 | Contracts & Agreements | Account-specific price terms, commitments, true-up clauses, anti-drift cap policy | `p1` |
 | Subscriptions | Effective-dated Plan/Add-on links, subscription state, plan phases, `(changeEffectiveAt, changeMode)` | `p1` |
 | Rating & Charging | Consumes resolved price outcome + Usage; owns Usage → RatedCharge, dedup, windowed `Q`. Downstream PRD `PRD-rating-engine-202604031200` is draft/empty; contract TBD | `p1` |
@@ -1232,7 +1233,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 
 - NFR targets are working assumptions (baselines from `PRD-metering-pricing-module-202601120119`) pending the program NFR workshop; capacity planning uses them until committed.
 - rating-core is a pure, I/O-free crate within the one `rating` gear deployable (ADR-0002 / T-D-16), not a separate service; the earlier "logical module within the BSS Rating domain" manifest §4.2 note is superseded.
-- The windowed `Q` is materialized and owned by the Rating `AggregationWindow` (single writer per `(subscription, meter, dimensionKey, window)`); Rating receives `Q` as a frozen input.
+- The windowed `Q` is materialized and owned by the rating pipeline's `QMaterializer` over `windowed_counter` (Design slice 13; single writer per `(subscription, meter, dimensionKey, window)`); rating-core receives `Q` as a frozen input.
 - OSS metering will emit `dimensionKey` values on usage; until then `dimensionKey` is the empty tuple and per-combination meters are the only workaround.
 - Catalog/Contracts supply `glCode`/SSP/PO and FX policy pointers as frozen inputs; Rating consumes, never recomputes, supplied evidence.
 - Promotions will provide a frozen coupon snapshot contract before production coupon rating; until then §17.2 is the Rating-side stub.
@@ -1246,7 +1247,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 | Non-negative resolved price: clamp-to-zero vs emit-as-credit | Finance | TBD | §6.1 guard is normative; only the residual-handling policy is deferred. | — |
 | Follow-on capabilities (percentage, min/cap per period, bilateral, two-dimensional) | Program workshop | TBD | Prioritize after Design lock for current Scope; see §17.4. Dimensional, CAPACITY/reservation, and composite meter are in Scope. | — |
 | Promotions PRD field names and coupon snapshot event contract | Promotions + Design | TBD | Align with §17.2 before production coupon rating; Rating-side semantics are normative here. | — |
-| Formal confirmation of rating-core deployment model (submodule of Rating vs standalone service) | Architecture / Program leadership | Before Design lock | Normative for Design: submodule of Rating. Executive confirmation pending; standalone requires manifest update. | — |
+| Formal confirmation of rating-core deployment model | Architecture / Program leadership | Before Design lock | **Superseded by ADR-0002 / T-D-16 (§14)**: rating-core is a pure crate inside the one `rating` gear deployable — the earlier "submodule of Rating vs standalone service" framing predates the consolidation (post-rename it read "submodule of itself"). Executive ack of ADR-0002 is the remaining formality. | — |
 | Minimal cloud subset for a real S3 / VM / Disks catalog | PM Team | 2026-06-11 | Resolved: Dimensional and CAPACITY/reservation (consumption + capacity flavor) in Scope; **Composite meter is in launch** — the pricing gear delivers the derived-meter primitive (Slice 10, formula-as-data over ≥2 published units) and hands Rating the eval math (SEAMS.md M5, 2026-07-10); VM MAY also be priced via the instance-type dimension. (The prior Follow-on status assumed no upstream primitive; superseded.) | 2026-06-11 |
 | Usage dimension-population contract (emission of `dimensionKey` values, field shapes, normalization) | OSS / CyberFabric Core (emission); Rating (declare/freeze) | TBD | BSS side closeable now (declare + freeze; Rating passes through). External dependency / critical path: the OSS metering emission shape. Until OSS emits values, `dimensionKey` stays empty. | — |
 | (Finance) Launch without a hard spend cap / real-time spend stop — accepted? Owner of credit risk + prepaid gating | Finance | TBD | Rating owns no enforcement. Finance MUST accept launch without a ceiling, or name the gating owner (Billing post-aggregation cap / OSS-Policy real-time stop). | — |
@@ -1260,7 +1261,8 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Usage dimension contract slips (OSS emission) | `dimensionKey` stays empty; per-combination meters explode catalog cardinality; S3/VM cannot be billed by dimension | Lock the BSS-side dimension contract now; raise OSS emission shape as an upstream Usage Collector requirement (critical path) — §17.3 |
-| rating-core deployment reversed to standalone service | Manifest contradiction; integration rework | Treat submodule-of-Rating as normative for Design; require executive confirmation + manifest update before reversal (§15) |
+| **Usage-collector transport gap (UC1) is not closed before implementation** | The entire ingestion half (slices 12–13) has no durable ordered source: a poll bridge misses late-accepted records and deactivations → wrong charges; slice-12 build is blocked | Adopt the phase-2 Usage Event Feed PRD (outbox emission, per-tenant ordering, idempotency-tuple keys); track as a launch-gating dependency on the program board (SEAMS §J UC1, CRIT) |
+| rating-core deployment reversed to standalone service | Manifest contradiction; integration rework | ADR-0002 / T-D-16 is the decided model (a pure crate inside the one `rating` gear); a reversal reopens the ADR, not this row — kept only to track the pending executive ack |
 | Uncommitted NFR numbers (p95, throughput) | Blocks engineering capacity planning | Commit working-assumption NFRs at the program workshop before Design lock (§7.1, §15) |
 | Missing anti-drift cap on material multi-link chains | Unbounded markup compounding across the channel | Step 4 fail-closed at publish without a cap; Finance-set default; clamp/fail mode decision (§15) |
 | `PRD-rating-engine-202604031200` draft/empty | Integration contract undefined | This PRD supplies formula semantics; Rating remains authoritative for the pipeline; resolve contract before Design lock |
@@ -1282,7 +1284,7 @@ For any evaluation at timestamp `t` (UTC) and context `ctx`:
 
 1. **Subscription composition**: Resolve active `planId`/`skuId` links and **plan phase** (trial / intro / evergreen or successor phases per Subscriptions SoR) effective at `t`. Phase selects the applicable price schedule within the plan.
 2. **Base catalog row**: Select `Price`/`PriceWindow` such that `t in [effectiveFrom, effectiveTo)` on the pricing 8-axis canonical scope key `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` per the non-overlap invariant (manifest §4.1). Apply `priceEligibility` in class order `existing_grandfathered > new_subscriptions_only > all_subscriptions`: `new_subscriptions_only` excludes subscriptions with `activatedAt` before window `effectiveFrom`; `existing_grandfathered` includes only subscriptions activated before cutover, and within it the generation is selected by the `cohort` of the subscription's pinned price id in `pricingSnapshotRef` (never `activatedAt` alone). If no eligible window matches, evaluation MUST fail (no silent fallback). Native multi-currency: when invoice currency equals the row's price currency, skip step 8 FX.
-3. **Meter mapping and billing granularity**: Map `UsageRecord` to a charge line keyed by `(meter, dimensionKey)` — the mapping MUST be injective on `(meter, dimensionKey)` per plan revision, or reject as a configuration error (fail-closed). A plan with no declared dimensions uses the empty `dimensionKey`. `billingGranularity` round-up MUST be applied to the aggregated/merged measure of the evaluation unit, never per raw `UsageRecord`. For continuous-duration meters, contiguous usage MUST be merged into a session/window measure first, then rounded up once; for discrete-count / `per_event` meters, the unit is the event; for windowed tier/volume models, round-up applies to the window measure before tier placement. The merge/aggregation is owned by Rating (single-writer per `(subscription, meter, dimensionKey, window)`); Rating prices the normalized aggregate. For `tierAggregationWindow != per_event`, tier/volume math MUST be evaluated over the window-aggregated quantity `Q`. When a §6.11 boundary (mid-cycle activation, plan change, phase conversion) splits an open aggregation window, each sub-window slice prices its own attributed quantity with a band offset equal to the accumulated prior-slice `Q` (tier-counter continuity, pricing `inst-tb-window-continuity`): graduated places marginally from the offset; volume selects the band by window-cumulative `Q`; package counts blocks once over the window by cumulative ceil-diff.
+3. **Meter mapping and billing granularity**: Map `UsageRecord` to a charge line keyed by `(meter, dimensionKey)` — the mapping MUST be injective on `(meter, dimensionKey)` per plan revision, or reject as a configuration error (fail-closed). A plan with no declared dimensions uses the empty `dimensionKey`. `billingGranularity` round-up MUST be applied to the aggregated/merged measure of the evaluation unit, never per raw `UsageRecord`. For continuous-duration meters, contiguous usage MUST be merged into a session/window measure first, then rounded up once; for discrete-count / `per_event` meters, the unit is the event; for windowed tier/volume models, round-up applies to the window measure before tier placement. The merge/aggregation is owned by the **rating pipeline** (slice 13; single-writer per `(subscription, meter, dimensionKey, window)`); **rating-core** prices the normalized aggregate. For `tierAggregationWindow != per_event`, tier/volume math MUST be evaluated over the window-aggregated quantity `Q`. When a §6.11 boundary (mid-cycle activation, plan change, phase conversion) splits an open aggregation window, each sub-window slice prices its own attributed quantity with a band offset equal to the accumulated prior-slice `Q` (tier-counter continuity, pricing `inst-tb-window-continuity`): graduated places marginally from the offset; volume selects the band by the **window total** (every slice re-resolves to the final total's band — never its own partial cumulative); package counts blocks once over the window by cumulative ceil-diff.
 4. **Partner / OrgTier / brand / region overlays**: For each candidate `PriceOverlay`, apply the scope filter (§PriceOverlay scope mapping below), then apply all survivors as a sequential stack in a deterministic total order: ascending `precedence` (lower first); cross-class ties resolve by the pricing class-specificity order `customerGroup > partner > orgTier > brand > region > global` (adopted verbatim), with ascending `priceOverlayId` as the final within-class stable tie-break. This layer stacks (applies all survivors); the class order breaks ties, it does not pick a single winner. Equal `precedence` among lists with overlapping scope within one class MUST be rejected at publish (fail-closed); the class order + `priceOverlayId` tie-break is a runtime safety net. Bounded composition: the cumulative markup/discount across the full partner → reseller → customer overlay chain MUST be bounded by a configured cap (`maxCumulativeMarkup`); exceeding it MUST clamp and record (or fail-closed if hard). A material multi-link chain without a configured cap MUST fail-closed at publish.
 5. **Customer / contract overlay**: Apply contract/account-level overrides after step 4, bounded by entitlement and approval rules. Contract terms outrank partner lists (Contract > Partner price overlays > Catalog base). Overrides MUST NOT introduce metering dimensions absent from the published Plan/SKU revision (publish validation rejects fail-closed).
 6. **Commitment rules**: Apply drawdown/overage per contract over an ordered list of commitment pools (`commitmentPools[]`, Contracts SoR). Commitment is always evaluated at step 6 (no reordering knob). When `reservationMatch` is present, the reserved/covered portion is determined first and excluded from pool drawdown **and from the on-demand tier counter** (the remainder re-bands from zero; the in-commit pool quantity is not excluded); the remaining quantity draws down `commitmentPools[]` (waterfall); residual beyond all pools is overage / on-demand. In-commit billability follows the pool's frozen `poolType` (`prepaid_drawdown` due-zero vs `committed_rate` in-arrears — §6.2). The frozen pool set, `poolType`, balances @ `balanceVersion`, draw order, rollover policy, and reserved-vs-pool split MUST be carried in `pricingSnapshotRef`.
@@ -1309,7 +1311,7 @@ Tenant axes NOT used as `PriceOverlay.scope` filters: `resourceTenantId` (usage 
 #### Determinism and Rating compatibility (preserved)
 
 - **Pure function core**: determinism stated over the evaluation unit; for windowed models the window-aggregated `Q` for `(subscription, meter, dimensionKey, window)`. Given frozen inputs, the monetary outcome MUST be identical across replay, recompute, and cross-region batch workers.
-- **Windowed `Q` ownership (single-writer)**: materialized and owned by the Rating `AggregationWindow`, single writer per partition key; concurrent re-resolve serializes on the partition key.
+- **Windowed `Q` ownership (single-writer)**: materialized and owned by the rating pipeline's `QMaterializer` (Design slice 13), single writer per partition key; rating-core consumes it frozen; concurrent re-resolve serializes on the partition key.
 - **Non-negative resolved price**: MUST NOT go negative; clamp to zero or emit a structured credit (policy TBD).
 - **Usage corrections / negative quantity**: deterministically reverse prior effect (refill pool, decrement `Q`), emit compensating deltas; never drive a line negative.
 - **Snapshot carry / idempotency / delta idempotency / separation**: per §6.1.

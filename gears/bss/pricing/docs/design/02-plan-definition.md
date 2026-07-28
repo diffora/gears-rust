@@ -102,7 +102,7 @@ Inherits Foundation C-set (fail-closed, append-only, UTC, ISO 4217, tenant isola
 | P2 | Custom-frequency anchoring | `customEveryN Days(n)` MUST anchor on `subscription_start` (a `calendar_month`/`fixed_day` anchor fails publish). `customEveryN Months(n)` MAY anchor `subscription_start` or `calendar_month`; a `subscription_start` day beyond the target month clamps to its last day (K2 rule) with the **anchor day preserved** per period (no drift: 31→28→31); UTC; joint anchor fixture with Subscriptions (D-20) | PRD §6.1; D-20 |
 | P3 | PlanTier equality | Plan `PlanTier` = parent SKU `PlanTier` unless an explicit, audited override is declared (default equal, no silent divergence) | PRD §17.3 |
 | P4 | Localization | Plan-owned display content (names, labels, descriptors) is single-language at launch; per-locale authoring is an open registry-owned item | PRD §15 (F-37) |
-| P5 | Descriptor minimum field set | The Billing/ERP minimum descriptor field list is open with Billing/Payments; the manifest §4.1 set (line template, tax category, GL code, itemization) is the working baseline | PRD §15 |
+| P5 | Descriptor minimum field set | **Pinned (D-48, 2026-07-28)**: descriptor-set entity = line template, tax category, GL code, itemization rule; the fifth element of the v1 contract — `billingTiming` — **rides the price row** (a `pricing_price` column, not a descriptor-set field); additive-only extension; Billing countersigns at its gear PRD | PRD §15, D-48 |
 
 ### 1.7 Naming & Design-Introduced Names
 
@@ -242,7 +242,7 @@ Slice 3), validated fail-closed at publish.
 **Output**: pass (set frozen into `CatalogVersion`), or a report listing missing fields
 
 **Steps**:
-1. [ ] - `p1` - Required per manifest §4.1: invoice line template, tax category, GL code, composition/itemization rules; publish blocks on any missing field with the field named in the report - `inst-ds-required`
+1. [ ] - `p1` - Required per manifest §4.1 / D-48 v1: invoice line template, tax category, GL code, composition/itemization rules — plus `billingTiming` on every recurring row (validated by Slice 6's rule; it rides the price row, not this entity); publish blocks on any missing field with the field named in the report - `inst-ds-required`
 2. [ ] - `p1` - The frozen set MUST be sufficient for Billing/ERP to post without re-querying mutable rows; the minimum field list is confirmed with Billing (P5) and the validator's required-set is config-extensible without a schema change - `inst-ds-sufficient`
 
 ## 4. States (CDSL)
@@ -311,15 +311,22 @@ Foundation §3.7 with capability semantics owned here: `billing_cycle`
 symmetric). Cycle/conflict checks run over these plan-authored edges at publish.
 
 **`pricing_plan_descriptor_set`** (FK `plan_id`): `invoice_line_template`, `tax_category`, `gl_code`,
-`itemization_rule` (+ config-extensible required-field registry, P5).
+`itemization_rule` (+ config-extensible required-field registry, P5). The D-48 v1 contract's
+fifth element, `billingTiming`, is deliberately **not** a column here — it rides `pricing_price`
+(per recurring row) and is delivered with the row.
 
 Key constraints: at most one terminal phase per plan revision (partial unique on
 `(plan_id, plan_revision) WHERE converts_to_phase_id IS NULL`; **existence** of exactly one
 terminal phase is the PhaseGraph pipeline rule — an index cannot enforce the ≥ 1 half);
 `custom_interval_n > 0` CHECK; `purchase_min_qty <= purchase_max_qty` CHECK; add-on rule
-`max_qty >= 1 WHERE required`; meter injectivity enforced as a unique `(plan_revision,
+`max_qty >= 1 WHERE required`; meter injectivity enforced as a partial unique `(tenant_id, plan_id,
 currency, region, price_overlay, phase, price_eligibility, cohort, meter, dimension_key)` over
-active usage rows — one priced line per `(meter, dimensionKey)` **per scope-key slice**
+**current** published usage rows (the same `lifecycle_state = 'published' and not superseded`
+predicate as the Foundation's scope-key partial unique — 2026-07-28 review fix: the earlier
+spelling named a `plan_revision` column `pricing_price` does not have and omitted
+`tenant_id`/`plan_id`; the FR's "per plan revision" scoping is realized as
+current-rows-per-plan, historical revisions retaining theirs through the supersession chain) —
+one priced line per `(meter, dimensionKey)` **per scope-key slice**
 (`meter`/`dimension_key` are Slice-3 usage-row columns; `cohort` — `none` on non-grandfathered
 rows — is the ADR-0002 generation axis: without it a second cutover on the same usage key
 would collide with the first generation; the CompositionValidator restates the
@@ -394,9 +401,10 @@ phases as the single source for Subscriptions runtime.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-descriptors`
 
-The system **MUST NOT** publish without the complete billing descriptor set (manifest §4.1);
-the validation report **MUST** name each missing field; the frozen set **MUST** be sufficient
-for Billing/ERP posting without re-querying mutable rows.
+The system **MUST NOT** publish without the complete billing descriptor set (manifest §4.1 /
+D-48 v1: the four descriptor-set fields, with `billingTiming` riding each recurring price
+row); the validation report **MUST** name each missing field; the frozen set **MUST** be
+sufficient for Billing/ERP posting without re-querying mutable rows.
 
 **Implements**: `cpt-cf-bss-pricing-algo-descriptors`
 
@@ -429,7 +437,7 @@ API:
 
 ## 10. Non-Functional Considerations
 
-- **Performance**: validation is authoring-path (not rating-path); the full pipeline on a worst-case plan (max phases/add-ons/currencies) must fit the publish interaction budget; plan/tier size caps are a **provisional NFR** to ratify before Design lock ([`../PRD.md`](../PRD.md) §14).
+- **Performance**: validation is authoring-path (not rating-path); the full pipeline on a worst-case plan (max phases/add-ons/currencies) must fit the publish interaction budget; plan/tier size caps are committed launch defaults (100 bands/row, 500 rows/plan soft — ratified 2026-07-28, [`../PRD.md`](../PRD.md) §14).
 - **Observability / metrics**: `pricing_publish_validation_failures_total{rule}`, `pricing_publish_total`, validation-catch-rate (goal: 100% of known-invalid configs blocked — PRD §1.3 success metric).
 - **Security & AuthZ**: authoring requires the catalog-authoring scope; PlanTier override and descriptor changes are audited mutations (governance slice owns the trail).
-- **Risks & open items**: minimum descriptor field set open with Billing (P5); localization owner for plan-owned display fields open (P4); upstream SKU retirement/unpublish joint contract open — a published plan referencing a retired SKU needs the registry's remediation signal (PRD §15). If the registry later declares **intrinsic SKU compatibility** metadata, it becomes an additional validation input (plan-authored edges checked against it) — additive, no migration (D-16).
+- **Risks & open items**: descriptor field set **pinned** (D-48 v1, P5 — Billing countersigns at its gear PRD); localization owner for plan-owned display fields open (P4/F-37, tracked Future); SKU retirement/unpublish joint contract **closed by cross-reference** (D-47 — the registry's `SkuReferenceCount` fail-closed predicate + this side's deprecation-signal flagging, PRD §15). If the registry later declares **intrinsic SKU compatibility** metadata, it becomes an additional validation input (plan-authored edges checked against it) — additive, no migration (D-16).

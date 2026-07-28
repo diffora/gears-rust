@@ -65,7 +65,7 @@ Catalog-authored).
 | NFR theme | Allocated To | Design Response | Verification / Status |
 |-----------|--------------|-----------------|-----------------------|
 | `cpt-cf-bss-subscriptions-nfr-operational-baselines` | Conversion job | Idempotent conversion (zero missed / zero double); reconciliation §17.1 trial-conversion check | Reconciliation + fixtures |
-| `cpt-cf-bss-subscriptions-nfr-lifecycle-latency` | `convertTrial` commit path | Synchronous commit class (p95 < 1s) | Load test |
+| `cpt-cf-bss-subscriptions-nfr-lifecycle-latency` | `convertTrial` commit path | Synchronous commit class (p95 < 1s) = the **intent commit** — a conversion from `draft` is an `activate` (OSS-blocking), so its status commit is async and outside the bound (slice 01 NFR row is the authority) | Load test |
 
 #### Key ADRs
 

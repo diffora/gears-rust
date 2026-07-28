@@ -385,7 +385,9 @@ usage + prorates at the same instant; no posted-invoice mutation
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-seq-renewal-grace`
 
-Renewal job at term end → payment pre-check → success: extend term + fresh snapshot refs; failure:
+Renewal job at term end → payment pre-check → success: extend term + eligibility-first snapshot
+re-resolution (SUB-D-14 as amended — a grandfathered subscription keeps its pinned generation
+until `grandfatherUntil` passes); failure:
 enter grace (default 7 days, paused next-term recurring), notices, hybrid exit → `suspended`/
 `cancelled` per Contract ladder; keyed to prevent double term extension
 ([`design/04-suspension-renewal-grace.md`](./design/04-suspension-renewal-grace.md)).

@@ -89,9 +89,9 @@ with provenance.
 
 **Out of scope**: `PlanLink` **execution** and subscription state (Subscriptions); the window
 cancellation **mechanics** (Slice 7 owns the window machinery — we invoke); posted-invoice anything
-(Billing); the grandfathering cutover itself (Slice 7 — a migration alternative);
-customer-notice lead-time policy (open business item — the schedule carries the effective
-date, policy sets it).
+(Billing); the grandfathering cutover itself (Slice 7 — a migration alternative). The
+customer-notice lead-time **value** is tenant policy (D-49: 60-day default floor in
+`pricing_policy_object`); this slice enforces it at scheduling (M5, `inst-mg-target`).
 
 ### 1.6 Constraints & Assumptions
 
@@ -103,7 +103,7 @@ Inherits Foundation C-set. Slice-11-specific:
 | M2 | Idempotent schedule | Re-triggering a migration produces no duplicate `PlanLink` requests for already-processed subscriptions (dedup key = `(migration_id, subscription)`) | PRD §6.8 |
 | M3 | Cancellation boundary | Cancel-before-effective invalidates the scheduled event without touching already-migrated subscriptions | PRD §6.8 |
 | M4 | Synthesis instant | Legacy synthesis freezes the published state **as of the trigger instant (UTC), frozen at execution**; provenance recorded (`migrated-origin`) | PRD §6.8 |
-| M5 | Notice period | Configurable lead time (default 60–90 days) is an open Finance/GTM item; the design takes the effective date as input | PRD §15 |
+| M5 | Notice period | **Decided (D-49, 2026-07-28)**: configurable per tenant with a **60-day default floor**, validated at scheduling (`effectiveAt >= announcement + configured notice`; tenants may raise, never silently lower); the notice value lives in `pricing_policy_object` | PRD §15, D-49 |
 
 ### 1.7 Naming & Design-Introduced Names
 
@@ -154,7 +154,7 @@ flowchart TB
 
 **Steps**:
 1. [ ] - `p1` - API: POST /v1/pricing/plans/{planId}/retire (dry-run first: returns the cancelled-window preview **and any cutover unit to be unwound**, D-05) - `inst-rt-api`
-2. [ ] - `p1` - Confirm: transition the plan state; **invoke** Slice 7's window-cancellation flow for every not-yet-active window (never merely mark invalid) — one local transaction with the state flip (D-03); active windows run to their natural end for in-flight subscribers. A **live cutover unit is unwound** in the same transaction (Slice 7 `inst-co-retirement-unwind`, D-05): predecessor window restored to its pre-cutover `effectiveTo`, scheduled copy/successor cancelled, unit closed as unwound; retirement with a live cutover is **always material** (Slice 5) - `inst-rt-cancel`
+2. [ ] - `p1` - Confirm: transition the plan state; **invoke** Slice 7's window-cancellation flow for not-yet-active windows (never merely mark invalid) — one local transaction with the state flip (D-03) — **but only for scope keys with no in-flight subscribers (D-51, 2026-07-28 review fix)**: a scheduled window that is the **continuing coverage** of a key with in-flight subscribers (e.g. the supersession successor extending past the active window's `effectiveTo`) is **kept**, because cancelling it opens the trailing void no gap-check can see — the active window expires at its natural end and every arrears charge/renewal after it would fail closed (`inst-ws-expire`). Retirement stops **selling**, never **rating**: not-sellable comes from the lifecycle predicate of the sellability gate (Slice 7 predicate (4)), so preserving coverage windows gives away nothing. Active windows run to their natural end for in-flight subscribers. A **live cutover unit is unwound** in the same transaction (Slice 7 `inst-co-retirement-unwind`, D-05): predecessor window restored to its pre-cutover `effectiveTo`, scheduled copy/successor cancelled — the unwind restores the predecessor's coverage, so D-05 and D-51 compose (the unwind never leaves a trailing void either); retirement with a live cutover is **always material** (Slice 5) - `inst-rt-cancel`
 3. [ ] - `p1` - Emit `PlanRetired`; the read model flags the plan not-sellable (Slice 7 gate input) - `inst-rt-event`
 4. [ ] - `p1` - **RETURN** 202; existing subscription snapshots untouched (M1) - `inst-rt-return`
 
@@ -187,7 +187,7 @@ flowchart TB
 
 **Steps**:
 1. [ ] - `p1` - `published → retired` blocks **new** subscriptions only; in-flight subscribers keep resolving their frozen snapshots and active windows until renewal/migration - `inst-re-block`
-2. [ ] - `p1` - Not-yet-active windows: Slice 7's cancellation flow is **invoked** (each cancellation emits `PriceWindowCancelled` and drives its cache-eviction path) — marking-invalid without the event is forbidden (consumers would keep warm caches) - `inst-re-cancelflow`
+2. [ ] - `p1` - Not-yet-active windows **of keys with no in-flight subscribers**: Slice 7's cancellation flow is **invoked** (each cancellation emits `PriceWindowCancelled` and drives its cache-eviction path) — marking-invalid without the event is forbidden (consumers would keep warm caches). A scheduled window that continues coverage for a key **with** in-flight subscribers is kept, not cancelled (D-51 — `inst-rt-cancel`); the confirm screen labels kept windows distinctly from cancelled ones - `inst-re-cancelflow`
 3. [ ] - `p1` - The operator confirm screen lists every window to be cancelled (dry-run) - `inst-re-warn`
 4. [ ] - `p1` - Retirement is a governed mutation (Slice 5): `plan × retire`, audited; retirement of a plan with active subscribers SHOULD pair with a migration schedule or an explicit grandfathering decision - `inst-re-governed`
 5. [ ] - `p1` - **Referential guard:** retirement is rejected while the plan is referenced as a **bundle component** (`sum_of_parts`/`own_price` composition, Slice 8) or as an **add-on price-override target** (Slice 2) — the dry-run enumerates the referencing bundles/plans; remediation (re-compose or retire the referrer first) precedes the retire. Plans listing the retiree in `allowedChangeTargets` are enumerated as a **warning** (not a block, D-24): the edge goes inert — Subscriptions re-checks the target's lifecycle state at change time. `PriceOverlays` targeting the retiree are likewise enumerated as a **warning** (D-31): they go dangling-and-flagged (`pricing.priceoverlay.target_retired`), staying evaluable for in-flight subscribers - `inst-re-references`
@@ -197,7 +197,7 @@ flowchart TB
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-migration`
 
 **Steps**:
-1. [ ] - `p1` - Target MUST be a **published** plan; the schedule carries source revision, target, effective date (M5 sets policy on the date), and scope (all / filtered subscriptions) - `inst-mg-target`
+1. [ ] - `p1` - Target MUST be a **published** plan; the schedule carries source revision, target, effective date, and scope (all / filtered subscriptions). **Notice validation (D-49):** scheduling validates `effectiveAt` >= the `PlanMigrationScheduled` announcement instant (the scheduling commit) + the tenant's configured notice period (default floor **60 days**, from `pricing_policy_object`); a shorter lead time fails (`MIGRATION_NOTICE_TOO_SHORT`, 422) — there is no silent override; an emergency shorter migration requires an explicit audited policy change first (itself material, D-10 pattern) - `inst-mg-target`
 2. [ ] - `p1` - The catalog emits the schedule; **Subscriptions** creates effective-dated `PlanLink`s and executes — the catalog never mutates a subscription and never touches a posted invoice (M1). A migration **never re-charges** the target plan's `one_time_setup` row (setup is once-per-subscription-lifetime — Slice 2 `inst-cs-setup-timing`), and a migrated subscription enters the target's **first non-trial phase** (D-39 — a migration never grants a new `trial`; entering an `intro` phase is allowed; the entry-phase rule rides the `PlanMigrationScheduled` contract) - `inst-mg-boundary`
 3. [ ] - `p1` - **Idempotency (M2):** re-triggering the same `migration_id` re-emits without duplicating `PlanLink` requests for already-processed subscriptions (the event carries the dedup contract; Subscriptions honors `(migration_id, subscription)`) - `inst-mg-idem`
 4. [ ] - `p1` - **Cancellation (M3, D-38):** the schedule invalidates via read-model state + audit (no new event name, per §7); already-migrated subscriptions are unaffected. **Propagation is a state handshake, not a wall clock**: Subscriptions MUST re-read the schedule state immediately **before beginning execution** and per processing batch thereafter — it never starts (or continues) against a cancelled record, closing the T-ε race; the catalog accepts a cancel in `scheduled`/`in_progress` and rejects only `completed` (`MIGRATION_COMPLETED`) - `inst-mg-cancel`
@@ -258,7 +258,8 @@ flowchart TB
 
 **Problem responses (RFC 9457):** `RETIRE_TARGET_OF_MIGRATION` (409),
 `RETIRE_PLAN_REFERENCED` (409, references enumerated — bundle component / add-on
-price-override target), `MIGRATION_TARGET_INVALID` (422), `MIGRATION_BLOCKED` (422, deltas
+price-override target), `MIGRATION_NOTICE_TOO_SHORT` (422 — `effectiveAt` closer than the
+configured notice period, D-49), `MIGRATION_TARGET_INVALID` (422), `MIGRATION_BLOCKED` (422, deltas
 enumerated), `MIGRATION_COMPLETED` (409 — cancel of a completed run; replaces the pre-D-34 `MIGRATION_ALREADY_EFFECTIVE`), `CONTRACT_LOCKED` (409).
 
 ## 6. Data Model
@@ -382,4 +383,4 @@ Integration (testcontainers):
 - **Performance**: delta analysis is a batch computation at schedule time (not order-time); migration fan-out throughput is bounded by the event pipeline, with progress visible via the schedule state.
 - **Observability**: `pricing_migrations{state}` gauge, `pricing_migration_excluded_locked_total`, `pricing_retirements_total`, stalled-migration alarm.
 - **Security & AuthZ**: `plan × retire` / `plan × migrate` (Slice 5 catalog); retirement and migration are audited governed mutations; synthesis exercises the `historical_import` grant where backdated reference rows are needed.
-- **Risks & open items**: minimum customer-notice lead time for enforced migration is an open Finance/GTM item (M5 — configurable, default 60–90 days); Subscriptions' `PlanLink` dedup contract must land jointly (the event carries the key; enforcement is theirs); upstream SKU retirement joint contract (registry) affects retiring plans whose SKU disappears first.
+- **Risks & open items**: the enforced-migration notice period is **decided** (D-49 — configurable, 60-day default floor, validated at scheduling, M5); Subscriptions' `PlanLink` dedup contract must land jointly (the event carries the key; enforcement is theirs); upstream SKU retirement joint contract (registry) affects retiring plans whose SKU disappears first.

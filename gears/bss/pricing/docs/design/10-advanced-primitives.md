@@ -178,6 +178,7 @@ flowchart TB
 2. [ ] - `p1` - The row remains a usage row (A2): `billingGranularity` REQUIRED; `tierAggregationWindow` REQUIRED only when tiered - `inst-rv-usage`
 3. [ ] - `p1` - The reserved/allocated **quantity** is runtime input (OSS/Contracts entitlement); the catalog neither meters nor allocates nor computes the charge; Tariffs step 6 sources the self-service rate from the snapshot - `inst-rv-runtime`
 3a. [ ] - `p1` - **Reservation × tiers (normative, money-affecting):** the matched/allocated reserved quantity is **excluded** from the on-demand tier counter `Q` — only the on-demand **remainder** enters the row's bands (150K used with a 100K reservation: 100K at `reservedRate`, the remainder's `Q` starts at 0, not 100K). Frozen semantics; the reservation joint fixture MUST include a tiered-remainder scenario - `inst-rv-tier-q`
+3b. [ ] - `p1` - **Reservation × level aggregation (D-53, 2026-07-28):** on a non-`sum` row (`aggregationFunction ∈ {peak, time_weighted}`, D-44) the `inst-rv-tier-q` exclusion has no single meaning — `Q` is a sum of per-granule folds of a level, and "subtract the reserved quantity" could net per granule or per window. At launch, therefore: **`reservationFlavor = capacity` is the only flavor authorable on a non-`sum` row** — its `capacityCharge = reservedRate × reservedQuantity` never touches `Q` at all, which is exactly the reserved-cloudlets-with-peak-metering launch product; **`consumption` flavor on a non-`sum` row fails publish** (`LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN`, 422) until per-granule netting semantics are decided (a named Future gate). The reservation fixture gains a capacity-on-level scenario before any such row publishes - `inst-rv-level`
 4. [ ] - `p1` - The reservation variant requires its own joint golden fixture before publish (registered into Slice 3's `FixtureGate`); negotiated RI-style rates stay in Contracts (boundary) - `inst-rv-fixture`
 
 ### Prepaid Credit Grant
@@ -274,7 +275,9 @@ D-44/D-45 launch boundary), `ALLOWANCE_QUANTITY_INVALID` (422 — `quantity ≤ 
 `ALLOWANCE_KIND_UNSUPPORTED` (422 — a `package` row: no band set to compile into),
 `COMPOSITE_CONSTITUENT_UNPUBLISHED` (422), `COMPOSITE_SELF_REFERENCE` (422),
 `DISCOUNT_REF_UNRESOLVED` (422), `FLOOR_TYPE_MISSING` (422), `FLOOR_FALLBACK_MISSING` (422),
-`TIER_QUAL_ON_NON_TIERED` (422 — `tierQualificationWindow = trailing_period` on a non-tiered or non-usage row); warnings:
+`TIER_QUAL_ON_NON_TIERED` (422 — `tierQualificationWindow = trailing_period` on a non-tiered or non-usage row),
+`LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` (422 — `reservationFlavor = consumption` on a
+non-`sum` row; capacity flavor only at launch, D-53); warnings:
 `FLOOR_INSIDE_PRICED_BAND`, `GRANT_PROMO_NO_EXPIRY` (a `promotional` grant with `expiryPolicy = never`).
 
 ## 6. Data Model
@@ -293,21 +296,31 @@ Columns on Foundation-owned tables + one slice table (`pricing_` prefix per Foun
 | `min_qty_usage_fallback` | `enum` | REQUIRED when `min_qty_usage` set; launch: `exception` only (rating exception path); frozen in snapshot |
 | `included_allowance` | `jsonb` | authored D-45 declaration `{quantity, rolloverPolicy}`; usage rows only; the compiled artifacts ($0 band rows in `pricing_price_tier_band` + the allowance marker, or the promotional grant) are derived at publish and frozen alongside it |
 
-**`pricing_plan` (Slice-10 columns)** — `prepaid_grant` (`jsonb`: `grantAmount`,
-`creditUnit`, `expiryPolicy`, `autoRechargeAllowed`, `category` — `prepaid | promotional`,
-default `prepaid`; `applicability` — the **materialized** usage-meter id set or `all_usage`;
-`drawdownPriority` — optional int ≥ 0) + **`pricing_grant_price`** rows.
+**`pricing_plan_grant`** (PK `grant_id`; FK `plan_id` — D-52, 2026-07-28: grants are a
+**table, not a singleton column** — one plan legitimately holds several: an authored prepaid
+grant plus one compiled `carry` allowance grant **per allowance-carrying usage row**
+(`inst-ac-carry`), so a single-jsonb model had nowhere to put the second grant):
 
-**`pricing_grant_price`** (FK `plan_id`): `currency`, `region`, `price_minor` (≥ 0) — the
-grant's purchase price per market (A3: not on the canonical scope key, no `chargeKind`); rows
-REQUIRED iff `category = prepaid` (price rows on a `promotional` grant fail publish).
+| Column | Type | Notes |
+|--------|------|-------|
+| `grant_id` | `uuid` | PK; the identity `pricing_grant_price` and the compiled-allowance marker reference |
+| `source` | `enum` | `authored \| compiled_allowance` — a compiled grant additionally records its source `price_id` (replay lineage; recompiled, never hand-edited) |
+| `expiry_policy` | `enum` | `never \| days(N)` on `authored` rows (D-43); **`periods(N)`** is the **compiled-only** third form (the `inst-ac-carry` carry horizon — anchor-derived billing periods): REQUIRED on `source = compiled_allowance`, forbidden on `authored` (publish-enforced per source) |
+| `grant_amount` / `credit_unit` / `auto_recharge_allowed` / `category` / `drawdown_priority` | — | as before (D-43 field rules unchanged, applied per grant row) |
+| `applicability` | `jsonb` | the **materialized** usage-meter id set or `all_usage`, per grant |
+
+**`pricing_grant_price`** (FK **`grant_id`** — re-keyed by D-52): `currency`, `region`,
+`price_minor` (≥ 0) — the grant's purchase price per market (A3: not on the canonical scope
+key, no `chargeKind`); rows REQUIRED iff that grant's `category = prepaid` (price rows on a
+`promotional` grant fail publish; compiled allowance grants are always `promotional` — never
+priced).
 
 **`pricing_composite_meter`** (PK `composite_id`; FK `plan_id`): `output_unit`,
 `constituent_units` (`jsonb`, ≥ 2 published ids), `formula` (`jsonb` — operands +
 operator/weights, A4), `revision`.
 
 Key constraints: `CHECK (reservation_flavor IS NULL) = (reserved_rate_minor IS NULL)`;
-`CHECK (grant fields complete when prepaid_grant set)` at publish; composite self-reference
+`CHECK (grant fields complete)` per `pricing_plan_grant` row at publish; composite self-reference
 check application-level (graph walk over `constituent_units` vs `output_unit`).
 
 ## 7. Events & Alarms
@@ -361,7 +374,7 @@ and the sellable path GA-gated on Billing/Rating execution.
 > (`cpt-cf-bss-pricing-algo-allowance-compile`).
 
 **Touches**:
-- DB: `pricing_plan.prepaid_grant`, `pricing_grant_price`
+- DB: `pricing_plan_grant`, `pricing_grant_price`
 - Entities: `GrantValidator`
 
 ### Included Allowance
@@ -382,7 +395,7 @@ machinery.
 **Implements**: `cpt-cf-bss-pricing-algo-allowance-compile`
 
 **Touches**:
-- DB: `pricing_price.included_allowance`, `pricing_price_tier_band` (compiled `$0` band), `pricing_plan.prepaid_grant` (compiled `carry` grant)
+- DB: `pricing_price.included_allowance`, `pricing_price_tier_band` (compiled `$0` band), `pricing_plan_grant` (compiled `carry` grant row, `source = compiled_allowance`)
 - Entities: `AllowanceCompiler`
 
 ### Derived Meter
@@ -450,7 +463,7 @@ Integration (testcontainers):
 
 ## 10. Non-Functional Considerations
 
-- **Performance**: all validation publish-path; composite formula size is bounded by the plan/tier size caps (provisional NFR).
+- **Performance**: all validation publish-path; composite formula size is bounded by the plan/tier size caps (ratified launch defaults, 2026-07-28).
 - **Observability**: `pricing_primitive_validation_failures_total{primitive}`, the two §7 gauges.
 - **Security & AuthZ**: grant-price and reserved-rate changes are price mutations — Slice 5 materiality; composite definitions are structural (versioned + approvable).
 - **Risks & open items**: prepaid balance execution absent (A5 — grants definable, not sellable; tracked GA gate with named owner per PRD §13) — when it lands, Billing MUST mirror the D-43 drawdown tie-break chain and the materialized `applicability` scope as a joint-contract line (drawdown placement vs discounts/tax is pinned — D-48 / `inst-pg-drawdown-placement`, post-discount pre-tax with the Tax-Engine-GA revisit; STRIPE-GAP-ANALYSIS G-4 closed 2026-07-28, Billing countersigns at its PRD); Tariffs must land the sourcing change for self-service reserved rates (snapshot, not Contracts) + the joint fixture (PRD §17.2); the Promotions PRD still does not exist — `discountRef` is the committed day-1 hook, the durable owner remains Future.

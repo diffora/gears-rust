@@ -24,7 +24,8 @@ The gear is not an authoring System of Record: the pricing gear owns the catalog
 `PriceWindow`, `PriceOverlay`, `CatalogVersion`, publish governance) — tariffs in the rate-card
 sense live there. The cross-gear contract is frozen in [`../SEAMS.md`](../SEAMS.md); this design
 implements the rating side of every resolved seam (terminology bridge for historical
-"Rating"/"Rating" wording: [`../DESIGN.md`](../DESIGN.md)).
+"Tariffs"/"Rating" wording — the pre-consolidation names of the core and the pipeline:
+[`../DESIGN.md`](../DESIGN.md)).
 
 **The canonical index — architecture overview, slice map, dependency order, cross-cutting
 normatives, the ADR index, and traceability — is [`../DESIGN.md`](../DESIGN.md).** Requirements

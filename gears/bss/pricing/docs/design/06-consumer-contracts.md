@@ -98,7 +98,7 @@ Inherits Foundation C-set. Slice-6-specific:
 |---|-------|----------------------|--------|
 | K1 | Canonical proration enum | `prorationBasis ∈ {calendar_days_actual, calendar_days_30, by_second, whole_unit, none}` — owned here, adopted **verbatim** by Tariffs; any extension is a versioned contract change | PRD §1.4 |
 | K2 | Anchor month-end/UTC | `billingAnchorPolicy ∈ {calendar_month, subscription_start, fixed_day(d)}`; `fixed_day(d)` — and a `subscription_start` anchor under monthly-granular cycles incl. `customEveryN Months(n)` (D-20) — with a day > month length anchors on the **last day of the month**, the **anchor day preserved** across periods (independent per-period clamp: 31→28→31, no drift); all anchor math UTC | PRD §1.4; D-20 |
-| K3 | Cross-boundary changes | Mid-cycle changes crossing currency/region/frequency are **not supported at launch** → cancel + new subscription; the contract publishes **no** cross-boundary credit basis; written sign-off (Subscriptions + Finance + GTM) is an open item | PRD §17.6 |
+| K3 | Cross-boundary changes | Mid-cycle changes crossing currency/region/frequency are **not supported at launch** → cancel + new subscription; the contract publishes **no** cross-boundary credit basis; signed off 2026-07-28 (D-49 — the product owner; the GTM customer-facing constraint entry is owed) | PRD §17.6, D-49 |
 | K4 | Rank vs PlanTier | `PlanTier` alone is **not** an ordering unless published as authoritative; otherwise `comparabilityRank` is REQUIRED for any plan in self-service change | PRD §1.4 |
 | K5 | Proration fixture | The joint proration golden fixture (catalog + Subscriptions + Tariffs) exists before code; publish-contract sign-off gates on it | PRD §13 |
 
@@ -215,11 +215,11 @@ Tariffs/Rating compute from.
 
 **Steps**:
 1. [ ] - `p1` - `allowedChangeTargets` entries MUST be **explicit published `planId`s** — rule-based targets are **not authorable at launch** (D-23: a rule resolves only at read time, defeating every publish-time guarantee below; the designed extension — read-time fail-safe resolution with a `partially_resolvable` marker — is §17.8 Future); a dangling target fails publish. An edge whose target is **later retired** is **inert**: Subscriptions MUST re-check the target's lifecycle state at change time (D-24) - `inst-pc-targets`
-1a. [ ] - `p1` - **Mutual comparability:** for every listed target, publish validates the target carries a `comparabilityRank` (or an authoritative published `PlanTier` ordering covers both) — otherwise the runtime classification A→B is uncomputable; ranks are a single **tenant-wide scale** (authoring discipline: documented on the read model), not per-plan-local numbers - `inst-pc-mutual`
+1a. [ ] - `p1` - **Mutual comparability:** for every listed target, publish validates the target carries a `comparabilityRank` (or an authoritative published `PlanTier` ordering covers both) — otherwise the runtime classification A→B is uncomputable; ranks are a single **tenant-wide scale** (authoring discipline: documented on the read model), not per-plan-local numbers. **Reverse guard (D-54, 2026-07-28):** the check also runs on the **target's own re-publish** — a plan referenced by any published `allowedChangeTargets` edge MUST NOT re-publish with its `comparability_rank` dropped to NULL (`COMPARABILITY_RANK_REVOKED`, 422, the referencing plans enumerated): without it a rank-less re-publish leaves already-published edges unclassifiable at read time, the same read-time drift D-23 cut rule-based targets to avoid (D-24 covers only the retirement case; dropping the rank legitimately requires first removing the inbound edges or publishing a covering `PlanTier` ordering) - `inst-pc-mutual`
 2. [ ] - `p1` - **Absence = no self-service change** (fail-safe), never any-to-any - `inst-pc-failsafe`
 3. [ ] - `p1` - `comparabilityRank` REQUIRED for any plan in self-service change unless an authoritative `PlanTier` ordering is published (K4); rank semantics: higher = upgrade, lower = downgrade, equal = switch (drives proration sign/credit in Subscriptions) - `inst-pc-rank`
 4. [ ] - `p1` - **Edge boundary classification (D-25):** publish classifies every change edge as `in_place` (target covers the source's `(currency, region)` set and matches frequency) or `cancel_plus_new` (crosses a K3 boundary) and **publishes the classification on the edge** — Subscriptions and the storefront disclose credit forfeiture on `cancel_plus_new` edges instead of discovering it at execution; the classification re-computes on either side's re-publish - `inst-pc-boundary`
-4. [ ] - `p1` - Change-target edits are plan mutations → versioned, approvable (Slice 5 materiality applies) - `inst-pc-governed`
+5. [ ] - `p1` - Change-target edits are plan mutations → versioned, approvable (Slice 5 materiality applies) - `inst-pc-governed`
 
 ### Rating Compatibility Contract
 
@@ -256,7 +256,9 @@ plan/price authoring surfaces. This slice contributes:
 `prorationBasis = none`, `inst-pi-credit-none`), `BILLING_TIMING_MISSING`
 (422), `GRANT_REF_UNDEFINED` (422), `GRANT_SET_PHASE_UNKNOWN` (422 — a per-phase grant-set
 key naming no phase of the plan's schedule, or per-phase entries on a non-phased plan; D-41),
-`CHANGE_TARGET_UNPUBLISHED` (422), `COMPARABILITY_RANK_REQUIRED` (422).
+`CHANGE_TARGET_UNPUBLISHED` (422), `COMPARABILITY_RANK_REQUIRED` (422),
+`COMPARABILITY_RANK_REVOKED` (422 — a re-publish dropping the rank while published inbound
+change edges reference the plan; D-54).
 
 ## 6. Data Model
 
@@ -400,4 +402,4 @@ Conformance (joint, K5):
 - **Performance**: all validation is publish-path; the contracts add columns to existing read-model rows — no extra read-path lookups.
 - **Observability / metrics**: `pricing_contract_validation_failures_total{contract}`; the conformance-fixture status gauge (shared with Slice 3's registry).
 - **Security & AuthZ**: contract fields are plan/price mutations — Slice 5 RBAC + materiality apply (a change-target edit can widen who may move where; it is governed).
-- **Risks & open items**: enum drift across Subscriptions/Tariffs (PRD risk — mitigated by K1 ownership + K5 fixtures before code); cross-boundary cancel+new written sign-off open (K3; Subscriptions + Finance + GTM); the proration fixture is jointly owned and MUST exist before implementation (PRD §13 gate).
+- **Risks & open items**: enum drift across Subscriptions/Tariffs (PRD risk — mitigated by K1 ownership + K5 fixtures before code); cross-boundary cancel+new signed off (K3 / D-49, 2026-07-28 — the GTM constraint entry remains owed); the proration fixture is jointly owned and MUST exist before implementation (PRD §13 gate).

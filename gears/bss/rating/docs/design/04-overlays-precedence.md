@@ -211,7 +211,7 @@ recorder); [`02-selection-eligibility.md`](./02-selection-eligibility.md) (the b
 stack applies to). Downstream: [`05-commitments-reservations.md`](./05-commitments-reservations.md)
 (step 6 runs on the overlaid amount; negotiated reserved rates arrive via the contract overlay),
 [`06-coupons.md`](./06-coupons.md) (coupons apply post-commitment), and the `EmissionGuard`
-non-negative check after steps 4–7 (01 §4.4).
+non-negative check after step 8 — FX + billing-currency coupons (01 §4.4).
 
 ### 3.5 External Dependencies
 

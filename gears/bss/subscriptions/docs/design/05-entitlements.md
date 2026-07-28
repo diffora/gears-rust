@@ -126,7 +126,7 @@ emit auditable events — never a silent overrun ([`../PRD.md`](../PRD.md) §6.9
 - **`GrantSetAssignment`** — the resolved grant set (incl. the active phase's map) materialised per subscription at a transition.
 - **`SeatBinding`** (2026-07-28 review fix — the seat-scoped entity the slice-03 quantity-decrease guard reads) — one committed seat unit of a quantity-bearing subscription: `(subscriptionId, seatBindingId)`, `state ∈ {active, frozen, revoked}`, bound/released **through the check-surface write API** by the consuming system, transactionally in this gear (per-user seat *placement* stays OSS-side — SUB-E3; this record is only the gear-committed consumption count). `COUNT(active)` is the guard's "quantity already consumed" — local and transactionally consistent by construction.
 - **`QuotaCounter`** — usage-vs-quota tracking (fed by the rating pipeline), soft/hard thresholds, exhaustion/restore state.
-- **`CheckDecision`** — the read-surface value object: flag decision, quota remaining, limit state.
+- **`CheckDecision`** — the read-surface value object: flag decision, quota remaining, limit state. A **`frozen` grant answers deny/`blocking`** (2026-07-28 billing-pass review #8 — the authoritative surface must not read frozen as active: paid-feature access must not survive a nonpayment suspension; the registry events `EntitlementFrozen`/`Unfrozen` exist for mirrors, this sentence is the rule for the surface itself).
 
 ### 3.2 Component Model
 
@@ -143,7 +143,11 @@ emit auditable events — never a silent overrun ([`../PRD.md`](../PRD.md) §6.9
 
 The **point-of-use check** read contract (feature-flag decision, quota remaining, limit state) is
 owned here — tenant-isolated, cache-friendly, p95 < 100ms; OSS calls it and enforces. The internal
-admin `issueEntitlement`/`revokeEntitlement` paths are audit-mandatory. Wire mappings + the external
+admin `issueEntitlement`/`revokeEntitlement` paths are audit-mandatory. The surface additionally
+owns the **seat bind/release write pair** (`bindSeat`/`releaseSeat` — 2026-07-28 billing-pass
+review #7: the operations `SeatBinding` rows are "bound/released through"; idempotency-keyed,
+audited, rejected above the committed quantity fail-closed) — the consuming system calls them as
+it places/frees seats; they mutate only this gear's `seat_binding` rows, never OSS state. Wire mappings + the external
 OSS contract are refined in [`09-consumer-contracts.md`](./09-consumer-contracts.md).
 
 ### 3.4 Internal Dependencies
@@ -176,7 +180,10 @@ events.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-storage-entitlement-ent`
 
-Owned here: `entitlement` (state + effective dates + grant-set source), `quota_counter`, and the
+Owned here: `entitlement` (state + effective dates + grant-set source), **`seat_binding`**
+(2026-07-28 billing-pass review #7 — the guard's `COUNT(active)` is transactionally consistent
+only if the rows live here: `(subscription_id, seat_binding_id)`, `state`, bound/released
+instants, partial index on `state = 'active'` per subscription), `quota_counter`, and the
 projected `entitlement_check_read_model` (cache-first, tenant-isolated). Tenant-partitioned. Concrete
 DDL is Design.
 
@@ -185,9 +192,12 @@ DDL is Design.
 - [ ] `p3` - **ID**: `cpt-cf-bss-subscriptions-deployment-ent`
 
 The check read path is served from the projected read model for the p95 < 100ms target with the
-**bounded-staleness degraded mode** (SUB-D-10): on projection outage it serves the **last-known-good
-decision up to the staleness budget** (default 60s — Product/OSS knob, [`../PRD.md`](../PRD.md) §15),
-then fails closed. Assignment runs on the commit path
+**bounded-staleness degraded mode** (SUB-D-10, as amended): on projection outage the **feature-flag
+dimension** serves the last-known-good decision up to the staleness budget (default 60s —
+Product/OSS knob, [`../PRD.md`](../PRD.md) §15) then fails closed, while the **quota dimension**
+fails closed to `blocking` beyond its own tighter freshness bound (provisional 10s) and never
+serves a last-known-good `allow` (the §4.3 flag-vs-quota split — restated here 2026-07-28 so this
+section stops contradicting it). Assignment runs on the commit path
 ([`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md) §3.8).
 
 ## 4. Additional Context
@@ -199,8 +209,8 @@ then fails closed. Assignment runs on the commit path
 - On a successful resource-affecting transition whose outcome requires grants/withdrawals (activate, suspend, resume, cancel, Policy-gated plan/add-on/quantity changes) the gear issues/revokes entitlements to match the new posture and emits `EntitlementIssued`/`EntitlementRevoked` ([`../PRD.md`](../PRD.md) §6.9 AC 12).
 - Issue/revoke is part of the **same commit** as the transition (slice 01) — posture never lags committed state.
 - **Async edges bind the entitlement change to the status-edge commit (2026-07-19 review fix — F-05-3).** For an async OSS-leg edge (suspend/resume with a resource leg, cancel deprovision — slice 01 §3.6), "the same commit" is the **status-edge commit** (the one that fires on the OSS confirmation and bumps `version`), **not** the intent commit (`approved`, work order issued). So entitlements freeze/revoke exactly when the status actually changes, aligned with the OSS posture. If the transition is **abandoned** before its status edge (terminal `oss_unconfirmed`/deny — slice 01 §4.3 taxonomy), **no entitlement change was committed** — there is no window where an active subscription carries revoked entitlements, and none to compensate.
-- **Cancel+new handover (2026-07-28 review fix — the slice-03 §4.3 "re-issue at one boundary" now has its owning mechanics here).** The handover spans **two aggregates and two commits**, so same-commit atomicity cannot hold across it; the ordering rule is **issue-before-revoke**: the successor's entitlements issue on its **activation status-edge commit** (OSS-confirmed), and the predecessor's revoke on its **cancel status-edge commit**, which slice 03 §4.3 sequences strictly after the successor's confirmation — so the customer never has an access **gap**, and the transient window is a bounded **double-grant**, not a dark period. The check surface treats a `supersedesSubscriptionId`-linked pair as **one continuity unit** for quota accounting during that window (a quota consumed on the pair counts once — keyed to the pair, not summed per aggregate), exactly as the slice-03 overlap exemption treats the pair for cardinality. The successor's `GrantSetAssignment` resolves from the successor's own frozen grant set (no cross-aggregate copy); `supersedesSubscriptionId` on the successor is the join key the surface and consumers use to correlate `EntitlementIssued` (successor) with the later `EntitlementRevoked` (predecessor).
-- **Freeze is a first-class state (2026-07-15 review fix):** `Entitlement.state ∈ {active, frozen, revoked}` — suspend **freezes** by default (restorable without re-materialisation; revoke only where product policy says so), resume **unfreezes**. `QuotaCounter`s **persist across suspend/resume and `collectionPaused`** — a mid-cycle suspension does not reset the cycle's usage; counters reset only at the §4.4 cycle boundary.
+- **Cancel+new handover (2026-07-28 review fix — the slice-03 §4.3 "re-issue at one boundary" now has its owning mechanics here).** The handover spans **two aggregates and two commits**, so same-commit atomicity cannot hold across it; the ordering rule is **issue-before-revoke**: the successor's entitlements issue on its **activation status-edge commit** (OSS-confirmed), and the predecessor's revoke on its **cancel status-edge commit**, which slice 03 §4.3 sequences strictly after the successor's confirmation — so the customer never has an access **gap**, and the transient window is a bounded **double-grant**, not a dark period. The check surface treats a `supersedesSubscriptionId`-linked pair as **one continuity unit** for quota accounting during that window — mechanically a **read-time fold** (2026-07-28 review #19): `QuotaCounter` stays per-subscription (no pair-keyed table), and the surface resolves the pair via `supersedesSubscriptionId` and serves `max(predecessor, successor)` per quota, never the sum, for the handover window only. The successor's counters **seed from the predecessor's values at the handover boundary** — a cancel+new mid-period does **not** hand the customer a fresh cycle quota (the commercial continuity rule; the fold and the seed make an implementer's natural "just sum them" wrong twice). Exactly as the slice-03 overlap exemption treats the pair for cardinality. The successor's `GrantSetAssignment` resolves from the successor's own frozen grant set (no cross-aggregate copy); `supersedesSubscriptionId` on the successor is the join key the surface and consumers use to correlate `EntitlementIssued` (successor) with the later `EntitlementRevoked` (predecessor).
+- **Freeze is a first-class state (2026-07-15 review fix):** `Entitlement.state ∈ {active, frozen, revoked}` — suspend **freezes** by default (restorable without re-materialisation; revoke only where product policy says so), resume **unfreezes**. **The same rule covers `SeatBinding` rows** (2026-07-28 review #7): suspend freezes active bindings, resume unfreezes them, and a **frozen binding still counts** toward the slice-03 quantity-decrease guard (the seat is committed, merely dormant — otherwise a suspension would silently license a quantity decrease below the bound count). Bind/release while `suspended` is rejected (`guard_violation` — posture is frozen). `QuotaCounter`s **persist across suspend/resume and `collectionPaused`** — a mid-cycle suspension does not reset the cycle's usage; counters reset only at the §4.4 cycle boundary.
 
 ### 4.2 Assignment from the Grant Set (normative)
 
@@ -225,7 +235,7 @@ then fails closed. Assignment runs on the commit path
 
 - Usage is tracked against quotas (aggregates fed by the rating pipeline); a **soft limit** crossing emits an auditable warning + MAY route overage per plan policy; a **hard limit** flips the check state to **blocking** — never a silent overrun ([`../PRD.md`](../PRD.md) §6.9). The events are `EntitlementQuotaWarning` / `EntitlementQuotaExhausted` / `EntitlementQuotaRestored` (SUB-D-09, slice 08 registry).
 - **Quantity-scaled quotas:** where the pricing grant set marks a quota **per-seat**, the materialised value is `grant × committed quantity @ t` (slice 03 `QuantityInterval`); a committed `updateQuantity` re-materialises the affected quotas at its boundary per `changeMode`.
-- **Cycle reset:** counters reset at the billing-anchor cycle boundary — triggered by the recurring period cut (slice 08), not by a separate clock, so quota cycles and billing periods can never drift apart.
+- **Cycle reset:** counters reset at the billing-anchor cycle boundary — triggered by the recurring period cut (slice 08), not by a separate clock, so quota cycles and billing periods can never drift apart. Two corollaries pinned 2026-07-28 (billing-pass review #20): **(a) during grace there is no reset** — grace suppresses the period cut, so counters deliberately do not refresh while no paid term exists (the customer keeps the old cycle's remainder, never a free fresh cycle); **(b) a backdated term extension** (late success in grace, §4.3b post-suspension) places the boundary in the past — the reset then applies **at the extension commit, forward-looking**: counters reset once, usage recorded between the backdated boundary and the commit stays where it accrued (no retroactive recount; the §17.1 reconciliation reads the same rule).
 - **Propagation exposure:** the usage→check-state path (rating pipeline → `QuotaTracker` → surface) bounds how fast a hard limit takes effect; the end-to-end lag budget is an open NFR ([`../PRD.md`](../PRD.md) §15) — until set, the exposure is measured and reported by the §17.1 entitlement-sync reconciliation.
 - Exhaustion + restore (new cycle, quota increase, plan change) emit auditable events.
 

@@ -206,7 +206,7 @@ off the commit path ([`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-normative-snapshot-segment-cmp`
 
-- Subscriptions freezes the `(currency, region)` binding at **activation** and contributes it as **one segment** of the composed `pricingSnapshotRef`; rating is the composition SoR that seals the ref (SEAMS **SUB-R2**; [rating PRD](../../../rating/docs/PRD.md) §1.4). The segment **persists across renewals** (a manual renewal's "fresh snapshot refs" refresh the pricing-side segments only) and across ownership transfers; only **cancel+new** re-freezes it — which is exactly why cross-currency/region changes are cancel+new (slice 03 §4.3).
+- Subscriptions freezes the `(currency, region)` binding at **activation** and contributes it as **one segment** of the composed `pricingSnapshotRef`; rating is the composition SoR that seals the ref (SEAMS **SUB-R2**; [rating PRD](../../../rating/docs/PRD.md) §1.4). The segment **persists across renewals** (any renewal's snapshot-ref re-resolution — auto and manual alike, SUB-D-14 as amended — touches the pricing-side segments only, eligibility-first: `priceEligibility`/`cohort` carry forward for grandfathered subscriptions, slice 04 §4.3) and across ownership transfers; only **cancel+new** re-freezes it — which is exactly why cross-currency/region changes are cancel+new (slice 03 §4.3).
 - Seat-count provenance (slice 03) and the activation date-trio (slice 01 §4.4) are **not** snapshot segments — they ride events/read-models. No fourth Subscriptions segment appears without a co-decision with rating.
 - Posted fee artifacts reproduce from the frozen ref; a posted period never re-resolves live catalog ([`../PRD.md`](../PRD.md) §6.8).
 

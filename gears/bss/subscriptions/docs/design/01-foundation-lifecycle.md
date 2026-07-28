@@ -181,7 +181,7 @@ this slice emits ([`../PRD.md`](../PRD.md) §6.3, §5.2).
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-domain-model-fnd`
 
-- **`Subscription`** (aggregate root) — `subscriptionId`, `status` (closed enum), `version` (monotonic), tenant axes (`resourceTenantId`, `payerTenantId`, `sellerTenantId`), `brandId` (per-sale, slice 02), the activation instants (`contractEffectiveAt`, `serviceActivatedAt`, `customerAcceptedAt`; §4.4), posture flags (`collectionPaused` window — attribute here, semantics slice 04), and references to its composition (slice 02), pending intents, and entitlements (slice 05).
+- **`Subscription`** (aggregate root) — `subscriptionId`, `status` (closed enum), `version` (monotonic), tenant axes (`resourceTenantId`, `payerTenantId`, `sellerTenantId`), `brandId` (per-sale, slice 02), the activation instants (`contractEffectiveAt`, `serviceActivatedAt`, `customerAcceptedAt`; §4.4), **the term/anchor state** (2026-07-28 billing-pass review #5 — the money path keys off it, so it is aggregate state, not a Contract read: `billingAnchor` (the PRD's cycle-boundary rule), the current **term window** `[termStartAt, termEndAt)`, and the monotonic **`currentTermSequence`** the double-extension key derives from; Contract supplies the *terms*, this aggregate persists the *state*, and the §4.3a/§4.3b backdated extensions mutate it locally through the commit path), posture flags (`collectionPaused` window — attribute here, semantics slice 04), and references to its composition (slice 02), pending intents, and entitlements (slice 05).
 - **`TransitionRequest`** — `id`, `subscriptionId`, `type ∈ {activate, suspend, resume, cancel, archive, changePlan, addAddOn, removeAddOn, updateQuantity, convertTrial, transfer, renew, unschedule, pauseCollection, resumeCollection, confirmAcceptance, extendTrial}` (SUB-D-08 completes the set so every FR-mandated mutation has a type; `archive` is the `cancelled→archived` edge operation), `idempotencyKey`, `status ∈ {pending, approved, applied, failed}`, the change envelope (`changeEffectiveAt`, `changeMode` / `cancelMode`, `resumeAt`), `correlationId`, actor + delegation-proof reference.
 - **`ScheduledIntent`** — a pending non-immediate intent on the aggregate: `kind` (cancel/resume/ramp step), `effectiveAt`, source `TransitionRequest`, `unscheduledAt?`; suppresses renewal / next-term recurring while pending (§4.3).
 - **`Approval`** — the maker-checker record required for high-risk types (`transfer`; trial extension slice 06): submitter, approver(s), decision, evidence.
@@ -273,8 +273,13 @@ never silently dropped.
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-storage-aggregate-fnd`
 
 Owned here (tenant-partitioned by the pinned `orderingTenantId`, SUB-D-06 — stable across transfers, UTC): `subscription` (aggregate current
-state), `subscription_revision` (append-only history; `REVOKE UPDATE, DELETE` + triggers),
-`transition_request` (with the `(subscriptionId, idempotencyKey)` unique index), `scheduled_intent`,
+state — incl. `billing_anchor`, `term_start_at`/`term_end_at`, `current_term_sequence`: the
+anchor-derived period identity and the `(subscriptionId, currentTermSequence)` extension key
+MUST be reproducible from persisted aggregate state, 2026-07-28 review #5), `subscription_revision` (append-only history; `REVOKE UPDATE, DELETE` + triggers),
+`transition_request` (with the `(subscriptionId, idempotencyKey)` unique index **plus the
+tenant-scoped creation-dedup index `(orderingTenantId, operation = create, idempotencyKey)`** —
+the constructor commit's key, which a `subscriptionId`-scoped index cannot express;
+2026-07-28 review #14), `scheduled_intent`,
 `approval`, the append-only `audit_log`, and the `event_outbox`. Capability slices add their own
 tables (composition in 02, grace evaluation in 04, entitlements in 05, trial phase state in 06,
 transfer approvals in 07). Concrete DDL is Design-owned; money never lives here (no monetary column).

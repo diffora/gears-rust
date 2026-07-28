@@ -233,7 +233,7 @@ slice's recorded policy identity. [`11-consumer-contracts.md`](./11-consumer-con
 
 1. Billing closes the period; the close-time `fxTableVersion` becomes authoritative ([`../PRD.md`](../PRD.md) §6.9).
 2. The slice-08 wrapper re-rates each provisional line via `FxCloseDeltaCalculator`: identical frozen tuple and pinned snapshot, only the close-time `fxTableVersion` substituted — a **full re-execution of step 8 plus the billing-currency coupon pass and the step-9 guards**, diffed at the line level. (A `percent` coupon re-scales with the converted amount; a billing-currency `fixed_amount` coupon does not — recomputing the conversion alone would mis-state the delta.)
-3. The difference leaves as a delta keyed `(window[, slice], prior-rated-version, snapshot)` via the Adjustment path ([`08-retroactivity-corrections.md`](./08-retroactivity-corrections.md)); the provisional line is never mutated.
+3. The difference leaves as a delta keyed `(unitKey[, slice], prior-rated-version, snapshot)` via the Adjustment path ([`08-retroactivity-corrections.md`](./08-retroactivity-corrections.md)); the provisional line is never mutated.
 4. Replay of either stage is byte-identical given which `fxTableVersion` applied at which stage — both are recorded inputs.
 
 ### 3.7 Database Schemas and Tables

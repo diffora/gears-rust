@@ -161,8 +161,8 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-revshare`
 
 **Steps**:
-1. [ ] - `p2` - When set, rev-share MUST sum to **100% per included vendor SKU**, with an explicit platform cut - `inst-rs-sum`
-2. [ ] - `p2` - **Residual normalization (B2, D-07):** authoring accepts `|Σ(share_bp) + platform_cut_bp − 10000| ≤ 1 bp`; at publish the bundle-level **`residual_absorber`** (a vendor SKU or the **platform** — default platform, so an "unnominated" state cannot exist) has its **effective** share adjusted by the residual, and the read model publishes effective shares summing to **exactly 10000 bp** (typed values retained for audit, the adjustment recorded). A residual over 1 bp fails publish (`RESIDUAL_OVER_TOLERANCE`) — e.g. a six-way even split (6 × 1666 bp = 9996) must be reconciled by the operator. Monetary (cent-level) rounding at settlement is a separate downstream rule and also lands on the absorber - `inst-rs-residual`
+1. [ ] - `p2` - When set, rev-share MUST sum to **100% per included vendor SKU**, with an explicit per-group platform cut; rev-share is authorable on **`sum_of_parts`** bundles only (D-55 — an `own_price` bundle has no per-vendor-SKU allocation base; `REVSHARE_BASIS_UNSUPPORTED`) - `inst-rs-sum`
+2. [ ] - `p2` - **Residual normalization (B2, D-07):** authoring accepts `|Σ(share_bp) + platform_cut_bp − 10000| ≤ 1 bp`; at publish the **group's `residual_absorber_party`** (a party row within that `(bundle, vendor SKU)` group, or the **platform** sentinel — default platform, so an "unnominated" state cannot exist; 2026-07-28 review fix — a bundle-level vendor-SKU absorber named a group, not a party) has its **effective** share adjusted by the residual, and the read model publishes effective shares summing to **exactly 10000 bp** (typed values retained for audit, the adjustment recorded). A residual over 1 bp fails publish (`RESIDUAL_OVER_TOLERANCE`) — e.g. a six-way even split (6 × 1666 bp = 9996) must be reconciled by the operator. Monetary (cent-level) rounding at settlement is a separate downstream rule and also lands on the absorber - `inst-rs-residual`
 3. [ ] - `p2` - `invoiceItemization` (`aggregate | itemize`) persists and MUST preserve per-SKU rev-share either way (Marketplace accrues per SKU regardless of invoice layout) - `inst-rs-itemization`
 
 ## 4. States (CDSL)
@@ -194,14 +194,27 @@ Slice-owned tables (`pricing_` prefix per Foundation §3.7):
 (required for `sum_of_parts`, B1), constraints (min/max qty).
 
 **`pricing_bundle_revshare`** (FK `bundle_id`): `vendor_sku_id`, `party`, `share_bp` (typed,
-basis points), `effective_share_bp` (published; absorber-adjusted at publish),
-`platform_cut_bp`. The absorber lives on the bundle: **`pricing_bundle.residual_absorber`**
-(`platform` sentinel or a `vendor_sku_id`; default `platform` — D-07).
+basis points), `effective_share_bp` (published; absorber-adjusted at publish).
+
+**`pricing_bundle_revshare_group`** (FK `bundle_id`; one row per `vendor_sku_id` — 2026-07-28
+review fix: the tolerance/exact-sum rule is per group, so the group-scoped values live on a
+group row, not smeared per party or per bundle): `vendor_sku_id`, **`platform_cut_bp`** (the
+group's platform cut — previously a per-party column used once per group), and
+**`residual_absorber_party`** — the **party row within this group** that absorbs the residual,
+or the `platform` sentinel (default). The former bundle-level `residual_absorber` typed as "a
+`vendor_sku_id`" named a *group*, not a resolvable party, and matched the PRD's "nominated
+primary **party**" only for the platform case; absorption is per group now, party-typed.
 
 Key constraints: authoring accepts `|SUM(share_bp) + platform_cut_bp − 10000| ≤ 1 bp` per
-`(bundle_id, vendor_sku_id)`; publish normalizes onto the absorber so
-`SUM(effective_share_bp) + platform_cut_bp = 10000` **exactly** (D-07); a residual over 1 bp
-fails (`RESIDUAL_OVER_TOLERANCE`). Downstream consumers read only the effective shares.
+`(bundle_id, vendor_sku_id)` (both terms from that group's rows); publish normalizes onto the
+group's `residual_absorber_party` so
+`SUM(effective_share_bp) + platform_cut_bp = 10000` **exactly per group** (D-07); a residual
+over 1 bp fails (`RESIDUAL_OVER_TOLERANCE`, naming the group). Downstream consumers read only
+the effective shares. **Rev-share basis (D-55, 2026-07-28): rev-share is authorable only on
+`sum_of_parts` bundles at launch** — an `own_price` bundle has one bundle amount and no
+per-vendor-SKU revenue to allocate (no declared allocation base), so `own_price` + `revShare`
+fails publish (`REVSHARE_BASIS_UNSUPPORTED`, 422); lifting this requires deciding an
+allocation base (e.g. component list prices) — a named Future gate.
 
 ## 7. Events & Alarms
 

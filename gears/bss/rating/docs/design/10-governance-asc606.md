@@ -305,7 +305,7 @@ subject (commercial configuration vs financial posting), different approver role
 materiality; a price change becomes a posting only later, via Rating → Billing → Ledger. No
 shared platform governance library exists today (`gears/bss/libs/` holds only `coord`).
 **Optional post-launch**: extract a shared maker-checker/audit *mechanism* into `libs/` that
-pricing, tariffs, and ledger instantiate each with its own policy — DRY the mechanism, not the
+pricing, rating, and ledger instantiate each with its own policy — DRY the mechanism, not the
 policy. Explicitly not a launch blocker.
 
 ### 4.4 ASC 606 Reference Emission (normative)

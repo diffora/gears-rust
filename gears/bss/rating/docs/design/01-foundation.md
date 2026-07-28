@@ -66,7 +66,7 @@ plus its snapshot ref *is* the output, and Rating owns its persistence
 | `cpt-cf-bss-rating-fr-evaluation-order` | The pipeline hard-codes the §17.1 step order (1 composition/phase → 2 base row → 3 meter/granularity → 4 overlay stack → 5 contract → 6 commitment/reservation → 7 coupon → 8 FX → 9 emit); step evaluators register into fixed slots; **there is no reordering configuration surface at all**. |
 | `cpt-cf-bss-rating-fr-single-outcome-determinism` | Determinism is stated over the **evaluation unit** (§4.2): per-event record or window-aggregated `Q` per `(subscription, meter, dimensionKey, window)`; given `(window-aggregated inputs, pricingSnapshotRef, fxTableVersion)` the monetary outcome is byte-identical across replay/recompute/regions; concurrent re-resolve serializes on the partition key. |
 | `cpt-cf-bss-rating-fr-snapshot-carry` | The `SnapshotComposer` assembles the canonical field list (§4.3): pricing pre-stamps the catalog subset, Subscriptions freezes the `(currency, region)` binding, the pipeline appends the eval-time segments (overlay ids, coupon ids + stacking, FX lock, commitment/reservation set); every emission carries stable `{skuId, planId, priceId}`. |
-| `cpt-cf-bss-rating-fr-idempotency` | Two key families (§4.2): the usage idempotency key (Rating dedup authoritative) and the **correction key** `(window[, slice], prior-rated-version, snapshot)` for deltas — a re-rate retry replays, never double-adjusts; delta dedup enforced by Rating (§2.2). |
+| `cpt-cf-bss-rating-fr-idempotency` | Two key families (§4.2): the usage idempotency key (Rating dedup authoritative) and the **correction key** `(unitKey[, slice], prior-rated-version, snapshot)` for deltas (`unitKey` = usage counter key or period-driven key, §4.2) — a re-rate retry replays, never double-adjusts; delta dedup enforced by the pipeline (§2.2). |
 | `cpt-cf-bss-rating-fr-non-negative-price` | The `EmissionGuard` clamps/credits a would-be-negative resolved line **after step 8 (FX + the billing-currency coupon pass)** and **before** period-level floor/cap (§4.4) — a billing-currency `fixed_amount` coupon can drive a line negative at step 8, so the guard clamps the post-FX amount, never the pre-FX one (slices 06 §4.2 / 07 §4.4); clamp-vs-credit policy is a §15 open. |
 | `cpt-cf-bss-rating-fr-separation` | The core is side-effect-free: it never mutates Usage or posted invoices; retro outcomes leave as deltas via the Adjustment path; reversal math (pool refill, `Q` decrement) is delegated to slices 05/08 under the §4.2 keys. |
 
@@ -213,7 +213,7 @@ per-line flow (retroactivity, period obligations); 10 registers publish validato
 | Dependency | What arrives frozen | Contract |
 |------------|--------------------|----------|
 | Pricing (Product Catalog) | pinned read model (key, windows, model kinds, bands, enums), `PriceWindow*` + `CatalogVersionPublished` events | [`11-consumer-contracts.md`](./11-consumer-contracts.md); SEAMS C1 |
-| Rating | windowed `Q` (single-writer per partition key), usage dedup | PRD §9.2 Rating handoff |
+| Rating pipeline (intra-gear since T-D-16 — slices 12/13/15, listed for the boundary, not as an external system) | windowed `Q` (single-writer per partition key), usage dedup | PRD §9.2 handoff; slices 12–15 |
 | Subscriptions | `phase_id`, eligibility inputs (`activatedAt`, bound cohort), seat count, `(changeEffectiveAt, changeMode)` | PRD §9.2 Subscriptions input |
 | Finance | FX tables + lock policy (`fxTableVersion`) | PRD §9.2 Finance FX |
 | Promotions | frozen coupon snapshots | PRD §9.2 Promotions |
@@ -240,7 +240,7 @@ per-line flow (retroactivity, period obligations); 10 registers publish validato
 
 1. Late/corrected usage lands in Rating; the window's `Q` is re-materialized (Rating, single-writer).
 2. `reresolve` replays the **pinned** snapshot for the whole window unit (no live read; serialized on the partition key).
-3. Diff against `prior-rated-version` → deltas only, keyed `(window[, slice], prior-rated-version, snapshot)`.
+3. Diff against `prior-rated-version` → deltas only, keyed `(unitKey[, slice], prior-rated-version, snapshot)` (§4.2).
 4. `periodState = closed_posted` routes the same diff through posted-period protection (slice 08) instead.
 
 ### 3.7 Database Schemas and Tables
@@ -286,10 +286,10 @@ Selection and non-overlap use the pricing canonical key **verbatim**:
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-determinism-fnd`
 
-- **Evaluation unit** — three kinds: `per_event` ⇒ one normalized `UsageRecord`; windowed models ⇒ the aggregated `Q` for `(subscription, meter, dimensionKey, window)` — **one unit per sub-window slice** when a slice-09 split partitions the window, coupled to earlier slices only through the frozen `bandOffsetQ` input ([`03-metering-models.md`](./03-metering-models.md) §4.3, T-D-12); **period-driven** ⇒ recurring lines, capacity-flavor charges, and period-end true-up surfacing, keyed `(subscription, priceId, chargeKind, lineKey, AnchorPeriod)` and synthesized by Rating's period tick at anchor boundaries ([`11-consumer-contracts.md`](./11-consumer-contracts.md) §4.1, T-D-15) — a zero-usage period still produces its period-driven units. `Q` and the per-slice attribution are materialized and owned by Rating (single writer per partition key); Rating never aggregates.
+- **Evaluation unit** — three kinds: `per_event` ⇒ one normalized `UsageRecord`; windowed models ⇒ the aggregated `Q` for `(subscription, meter, dimensionKey, window)` — **one unit per sub-window slice** when a slice-09 split partitions the window, coupled to earlier slices only through the frozen `bandOffsetQ` input ([`03-metering-models.md`](./03-metering-models.md) §4.3, T-D-12); **period-driven** ⇒ recurring lines, capacity-flavor charges, and period-end true-up surfacing, keyed `(subscription, priceId, chargeKind, lineKey, AnchorPeriod)` and synthesized by Rating's period tick at anchor boundaries ([`11-consumer-contracts.md`](./11-consumer-contracts.md) §4.1, T-D-15) — a zero-usage period still produces its period-driven units. `Q` and the per-slice attribution are materialized and owned by the **rating pipeline** (slice 13 `QMaterializer`; single writer per partition key); **rating-core** never aggregates (core/pipeline per PRD §2.1 — 2026-07-28 review fix).
 - **Frozen tuple**: `(window-aggregated inputs incl. bandOffsetQ for a sub-window slice, pricingSnapshotRef, fxTableVersion)` ⇒ byte-identical monetary outcome across replay, recompute, and cross-region workers. Every unit binds exactly **one** pinned snapshot — a split window is several units (one per slice), never one unit over several snapshots (T-D-12). The `DeterminismGuard` stamps a frozen-input digest into metadata; a divergence without an input change is a defect by definition.
 - **Serialization**: concurrent re-resolve for one unit serializes on the partition key; there are no cross-partition locks.
-- **Keys**: usage idempotency key (Rating dedup authoritative — same key + same snapshot never double-charges); correction key `(window[, slice], prior-rated-version, snapshot)` for every delta (retry replays, never double-adjusts) — the slice coordinate is present iff a slice-09 split partitions the window. Delta-dedup **owner**: **Rating** (§2.2, T-D-11).
+- **Keys**: usage idempotency key (Rating dedup authoritative — same key + same snapshot never double-charges); correction key `(unitKey[, slice], prior-rated-version, snapshot)` for every delta (retry replays, never double-adjusts) — **`unitKey` generalizes over both unit families** (2026-07-28 review fix, Blocking #1): the usage counter key `(subscription, meter, dimensionKey, window)` *or* the period-driven key `(subscription, priceId, chargeKind, lineKey, AnchorPeriod)`, exactly as `rated_output` already keys — a close-time FX re-rate of a recurring line, a true-up recompute, and a capacity-charge correction are deltas too and must collide on retry; the slice coordinate is present iff a slice-09 split partitions a usage window (never on period-driven units). Delta-dedup **owner**: **Rating** (§2.2, T-D-11).
 - **Snapshot-only replay**: open-period re-resolution and posted-period corrections both replay the pinned snapshot; a live catalog read on a correction path is a defect (SEAMS W2).
 
 ### 4.3 pricingSnapshotRef Composition (normative)
@@ -303,7 +303,7 @@ the ref at emission — immutable thereafter:
 |---------|--------|------|
 | `catalogVersion` (pending → committed) | pricing gear | publish / `CatalogVersionPublished` |
 | resolved price ids (**incl. `cohort`**) | pricing gear | publish |
-| evaluation-policy version | pricing gear | publish |
+| evaluation-policy version — **explicitly including the level-aggregation triple** `aggregationFunction`/`aggregationGranularity`/`maxHold` per non-`sum` usage row (D-44/T-D-17; 2026-07-28 review fix — previously only implicit inside the pricing pre-stamp) | pricing gear | publish |
 | `(currency, region)` binding | Subscriptions | activation |
 | resolved overlay / `priceOverlay` ids | Rating | evaluation |
 | applied coupon id(s) + stacking policy | Rating | evaluation |

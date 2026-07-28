@@ -24,8 +24,9 @@
 > other side, no action beyond citing it.
 >
 > Severity: `CRIT` (breaks lifecycle/billing correctness), `HIGH`, `MED`, `LOW`. Line refs: `S:` =
-> this gear's [`PRD.md`](./PRD.md); neighbour refs carry their path. The twelve autonomous decisions
-> `SUB-D-01…12` live in [`DECISIONS.md`](./DECISIONS.md); the vendor gaps `G-1…G-6` in
+> this gear's [`PRD.md`](./PRD.md); neighbour refs carry their path. The autonomous decisions
+> `SUB-D-01…18` live in [`DECISIONS.md`](./DECISIONS.md) (01…12: 2026-07-15 wave; 13…15:
+> 2026-07-28 review fixes; 16…18: 2026-07-28 billing pass); the vendor gaps `G-1…G-6` in
 > [`STRIPE-ZUORA-GAP-ANALYSIS.md`](./STRIPE-ZUORA-GAP-ANALYSIS.md).
 
 ---
@@ -61,6 +62,7 @@
 | **SUB-P3** | MED | **ALIGNED (SUB-adopts)** | **Trial sellable definition.** Catalog is authoritative for the trial offer — trial plan/SKU, promotional `PriceWindow`, or a leading trial **phase** (S:470, S:899). Subscriptions persists **evaluated** trial state (attributes + `PlanLink`/snapshot pointers), never a `trial` status (S:458). Aligned; attribute/event naming closes at design. |
 | **SUB-P4** | MED | **Product (deferred)** | **Prepaid credit grant.** The prepaid credit **definition** is pricing **D-43**; the balance/drawdown is **Billing/Rating**, GA-gated (S:182). Subscriptions keeps **subscription-side hooks only** — it neither defines nor draws down the wallet. See the Billing-facing drawdown line **SUB-B4**. No launch dependency for the core lifecycle. |
 | **SUB-P5** | MED | **SUB-adopts** | **Sellability / publish gate.** `PlanLink`/`AddOn` resolve only against **published** plans that pass the pricing sellability gate (pricing `design/07`; S:150). A draft or `not_sellable_ga` plan MUST fail the `create`/`changePlan` guard fail-closed. Adopt the gate as a precondition; the overlap **key** itself is registry-owned (**SUB-G1**). |
+| **SUB-P6** | HIGH | **Joint (added 2026-07-28, billing-pass review #2)** | **Grandfathering eligibility expiry — inbound signal + outbound feedback.** Pricing publishes **`EligibilityExpirySignal`** ("a generation's `grandfatherUntil` passed — Subscriptions re-binds at next renewal", pricing `design/07`) and alarms on expired-but-still-bound rows **reported back by this gear** past one renewal cycle. Both halves are obligations here: (inbound) the `RenewalJob` consults the signal per renewal — it is what gates the SUB-D-14 re-bind away from a pinned generation (slice 04 §4.3); (outbound) after each renewal of a bound-to-expired-generation subscription that could **not** re-bind (firing failure, held term), this gear reports the still-bound state back on the same read-model feedback surface pricing's backlog alarm consumes (pricing's "two-way Subscriptions publish contract"). Consumed via the pricing read model + events; contract fields close at design freeze with pricing. |
 
 ## C. Contracts & Agreements
 
@@ -92,6 +94,7 @@
 | **SUB-B4** | MED | **Joint (pricing G-4 — closed)** | **Prepaid drawdown + tax placement.** The pricing gap **G-4** was **closed 2026-07-28 (pricing D-48)**: drawdown applies **post-discount, pre-tax** (a credit reduces the charge, never pays the invoice), dormant at MVP (tax-exclusive) with a revisit checkpoint at Tax Engine GA; Billing countersigns at its gear PRD. Subscriptions still supplies only the subscription-side hooks (which subscription, which grant reference); nothing further to resolve here before prepaid GA beyond the Billing countersign. |
 | **SUB-B5** | MED | **SUB-authors** | **Dunning handoff.** Post-renewal billing failure hands off to **dunning** (Billing/Payments §4.4–4.5); the §6.5 grace rules and triggers apply (S:707). Subscriptions emits the failure/grace signals and the audit trail; **dunning execution + PSP webhook payloads are Billing/Payments + Design** (S:1058, S:1326). |
 | **SUB-B6** | MED | **Neighbour-extends (Billing)** | **Posted-period watermark for the backdating guard.** The §6.3 backdating guard ("reject a boundary inside an already-posted invoice period", AC 6) needs to *know* what is posted — Billing MUST expose a per-subscription **`billedThroughAt`** watermark (read model/event) that Subscriptions consumes fail-closed (unknown watermark ⇒ treat as posted, reject). Identified by the 2026-07-15 design review: without this the guard has no data source (design slice 03 §4.6). |
+| **SUB-B7** | MED | **Joint (added 2026-07-28, billing-pass review #10)** | **Mid-term cancellation money path.** PRD §6.8: "cancel mid-period → early-termination fee or refund per **contract**, materialized as Billing artifacts". Split: **Subscriptions** supplies the facts (`SubscriptionCancelled` with instant + `cancelMode` + reason + contract ref; the in-flight period fact stands — SUB-D-18); **Contracts** defines the ETF/refund/credit terms; **Billing** materialises the artifacts (new billable/adjustment paths, never a retro-edit). This gear computes no money on this path. |
 
 ## E. Policy Engine & OSS Provisioning
 
@@ -182,6 +185,12 @@
 - **SUB-D-10** — entitlement check surface: bounded-staleness degraded mode. Seam SUB-E3.
 - **SUB-D-11** — `draft → cancelled` (void) edge. (Status machine; no cross-gear seam.)
 - **SUB-D-12** — `collectionPaused` defers renewal collection (pre-check/grace/dunning), not term extension. Seam SUB-B2.
+- **SUB-D-13** (2026-07-28) — term boundaries always resolve: `autoRenew=false` → system `term_expired` cancel; post-suspension payment backdates the term. Seams SUB-C1, SUB-B1.
+- **SUB-D-14** (2026-07-28, **amended by the billing pass**) — renewal snapshot-ref re-resolution is **eligibility-first**: non-grandfathered re-binds to the current row; grandfathered keeps its pinned generation until `grandfatherUntil` passes (`EligibilityExpirySignal`). Seam **SUB-P6**.
+- **SUB-D-15** (2026-07-28) — manual change mid-ramp supersedes the remaining Contract-authored steps. Seam SUB-C2.
+- **SUB-D-16** (2026-07-28, billing pass) — nonpayment `suspended` dwell: 90-day platform default → system `nonpayment_exhausted` cancel. Seam SUB-C1.
+- **SUB-D-17** (2026-07-28, billing pass) — renewal price-change notice input (pricing-sourced supersession/expiry flag arms the 30-day commercial notice). Seams SUB-P6, SUB-F2.
+- **SUB-D-18** (2026-07-28, billing pass) — mid-term cancellation money path: fact stands; ETF/refund = Contracts defines, Billing materialises. Seam **SUB-B7**.
 
 **Aligned (counterpart written; no action beyond citing):**
 - SUB-R2 (rating SEAMS S1), SUB-P3, SUB-B1, SUB-E1.
@@ -203,7 +212,7 @@
 **Manifest alignment (tracked §15, not a design blocker):**
 - **SUB-N1** — `updateQuantity` / `convertTrial` `TransitionRequest.type` values + `cancelMode`/`resumeAt` envelope await manifest §4.3 alignment.
 
-**Propagation status:** the SUB-D-01…12 decisions are propagated into [`PRD.md`](./PRD.md)
+**Propagation status:** the SUB-D-01…18 decisions are propagated into [`PRD.md`](./PRD.md)
 (§5.1/§6/§12/§15) and [`DECISIONS.md`](./DECISIONS.md); vendor gaps G-1…G-6 are all processed
 ([`STRIPE-ZUORA-GAP-ANALYSIS.md`](./STRIPE-ZUORA-GAP-ANALYSIS.md)). This seam map is the input to
 the design set — each slice implements the Subscriptions side of the seams listed for it in

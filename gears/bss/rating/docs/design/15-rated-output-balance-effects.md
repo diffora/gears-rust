@@ -61,7 +61,7 @@ double-draws a pool. What leaves here goes to Billing (slice
 | Requirement | Design Response |
 |-------------|-----------------|
 | Outcome → RatedCharge/BillableItem mapping (core slice [`11`](./11-consumer-contracts.md) §4.1, ADR-0002 C6) | `OutcomeMapper` maps each resolved line to a `RatedCharge` (full-precision amount + rounding-policy id + sealed ref + `{skuId, planId, priceId}`); obligations ride as envelope, never charges; this slice **ratifies** the §4.1 table (§4.1). |
-| `cpt-cf-bss-rating-fr-idempotency` (delta family, T-D-11) | `DeltaDedupIndex` keys every delta by `(window[, slice], prior-rated-version, snapshot)`; a retried key returns the recorded `Adjustment` and re-emits nothing (§4.3). |
+| `cpt-cf-bss-rating-fr-idempotency` (delta family, T-D-11) | `DeltaDedupIndex` keys every delta by `(unitKey[, slice], prior-rated-version, snapshot)`; a retried key returns the recorded `Adjustment` and re-emits nothing (§4.3). |
 | Posted-period protection (PRD §6.10) | The original `RatedCharge` is immutable; a correction materializes a new `Adjustment`; the `prior-rated-version` chain is the correction lineage (§4.2). |
 | `CommitmentBalanceEffect` publication (T-D-10) | `BalanceEffectPublisher` publishes per-pool signed draw/refill deltas to Contracts via a transactional outbox, idempotent on the outcome key; Contracts serializes `balanceVersion` and cascades corrections (§4.5). |
 
@@ -152,7 +152,7 @@ id; rounding and floor/cap execution are Billing's (core slice [`01`](./01-found
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-domain-model-rob`
 
 - **`RatedCharge`** — one charge line + unit: full-precision amount, rounding-policy id, sealed `pricingSnapshotRef`, `{skuId, planId, priceId}`, **`glCode`** (the accounting pass-through Finance/Billing post journal entries from — non-null at MVP, slice [`10`](./10-governance-asc606.md) §4.3; carried, never interpreted), discount/FX lineage, ASC refs (null@MVP), the provisional flag (invoice-period FX), the usage/period key; immutable.
-- **`Adjustment`** — a correction delta: correction key `(window[, slice], prior-rated-version, snapshot)`, signed full-precision amount, reversal effects, bitemporal stamps; immutable; references the `RatedCharge` version it corrects.
+- **`Adjustment`** — a correction delta: correction key `(unitKey[, slice], prior-rated-version, snapshot)`, signed full-precision amount, reversal effects, bitemporal stamps; immutable; references the `RatedCharge` version it corrects.
 - **`RatedOutputVersion`** — the `prior-rated-version` chain node: which version of a window/unit's rating this outcome is, for deterministic diffing (core slice [`08`](./08-retroactivity-corrections.md)).
 - **`CommitmentBalanceEffect`** — per-pool signed draw/refill deltas for one outcome, idempotent on the outcome key; published to Contracts (T-D-10).
 - **`BillableItem`** — the Billing-facing envelope carrying the `RatedCharge`/`Adjustment` + obligations for slice [`16`](./16-billing-handoff-operations.md).
@@ -209,7 +209,7 @@ Upstream: slice [`14`](./14-unit-synthesis-period-tick.md) (delivers core outcom
 
 **Persist a correction delta**:
 
-1. A `reresolve` delta arrives (core slice [`08`](./08-retroactivity-corrections.md)) with its correction key `(window[, slice], prior-rated-version, snapshot)`.
+1. A `reresolve` delta arrives (core slice [`08`](./08-retroactivity-corrections.md)) with its correction key `(unitKey[, slice], prior-rated-version, snapshot)`.
 2. `DeltaDedupIndex` checks the key: a known key returns the recorded `Adjustment` and stops (idempotent replay, no re-emit).
 3. Else `AdjustmentMaterializer` writes a new immutable `Adjustment` (signed amount, reversal effects, bitemporal stamps) and advances the `prior-rated-version` chain; the original `RatedCharge` is untouched.
 4. The `Adjustment` + any per-pool `CommitmentBalanceEffect` (refill/re-draw) publish downstream idempotently on the correction key.
@@ -221,7 +221,7 @@ Upstream: slice [`14`](./14-unit-synthesis-period-tick.md) (delivers core outcom
 **Owned (partitioned by the pinned `orderingTenantId`, UTC):**
 
 - `rated_output` — resolved outcome + sealed `pricingSnapshotRef` + `RatedOutputVersion` chain; the `RatedCharge` rows (immutable); dedup index on `(usageKey | period-unit key, snapshot)`.
-- `delta_dedup` — unique index on the correction key `(window[, slice], prior-rated-version, snapshot)`; the authoritative delta dedup.
+- `delta_dedup` — unique index on the correction key `(unitKey[, slice], prior-rated-version, snapshot)` (`unitKey` = `usageKey | period-unit key`, mirroring `rated_output`'s generalized key — 2026-07-28 review fix); the authoritative delta dedup.
 - `adjustment` — immutable correction deltas (append-only).
 - `balance_effect_outbox` — the transactional outbox for `CommitmentBalanceEffect`s (committed with `rated_output`; at-least-once; idempotent on the outcome key).
 
@@ -273,8 +273,8 @@ stable design, not a proposal.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-delta-dedup-rob`
 
-- The **delta-dedup owner is Rating**, enforced here as the delta persister (T-D-11; core slice [`01`](./01-foundation.md) §2.2, slice [`08`](./08-retroactivity-corrections.md) §2.2/§4.2). `DeltaDedupIndex` is a unique index on `(window[, slice], prior-rated-version, snapshot)`.
-- A retried correction key **returns the recorded `Adjustment`** and re-emits nothing downstream; a genuinely new correction to the same window diffs against the then-current `prior-rated-version`, producing a **new** key (the keys never repeat, and the chain is the correction lineage).
+- The **delta-dedup owner is Rating**, enforced here as the delta persister (T-D-11; core slice [`01`](./01-foundation.md) §2.2, slice [`08`](./08-retroactivity-corrections.md) §2.2/§4.2). `DeltaDedupIndex` is a unique index on `(unitKey[, slice], prior-rated-version, snapshot)` — `unitKey` spanning both unit families like `rated_output` (a retried close-time FX re-rate of a recurring line collides here, 2026-07-28 review fix).
+- A retried correction key **returns the recorded `Adjustment`** and re-emits nothing downstream; a genuinely new correction to the same unit diffs against the then-current `prior-rated-version`, producing a **new** key (the keys never repeat, and the chain is the correction lineage).
 - Billing additionally treats `Adjustment` consumption as idempotent on the same key — **defense in depth**, not the primary guard (core slice [`08`](./08-retroactivity-corrections.md) §2.2).
 
 ### 4.4 Provisional-FX Supersession (normative)

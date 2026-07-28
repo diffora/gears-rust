@@ -215,7 +215,7 @@ mints its own correction path.
 | Pricing (Product Catalog) | `prorationBasis` (incl. `none`), `billingAnchorPolicy` + D-20 clamp, floor/cap attachment, carry-vs-reset flags — all in the pinned snapshot; window `effectiveFrom` boundaries | [`../../../pricing/docs/design/06-consumer-contracts.md`](../../../pricing/docs/design/06-consumer-contracts.md); SEAMS P1/P2 |
 | Subscriptions | `(changeEffectiveAt, changeMode)`; plan revision linkage | [`../PRD.md`](../PRD.md) §9.2 Subscriptions input |
 | Billing | `periodState` (open / closed_posted); executes floor/cap + rounding over the period aggregate | [`../PRD.md`](../PRD.md) §9.2 Billing contract |
-| Rating | windowed `Q` per sub-window (single-writer, M7 key); persists outcomes, obligations, deltas | [`../PRD.md`](../PRD.md) §9.2 Rating handoff |
+| Rating pipeline (intra-gear — slices 13/15) | windowed `Q` per sub-window (single-writer, M7 key); persists outcomes, obligations, deltas | [`../PRD.md`](../PRD.md) §9.2 handoff; slices 13/15 |
 
 ### 3.6 Interactions and Sequences
 
@@ -282,7 +282,7 @@ subscription/period and carries no cross-partition lock.
 - **Attachment**: to the usage component by default, or recurring+usage if plan-level — frozen in `pricingSnapshotRef` (§17.2).
 - **Currency**: set in price currency; a billing-currency comparison converts with the same FX policy and `fxTableVersion` as step 8 (slice 07); the currency is always explicit — no implicit default (§17.2).
 - **Ordering**: the per-line non-negative guard (01 §4.4) runs before any period-level phase; a floor MUST NOT mask a negative line.
-- **Surfaced, never posted**: the obligation is an emitted value, not a posting; re-emission for a re-opened window is deterministic over the same frozen tuple, and changes flow as deltas under the slice-08 correction key `(window[, slice], prior-rated-version, snapshot)`.
+- **Surfaced, never posted**: the obligation is an emitted value, not a posting; re-emission for a re-opened window is deterministic over the same frozen tuple, and changes flow as deltas under the slice-08 correction key `(unitKey[, slice], prior-rated-version, snapshot)` (01 §4.2).
 - **Phasing**: the boundary and obligation shape are defined now; floor/cap *execution* is phased Follow-on on the Billing side ([`../PRD.md`](../PRD.md) §17.4) — the contract does not change when execution lands.
 - **Open** ([`../PRD.md`](../PRD.md) §15): whether a contractual floor claws back coupon discount — default proposal: the floor compares the post-coupon total; carried here unresolved.
 

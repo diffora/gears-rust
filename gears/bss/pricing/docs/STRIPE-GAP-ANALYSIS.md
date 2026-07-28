@@ -97,8 +97,8 @@ gaps; captured here only to map them to their Stripe analogue so we don't "redis
 
 | Deferred item (§17.8) | Stripe analogue | Note |
 |---|---|---|
-| `includedAllowance` / `rolloverPolicy` | included usage in a price + credit rollover | Common SaaS shape ("500 units included, unused roll over"); deferred |
-| authorable `aggregationFunction` / peak model kind | Stripe meter aggregation (`sum` \| `last` \| `max`) | We fix aggregation downstream today; not author-selectable |
+| `includedAllowance` / `rolloverPolicy` | included usage in a price + credit rollover | **Re-decided into launch — D-45 (2026-07-16)**: authored `{quantity, rolloverPolicy {none, carry}}`, publish-compiled ($0 band / D-43 grant); the deferred residue = the extensions (per-seat scaling, level-meter allowance) |
+| authorable `aggregationFunction` / peak model kind | Stripe meter aggregation (`sum` \| `last` \| `max`) | **Re-decided into launch — D-44 (2026-07-16)**: authorable `{sum, peak, time_weighted}` + granularity (granule fold, rating T-D-17); the deferred residue = `last` \| `unique` |
 | two-dimensional (seats × usage) single-line pricing | Stripe: two prices on one item | Deferred; today = two rows |
 | structural freemium flag | Stripe free price / $0 tier | Expressible today as a `$0` row/tier; no first-class flag |
 | `currencyFallbackPolicy` (FX fallback) | Stripe multi-currency / presentment | We are deliberately **fail-closed, no implicit FX** ([PRD.md](./PRD.md) §L524) |
@@ -199,6 +199,9 @@ cross-grant order is Billing-owned via a normative tie-break chain (`drawdownPri
 `promotional` first → earlier expiry → earlier issuance → `grantId`). Rating-side check
 passed: the wallet grant is disjoint from step-6 `commitmentPools[]` (rating SEAMS M8), so
 this stays a catalog+Billing concern; where drawdown sits relative to tax remains G-4.
+**Schema note (D-52, 2026-07-28)**: grants are now rows of the `pricing_plan_grant` table
+(PK `grant_id`; `pricing_grant_price` re-keyed on it) — the `pricing_plan.prepaid_grant`
+jsonb named in the recommendation above is superseded.
 
 ### G-3. Minimum commitment / committed spend (monetary true-up)
 

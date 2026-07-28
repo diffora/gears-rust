@@ -68,7 +68,7 @@ cardinality key from the registry).
 
 | NFR theme | Allocated To | Design Response | Verification / Status |
 |-----------|--------------|-----------------|-----------------------|
-| `cpt-cf-bss-subscriptions-nfr-lifecycle-latency` | Change commit path | `changePlan`/`updateQuantity` in the synchronous commit class (p95 < 1s) | Load test; baseline (workshop-pending) |
+| `cpt-cf-bss-subscriptions-nfr-lifecycle-latency` | Change commit path | `changePlan`/`updateQuantity` in the synchronous commit class (p95 < 1s) = the **intent commit**; a change with an OSS leg completes its status commit async, outside the bound (slice 01 NFR row is the authority) | Load test; baseline (workshop-pending) |
 | `cpt-cf-bss-subscriptions-nfr-proration-accuracy` | Boundary + rating | 100% end-to-end alignment vs policy; math owned by rating, boundary here — tested on the joint fixture | Joint proration fixture |
 
 #### Key ADRs

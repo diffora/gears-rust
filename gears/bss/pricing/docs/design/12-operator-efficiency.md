@@ -96,8 +96,8 @@ Inherits Foundation C-set. Slice-12-specific:
 |---|-------|----------------------|--------|
 | O1 | Clone resets | `priceEligibility`/`grandfatherUntil` reset to defaults; contract locks never copy; `discountRef` copies only if it still resolves (else dropped + operator notice); `clonedFrom` recorded | PRD §6.11 |
 | O2 | Import phases | Pre-commit validation is **all-or-nothing** (any invalid row blocks the batch with a per-row report); commit is **per-row** optimistic — an ETag conflict fails only that row (committed rows stand; conflicted rows listed for retry); never silent overwrite | PRD §6.11 |
-| O3 | Repricing SLO | Idempotent re-run after partial failure; deduplicated events; provisional ≥ 50 rows/sec back-calculated from the tenant worst case vs the maintenance window — **ratify before Design lock** | PRD §6.11/§14 |
-| O4 | Idempotency TTL | Client-key replay returns the original result within a documented TTL (value provisional); replay during an active bulk lock returns the original completed result regardless of lock state | PRD §6.11 |
+| O3 | Repricing SLO | Idempotent re-run after partial failure; deduplicated events; ≥ 50 rows/sec — **ratified 2026-07-28** as the launch default, perf-test-verified against the tenant worst case vs the maintenance window | PRD §6.11/§14 |
+| O4 | Idempotency TTL | Client-key replay returns the original result within the **24h TTL (ratified 2026-07-28)**; replay during an active bulk lock returns the original completed result regardless of lock state | PRD §6.11 |
 | O5 | Version coalescing | A mass run MAY coalesce into one or few `CatalogVersion`s (registry batching, Foundation §4.2 step 5) | PRD §6.11 |
 
 ### 1.7 Naming & Design-Introduced Names
@@ -211,7 +211,7 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-history-export`
 
 **Steps**:
-1. [ ] - `p2` - Chronological immutable price-history records (the append-only `pricing_price` rows) with actor and effective dates, under `plan × read` (D-12 — history is plan/price data, Finance-readable by construction; the separate Slice-5 audit trail stays `audit × read`, Auditor-only) - `inst-he-read`
+1. [ ] - `p2` - Chronological immutable price-history records (the append-only `pricing_price` rows) with actor and effective dates — the actor read **from the row's own `created_by` column** (pseudonymous principal, Foundation §3.7; 2026-07-28 review fix: never from `pricing_audit_log`, which D-12 confines to `audit × read` Auditor-only) — under `plan × read` (D-12 — history is plan/price data, Finance-readable by construction; the separate Slice-5 audit trail stays `audit × read`, Auditor-only) - `inst-he-read`
 2. [ ] - `p2` - Export (`plan × read`, D-12) within p95 ≤ 5s per 100 records - `inst-he-export`
 3. [ ] - `p2` - History is a **read** over existing append-only structures — this slice adds no new history store (the Foundation's immutability IS the history) - `inst-he-nostore`
 
@@ -221,7 +221,7 @@ flowchart TB
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-state-bulk-operation`
 
-**States**: validating, validation_failed, committing, completed, completed_with_conflicts
+**States**: validating, validation_failed, awaiting_approval (R-09 — a material batch parks here until the batch approval lands), committing, completed, completed_with_conflicts
 **Initial State**: validating (Phase 1)
 
 **Transitions**:
@@ -238,6 +238,7 @@ flowchart TB
 | `POST` | `/v1/pricing/plans/{planId}/clone` | Clone into a new draft plan | client key | `plan × write` |
 | `POST` | `/v1/pricing/bulk-imports` | Two-phase bulk price import | client key (O4) | `plan × write` |
 | `GET` | `/v1/pricing/bulk-imports/{id}` | Batch report (per-row outcomes) | — | `plan × read` |
+| `POST` | `/v1/pricing/bulk-imports/{id}:abort` | Abort a batch before commit (Phase-2 boundary rules in §6) | client key | `plan × write` |
 | `POST` | `/v1/pricing/repricing-runs` | Idempotent mass adjustment | `run_id` | `plan × write` |
 | `GET` | `/v1/pricing/repricing-runs/{id}` | Run progress / result | — | `plan × read` |
 | `GET` | `/v1/pricing/history` | Immutable price history (filters) | — | `plan × read` (D-12) |
@@ -352,7 +353,7 @@ p95 ≤ 5s per 100 records, reading existing append-only structures only.
 
 **Touches**:
 - API: `GET /v1/pricing/history`, `POST /v1/pricing/history/export`
-- DB: (reads `pricing_price` history + `pricing_audit_log`)
+- DB: (reads `pricing_price`/`pricing_plan` history incl. their `created_by` actor columns — never `pricing_audit_log`, which stays `audit × read` per D-12)
 - Entities: `HistoryExporter`
 
 ## 9. Acceptance Criteria
@@ -376,7 +377,7 @@ NFR verification:
 
 ## 10. Non-Functional Considerations
 
-- **Performance**: Phase-1 validation parallelizes per row (shared-nothing rules); Phase-2 commit is row-transactional; the repricing journal adds one indexed write per row. The O3 throughput value and the plan/tier caps are **provisional NFRs — ratify before Design lock** ([`../PRD.md`](../PRD.md) §14).
+- **Performance**: Phase-1 validation parallelizes per row (shared-nothing rules); Phase-2 commit is row-transactional; the repricing journal adds one indexed write per row. The O3 throughput value and the plan/tier caps are committed launch defaults (ratified 2026-07-28; O3 perf-test-verified — [`../PRD.md`](../PRD.md) §14).
 - **Observability**: `pricing_bulk_rows_total{outcome}`, `pricing_repricing_rows_per_second`, `pricing_bulk_conflicts_total`, run-progress gauges.
 - **Security & AuthZ**: bulk carries **no new authority** — `plan × write/publish` + the same materiality/approval policy; price history/export is `plan × read` (D-12), while the audit trail stays `audit × read/export`, Auditor-only (Slice 5 catalog).
-- **Risks & open items**: idempotency-key TTL and the throughput SLO are provisional (O3/O4); a mass run's coalesced `CatalogVersion` depends on the registry's batching-delay SLO (open with Registry) — a slow batch delays snapshot pinning for the whole run. **Bulk window operations**: an N-row repricing implies N supersession window open/close operations — since the window consolidation (D-03) these are local writes to the gear-owned `pricing_price_window` store inside the per-row transactions, so their throughput is part of this slice's own O3 sizing (no cross-component contract).
+- **Risks & open items**: a mass run's coalesced `CatalogVersion` rides the registry's batching-delay SLO (D-47: bulk ≤ 5 min hard max) — the bound caps how long a batch can delay snapshot pinning for the run. **Bulk window operations**: an N-row repricing implies N supersession window open/close operations — since the window consolidation (D-03) these are local writes to the gear-owned `pricing_price_window` store inside the per-row transactions, so their throughput is part of this slice's own O3 sizing (no cross-component contract).

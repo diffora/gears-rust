@@ -232,7 +232,7 @@ and the rev-share pass-through recorded in §4.2.
 | Dependency | What crosses the boundary | Contract |
 |------------|--------------------------|----------|
 | Pricing (Product Catalog) | pinned read model; `PriceWindow*` ×4 + `CatalogVersionPublished`; bundle component sets + `effective_share_bp` | §4.2; SEAMS C1, W1, W2, P1/P2, B1, M11 |
-| Rating | outcome envelope out; windowed `Q`, usage dedup, rated-output persistence stay Rating-side | §4.1; SEAMS M7 |
+| Rating pipeline (intra-gear — slices 12–16) | outcome envelope out; windowed `Q`, usage dedup, rated-output persistence stay pipeline-side | §4.1; SEAMS M7; slices 12–16 |
 | Subscriptions | `phase_id`, eligibility inputs, seat count, `(changeEffectiveAt, changeMode)`, `(currency, region)` binding | §4.3; SEAMS S1 |
 | Finance | FX tables + lock policies, `fxTableVersion` | §4.4 |
 | Promotions | frozen coupon snapshots | §4.5 |
@@ -301,7 +301,7 @@ before Design lock, §2.2):
 | zero-due `prepaid_drawdown` in-commit line (slice 05 §4.1, T-D-14) | a `RatedCharge` with amount-due 0 + notional value in lineage — itemized, never dropped |
 | obligations (`TrueUpObligation`, `PeriodFloorCapObligation`) | envelope ride-along to Billing execution — never a `RatedCharge` |
 | provisional invoice-period-FX amount (slice 07) | `RatedCharge` flagged provisional; the close-time delta supersedes by correction key, never mutates |
-| correction deltas (slice 08) | `Adjustment` entities keyed by the correction key `(window[, slice], prior-rated-version, snapshot)`; the original `RatedCharge` is immutable |
+| correction deltas (slice 08) | `Adjustment` entities keyed by the correction key `(unitKey[, slice], prior-rated-version, snapshot)` (01 §4.2 — both unit families); the original `RatedCharge` is immutable |
 | idempotency | usage key ⇒ `RatedCharge` dedup; correction key ⇒ `Adjustment` dedup — both enforced by Rating (T-D-11) |
 | `CommitmentBalanceEffect` (slice 05 §4.1, T-D-10) | published by Rating to Contracts per rated outcome, idempotent on the outcome's key |
 
@@ -313,7 +313,7 @@ aggregates. Rating additionally owns the **period tick** that synthesizes the pe
 evaluation units — recurring lines, capacity-flavor charges, true-up surfacing — at
 `AnchorPeriod` boundaries (01 §4.2, T-D-15), and **publishes `CommitmentBalanceEffect`s to
 Contracts** (T-D-10). `reresolve` deltas carry the correction key
-`(window[, slice], prior-rated-version, snapshot)`; **delta dedup is Rating's (T-D-11)** —
+`(unitKey[, slice], prior-rated-version, snapshot)`; **delta dedup is Rating's (T-D-11)** —
 01 §2.2. The mapping table above is the core-side proposal ratified intra-gear by pipeline slice 15 (§2.2
 constraint — confirmation open, no longer a cross-gear contract since ADR-0002); incompatible
 changes take a major version bump (PRD §9.1).
@@ -426,7 +426,7 @@ SEAMS N1: the canonical name of the upstream catalog gear is **"Pricing (Product
 The pricing gear names this consumer `cpt-cf-bss-pricing-actor-rating` (pricing design 06 §1.3;
 renamed to the rating actor with the consolidation — ADR-0002 commit C). On the rating side
 ([`../PRD.md`](../PRD.md) §2.1): **Rating** names the gear and domain, **rating-core** the pure
-evaluation crate, and **Rating / rating-core / rating-core** are deprecated (ADR-0002); "tariff" is
+evaluation crate, and **Tariffs / PLAL / tariff-core** are deprecated (ADR-0002); "tariff" is
 reserved for Pricing-owned rate definitions. A reference through a superseded alias is a
 documentation defect, not a second system.
 

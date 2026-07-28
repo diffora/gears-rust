@@ -35,9 +35,11 @@
 > pipeline** (slices 12–16, per ADR-0002). This page is the single index over that set and
 > delegates slice-level detail to the slice documents.
 >
-> **Terminology bridge (ADR-0002)**: inside the evaluation-core slices, historical "**Rating**"
-> reads as *the evaluation core* (`rating-core`), and historical neighbour-"**Rating**" reads as
-> *the rating pipeline* — one gear since consolidation; full prose re-voicing is a tracked
+> **Terminology bridge (ADR-0002)**: inside the evaluation-core slices, historical "**Tariffs**"
+> reads as *the evaluation core* (`rating-core`), and historical neighbour-"**Rating**" (the
+> then-separate rating-engine) reads as *the rating pipeline* — one gear since consolidation;
+> (2026-07-28 fix: the mechanical rename had collapsed both historical terms to "Rating",
+> leaving the bridge mapping a word to itself); full prose re-voicing is a tracked
 > migration residue ([`DECISIONS.md`](./DECISIONS.md)).
 >
 > **Status**: evaluation core (01–11) and operational pipeline (12–16) authored, pre-Design-lock.
