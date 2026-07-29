@@ -20,6 +20,16 @@
 //! defect — is outside what this invariant can mechanically catch; only a
 //! named-but-uncited target is. D-34 and D-36 below are real, rediscovered instances of
 //! that second, actually-detectable shape.
+//!
+//! `records_the_step1_backtest_score` pins 27 P1 findings. **2 of those 27 are not
+//! historical debt**: D-44 (`SEAMS M10`) and D-46 (`SEAMS RG3`) are real, defined seam ids
+//! — genuinely present in rating's and subscriptions' own `SEAMS.md` — that read as
+//! `P1/seam-undefined` here only because this backtest loads the pricing corpus alone, so
+//! neither sibling `SEAMS.md` is loaded for `SeamIndex` to resolve against. A real
+//! multi-gear run (as `main.rs` does) would not flag either. Left in the pin rather than
+//! filtered out, because the pin's job is "what this exact fixture, checked exactly this
+//! way, produces" — but anyone reading 27 as "27 rediscovered defects" would overcount by
+//! these 2 and might go looking for a fix that doesn't exist on the pricing side.
 
 use std::path::PathBuf;
 
@@ -74,19 +84,69 @@ fn rediscovers_the_two_unclaimed_requirements() {
     );
 }
 
-/// Records the score. Update the number deliberately when an invariant lands —
-/// a change here is a claim about effectiveness and belongs in the commit message.
+/// Pinned per-invariant finding counts against the frozen `10073c36` fixture
+/// (2026-07-29), verified by hand against the corpus, not derived from a first run of
+/// this test. Exact, not a floor — the fixture cannot change (its contents must always
+/// equal what `git archive 10073c36 gears/bss/pricing/docs` produces), so these are a
+/// stable pin, checked the same way the sibling pinned baselines in `propagation.rs`
+/// (`PINNED_PROPAGATION_GAPS_2026_07_29`) and `closure.rs`
+/// (`PINNED_UNREFERENCED_CODES_2026_07_29`) are: `records_the_step1_backtest_score` fails
+/// if the real count moves in *either* direction, not just downward. 2 of `PINNED_P1`'s
+/// 27 are the single-corpus seam artifact described in this file's module doc comment
+/// (D-44, D-46) — not historical debt.
+///
+/// A failure here is a real claim about the checker's effectiveness: a change to
+/// `invariants::{propagation,fr_coverage,closure}` moved how many of the historical
+/// corpus's real defects it catches. Verify the new count by hand before trusting it —
+/// the same way the D-53 -> D-34/D-36 substitution above was independently verified, not
+/// asserted — then update these constants deliberately, in the same commit as the change
+/// that moved them, with the new number and the reasoning in the commit message. Never
+/// edit these to quietly re-baseline a failing run back to green.
+const PINNED_P1: usize = 27;
+const PINNED_P2: usize = 3;
+const PINNED_P3: usize = 55;
+const PINNED_TOTAL: usize = PINNED_P1 + PINNED_P2 + PINNED_P3;
+
+/// Records the score. Fails in both directions against the pinned counts above — a
+/// regression collapsing 85 to some other nonzero number, or an unnoticed explosion,
+/// must be as loud as a drop to zero.
 #[test]
 fn records_the_step1_backtest_score() {
     let corpus = historical();
     let seams = SeamIndex::build(std::slice::from_ref(&corpus));
     let declared = DeclaredInstructions::build(std::slice::from_ref(&corpus));
-    let total = invariants::propagation::check(&corpus, &seams).len()
-        + invariants::fr_coverage::check(&corpus).len()
-        + invariants::closure::check(&corpus, &declared).len();
-    println!("step-1 backtest: {total} finding(s) against 10073c36");
-    assert!(
-        total > 0,
-        "a checker that finds nothing in a known-bad tree is broken"
+    let p1 = invariants::propagation::check(&corpus, &seams).len();
+    let p2 = invariants::fr_coverage::check(&corpus).len();
+    let p3 = invariants::closure::check(&corpus, &declared).len();
+    let total = p1 + p2 + p3;
+    println!("step-1 backtest: {total} finding(s) against 10073c36 (P1 {p1}, P2 {p2}, P3 {p3})");
+
+    assert_eq!(
+        p1, PINNED_P1,
+        "P1/propagation count drifted from the pinned {PINNED_P1} (got {p1}) — this is a \
+         claim about the checker's effectiveness, not a number to quietly re-baseline: \
+         verify the new count by hand, then update PINNED_P1 deliberately with the \
+         reasoning in the commit message"
+    );
+    assert_eq!(
+        p2, PINNED_P2,
+        "P2/fr-coverage count drifted from the pinned {PINNED_P2} (got {p2}) — this is a \
+         claim about the checker's effectiveness, not a number to quietly re-baseline: \
+         verify the new count by hand, then update PINNED_P2 deliberately with the \
+         reasoning in the commit message"
+    );
+    assert_eq!(
+        p3, PINNED_P3,
+        "P3/closure count drifted from the pinned {PINNED_P3} (got {p3}) — this is a \
+         claim about the checker's effectiveness, not a number to quietly re-baseline: \
+         verify the new count by hand, then update PINNED_P3 deliberately with the \
+         reasoning in the commit message"
+    );
+    assert_eq!(
+        total, PINNED_TOTAL,
+        "step-1 backtest total drifted from the pinned {PINNED_TOTAL} (got {total}) — this \
+         is a claim about the checker's effectiveness, not a number to quietly \
+         re-baseline: verify the new total by hand, then update the pinned constants \
+         deliberately with the reasoning in the commit message"
     );
 }
