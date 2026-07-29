@@ -129,6 +129,81 @@ fn unparsed_propagated_label(lines: &[&str], all: &[Decision], i: usize) -> Opti
     label.find(&body).map(|m| m.as_str().to_string())
 }
 
+/// Pinned baseline of `P1/propagation-missing` findings against the live
+/// pricing register, hand-derived from the failure output of this test on
+/// 2026-07-29 (not by running the checker and trusting whatever it
+/// produces — a self-derived baseline asserts nothing). These 24
+/// `(decision id, target path)` pairs are **debt, not correctness**:
+/// pre-existing gaps left by the 2026-07-10 decision wave, confirmed real
+/// by manual cross-check (PRD.md cites 34 *other* decision ids, so the
+/// citation convention is genuine and broadly followed — these 24 are
+/// what that wave skipped, not resolver noise). Two confirmed shapes: D-01's
+/// substance is present in the PRD and only the citation is missing; D-15's
+/// `PHASE_UNCOVERED` never appears there at all, a real substance gap.
+/// Fixing them is a separate docs round (tracked as **D-69**), not this
+/// task loop's job. Pinned as an exact set so a *new* gap fails this test
+/// immediately, and so a *fixed* gap fails it too — the list must be
+/// updated deliberately when the docs improve, never left to quietly
+/// become a floor. Promoted to a `pub const` (2026-07-29, fix round 1) so
+/// the CLI has exactly the same one definition of this debt the tests pin
+/// against, rather than a second, test-only copy the CLI can't see.
+pub const PINNED_PROPAGATION_GAPS_2026_07_29: &[(&str, &str)] = &[
+    ("D-01", "PRD.md"),
+    (
+        "D-02",
+        "ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md",
+    ),
+    ("D-02", "DESIGN.md"),
+    ("D-02", "PRD.md"),
+    ("D-02", "design/01-foundation.md"),
+    ("D-02", "design/07-pricewindow-linkage.md"),
+    ("D-04", "PRD.md"),
+    ("D-05", "PRD.md"),
+    ("D-06", "PRD.md"),
+    ("D-07", "PRD.md"),
+    ("D-13", "PRD.md"),
+    ("D-15", "PRD.md"),
+    ("D-16", "PRD.md"),
+    ("D-19", "PRD.md"),
+    ("D-20", "PRD.md"),
+    ("D-24", "PRD.md"),
+    ("D-25", "PRD.md"),
+    ("D-28", "PRD.md"),
+    ("D-32", "PRD.md"),
+    ("D-35", "PRD.md"),
+    ("D-39", "PRD.md"),
+    ("D-40", "design/10-advanced-primitives.md"),
+    ("D-41", "DESIGN.md"),
+    ("D-60", "design/03-price-structure.md"),
+];
+
+/// Parses a `P1/propagation-missing` finding's `(decision id, target path)` pair from
+/// `check`'s own fixed message template. `None` for any other invariant tag or a
+/// message that doesn't match the expected shape — the single production-and-test
+/// definition of "how to read this finding back into pinned-baseline shape" (promoted
+/// 2026-07-29, fix round 1, replacing what was a test-only `missing_pairs` helper).
+pub fn missing_pair(finding: &Finding) -> Option<(String, String)> {
+    if finding.invariant != "P1/propagation-missing" {
+        return None;
+    }
+    let shape =
+        Regex::new(r"^(D-\d+) claims propagation into (.+), but that document never cites D-\d+$")
+            .expect("valid message-shape regex");
+    shape
+        .captures(&finding.message)
+        .map(|c| (c[1].to_string(), c[2].to_string()))
+}
+
+/// True if `finding` is exactly one of the pinned, accepted-debt propagation gaps
+/// (tracked as D-69) rather than newly appeared drift.
+pub fn is_pinned_baseline(finding: &Finding) -> bool {
+    missing_pair(finding).is_some_and(|(id, path)| {
+        PINNED_PROPAGATION_GAPS_2026_07_29
+            .iter()
+            .any(|(pid, ppath)| *pid == id && *ppath == path)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,86 +229,17 @@ mod tests {
         targets::SeamIndex::build(&[load("pricing"), load("rating"), load("subscriptions")])
     }
 
-    /// Pinned baseline of `P1/propagation-missing` findings against the live
-    /// pricing register, hand-derived from the failure output of this test on
-    /// 2026-07-29 (not by running the checker and trusting whatever it
-    /// produces — a self-derived baseline asserts nothing). These 24
-    /// `(decision id, target path)` pairs are **debt, not correctness**:
-    /// pre-existing gaps left by the 2026-07-10 decision wave, confirmed real
-    /// by manual cross-check (PRD.md cites 34 *other* decision ids, so the
-    /// citation convention is genuine and broadly followed — these 24 are
-    /// what that wave skipped, not resolver noise). Two confirmed shapes: D-01's
-    /// substance is present in the PRD and only the citation is missing; D-15's
-    /// `PHASE_UNCOVERED` never appears there at all, a real substance gap.
-    /// Fixing them is a separate docs round (tracked as **D-69**), not this
-    /// task loop's job. Pinned as an exact set so a *new* gap fails this test
-    /// immediately, and so a *fixed* gap fails it too — the list must be
-    /// updated deliberately when the docs improve, never left to quietly
-    /// become a floor.
-    const PINNED_PROPAGATION_GAPS_2026_07_29: &[(&str, &str)] = &[
-        ("D-01", "PRD.md"),
-        (
-            "D-02",
-            "ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md",
-        ),
-        ("D-02", "DESIGN.md"),
-        ("D-02", "PRD.md"),
-        ("D-02", "design/01-foundation.md"),
-        ("D-02", "design/07-pricewindow-linkage.md"),
-        ("D-04", "PRD.md"),
-        ("D-05", "PRD.md"),
-        ("D-06", "PRD.md"),
-        ("D-07", "PRD.md"),
-        ("D-13", "PRD.md"),
-        ("D-15", "PRD.md"),
-        ("D-16", "PRD.md"),
-        ("D-19", "PRD.md"),
-        ("D-20", "PRD.md"),
-        ("D-24", "PRD.md"),
-        ("D-25", "PRD.md"),
-        ("D-28", "PRD.md"),
-        ("D-32", "PRD.md"),
-        ("D-35", "PRD.md"),
-        ("D-39", "PRD.md"),
-        ("D-40", "design/10-advanced-primitives.md"),
-        ("D-41", "DESIGN.md"),
-        ("D-60", "design/03-price-structure.md"),
-    ];
-
-    /// Parses `P1/propagation-missing` findings back into `(decision id, target
-    /// path)` pairs by their fixed message template (`check`'s own
-    /// `format!("{} claims propagation into {path}, but that document never
-    /// cites {}", ...)`). Test-only: production `Finding` has no separate path
-    /// field, and this round changes test expression, not that shape.
-    fn missing_pairs(findings: &[Finding]) -> Vec<(String, String)> {
-        let shape = Regex::new(
-            r"^(D-\d+) claims propagation into (.+), but that document never cites D-\d+$",
-        )
-        .expect("valid message-shape regex");
-        findings
-            .iter()
-            .filter(|f| f.invariant == "P1/propagation-missing")
-            .map(|f| {
-                let caps = shape.captures(&f.message).unwrap_or_else(|| {
-                    panic!(
-                        "P1/propagation-missing message doesn't match the expected shape: {}",
-                        f.message
-                    )
-                });
-                (caps[1].to_string(), caps[2].to_string())
-            })
-            .collect()
-    }
-
     #[test]
     fn propagation_gaps_match_the_pinned_2026_07_29_baseline() {
         // NOT a green invariant, deliberately: see PINNED_PROPAGATION_GAPS_2026_07_29's
-        // doc comment. This test exists to make debt visible and stable, not to
-        // assert the register is clean — it currently is not, and pretending
-        // otherwise (by asserting emptiness, as this test previously did) hides
-        // exactly the kind of gap P1 exists to catch.
-        let actual: BTreeSet<(String, String)> = missing_pairs(&check(&pricing(), &known_seams()))
-            .into_iter()
+        // doc comment (a module-level `pub const` now, brought into scope here by `use
+        // super::*` above). This test exists to make debt visible and stable, not to
+        // assert the register is clean — it currently is not, and pretending otherwise
+        // (by asserting emptiness, as this test previously did) hides exactly the kind
+        // of gap P1 exists to catch.
+        let actual: BTreeSet<(String, String)> = check(&pricing(), &known_seams())
+            .iter()
+            .filter_map(missing_pair)
             .collect();
         let expected: BTreeSet<(String, String)> = PINNED_PROPAGATION_GAPS_2026_07_29
             .iter()

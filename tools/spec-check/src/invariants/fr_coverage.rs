@@ -5,22 +5,55 @@ use regex::Regex;
 use crate::Corpus;
 use crate::finding::{Finding, Severity};
 
+/// Requirement id -> the corpus-relative paths of every slice that claims it (a
+/// `BTreeSet` per id since a copy/paste slip can claim the same id twice in one file —
+/// see `collect_traces_to`'s doc comment).
+type ClaimsByRequirement = BTreeMap<String, BTreeSet<String>>;
+
 /// P2 — every `…-fr-…` id defined in the PRD is claimed by at least one slice's
 /// `**Traces to**:` block, and no slice traces to an id the PRD never defines.
+///
+/// A gear whose slices use *neither* convention P2 recognises (`**Traces to**:` nor
+/// `This slice directly addresses:`) is not "fully uncovered" — it is unparsed. Rating
+/// and subscriptions both carry a third, still-unrecognised convention (`## 5.
+/// Traceability` sections citing short-form ids like `` `fr-overlay-stacking` `` rather
+/// than the fully-qualified `cpt-cf-bss-…-fr-…` shape). Emitting a `P2/fr-unclaimed` for
+/// every one of that gear's requirements would report confident-sounding gaps P2 has no
+/// actual basis for — worse than silence. So: when no document in the corpus used either
+/// known convention at all, this emits exactly one `P2/traceability-convention-unknown`
+/// instead of the per-id sweep. `P2/fr-dangling` is unaffected either way — a slice
+/// claiming (in a convention this *can* read) an id the PRD never defines is exactly as
+/// real a defect regardless of how much of the corpus verifies cleanly.
 pub fn check(corpus: &Corpus) -> Vec<Finding> {
     let defined = defined_requirements(corpus);
-    let (claimed, mut findings) = claimed_requirements(corpus);
+    let (claimed, mut findings, convention_seen) = claimed_requirements(corpus);
 
-    for id in &defined {
-        if !claimed.contains_key(id) {
-            findings.push(Finding {
-                invariant: "P2/fr-unclaimed".to_string(),
-                severity: Severity::Low,
-                file: "PRD.md".to_string(),
-                line: None,
-                message: format!("{id} is claimed by no slice's Traces-to line"),
-            });
+    if convention_seen {
+        for id in &defined {
+            if !claimed.contains_key(id) {
+                findings.push(Finding {
+                    invariant: "P2/fr-unclaimed".to_string(),
+                    severity: Severity::Low,
+                    file: "PRD.md".to_string(),
+                    line: None,
+                    message: format!("{id} is claimed by no slice's Traces-to line"),
+                });
+            }
         }
+    } else {
+        findings.push(Finding {
+            invariant: "P2/traceability-convention-unknown".to_string(),
+            severity: Severity::Low,
+            file: "PRD.md".to_string(),
+            line: None,
+            message: format!(
+                "P2 cannot verify requirement coverage for {}: no slice uses a recognised \
+                 traceability convention (`**Traces to**:` or `This slice directly \
+                 addresses:`) — per-id claims are not reported for this gear rather than \
+                 reporting every requirement as unclaimed",
+                corpus.root().display()
+            ),
+        });
     }
 
     for (id, files) in &claimed {
@@ -59,17 +92,23 @@ fn defined_requirements(corpus: &Corpus) -> BTreeSet<String> {
 /// the second shape still gets a `P2/traceability-convention-divergent`
 /// finding of its own: the checker must not silently absorb a shape split from
 /// the rest of the set.
-fn claimed_requirements(corpus: &Corpus) -> (BTreeMap<String, BTreeSet<String>>, Vec<Finding>) {
+///
+/// The third return value is whether *either* convention was seen anywhere in the
+/// corpus at all — `check` uses it to distinguish "this gear's requirements are
+/// verifiably uncovered" from "this gear's convention is one P2 doesn't parse".
+fn claimed_requirements(corpus: &Corpus) -> (ClaimsByRequirement, Vec<Finding>, bool) {
     let id = Regex::new(r"`(cpt-cf-[a-z0-9-]*-fr-[a-z0-9-]+)`").expect("valid id regex");
-    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut out: ClaimsByRequirement = BTreeMap::new();
     let mut findings = Vec::new();
+    let mut convention_seen = false;
 
     for (path, text) in corpus.files() {
         if path == "PRD.md" {
             continue;
         }
-        collect_traces_to(path, text, &id, &mut out);
-        if collect_directly_addresses(path, text, &id, &mut out) {
+        let saw_traces_to = collect_traces_to(path, text, &id, &mut out);
+        let saw_directly_addresses = collect_directly_addresses(path, text, &id, &mut out);
+        if saw_directly_addresses {
             findings.push(Finding {
                 invariant: "P2/traceability-convention-divergent".to_string(),
                 severity: Severity::Low,
@@ -81,8 +120,9 @@ fn claimed_requirements(corpus: &Corpus) -> (BTreeMap<String, BTreeSet<String>>,
                 ),
             });
         }
+        convention_seen = convention_seen || saw_traces_to || saw_directly_addresses;
     }
-    (out, findings)
+    (out, findings, convention_seen)
 }
 
 /// Ids inside a `**Traces to**:` block, which runs until the first blank line.
@@ -90,17 +130,18 @@ fn claimed_requirements(corpus: &Corpus) -> (BTreeMap<String, BTreeSet<String>>,
 /// the same id in one block, and that is one dangling defect, not one per
 /// repetition — deduplicating here (rather than in the dangling loop) keeps
 /// both collectors and their caller honest about "which documents claim this
-/// id", with no separate dedup step to forget.
-fn collect_traces_to(
-    path: &str,
-    text: &str,
-    id: &Regex,
-    out: &mut BTreeMap<String, BTreeSet<String>>,
-) {
+/// id", with no separate dedup step to forget. Returns whether the marker was
+/// seen at all, mirroring `collect_directly_addresses` — `claimed_requirements`
+/// needs both collectors' "did I see my marker" signal to tell a gear using
+/// neither convention from one using this convention exhaustively (thoroughly
+/// claiming everything, hence never triggering a per-id finding either way).
+fn collect_traces_to(path: &str, text: &str, id: &Regex, out: &mut ClaimsByRequirement) -> bool {
     let mut in_block = false;
+    let mut seen = false;
     for line in text.lines() {
         if line.contains("**Traces to**:") {
             in_block = true;
+            seen = true;
         } else if in_block && line.trim().is_empty() {
             in_block = false;
         }
@@ -112,6 +153,7 @@ fn collect_traces_to(
             }
         }
     }
+    seen
 }
 
 /// Ids inside a `This slice directly addresses:` block. Unlike `**Traces
@@ -128,7 +170,7 @@ fn collect_directly_addresses(
     path: &str,
     text: &str,
     id: &Regex,
-    out: &mut BTreeMap<String, BTreeSet<String>>,
+    out: &mut ClaimsByRequirement,
 ) -> bool {
     const MARKER: &str = "This slice directly addresses:";
     let mut in_block = false;
@@ -295,5 +337,68 @@ mod tests {
         assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
         assert_eq!(findings[0].invariant, "P2/fr-dangling");
         assert_eq!(findings[0].file, "design/01-a.md");
+    }
+
+    #[test]
+    fn flags_a_gear_using_no_known_traceability_convention_instead_of_per_id_noise() {
+        // Mirrors rating's and subscriptions' real shape: the PRD defines requirements,
+        // but no slice uses `**Traces to**:` or `This slice directly addresses:`
+        // anywhere — instead a third, unparsed convention (`## 5. Traceability`
+        // sections citing short-form ids). P2 has no way to tell "claimed" from
+        // "unclaimed" for this gear's convention, so it must say so exactly once
+        // rather than emit a P2/fr-unclaimed for every requirement it can't verify.
+        //
+        // `findings.len() == 1` below also proves P2/fr-dangling can't fire alongside
+        // convention-unknown for this corpus: nothing can enter `claimed` without one of
+        // the two known markers being seen, and seeing either marker is exactly what
+        // "convention known" means — so a truly unrecognised-convention corpus has
+        // nothing for the (untouched, still-unconditional) fr-dangling loop to iterate.
+        let corpus = Corpus::from_parts(
+            "gears/bss/gamma/docs",
+            [
+                (
+                    "PRD.md",
+                    "- [ ] `p1` - **ID**: `cpt-cf-bss-gamma-fr-one`\n- [ ] `p1` - **ID**: `cpt-cf-bss-gamma-fr-two`\n",
+                ),
+                (
+                    "design/01-a.md",
+                    "## 5. Traceability\n\n- **PRD**: §6.3 `fr-one`; §6.4 `fr-two`\n",
+                ),
+            ],
+        );
+        let findings = check(&corpus);
+        assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
+        assert_eq!(findings[0].invariant, "P2/traceability-convention-unknown");
+        assert_eq!(findings[0].severity, Severity::Low);
+        assert!(
+            !findings.iter().any(|f| f.invariant == "P2/fr-unclaimed"),
+            "unexpected: {findings:#?}"
+        );
+    }
+
+    #[test]
+    fn rating_and_subscriptions_report_convention_unknown_not_per_id_noise() {
+        // Real-corpus regression for the P2 fix: rating and subscriptions use a third
+        // (unparsed) traceability convention — confirmed by no file in either gear
+        // containing `**Traces to**:` or `This slice directly addresses:` — so each
+        // must report exactly one P2/traceability-convention-unknown and zero
+        // P2/fr-unclaimed. Pricing is unaffected: it uses `**Traces to**:` throughout,
+        // so it keeps its normal per-id behaviour (see `every_pricing_fr_is_claimed_by_a_slice`).
+        for gear in ["rating", "subscriptions"] {
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("../../gears/bss/{gear}/docs"));
+            let corpus = Corpus::load(&root).expect("gear corpus loads");
+            let findings = check(&corpus);
+            let unknown: Vec<_> = findings
+                .iter()
+                .filter(|f| f.invariant == "P2/traceability-convention-unknown")
+                .collect();
+            let unclaimed: Vec<_> = findings
+                .iter()
+                .filter(|f| f.invariant == "P2/fr-unclaimed")
+                .collect();
+            assert_eq!(unknown.len(), 1, "{gear}: unexpected: {findings:#?}");
+            assert!(unclaimed.is_empty(), "{gear}: unexpected: {findings:#?}");
+        }
     }
 }

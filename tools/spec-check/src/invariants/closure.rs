@@ -5,21 +5,50 @@ use regex::Regex;
 use crate::Corpus;
 use crate::finding::{Finding, Severity};
 
-/// P3 — declared-and-referenced closure for instruction ids and error codes.
-pub fn check(corpus: &Corpus) -> Vec<Finding> {
+/// The union of every `inst-*` id declared (via a `` - `inst-id` `` bullet line) across
+/// every corpus the CLI loaded. `check`'s dangling-instruction rule verifies references
+/// against this union rather than the referencing corpus's own declarations alone: an id
+/// pricing declares and rating cites (in `SEAMS.md`, `DECISIONS.md`, an ADR, …) without a
+/// local re-declaration is a legitimate cross-gear reference, not a dangling one — P3
+/// must not conflate "declared in a sibling gear" with "declared nowhere".
+#[derive(Debug, Default)]
+pub struct DeclaredInstructions {
+    ids: BTreeSet<String>,
+}
+
+impl DeclaredInstructions {
+    pub fn build(corpora: &[Corpus]) -> Self {
+        let declared_inst = Regex::new(r"- `(inst-[a-z0-9-]+)`\s*$").expect("valid decl regex");
+        let mut ids = BTreeSet::new();
+        for corpus in corpora {
+            for (_, text) in corpus.files() {
+                for line in text.lines() {
+                    if let Some(c) = declared_inst.captures(line.trim_end()) {
+                        ids.insert(c[1].to_string());
+                    }
+                }
+            }
+        }
+        Self { ids }
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+}
+
+/// P3 — declared-and-referenced closure for instruction ids and error codes. `declared`
+/// is the cross-corpus instruction-id union (see `DeclaredInstructions`) built once from
+/// every loaded gear; error-code closure (`check_error_codes`) stays scoped to `corpus`
+/// alone — unlike instruction ids, error codes are not cited across gears by convention.
+pub fn check(corpus: &Corpus, declared: &DeclaredInstructions) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    let declared_inst = Regex::new(r"- `(inst-[a-z0-9-]+)`\s*$").expect("valid decl regex");
     let any_inst = Regex::new(r"`(inst-[a-z0-9-]+)`").expect("valid ref regex");
-
-    let mut declared: BTreeSet<String> = BTreeSet::new();
     let mut referenced: BTreeMap<String, String> = BTreeMap::new();
 
     for (path, text) in corpus.files() {
         for line in text.lines() {
-            if let Some(c) = declared_inst.captures(line.trim_end()) {
-                declared.insert(c[1].to_string());
-            }
             for c in any_inst.captures_iter(line) {
                 referenced
                     .entry(c[1].to_string())
@@ -126,6 +155,143 @@ fn check_error_codes(corpus: &Corpus) -> Vec<Finding> {
     findings
 }
 
+/// Pinned baseline of `P3/code-unreferenced` findings against the live pricing corpus,
+/// hand-derived from the failure output of this test on 2026-07-29 (not by running the
+/// checker and trusting whatever it produces — a self-derived baseline asserts
+/// nothing). These 51 `(code, declaring file)` pairs are **debt, not correctness**:
+/// confirmed real — each rule describes its failure mode in prose (e.g. "any overlap
+/// fails") without naming the specific code its slice's Problem-responses catalogue
+/// defines for that failure. Fixing them is a separate docs round (owed alongside
+/// **D-69**), not this task loop's job. Pinned as an exact set so a *new*
+/// unreferenced code fails this test immediately, and so a *fixed* one fails it too —
+/// the list must be updated deliberately when the docs improve, never left to quietly
+/// become a floor. Promoted to a `pub const` (2026-07-29, fix round 1) so the CLI has
+/// exactly the same one definition of this debt the tests pin against, rather than a
+/// second, test-only copy the CLI can't see.
+pub const PINNED_UNREFERENCED_CODES_2026_07_29: &[(&str, &str)] = &[
+    ("ADDON_CYCLE", "design/02-plan-definition.md"),
+    ("ADDON_INCOMPATIBLE", "design/02-plan-definition.md"),
+    ("ADDON_OVERRIDE_UNRESOLVED", "design/02-plan-definition.md"),
+    ("APPROVAL_ROLE_REQUIRED", "design/05-governance.md"),
+    (
+        "AVAILABILITY_OUTSIDE_COVERAGE",
+        "design/07-pricewindow-linkage.md",
+    ),
+    ("BACKDATE_GRANT_REQUIRED", "design/05-governance.md"),
+    ("BASIS_MISSING", "design/08-bundles.md"),
+    ("BILLING_TIMING_MISSING", "design/06-consumer-contracts.md"),
+    ("BRAND_UNKNOWN", "design/04-currency-tax.md"),
+    ("BULK_ROW_CONFLICT", "design/12-operator-efficiency.md"),
+    (
+        "CHANGE_TARGET_UNPUBLISHED",
+        "design/06-consumer-contracts.md",
+    ),
+    ("CLONE_SOURCE_NOT_FOUND", "design/12-operator-efficiency.md"),
+    ("COMPONENT_UNPUBLISHED", "design/08-bundles.md"),
+    (
+        "COMPOSITE_CONSTITUENT_UNPUBLISHED",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "COMPOSITE_SELF_REFERENCE",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "COMPOSITE_TOO_FEW_CONSTITUENTS",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "CREDIT_UNIT_UNPUBLISHED",
+        "design/10-advanced-primitives.md",
+    ),
+    ("DESCRIPTOR_INCOMPLETE", "design/02-plan-definition.md"),
+    ("EVAL_POLICY_MISPLACED", "design/03-price-structure.md"),
+    ("FLOOR_FALLBACK_MISSING", "design/10-advanced-primitives.md"),
+    (
+        "FLOOR_INSIDE_PRICED_BAND",
+        "design/10-advanced-primitives.md",
+    ),
+    ("FLOOR_TYPE_MISSING", "design/10-advanced-primitives.md"),
+    (
+        "GRANDFATHERED_ROW_IMMUTABLE",
+        "design/07-pricewindow-linkage.md",
+    ),
+    (
+        "GRANDFATHER_LOOSEN_FORBIDDEN",
+        "design/07-pricewindow-linkage.md",
+    ),
+    (
+        "GRANT_APPLICABILITY_INELIGIBLE",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "GRANT_APPLICABILITY_UNIT_MISMATCH",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "GRANT_APPLICABILITY_UNPUBLISHED",
+        "design/10-advanced-primitives.md",
+    ),
+    ("GRANT_EXPIRY_MISSING", "design/10-advanced-primitives.md"),
+    ("GRANT_PRICE_UNSCOPED", "design/10-advanced-primitives.md"),
+    ("GRANT_REF_UNDEFINED", "design/06-consumer-contracts.md"),
+    ("GROUP_UNKNOWN", "design/09-price-overlays.md"),
+    ("HYBRID_INCOMPLETE", "design/02-plan-definition.md"),
+    ("METER_AMBIGUOUS", "design/02-plan-definition.md"),
+    ("PACKAGE_FIELDS_INVALID", "design/03-price-structure.md"),
+    ("PHASE_DURATION_INVALID", "design/02-plan-definition.md"),
+    ("PHASE_GRAPH_INVALID", "design/02-plan-definition.md"),
+    ("PLANTIER_DIVERGENT", "design/02-plan-definition.md"),
+    ("PLANTIER_MISSING", "design/02-plan-definition.md"),
+    (
+        "PRORATION_INPUTS_MISSING",
+        "design/06-consumer-contracts.md",
+    ),
+    ("PURCHASE_QTY_RANGE_INVALID", "design/02-plan-definition.md"),
+    ("QUANTITY_SOURCE_MISSING", "design/03-price-structure.md"),
+    ("REASON_REQUIRED", "design/05-governance.md"),
+    ("REGION_SCOPE_DENIED", "design/05-governance.md"),
+    (
+        "RESERVATION_ON_NON_USAGE",
+        "design/10-advanced-primitives.md",
+    ),
+    ("RUN_SELECTOR_EMPTY", "design/12-operator-efficiency.md"),
+    ("SETUP_ROW_INVALID", "design/02-plan-definition.md"),
+    ("TAXONOMY_VALUE_IN_USE", "design/04-currency-tax.md"),
+    ("TAX_BASIS_INCOMPLETE", "design/04-currency-tax.md"),
+    ("TIER_BANDS_GAP", "design/03-price-structure.md"),
+    ("TIER_BANDS_OVERLAP", "design/03-price-structure.md"),
+    ("WINDOW_GAP", "design/07-pricewindow-linkage.md"),
+];
+
+/// Parses a `P3/code-unreferenced` finding's `(code, declaring file)` pair from
+/// `check_error_codes`'s own fixed message template. `None` for any other invariant tag
+/// or a message that doesn't match the expected shape — the single production-and-test
+/// definition of "how to read this finding back into pinned-baseline shape" (promoted
+/// 2026-07-29, fix round 1, replacing what was a test-only `unreferenced_pairs` helper).
+pub fn unreferenced_pair(finding: &Finding) -> Option<(String, String)> {
+    if finding.invariant != "P3/code-unreferenced" {
+        return None;
+    }
+    let shape = Regex::new(
+        r"^`([A-Z][A-Z0-9_]+)` is declared in a Problem-responses block but referenced by no rule$",
+    )
+    .expect("valid message-shape regex");
+    shape
+        .captures(&finding.message)
+        .map(|c| (c[1].to_string(), finding.file.clone()))
+}
+
+/// True if `finding` is exactly one of the pinned, accepted-debt unreferenced-code
+/// findings (tracked as D-69) rather than newly appeared drift.
+pub fn is_pinned_baseline(finding: &Finding) -> bool {
+    unreferenced_pair(finding).is_some_and(|(code, file)| {
+        PINNED_UNREFERENCED_CODES_2026_07_29
+            .iter()
+            .any(|(pcode, pfile)| *pcode == code && *pfile == file)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +303,17 @@ mod tests {
         Corpus::load(&root).expect("pricing corpus loads")
     }
 
+    fn load_gears(names: &[&str]) -> Vec<Corpus> {
+        names
+            .iter()
+            .map(|g| {
+                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join(format!("../../gears/bss/{g}/docs"));
+                Corpus::load(&root).expect("gear corpus loads")
+            })
+            .collect()
+    }
+
     #[test]
     fn flags_an_instruction_id_referenced_but_never_declared() {
         let corpus = Corpus::from_parts(
@@ -146,10 +323,82 @@ mod tests {
                 "1. Do the thing per `inst-xx-ghost` - `inst-xx-real`\n",
             )],
         );
-        let findings = check(&corpus);
+        let declared = DeclaredInstructions::build(std::slice::from_ref(&corpus));
+        let findings = check(&corpus, &declared);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].invariant, "P3/inst-dangling");
         assert!(findings[0].message.contains("inst-xx-ghost"));
+    }
+
+    #[test]
+    fn does_not_flag_an_instruction_id_declared_in_a_different_loaded_corpus() {
+        // Mirrors the real shape this fix addresses: an id pricing declares (in a
+        // design slice), cited from rating's SEAMS.md without a local re-declaration
+        // there. Resolving declarations across every loaded corpus — not just the one
+        // currently being checked — is exactly what makes this a legitimate reference
+        // rather than a dangling one.
+        let corpora = vec![
+            Corpus::from_parts(
+                "gears/bss/alpha/docs",
+                [("design/01-a.md", "1. Some rule - `inst-shared-id`\n")],
+            ),
+            Corpus::from_parts(
+                "gears/bss/beta/docs",
+                [(
+                    "SEAMS.md",
+                    "Cites the joint contract `inst-shared-id` here.\n",
+                )],
+            ),
+        ];
+        let declared = DeclaredInstructions::build(&corpora);
+        let findings = check(&corpora[1], &declared);
+        assert!(
+            !findings.iter().any(|f| f.invariant == "P3/inst-dangling"),
+            "unexpected: {findings:#?}"
+        );
+    }
+
+    #[test]
+    fn flags_an_instruction_id_declared_in_no_loaded_corpus() {
+        // Distinguishes "declared elsewhere in the loaded set" (previous test — not
+        // dangling) from "declared nowhere at all" (still dangling): the cross-corpus
+        // union must not become a blanket amnesty for genuinely invented ids.
+        let corpora = vec![
+            Corpus::from_parts(
+                "gears/bss/alpha/docs",
+                [("design/01-a.md", "nothing here\n")],
+            ),
+            Corpus::from_parts(
+                "gears/bss/beta/docs",
+                [("SEAMS.md", "Cites the never-declared `inst-ghost` here.\n")],
+            ),
+        ];
+        let declared = DeclaredInstructions::build(&corpora);
+        let findings = check(&corpora[1], &declared);
+        let dangling: Vec<_> = findings
+            .iter()
+            .filter(|f| f.invariant == "P3/inst-dangling")
+            .collect();
+        assert_eq!(dangling.len(), 1, "unexpected: {findings:#?}");
+        assert!(dangling[0].message.contains("inst-ghost"));
+    }
+
+    #[test]
+    fn cross_gear_instruction_references_are_not_flagged_against_the_live_corpus() {
+        // Real-corpus regression: before this fix, checking rating/subscriptions against
+        // only their own declarations produced 8 P3/inst-dangling false positives for
+        // ids pricing declares and they legitimately cite (inst-tt-joint,
+        // inst-cmp-usagetype, inst-plv-adjustment, inst-plv-lines, inst-rv-tier-q,
+        // inst-plv-class-tiebreak, inst-tb-window-continuity, inst-gs-shape). With the
+        // declared set built across all three loaded gears, there must be none.
+        let corpora = load_gears(&["pricing", "rating", "subscriptions"]);
+        let declared = DeclaredInstructions::build(&corpora);
+        let dangling: Vec<_> = corpora
+            .iter()
+            .flat_map(|c| check(c, &declared))
+            .filter(|f| f.invariant == "P3/inst-dangling")
+            .collect();
+        assert!(dangling.is_empty(), "unexpected: {dangling:#?}");
     }
 
     #[test]
@@ -161,7 +410,8 @@ mod tests {
                 "**Problem responses (RFC 9457):** `USED_CODE` (422),\n`ORPHAN_CODE` (409)\n\nRule: fails with `USED_CODE`.\n",
             )],
         );
-        let findings = check(&corpus);
+        let declared = DeclaredInstructions::build(std::slice::from_ref(&corpus));
+        let findings = check(&corpus, &declared);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].invariant, "P3/code-unreferenced");
         assert!(findings[0].message.contains("ORPHAN_CODE"));
@@ -185,7 +435,8 @@ mod tests {
                  `FIRST_CODE` (409), `SECOND_CODE` (422).\n",
             )],
         );
-        let findings = check(&corpus);
+        let declared = DeclaredInstructions::build(std::slice::from_ref(&corpus));
+        let findings = check(&corpus, &declared);
         let divergences: Vec<_> = findings
             .iter()
             .filter(|f| f.invariant == "P3/code-convention-divergent")
@@ -209,7 +460,8 @@ mod tests {
                 "The publish check fails with `SOME_CODE` when the row is invalid.\n",
             )],
         );
-        let findings = check(&corpus);
+        let declared = DeclaredInstructions::build(std::slice::from_ref(&corpus));
+        let findings = check(&corpus, &declared);
         assert!(
             !findings
                 .iter()
@@ -220,144 +472,13 @@ mod tests {
 
     #[test]
     fn pricing_corpus_has_no_dangling_instruction_ids() {
-        let dangling: Vec<_> = check(&pricing())
+        let pricing = pricing();
+        let declared = DeclaredInstructions::build(std::slice::from_ref(&pricing));
+        let dangling: Vec<_> = check(&pricing, &declared)
             .into_iter()
             .filter(|f| f.invariant == "P3/inst-dangling")
             .collect();
         assert!(dangling.is_empty(), "unexpected: {dangling:#?}");
-    }
-
-    /// Pinned baseline of `P3/code-unreferenced` findings against the live pricing corpus,
-    /// hand-derived from the failure output of this test on 2026-07-29 (not by running the
-    /// checker and trusting whatever it produces — a self-derived baseline asserts
-    /// nothing). These 51 `(code, declaring file)` pairs are **debt, not correctness**:
-    /// confirmed real — each rule describes its failure mode in prose (e.g. "any overlap
-    /// fails") without naming the specific code its slice's Problem-responses catalogue
-    /// defines for that failure. Fixing them is a separate docs round (owed alongside
-    /// **D-69**), not this task loop's job. Pinned as an exact set so a *new*
-    /// unreferenced code fails this test immediately, and so a *fixed* one fails it too —
-    /// the list must be updated deliberately when the docs improve, never left to quietly
-    /// become a floor.
-    const PINNED_UNREFERENCED_CODES_2026_07_29: &[(&str, &str)] = &[
-        ("ADDON_CYCLE", "design/02-plan-definition.md"),
-        ("ADDON_INCOMPATIBLE", "design/02-plan-definition.md"),
-        ("ADDON_OVERRIDE_UNRESOLVED", "design/02-plan-definition.md"),
-        ("APPROVAL_ROLE_REQUIRED", "design/05-governance.md"),
-        (
-            "AVAILABILITY_OUTSIDE_COVERAGE",
-            "design/07-pricewindow-linkage.md",
-        ),
-        ("BACKDATE_GRANT_REQUIRED", "design/05-governance.md"),
-        ("BASIS_MISSING", "design/08-bundles.md"),
-        ("BILLING_TIMING_MISSING", "design/06-consumer-contracts.md"),
-        ("BRAND_UNKNOWN", "design/04-currency-tax.md"),
-        ("BULK_ROW_CONFLICT", "design/12-operator-efficiency.md"),
-        (
-            "CHANGE_TARGET_UNPUBLISHED",
-            "design/06-consumer-contracts.md",
-        ),
-        ("CLONE_SOURCE_NOT_FOUND", "design/12-operator-efficiency.md"),
-        ("COMPONENT_UNPUBLISHED", "design/08-bundles.md"),
-        (
-            "COMPOSITE_CONSTITUENT_UNPUBLISHED",
-            "design/10-advanced-primitives.md",
-        ),
-        (
-            "COMPOSITE_SELF_REFERENCE",
-            "design/10-advanced-primitives.md",
-        ),
-        (
-            "COMPOSITE_TOO_FEW_CONSTITUENTS",
-            "design/10-advanced-primitives.md",
-        ),
-        (
-            "CREDIT_UNIT_UNPUBLISHED",
-            "design/10-advanced-primitives.md",
-        ),
-        ("DESCRIPTOR_INCOMPLETE", "design/02-plan-definition.md"),
-        ("EVAL_POLICY_MISPLACED", "design/03-price-structure.md"),
-        ("FLOOR_FALLBACK_MISSING", "design/10-advanced-primitives.md"),
-        (
-            "FLOOR_INSIDE_PRICED_BAND",
-            "design/10-advanced-primitives.md",
-        ),
-        ("FLOOR_TYPE_MISSING", "design/10-advanced-primitives.md"),
-        (
-            "GRANDFATHERED_ROW_IMMUTABLE",
-            "design/07-pricewindow-linkage.md",
-        ),
-        (
-            "GRANDFATHER_LOOSEN_FORBIDDEN",
-            "design/07-pricewindow-linkage.md",
-        ),
-        (
-            "GRANT_APPLICABILITY_INELIGIBLE",
-            "design/10-advanced-primitives.md",
-        ),
-        (
-            "GRANT_APPLICABILITY_UNIT_MISMATCH",
-            "design/10-advanced-primitives.md",
-        ),
-        (
-            "GRANT_APPLICABILITY_UNPUBLISHED",
-            "design/10-advanced-primitives.md",
-        ),
-        ("GRANT_EXPIRY_MISSING", "design/10-advanced-primitives.md"),
-        ("GRANT_PRICE_UNSCOPED", "design/10-advanced-primitives.md"),
-        ("GRANT_REF_UNDEFINED", "design/06-consumer-contracts.md"),
-        ("GROUP_UNKNOWN", "design/09-price-overlays.md"),
-        ("HYBRID_INCOMPLETE", "design/02-plan-definition.md"),
-        ("METER_AMBIGUOUS", "design/02-plan-definition.md"),
-        ("PACKAGE_FIELDS_INVALID", "design/03-price-structure.md"),
-        ("PHASE_DURATION_INVALID", "design/02-plan-definition.md"),
-        ("PHASE_GRAPH_INVALID", "design/02-plan-definition.md"),
-        ("PLANTIER_DIVERGENT", "design/02-plan-definition.md"),
-        ("PLANTIER_MISSING", "design/02-plan-definition.md"),
-        (
-            "PRORATION_INPUTS_MISSING",
-            "design/06-consumer-contracts.md",
-        ),
-        ("PURCHASE_QTY_RANGE_INVALID", "design/02-plan-definition.md"),
-        ("QUANTITY_SOURCE_MISSING", "design/03-price-structure.md"),
-        ("REASON_REQUIRED", "design/05-governance.md"),
-        ("REGION_SCOPE_DENIED", "design/05-governance.md"),
-        (
-            "RESERVATION_ON_NON_USAGE",
-            "design/10-advanced-primitives.md",
-        ),
-        ("RUN_SELECTOR_EMPTY", "design/12-operator-efficiency.md"),
-        ("SETUP_ROW_INVALID", "design/02-plan-definition.md"),
-        ("TAXONOMY_VALUE_IN_USE", "design/04-currency-tax.md"),
-        ("TAX_BASIS_INCOMPLETE", "design/04-currency-tax.md"),
-        ("TIER_BANDS_GAP", "design/03-price-structure.md"),
-        ("TIER_BANDS_OVERLAP", "design/03-price-structure.md"),
-        ("WINDOW_GAP", "design/07-pricewindow-linkage.md"),
-    ];
-
-    /// Parses `P3/code-unreferenced` findings back into `(code, file)` pairs. `file` is
-    /// already a structured `Finding` field; `code` is pulled from `check_error_codes`'s own
-    /// fixed message template (`` `{codeid}` is declared in a Problem-responses block but
-    /// referenced by no rule ``). Test-only, same reasoning as `propagation.rs`'s
-    /// `missing_pairs`: production `Finding` has no separate symbol field, and this round
-    /// changes test expression, not that shape.
-    fn unreferenced_pairs(findings: &[Finding]) -> Vec<(String, String)> {
-        let shape = Regex::new(
-            r"^`([A-Z][A-Z0-9_]+)` is declared in a Problem-responses block but referenced by no rule$",
-        )
-        .expect("valid message-shape regex");
-        findings
-            .iter()
-            .filter(|f| f.invariant == "P3/code-unreferenced")
-            .map(|f| {
-                let caps = shape.captures(&f.message).unwrap_or_else(|| {
-                    panic!(
-                        "P3/code-unreferenced message doesn't match the expected shape: {}",
-                        f.message
-                    )
-                });
-                (caps[1].to_string(), f.file.clone())
-            })
-            .collect()
     }
 
     #[test]
@@ -366,8 +487,12 @@ mod tests {
         // doc comment. This test exists to make debt visible and stable, not to assert the
         // corpus is clean — it currently is not, and pretending otherwise (by asserting
         // emptiness) would hide exactly the kind of gap P3 exists to catch.
-        let actual: BTreeSet<(String, String)> =
-            unreferenced_pairs(&check(&pricing())).into_iter().collect();
+        let pricing = pricing();
+        let declared = DeclaredInstructions::build(std::slice::from_ref(&pricing));
+        let actual: BTreeSet<(String, String)> = check(&pricing, &declared)
+            .iter()
+            .filter_map(unreferenced_pair)
+            .collect();
         let expected: BTreeSet<(String, String)> = PINNED_UNREFERENCED_CODES_2026_07_29
             .iter()
             .map(|(code, path)| (code.to_string(), path.to_string()))
