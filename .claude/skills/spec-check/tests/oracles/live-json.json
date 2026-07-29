@@ -1,0 +1,111 @@
+{
+  "findings": [
+    {
+      "invariant": "P1/propagation-uninterpretable",
+      "severity": "low",
+      "file": "DECISIONS.md",
+      "line": 485,
+      "message": "D-49: propagation citation `§15 rows ×5.` names nothing the resolver recognises, so the claim was not verified at all"
+    },
+    {
+      "invariant": "P1/propagation-uninterpretable",
+      "severity": "low",
+      "file": "DECISIONS.md",
+      "line": 588,
+      "message": "D-66: propagation citation `rating ×4 files (6 sites); subscriptions ×2 files (3 sites).` names nothing the resolver recognises, so the claim was not verified at all"
+    },
+    {
+      "invariant": "P2/traceability-convention-divergent",
+      "severity": "low",
+      "file": "design/01-foundation.md",
+      "line": null,
+      "message": "design/01-foundation.md claims requirements via `This slice directly addresses:`; the rest of the design set uses `**Traces to**:`"
+    },
+    {
+      "invariant": "P2/fr-multiply-claimed",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "cpt-cf-bss-pricing-fr-invoice-currency-binding is claimed by 2 slices, not one: design/04-currency-tax.md, design/08-bundles.md"
+    },
+    {
+      "invariant": "P2/fr-multiply-claimed",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "cpt-cf-bss-pricing-fr-mutation-idempotency is claimed by 2 slices, not one: design/01-foundation.md, design/12-operator-efficiency.md"
+    },
+    {
+      "invariant": "P2/fr-multiply-claimed",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "cpt-cf-bss-pricing-fr-per-seat is claimed by 2 slices, not one: design/02-plan-definition.md, design/03-price-structure.md"
+    },
+    {
+      "invariant": "P2/fr-multiply-claimed",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "cpt-cf-bss-pricing-fr-price-amount-validation is claimed by 3 slices, not one: design/01-foundation.md, design/03-price-structure.md, design/04-currency-tax.md"
+    },
+    {
+      "invariant": "P3/code-convention-divergent",
+      "severity": "low",
+      "file": "design/01-foundation.md",
+      "line": null,
+      "message": "design/01-foundation.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention"
+    },
+    {
+      "invariant": "P1/decision-register-unparsed",
+      "severity": "low",
+      "file": "DECISIONS.md",
+      "line": null,
+      "message": "P1 cannot verify propagation for gears/bss/rating/docs: DECISIONS.md yielded zero decision entries — no `#### <id> …` heading matched the recognised id shape (`D-NN`, optionally gear-prefixed, e.g. `SUB-D-01`) — 0 `**Propagated`-shaped field(s) in that register went unchecked as a result"
+    },
+    {
+      "invariant": "P2/traceability-convention-unknown",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "P2 cannot verify requirement coverage for gears/bss/rating/docs: no slice uses a recognised traceability convention (`**Traces to**:` or `This slice directly addresses:`) — 43 requirement(s) went unchecked as a result; per-id claims are not reported for this gear rather than reporting every requirement as unclaimed"
+    },
+    {
+      "invariant": "P3/code-convention-divergent",
+      "severity": "low",
+      "file": "design/04-overlays-precedence.md",
+      "line": null,
+      "message": "design/04-overlays-precedence.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention"
+    },
+    {
+      "invariant": "P3/code-convention-divergent",
+      "severity": "low",
+      "file": "design/15-rated-output-balance-effects.md",
+      "line": null,
+      "message": "design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention"
+    },
+    {
+      "invariant": "P1/propagation-uninterpretable",
+      "severity": "low",
+      "file": "DECISIONS.md",
+      "line": 143,
+      "message": "SUB-D-15: propagation citation `slice 03 §4.5; slice 08 registry rows; SUB-D-09 amendment.` names nothing the resolver recognises, so the claim was not verified at all"
+    },
+    {
+      "invariant": "P1/propagation-unresolvable",
+      "severity": "low",
+      "file": "DECISIONS.md",
+      "line": 150,
+      "message": "SUB-D-16: propagation target `SEAMS` names no document the resolver can map"
+    },
+    {
+      "invariant": "P2/traceability-convention-unknown",
+      "severity": "low",
+      "file": "PRD.md",
+      "line": null,
+      "message": "P2 cannot verify requirement coverage for gears/bss/subscriptions/docs: no slice uses a recognised traceability convention (`**Traces to**:` or `This slice directly addresses:`) — 47 requirement(s) went unchecked as a result; per-id claims are not reported for this gear rather than reporting every requirement as unclaimed"
+    }
+  ],
+  "known_debt_suppressed": 75,
+  "known_debt_tracked_as": "D-69"
+}
