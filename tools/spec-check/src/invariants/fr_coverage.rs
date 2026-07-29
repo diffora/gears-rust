@@ -11,8 +11,16 @@ use crate::invariants::closure::is_design_slice;
 /// see `collect_traces_to`'s doc comment).
 type ClaimsByRequirement = BTreeMap<String, BTreeSet<String>>;
 
-/// P2 — every `…-fr-…` id defined in the PRD is claimed by at least one slice's
+/// P2 — every `…-fr-…` id defined in the PRD is claimed by **exactly one** slice's
 /// `**Traces to**:` block, and no slice traces to an id the PRD never defines.
+///
+/// Exactly one, not at least one (2026-07-29 final review, item 6): `ClaimsByRequirement`
+/// always mapped an id to the *set* of claiming files, but nothing ever reported
+/// `len() > 1`, so the ownership ambiguity this invariant exists to catch — two slices both
+/// asserting they implement one requirement, with no single owner to change when it moves —
+/// was live and undetected. Both halves are `Low`: `fr-unclaimed` and `fr-multiply-claimed`
+/// are the two directions of the same cardinality question, and neither proves a document
+/// states something false the way `fr-dangling` (Medium) does.
 ///
 /// A gear whose slices use *neither* convention P2 recognises (`**Traces to**:` nor
 /// `This slice directly addresses:`) is not "fully uncovered" — it is unparsed. Rating
@@ -60,6 +68,26 @@ pub fn check(corpus: &Corpus) -> Vec<Finding> {
     }
 
     for (id, files) in &claimed {
+        // Reported whether or not the PRD defines the id: two slices both claiming an id is
+        // an ownership defect on its own, and an id that is *also* dangling gets both
+        // findings because they are two different defects in two different documents.
+        if files.len() > 1 {
+            findings.push(Finding {
+                invariant: "P2/fr-multiply-claimed".to_string(),
+                severity: Severity::Low,
+                file: "PRD.md".to_string(),
+                line: None,
+                message: format!(
+                    "{id} is claimed by {} slices, not one: {}",
+                    files.len(),
+                    files
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
         if !defined.contains(id) {
             for f in files {
                 findings.push(Finding {
@@ -233,6 +261,107 @@ mod tests {
             .filter(|f| f.invariant == "P2/fr-unclaimed")
             .collect();
         assert!(orphans.is_empty(), "unexpected: {orphans:#?}");
+    }
+
+    #[test]
+    fn flags_a_requirement_two_slices_both_claim() {
+        // Item 6: P2's own brief is titled "every PRD requirement is claimed by exactly one
+        // slice", but nothing ever reported `len() > 1` — the map has always been id -> *set
+        // of files*, so the data was there and the check was missing. The finding must name
+        // every claiming slice: "somebody claims this twice" is not actionable, "these two
+        // do" is.
+        let corpus = Corpus::from_parts(
+            "synthetic",
+            [
+                ("PRD.md", "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-shared`\n"),
+                (
+                    "design/01-a.md",
+                    "**Traces to**: `cpt-cf-bss-x-fr-shared`\n",
+                ),
+                (
+                    "design/02-b.md",
+                    "**Traces to**: `cpt-cf-bss-x-fr-shared`\n",
+                ),
+            ],
+        );
+        let findings = check(&corpus);
+        assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
+        assert_eq!(findings[0].invariant, "P2/fr-multiply-claimed");
+        assert_eq!(findings[0].severity, Severity::Low);
+        assert!(findings[0].message.contains("design/01-a.md"));
+        assert!(findings[0].message.contains("design/02-b.md"));
+    }
+
+    #[test]
+    fn one_slice_claiming_a_requirement_twice_is_not_multiply_claimed() {
+        // The bound: `ClaimsByRequirement` deduplicates per file precisely so a copy/paste or
+        // line-wrap repetition inside one block is not two owners. Ownership is per document.
+        let corpus = Corpus::from_parts(
+            "synthetic",
+            [
+                ("PRD.md", "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-once`\n"),
+                (
+                    "design/01-a.md",
+                    "**Traces to**: `cpt-cf-bss-x-fr-once`, `cpt-cf-bss-x-fr-once`\n",
+                ),
+            ],
+        );
+        assert!(
+            check(&corpus).is_empty(),
+            "unexpected: {:#?}",
+            check(&corpus)
+        );
+    }
+
+    #[test]
+    fn multiply_claimed_pricing_requirements_match_what_the_live_design_set_shows() {
+        // The live set item 6 uncovered, pinned as an exact set (in *block scope* — the
+        // review's corroborating numbers came from a corpus-wide grep, and this confirms them
+        // against Traces-to/directly-addresses blocks specifically, where the ownership claim
+        // actually lives). All four are pricing's; rating and subscriptions use a convention
+        // P2 cannot read, so they contribute no claims at all and cannot appear here.
+        //
+        // Not accepted debt and deliberately not in a pinned register: these stay live Low
+        // findings in the CLI's output for a human to rule on. This test only keeps the set
+        // stable — a fifth appearing, or one being resolved, must both fail here.
+        let findings = check(&pricing());
+        let mut actual: Vec<(String, usize)> = findings
+            .iter()
+            .filter(|f| f.invariant == "P2/fr-multiply-claimed")
+            .map(|f| {
+                let id = f
+                    .message
+                    .split_whitespace()
+                    .next()
+                    .expect("the message opens with the requirement id")
+                    .to_string();
+                let n = f
+                    .message
+                    .split(" is claimed by ")
+                    .nth(1)
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .expect("the message states how many slices claim it");
+                (id, n)
+            })
+            .collect();
+        actual.sort();
+        assert_eq!(
+            actual,
+            [
+                (
+                    "cpt-cf-bss-pricing-fr-invoice-currency-binding".to_string(),
+                    2
+                ),
+                ("cpt-cf-bss-pricing-fr-mutation-idempotency".to_string(), 2),
+                ("cpt-cf-bss-pricing-fr-per-seat".to_string(), 2),
+                (
+                    "cpt-cf-bss-pricing-fr-price-amount-validation".to_string(),
+                    3
+                ),
+            ],
+            "the set of multiply-claimed pricing requirements moved; findings: {findings:#?}"
+        );
     }
 
     #[test]

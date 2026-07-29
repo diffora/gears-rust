@@ -1,5 +1,16 @@
 use regex::Regex;
 
+/// The decision-id shape a `####` register entry heading may carry: `D-NN`, optionally
+/// carrying one or more uppercase gear prefixes (`SUB-D-01`, and a future `T-D-01`).
+///
+/// A convention, so it belongs in code — but it must stay *shape*, never a list of gear
+/// names: `(?:[A-Z][A-Z0-9]*-)*` accepts any prefix a sibling gear might mint without this
+/// crate learning which gears exist. Pricing's register writes the bare `D-NN` form and
+/// subscriptions' writes `SUB-D-NN`; before this shape was widened the parser matched only
+/// the bare form, so all 19 of subscriptions' populated `**Propagated**:` claims were
+/// never checked and the run reported clean.
+pub const DECISION_ID: &str = r"(?:[A-Z][A-Z0-9]*-)*D-\d+";
+
 /// One `#### D-NN …` entry of a gear's `DECISIONS.md`.
 #[derive(Debug, Clone)]
 pub struct Decision {
@@ -13,7 +24,7 @@ pub struct Decision {
 /// Parses decision entries. Status-board table rows mentioning `D-NN` are not
 /// entries and are deliberately not matched — only `####` headings are.
 pub fn parse(text: &str) -> Vec<Decision> {
-    let heading = Regex::new(r"^#### (D-\d+)\b").expect("valid heading regex");
+    let heading = Regex::new(&format!(r"^#### ({DECISION_ID})\b")).expect("valid heading regex");
     // Stop at the next *field label*: 8 of 68 real entries continue with
     // `**Amendment …**:` on the SAME physical line, and a greedy `(.+)` swallows those
     // paragraphs whole. The boundary requires the closing `**` to be followed by a colon,
@@ -103,6 +114,16 @@ mod tests {
 #### D-64 [L] Qualifier with no parentheses stays unrecognized
 
 - **Propagated pending**: S9 `inst-should-not-be-read` + §7.
+
+| SUB-D-18 | M | a prefixed status-board row, still not an entry | **DECIDED** |
+
+#### SUB-D-19 [M] A gear-prefixed entry, subscriptions' live shape
+
+- **Propagated**: PRD §6.8 FR + §9.2 + AC 5; SEAMS SUB-B1.
+
+#### T-D-01 [M] A second, differently-prefixed gear's shape
+
+- **Propagated**: PRD §6.5.
 "#;
 
     #[test]
@@ -110,7 +131,45 @@ mod tests {
         let ds = parse(SAMPLE);
         assert_eq!(
             ds.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
-            ["D-53", "D-54", "D-60", "D-61", "D-62", "D-63", "D-64"]
+            [
+                "D-53", "D-54", "D-60", "D-61", "D-62", "D-63", "D-64", "SUB-D-19", "T-D-01"
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_a_gear_prefixed_decision_id_and_its_propagated_field() {
+        // The critical coverage gap this widening closes: subscriptions' register writes
+        // `#### SUB-D-NN`, and the old `^#### (D-\d+)\b` anchor matched none of its 19
+        // entries — so 19 populated `**Propagated**:` claims were never checked while the
+        // CLI printed a finding count that read as a clean verdict. `T-D-01` proves the
+        // shape is a shape, not a hardcoded `SUB-` special case.
+        let ds = parse(SAMPLE);
+        let sub = ds
+            .iter()
+            .find(|d| d.id == "SUB-D-19")
+            .expect("a gear-prefixed entry must parse");
+        assert_eq!(
+            sub.propagated.as_deref(),
+            Some("PRD §6.8 FR + §9.2 + AC 5; SEAMS SUB-B1.")
+        );
+        let t = ds
+            .iter()
+            .find(|d| d.id == "T-D-01")
+            .expect("a differently-prefixed entry must parse");
+        assert_eq!(t.propagated.as_deref(), Some("PRD §6.5."));
+    }
+
+    #[test]
+    fn a_gear_prefixed_status_board_row_is_still_not_an_entry() {
+        // The widened id must not also widen *what counts as an entry*: only `####`
+        // headings do, so the `| SUB-D-18 | … |` status-board row above must stay unparsed
+        // exactly as the bare-`D-56` row does.
+        let ds = parse(SAMPLE);
+        assert!(
+            !ds.iter().any(|d| d.id == "SUB-D-18"),
+            "a table row is not a decision entry: {:#?}",
+            ds.iter().map(|d| &d.id).collect::<Vec<_>>()
         );
     }
 

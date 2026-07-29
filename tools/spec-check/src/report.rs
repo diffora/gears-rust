@@ -44,6 +44,78 @@ pub fn partition_known_debt(findings: Vec<Finding>, gear: &str) -> (Vec<Finding>
     findings.into_iter().partition(|f| !is_known_debt(f, gear))
 }
 
+/// The whole text report, ready to print (no trailing newline — the caller's `println!`
+/// supplies it).
+///
+/// Lives here, not inlined in `main`'s `match` arm, because the suppression *policy* is this
+/// module's responsibility and so is disclosing it: the line `75 known-debt finding(s)
+/// suppressed, tracked as D-69` is the only thing standing between 75 suppressed findings and
+/// 75 invisible ones, and while it was declared inline in the binary no test could reach it —
+/// a refactor that dropped it would have failed nothing. Both summary variants and the
+/// `show_known_debt` body are asserted in this module's tests.
+pub fn render_text(live: &[Finding], known_debt: &[Finding], show_known_debt: bool) -> String {
+    let mut out = String::new();
+    for f in live {
+        out.push_str(&f.render());
+        out.push('\n');
+    }
+    if show_known_debt && !known_debt.is_empty() {
+        out.push_str(&format!(
+            "\nKnown debt — accepted, tracked as {KNOWN_DEBT_TICKET}, not new drift \
+             ({} finding(s)):\n",
+            known_debt.len()
+        ));
+        for f in known_debt {
+            out.push_str(&f.render());
+            out.push('\n');
+        }
+    }
+    out.push_str(&format!("\n{} finding(s)", live.len()));
+    if !known_debt.is_empty() {
+        out.push('\n');
+        if show_known_debt {
+            out.push_str(&format!(
+                "{} known-debt finding(s) shown above, tracked as {KNOWN_DEBT_TICKET} \
+                 (accepted, not new drift)",
+                known_debt.len()
+            ));
+        } else {
+            out.push_str(&format!(
+                "{} known-debt finding(s) suppressed, tracked as {KNOWN_DEBT_TICKET} \
+                 — pass --show-known-debt to see them",
+                known_debt.len()
+            ));
+        }
+    }
+    out
+}
+
+/// The `--format json` envelope. A named type here rather than an anonymous struct declared
+/// inside `main`'s `match` arm, for the same reason as `render_text`: the suppressed count and
+/// the ticket it is tracked against are part of the reporting contract a consumer parses, so
+/// they belong somewhere a test can see them.
+#[derive(serde::Serialize)]
+pub struct JsonReport<'a> {
+    pub findings: &'a [Finding],
+    pub known_debt_suppressed: usize,
+    pub known_debt_tracked_as: &'static str,
+    /// Present only under `--show-known-debt`, so the default envelope stays the live set
+    /// plus an honest count of what was withheld.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub known_debt: Option<&'a [Finding]>,
+}
+
+impl<'a> JsonReport<'a> {
+    pub fn new(live: &'a [Finding], known_debt: &'a [Finding], show_known_debt: bool) -> Self {
+        Self {
+            findings: live,
+            known_debt_suppressed: known_debt.len(),
+            known_debt_tracked_as: KNOWN_DEBT_TICKET,
+            known_debt: show_known_debt.then_some(known_debt),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +225,98 @@ mod tests {
         let (live, known_debt) = partition_known_debt(vec![pinned_propagation_finding()], "rating");
         assert_eq!(live.len(), 1, "unexpected: {live:#?}");
         assert!(known_debt.is_empty(), "unexpected: {known_debt:#?}");
+    }
+
+    #[test]
+    fn the_default_summary_discloses_how_many_findings_were_suppressed() {
+        // The one line that makes suppression honest rather than silent. Untested while it
+        // lived inline in `main`'s match arm: a refactor that dropped it failed nothing, and
+        // the difference between "6 findings" and "6 findings, 75 suppressed" is the
+        // difference between a report and a misleading one.
+        let out = render_text(
+            &[non_baseline_finding()],
+            &[pinned_propagation_finding()],
+            false,
+        );
+        assert!(out.contains("\n1 finding(s)"), "unexpected: {out}");
+        assert!(
+            out.contains("1 known-debt finding(s) suppressed, tracked as D-69"),
+            "the default summary must disclose the suppressed count: {out}"
+        );
+        assert!(
+            out.contains("--show-known-debt"),
+            "and must say how to see them: {out}"
+        );
+        // Suppressed means suppressed: the withheld finding's own text must not be printed,
+        // or the count line would be describing something already on screen.
+        assert!(
+            !out.contains(&pinned_propagation_finding().message),
+            "a suppressed finding must not be rendered: {out}"
+        );
+    }
+
+    #[test]
+    fn show_known_debt_renders_the_suppressed_findings_and_switches_the_summary() {
+        let out = render_text(
+            &[non_baseline_finding()],
+            &[pinned_propagation_finding()],
+            true,
+        );
+        assert!(
+            out.contains("Known debt — accepted, tracked as D-69, not new drift (1 finding(s)):"),
+            "unexpected: {out}"
+        );
+        assert!(
+            out.contains(&pinned_propagation_finding().message),
+            "the suppressed finding must now be rendered: {out}"
+        );
+        assert!(
+            out.contains("1 known-debt finding(s) shown above, tracked as D-69"),
+            "the summary must switch to the shown variant: {out}"
+        );
+        assert!(
+            !out.contains("suppressed"),
+            "and must not still claim suppression: {out}"
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_known_debt_prints_no_known_debt_summary_at_all() {
+        // Both variants are conditional on there being debt to talk about; a clean run must
+        // not print a "0 known-debt finding(s)" line under either flag.
+        for show in [false, true] {
+            let out = render_text(&[non_baseline_finding()], &[], show);
+            assert!(out.contains("\n1 finding(s)"), "show={show}: {out}");
+            assert!(!out.contains("known-debt"), "show={show}: {out}");
+            assert!(!out.contains("Known debt"), "show={show}: {out}");
+        }
+    }
+
+    #[test]
+    fn the_json_envelope_reports_the_suppressed_count_and_withholds_the_findings_by_default() {
+        let live = [non_baseline_finding()];
+        let debt = [pinned_propagation_finding()];
+
+        let default = serde_json::to_string(&JsonReport::new(&live, &debt, false))
+            .expect("the envelope serializes");
+        assert!(
+            default.contains(r#""known_debt_suppressed":1"#),
+            "unexpected: {default}"
+        );
+        assert!(
+            default.contains(r#""known_debt_tracked_as":"D-69""#),
+            "unexpected: {default}"
+        );
+        assert!(
+            !default.contains(r#""known_debt":"#),
+            "the withheld findings must be absent, not null: {default}"
+        );
+
+        let shown = serde_json::to_string(&JsonReport::new(&live, &debt, true))
+            .expect("the envelope serializes");
+        assert!(
+            shown.contains(r#""known_debt":["#),
+            "--show-known-debt must include them: {shown}"
+        );
     }
 }

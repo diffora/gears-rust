@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 
 use regex::Regex;
 
@@ -16,6 +17,65 @@ pub struct Resolved {
     /// a row for, paired with the sorted, deduplicated gear names that claim it — two
     /// gears claiming one seam id is a genuine conflict, not a resolvable target.
     pub seam_conflicts: Vec<(String, Vec<String>)>,
+}
+
+impl Resolved {
+    /// True when the citation yielded *nothing at all*: no target to verify, and nothing
+    /// to report either.
+    ///
+    /// `resolve` populates `unresolved` only for tokens it recognised but could not map, so
+    /// a citation containing no recognised token whatsoever (`§15 rows ×5.`, `rating ×4
+    /// files (6 sites)`) comes back completely empty and every downstream loop pushes
+    /// nothing — a silent skip of a real propagation claim. Callers use this to say so
+    /// instead (see `invariants::propagation`'s `P1/propagation-uninterpretable`).
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+            && self.unresolved.is_empty()
+            && self.seam_undefined.is_empty()
+            && self.seam_conflicts.is_empty()
+    }
+}
+
+/// Lexically normalizes `p`: drops `.` components and folds each `..` against the one
+/// before it. Purely textual — no filesystem access, no symlink resolution — because the
+/// only shape it has to undo is the `../../<gear>/docs/` form `resolve` itself mints.
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Text of `rel` — which may escape `corpus`'s own root via `../`, the cross-gear
+/// `../../<gear>/docs/SEAMS.md` form `resolve` returns — looked up across every loaded
+/// corpus.
+///
+/// In-corpus paths take the fast path and never consult `loaded`, so a single-gear run or a
+/// synthetic test that passes `&[]` behaves exactly as a plain `corpus.text(rel)` would.
+/// `None` means no loaded corpus provides the document, which a caller must *report* rather
+/// than skip: per the plan's Global Constraints an unverifiable propagation target is a
+/// `Finding`, never a silent skip. Before this existed, every cross-gear target was
+/// dropped by a bare `else { continue }` and four of pricing's decisions had their only
+/// cross-gear claim silently unverified.
+pub fn text_at<'a>(corpus: &'a Corpus, rel: &str, loaded: &'a [Corpus]) -> Option<&'a str> {
+    if let Some(text) = corpus.text(rel) {
+        return Some(text);
+    }
+    let target = normalize(&corpus.root().join(rel));
+    loaded.iter().find_map(|other| {
+        let base = normalize(other.root());
+        let sub = target.strip_prefix(&base).ok()?;
+        other.text(&sub.to_string_lossy().replace('\\', "/"))
+    })
 }
 
 /// Where a `SEAMS.md` seam id (`M12`, `RG3`, `SUB-P7`, …) is actually defined, gathered

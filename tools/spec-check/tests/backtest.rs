@@ -21,14 +21,14 @@
 //! named-but-uncited target is. D-34 and D-36 below are real, rediscovered instances of
 //! that second, actually-detectable shape.
 //!
-//! `records_the_step1_backtest_score` pins 27 P1 findings. **2 of those 27 are not
+//! `records_the_step1_backtest_score` pins 28 P1 findings. **2 of those 28 are not
 //! historical debt**: D-44 (`SEAMS M10`) and D-46 (`SEAMS RG3`) are real, defined seam ids
 //! — genuinely present in rating's and subscriptions' own `SEAMS.md` — that read as
 //! `P1/seam-undefined` here only because this backtest loads the pricing corpus alone, so
 //! neither sibling `SEAMS.md` is loaded for `SeamIndex` to resolve against. A real
 //! multi-gear run (as `main.rs` does) would not flag either. Left in the pin rather than
 //! filtered out, because the pin's job is "what this exact fixture, checked exactly this
-//! way, produces" — but anyone reading 27 as "27 rediscovered defects" would overcount by
+//! way, produces" — but anyone reading 28 as "28 rediscovered defects" would overcount by
 //! these 2 and might go looking for a fix that doesn't exist on the pricing side.
 
 use std::path::PathBuf;
@@ -56,7 +56,7 @@ fn historical() -> Corpus {
 fn rediscovers_d34_and_d36_never_reaching_the_prd() {
     let corpus = historical();
     let seams = SeamIndex::build(std::slice::from_ref(&corpus));
-    let findings = invariants::propagation::check(&corpus, &seams);
+    let findings = invariants::propagation::check(&corpus, &seams, std::slice::from_ref(&corpus));
     for id in ["D-34", "D-36"] {
         assert!(
             findings
@@ -92,7 +92,7 @@ fn rediscovers_the_two_unclaimed_requirements() {
 /// (`PINNED_PROPAGATION_GAPS_2026_07_29`) and `closure.rs`
 /// (`PINNED_UNREFERENCED_CODES_2026_07_29`) are: `records_the_step1_backtest_score` fails
 /// if the real count moves in *either* direction, not just downward. 2 of `PINNED_P1`'s
-/// 27 are the single-corpus seam artifact described in this file's module doc comment
+/// 28 are the single-corpus seam artifact described in this file's module doc comment
 /// (D-44, D-46) — not historical debt.
 ///
 /// A failure here is a real claim about the checker's effectiveness: a change to
@@ -102,20 +102,40 @@ fn rediscovers_the_two_unclaimed_requirements() {
 /// asserted — then update these constants deliberately, in the same commit as the change
 /// that moved them, with the new number and the reasoning in the commit message. Never
 /// edit these to quietly re-baseline a failing run back to green.
-const PINNED_P1: usize = 27;
-const PINNED_P2: usize = 3;
+///
+/// Both counts moved once, in the 2026-07-29 final-review fix wave, and each move was
+/// verified against the fixture by hand before the constant was touched:
+///
+/// - `PINNED_P1` 27 -> **28**, by item 4 (`P1/propagation-uninterpretable`). A citation
+///   containing no token the resolver recognises used to return an all-empty `Resolved` and
+///   produce nothing at all — a silent skip, against the plan's Global Constraint. The
+///   fixture's register has exactly one such citation, D-49's `§15 rows ×5.`, counted
+///   independently of the checker (56 entries scanned, 1 with no recognised token). D-66,
+///   the other live instance, postdates this fixture and is absent from it.
+/// - `PINNED_P2` 3 -> **7**, by item 6 (`P2/fr-multiply-claimed`). P2 implemented "at least
+///   one slice claims each requirement" while its own brief specified "exactly one";
+///   `len() > 1` was never reported. Four fixture requirements are claimed by more than one
+///   slice — `fr-price-amount-validation` by 3 (slices 01, 03, 04), and
+///   `fr-invoice-currency-binding`, `fr-per-seat`, `fr-mutation-idempotency` by 2 each —
+///   counted independently over Traces-to/directly-addresses block scope. They are the same
+///   four the live corpus shows, because these blocks did not change between 10073c36 and
+///   today.
+///
+/// `PINNED_P3` did not move: the fix wave did not touch `invariants::closure`.
+const PINNED_P1: usize = 28;
+const PINNED_P2: usize = 7;
 const PINNED_P3: usize = 55;
 const PINNED_TOTAL: usize = PINNED_P1 + PINNED_P2 + PINNED_P3;
 
 /// Records the score. Fails in both directions against the pinned counts above — a
-/// regression collapsing 85 to some other nonzero number, or an unnoticed explosion,
-/// must be as loud as a drop to zero.
+/// regression collapsing the pinned total to some other nonzero number, or an unnoticed
+/// explosion, must be as loud as a drop to zero.
 #[test]
 fn records_the_step1_backtest_score() {
     let corpus = historical();
     let seams = SeamIndex::build(std::slice::from_ref(&corpus));
     let declared = DeclaredInstructions::build(std::slice::from_ref(&corpus));
-    let p1 = invariants::propagation::check(&corpus, &seams).len();
+    let p1 = invariants::propagation::check(&corpus, &seams, std::slice::from_ref(&corpus)).len();
     let p2 = invariants::fr_coverage::check(&corpus).len();
     let p3 = invariants::closure::check(&corpus, &declared).len();
     let total = p1 + p2 + p3;

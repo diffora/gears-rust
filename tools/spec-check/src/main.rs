@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use spec_check::finding::Severity;
 use spec_check::invariants::closure::DeclaredInstructions;
-use spec_check::report::{self, KNOWN_DEBT_TICKET};
+use spec_check::report;
 use spec_check::targets::{self, SeamIndex};
 use spec_check::{Corpus, Finding, invariants};
 
@@ -100,7 +100,7 @@ fn main() -> Result<ExitCode> {
     let mut failing = false;
     for corpus in &corpora {
         let mut corpus_findings = Vec::new();
-        corpus_findings.extend(invariants::propagation::check(corpus, &seams));
+        corpus_findings.extend(invariants::propagation::check(corpus, &seams, &corpora));
         corpus_findings.extend(invariants::fr_coverage::check(corpus));
         corpus_findings.extend(invariants::closure::check(corpus, &declared));
 
@@ -111,53 +111,18 @@ fn main() -> Result<ExitCode> {
         known_debt.extend(corpus_known_debt);
     }
 
+    // Both renderings live in `report` (which owns the suppression policy they disclose) so
+    // they are reachable from a test — see its `render_text` / `JsonReport` doc comments.
     match args.format {
         Format::Json => {
-            #[derive(serde::Serialize)]
-            struct Report<'a> {
-                findings: &'a [Finding],
-                known_debt_suppressed: usize,
-                known_debt_tracked_as: &'static str,
-                #[serde(skip_serializing_if = "Option::is_none")]
-                known_debt: Option<&'a [Finding]>,
-            }
-            let out = Report {
-                findings: &live,
-                known_debt_suppressed: known_debt.len(),
-                known_debt_tracked_as: KNOWN_DEBT_TICKET,
-                known_debt: args.show_known_debt.then_some(known_debt.as_slice()),
-            };
+            let out = report::JsonReport::new(&live, &known_debt, args.show_known_debt);
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Format::Text => {
-            for f in &live {
-                println!("{}", f.render());
-            }
-            if args.show_known_debt && !known_debt.is_empty() {
-                println!(
-                    "\nKnown debt — accepted, tracked as {KNOWN_DEBT_TICKET}, not new drift ({} finding(s)):",
-                    known_debt.len()
-                );
-                for f in &known_debt {
-                    println!("{}", f.render());
-                }
-            }
-            println!("\n{} finding(s)", live.len());
-            if !known_debt.is_empty() {
-                if args.show_known_debt {
-                    println!(
-                        "{} known-debt finding(s) shown above, tracked as {KNOWN_DEBT_TICKET} \
-                         (accepted, not new drift)",
-                        known_debt.len()
-                    );
-                } else {
-                    println!(
-                        "{} known-debt finding(s) suppressed, tracked as {KNOWN_DEBT_TICKET} \
-                         — pass --show-known-debt to see them",
-                        known_debt.len()
-                    );
-                }
-            }
+            println!(
+                "{}",
+                report::render_text(&live, &known_debt, args.show_known_debt)
+            );
         }
     }
 
