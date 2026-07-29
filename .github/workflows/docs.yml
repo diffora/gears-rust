@@ -7,6 +7,7 @@ on:
       - '**/*.md'
       - 'docs/**'
       - 'guidelines/**'
+      - 'tools/spec-check/**'
   workflow_dispatch:
 
 concurrency:
@@ -34,3 +35,21 @@ jobs:
 
       - name: Check markdown links
         run: make lychee
+
+  spec_check:
+    name: Spec Invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          clean: 'true'
+          submodules: recursive
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup show
+
+      - name: Check spec invariants
+        run: make spec-check

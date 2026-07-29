@@ -5,8 +5,11 @@ use crate::finding::{Finding, Severity};
 use crate::{Corpus, decisions, targets};
 
 /// P1 — for every decision that records a propagation surface, each named target
-/// document must cite the decision id.
-pub fn check(corpus: &Corpus) -> Vec<Finding> {
+/// document must cite the decision id. `seams` is the cross-gear seam-ownership index
+/// (see `targets::SeamIndex`) built from every corpus the CLI loaded, so a `SEAMS <id>`
+/// propagation target can be checked against who actually owns `id` instead of a
+/// prefix guess.
+pub fn check(corpus: &Corpus, seams: &targets::SeamIndex) -> Vec<Finding> {
     let Some(register) = corpus.text("DECISIONS.md") else {
         return Vec::new();
     };
@@ -39,7 +42,7 @@ pub fn check(corpus: &Corpus) -> Vec<Finding> {
             }
             continue;
         };
-        let resolved = targets::resolve(raw, corpus);
+        let resolved = targets::resolve(raw, corpus, seams);
 
         for token in &resolved.unresolved {
             findings.push(Finding {
@@ -50,6 +53,35 @@ pub fn check(corpus: &Corpus) -> Vec<Finding> {
                 message: format!(
                     "{}: propagation target `{token}` names no document the resolver can map",
                     d.id
+                ),
+            });
+        }
+
+        for id in &resolved.seam_undefined {
+            findings.push(Finding {
+                invariant: "P1/seam-undefined".to_string(),
+                severity: Severity::Medium,
+                file: "DECISIONS.md".to_string(),
+                line: Some(d.line),
+                message: format!(
+                    "{}: propagation target `SEAMS {id}` cites a seam id that no loaded \
+                     gear's SEAMS.md defines",
+                    d.id
+                ),
+            });
+        }
+
+        for (id, owners) in &resolved.seam_conflicts {
+            findings.push(Finding {
+                invariant: "P1/seam-conflict".to_string(),
+                severity: Severity::Medium,
+                file: "DECISIONS.md".to_string(),
+                line: Some(d.line),
+                message: format!(
+                    "{}: propagation target `SEAMS {id}` is defined in more than one \
+                     loaded gear's SEAMS.md: {}",
+                    d.id,
+                    owners.join(", ")
                 ),
             });
         }
@@ -107,6 +139,19 @@ mod tests {
     fn pricing() -> Corpus {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../gears/bss/pricing/docs");
         Corpus::load(&root).expect("pricing corpus loads")
+    }
+
+    /// The seam index a real CLI run builds: every live BSS gear's `SEAMS.md`, loaded
+    /// once. Used so this module's `check` calls see exactly what a real run would —
+    /// cross-gear `SEAMS <id>` citations resolve for real instead of against an empty
+    /// index (which would misreport every one of them as owned by no loaded gear).
+    fn known_seams() -> targets::SeamIndex {
+        let load = |gear: &str| {
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("../../gears/bss/{gear}/docs"));
+            Corpus::load(&root).expect("gear corpus loads")
+        };
+        targets::SeamIndex::build(&[load("pricing"), load("rating"), load("subscriptions")])
     }
 
     /// Pinned baseline of `P1/propagation-missing` findings against the live
@@ -187,8 +232,9 @@ mod tests {
         // assert the register is clean — it currently is not, and pretending
         // otherwise (by asserting emptiness, as this test previously did) hides
         // exactly the kind of gap P1 exists to catch.
-        let actual: BTreeSet<(String, String)> =
-            missing_pairs(&check(&pricing())).into_iter().collect();
+        let actual: BTreeSet<(String, String)> = missing_pairs(&check(&pricing(), &known_seams()))
+            .into_iter()
+            .collect();
         let expected: BTreeSet<(String, String)> = PINNED_PROPAGATION_GAPS_2026_07_29
             .iter()
             .map(|(id, path)| (id.to_string(), path.to_string()))
@@ -217,7 +263,7 @@ mod tests {
                 ("PRD.md", "Some requirement text with no citation.\n"),
             ],
         );
-        let findings = check(&corpus);
+        let findings = check(&corpus, &targets::SeamIndex::default());
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].invariant, "P1/propagation-missing");
         assert_eq!(findings[0].file, "DECISIONS.md");
@@ -234,7 +280,7 @@ mod tests {
                 "#### D-98 [L] Vague\n\n- **Propagated**: SEAMS.\n",
             )],
         );
-        let findings = check(&corpus);
+        let findings = check(&corpus, &targets::SeamIndex::default());
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].invariant, "P1/propagation-unresolvable");
         assert_eq!(findings[0].severity, Severity::Low);
@@ -255,7 +301,7 @@ mod tests {
                 "#### D-97 [M] Something\n\n- **Propagated (normative, 2026-07-28)**: PRD §1.\n",
             )],
         );
-        let findings = check(&corpus);
+        let findings = check(&corpus, &targets::SeamIndex::default());
         assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
         assert_eq!(findings[0].invariant, "P1/propagation-label-unparsed");
         assert_eq!(findings[0].severity, Severity::Medium);
@@ -281,7 +327,67 @@ mod tests {
                 "#### D-96 [M] Resolved elsewhere\n\n- **Decision**: RESOLVED by D-03.\n",
             )],
         );
-        let findings = check(&corpus);
+        let findings = check(&corpus, &targets::SeamIndex::default());
         assert!(findings.is_empty(), "unexpected: {findings:#?}");
+    }
+
+    #[test]
+    fn flags_a_seam_citation_whose_id_no_loaded_gear_defines() {
+        // "Z9" is not a row any loaded corpus's SEAMS.md defines — a dangling seam
+        // reference, and a real defect distinct from an unresolvable-shorthand miss.
+        let corpus = Corpus::from_parts(
+            "synthetic",
+            [(
+                "DECISIONS.md",
+                "#### D-95 [M] Dangling seam reference\n\n- **Propagated**: SEAMS Z9 note.\n",
+            )],
+        );
+        let findings = check(&corpus, &targets::SeamIndex::default());
+        assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
+        assert_eq!(findings[0].invariant, "P1/seam-undefined");
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert_eq!(findings[0].file, "DECISIONS.md");
+        assert!(findings[0].message.contains("D-95"));
+        assert!(findings[0].message.contains("Z9"));
+    }
+
+    #[test]
+    fn flags_a_seam_citation_whose_id_two_loaded_gears_both_define() {
+        // No two real gears currently claim the same seam id (verified against the
+        // live corpus), so this constructs the conflict directly: two synthetic
+        // corpora, each defining a `Z1` row, both loaded alongside the citing corpus.
+        let corpus = Corpus::from_parts(
+            "synthetic",
+            [(
+                "DECISIONS.md",
+                "#### D-94 [M] Conflicting seam ownership\n\n- **Propagated**: SEAMS Z1 note.\n",
+            )],
+        );
+        let alpha = Corpus::from_parts(
+            "gears/bss/alpha/docs",
+            [(
+                "SEAMS.md",
+                "| # | Sev | Verdict | Seam |\n|---|-----|---------|------|\n\
+                 | **Z1** | HIGH | Joint | Alpha's definition. |\n",
+            )],
+        );
+        let beta = Corpus::from_parts(
+            "gears/bss/beta/docs",
+            [(
+                "SEAMS.md",
+                "| # | Sev | Verdict | Seam |\n|---|-----|---------|------|\n\
+                 | **Z1** | HIGH | Joint | Beta's conflicting definition. |\n",
+            )],
+        );
+        let seams = targets::SeamIndex::build(&[alpha, beta]);
+
+        let findings = check(&corpus, &seams);
+        assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
+        assert_eq!(findings[0].invariant, "P1/seam-conflict");
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert!(findings[0].message.contains("D-94"));
+        assert!(findings[0].message.contains("Z1"));
+        assert!(findings[0].message.contains("alpha"));
+        assert!(findings[0].message.contains("beta"));
     }
 }

@@ -250,6 +250,14 @@ lychee:
 	$(call check_tool,lychee)
 	lychee --exclude-path 'docs/web-docs' docs examples tools/dylint_lints guidelines
 
+# Cross-document invariants over the BSS gear design sets.
+.PHONY: spec-check
+spec-check:
+	cargo run -q -p spec-check -- \
+	  --gear gears/bss/pricing/docs \
+	  --gear gears/bss/rating/docs \
+	  --gear gears/bss/subscriptions/docs
+
 ## Validate internal links in web-docs.
 # The web-docs pages use Starlight route-relative links (e.g. ../foo/) that only
 # resolve against the *built* site, not the markdown source — so we build the
