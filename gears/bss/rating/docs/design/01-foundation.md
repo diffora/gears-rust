@@ -301,7 +301,7 @@ the ref at emission — immutable thereafter:
 
 | Segment | Writer | When |
 |---------|--------|------|
-| `catalogVersion` (pending → committed) | pricing gear | publish / `CatalogVersionPublished` |
+| `catalogVersion` (pending → committed) | **registry (products gear)** — sole incrementer; pricing only requests addressability | pricing publish → registry `CatalogVersionPublished` |
 | resolved price ids (**incl. `cohort`**) | pricing gear | publish |
 | evaluation-policy version — **explicitly including the level-aggregation triple** `aggregationFunction`/`aggregationGranularity`/`maxHold` per non-`sum` usage row (D-44/T-D-17; 2026-07-28 review fix — previously only implicit inside the pricing pre-stamp) | pricing gear | publish |
 | `(currency, region)` binding | Subscriptions | activation |

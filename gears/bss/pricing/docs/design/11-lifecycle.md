@@ -243,10 +243,10 @@ flowchart TB
 **Initial State**: scheduled (deltas resolved, event emitted)
 
 **Transitions**:
-1. [ ] - `p1` - **FROM** scheduled **TO** in_progress **WHEN** the effective date passes and Subscriptions begins `PlanLink` execution. **Execution-time re-validation (D-36):** on this transition the catalog **re-resolves** the contract-lock set and the boundary deltas against fresh state — newly-locked subscriptions are **excluded** (appended to the completion record; a lock is never broken however stale the schedule), and a newly-broken boundary (the target lost its frozen `(currency, region)`/frequency coverage) fails that subscription's `PlanLink` **closed** into the migration exception list - `inst-mst-start`
+1. [ ] - `p1` - **FROM** scheduled **TO** in_progress **WHEN** the effective date has passed **and** Subscriptions calls `POST /v1/pricing/migrations/{id}:start` (§5) — the transition is driven by that call, never by the wall clock alone, and the call's response body is how the exclusion set below reaches the executor. **Execution-time re-validation (D-36):** on this transition the catalog **re-resolves** the contract-lock set and the boundary deltas against fresh state — newly-locked subscriptions are **excluded** (appended to the completion record; a lock is never broken however stale the schedule), and a newly-broken boundary (the target lost its frozen `(currency, region)`/frequency coverage) fails that subscription's `PlanLink` **closed** into the migration exception list - `inst-mst-start`
 2. [ ] - `p1` - **FROM** scheduled **TO** cancelled **WHEN** cancelled before the effective date (M3; nothing executed yet) - `inst-mst-cancel`
 2a. [ ] - `p1` - **FROM** in_progress **TO** cancelled **WHEN** the operator stops a partially-executed run (D-34 — the stop-the-bleeding control): **further** `PlanLink` processing halts; already-migrated subscriptions are unaffected; the partial (migrated / not-attempted) sets are listed on the record. Only a **completed** run is uncancellable - `inst-mst-cancel-inflight`
-3. [ ] - `p1` - **FROM** in_progress **TO** completed **WHEN** Subscriptions reports the scope processed (excluded contract-locked set listed on the completion record) - `inst-mst-complete`
+3. [ ] - `p1` - **FROM** in_progress **TO** completed **WHEN** Subscriptions reports the scope processed via `POST /v1/pricing/migrations/{id}:complete` (§5) — excluded contract-locked set listed on the completion record - `inst-mst-complete`
 
 ## 5. API Surface
 
@@ -256,6 +256,18 @@ flowchart TB
 | `POST` | `/v1/pricing/migrations` | Schedule a migration (deltas computed) | `migration_id` (M2) | `plan × migrate` |
 | `DELETE` | `/v1/pricing/migrations/{id}` | Cancel a `scheduled` or `in_progress` migration (D-34; a `completed` one is uncancellable) | — | `plan × migrate` |
 | `GET` | `/v1/pricing/migrations/{id}` | Schedule + delta report + progress | — | `plan × read` |
+| `POST` | `/v1/pricing/migrations/{id}:start` | **Subscriptions declares execution start** — flips `scheduled → in_progress`, runs the D-36 execution-time re-validation, and **returns the exclusion set** (freshly contract-locked subscriptions + newly-broken-boundary subscriptions) that Subscriptions MUST honour. Calling it before the first `PlanLink` batch is a **normative obligation**, not an option | `migration_id` (repeat calls return the same exclusion set without re-transitioning) | `plan × migrate` |
+| `POST` | `/v1/pricing/migrations/{id}:complete` | **Subscriptions reports the scope processed** — carries the processed / excluded / failed sets; flips `in_progress → completed` and closes the completion record | `migration_id` | `plan × migrate` |
+
+**Why these two exist (2026-07-29 review fix).** Both non-terminal transitions were specified
+with Subscriptions as the actor (`inst-mst-start`: "*and Subscriptions begins `PlanLink`
+execution*"; `inst-mst-complete`: "*when Subscriptions reports the scope processed*") while the
+surface offered only operator-facing `POST`/`DELETE`/`GET` — the handshake had no call. Without
+it the catalog would flip on wall-clock alone, D-36's execution-time re-resolution would never
+run, and the freshly re-resolved exclusion set would have no delivery path to the party that
+executes: a subscription contract-locked between scheduling and `effective_at` would be
+migrated, breaking `dod-contract-lock`'s "reported, never broken". The record would also stay
+`scheduled` forever, so `pricing.migration.stalled` could not distinguish stalled from finished.
 
 **Problem responses (RFC 9457):** `RETIRE_TARGET_OF_MIGRATION` (409),
 `RETIRE_PLAN_REFERENCED` (409, references enumerated — bundle component / add-on

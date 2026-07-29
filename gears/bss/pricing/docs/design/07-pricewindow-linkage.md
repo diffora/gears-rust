@@ -201,6 +201,7 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 
 **Steps**:
 1. [ ] - `p1` - Sort windows by `effectiveFrom`; any uncovered interval between one window's end and the next's start over billable periods → reject, naming `[gapStart, gapEnd)` and the scope key - `inst-fg-detect`
+1a. [ ] - `p1` - **Trailing void (normative, 2026-07-29 review fix):** `inst-fg-detect` is an *interior* check — it compares each window against its successor and by construction cannot see a void with **no** successor. A cancellation or an `effectiveTo` shortening that removes the last coverage on a key is therefore invisible to it. Any cancel/shorten MUST additionally leave the key covered through `max(current coverage end, now + the longest billing cycle sold on that key)` — otherwise reject (`WINDOW_TRAILING_VOID`, 422), naming the key and the first uncovered instant. The **only** exemption is D-51's: a key with no in-flight subscribers. This closes the same hazard D-05 closed on the retirement path: without it one `plan × write` holder can `DELETE` the two-person-approved scheduled successor, let the active window expire at its natural end, and leave every arrears charge and renewal on the key failing closed - `inst-fg-trailing`
 2. [ ] - `p1` - The check runs at publish **and** inside every window-mutating operation (schedule, cancel, `effectiveTo` adjustment, cutover, retirement-triggered cancellation) — windows are slice-owned (D-03), every mutation goes through `WindowScheduler`/`CutoverOrchestrator`, and there is **no side door**: the window tables carry the same REVOKE + column-whitelist trigger discipline as `pricing_price`, so a gap can never be introduced past validation - `inst-fg-when`
 
 ### Sellability Gate
@@ -263,6 +264,7 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 2. [ ] - `p1` - **FROM** active **TO** expired **WHEN** `now ≥ effectiveTo` (job flips it and emits `PriceWindowExpired`; an open-ended window — `effectiveTo = null` — never expires; **no fallback pricing exists**: a key without a successor window fails closed downstream, per the coverage doctrine) - `inst-ws-expire`
 3. [ ] - `p1` - **FROM** scheduled **TO** cancelled **WHEN** cancelled before activation (retirement flow, cutover unwind, or operator cancellation; emits `PriceWindowCancelled`); an **active or historical window is never cancelled or deleted** — active windows are only shortened via `effectiveTo` - `inst-ws-cancel`
 4. [ ] - `p1` - **Historical immutability:** once `effectiveFrom` has passed, `effectiveFrom` and the window↔price binding are immutable; the only permitted mutation of an `active` window is moving its **future** `effectiveTo` (shorten/extend, overlap- and coverage-validated — cutover's shorten uses this path); `expired`/`cancelled` windows are immutable history (7y retention with the audit store) - `inst-ws-immutable`
+5. [ ] - `p1` - **Future-only start (normative, 2026-07-29 review fix):** `effectiveFrom` MUST be **strictly in the future** at creation (`WINDOW_START_IN_PAST`, 422). `inst-ws-immutable` guards only *mutation* of a past start, so without this rule a `plan × write` holder could POST a window starting 60 days ago, have the `WindowActivationJob` activate it on its next pass, and reprice open (unposted) arrears periods — bypassing the `BackdateGrant` (reason-mandatory, two-person) that S2 `inst-bc-available-from` calls "the **only** sanctioned backdating", and never tripping S5's `BACKDATE_SIDE_EFFECT` predicate. Retroactive effectiveness exists **only** as reference rows on the Slice 5 historical-import path, which schedules no windows - `inst-ws-future-start`
 
 ### Grandfathered Row Eligibility State Machine
 
@@ -294,7 +296,10 @@ per generation row — generations expire independently (ADR-0002)
 window overlaps an existing one on the same canonical scope key), `WINDOW_HISTORICAL_IMMUTABLE`
 (409 — mutation of a past `effectiveFrom`, an expired/cancelled window, or the window↔price
 binding), `WINDOW_NOT_CANCELLABLE` (409 — DELETE on an active/historical window),
-`CUTOVER_GAP` (422),
+`WINDOW_TRAILING_VOID` (422 — a cancel/shorten that would leave the key uncovered with no
+successor, `inst-fg-trailing`; names the key and the first uncovered instant),
+`WINDOW_START_IN_PAST` (422 — `effectiveFrom` not strictly in the future at creation,
+`inst-ws-future-start`), `CUTOVER_GAP` (422),
 `CUTOVER_INSTANT_PASSED` (422 — instant in the past at submit or at approval commit),
 `PENDING_CHANGE_UNIT_EXISTS` (409 — a pending unit already holds one of the touched keys),
 `GRANDFATHER_LOOSEN_FORBIDDEN` (422), `GRANDFATHERED_ROW_IMMUTABLE` (409),

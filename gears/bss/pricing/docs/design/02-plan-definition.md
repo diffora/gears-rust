@@ -235,6 +235,7 @@ Slice 3), validated fail-closed at publish.
 3b. [ ] - `p1` - **Usage rows are phase-invariant by default (D-15):** one usage row (on the **terminal `phase_id`** — D-19) covers **all** phases; an explicit phase-scoped usage row overrides it **for its phase** (phase-specific wins — a published resolution rule of the same class as most-specific-wins eligibility, adopted verbatim by Tariffs; joint fixture). Free trial usage = an explicit trial-phase usage row at 0 — never a silent default - `inst-ph-usage-invariant`
 4. [ ] - `p1` - A `trial` phase publishes `displayTrialDays` = its `phaseDurationDays` (the PRD-named alias for preview/quoting; one value, two projections) - `inst-ph-trial`
 5. [ ] - `p1` - **Axis typing (D-19):** the `phase` axis is always a `phase_id`. Every plan gets a terminal phase row — authored (phased plans) or **auto-created implicit** (kind `evergreen`; non-phased/one-time plans) at plan creation; non-phased/one-time/setup rows carry that terminal `phase_id` (Foundation §4.1 defaults). The literal `evergreen` is a phase *kind*, never an axis value - `inst-ph-default`
+5a. [ ] - `p1` - **Terminal-phase stability across revisions (normative, 2026-07-29 review fix):** D-56 pins phase **ids**, but the scope-key default (`inst-ph-default`) and usage phase-invariance (`inst-ph-usage-invariant`) are both defined relative to *which* phase is terminal — so a revision that re-terminalizes silently moves them. Therefore: (a) a revision MUST NOT re-terminalize an existing phase or introduce a **different** terminal phase — the terminal `phase_id` is immutable for the life of the plan (`TERMINAL_PHASE_CHANGED`, 422); (b) a revision MUST re-attach every `phase_id` referenced by a current published `pricing_price` row — dropping such a phase fails publish (`PHASE_IN_USE`, 422). Without (a), a usage-only plan published non-phased (metered row on the implicit terminal `T0`) can be revised to add a trial plus a new evergreen `E`: `T0` becomes non-terminal, the metered row is no longer phase-invariant, a subscription in `E` resolves **no** usage row, and Tariffs fails closed on a published sellable plan. `inst-ph-coverage` cannot catch this — since the 2026-07-28 fix it is scoped to recurring rows on `recurring`/`hybrid` plans, so usage-only plans are entirely unguarded. This is the "sold but unrateable" state D-15 exists to prevent, reintroduced through revisioning - `inst-ph-terminal-stable`
 
 ### Billing Descriptor Completeness
 
@@ -276,7 +277,10 @@ Slice 3), validated fail-closed at publish.
 `price_override_ref` unpublished or not covering a sold `(currency, region)`),
 `PHASE_GRAPH_INVALID` (422), `PHASE_DURATION_INVALID` (422 — non-terminal phase without
 `phaseDurationDays`, or a terminal phase with one), `PHASE_UNCOVERED` (422 — a phase with no
-covering recurring row for a sold `(currency, region)`, D-15), `SETUP_ROW_INVALID` (422 — setup row on a
+covering recurring row for a sold `(currency, region)`, D-15),
+`TERMINAL_PHASE_CHANGED` (422 — a revision re-terminalizing an existing phase or introducing a
+different terminal phase, `inst-ph-terminal-stable`), `PHASE_IN_USE` (422 — a revision dropping
+a phase still referenced by a current published price row), `SETUP_ROW_INVALID` (422 — setup row on a
 one-time plan, or carrying recurrence/`billingTiming`/tier fields),
 `PURCHASE_QTY_RANGE_INVALID` (422 — `purchase_min_qty > purchase_max_qty`),
 `AVAILABLE_FROM_IN_PAST` (422 — outside the historical-import path),

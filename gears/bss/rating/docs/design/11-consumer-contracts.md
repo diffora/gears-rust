@@ -149,7 +149,7 @@ floor/cap, posting — is downstream's (01 §4.4).
 
 The Rating handoff is an in-process call within the one `rating` gear deployable (01 §3.8), not a
 service API or queue; the only asynchronous surface consumed is the
-pricing event set (four `PriceWindow*` + `CatalogVersionPublished`).
+pricing event set (four `PriceWindow*`) plus the registry's `CatalogVersionPublished`.
 
 #### No local enum or key extension
 
@@ -253,7 +253,7 @@ and the rev-share pass-through recorded in §4.2.
 
 **Consume the pricing event set** (SEAMS W1):
 
-1. Pricing emits `PriceWindowScheduled/Activated/Expired/Cancelled` and `CatalogVersionPublished` from its outbox; the activation-job events are at-least-once, idempotency-keyed, ordered per `(tenant, plan)` (pricing design 07 §7).
+1. **Two producers, two streams** (corrected 2026-07-29 cross-gear review — the earlier text attributed both to pricing's outbox): (a) the **pricing** gear emits `PriceWindowScheduled/Activated/Expired/Cancelled` from its outbox — at-least-once, idempotency-keyed, ordered per `(tenant, plan)` (pricing design 07 §7); `CatalogVersionPublished` is **not** in pricing's frozen event-name set (pricing `fr-event-contract`). (b) `CatalogVersionPublished` is emitted by the **registry (products gear)**, which is the **sole** `CatalogVersion` incrementer (products `fr-sku-catalog-version`; pricing design 01 §3 step 5 — the Foundation only *requests* addressability on publish). It is a tenant-wide catalog-publish event, **not** per-plan: rating MUST subscribe to it on the registry's stream and MUST NOT assume `(tenant, plan)` ordering for it. Wiring the pin adapter to pricing's topic alone would mean no `CatalogVersion` ever becomes pin-eligible (step 3) and every resolution run failing closed.
 2. Each event invalidates the matching pages of the non-authoritative resolved-window cache (01 §3.7) — **including `Cancelled`**, so a pre-cached scheduled window that pricing later voids is retracted (the W1 failure this contract closes).
 3. A `CatalogVersion` becomes pin-eligible only after `CatalogVersionPublished` **and** the warm-completion marker (§4.2); events carry no rate authority — resolution always reads the pinned model.
 
@@ -329,7 +329,7 @@ consumer contract
 - **Read model (pinned)**: rows on the 8-axis canonical scope key with UTC half-open windows (non-overlap on the full key); `modelKind ∈ {flat, per_unit, graduated, volume, package}` with the pricing §17.2 kind → formula mapping as shared SoR (T-D-05); tier bands; `priceEligibility` + `cohort` generation; `prorationBasis ∈ {calendar_days_actual, calendar_days_30, by_second, whole_unit, none}`; `billingAnchorPolicy ∈ {calendar_month, subscription_start, fixed_day(d)}` with the D-20 last-of-month clamp (anchor day preserved, no drift); the prepaid-grant set (plan-attached credit grants whose balance/drawdown executor is Billing/Rating — distinct from `commitmentPools[]`, SEAMS M8); the rating-compat triple.
 - **Pin discipline** (pricing design 01 §4.4): one committed `CatalogVersion` per resolution run; a version resolves only after `CatalogVersionPublished` **and** its warm-completion marker; pin lag ≤ 5s; no draft read; no default substitution.
 - **Enums verbatim (P1/P2, T-D-07)**: adopted byte-identical under CI gate `pricing.contracts.enum_drift` (**Critical**) — drift is a build-time block; the runtime alarm covers registry divergence (pricing design 06 §7). Rating never prorates a `none` row (pricing rejects `creditOnDowngrade = true` + `none` at publish) but MUST recognize the value for the conformance fixture (SEAMS P1). The plan-change fields (`allowedChangeTargets`, `comparabilityRank`) are published for Subscriptions; Rating's plan-change inputs are §4.3's `(changeEffectiveAt, changeMode)` plus these frozen enums.
-- **Events (W1)**: **all four** `PriceWindowScheduled/Activated/Expired/Cancelled` plus `CatalogVersionPublished` — outbox-emitted; activation-job events at-least-once, idempotency-keyed, ordered per `(tenant, plan)` (pricing design 07 §7). Consuming `Cancelled` is load-bearing: it retracts pre-cached scheduled windows that pricing voids.
+- **Events (W1)**: **all four** `PriceWindowScheduled/Activated/Expired/Cancelled` from the **pricing** outbox, plus `CatalogVersionPublished` from the **registry (products gear)** — the sole `CatalogVersion` incrementer, tenant-wide and not per-plan (corrected 2026-07-29); activation-job events at-least-once, idempotency-keyed, ordered per `(tenant, plan)` (pricing design 07 §7). Consuming `Cancelled` is load-bearing: it retracts pre-cached scheduled windows that pricing voids.
 - **Snapshot-replay guarantee (W2, T-D-04)**: pricing retains snapshots for open windows; every correction — open-period late arrival and posted-period alike — replays the pinned `pricingSnapshotRef`, never a live catalog read.
 - **Bundles (B1, T-D-08)**: for `sum_of_parts` the catalog persists the component `planId` reference set only — **the summing is Rating's at eval**; rev-share arrives publish-normalized (`SUM(effective_share_bp) + platform_cut_bp = 10000` exactly, pricing D-07) and Rating reads **only** `effective_share_bp`, passing it through untouched (evaluated in slice 10).
 - **Catalog guarantees relied on (M11)**: open-top tier bands (D-17 — no fail-closed-above-max branch exists); graduated/volume/package restricted to `chargeKind = usage` (D-18); grandfathered rows immutable in price.
@@ -395,7 +395,7 @@ identically in 01 §4.3, [`../SEAMS.md`](../SEAMS.md) S1, and here:
 
 | Segment | Writer | When |
 |---------|--------|------|
-| `catalogVersion` (pending → committed) | pricing gear | publish / `CatalogVersionPublished` |
+| `catalogVersion` (pending → committed) | **registry (products gear)** — sole incrementer; pricing only requests addressability | pricing publish → registry `CatalogVersionPublished` |
 | resolved price ids (**incl. `cohort`**) | pricing gear | publish |
 | evaluation-policy version | pricing gear | publish |
 | `(currency, region)` binding | Subscriptions | activation |

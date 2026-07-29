@@ -53,7 +53,8 @@ the §17.2 conformance mapping.
 
 **Traces to**: `cpt-cf-bss-pricing-fr-model-kind`, `cpt-cf-bss-pricing-fr-tier-validation`,
 `cpt-cf-bss-pricing-fr-package-pricing`, `cpt-cf-bss-pricing-fr-model-kind-conformance`,
-`cpt-cf-bss-pricing-fr-price-amount-validation`, `cpt-cf-bss-pricing-fr-per-seat`
+`cpt-cf-bss-pricing-fr-price-amount-validation`, `cpt-cf-bss-pricing-fr-per-seat`,
+`cpt-cf-bss-pricing-fr-level-aggregation`
 
 ### 1.2 Purpose
 
@@ -113,7 +114,7 @@ Design-introduced names (Slice 3):
 | `ModelKindValidator` | Registered rules: explicit kind, kind-specific required/forbidden fields |
 | `TierBandValidator` | Registered rules: ordering, non-overlap, contiguity, top-band policy under Q1 |
 | `PackageValidator` | Registered rules: `packageSize`/`packagePrice` presence + structural exclusivity with tier-band fields |
-| `FixtureGate` | The publish-time check that the row's `modelKind` (and reservation / `level-aggregation` variants, D-44) has a green joint golden fixture |
+| `FixtureGate` | The publish-time check that the row's `modelKind` (and the reservation / `level-aggregation` (D-44) / `trailing_tier` (D-40, S10 `inst-tt-fixture`) variants) has a green joint golden fixture |
 
 ### 1.8 Context & Dependencies
 
@@ -190,7 +191,7 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 1. [ ] - `p1` - Bands sorted ascending by `fromQty`; any overlap fails; any gap fails (contiguity under `[fromQty, toQty)`: next `fromQty` = previous `toQty`); each band MUST satisfy `toQty > fromQty` when `toQty` is non-null (`TIER_BAND_EMPTY`); an advisory (non-blocking) warning is emitted when any band's effective unit price exceeds the previous band's (non-volume-discount pattern) — carried in the Foundation validation report's `warnings[]` channel - `inst-tb-order`
 2. [ ] - `p1` - First band starts at the row's quantity origin (`fromQty = 0`); a `$0` first band is valid (Q5) — since D-45 the **preferred** authoring of "N included" is the first-class `includedAllowance` (Slice 10 `AllowanceCompiler` compiles it into this same `$0`-band shape + a frozen marker); a hand-authored `$0` band stays legal but carries no marker, and combining both on one row is the double-free publish failure (`ALLOWANCE_DOUBLE_FREE`, Q6) - `inst-tb-first`
 3. [ ] - `p1` - **Top band is always open (D-17)**: `toQty = null` REQUIRED on the top band; a closed top fails publish (`TIER_TOP_CLOSED`) — "price undefined above X" is never the commercial intent: quantity capping is an entitlement **quota** (grant set; Subscriptions enforces), per-period fee caps are Tariffs Future (§17.8), and a different price above X is simply another band. Any quantity is therefore always rateable on a tiered row — "sold but unrateable" is impossible by construction - `inst-tb-top`
-4. [ ] - `p1` - Tiered usage rows MUST carry `tierAggregationWindow` (`calendar_month | invoice_period | subscription_lifetime | per_event`); derivation of the in-window `Q` is the row's `aggregationFunction` per Q2/D-44 — `sum` (default) window-sum, or the non-`sum` granule fold (`peak`/`time_weighted`, authoring rules in this slice's Level Aggregation algorithm) whose sum-of-folds `Q` is additive, so band math is unchanged either way - `inst-tb-window`
+4. [ ] - `p1` - Tiered usage rows — **and `package` usage rows** (`inst-pk-window`) — MUST carry `tierAggregationWindow` (`calendar_month | invoice_period | subscription_lifetime | per_event`); derivation of the in-window `Q` is the row's `aggregationFunction` per Q2/D-44 — `sum` (default) window-sum, or the non-`sum` granule fold (`peak`/`time_weighted`, authoring rules in this slice's Level Aggregation algorithm) whose sum-of-folds `Q` is additive, so band math is unchanged either way - `inst-tb-window`
 5. [ ] - `p1` - **Band units (normative):** `fromQty`/`toQty` are expressed in **billable units after `billingGranularity` quantization** (e.g. `per_hour` → band quantities are hours, never raw seconds); the read model documents the unit so catalog and Tariffs cannot diverge on it - `inst-tb-units`
 6. [ ] - `p1` - **Window continuity across supersession (normative):** the tier counter `Q` is derived per **`(subscription, meter, dimensionKey, window)`** (the canonical 4-tuple agreed with Rating — SEAMS M7; `dimensionKey` = the empty tuple until OSS dimensional emission lands, so undimensioned plans read as the single empty-tuple counter) — it belongs to the subscription's usage history, **not** to a price-row version. Superseding a row (new bands, new price) does **NOT** reset an in-window counter, and `subscription_lifetime` `Q` in particular survives every supersession/versioning; the new row's bands are simply applied to the continued `Q`. Requires its own joint golden fixture (a supersession mid-window scenario) in the Slice 3 conformance registry - `inst-tb-window-continuity`
 
@@ -203,7 +204,8 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 
 **Steps**:
 1. [ ] - `p2` - `packageSize > 0` (units per block) and `packagePrice ≥ 0` (per block) MUST be present; tier-band fields MUST be absent; publish rejects otherwise - `inst-pk-fields`
-2. [ ] - `p2` - The round-up math (`blocks = ceil(used / packageSize)`, `charge = blocks × packagePrice`) is **Tariffs-owned**; the read model exposes the two fields only - `inst-pk-math`
+1a. [ ] - `p2` - **Accumulation window REQUIRED (normative, 2026-07-29 review fix):** a `package` row MUST carry `tierAggregationWindow` — it is the window over which `used` accumulates **before** block round-up, and publish fails without it (`EVAL_POLICY_MISSING`, 422). Block math is **non-linear in the window**, so the field is not tier-specific bookkeeping: 150 units in a month folds to `ceil(150/100) = 2` blocks under `invoice_period` but to 30 blocks if a daily fold is assumed, a 15× spread on the same published row. `billingGranularity` does **not** supply this — it quantizes the quantity, it does not bound a period (the same asymmetry the PRD already resolves explicitly for `volume`, whose single rate is applied "on total `Q` within `tierAggregationWindow`") - `inst-pk-window`
+2. [ ] - `p2` - The round-up math (`blocks = ceil(used / packageSize)`, `charge = blocks × packagePrice`) is **Tariffs-owned** and folds over `tierAggregationWindow` per `inst-pk-window`; the read model exposes the three fields only - `inst-pk-math`
 
 ### Level Aggregation Authoring (D-44)
 
@@ -291,7 +293,7 @@ SecureORM; published rows append-only per Foundation §4.3):
 | `manual_quantity` | `bigint` | required when `quantity_source = manual`; frozen in snapshot |
 | `package_size` | `bigint` | `> 0`; `package` only |
 | `package_price_minor` | `bigint` | `≥ 0`; `package` only |
-| `tier_aggregation_window` | `enum` | `calendar_month \| invoice_period \| subscription_lifetime \| per_event`; tiered usage rows only |
+| `tier_aggregation_window` | `enum` | `calendar_month \| invoice_period \| subscription_lifetime \| per_event`; tiered **and `package`** usage rows (`inst-pk-window` — block round-up is non-linear in the window) |
 | `billing_granularity` | `enum` | `per_second \| per_minute \| per_hour \| per_day \| whole_unit`; all usage rows |
 | `aggregation_function` | `enum` | `sum (default) \| peak \| time_weighted`; usage rows only (D-44); frozen in snapshot |
 | `aggregation_granularity` | `enum` | `hour (default) \| day`; non-`sum` rows only (D-44); the granule of the rating-side fold |
