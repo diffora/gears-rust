@@ -59,9 +59,9 @@ fn defined_requirements(corpus: &Corpus) -> BTreeSet<String> {
 /// the second shape still gets a `P2/traceability-convention-divergent`
 /// finding of its own: the checker must not silently absorb a shape split from
 /// the rest of the set.
-fn claimed_requirements(corpus: &Corpus) -> (BTreeMap<String, Vec<String>>, Vec<Finding>) {
+fn claimed_requirements(corpus: &Corpus) -> (BTreeMap<String, BTreeSet<String>>, Vec<Finding>) {
     let id = Regex::new(r"`(cpt-cf-[a-z0-9-]*-fr-[a-z0-9-]+)`").expect("valid id regex");
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut findings = Vec::new();
 
     for (path, text) in corpus.files() {
@@ -86,7 +86,17 @@ fn claimed_requirements(corpus: &Corpus) -> (BTreeMap<String, Vec<String>>, Vec<
 }
 
 /// Ids inside a `**Traces to**:` block, which runs until the first blank line.
-fn collect_traces_to(path: &str, text: &str, id: &Regex, out: &mut BTreeMap<String, Vec<String>>) {
+/// A `BTreeSet` per id, not a `Vec`: a copy/paste or line-wrap slip can repeat
+/// the same id in one block, and that is one dangling defect, not one per
+/// repetition — deduplicating here (rather than in the dangling loop) keeps
+/// both collectors and their caller honest about "which documents claim this
+/// id", with no separate dedup step to forget.
+fn collect_traces_to(
+    path: &str,
+    text: &str,
+    id: &Regex,
+    out: &mut BTreeMap<String, BTreeSet<String>>,
+) {
     let mut in_block = false;
     for line in text.lines() {
         if line.contains("**Traces to**:") {
@@ -98,7 +108,7 @@ fn collect_traces_to(path: &str, text: &str, id: &Regex, out: &mut BTreeMap<Stri
             for c in id.captures_iter(line) {
                 out.entry(c[1].to_string())
                     .or_default()
-                    .push(path.to_string());
+                    .insert(path.to_string());
             }
         }
     }
@@ -118,7 +128,7 @@ fn collect_directly_addresses(
     path: &str,
     text: &str,
     id: &Regex,
-    out: &mut BTreeMap<String, Vec<String>>,
+    out: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> bool {
     const MARKER: &str = "This slice directly addresses:";
     let mut in_block = false;
@@ -143,7 +153,7 @@ fn collect_directly_addresses(
         for c in id.captures_iter(line) {
             out.entry(c[1].to_string())
                 .or_default()
-                .push(path.to_string());
+                .insert(path.to_string());
         }
     }
     seen
@@ -215,23 +225,29 @@ mod tests {
         // rule (the `**Traces to**:` rule) — the blank line here is what
         // proves the stop condition is right, since that rule would collect
         // nothing at all from this shape.
+        //
+        // Two ids, not one: this is what makes "exactly one divergence
+        // finding" a real assertion about the finding's cardinality (raised
+        // once per document) rather than one that would also pass a latent
+        // bug where the push lived inside the per-id capture loop instead of
+        // after it (which would emit one divergence finding per id here).
         let corpus = Corpus::from_parts(
             "synthetic",
             [
                 (
                     "PRD.md",
-                    "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-foundational`\n",
+                    "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-foundational`\n- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-alsofoundational`\n",
                 ),
                 (
                     "design/01-a.md",
-                    "This slice directly addresses:\n\n- `cpt-cf-bss-x-fr-foundational` — does the thing\n",
+                    "This slice directly addresses:\n\n- `cpt-cf-bss-x-fr-foundational` / `cpt-cf-bss-x-fr-alsofoundational` — does the thing\n",
                 ),
             ],
         );
         let findings = check(&corpus);
         assert!(
             !findings.iter().any(|f| f.invariant == "P2/fr-unclaimed"),
-            "requirement should be treated as claimed: {findings:#?}"
+            "requirements should be treated as claimed: {findings:#?}"
         );
         let divergences: Vec<_> = findings
             .iter()
@@ -256,6 +272,27 @@ mod tests {
         );
         let findings = check(&corpus);
         assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].invariant, "P2/fr-dangling");
+        assert_eq!(findings[0].file, "design/01-a.md");
+    }
+
+    #[test]
+    fn deduplicates_a_dangling_id_repeated_in_one_document() {
+        // A copy/paste or line-wrap slip can list the same undefined id twice in
+        // one Traces-to block. That is one defect, not two — repeated mentions of
+        // the same (file, id) pair must not inflate the finding count.
+        let corpus = Corpus::from_parts(
+            "synthetic",
+            [
+                ("PRD.md", ""),
+                (
+                    "design/01-a.md",
+                    "**Traces to**: `cpt-cf-bss-x-fr-ghost`, `cpt-cf-bss-x-fr-ghost`\n",
+                ),
+            ],
+        );
+        let findings = check(&corpus);
+        assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
         assert_eq!(findings[0].invariant, "P2/fr-dangling");
         assert_eq!(findings[0].file, "design/01-a.md");
     }
