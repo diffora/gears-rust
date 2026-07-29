@@ -52,6 +52,18 @@ impl Corpus {
     pub fn has(&self, rel: &str) -> bool {
         self.files.contains_key(rel)
     }
+
+    /// Builds an in-memory corpus. Test-only in practice, but not `#[cfg(test)]`
+    /// so integration tests in `tests/` can use it too.
+    pub fn from_parts<'a>(root: &str, parts: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        Self {
+            root: PathBuf::from(root),
+            files: parts
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
