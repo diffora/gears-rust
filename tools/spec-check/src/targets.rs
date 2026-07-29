@@ -74,7 +74,16 @@ impl SeamIndex {
 /// (`.../gears/bss/rating/docs` -> `rating`). `None` for a root shape this convention
 /// doesn't apply to (e.g. a bare, single-component synthetic test root) — callers treat
 /// that corpus as contributing nothing, never as an error.
-fn gear_name(corpus: &Corpus) -> Option<String> {
+///
+/// `pub`, not `pub(crate)`: the CLI binary (`main.rs`) is a separate crate from this
+/// library (`spec_check`) even though they share a package, so `pub(crate)` would not
+/// reach it. `main.rs` needs this to qualify each corpus's findings with the gear they
+/// came from before the known-debt decision (`report::is_known_debt`) — see Ruling 3's
+/// cross-corpus safety requirement: a finding from one gear must never be matched
+/// against another gear's pinned baseline entry. This is the one place gear identity is
+/// allowed to flow *out* of resolution-adjacent code — it stays data for the known-debt
+/// decision, never a branch in `resolve` or any invariant's matching logic.
+pub fn gear_name(corpus: &Corpus) -> Option<String> {
     corpus
         .root()
         .parent()?

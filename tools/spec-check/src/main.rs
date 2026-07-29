@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 use spec_check::finding::Severity;
 use spec_check::invariants::closure::DeclaredInstructions;
 use spec_check::report::{self, KNOWN_DEBT_TICKET};
-use spec_check::targets::SeamIndex;
+use spec_check::targets::{self, SeamIndex};
 use spec_check::{Corpus, Finding, invariants};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -61,10 +61,17 @@ fn rank(s: Severity) -> Gate {
 /// it: known, worked-off (or at least tracked) debt should not block every run forever.
 /// Pulled out as its own pure function (rather than inlined in `main`) so it has
 /// something to be unit-tested against directly, without spawning the binary.
-fn is_failing(findings: &[Finding], max_severity: Gate) -> bool {
+///
+/// `findings` must all be from the same corpus, named by `gear` — both pinned baselines
+/// are gear-qualified (task-review Ruling 3 fix, 2026-07-29, fix round 3), so the
+/// known-debt decision needs to know which corpus produced each finding. `main` calls
+/// this once per loaded corpus rather than once over every corpus's findings flattened
+/// together, so a same-keyed finding from a different gear is never mistaken for
+/// pricing's pinned debt.
+fn is_failing(findings: &[Finding], gear: &str, max_severity: Gate) -> bool {
     findings
         .iter()
-        .filter(|f| !report::is_known_debt(f))
+        .filter(|f| !report::is_known_debt(f, gear))
         .any(|f| rank(f.severity) >= max_severity)
 }
 
@@ -83,15 +90,26 @@ fn main() -> Result<ExitCode> {
     let seams = SeamIndex::build(&corpora);
     let declared = DeclaredInstructions::build(&corpora);
 
-    let mut findings: Vec<Finding> = Vec::new();
+    // Findings are partitioned into known-debt vs. live *per corpus*, before being
+    // accumulated across the whole run — not by flattening every corpus's findings
+    // first and partitioning once. Both pinned baselines are gear-qualified (task-review
+    // Ruling 3 fix): the known-debt decision needs the gear each finding actually came
+    // from, and that context only still exists here, one corpus at a time.
+    let mut live: Vec<Finding> = Vec::new();
+    let mut known_debt: Vec<Finding> = Vec::new();
+    let mut failing = false;
     for corpus in &corpora {
-        findings.extend(invariants::propagation::check(corpus, &seams));
-        findings.extend(invariants::fr_coverage::check(corpus));
-        findings.extend(invariants::closure::check(corpus, &declared));
-    }
+        let mut corpus_findings = Vec::new();
+        corpus_findings.extend(invariants::propagation::check(corpus, &seams));
+        corpus_findings.extend(invariants::fr_coverage::check(corpus));
+        corpus_findings.extend(invariants::closure::check(corpus, &declared));
 
-    let failing = is_failing(&findings, args.max_severity);
-    let (live, known_debt) = report::partition_known_debt(findings);
+        let gear = targets::gear_name(corpus).unwrap_or_default();
+        failing |= is_failing(&corpus_findings, &gear, args.max_severity);
+        let (corpus_live, corpus_known_debt) = report::partition_known_debt(corpus_findings, &gear);
+        live.extend(corpus_live);
+        known_debt.extend(corpus_known_debt);
+    }
 
     match args.format {
         Format::Json => {
@@ -156,7 +174,7 @@ mod tests {
     use spec_check::invariants::propagation::PINNED_PROPAGATION_GAPS_2026_07_29;
 
     fn pinned_propagation_finding() -> Finding {
-        let (id, path) = PINNED_PROPAGATION_GAPS_2026_07_29[0];
+        let (_, id, path) = PINNED_PROPAGATION_GAPS_2026_07_29[0];
         Finding {
             invariant: "P1/propagation-missing".to_string(),
             severity: Severity::Medium,
@@ -171,7 +189,7 @@ mod tests {
     #[test]
     fn a_run_whose_only_findings_are_pinned_baseline_entries_does_not_fail() {
         let findings = vec![pinned_propagation_finding()];
-        assert!(!is_failing(&findings, Gate::Medium));
+        assert!(!is_failing(&findings, "pricing", Gate::Medium));
     }
 
     #[test]
@@ -188,7 +206,7 @@ mod tests {
                     .to_string(),
             },
         ];
-        assert!(is_failing(&findings, Gate::Medium));
+        assert!(is_failing(&findings, "pricing", Gate::Medium));
     }
 
     #[test]
@@ -196,6 +214,18 @@ mod tests {
         // The whole point of pinning: severity alone never re-triggers a baseline
         // entry, even against the lowest gate.
         let findings = vec![pinned_propagation_finding()];
-        assert!(!is_failing(&findings, Gate::Low));
+        assert!(!is_failing(&findings, "pricing", Gate::Low));
+    }
+
+    #[test]
+    fn a_same_keyed_finding_from_a_different_gear_fails_the_run() {
+        // Cross-corpus safety (task-review Ruling 3, CRITICAL): a finding that is
+        // byte-identical in its (id, path)-parseable message to a pinned pricing
+        // baseline entry, but attributed to a different gear, must still fail the run —
+        // it is new drift in that gear, not the pricing debt the baseline pins.
+        let (gear, _, _) = PINNED_PROPAGATION_GAPS_2026_07_29[0];
+        assert_eq!(gear, "pricing", "test assumes entry 0 is pricing's");
+        let findings = vec![pinned_propagation_finding()];
+        assert!(is_failing(&findings, "rating", Gate::Medium));
     }
 }

@@ -133,7 +133,7 @@ fn unparsed_propagated_label(lines: &[&str], all: &[Decision], i: usize) -> Opti
 /// pricing register, hand-derived from the failure output of this test on
 /// 2026-07-29 (not by running the checker and trusting whatever it
 /// produces — a self-derived baseline asserts nothing). These 24
-/// `(decision id, target path)` pairs are **debt, not correctness**:
+/// `(gear, decision id, target path)` triples are **debt, not correctness**:
 /// pre-existing gaps left by the 2026-07-10 decision wave, confirmed real
 /// by manual cross-check (PRD.md cites 34 *other* decision ids, so the
 /// citation convention is genuine and broadly followed — these 24 are
@@ -147,34 +147,45 @@ fn unparsed_propagated_label(lines: &[&str], all: &[Decision], i: usize) -> Opti
 /// become a floor. Promoted to a `pub const` (2026-07-29, fix round 1) so
 /// the CLI has exactly the same one definition of this debt the tests pin
 /// against, rather than a second, test-only copy the CLI can't see.
-pub const PINNED_PROPAGATION_GAPS_2026_07_29: &[(&str, &str)] = &[
-    ("D-01", "PRD.md"),
+///
+/// Every entry names `"pricing"` (task-review Ruling 3 fix, 2026-07-29, fix round 3):
+/// this baseline is a snapshot of *one specific corpus*, and `(id, path)` alone is not a
+/// unique key across gears — rating and subscriptions have their own `DECISIONS.md` with
+/// their own `D-NN` ids, and `PRD.md`/`design/03-price-structure.md` are common
+/// filenames a sibling gear could equally have. Without the gear qualifier, a
+/// same-shaped finding from a different gear would be silently swallowed as if it were
+/// this pinned pricing debt. The gear name here is baseline *data*, describing which
+/// corpus this specific snapshot was taken from — it must never leak into `targets.rs`'s
+/// resolution path or any invariant's matching logic.
+pub const PINNED_PROPAGATION_GAPS_2026_07_29: &[(&str, &str, &str)] = &[
+    ("pricing", "D-01", "PRD.md"),
     (
+        "pricing",
         "D-02",
         "ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md",
     ),
-    ("D-02", "DESIGN.md"),
-    ("D-02", "PRD.md"),
-    ("D-02", "design/01-foundation.md"),
-    ("D-02", "design/07-pricewindow-linkage.md"),
-    ("D-04", "PRD.md"),
-    ("D-05", "PRD.md"),
-    ("D-06", "PRD.md"),
-    ("D-07", "PRD.md"),
-    ("D-13", "PRD.md"),
-    ("D-15", "PRD.md"),
-    ("D-16", "PRD.md"),
-    ("D-19", "PRD.md"),
-    ("D-20", "PRD.md"),
-    ("D-24", "PRD.md"),
-    ("D-25", "PRD.md"),
-    ("D-28", "PRD.md"),
-    ("D-32", "PRD.md"),
-    ("D-35", "PRD.md"),
-    ("D-39", "PRD.md"),
-    ("D-40", "design/10-advanced-primitives.md"),
-    ("D-41", "DESIGN.md"),
-    ("D-60", "design/03-price-structure.md"),
+    ("pricing", "D-02", "DESIGN.md"),
+    ("pricing", "D-02", "PRD.md"),
+    ("pricing", "D-02", "design/01-foundation.md"),
+    ("pricing", "D-02", "design/07-pricewindow-linkage.md"),
+    ("pricing", "D-04", "PRD.md"),
+    ("pricing", "D-05", "PRD.md"),
+    ("pricing", "D-06", "PRD.md"),
+    ("pricing", "D-07", "PRD.md"),
+    ("pricing", "D-13", "PRD.md"),
+    ("pricing", "D-15", "PRD.md"),
+    ("pricing", "D-16", "PRD.md"),
+    ("pricing", "D-19", "PRD.md"),
+    ("pricing", "D-20", "PRD.md"),
+    ("pricing", "D-24", "PRD.md"),
+    ("pricing", "D-25", "PRD.md"),
+    ("pricing", "D-28", "PRD.md"),
+    ("pricing", "D-32", "PRD.md"),
+    ("pricing", "D-35", "PRD.md"),
+    ("pricing", "D-39", "PRD.md"),
+    ("pricing", "D-40", "design/10-advanced-primitives.md"),
+    ("pricing", "D-41", "DESIGN.md"),
+    ("pricing", "D-60", "design/03-price-structure.md"),
 ];
 
 /// Parses a `P1/propagation-missing` finding's `(decision id, target path)` pair from
@@ -182,6 +193,12 @@ pub const PINNED_PROPAGATION_GAPS_2026_07_29: &[(&str, &str)] = &[
 /// message that doesn't match the expected shape — the single production-and-test
 /// definition of "how to read this finding back into pinned-baseline shape" (promoted
 /// 2026-07-29, fix round 1, replacing what was a test-only `missing_pairs` helper).
+///
+/// Deliberately does not, and cannot, recover a gear from the `Finding` alone — a
+/// `Finding` (see `finding.rs`) carries only a corpus-relative path, never a gear
+/// qualifier. Callers that need to match against a gear-qualified baseline (see
+/// `is_pinned_baseline`) must supply the gear themselves, from the corpus context they
+/// still have at the point the finding was produced.
 pub fn missing_pair(finding: &Finding) -> Option<(String, String)> {
     if finding.invariant != "P1/propagation-missing" {
         return None;
@@ -194,13 +211,17 @@ pub fn missing_pair(finding: &Finding) -> Option<(String, String)> {
         .map(|c| (c[1].to_string(), c[2].to_string()))
 }
 
-/// True if `finding` is exactly one of the pinned, accepted-debt propagation gaps
-/// (tracked as D-69) rather than newly appeared drift.
-pub fn is_pinned_baseline(finding: &Finding) -> bool {
+/// True if `finding`, attributed to `gear`, is exactly one of the pinned, accepted-debt
+/// propagation gaps (tracked as D-69) rather than newly appeared drift. `gear` is not
+/// read from `finding` (it can't be — see `missing_pair`) but must be supplied by the
+/// caller from the corpus the finding was actually produced against (task-review Ruling
+/// 3 fix, 2026-07-29, fix round 3): a same-`(id, path)` finding attributed to any other
+/// gear must not match.
+pub fn is_pinned_baseline(finding: &Finding, gear: &str) -> bool {
     missing_pair(finding).is_some_and(|(id, path)| {
         PINNED_PROPAGATION_GAPS_2026_07_29
             .iter()
-            .any(|(pid, ppath)| *pid == id && *ppath == path)
+            .any(|(pgear, pid, ppath)| *pgear == gear && *pid == id && *ppath == path)
     })
 }
 
@@ -241,9 +262,22 @@ mod tests {
             .iter()
             .filter_map(missing_pair)
             .collect();
+        // Raw `check()` output is only ever compared against this one corpus's own
+        // pinned entries — the drift test runs pricing alone, so the (id, path)
+        // projection (dropping the gear element) is the correct comparison here. Every
+        // entry in the pin is `"pricing"` by construction (see the const's doc comment);
+        // asserted below so a future entry added for a different gear would fail loudly
+        // here rather than silently changing what this test actually checks.
+        assert!(
+            PINNED_PROPAGATION_GAPS_2026_07_29
+                .iter()
+                .all(|(gear, _, _)| *gear == "pricing"),
+            "this baseline is documented as a pricing-only snapshot; a non-pricing entry \
+             would invalidate this test's (id, path)-only comparison"
+        );
         let expected: BTreeSet<(String, String)> = PINNED_PROPAGATION_GAPS_2026_07_29
             .iter()
-            .map(|(id, path)| (id.to_string(), path.to_string()))
+            .map(|(_, id, path)| (id.to_string(), path.to_string()))
             .collect();
 
         let appeared: Vec<_> = actual.difference(&expected).collect();
@@ -254,6 +288,29 @@ mod tests {
              newly appeared (not in the pin): {appeared:#?}; \
              no longer reproduced (pin needs updating — did someone fix these?): {disappeared:#?}"
         );
+    }
+
+    #[test]
+    fn is_pinned_baseline_matches_only_the_recorded_gear() {
+        // Task-review Ruling 3 finding (CRITICAL): a finding whose (id, path) matches a
+        // pinned pricing entry byte-for-byte must not be treated as known debt when it
+        // is attributed to a different gear — the baseline is a snapshot of one specific
+        // corpus, and neither `D-NN` nor the target path is unique across gears (rating
+        // and subscriptions have their own DECISIONS.md with their own D-NN ids).
+        let (gear, id, path) = PINNED_PROPAGATION_GAPS_2026_07_29[0];
+        assert_eq!(gear, "pricing", "test assumes entry 0 is pricing's");
+        let finding = Finding {
+            invariant: "P1/propagation-missing".to_string(),
+            severity: Severity::Medium,
+            file: "DECISIONS.md".to_string(),
+            line: Some(1),
+            message: format!(
+                "{id} claims propagation into {path}, but that document never cites {id}"
+            ),
+        };
+        assert!(is_pinned_baseline(&finding, "pricing"));
+        assert!(!is_pinned_baseline(&finding, "rating"));
+        assert!(!is_pinned_baseline(&finding, "subscriptions"));
     }
 
     #[test]

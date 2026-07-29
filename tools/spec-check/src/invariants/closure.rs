@@ -80,7 +80,12 @@ pub fn check(corpus: &Corpus, declared: &DeclaredInstructions) -> Vec<Finding> {
 /// *reference* codes a slice owns without ever declaring any themselves. Path shape, not
 /// "does it mention a code," is the discriminator: what makes a document own a catalogue is
 /// that it is a slice.
-fn is_design_slice(path: &str) -> bool {
+///
+/// `pub(crate)`: `fr_coverage.rs` reuses this to scope its own traceability-convention
+/// detection to the same set of documents, for the same reason — a `**Traces to**:` (or
+/// Problem-responses) convention lives on slices, and a non-slice document merely
+/// mentioning either shape in prose must not count as the gear "using" it.
+pub(crate) fn is_design_slice(path: &str) -> bool {
     path.strip_prefix("design/")
         .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
 }
@@ -158,110 +163,241 @@ fn check_error_codes(corpus: &Corpus) -> Vec<Finding> {
 /// Pinned baseline of `P3/code-unreferenced` findings against the live pricing corpus,
 /// hand-derived from the failure output of this test on 2026-07-29 (not by running the
 /// checker and trusting whatever it produces — a self-derived baseline asserts
-/// nothing). These 51 `(code, declaring file)` pairs are **debt, not correctness**:
-/// confirmed real — each rule describes its failure mode in prose (e.g. "any overlap
-/// fails") without naming the specific code its slice's Problem-responses catalogue
-/// defines for that failure. Fixing them is a separate docs round (owed alongside
-/// **D-69**), not this task loop's job. Pinned as an exact set so a *new*
+/// nothing). These 51 `(gear, code, declaring file)` triples are **debt, not
+/// correctness**: confirmed real — each rule describes its failure mode in prose (e.g.
+/// "any overlap fails") without naming the specific code its slice's Problem-responses
+/// catalogue defines for that failure. Fixing them is a separate docs round (owed
+/// alongside **D-69**), not this task loop's job. Pinned as an exact set so a *new*
 /// unreferenced code fails this test immediately, and so a *fixed* one fails it too —
 /// the list must be updated deliberately when the docs improve, never left to quietly
 /// become a floor. Promoted to a `pub const` (2026-07-29, fix round 1) so the CLI has
 /// exactly the same one definition of this debt the tests pin against, rather than a
 /// second, test-only copy the CLI can't see.
-pub const PINNED_UNREFERENCED_CODES_2026_07_29: &[(&str, &str)] = &[
-    ("ADDON_CYCLE", "design/02-plan-definition.md"),
-    ("ADDON_INCOMPATIBLE", "design/02-plan-definition.md"),
-    ("ADDON_OVERRIDE_UNRESOLVED", "design/02-plan-definition.md"),
-    ("APPROVAL_ROLE_REQUIRED", "design/05-governance.md"),
+///
+/// Every entry names `"pricing"` (task-review Ruling 3 fix, 2026-07-29, fix round 3):
+/// this baseline is a snapshot of *one specific corpus*, and an error-code token plus a
+/// corpus-relative filename is not a unique key across gears — `design/03-...`-shaped
+/// filenames in particular are just as likely to exist in a sibling gear's own design
+/// set. Without the gear qualifier a same-shaped finding from a different gear would be
+/// silently swallowed as if it were this pinned pricing debt. The gear name here is
+/// baseline *data* — it must never leak into `targets.rs`'s resolution path or any
+/// invariant's matching logic.
+pub const PINNED_UNREFERENCED_CODES_2026_07_29: &[(&str, &str, &str)] = &[
+    ("pricing", "ADDON_CYCLE", "design/02-plan-definition.md"),
     (
+        "pricing",
+        "ADDON_INCOMPATIBLE",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
+        "ADDON_OVERRIDE_UNRESOLVED",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
+        "APPROVAL_ROLE_REQUIRED",
+        "design/05-governance.md",
+    ),
+    (
+        "pricing",
         "AVAILABILITY_OUTSIDE_COVERAGE",
         "design/07-pricewindow-linkage.md",
     ),
-    ("BACKDATE_GRANT_REQUIRED", "design/05-governance.md"),
-    ("BASIS_MISSING", "design/08-bundles.md"),
-    ("BILLING_TIMING_MISSING", "design/06-consumer-contracts.md"),
-    ("BRAND_UNKNOWN", "design/04-currency-tax.md"),
-    ("BULK_ROW_CONFLICT", "design/12-operator-efficiency.md"),
     (
+        "pricing",
+        "BACKDATE_GRANT_REQUIRED",
+        "design/05-governance.md",
+    ),
+    ("pricing", "BASIS_MISSING", "design/08-bundles.md"),
+    (
+        "pricing",
+        "BILLING_TIMING_MISSING",
+        "design/06-consumer-contracts.md",
+    ),
+    ("pricing", "BRAND_UNKNOWN", "design/04-currency-tax.md"),
+    (
+        "pricing",
+        "BULK_ROW_CONFLICT",
+        "design/12-operator-efficiency.md",
+    ),
+    (
+        "pricing",
         "CHANGE_TARGET_UNPUBLISHED",
         "design/06-consumer-contracts.md",
     ),
-    ("CLONE_SOURCE_NOT_FOUND", "design/12-operator-efficiency.md"),
-    ("COMPONENT_UNPUBLISHED", "design/08-bundles.md"),
     (
+        "pricing",
+        "CLONE_SOURCE_NOT_FOUND",
+        "design/12-operator-efficiency.md",
+    ),
+    ("pricing", "COMPONENT_UNPUBLISHED", "design/08-bundles.md"),
+    (
+        "pricing",
         "COMPOSITE_CONSTITUENT_UNPUBLISHED",
         "design/10-advanced-primitives.md",
     ),
     (
+        "pricing",
         "COMPOSITE_SELF_REFERENCE",
         "design/10-advanced-primitives.md",
     ),
     (
+        "pricing",
         "COMPOSITE_TOO_FEW_CONSTITUENTS",
         "design/10-advanced-primitives.md",
     ),
     (
+        "pricing",
         "CREDIT_UNIT_UNPUBLISHED",
         "design/10-advanced-primitives.md",
     ),
-    ("DESCRIPTOR_INCOMPLETE", "design/02-plan-definition.md"),
-    ("EVAL_POLICY_MISPLACED", "design/03-price-structure.md"),
-    ("FLOOR_FALLBACK_MISSING", "design/10-advanced-primitives.md"),
     (
+        "pricing",
+        "DESCRIPTOR_INCOMPLETE",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
+        "EVAL_POLICY_MISPLACED",
+        "design/03-price-structure.md",
+    ),
+    (
+        "pricing",
+        "FLOOR_FALLBACK_MISSING",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "pricing",
         "FLOOR_INSIDE_PRICED_BAND",
         "design/10-advanced-primitives.md",
     ),
-    ("FLOOR_TYPE_MISSING", "design/10-advanced-primitives.md"),
     (
+        "pricing",
+        "FLOOR_TYPE_MISSING",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "pricing",
         "GRANDFATHERED_ROW_IMMUTABLE",
         "design/07-pricewindow-linkage.md",
     ),
     (
+        "pricing",
         "GRANDFATHER_LOOSEN_FORBIDDEN",
         "design/07-pricewindow-linkage.md",
     ),
     (
+        "pricing",
         "GRANT_APPLICABILITY_INELIGIBLE",
         "design/10-advanced-primitives.md",
     ),
     (
+        "pricing",
         "GRANT_APPLICABILITY_UNIT_MISMATCH",
         "design/10-advanced-primitives.md",
     ),
     (
+        "pricing",
         "GRANT_APPLICABILITY_UNPUBLISHED",
         "design/10-advanced-primitives.md",
     ),
-    ("GRANT_EXPIRY_MISSING", "design/10-advanced-primitives.md"),
-    ("GRANT_PRICE_UNSCOPED", "design/10-advanced-primitives.md"),
-    ("GRANT_REF_UNDEFINED", "design/06-consumer-contracts.md"),
-    ("GROUP_UNKNOWN", "design/09-price-overlays.md"),
-    ("HYBRID_INCOMPLETE", "design/02-plan-definition.md"),
-    ("METER_AMBIGUOUS", "design/02-plan-definition.md"),
-    ("PACKAGE_FIELDS_INVALID", "design/03-price-structure.md"),
-    ("PHASE_DURATION_INVALID", "design/02-plan-definition.md"),
-    ("PHASE_GRAPH_INVALID", "design/02-plan-definition.md"),
-    ("PLANTIER_DIVERGENT", "design/02-plan-definition.md"),
-    ("PLANTIER_MISSING", "design/02-plan-definition.md"),
     (
+        "pricing",
+        "GRANT_EXPIRY_MISSING",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "pricing",
+        "GRANT_PRICE_UNSCOPED",
+        "design/10-advanced-primitives.md",
+    ),
+    (
+        "pricing",
+        "GRANT_REF_UNDEFINED",
+        "design/06-consumer-contracts.md",
+    ),
+    ("pricing", "GROUP_UNKNOWN", "design/09-price-overlays.md"),
+    (
+        "pricing",
+        "HYBRID_INCOMPLETE",
+        "design/02-plan-definition.md",
+    ),
+    ("pricing", "METER_AMBIGUOUS", "design/02-plan-definition.md"),
+    (
+        "pricing",
+        "PACKAGE_FIELDS_INVALID",
+        "design/03-price-structure.md",
+    ),
+    (
+        "pricing",
+        "PHASE_DURATION_INVALID",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
+        "PHASE_GRAPH_INVALID",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
+        "PLANTIER_DIVERGENT",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
+        "PLANTIER_MISSING",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
         "PRORATION_INPUTS_MISSING",
         "design/06-consumer-contracts.md",
     ),
-    ("PURCHASE_QTY_RANGE_INVALID", "design/02-plan-definition.md"),
-    ("QUANTITY_SOURCE_MISSING", "design/03-price-structure.md"),
-    ("REASON_REQUIRED", "design/05-governance.md"),
-    ("REGION_SCOPE_DENIED", "design/05-governance.md"),
     (
+        "pricing",
+        "PURCHASE_QTY_RANGE_INVALID",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
+        "QUANTITY_SOURCE_MISSING",
+        "design/03-price-structure.md",
+    ),
+    ("pricing", "REASON_REQUIRED", "design/05-governance.md"),
+    ("pricing", "REGION_SCOPE_DENIED", "design/05-governance.md"),
+    (
+        "pricing",
         "RESERVATION_ON_NON_USAGE",
         "design/10-advanced-primitives.md",
     ),
-    ("RUN_SELECTOR_EMPTY", "design/12-operator-efficiency.md"),
-    ("SETUP_ROW_INVALID", "design/02-plan-definition.md"),
-    ("TAXONOMY_VALUE_IN_USE", "design/04-currency-tax.md"),
-    ("TAX_BASIS_INCOMPLETE", "design/04-currency-tax.md"),
-    ("TIER_BANDS_GAP", "design/03-price-structure.md"),
-    ("TIER_BANDS_OVERLAP", "design/03-price-structure.md"),
-    ("WINDOW_GAP", "design/07-pricewindow-linkage.md"),
+    (
+        "pricing",
+        "RUN_SELECTOR_EMPTY",
+        "design/12-operator-efficiency.md",
+    ),
+    (
+        "pricing",
+        "SETUP_ROW_INVALID",
+        "design/02-plan-definition.md",
+    ),
+    (
+        "pricing",
+        "TAXONOMY_VALUE_IN_USE",
+        "design/04-currency-tax.md",
+    ),
+    (
+        "pricing",
+        "TAX_BASIS_INCOMPLETE",
+        "design/04-currency-tax.md",
+    ),
+    ("pricing", "TIER_BANDS_GAP", "design/03-price-structure.md"),
+    (
+        "pricing",
+        "TIER_BANDS_OVERLAP",
+        "design/03-price-structure.md",
+    ),
+    ("pricing", "WINDOW_GAP", "design/07-pricewindow-linkage.md"),
 ];
 
 /// Parses a `P3/code-unreferenced` finding's `(code, declaring file)` pair from
@@ -269,6 +405,11 @@ pub const PINNED_UNREFERENCED_CODES_2026_07_29: &[(&str, &str)] = &[
 /// or a message that doesn't match the expected shape — the single production-and-test
 /// definition of "how to read this finding back into pinned-baseline shape" (promoted
 /// 2026-07-29, fix round 1, replacing what was a test-only `unreferenced_pairs` helper).
+///
+/// Deliberately does not, and cannot, recover a gear from the `Finding` alone (see
+/// `finding.rs`: a `Finding` carries only a corpus-relative path). Callers matching
+/// against a gear-qualified baseline (see `is_pinned_baseline`) must supply the gear
+/// themselves.
 pub fn unreferenced_pair(finding: &Finding) -> Option<(String, String)> {
     if finding.invariant != "P3/code-unreferenced" {
         return None;
@@ -282,13 +423,16 @@ pub fn unreferenced_pair(finding: &Finding) -> Option<(String, String)> {
         .map(|c| (c[1].to_string(), finding.file.clone()))
 }
 
-/// True if `finding` is exactly one of the pinned, accepted-debt unreferenced-code
-/// findings (tracked as D-69) rather than newly appeared drift.
-pub fn is_pinned_baseline(finding: &Finding) -> bool {
+/// True if `finding`, attributed to `gear`, is exactly one of the pinned, accepted-debt
+/// unreferenced-code findings (tracked as D-69) rather than newly appeared drift. `gear`
+/// must be supplied by the caller from the corpus the finding was actually produced
+/// against (task-review Ruling 3 fix, 2026-07-29, fix round 3) — a same-`(code, file)`
+/// finding attributed to any other gear must not match.
+pub fn is_pinned_baseline(finding: &Finding, gear: &str) -> bool {
     unreferenced_pair(finding).is_some_and(|(code, file)| {
         PINNED_UNREFERENCED_CODES_2026_07_29
             .iter()
-            .any(|(pcode, pfile)| *pcode == code && *pfile == file)
+            .any(|(pgear, pcode, pfile)| *pgear == gear && *pcode == code && *pfile == file)
     })
 }
 
@@ -493,9 +637,22 @@ mod tests {
             .iter()
             .filter_map(unreferenced_pair)
             .collect();
+        // Raw `check()` output is only ever compared against this one corpus's own
+        // pinned entries here, so the (code, file) projection (dropping the gear
+        // element) is the correct comparison — every entry in the pin is `"pricing"` by
+        // construction (see the const's doc comment); asserted below so a future entry
+        // added for a different gear would fail loudly here rather than silently
+        // changing what this test actually checks.
+        assert!(
+            PINNED_UNREFERENCED_CODES_2026_07_29
+                .iter()
+                .all(|(gear, _, _)| *gear == "pricing"),
+            "this baseline is documented as a pricing-only snapshot; a non-pricing entry \
+             would invalidate this test's (code, file)-only comparison"
+        );
         let expected: BTreeSet<(String, String)> = PINNED_UNREFERENCED_CODES_2026_07_29
             .iter()
-            .map(|(code, path)| (code.to_string(), path.to_string()))
+            .map(|(_, code, path)| (code.to_string(), path.to_string()))
             .collect();
 
         let appeared: Vec<_> = actual.difference(&expected).collect();
@@ -506,5 +663,28 @@ mod tests {
              newly appeared (not in the pin): {appeared:#?}; \
              no longer reproduced (pin needs updating — did someone fix these?): {disappeared:#?}"
         );
+    }
+
+    #[test]
+    fn is_pinned_baseline_matches_only_the_recorded_gear() {
+        // Task-review Ruling 3 finding (CRITICAL, "do the same for the code-unreferenced
+        // side"): a finding whose (code, file) matches a pinned pricing entry
+        // byte-for-byte must not be treated as known debt when attributed to a
+        // different gear — `design/03-...`-shaped filenames are just as plausible in a
+        // sibling gear's own design set.
+        let (gear, code, file) = PINNED_UNREFERENCED_CODES_2026_07_29[0];
+        assert_eq!(gear, "pricing", "test assumes entry 0 is pricing's");
+        let finding = Finding {
+            invariant: "P3/code-unreferenced".to_string(),
+            severity: Severity::Low,
+            file: file.to_string(),
+            line: None,
+            message: format!(
+                "`{code}` is declared in a Problem-responses block but referenced by no rule"
+            ),
+        };
+        assert!(is_pinned_baseline(&finding, "pricing"));
+        assert!(!is_pinned_baseline(&finding, "rating"));
+        assert!(!is_pinned_baseline(&finding, "subscriptions"));
     }
 }

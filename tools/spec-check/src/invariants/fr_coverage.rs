@@ -4,6 +4,7 @@ use regex::Regex;
 
 use crate::Corpus;
 use crate::finding::{Finding, Severity};
+use crate::invariants::closure::is_design_slice;
 
 /// Requirement id -> the corpus-relative paths of every slice that claims it (a
 /// `BTreeSet` per id since a copy/paste slip can claim the same id twice in one file —
@@ -49,9 +50,11 @@ pub fn check(corpus: &Corpus) -> Vec<Finding> {
             message: format!(
                 "P2 cannot verify requirement coverage for {}: no slice uses a recognised \
                  traceability convention (`**Traces to**:` or `This slice directly \
-                 addresses:`) — per-id claims are not reported for this gear rather than \
-                 reporting every requirement as unclaimed",
-                corpus.root().display()
+                 addresses:`) — {} requirement(s) went unchecked as a result; per-id claims \
+                 are not reported for this gear rather than reporting every requirement as \
+                 unclaimed",
+                corpus.root().display(),
+                defined.len()
             ),
         });
     }
@@ -96,6 +99,16 @@ fn defined_requirements(corpus: &Corpus) -> BTreeSet<String> {
 /// The third return value is whether *either* convention was seen anywhere in the
 /// corpus at all — `check` uses it to distinguish "this gear's requirements are
 /// verifiably uncovered" from "this gear's convention is one P2 doesn't parse".
+///
+/// Scoped to `is_design_slice` documents only (shared with `closure.rs`'s identical
+/// scoping of the Problem-responses convention): the brief scopes both claim-collection
+/// and convention detection to *design slice* files specifically. Without this, a stray
+/// `**Traces to**:` in a non-slice document — an ADR quoting the convention as an
+/// example, a `DESIGN.md` illustration — would count towards `convention_seen` (wrongly
+/// reviving the per-id sweep for a gear whose real slices use neither known convention)
+/// and could even wrongly "claim" a requirement no real slice claims. `PRD.md` itself is
+/// excluded by construction: it never starts with `design/`, so `is_design_slice` is
+/// `false` for it same as before.
 fn claimed_requirements(corpus: &Corpus) -> (ClaimsByRequirement, Vec<Finding>, bool) {
     let id = Regex::new(r"`(cpt-cf-[a-z0-9-]*-fr-[a-z0-9-]+)`").expect("valid id regex");
     let mut out: ClaimsByRequirement = BTreeMap::new();
@@ -103,7 +116,7 @@ fn claimed_requirements(corpus: &Corpus) -> (ClaimsByRequirement, Vec<Finding>, 
     let mut convention_seen = false;
 
     for (path, text) in corpus.files() {
-        if path == "PRD.md" {
+        if !is_design_slice(path) {
             continue;
         }
         let saw_traces_to = collect_traces_to(path, text, &id, &mut out);
@@ -374,6 +387,16 @@ mod tests {
             !findings.iter().any(|f| f.invariant == "P2/fr-unclaimed"),
             "unexpected: {findings:#?}"
         );
+        // Suppression must not be silent (task-review Ruling 2 finding): the message
+        // must state the cost — how many requirements went unchecked as a result.
+        // The fixture's PRD defines exactly 2 (`fr-one`, `fr-two`). Checks for "2
+        // requirement" rather than a bare '2' — the invariant tag "P2" itself
+        // contains a '2', so a bare-digit check would pass vacuously.
+        assert!(
+            findings[0].message.contains("2 requirement"),
+            "message doesn't state the unchecked count: {:?}",
+            findings[0].message
+        );
     }
 
     #[test]
@@ -384,7 +407,11 @@ mod tests {
         // must report exactly one P2/traceability-convention-unknown and zero
         // P2/fr-unclaimed. Pricing is unaffected: it uses `**Traces to**:` throughout,
         // so it keeps its normal per-id behaviour (see `every_pricing_fr_is_claimed_by_a_slice`).
-        for gear in ["rating", "subscriptions"] {
+        //
+        // The exact unchecked-count is asserted per gear (task-review Ruling 2 finding:
+        // suppression must state its cost) — 43 for rating, 47 for subscriptions,
+        // hand-counted from each gear's PRD.md `**ID**:` rows.
+        for (gear, unchecked) in [("rating", 43), ("subscriptions", 47)] {
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("../../gears/bss/{gear}/docs"));
             let corpus = Corpus::load(&root).expect("gear corpus loads");
@@ -399,6 +426,39 @@ mod tests {
                 .collect();
             assert_eq!(unknown.len(), 1, "{gear}: unexpected: {findings:#?}");
             assert!(unclaimed.is_empty(), "{gear}: unexpected: {findings:#?}");
+            assert!(
+                unknown[0]
+                    .message
+                    .contains(&format!("{unchecked} requirement")),
+                "{gear}: message doesn't state the unchecked count ({unchecked}): {:?}",
+                unknown[0].message
+            );
         }
+    }
+
+    #[test]
+    fn a_traces_to_marker_outside_a_design_slice_does_not_count_as_a_known_convention() {
+        // Task-review Ruling 2 finding: the brief scopes detection to *design slice*
+        // files. A stray `**Traces to**:` in a non-slice document (an ADR quoting the
+        // convention as an example, a DESIGN.md example, ...) must not count as this
+        // gear "using a known convention" — nor may it silently absorb a claim, or a
+        // requirement genuinely unclaimed by any real slice would read as claimed by
+        // accident. No design slice here uses either known convention, so the only
+        // correct outcome is exactly one convention-unknown finding.
+        let corpus = Corpus::from_parts(
+            "gears/bss/gamma/docs",
+            [
+                ("PRD.md", "- [ ] `p1` - **ID**: `cpt-cf-bss-gamma-fr-one`\n"),
+                (
+                    "ADR/0001-example.md",
+                    "Design slices should write **Traces to**: `cpt-cf-bss-gamma-fr-one` \
+                     per convention.\n",
+                ),
+            ],
+        );
+        let findings = check(&corpus);
+        assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
+        assert_eq!(findings[0].invariant, "P2/traceability-convention-unknown");
+        assert!(findings[0].message.contains("1 requirement"));
     }
 }
