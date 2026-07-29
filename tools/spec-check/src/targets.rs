@@ -21,14 +21,20 @@ pub fn resolve(raw: &str, corpus: &Corpus) -> Resolved {
     // DECISIONS.md (D-65) reads "subscriptions SEAMS **SUB-P7**.", and without it
     // that seam id is invisible to this regex, so the token falls back to bare
     // SEAMS and misreports a resolvable citation as unresolved.
-    let seam_gear = Regex::new(r"\bSEAMS\s+(?:§\w+\s+)?\**(M\d+|RG\d+|SUB-[A-Za-z0-9]+)")
-        .expect("valid seam regex");
+    //
+    // Anchored at the start of the slice that follows THIS `SEAMS` occurrence (see
+    // call site below), so a clause citing two sibling gears resolves each `SEAMS`
+    // to its own id instead of both — via an unanchored, whole-string search —
+    // collapsing onto whichever id happens to appear first.
+    let seam_gear =
+        Regex::new(r"^\s+(?:§\w+\s+)?\**(M\d+|RG\d+|SUB-[A-Za-z0-9]+)").expect("valid seam regex");
 
     let mut paths = BTreeSet::new();
     let mut unresolved = BTreeSet::new();
 
     for cap in token.captures_iter(raw) {
-        let whole = cap[1].to_string();
+        let whole_match = cap.get(1).expect("group 1 always matches");
+        let whole = whole_match.as_str().to_string();
         match whole.as_str() {
             "PRD" => insert_if_present(corpus, "PRD.md", &mut paths, &mut unresolved, &whole),
             "DESIGN" => insert_if_present(corpus, "DESIGN.md", &mut paths, &mut unresolved, &whole),
@@ -39,7 +45,7 @@ pub fn resolve(raw: &str, corpus: &Corpus) -> Resolved {
                 &mut unresolved,
                 &whole,
             ),
-            "SEAMS" => match seam_gear.captures(raw) {
+            "SEAMS" => match seam_gear.captures(&raw[whole_match.end()..]) {
                 Some(c) if c[1].starts_with("SUB-") => {
                     paths.insert("../../subscriptions/docs/SEAMS.md".to_string());
                 }
@@ -167,5 +173,41 @@ mod tests {
         let r = resolve("subscriptions SEAMS **SUB-P7**.", &pricing());
         assert_eq!(r.paths, ["../../subscriptions/docs/SEAMS.md"]);
         assert!(r.unresolved.is_empty());
+    }
+
+    #[test]
+    fn each_seams_occurrence_resolves_to_its_own_gear() {
+        // The register already propagates one decision (D-66) jointly to both
+        // sibling gears; it just hasn't cited both via the `SEAMS` shorthand in a
+        // single field yet. A whole-string search for "the first SEAMS+id" would
+        // collapse this to one gear, silently dropping the other. Anchoring each
+        // lookup at the occurrence it belongs to must resolve both.
+        let r = resolve(
+            "rating SEAMS M9 adopted; subscriptions SEAMS **SUB-P8** owed",
+            &pricing(),
+        );
+        assert_eq!(
+            r.paths,
+            [
+                "../../rating/docs/SEAMS.md",
+                "../../subscriptions/docs/SEAMS.md",
+            ]
+        );
+        assert!(r.unresolved.is_empty());
+    }
+
+    #[test]
+    fn bare_seams_is_not_rescued_by_a_later_unrelated_id() {
+        // A position-agnostic seam-id search would find "M12" — cited later, for a
+        // different SEAMS occurrence — and wrongly use it to resolve the earlier,
+        // genuinely bare SEAMS. The bare occurrence must land in unresolved on its
+        // own merits, independent of what a later occurrence in the same string
+        // happens to cite.
+        let r = resolve(
+            "SEAMS unspecified; rating SEAMS M12 confirms the same block",
+            &pricing(),
+        );
+        assert_eq!(r.paths, ["../../rating/docs/SEAMS.md"]);
+        assert_eq!(r.unresolved, ["SEAMS"]);
     }
 }
