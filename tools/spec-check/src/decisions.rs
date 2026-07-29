@@ -14,9 +14,13 @@ pub struct Decision {
 /// entries and are deliberately not matched — only `####` headings are.
 pub fn parse(text: &str) -> Vec<Decision> {
     let heading = Regex::new(r"^#### (D-\d+)\b").expect("valid heading regex");
-    // Stop at the next bold label: 8 of 68 real entries continue with `**Amendment**`
-    // on the SAME physical line, and a greedy `(.+)` swallows those paragraphs whole.
-    let propagated = Regex::new(r"\*\*Propagated\*\*:\s*(.+?)(?:\s*\*\*[A-Z]|$)")
+    // Stop at the next *field label*: 8 of 68 real entries continue with
+    // `**Amendment …**:` on the SAME physical line, and a greedy `(.+)` swallows those
+    // paragraphs whole. The boundary requires the closing `**` to be followed by a colon,
+    // because every genuine label in this corpus carries one (`**Where**:`, `**Decision**:`,
+    // `**Owed**:`) while citations contain colon-less inline bold (`**Formalized as
+    // ADR-0003**` in D-03, `**SUB-P7**` in D-65) that must NOT end the capture.
+    let propagated = Regex::new(r"\*\*Propagated\*\*:\s*(.+?)(?:\s*\*\*[A-Z][^*]*\*\*:|$)")
         .expect("valid propagated regex");
 
     let lines: Vec<&str> = text.lines().collect();
@@ -64,6 +68,16 @@ mod tests {
 #### D-54 [L] Something with no propagation line
 
 - **Decision**: nothing to propagate yet.
+
+#### D-60 [M] Plain citation, no continuation
+
+- **Decision**: plain case; nothing follows the citation on the line.
+- **Propagated**: S9 `inst-plain-case` + §7; PRD glossary row.
+
+#### D-61 [H] Citation with inline colon-less bold mid-clause
+
+- **Decision**: something formalized, modeled on D-03's shape.
+- **Propagated**: S9 `inst-adr-case` + §7 glossary row. **Formalized as ADR-0009** (`cpt-cf-bss-pricing-adr-example-token`).
 "#;
 
     #[test]
@@ -71,7 +85,7 @@ mod tests {
         let ds = parse(SAMPLE);
         assert_eq!(
             ds.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
-            ["D-53", "D-54"]
+            ["D-53", "D-54", "D-60", "D-61"]
         );
     }
 
@@ -103,5 +117,33 @@ mod tests {
             !propagated.contains("Amendment"),
             "captured amendment prose into propagated: {propagated:?}"
         );
+    }
+
+    #[test]
+    fn keeps_the_whole_citation_when_nothing_follows_it() {
+        let ds = parse(SAMPLE);
+        let d60 = &ds[2];
+        assert_eq!(d60.id, "D-60");
+        assert_eq!(
+            d60.propagated.as_deref(),
+            Some("S9 `inst-plain-case` + §7; PRD glossary row.")
+        );
+    }
+
+    #[test]
+    fn does_not_cut_at_colon_less_inline_bold_mid_clause() {
+        let ds = parse(SAMPLE);
+        let d61 = &ds[3];
+        assert_eq!(d61.id, "D-61");
+        let propagated = d61
+            .propagated
+            .as_deref()
+            .expect("D-61 has a propagated citation");
+        // The whole clause must survive, including the token past the colon-less bold span.
+        assert_eq!(
+            propagated,
+            "S9 `inst-adr-case` + §7 glossary row. **Formalized as ADR-0009** (`cpt-cf-bss-pricing-adr-example-token`)."
+        );
+        assert!(propagated.contains("cpt-cf-bss-pricing-adr-example-token"));
     }
 }
