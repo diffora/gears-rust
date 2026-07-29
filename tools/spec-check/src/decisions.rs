@@ -14,7 +14,10 @@ pub struct Decision {
 /// entries and are deliberately not matched — only `####` headings are.
 pub fn parse(text: &str) -> Vec<Decision> {
     let heading = Regex::new(r"^#### (D-\d+)\b").expect("valid heading regex");
-    let propagated = Regex::new(r"\*\*Propagated\*\*:\s*(.+)").expect("valid propagated regex");
+    // Stop at the next bold label: 8 of 68 real entries continue with `**Amendment**`
+    // on the SAME physical line, and a greedy `(.+)` swallows those paragraphs whole.
+    let propagated = Regex::new(r"\*\*Propagated\*\*:\s*(.+?)(?:\s*\*\*[A-Z]|$)")
+        .expect("valid propagated regex");
 
     let lines: Vec<&str> = text.lines().collect();
     let starts: Vec<(usize, String)> = lines
@@ -29,8 +32,9 @@ pub fn parse(text: &str) -> Vec<Decision> {
         .map(|(n, (start, id))| {
             let end = starts.get(n + 1).map(|(s, _)| *s).unwrap_or(lines.len());
             let body = &lines[*start..end];
-            // The label and its content always sit on one physical line in this corpus;
-            // a wrapped continuation would be a doc-format change, not a parser concern.
+            // The label and its citation sit on one physical line in this corpus, but
+            // later prose (`**Amendment**: …`) may follow on that same line — the regex
+            // above cuts the capture at that boundary.
             let prop = body
                 .iter()
                 .find_map(|l| propagated.captures(l))
@@ -55,7 +59,7 @@ mod tests {
 
 - **Where**: design/10.
 - **Decision**: capacity only.
-- **Propagated**: S10 `inst-rv-level` + §5; S3 cross-ref.
+- **Propagated**: S10 `inst-rv-level` + §5; S3 cross-ref. **Amendment**: scope narrowed to reserved rows only, 2026-07-28.
 
 #### D-54 [L] Something with no propagation line
 
@@ -86,5 +90,18 @@ mod tests {
     fn records_the_heading_line_number() {
         let ds = parse(SAMPLE);
         assert_eq!(ds[0].line, 4);
+    }
+
+    #[test]
+    fn stops_the_propagated_capture_before_a_same_line_amendment_label() {
+        let ds = parse(SAMPLE);
+        let propagated = ds[0]
+            .propagated
+            .as_deref()
+            .expect("D-53 has a propagated citation");
+        assert!(
+            !propagated.contains("Amendment"),
+            "captured amendment prose into propagated: {propagated:?}"
+        );
     }
 }
