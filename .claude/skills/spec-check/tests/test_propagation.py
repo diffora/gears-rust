@@ -13,9 +13,9 @@ from spec_check.targets import SeamIndex, gear_name
 
 
 def live_corpora():
-    """Every live BSS gear's corpus, in the order `make spec-check` passes them —
-    pricing first, so `live_corpora()[0]` is the corpus the pinned baseline was
-    taken from.
+    """Every live BSS gear's corpus, in the order the removed `make spec-check`
+    target passed them — pricing first, so `live_corpora()[0]` is the corpus the
+    pinned baseline was taken from.
 
     The whole live set, rather than pricing alone: a cross-gear propagation target
     is verified against the sibling document, so a test that loaded one gear would

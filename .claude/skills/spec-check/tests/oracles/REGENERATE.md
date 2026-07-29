@@ -33,6 +33,6 @@ correct, but non-reproducible — output.
 Only when the *live documents* change, which is what the D-69 docs round will
 do. A finding appearing or disappearing here is a real claim about the design
 set, and re-freezing must be a deliberate, separately-justified commit — never a
-way to make a failing port look green. After `tools/spec-check` is removed the
-binary that produced these no longer exists; recovering it means checking out
-`06c46d6d`.
+way to make a failing port look green. `tools/spec-check` was removed on
+2026-07-29, so the binary that produced these no longer exists; recovering it
+means checking out `06c46d6d`.

@@ -9610,18 +9610,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spec-check"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "regex",
- "serde",
- "serde_json",
- "walkdir",
-]
-
-[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

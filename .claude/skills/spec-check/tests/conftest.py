@@ -14,7 +14,8 @@ if str(SCRIPTS) not in sys.path:
 #: Repository root — `.claude/skills/spec-check/tests` is four levels down.
 REPO_ROOT = SKILL_ROOT.parent.parent.parent
 
-#: The three gear docs trees `make spec-check` passes, in that order. Pricing is
+#: The three gear docs trees, in the order the removed `make spec-check` target
+#: passed them — which is what the frozen oracles were captured from. Pricing is
 #: first, so `LIVE_GEARS[0]` is the corpus both pinned baselines were taken from.
 #: These are repo-relative strings, not absolute paths: the corpus root is echoed
 #: verbatim into two finding messages, so the oracles only reproduce when the

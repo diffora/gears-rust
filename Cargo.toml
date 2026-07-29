@@ -26,7 +26,6 @@ debug = "line-tables-only"
 members = [
     "apps/cf-gears-example-server",
     "tools/gts-analyze",
-    "tools/spec-check",
     "tools/xtask",
     "libs/toolkit",
     "libs/toolkit-macros",

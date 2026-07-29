@@ -9,13 +9,19 @@ allowed-tools: Bash, Read
 
 Three deterministic invariants over a gear's `docs/` tree.
 
-**The exit code gates something.** CI's `Spec Invariants` job
-(`.github/workflows/docs.yml`) runs `make spec-check` on every PR touching
-`**/*.md`, `docs/`, `guidelines/` or `tools/spec-check/`, and a live finding at or
-above `--max-severity` (default `medium`) fails it. Pinned known debt never does.
-That job still shells out to the Rust crate `tools/spec-check`, which this skill
-is a verified port of — rewiring the Makefile to the Python CLI below, and
-removing the crate, is a later step.
+**Advisory — nothing runs this for you, and nothing consumes its exit code.** It
+used to: CI's `Spec Invariants` job in `.github/workflows/docs.yml` ran
+`make spec-check` on every PR touching `**/*.md`, `docs/` or `guidelines/`, and a
+live finding at or above `--max-severity` failed it. That job, the Makefile target
+and the Rust crate this is a verified port of (`tools/spec-check`) were all removed
+on 2026-07-29, deliberately: the tool is meant to be run on demand against the
+documents you are actually working on, one feature at a time.
+
+What that costs, stated plainly rather than glossed: the design set is now
+validated by nothing automatically, and the pinned baselines below no longer fail
+in both directions on every docs PR — a finding that stops reproducing will just
+quietly stop reproducing until someone runs this. The exit code still means what it
+always meant; there is simply no longer a gate reading it.
 
 ## How to invoke
 
@@ -114,4 +120,4 @@ reddens them rather than edit:
    exactly against the live corpus.
 3. `tests/test_closure.py` — the 51 pinned unreferenced error codes, likewise.
 4. `tests/test_backtest.py` — all three invariants against the frozen `10073c36`
-   pricing tree under `tools/spec-check/tests/fixtures/`: P1 28, P2 7, P3 55.
+   pricing tree under `tests/fixtures/`: P1 28, P2 7, P3 55.
