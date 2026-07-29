@@ -43,7 +43,9 @@ from spec_check.targets import SeamIndex
 #: `git archive 10073c36 gears/bss/pricing/docs`. Never hand-edited: the pins
 #: below fail in both directions, and the only reason they cannot flake is that
 #: the input cannot change.
-FIXTURE = REPO_ROOT / "tools/spec-check/tests/fixtures/gears/bss/pricing/docs"
+FIXTURE = (
+    REPO_ROOT / ".claude/skills/spec-check/tests/fixtures/gears/bss/pricing/docs"
+)
 
 #: Pinned per-invariant counts, verified by hand against the corpus, not derived
 #: from a first run. Exact, not a floor — the fixture cannot change, so these are
