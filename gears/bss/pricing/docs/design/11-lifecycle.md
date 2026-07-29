@@ -259,7 +259,7 @@ flowchart TB
 | `POST` | `/v1/pricing/migrations/{id}:start` | **Subscriptions declares execution start** — flips `scheduled → in_progress`, runs the D-36 execution-time re-validation, and **returns the exclusion set** (freshly contract-locked subscriptions + newly-broken-boundary subscriptions) that Subscriptions MUST honour. Calling it before the first `PlanLink` batch is a **normative obligation**, not an option | `migration_id` (repeat calls return the same exclusion set without re-transitioning) | `plan × migrate` |
 | `POST` | `/v1/pricing/migrations/{id}:complete` | **Subscriptions reports the scope processed** — carries the processed / excluded / failed sets; flips `in_progress → completed` and closes the completion record | `migration_id` | `plan × migrate` |
 
-**Why these two exist (2026-07-29 review fix).** Both non-terminal transitions were specified
+**Why these two exist (D-65, 2026-07-29 review fix).** Both non-terminal transitions were specified
 with Subscriptions as the actor (`inst-mst-start`: "*and Subscriptions begins `PlanLink`
 execution*"; `inst-mst-complete`: "*when Subscriptions reports the scope processed*") while the
 surface offered only operator-facing `POST`/`DELETE`/`GET` — the handshake had no call. Without

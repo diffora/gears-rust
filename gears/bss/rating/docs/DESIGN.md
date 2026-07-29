@@ -184,7 +184,7 @@ publishes balance effects, `16` hands off to Billing.
 
 ### 3.5 External Dependencies
 
-- **Pricing (Product Catalog) gear** — SoR for the scope key, `PriceWindow`, `PriceOverlay`, `CatalogVersion`; produces the `PriceWindow*` events and the frozen read model. `CatalogVersionPublished` comes from the **registry (products gear)**, the sole `CatalogVersion` incrementer (corrected 2026-07-29).
+- **Pricing (Product Catalog) gear** — SoR for the scope key, `PriceWindow`, `PriceOverlay`, `CatalogVersion`; produces the `PriceWindow*` events and the frozen read model. `CatalogVersionPublished` comes from the **registry (products gear)**, the sole `CatalogVersion` incrementer (corrected 2026-07-29 — pricing D-66).
 - **Subscriptions** — phase, eligibility inputs, seat count, plan-change policy.
 - **Finance** — FX tables and lock policies. **Promotions** — frozen coupon snapshots. **Billing** — `periodState`, floor/cap and rounding execution.
 
