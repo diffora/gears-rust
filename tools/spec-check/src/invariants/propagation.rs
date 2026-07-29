@@ -286,13 +286,15 @@ fn unparsed_propagated_label(lines: &[&str], all: &[Decision], i: usize) -> Opti
 /// Every entry is also an **in-corpus** target, and that is all this snapshot ever could
 /// have covered: when it was taken, a resolved cross-gear target (`../../<gear>/docs/SEAMS.md`)
 /// was dropped by `check` without being verified, so no such gap could appear. Since the
-/// 2026-07-29 final-review fix wave (item 5) those targets are checked for real, and the one
-/// gap that surfaced (D-46 into rating's `SEAMS.md`) is deliberately **not** listed here: this
-/// register is *accepted* debt, whose contents are a human decision, and an entry here also
-/// stops the CLI failing on it. It stays a live finding until someone rules on it in the D-69
-/// round. `cross_gear_propagation_gaps_are_newly_visible_unaccepted_debt` keeps that set
-/// stable meanwhile, and the drift test below compares only in-corpus targets against this
-/// register so the two sets never blur into each other.
+/// 2026-07-29 final-review fix wave (item 5) those targets are checked for real. The one gap
+/// that surfaced — D-46 into rating's `SEAMS.md` — was deliberately **never** listed here, and
+/// was instead closed on 2026-07-29 by fixing the document (rating's `RG3` row now cites
+/// `pricing **D-46**`) on the human's ruling. That is the distinction this register exists to
+/// keep: it holds *accepted* debt, whose contents are a human decision, and an entry here also
+/// stops the CLI failing on it — so adding a brand-new finding would have buried it rather than
+/// getting it fixed. `cross_gear_propagation_gaps_match_the_expected_set` pins the cross-gear
+/// set (now empty) and the drift test below compares only in-corpus targets against this
+/// register, so the two sets never blur into each other.
 pub const PINNED_PROPAGATION_GAPS_2026_07_29: &[(&str, &str, &str)] = &[
     ("pricing", "D-01", "PRD.md"),
     (
@@ -458,21 +460,29 @@ mod tests {
     }
 
     #[test]
-    fn cross_gear_propagation_gaps_are_newly_visible_unaccepted_debt() {
+    fn cross_gear_propagation_gaps_match_the_expected_set() {
         // What item 5 bought, asserted as an exact set so it drifts loudly in both
         // directions. Four of pricing's decisions claim a cross-gear propagation surface
         // (D-44 `SEAMS M10`, D-46 `SEAMS RG3`, D-60 `SEAMS M12`, D-65 `SEAMS SUB-P7`); all
-        // four used to be dropped by a bare `else { continue }`. Checked for real, three are
-        // clean — rating's SEAMS.md cites D-44 and D-60, subscriptions' cites D-65 — and one
-        // is a genuine gap: rating's `RG3` row records the reconciliation D-46 drove but
-        // never cites D-46.
+        // four used to be dropped by a bare `else { continue }` and were verified by nothing.
+        // Checked for real, **all four now verify clean** — rating's `SEAMS.md` cites D-44,
+        // D-46 and D-60, subscriptions' cites D-65 — so the expected set is empty.
         //
-        // Deliberately NOT added to `PINNED_PROPAGATION_GAPS_2026_07_29`: that register is
-        // *accepted* debt whose contents are a human decision, and an entry there would stop
-        // the CLI failing on this, which is exactly how a newly-found defect gets buried. It
-        // stays a live Medium finding that reddens `make spec-check` until someone rules on
-        // it in the D-69 docs round. This test's job is only to keep the set stable
-        // meanwhile: a second cross-gear gap, or this one being fixed, must both fail here.
+        // It was not empty when item 5 landed: D-46 was a real gap, rating's `RG3` row
+        // recording the reconciliation D-46 drove without ever citing it. That gap was closed
+        // on **2026-07-29** by a citation added to rating's `SEAMS.md` RG3 row (`pricing
+        // **D-46**`, matching the `pricing D-44` / `pricing D-60` convention M10 and M12
+        // already use in that file), on the human's ruling to fix the doc. It was closed by
+        // fixing the document — **not** by pinning it: `PINNED_PROPAGATION_GAPS_2026_07_29`
+        // was never extended, because that register is *accepted* debt whose contents are a
+        // human decision, and an entry there would also have stopped the CLI failing on it,
+        // which is exactly how a newly-found defect gets buried.
+        //
+        // Kept as an exact-set assertion rather than a "no gaps" check, so the failure message
+        // still *names* whatever appears. The direction rule is the load-bearing part and
+        // still holds: a newly appeared gap is unaccepted debt to take to a human, and a
+        // disappeared one means a docs round closed it and this expectation needs updating —
+        // never the other way round.
         let corpora = live_corpora();
         let seams = targets::SeamIndex::build(&corpora);
         let actual: BTreeSet<(String, String)> = check(&corpora[0], &seams, &corpora)
@@ -480,13 +490,98 @@ mod tests {
             .filter_map(missing_pair)
             .filter(|(_, path)| is_cross_gear(path))
             .collect();
-        let expected: BTreeSet<(String, String)> =
-            [("D-46".to_string(), "../../rating/docs/SEAMS.md".to_string())].into();
+        let expected: BTreeSet<(String, String)> = BTreeSet::new();
         assert_eq!(
             actual, expected,
             "the set of cross-gear propagation gaps moved — a new one is unaccepted debt to \
              take to a human, and a disappeared one means the docs round closed it and this \
              expectation needs updating (never the other way round)"
+        );
+    }
+
+    /// The decision id a P1 message opens with (`D-49: propagation citation …`,
+    /// `SUB-D-16 carries …`), used as a finding's stable identity for the whole-class drift
+    /// test below. `""` for `P1/decision-register-unparsed`, whose subject is a whole register
+    /// rather than one decision — the gear in the tuple already identifies it uniquely.
+    ///
+    /// Deliberately not keyed on `(file, line)`: every one of these findings sits in
+    /// `DECISIONS.md`, so a line number would make the expectation break on any unrelated edit
+    /// to that file, which is drift detection that cries wolf rather than drift detection.
+    fn subject_id(finding: &Finding) -> String {
+        if finding.invariant == "P1/decision-register-unparsed" {
+            return String::new();
+        }
+        finding
+            .message
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(':')
+            .to_string()
+    }
+
+    #[test]
+    fn every_other_live_p1_finding_class_matches_its_exact_expected_set() {
+        // Re-review gap (2026-07-29, Low): the two drift tests above project only
+        // `P1/propagation-missing`, so every *other* P1 class — including the three this fix
+        // wave added — was pinned by nothing at all. Fixing D-49's citation would have made a
+        // finding vanish with no test failing: exactly the failure mode item 8 was raised
+        // about, now applying to the classes this wave introduced.
+        //
+        // Exact set over all three gears, keyed `(gear, invariant, subject)`. That makes this
+        // an assertion about the *classes that are empty* too: a `seam-undefined`,
+        // `seam-conflict`, `propagation-label-unparsed` or `propagation-target-not-loaded`
+        // appearing anywhere would add a tuple and fail here, even though none of them is
+        // listed below. `propagation-missing` is excluded because it is already pinned exactly,
+        // twice — by `propagation_gaps_match_the_pinned_2026_07_29_baseline` for in-corpus
+        // targets and `cross_gear_propagation_gaps_match_the_expected_set` for cross-gear ones.
+        //
+        // Every entry here is a real coverage gap the tool honestly reports, not accepted debt,
+        // and none of it is suppressed — all five appear in `make spec-check` output. They are
+        // Low, so they do not fail the run; this test is what keeps them from silently
+        // disappearing:
+        //   - D-49  `§15 rows ×5.` — a real claim naming no document.
+        //   - D-66  `rating ×4 files (6 sites); …` — a real *cross-gear* claim, unverifiable
+        //           as written; the one item 5 cannot help, since nothing in it resolves.
+        //   - SUB-D-15 — cites `slice 03 §4.5`, a convention the resolver does not read.
+        //   - SUB-D-16 — cites a genuinely bare `SEAMS register row`, with no seam id.
+        //   - rating's register — a `T-D-NN` table with no `**Propagated**:` field at all, so
+        //           P1 correctly declares it has no propagation surface here.
+        let corpora = live_corpora();
+        let seams = targets::SeamIndex::build(&corpora);
+        let actual: BTreeSet<(String, String, String)> = corpora
+            .iter()
+            .flat_map(|corpus| {
+                let gear = targets::gear_name(corpus).unwrap_or_default();
+                check(corpus, &seams, &corpora)
+                    .into_iter()
+                    .filter(|f| f.invariant != "P1/propagation-missing")
+                    .map(move |f| (gear.clone(), f.invariant.clone(), subject_id(&f)))
+            })
+            .collect();
+        let expected: BTreeSet<(String, String, String)> = [
+            ("pricing", "P1/propagation-uninterpretable", "D-49"),
+            ("pricing", "P1/propagation-uninterpretable", "D-66"),
+            ("rating", "P1/decision-register-unparsed", ""),
+            (
+                "subscriptions",
+                "P1/propagation-uninterpretable",
+                "SUB-D-15",
+            ),
+            ("subscriptions", "P1/propagation-unresolvable", "SUB-D-16"),
+        ]
+        .iter()
+        .map(|(g, i, s)| (g.to_string(), i.to_string(), s.to_string()))
+        .collect();
+
+        let appeared: Vec<_> = actual.difference(&expected).collect();
+        let disappeared: Vec<_> = expected.difference(&actual).collect();
+        assert!(
+            appeared.is_empty() && disappeared.is_empty(),
+            "the live non-missing P1 finding set moved — \
+             newly appeared (a new coverage gap, or a new defect class): {appeared:#?}; \
+             no longer reproduced (a docs round closed it, or a check stopped firing — verify \
+             which before updating this expectation): {disappeared:#?}"
         );
     }
 
