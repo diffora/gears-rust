@@ -35,12 +35,19 @@ def oracle(name):
     return (ORACLES / name).read_text(encoding="utf-8")
 
 
-def run_check(*args):
+def run_check(*args, **kwargs):
     """Runs the Python CLI from the repository root, returning (stdout, returncode).
 
     From the repository root specifically: the `--gear` arguments are relative and
     two finding messages echo them verbatim.
+
+    `expect_stderr=True` inverts the stderr assertion for the runs that are meant
+    to fail to load: the diagnostic must be there, and must carry the prefix Rust's
+    `Termination for Result` produced (`Error: {err:?}`). The frozen oracles cover
+    stdout only, so this is the one place that surface is pinned.
     """
+    expect_stderr = kwargs.pop("expect_stderr", False)
+    assert not kwargs, kwargs
     proc = subprocess.run(
         [sys.executable, str(CHECK_PY)] + list(args),
         cwd=str(REPO_ROOT),
@@ -48,7 +55,13 @@ def run_check(*args):
         stderr=subprocess.PIPE,
         encoding="utf-8",
     )
-    assert proc.stderr == "", "the CLI must not write to stderr: {!r}".format(proc.stderr)
+    if expect_stderr:
+        assert proc.stderr.startswith("Error: "), (
+            "a corpus that cannot be loaded must report on stderr the way the Rust "
+            "binary did: {!r}".format(proc.stderr)
+        )
+    else:
+        assert proc.stderr == "", "the CLI must not write to stderr: {!r}".format(proc.stderr)
     return proc.stdout, proc.returncode
 
 
