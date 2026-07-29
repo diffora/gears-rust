@@ -10,14 +10,20 @@ each per-invariant count below is an exact pin, for the reasons `PINNED_P1`
 explains.
 
 `test_records_the_step1_backtest_score` pins 28 P1 findings. **2 of those 28 are
-not historical debt**: D-44 (`SEAMS M10`) and D-46 (`SEAMS RG3`) are real,
-defined seam ids — genuinely present in rating's and subscriptions' own SEAMS.md
-— that read as `P1/seam-undefined` here only because this backtest loads the
-pricing corpus alone, so neither sibling SEAMS.md is loaded for the seam index to
+not historical debt**: D-44 (`SEAMS M10`) and D-46 (`SEAMS RG3`) are real, defined
+seam ids that read as `P1/seam-undefined` here only because this backtest loads the
+pricing corpus alone, so no sibling SEAMS.md is loaded for the seam index to
 resolve against. A real multi-gear run would not flag either. They are left in
 the pin because the pin's job is "what this exact fixture, checked exactly this
 way, produces" — but anyone reading 28 as "28 rediscovered defects" would
 overcount by these 2.
+
+One correction to the Rust original's doc comment, which describes these two as
+"genuinely present in rating's and subscriptions' own `SEAMS.md`": both are rows
+in *rating's* `SEAMS.md`, and `SeamIndex.build` over the live three-gear set
+resolves each to `['rating']`. Subscriptions enters this class only through ids
+that postdate this fixture: the live corpus raises four such findings, M10, RG3
+and M12 owned by rating and SUB-P7 by subscriptions.
 
 One deliberate deviation from the design spec, inherited from the Rust original:
 its flagship example is D-53, and P1 raises no finding for it. D-53's own
