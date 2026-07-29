@@ -51,5 +51,23 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustup show
 
+      # Both steps are needed, and neither substitutes for the other.
+      #
+      # `make spec-check` catches a *new* defect in the docs. It cannot catch a *fixed* one:
+      # a finding that stops reproducing simply vanishes from the output and the run stays
+      # green, leaving the pinned baselines (PINNED_PROPAGATION_GAPS_2026_07_29,
+      # PINNED_UNREFERENCED_CODES_2026_07_29, PINNED_P1/P2/P3) quietly wrong.
+      #
+      # `cargo test -p spec-check` is what asserts on the live documents in both directions —
+      # the drift tests in invariants::{propagation,fr_coverage,closure} and targets. It runs
+      # here because ci.yml's workflow-level `paths-ignore: ['**/*.md', 'docs/**']` skips that
+      # whole workflow, Test Suite included, for a docs-only PR — and a docs-only PR is exactly
+      # the kind that moves these assertions. Without this step the D-69 docs round would pass
+      # every check that runs on it and then leave `cargo test -p spec-check` red on `main` for
+      # the next unrelated Rust PR. (ci.yml's `paths-ignore` is broader repo policy and is
+      # deliberately left alone.)
       - name: Check spec invariants
         run: make spec-check
+
+      - name: Spec-check test suite (asserts on the live docs in both directions)
+        run: cargo test -p spec-check
