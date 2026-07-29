@@ -212,7 +212,7 @@
 **Manifest alignment (tracked §15, not a design blocker):**
 - **SUB-N1** — `updateQuantity` / `convertTrial` `TransitionRequest.type` values + `cancelMode`/`resumeAt` envelope await manifest §4.3 alignment.
 
-**Propagation status:** the SUB-D-01…18 decisions are propagated into [`PRD.md`](./PRD.md)
+**Propagation status:** the SUB-D-01…19 decisions are propagated into [`PRD.md`](./PRD.md)
 (§5.1/§6/§12/§15) and [`DECISIONS.md`](./DECISIONS.md); vendor gaps G-1…G-6 are all processed
 ([`STRIPE-ZUORA-GAP-ANALYSIS.md`](./STRIPE-ZUORA-GAP-ANALYSIS.md)). This seam map is the input to
 the design set — each slice implements the Subscriptions side of the seams listed for it in

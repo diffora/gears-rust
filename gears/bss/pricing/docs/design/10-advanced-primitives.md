@@ -247,7 +247,7 @@ flowchart TB
 2. [ ] - `p2` - `trailing_period`: the **rate tier is qualified by the prior billing period's total** `Q` — the subscription's **anchor-derived period**, not a calendar month (for non-calendar-anchored subscriptions the two differ, and the anchor-derived reading is the normative one; the PRD glossary agrees) — the band the trailing total falls into (single-band **volume**-style selection) sets **one rate for the whole current period**; billing then applies that locked rate to actual usage at `billingGranularity`. Canonical case: PaaS egress where the prior period's volume sets `$/GiB` and the current period is billed hourly on actual traffic - `inst-tt-qualify`
 3. [ ] - `p2` - The qualified rate is a **period rate-lock** frozen into `pricingSnapshotRef` for the current period (the tier analogue of the FX rate-lock): Tariffs applies the locked rate; the catalog authors the window and never computes the qualification or the trailing aggregate (Rating supplies the trailing total) - `inst-tt-lock`
 4. [ ] - `p2` - `tierQualificationWindow` is **usage-tiered only** (`graduated`/`volume`): an **explicit** window of **any** value — `trailing_period` or `current` — on `flat`/`per_unit`/`package` or any non-usage row fails publish (`TIER_QUAL_ON_NON_TIERED`, 422; fail-closed — the field is meaningless there, and an accepted-but-ignored value would mask authoring errors; 2026-07-28 review fix, flagged for veto) - `inst-tt-forbidden`
-5. [ ] - `p2` - **Bootstrap** (first period, no trailing history) resolves to the **lowest tier** unless the plan authors an explicit bootstrap tier; the resolved bootstrap choice freezes in the snapshot so replay is deterministic - `inst-tt-bootstrap`
+5. [ ] - `p2` - **Bootstrap** (first period, no trailing history) resolves to the **lowest tier — unconditionally at launch** (2026-07-28 review fix, flagged for veto): the earlier "unless the plan authors an explicit bootstrap tier" escape hatch named no field, no validation rule, and no `pricingSnapshotRef` representation, so it was not implementable; an **authored** bootstrap tier is a named Future gate (§17.8-style — it needs a column, a publish check that the value is one of the row's bands, and a snapshot segment before it can be honoured). The resolved bootstrap choice still freezes in the snapshot so replay is deterministic - `inst-tt-bootstrap`
 6. [ ] - `p2` - The qualification window and the resolved locked rate are part of the **joint Rating contract** (PRD §consumer-contracts): Rating computes the trailing aggregate and re-qualifies at each period boundary; Tariffs reads the locked rate from the pin - `inst-tt-joint`
 
 ## 4. States (CDSL)
@@ -441,7 +441,8 @@ rate tier from the **prior billing period's total** (anchor-derived, not calenda
 single-band selection), locks that rate for the
 current period into `pricingSnapshotRef`, and bills actual usage at `billingGranularity`;
 an explicit window (any value) on a non-tiered/non-usage row fails publish (2026-07-28 review fix, flagged for veto); first-period bootstrap resolves to
-the lowest tier (or an authored bootstrap) and freezes. Tariffs applies the locked rate; Rating
+the lowest tier (unconditionally at launch — an authored bootstrap tier is a named
+Future gate, 2026-07-28 review fix) and freezes. Tariffs applies the locked rate; Rating
 supplies the trailing aggregate and re-qualifies at each period boundary.
 
 **Implements**: `cpt-cf-bss-pricing-algo-trailing-tier`
