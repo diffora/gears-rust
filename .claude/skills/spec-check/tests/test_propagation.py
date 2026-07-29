@@ -152,6 +152,31 @@ def test_reports_unresolvable_targets_separately_and_at_low_severity():
     assert findings[0].severity == Severity.LOW
 
 
+def test_flags_a_propagated_label_shape_the_widened_parser_still_cannot_read():
+    # `decisions.parse`'s anchor reads a *parenthetical* qualifier
+    # (`**Propagated (normative, 2026-07-28)**:`, D-42's shape until it was
+    # normalised). A qualifier written any other way must still come back `None`,
+    # so `unparsed_propagated_label`'s fallback stays reachable: an unresolvable
+    # propagation target must be a Finding, never a silent skip, and this shape
+    # was never in scope for the widening.
+    #
+    # Restored from `propagation.rs:718-742`, which the plan's test file dropped.
+    # The table-driven test below covers this label shape, but only asserts the
+    # invariant id — the severity and the reported file are pinned nowhere else,
+    # and the Rust test that pinned them does not survive the crate's removal.
+    corpus = Corpus.from_parts(
+        "synthetic",
+        [("DECISIONS.md", "#### D-97 [M] Something\n\n- **Propagated pending**: PRD §1.\n")],
+    )
+    findings = check(corpus, SeamIndex(), [])
+    assert len(findings) == 1, "unexpected: {!r}".format(findings)
+    assert findings[0].invariant == "P1/propagation-label-unparsed"
+    assert findings[0].severity == Severity.MEDIUM
+    assert findings[0].file == "DECISIONS.md"
+    assert "D-97" in findings[0].message
+    assert "Propagated pending" in findings[0].message
+
+
 def test_every_propagated_label_shape_the_parser_cannot_read_is_still_reported():
     # The fallback used to share the primary parser's exact blind spot — both
     # required the colon *outside* the bold span — so none of these produced
