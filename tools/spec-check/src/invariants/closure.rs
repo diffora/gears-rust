@@ -44,15 +44,29 @@ pub fn check(corpus: &Corpus) -> Vec<Finding> {
     findings
 }
 
+/// True for corpus-relative paths that are numbered design slices — `design/01-foundation.md`,
+/// `design/02-plan-definition.md`, and so on — the only documents expected to own an error
+/// catalogue. Excludes `design/README.md` (an index, not a slice: no numeric prefix) and
+/// everything outside `design/` (PRD, DESIGN, DECISIONS, ADRs), which legitimately
+/// *reference* codes a slice owns without ever declaring any themselves. Path shape, not
+/// "does it mention a code," is the discriminator: what makes a document own a catalogue is
+/// that it is a slice.
+fn is_design_slice(path: &str) -> bool {
+    path.strip_prefix("design/")
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+}
+
 /// Error codes declared inside a `**Problem responses (RFC 9457):**` block (which runs
 /// until the first blank line) and never mentioned again anywhere else in the corpus, plus
-/// documents that declare codes without ever opening such a block at all. The latter mirrors
-/// `fr_coverage.rs`'s `collect_directly_addresses`: `design/01-foundation.md` names its
-/// Foundation-owned codes in prose rather than a Problem-responses block, so without this
-/// second check those codes — and any future document doing the same — would be invisible
-/// to the "declared" side of the closure rule, silently narrowing what P3 covers rather than
+/// design slices that declare codes without ever opening such a block at all. The latter
+/// mirrors `fr_coverage.rs`'s `collect_directly_addresses`: `design/01-foundation.md` names
+/// its Foundation-owned codes in prose rather than a Problem-responses block, so without this
+/// second check those codes — and any future slice doing the same — would be invisible to
+/// the "declared" side of the closure rule, silently narrowing what P3 covers rather than
 /// surfacing the gap. One finding per document, not per code, since the defect is "this
-/// document uses a different convention," not "this code is unreachable."
+/// document uses a different convention," not "this code is unreachable." Scoped to
+/// `is_design_slice` documents only: non-slice documents legitimately reference codes they
+/// don't own and must not be flagged for it.
 fn check_error_codes(corpus: &Corpus) -> Vec<Finding> {
     let code = Regex::new(r"`([A-Z][A-Z0-9_]{4,})`").expect("valid code regex");
     let mut declared: BTreeMap<String, String> = BTreeMap::new();
@@ -81,7 +95,7 @@ fn check_error_codes(corpus: &Corpus) -> Vec<Finding> {
                 }
             }
         }
-        if saw_code && !saw_block {
+        if saw_code && !saw_block && is_design_slice(path) {
             findings.push(Finding {
                 invariant: "P3/code-convention-divergent".to_string(),
                 severity: Severity::Low,
@@ -160,7 +174,9 @@ mod tests {
         // what makes "exactly one divergence finding" a real assertion about the finding's
         // cardinality (one per document) rather than one that would also pass a latent bug
         // where the push lived inside the per-code capture loop instead of after it (which
-        // would emit one divergence finding per code here).
+        // would emit one divergence finding per code here). The path is deliberately
+        // slice-shaped (`design/` + a numeric prefix) — `is_design_slice` excludes anything
+        // else, so a non-slice-shaped fixture here would make this test pass vacuously.
         let corpus = Corpus::from_parts(
             "synthetic",
             [(
@@ -177,6 +193,29 @@ mod tests {
         assert_eq!(divergences.len(), 1, "unexpected: {findings:#?}");
         assert_eq!(divergences[0].severity, Severity::Low);
         assert_eq!(divergences[0].file, "design/01-a.md");
+    }
+
+    #[test]
+    fn does_not_flag_a_non_slice_document_that_references_codes() {
+        // The regression this scoping guards against: PRD.md, DECISIONS.md, and the ADRs
+        // reference codes that a slice owns without ever declaring any themselves — they
+        // were never meant to use the Problem-responses convention, so merely mentioning a
+        // code in prose (with no catalogue block) must not flag them the way it would flag
+        // a diverging slice.
+        let corpus = Corpus::from_parts(
+            "synthetic",
+            [(
+                "PRD.md",
+                "The publish check fails with `SOME_CODE` when the row is invalid.\n",
+            )],
+        );
+        let findings = check(&corpus);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.invariant == "P3/code-convention-divergent"),
+            "unexpected: {findings:#?}"
+        );
     }
 
     #[test]
