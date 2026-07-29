@@ -20,8 +20,20 @@ pub fn parse(text: &str) -> Vec<Decision> {
     // because every genuine label in this corpus carries one (`**Where**:`, `**Decision**:`,
     // `**Owed**:`) while citations contain colon-less inline bold (`**Formalized as
     // ADR-0003**` in D-03, `**SUB-P7**` in D-65) that must NOT end the capture.
-    let propagated = Regex::new(r"\*\*Propagated\*\*:\s*(.+?)(?:\s*\*\*[A-Z][^*]*\*\*:|$)")
-        .expect("valid propagated regex");
+    //
+    // The left anchor accepts an optional parenthetical qualifier inside the bold span
+    // itself — `**Propagated (normative, 2026-07-28)**:` as well as the plain
+    // `**Propagated**:` — because a qualified label is still the same field, only
+    // annotated. `[^*)]*` cannot cross a `*` or a `)`, so the qualifier can never run
+    // past the closing `**` of its own bold span (and stops at the first `)`, so it
+    // can't swallow a second parenthetical either). A qualifier written any other way
+    // (no parens, e.g. `**Propagated pending**:`) is deliberately left unmatched:
+    // `propagated` comes back `None` for it exactly as for "nothing to propagate", and
+    // P1's `unparsed_propagated_label` fallback (propagation.rs) is what turns that
+    // specific shape into a Finding instead of a silent skip.
+    let propagated =
+        Regex::new(r"\*\*Propagated(?:\s*\([^*)]*\))?\*\*:\s*(.+?)(?:\s*\*\*[A-Z][^*]*\*\*:|$)")
+            .expect("valid propagated regex");
 
     let lines: Vec<&str> = text.lines().collect();
     let starts: Vec<(usize, String)> = lines
@@ -78,6 +90,19 @@ mod tests {
 
 - **Decision**: something formalized, modeled on D-03's shape.
 - **Propagated**: S9 `inst-adr-case` + §7 glossary row. **Formalized as ADR-0009** (`cpt-cf-bss-pricing-adr-example-token`).
+
+#### D-62 [M] Qualified label with a same-line continuation
+
+- **Decision**: mirrors the live register's pre-2026-07-29 D-42 shape.
+- **Propagated (normative, 2026-07-28)**: S9 `inst-qualified-case` + §7 glossary row. **Amendment**: scope narrowed, 2026-07-28.
+
+#### D-63 [M] Qualified label, nothing follows the citation
+
+- **Propagated (normative, 2026-07-28)**: S9 `inst-plain-qualified-case` + §7; PRD glossary row.
+
+#### D-64 [L] Qualifier with no parentheses stays unrecognized
+
+- **Propagated pending**: S9 `inst-should-not-be-read` + §7.
 "#;
 
     #[test]
@@ -85,7 +110,7 @@ mod tests {
         let ds = parse(SAMPLE);
         assert_eq!(
             ds.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
-            ["D-53", "D-54", "D-60", "D-61"]
+            ["D-53", "D-54", "D-60", "D-61", "D-62", "D-63", "D-64"]
         );
     }
 
@@ -145,5 +170,50 @@ mod tests {
             "S9 `inst-adr-case` + §7 glossary row. **Formalized as ADR-0009** (`cpt-cf-bss-pricing-adr-example-token`)."
         );
         assert!(propagated.contains("cpt-cf-bss-pricing-adr-example-token"));
+    }
+
+    #[test]
+    fn parses_a_propagated_label_carrying_a_parenthetical_qualifier() {
+        // Mirrors the live register's pre-2026-07-29 D-42 shape: a genuine
+        // propagation surface recorded under `**Propagated (normative,
+        // 2026-07-28)**:` rather than the plain `**Propagated**:` every other
+        // entry uses. The anchor must read the citation exactly as it would
+        // for the plain form.
+        let ds = parse(SAMPLE);
+        let d63 = ds.iter().find(|d| d.id == "D-63").expect("D-63 present");
+        assert_eq!(
+            d63.propagated.as_deref(),
+            Some("S9 `inst-plain-qualified-case` + §7; PRD glossary row.")
+        );
+    }
+
+    #[test]
+    fn stops_a_qualified_propagated_capture_before_a_same_line_continuation_label() {
+        // The qualifier must not disturb the existing right-boundary behaviour:
+        // a qualified label that continues into `**Amendment**:` on the same
+        // physical line still cuts the capture at that boundary.
+        let ds = parse(SAMPLE);
+        let d62 = ds.iter().find(|d| d.id == "D-62").expect("D-62 present");
+        let propagated = d62
+            .propagated
+            .as_deref()
+            .expect("D-62 has a propagated citation");
+        assert_eq!(propagated, "S9 `inst-qualified-case` + §7 glossary row.");
+        assert!(
+            !propagated.contains("Amendment"),
+            "captured amendment prose into propagated: {propagated:?}"
+        );
+    }
+
+    #[test]
+    fn a_qualifier_without_parentheses_is_not_recognized() {
+        // The widened anchor accepts a *parenthetical* qualifier only. A
+        // qualifier written any other way must still come back `None` — the
+        // widening must not swallow every "Propagated ...**:"-shaped label,
+        // or P1/propagation-label-unparsed (propagation.rs) could never fire
+        // again.
+        let ds = parse(SAMPLE);
+        let d64 = ds.iter().find(|d| d.id == "D-64").expect("D-64 present");
+        assert_eq!(d64.propagated, None);
     }
 }

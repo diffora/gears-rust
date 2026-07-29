@@ -293,18 +293,20 @@ mod tests {
     }
 
     #[test]
-    fn flags_a_propagated_label_variant_the_parser_cannot_read() {
-        // Mirrors the live register's D-42: a genuine propagation surface recorded
-        // under `**Propagated (normative, 2026-07-28)**:` — a bold label that
-        // decisions::parse's exact `**Propagated**:` anchor does not capture, so
-        // `d.propagated` comes back `None` exactly as it would for a decision with
-        // nothing to propagate. The two must not be conflated: this one names a
-        // real, unread propagation surface.
+    fn flags_a_propagated_label_shape_the_widened_parser_still_cannot_read() {
+        // decisions::parse's anchor now reads a *parenthetical* qualifier
+        // (`**Propagated (normative, 2026-07-28)**:`, D-42's shape until it was
+        // normalised — see `resolves_a_propagated_label_with_a_parenthetical_qualifier`
+        // below). A qualifier written any other way must still come back `None`,
+        // so `unparsed_propagated_label`'s fallback stays reachable: per the
+        // plan's Global Constraints an unresolvable propagation target must be a
+        // Finding, never a silent skip, and this shape was never in scope for the
+        // widening.
         let corpus = Corpus::from_parts(
             "synthetic",
             [(
                 "DECISIONS.md",
-                "#### D-97 [M] Something\n\n- **Propagated (normative, 2026-07-28)**: PRD §1.\n",
+                "#### D-97 [M] Something\n\n- **Propagated pending**: PRD §1.\n",
             )],
         );
         let findings = check(&corpus, &targets::SeamIndex::default());
@@ -313,11 +315,34 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Medium);
         assert_eq!(findings[0].file, "DECISIONS.md");
         assert!(findings[0].message.contains("D-97"));
-        assert!(
-            findings[0]
-                .message
-                .contains("Propagated (normative, 2026-07-28)")
+        assert!(findings[0].message.contains("Propagated pending"));
+    }
+
+    #[test]
+    fn resolves_a_propagated_label_with_a_parenthetical_qualifier() {
+        // D-42 wrote exactly this shape (until a doc edit outside this task
+        // normalised it to the plain form — see the task report). The widened
+        // anchor must resolve a qualified label exactly as it would the plain
+        // `**Propagated**:` form: no `P1/propagation-label-unparsed`, ordinary
+        // citation checking against the named target, same as
+        // `flags_a_target_that_does_not_cite_the_decision` above but through the
+        // qualified label.
+        let corpus = Corpus::from_parts(
+            "synthetic",
+            [
+                (
+                    "DECISIONS.md",
+                    "#### D-93 [M] Something\n\n- **Propagated (normative, 2026-07-28)**: PRD §1.\n",
+                ),
+                ("PRD.md", "Some requirement text with no citation.\n"),
+            ],
         );
+        let findings = check(&corpus, &targets::SeamIndex::default());
+        assert_eq!(findings.len(), 1, "unexpected: {findings:#?}");
+        assert_eq!(findings[0].invariant, "P1/propagation-missing");
+        assert_eq!(findings[0].file, "DECISIONS.md");
+        assert!(findings[0].message.contains("D-93"));
+        assert!(findings[0].message.contains("PRD.md"));
     }
 
     #[test]
