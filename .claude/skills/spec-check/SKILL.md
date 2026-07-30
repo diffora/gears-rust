@@ -103,15 +103,133 @@ Nor can it see a *whole-field* omission: a decision that never names a target at
 all is invisible to P1 by construction, because P1 checks the targets a decision
 names. D-53 is the canonical example.
 
+## N1 — is the requirement actually specified, and does every account agree?
+
+Everything above is the deterministic layer: it counts claims. N1 reads prose. It
+answers the two questions P2 cannot — *is there valid prose specifying this
+requirement*, and *do all the statements about it agree* — for the **requirement**
+kind (`fr` and `nfr`). Designed in
+`docs/superpowers/specs/2026-07-30-spec-check-n1-requirements-design.md`.
+
+**Advisory, like everything else here. Nothing gates. The report is the output.**
+
+**Status: the pipeline is built and the triage thresholds are not yet usable.** On
+the live corpora every one of the 116 requirements lands in
+`suspicious:multi-region`, which makes three of the six classes unreachable and
+would spend a judge call on all 116 — see "Why the thresholds are still open"
+below. Steps 1 and 3 are sound and tested; step 2 is not worth running at this
+setting.
+
+Three steps, two durable artifacts, one judge per requirement:
+
+```bash
+# 1. deterministic: neighbourhoods + a triage histogram
+python3 .claude/skills/spec-check/scripts/neighbourhoods.py \
+  --gear gears/bss/ledger/docs \
+  --out .spec-check/neighbourhoods-ledger.json
+
+# 2. judgment: one `spec-check-n1-judge` sub-agent per neighbourhood with
+#    "judge": true, its rendered neighbourhood as the entire prompt. Collect the
+#    JSON objects into a list and write .spec-check/verdicts-ledger.json.
+
+# 3. deterministic again: validate, enforce the honesty rules, render
+python3 .claude/skills/spec-check/scripts/judge_report.py \
+  --neighbourhoods .spec-check/neighbourhoods-ledger.json \
+  --verdicts .spec-check/verdicts-ledger.json \
+  --out docs/spec-check/N1-ledger.md
+```
+
+Render step 2's prompt with the code, never by hand:
+
+```bash
+python3 - <<'PY'
+import json, sys
+sys.path.insert(0, ".claude/skills/spec-check/scripts")
+from spec_check.semantic import neighbourhood
+envelope = json.load(open(".spec-check/neighbourhoods-ledger.json"))
+for item in envelope["neighbourhoods"]:
+    if neighbourhood.judge_needed(item):
+        print("=== {} ===".format(item["id"]))
+        print(neighbourhood.render_for_judge(item))
+PY
+```
+
+`render_for_judge` withholds `selected_by`, `score` and `triage`. That is the
+control, not a formatting preference: a judge told a region was id-anchored is
+biased toward accepting it, and the premise run was validated blind. Whether
+revealing it helps is the one A/B worth running.
+
+**Run it per gear, not per repository.** The artifacts and the report are
+gear-scoped, and a judge call per requirement is the cost.
+
+**Where things go, and why it matters:**
+
+| Artifact | Location | Reason |
+|---|---|---|
+| `neighbourhoods.json`, `verdicts.json` | `.spec-check/` (git-ignored) | Regenerable, and they quote design prose |
+| The report | `docs/spec-check/N1-<gear>.md` | **Never inside a gear's `docs/`** — a corpus loads every `*.md` under its root, so a report written there becomes a document the next run parses and term overlap starts matching the previous run's own output. `judge_report.py` refuses such a path outright |
+
+References in the report are plain `path:line` text, not links, because
+`make lychee` walks `docs`.
+
+Two rules are enforced by `judge_report.py` rather than by the judge's prompt:
+
+1. **An unbuildable neighbourhood is a finding, never a skip.** `no-prose` and
+   `no-region` get their own report rows, with the reason and the line the
+   requirement is declared at. Zero neighbourhoods and zero findings must never
+   look alike.
+2. **A finding that cannot cite two sides is discarded.** A `divergent` verdict
+   without `file:line` for the assertion *and* `file:line` for what contradicts
+   it, in distinct locations, is downgraded to `consistent` and the downgrade is
+   recorded in the report.
+
+Plus one check beyond the design: a citation whose `file:line` falls outside every
+fragment of its own neighbourhood makes the verdict `judge-failed`. That is what
+turns "the judge has no repository access" from a claim about the harness into
+something the pipeline verifies.
+
+### Why the thresholds are still open
+
+Measured on the live corpora 2026-07-30, at the design's starting values (window
+12/6, region threshold 4 distinct terms, `covered:strong` ≥ 8):
+
+| | pricing | ledger |
+|---|---|---|
+| requirements | 76 | 40 |
+| windows in the corpus | 1619 | 1217 |
+| terms per requirement, median | 33 (max 161) | 28 (max 141) |
+| windows clearing the threshold of 4, per requirement | ~374 | ~239 |
+| regions selected per requirement | 3–5, never fewer | 3–5, never fewer |
+| triage outcome | 76 × `multi-region` | 40 × `multi-region` |
+
+Classes 4–6 of the ladder (`not-normative`, `weak-coverage`, `covered:strong`) all
+require **exactly one** region, so they are unreachable whenever more than one
+window clears the threshold — which, at 4 distinct terms out of a median 33, is
+always. The thresholds were derived from a run over one-line `**Decision**:`
+fields; a requirement paragraph yields an order of magnitude more terms, so the
+absolute counts do not transfer. Two further measurements bear on the fix:
+
+- **The document-frequency cutoff barely fires** at this corpus size: median 33
+  raw terms → 29 kept, because a term must appear in more than 405 of pricing's
+  1619 windows to be dropped.
+- **57 % of pricing's term-overlap regions are windows of `PRD.md` itself**
+  (125 of 220) — neighbouring requirements sharing vocabulary with side A, not
+  design prose. Ledger: 34 % (28 of 83).
+
+A scale-free score (the *fraction* of a requirement's terms a window carries)
+separates: the best non-self window covers a median 0.78 of them in pricing and
+0.63 in ledger, with a minimum of 0.33. That is a design decision, not a knob, and
+it is open.
+
 ## Tests
 
 ```bash
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-110 tests, no third-party runtime dependencies. Four of them are the oracles this
-port was accepted against, and they are the ones to distrust a change that
-reddens them rather than edit:
+183 tests, no third-party runtime dependencies — 110 for the deterministic layer
+and 73 for N1. Four of them are the oracles this port was accepted against, and
+they are the ones to distrust a change that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against
    output frozen from the Rust implementation this was ported from
