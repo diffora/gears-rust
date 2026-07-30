@@ -20,7 +20,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 COVERAGE_VALUES = ("specified", "claim-only", "underspecified")
-AGREEMENT_VALUES = ("consistent", "divergent", "not-applicable")
+#: `contradicts-declaration` is not a comparison between accounts — it is the one
+#: case the other three cannot express: the design set states a rule that contradicts
+#: the requirement's own declaration. Measured on the 2026-07-30 evaluation sample it
+#: applied to 2 of 12, both of which had to be recorded as `underspecified` instead,
+#: which reads as "someone forgot to finish this" rather than "someone decided the
+#: opposite". Side A is fragment 0 of the neighbourhood, so it is citable exactly like
+#: any region; only this vocabulary and the agent's instructions were missing.
+AGREEMENT_VALUES = ("consistent", "divergent", "not-applicable", "contradicts-declaration")
 ROLE_VALUES = ("specifies", "mentions")
 USEFULNESS_VALUES = ("decisive", "useful", "noise")
 
@@ -104,6 +111,21 @@ def _distinct_locations(citations):
     return {(c["file"], c["line"]) for c in citations}
 
 
+def _declaration_span(neighbourhood):
+    """Side A, identified by role rather than position — `None` if absent."""
+    for fragment in neighbourhood["fragments"]:
+        if fragment.get("role") == "requirement-declaration":
+            return (fragment["file"], fragment["lines"][0], fragment["lines"][1])
+    return None
+
+
+def _cites_declaration(citations, span):
+    if span is None:
+        return False
+    path, start, end = span
+    return any(c["file"] == path and start <= c["line"] <= end for c in citations)
+
+
 def normalise(verdict, neighbourhood):
     """`(verdict, notes)` — the verdict as it will be reported, and every downgrade.
 
@@ -117,13 +139,33 @@ def normalise(verdict, neighbourhood):
     notes = []
 
     specifies = [r for r in out["regions"] if r["role"] == "specifies"]
-    if len(specifies) < 2 and out["agreement"] != "not-applicable":
+    # `contradicts-declaration` is exempt: its two sides are one account and side A,
+    # so requiring two accounts would erase exactly the verdict it exists to carry.
+    if (len(specifies) < 2
+            and out["agreement"] not in ("not-applicable", "contradicts-declaration")):
         notes.append(
             "{} → not-applicable: agreement is derived only from regions the judge "
             "marked `specifies`, and this verdict marks {} — there is nothing to "
             "compare".format(out["agreement"], len(specifies))
         )
         out["agreement"] = "not-applicable"
+
+    if out["agreement"] == "contradicts-declaration":
+        # The mirror of honesty rule 2, one side of which is fixed: a contradiction
+        # of the declaration must show the declaration. Citing only design regions is
+        # a claim about accounts disagreeing with each other, which is `divergent`;
+        # citing only the declaration shows nothing contradicting it.
+        span = _declaration_span(neighbourhood)
+        outside = [c for c in out["citations"]
+                   if not _cites_declaration([c], span)]
+        if not (_cites_declaration(out["citations"], span) and outside):
+            notes.append(
+                "contradicts-declaration → not-applicable: this verdict must cite the "
+                "declaration and, in a distinct location, the account that contradicts "
+                "it; it cites {} inside the declaration and {} outside it".format(
+                    len(out["citations"]) - len(outside), len(outside))
+            )
+            out["agreement"] = "not-applicable"
 
     if out["agreement"] == "divergent":
         locations = _distinct_locations(out["citations"])
@@ -148,8 +190,9 @@ def normalise(verdict, neighbourhood):
 
 #: Report order: the outcomes a reader must act on first. Within a verdict, by id.
 _VERDICT_ORDER = (
-    "divergent", "judge-failed", "claim-only", "underspecified", "no-region",
-    "no-prose", "specified", "consistent", "no-account", "not-judged",
+    "divergent", "contradicts-declaration", "judge-failed", "claim-only",
+    "underspecified", "no-region", "no-prose", "specified", "consistent",
+    "no-account", "not-judged",
 )
 
 
@@ -265,7 +308,11 @@ def rows(envelope, verdicts):
 
         assertion, contradiction = _assertion_and_contradiction(normalised)
         base.update({
-            "verdict": "divergent" if normalised["agreement"] == "divergent"
+            # The agreement axis names the row only when it carries a defect the
+            # coverage axis would hide: `specified + contradicts-declaration` is not a
+            # covered requirement, it is a decided-the-other-way one.
+            "verdict": normalised["agreement"]
+                       if normalised["agreement"] in ("divergent", "contradicts-declaration")
                        else normalised["coverage"],
             "coverage": normalised["coverage"],
             "agreement": normalised["agreement"],

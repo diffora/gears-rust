@@ -37,12 +37,30 @@ Answer these, in this order:
 2. **Coverage**: `specified` (at least one region states the rule),
    `claim-only` (regions name or gesture at it without stating it),
    `underspecified` (a region states part of it and leaves an operative gap).
-3. **Agreement**, derived **only** from regions you marked `specifies`:
-   `divergent` (two of them state incompatible rules), `consistent` (they agree),
-   `not-applicable` (fewer than two — an honest answer, not an evasion).
-4. **Citations**: for `divergent`, one `file:line` for the assertion and one for
+3. **Agreement.** Three of the four values compare the regions you marked
+   `specifies` with **each other**: `divergent` (two of them state incompatible
+   rules), `consistent` (they agree), `not-applicable` (fewer than two — an honest
+   answer, not an evasion).
+
+   The fourth compares an account with **side A**: `contradicts-declaration`, for
+   when the design set does not merely leave the requirement incomplete but states
+   something the declaration forbids, or declines something the declaration
+   requires — "out of v1 scope" against a declaration `MUST`, a deferral against a
+   stated obligation, a different rule for the same condition. **One account is
+   enough for this**, and the number of `specifies` regions does not constrain it.
+   Prefer it over `underspecified` whenever the gap is a decision rather than an
+   omission: `underspecified` reads as "someone did not finish this", and that is
+   the wrong thing to tell a reader about a rule someone deliberately dropped.
+4. **Citations.** For `divergent`: one `file:line` for the assertion and one for
    what contradicts it, in **distinct locations**, each with a short quote. A
    disagreement you cannot show both sides of is not a finding.
+
+   For `contradicts-declaration`: one citation **inside the declaration** — it is a
+   fragment with a `file:line` range exactly like a region, and you may cite it —
+   and one inside the account that contradicts it. Citing only design regions is a
+   claim that accounts disagree with each other, which is `divergent`; citing only
+   the declaration shows nothing contradicting it. Either way the verdict is
+   downgraded to `not-applicable` and the downgrade is printed.
 5. **`proposed_fix`**: required unless coverage is `specified` and agreement is
    `consistent`. One sentence naming **which document must change and how**. Name
    the document, do not draft normative text: you have seen excerpts, not
@@ -56,10 +74,13 @@ them, in the order the requirements appear.
  "regions": [{"file": "…", "lines": [start, end], "role": "specifies|mentions",
               "usefulness": "decisive|useful|noise"}],
  "coverage": "specified|claim-only|underspecified",
- "agreement": "consistent|divergent|not-applicable",
+ "agreement": "consistent|divergent|not-applicable|contradicts-declaration",
  "citations": [{"file": "…", "line": 0, "quote": "…"}],
  "reasoning": "one paragraph",
  "proposed_fix": "one sentence naming the document to change"}
 
 `file` and `lines` for each region must be copied verbatim from the region header
-you were given, and every `citations[].line` must fall inside one of those ranges.
+you were given. Every `citations[].line` must fall inside one of the ranges you were
+shown — the candidate regions **or the declaration**, which is a fragment with a
+`file:line` range like any other and is the required side A of a
+`contradicts-declaration` verdict.

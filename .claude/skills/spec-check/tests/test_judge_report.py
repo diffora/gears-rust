@@ -202,6 +202,62 @@ def test_covered_strong_is_listed_with_the_reason_it_was_not_judged(tmp_path):
     assert "judge-failed" not in report
 
 
+def _contradicts(**overrides):
+    """A verdict whose single account contradicts the declaration itself."""
+    base = verdict(
+        agreement="contradicts-declaration",
+        regions=[{"file": "design/03-c.md", "lines": [88, 99],
+                  "role": "specifies", "usefulness": "decisive"}],
+        citations=[
+            {"file": "PRD.md", "line": 11, "quote": "Publish MUST freeze the snapshot"},
+            {"file": "design/03-c.md", "line": 92, "quote": "freezing is out of v1 scope"},
+        ],
+        proposed_fix="PRD.md must be scoped to match design/03-c.md, or the design must commit.",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_a_declaration_contradiction_is_reported_with_both_sides(tmp_path):
+    # The axis N1 lacked: `agreement` compares accounts with each other, so a design
+    # that explicitly declines a PRD MUST had nowhere to land and fell into
+    # `underspecified`. Measured twice in a sample of twelve.
+    proc, report = run(tmp_path, envelope(judged()), [_contradicts()])
+    assert "| fr-thing | contradicts-declaration |" in report
+    assert "PRD.md:11" in report and "design/03-c.md:92" in report
+    assert "judge-failed" not in report
+
+
+def test_a_declaration_contradiction_survives_having_one_account(tmp_path):
+    # It must not be swept up by the "fewer than two `specifies` → not-applicable"
+    # rule: the contradiction is between one account and side A, not between accounts.
+    proc, report = run(tmp_path, envelope(judged()), [_contradicts()])
+    assert "not-applicable" not in report
+
+
+def test_a_declaration_contradiction_needs_a_citation_in_the_declaration(tmp_path):
+    # Both sides cited inside design regions proves accounts disagree with each other,
+    # which is `divergent`, not this. Without the declaration side the claim is unshown.
+    no_side_a = _contradicts(citations=[
+        {"file": "design/03-c.md", "line": 92, "quote": "freezes"},
+        {"file": "design/09-i.md", "line": 151, "quote": "recomputes"},
+    ])
+    proc, report = run(tmp_path, envelope(judged()), [no_side_a])
+    assert "| fr-thing | contradicts-declaration |" not in report
+    assert "contradicts-declaration → not-applicable" in report
+
+
+def test_a_declaration_contradiction_needs_a_citation_outside_it(tmp_path):
+    # Citing only the declaration shows nothing contradicting it.
+    only_side_a = _contradicts(citations=[
+        {"file": "PRD.md", "line": 10, "quote": "Publish"},
+        {"file": "PRD.md", "line": 11, "quote": "MUST freeze"},
+    ])
+    proc, report = run(tmp_path, envelope(judged()), [only_side_a])
+    assert "| fr-thing | contradicts-declaration |" not in report
+    assert "contradicts-declaration → not-applicable" in report
+
+
 def test_anchored_no_account_is_not_reported_as_covered(tmp_path):
     # These two classes are opposites — `covered:strong` means one account cleared
     # the strong threshold, `anchored:no-account` means nothing cleared the account

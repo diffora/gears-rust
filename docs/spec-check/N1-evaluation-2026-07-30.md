@@ -201,14 +201,33 @@ highest-scoring occurrence looks right — but neither known case would be fixed
 since both name the id exactly once, so proposing it now would be the same
 evidence-free guess this section already made once.
 
-## A limit of the schema itself
+## A limit of the schema itself — found here, closed 2026-07-30
 
-N1's `agreement` axis compares accounts **with each other**. It cannot express a
-contradiction between the declaration and its single account. Two requirements in this
-sample hit that wall — #8, where the design puts a PRD `MUST` (statutory allocation
-precedence) explicitly out of v1 scope, and #12's underlying deferral. Opus named the
-gap unprompted: "the text that contradicts the descope is the PRD declaration itself,
-which is not a citable region here". Both land as `underspecified`, which is the closest
-available verdict and not the right one. A `contradicts-declaration` outcome would need
-its own honesty rule, since side A is not a region and the two-sided citation check
-would have to change shape.
+At the time of this run, N1's `agreement` axis compared accounts **with each other** and
+could not express a contradiction between the declaration and its account. Two of the
+twelve hit that wall — #8, where the design puts a PRD `MUST` (statutory allocation
+precedence) explicitly out of v1 scope, and #12's underlying deferral. Opus named the gap
+unprompted: "the text that contradicts the descope is the PRD declaration itself, which
+is not a citable region here." Both were filed as `underspecified`, which tells a reader
+someone did not finish the work when in fact someone had decided the opposite.
+
+**The judge was wrong about one thing, and it turned out to be the whole obstacle.** The
+declaration is not a region, but it *is* fragment 0 of the neighbourhood, carrying a
+`file:line` range like any other, and the citation-containment check has always validated
+against every fragment — so a citation into the declaration would have been accepted all
+along. What blocked the verdict was the agent's own contract, which defined agreement as
+"derived **only** from regions you marked `specifies`" and told the judge citations must
+land inside region ranges.
+
+So the fix was vocabulary, not machinery: a fourth `agreement` value
+`contradicts-declaration`, exempt from the two-accounts rule, with its own honesty rule —
+cite inside the declaration's span *and*, in a distinct location, the account that
+contradicts it, or be downgraded to `not-applicable` with the downgrade printed. Four
+tests pin it, and it renders end-to-end on the one instance of this shape still live in
+the corpus (`fr-fx-rate-source-failure`: the PRD still keys its MUST on provider
+unreachability, which the ratified post-path-local model removed).
+
+**What this does to the numbers above:** nothing was re-run, and the table stands as
+measured. But #8 and #12 would now be `contradicts-declaration` rather than
+`underspecified`, so the two runs are not comparable across this change — which is the
+honest reason to record it here rather than quietly restating the sample.

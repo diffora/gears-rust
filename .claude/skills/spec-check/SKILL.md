@@ -342,6 +342,17 @@ References in the report are plain `path:line` text, not links, because
 - **A finding that cannot cite two sides is discarded.** A `divergent` verdict
   without `file:line` for the assertion *and* for what contradicts it, in distinct
   locations, is downgraded to `consistent` and the downgrade is printed.
+- **`contradicts-declaration` must cite the declaration.** The fourth agreement
+  value, added 2026-07-30, carries the case the other three cannot express: the design
+  set does not leave the requirement incomplete, it states something the declaration
+  forbids or declines something it requires. Its two sides are one account and side A,
+  so it is exempt from the "fewer than two `specifies` → not-applicable" rule — but it
+  must cite **inside the declaration's own span** and, in a distinct location, the
+  account contradicting it. Citing only design regions is `divergent`; citing only the
+  declaration shows nothing. Either failure downgrades to `not-applicable`, printed.
+  On the 2026-07-30 evaluation sample this applied to **2 of 12**, both of which had
+  to be filed as `underspecified` — which tells a reader someone did not finish the
+  work, when someone had decided the opposite.
 - **A citation outside every fragment of its own neighbourhood is `judge-failed`.**
   Beyond the design, and it is what turns "the judge has no repository access" from a
   claim about the harness into something the pipeline verifies.
@@ -394,8 +405,8 @@ References in the report are plain `path:line` text, not links, because
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-209 tests, no third-party runtime dependencies — 110 for the deterministic layer
-and 99 for N1. Four of them are the oracles this port was accepted against, and
+213 tests, no third-party runtime dependencies — 110 for the deterministic layer
+and 103 for N1. Four of them are the oracles this port was accepted against, and
 they are the ones to distrust a change that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against
