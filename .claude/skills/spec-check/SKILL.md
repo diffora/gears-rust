@@ -66,6 +66,41 @@ Exit codes: `0` clean, `1` the gate tripped **or** a `--gear` directory does not
 exist (that one also prints `Error: …` on stderr — a docs tree that will not load
 is never reported as a clean run), `2` usage error.
 
+## Standing rules for any run
+
+These hold for every invocation and are the reason `/spec-check <gear>` is the whole
+prompt. Nobody should have to dictate them per run; if a rule is missing here, add it
+here rather than to the request.
+
+1. **Smoke-test the judge before planning anything that needs it.** One cheap dispatch
+   of `spec-check-n1-judge`. Its tool list *and* its instruction body resolve when the
+   session starts, so an edit to `.claude/agents/` takes effect only in the next
+   session — a run under a stale contract measures the previous version of the tool.
+   If it will not spawn, stop and say so.
+2. **Never substitute a repository-capable agent, and never judge in its place.** The
+   whole measurement is that the judge answered from the neighbourhood and nothing
+   else. A verdict reached any other way is not a smaller result, it is a different
+   and unauditable one.
+3. **Verify every two-sided finding by eye before it enters a report.** Open both
+   cited locations in the real documents and confirm they are genuinely incompatible.
+   This applies to `divergent` and to `contradicts-declaration`. **Record a false
+   positive as a false positive** — it is the most valuable tuning signal available,
+   not an embarrassment.
+4. **Report what went unchecked as loudly as what was found.** The coverage findings
+   (`decision-register-unparsed`, `traceability-convention-unknown`,
+   `propagation-uninterpretable`) and the `anchored:no-account` share are statements
+   about the search, not about the documents. No findings is not "clean".
+5. **Do not move a pinned histogram or count without hand-checking the class members
+   that moved**, and record what you checked next to the new pin. A pin taken from the
+   code's own output pins the bug.
+6. **Do not tune thresholds on the sample being measured.** Record the hypothesis and
+   test it on a different corpus. See the corrected record in
+   `docs/spec-check/N1-evaluation-2026-07-30.md` — two obvious fixes there are
+   backwards, for reasons worth reading before proposing a third.
+7. **Dispatch `--size 1` when the result will be quoted as a measurement.** The judge
+   reads nothing, so the caller reproduces every prompt verbatim by hand; a slip in a
+   40 KB batch corrupts the run silently. Small prompts are the mitigation.
+
 ## Reading the output
 
 Findings are `[Severity] file:line — message (invariant)`, or `[Severity] file —
