@@ -40,7 +40,22 @@ corpus root verbatim, so absolute paths give equally correct but non-reproducibl
 output — and the frozen oracles in `tests/oracles/` only diff clean against this
 invocation.
 
-**Pass every related gear, not just the one under review.** Two checks are
+**Or let it find them: `--auto-context`.** It reads the gear's documents for the two
+channels that actually carry the graph — relative links `](../../<gear>/docs` and
+foreign `cpt-cf-bss-<gear>-` ids — loads what they name for resolution, and does **not**
+check it, so asking about pricing never returns rating's findings. One hop, never
+transitive. It prints what it loaded and what it could not find, because a run that
+silently widens its own corpus is unreproducible from its output.
+
+Both channels are needed, measured 2026-07-30: pricing cites **no** foreign id at all
+(its cross-gear dependency is bare `SEAMS M10`-style rows with no gear name) and is found
+only by link; rating has no outbound links and is found only by id; ledger is genuinely
+standalone on both. `--gear gears/bss/pricing/docs --auto-context` takes the 4 spurious
+`seam-undefined` to 0. Opt-in, because loading more gears changes what resolves — on the
+three-gear invocation above it would additionally pull `products` in through rating's
+citations and move the frozen oracles.
+
+**Otherwise pass every related gear by hand, not just the one under review.** Two checks are
 cross-gear: P1 resolves a `SEAMS <id>` propagation target against whichever
 loaded gear actually defines that seam row, and P3 resolves instruction-id
 declarations across the whole loaded set. Run alone, a gear's honest cross-gear

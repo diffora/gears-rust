@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from spec_check import report  # noqa: E402
+from spec_check import context, report  # noqa: E402
 from spec_check.corpus import Corpus, CorpusError  # noqa: E402
 from spec_check.finding import Severity  # noqa: E402
 from spec_check.invariants import closure, fr_coverage, propagation  # noqa: E402
@@ -60,6 +60,14 @@ def _parse_args(argv):
         "--gear", dest="gears", action="extend", nargs="+", required=True,
         help="One or more gear `docs/` directories.",
     )
+    parser.add_argument(
+        "--auto-context", action="store_true",
+        help="Discover the gears this one's documents point at — by relative link and "
+             "by foreign id — and load them for cross-gear resolution without checking "
+             "them. Saves the caller knowing the graph: pricing needs rating and "
+             "subscriptions and cites neither by id, only by bare `SEAMS` row. Opt-in "
+             "because loading more gears changes what resolves.",
+    )
     parser.add_argument("--format", choices=["text", "json"], default="text")
     parser.add_argument(
         "--max-severity", choices=["low", "medium", "high"], default="medium",
@@ -86,9 +94,36 @@ def main(argv=None):
     # Load every `--gear` corpus up front, before checking any of them: P1's seam
     # ownership check and P3's cross-gear instruction-id closure both need to know
     # what every loaded gear declares, not just the one currently being checked.
-    corpora = [Corpus.load(gear) for gear in args.gears]
-    seams = SeamIndex.build(corpora)
-    declared = closure.DeclaredInstructions.build(corpora)
+    subjects = list(args.gears)
+    # `--auto-context` separates the two meanings `--gear` had been carrying: what to
+    # resolve against, and what to report on. Context gears are loaded so P1 and P3 can
+    # see what they declare, and are never themselves checked — asking about pricing
+    # must not return rating's findings.
+    context_gears, unresolved = [], []
+    if args.auto_context:
+        seen = set(os.path.normpath(g) for g in subjects)
+        for gear in subjects:
+            found, missing = context.discover(gear)
+            unresolved.extend(missing)
+            for path in found:
+                if os.path.normpath(path) not in seen:
+                    seen.add(os.path.normpath(path))
+                    context_gears.append(path)
+        unresolved = sorted(set(unresolved))
+        # A run that silently widens its own corpus cannot be reproduced from its
+        # output, and a citation pointing at a gear that is not there is a fact about
+        # the documents rather than a lookup miss to swallow.
+        print("auto-context: loaded {} for resolution, not checked".format(
+            ", ".join(context_gears) if context_gears else "nothing"))
+        if unresolved:
+            print("auto-context: cited but not found: {}".format(", ".join(unresolved)))
+        print("")
+
+    corpora = [Corpus.load(gear) for gear in subjects]
+    context_corpora = [Corpus.load(gear) for gear in context_gears]
+    resolvable = corpora + context_corpora
+    seams = SeamIndex.build(resolvable)
+    declared = closure.DeclaredInstructions.build(resolvable)
 
     # Findings are partitioned into known-debt vs. live *per corpus*, before being
     # accumulated across the whole run — not by flattening every corpus's findings
@@ -100,7 +135,7 @@ def main(argv=None):
     failing = False
     for corpus in corpora:
         corpus_findings = []
-        corpus_findings.extend(propagation.check(corpus, seams, corpora))
+        corpus_findings.extend(propagation.check(corpus, seams, resolvable))
         corpus_findings.extend(fr_coverage.check(corpus))
         corpus_findings.extend(closure.check(corpus, declared))
 
