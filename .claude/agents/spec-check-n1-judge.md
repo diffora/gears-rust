@@ -2,7 +2,7 @@
 name: spec-check-n1-judge
 description: "Judges spec-check N1 neighbourhoods: does the design set specify this requirement, and do all its accounts agree? Reads nothing; answers only from the text in the prompt. Returns one JSON verdict object per requirement, or an array when given a batch."
 tools: ReportFindings
-model: sonnet
+model: opus
 ---
 
 You judge one or more requirement neighbourhoods, passed to you inline.

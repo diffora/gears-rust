@@ -113,12 +113,14 @@ kind (`fr` and `nfr`). Designed in
 
 **Advisory, like everything else here. Nothing gates. The report is the output.**
 
-**Status:** all four steps are built, tested and pinned, and step 3 has been run once
-— the ledger evaluation sample of 16, judged in 5 dispatches on 2026-07-30. Its
-reading is `docs/spec-check/N1-ledger-step1-findings.md`; the generated report beside
-it is `N1-ledger-step1.md`. The second evaluation the design asks for — a
-hand-labelled sample scored against the judge — is still owed, so **how good the judge
-is remains unmeasured**; what one run showed is recorded in the findings document.
+**Status:** all four steps are built, tested and pinned, and both evaluations the
+design asks for have been run (2026-07-30). The ledger hypothesis — 16 requirements in
+5 dispatches — is answered in `docs/spec-check/N1-ledger-step1-findings.md`, beside its
+generated report `N1-ledger-step1.md`. The judge comparison — 12 hand-labelled
+requirements against two models on identical prompts — is
+`docs/spec-check/N1-evaluation-2026-07-30.md`, and it is why the judge now runs on
+**Opus**. Between them the two runs turned up **five real document defects**, four of
+which nothing else had found.
 
 ### The runbook
 
@@ -175,7 +177,16 @@ payload. Three controls, in order of effect:
 |---|---|
 | The ladder judges only what needs judging | 116 → **69** judged (52 pricing, 17 ledger) |
 | `judge_batches.py`, 4 per dispatch | 69 → **22 dispatches** (14 pricing, 8 ledger) |
-| The judge runs on **Sonnet**, not the inherited model | per-token, not per-call |
+
+A third control was **deliberately given up on 2026-07-30**: the judge used to run on
+Sonnet, which is cheaper per token. The A/B in
+`docs/spec-check/N1-evaluation-2026-07-30.md` measured the two models on identical
+prompts and found Sonnet caught **1 of 3** eye-verified contradictions where Opus
+caught **3 of 3** — on the one class this tool exists to find, and with no false
+positive from either. Cost control now rests entirely on the two structural controls
+above, which is the right place for it: they cut *dispatches*, and the dispatch count
+is what the bill tracks. Buying back the per-token saving would cost two thirds of the
+divergence findings.
 
 The ledger evaluation sample the design asks for — the 16 requirements P2 reports as
 multiply claimed — comes to **6 judged, 5 dispatches**, because 10 of the 16 are
@@ -344,13 +355,23 @@ References in the report are plain `path:line` text, not links, because
 - **A rule stated in vocabulary the PRD does not share** lands in `no-region` or
   `anchored:no-account`, which say exactly that and no more. Neither is evidence of
   absence.
-- **Whether the judge is any good.** One run of 6 judged requirements is not a
-  measurement of that. It did show the `usefulness` column earning its place: for
-  `fr-idempotency-per-flow` the only region clearing `SCORE_THRESHOLD` came back
-  `noise` while the decisive one scored **0.000** and was present only because it
-  names the id — so a low score is not low relevance for the compressed vocabulary of
-  a design-response table, and the anchor rule should not be tightened on score.
-  Agreement against hand labels is still unmeasured.
+- **How good the judge is in absolute terms.** Measured once, on 12 requirements
+  (`docs/spec-check/N1-evaluation-2026-07-30.md`), and the headline is that the
+  *reference* was the weak part: hand labels written against the full documents were
+  wrong on 3 of 12, twice by missing a contradiction the judge caught. What the run
+  does establish is that `coverage` is stable — 12/12 between the two models, 11/12
+  against the labels — and that all disagreement lives on the `agreement` axis. Treat
+  the report as an inter-rater comparison, not an accuracy score.
+- **Whether the thresholds are right.** Two calibration hypotheses are recorded and
+  deliberately *not* applied, because tuning on the sample the tool was measured on
+  would make the measurement meaningless: (1) a low score is not low relevance for the
+  compressed vocabulary of a design-response table — for `fr-idempotency-per-flow` the
+  only region clearing `SCORE_THRESHOLD` came back `noise` while the decisive one
+  scored **0.000** and was present only because it names the id, so the anchor rule
+  must not be tightened on score; (2) the top-3 overlap cut can lose a requirement's
+  decisive region to a neighbour — `inst-cs-customfreq` states `fr-custom-frequency`
+  in full and reached the neighbourhoods of `fr-one-time-setup` and
+  `fr-hybrid-completeness` but not its own. Both need a fresh corpus to test.
 
 ## Tests
 
