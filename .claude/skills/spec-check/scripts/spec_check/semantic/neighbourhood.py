@@ -54,6 +54,10 @@ def build(requirement, regions, triage_class):
         "requirement_id": requirement.id,
         "requirement_kind": requirement.kind,
         "priority": requirement.priority,
+        #: Where the declaration itself is. A `no-prose` neighbourhood has no
+        #: fragment at all, so this is the only location its report row can name —
+        #: and naming one is the difference between a finding and a shrug.
+        "declaration_file": requirement.file,
         "declaration_line": requirement.line,
         "triage": triage_class,
         "judge": triage_class in JUDGED,
