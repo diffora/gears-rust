@@ -190,6 +190,33 @@ def test_at_most_five_regions_so_six_fragments_including_the_declaration():
     assert len([r for r in picked if r.selected_by == "term-overlap"]) == regions.MAX_OVERLAP_REGIONS
 
 
+def test_two_overlapping_windows_are_not_both_selected():
+    # Windows step by half their length, so neighbours share six lines and both can
+    # clear the threshold on the same paragraph. Selecting both spends two of five
+    # region slots showing the judge one text twice — which is what happened to
+    # ledger's fr-manual-adjustment-governance, whose regions were design/05:415-426
+    # and design/05:409-420.
+    body = "".join("filler line {}\n".format(n) for n in range(8))
+    body += "publish freeze snapshot overlay currency rounding tiering approvals\n"
+    body += "".join("more filler {}\n".format(n) for n in range(8))
+    corpus = padded(
+        ("PRD.md",
+         "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-thing`\n"
+         "\n"
+         "Publish **MUST** freeze snapshot overlay currency rounding tiering approvals.\n"),
+        ("design/01-a.md", body),
+    )
+    index = regions.WindowIndex.build(corpus)
+    req = requirements.parse(corpus)[0]
+    picked = regions.select(index, req)
+    spans = [(r.file, r.start, r.end) for r in picked]
+    for i, (path, start, end) in enumerate(spans):
+        for other_path, other_start, other_end in spans[i + 1:]:
+            assert not (path == other_path and start <= other_end and other_start <= end), \
+                "overlapping regions selected: {} and {}".format(
+                    (path, start, end), (other_path, other_start, other_end))
+
+
 def test_selection_is_deterministic_and_sorted_by_score_then_path():
     corpus = padded(
         ("PRD.md",

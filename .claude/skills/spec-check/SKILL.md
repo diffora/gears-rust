@@ -192,6 +192,14 @@ overlapping spans. Every requirement of a gear declares itself in the same `PRD.
 so every pair conflicts and every batch holds one member — measured, ledger's 17
 judged neighbourhoods produced 17 batches.
 
+**The agent registry is fixed when the session starts.** Editing
+`.claude/agents/spec-check-n1-judge.md` — its `tools:` list especially — takes effect
+in the *next* session, not this one; a mid-session edit is not re-read and a newly
+created agent file is not picked up at all. If a dispatch is refused with
+"would be spawned with zero tools", that is this, and the fix is a new session. Do
+**not** substitute a repository-capable agent: the measurement's whole point is that
+the judge answered from the neighbourhood and nothing else.
+
 A malformed response gets **one retry**, then the neighbourhood is left out of
 `verdicts.json` and `judge_report.py` records it as `judge-failed`. With a batch,
 the retry costs the whole batch, which is the argument against large `--size`.
@@ -266,9 +274,9 @@ it must read as a diff.
 | `unbuildable:no-prose` | 0 | 0 |
 | `no-region` | 6 | 0 |
 | `anchored:no-account` | 18 | 23 |
-| `suspicious:multi-region` | 34 | 9 |
+| `suspicious:multi-region` | 14 | 3 |
 | `suspicious:not-normative` | 0 | 0 |
-| `suspicious:weak-coverage` | 18 | 8 |
+| `suspicious:weak-coverage` | 38 | 14 |
 | `covered:strong` | 0 | 0 |
 | **total / judged** | **76 / 52** | **40 / 17** |
 
@@ -282,6 +290,13 @@ came out of that check, before any judge ran:
 - **Ten of the sixteen requirements P2 reports as claimed by 2–5 ledger slices are
   `anchored:no-account`**: the claims are real and not one of those locations states
   the rule. That is most of the ledger hypothesis answered deterministically.
+- **Overlapping windows were inflating `multi-region` twofold.** Windows step by half
+  their length, so two neighbours can clear the threshold on the strength of one
+  paragraph; a real batch prompt showed the same seven governance steps as two
+  regions (`design/05:415-426` and `design/05:409-420`). Deduplicating took the class
+  from 34 to 14 in pricing and 9 to 3 in ledger. Only **17 requirements across both
+  corpora have two genuinely distinct accounts**, so divergence is possible for 17,
+  not 43 — a false-divergence source removed, not merely budget saved.
 
 `covered:strong` and `not-normative` are honest zeroes, kept in the histogram at
 zero so a class that stops occurring is distinguishable from one that never existed.
@@ -298,6 +313,11 @@ References in the report are plain `path:line` text, not links, because
 
 ### What the pipeline enforces rather than asks for
 
+- **The judge cannot read the repository.** Its agent definition grants exactly one
+  tool, `ReportFindings`, which touches neither the filesystem nor the network. That
+  is not a taste: this harness **refuses to spawn an agent with zero tools**
+  (`tools: TodoWrite` resolved to nothing and was rejected outright), so least
+  privilege here means naming one inert tool rather than none.
 - **`selected_by`, `score` and the triage class are withheld from the judge**, by
   `render_for_judge` and therefore also from every batch prompt. A judge told a
   region was id-anchored is biased toward accepting it, and the premise run was
@@ -331,8 +351,8 @@ References in the report are plain `path:line` text, not links, because
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-204 tests, no third-party runtime dependencies — 110 for the deterministic layer
-and 94 for N1. Four of them are the oracles this port was accepted against, and
+205 tests, no third-party runtime dependencies — 110 for the deterministic layer
+and 95 for N1. Four of them are the oracles this port was accepted against, and
 they are the ones to distrust a change that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against

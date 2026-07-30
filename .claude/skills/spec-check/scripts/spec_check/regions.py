@@ -280,13 +280,25 @@ def _overlap_regions(index, terms, excluded, declaring_file):
             continue
         scored.append((-score, window.file, window.start, window, score, matched))
     scored.sort(key=lambda row: row[:3])
-    return [
-        Region(
+
+    # Windows step by half their length, so adjacent ones share six lines and both
+    # can clear the threshold on the strength of the same paragraph. Taking both
+    # spends two of five region slots showing the judge one text twice — measured on
+    # `fr-manual-adjustment-governance`, whose regions 3 and 4 were
+    # `design/05:415-426` and `design/05:409-420`, the same seven governance steps.
+    # The higher-scoring window wins because `scored` is already in that order.
+    out = []
+    for _negated, _path, _start, window, score, matched in scored:
+        if any(window.file == kept.file and window.start <= kept.end
+               and kept.start <= window.end for kept in out):
+            continue
+        out.append(Region(
             file=window.file, start=window.start, end=window.end, text=window.text,
             score=score, selected_by="term-overlap", matched=matched,
-        )
-        for _negated, _path, _start, window, score, matched in scored[:MAX_OVERLAP_REGIONS]
-    ]
+        ))
+        if len(out) == MAX_OVERLAP_REGIONS:
+            break
+    return out
 
 
 def select(index, requirement):

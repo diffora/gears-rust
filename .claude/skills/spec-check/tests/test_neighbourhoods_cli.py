@@ -149,8 +149,14 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #:   slices land here, which is a substantive result on its own.
 #: - `suspicious:multi-region`: ledger's `fr-idempotency-per-flow` is anchored in
 #:   four distinct slices scoring 0.000, 0.571, 0.143 and 0.286 — only one is an
-#:   account, so under the corrected rule it is *not* multi-region, and the two that
-#:   remain in ledger are requirements with two genuine accounts.
+#:   account, so under the corrected rule it is *not* multi-region.
+#: - **Overlapping windows were inflating this class by a factor of two.** Reading a
+#:   real batch prompt showed `fr-manual-adjustment-governance` carrying
+#:   `design/05:415-426` and `design/05:409-420` as two regions — the same seven
+#:   governance steps, shown to the judge twice. Deduplicating overlapping windows
+#:   took `multi-region` from 34 to 14 in pricing and 9 to 3 in ledger: 20 of
+#:   pricing's 34 "two accounts" were one paragraph counted twice, which is a
+#:   false-divergence source removed, not merely budget saved.
 #: - `covered:strong` × 0 and `not-normative` × 0 are honest zeroes: the first needs
 #:   a single account that is *also* id-anchored and ≥ 0.75, and requirement prose in
 #:   both corpora is overwhelmingly `MUST`-laden. Both stay in the histogram at zero
@@ -159,18 +165,18 @@ PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 6,
     "anchored:no-account": 18,
-    "suspicious:multi-region": 34,
+    "suspicious:multi-region": 14,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 18,
+    "suspicious:weak-coverage": 38,
     "covered:strong": 0,
 }
 PINNED_TRIAGE_LEDGER = {
     "unbuildable:no-prose": 0,
     "no-region": 0,
     "anchored:no-account": 23,
-    "suspicious:multi-region": 9,
+    "suspicious:multi-region": 3,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 8,
+    "suspicious:weak-coverage": 14,
     "covered:strong": 0,
 }
 
