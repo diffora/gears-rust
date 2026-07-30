@@ -151,20 +151,55 @@ One format deviation, recorded because it costs a batch its retry: Sonnet return
 newline-delimited JSON objects instead of the requested array on batch-02. Opus returned
 a well-formed array on all three batches.
 
-## Calibration hypotheses, recorded and not applied
+## The search limitation this run exposed
 
-Applying either of these to the sample the measurement ran on would fit the tool to its
-own test set. Both need a fresh corpus.
+**Corrected 2026-07-30, after investigation.** This section first recorded two
+"calibration hypotheses", the second of which was wrong twice over — in its mechanism
+and in its facts. Both errors are stated here rather than quietly edited out, because
+the wrong version was the more actionable-sounding one and someone would have acted on
+it.
 
-1. **A low score is not low relevance** for the compressed vocabulary of a
-   design-response table. See `N1-ledger-step1-findings.md`: the decisive region for
-   `fr-idempotency-per-flow` scored 0.000 and was present only because it names the id.
-   The id-anchor rule must not be tightened on score.
-2. **The top-3 term-overlap cut can lose a requirement's decisive region to a
-   neighbour.** `inst-cs-customfreq` states `fr-custom-frequency` in full and appears in
-   the neighbourhoods of `fr-one-time-setup` (0.833) and `fr-hybrid-completeness`
-   (0.625) — but not in its own, which is why #1 is labelled `underspecified` by all
-   three sources when the design set does in fact carry the rule.
+**What was claimed:** that the top-3 term-overlap cut "loses a requirement's decisive
+region to a neighbour" — `inst-cs-customfreq` states `fr-custom-frequency` in full,
+appears in the neighbourhoods of `fr-one-time-setup` (0.833) and
+`fr-hybrid-completeness` (0.625), but not its own.
+
+**What is true.** Scoring is per requirement and independent, so no region can be lost
+to a neighbour; the same window is simply scored three times against three different
+term sets. Measured directly, `design/02-plan-definition.md:199-210` scores **0.414**
+for `fr-custom-frequency` — it was cut by the 0.6 threshold, not by the top-3 rule, and
+was never a candidate. And `inst-cs-customfreq` does **not** state the requirement in
+full: it omits the declaration's first clause, that the catalog must persist the
+interval as metadata for `quarterly`, `semiannual` and `customEveryN{...}`, and never
+mentions quarterly or semiannual at all. So `underspecified` — the verdict all three
+sources gave — was **correct**, and this is not an example of the tool missing a rule
+the design set carries.
+
+**The real, milder finding.** A region's score is
+`|requirement terms ∩ window terms| / |requirement terms|`, the *recall* of the
+declaration's vocabulary. A declaration carrying enumerations, illustrations and
+cross-team notes has terms the design legitimately never repeats, so terse normative
+prose scores low against a verbose declaration by construction. Here the better
+evidence lost to the worse one: the 0.414 window states four of five clauses, while
+`DECISIONS.md` D-20 at 0.621 states one — and D-20 was selected. The judge reasoned
+from the weaker fragment and still reached the right class.
+
+The same root explains the step-1 finding in `N1-ledger-step1-findings.md`, where
+`fr-idempotency-per-flow`'s decisive design-response row scored 0.000: a table cell is
+about as terse as design prose gets.
+
+**No change is proposed, and two obvious fixes are backwards.** Scoring a best-matching
+sub-span, or making the list item the selection unit, would each *lower* every score,
+because recall is monotonic in window size. Lowering the threshold is already measured
+bad. The mitigation that exists — id anchors admitted at any score — is what saved the
+`fr-idempotency-per-flow` case and is the standing reason not to tighten anchors on
+score; it cannot help `fr-custom-frequency`, whose window never names the id.
+
+**One thing worth measuring later:** `_anchor_regions` takes the first id occurrence per
+document, usually a `Traces to` header rather than the rule. Preferring the
+highest-scoring occurrence looks right — but neither known case would be fixed by it,
+since both name the id exactly once, so proposing it now would be the same
+evidence-free guess this section already made once.
 
 ## A limit of the schema itself
 

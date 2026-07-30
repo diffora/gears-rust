@@ -362,16 +362,31 @@ References in the report are plain `path:line` text, not links, because
   does establish is that `coverage` is stable — 12/12 between the two models, 11/12
   against the labels — and that all disagreement lives on the `agreement` axis. Treat
   the report as an inter-rater comparison, not an accuracy score.
-- **Whether the thresholds are right.** Two calibration hypotheses are recorded and
-  deliberately *not* applied, because tuning on the sample the tool was measured on
-  would make the measurement meaningless: (1) a low score is not low relevance for the
-  compressed vocabulary of a design-response table — for `fr-idempotency-per-flow` the
-  only region clearing `SCORE_THRESHOLD` came back `noise` while the decisive one
-  scored **0.000** and was present only because it names the id, so the anchor rule
-  must not be tightened on score; (2) the top-3 overlap cut can lose a requirement's
-  decisive region to a neighbour — `inst-cs-customfreq` states `fr-custom-frequency`
-  in full and reached the neighbourhoods of `fr-one-time-setup` and
-  `fr-hybrid-completeness` but not its own. Both need a fresh corpus to test.
+- **Terse normative prose scores low against a verbose declaration, by construction.**
+  A region's score is `|requirement terms ∩ window terms| / |requirement terms|` — the
+  *recall* of the declaration's vocabulary. A declaration carrying enumerations,
+  illustrations and cross-team notes has terms the design legitimately never repeats,
+  so the step that states the rule most exactly can still score low. Two measured
+  instances: `fr-idempotency-per-flow`, whose decisive design-response row scored
+  **0.000**; and `fr-custom-frequency`, where the window holding `inst-cs-customfreq`
+  scored **0.414** while `DECISIONS.md` D-20 — weaker evidence, covering one clause of
+  five — scored 0.621 and was selected in its place.
+
+  **The mitigation already exists: the id-anchor rule admits a region whatever it
+  scores.** That is what saved the first case, and it is the reason not to tighten
+  anchors on score. It cannot save the second, whose window never names the id.
+
+  Two structural fixes suggest themselves and **both are backwards**: scoring a
+  best-matching sub-span, or making the list item the selection unit, would each
+  *lower* every score, because recall is monotonic in window size — a window holding
+  eight instruction steps matches at least as many of the requirement's terms as the
+  one step does alone. Lowering `SCORE_THRESHOLD` is measured bad (0.5 fills top-3 with
+  noise). No change is proposed; the limitation above is the honest statement.
+
+  Worth measuring rather than changing: `_anchor_regions` takes the *first* id
+  occurrence per document, usually the `Traces to` header rather than the rule.
+  Preferring the highest-scoring occurrence looks right, but neither known case would be
+  fixed by it — both name the id once — so it needs a corpus where it reproduces.
 
 ## Tests
 
