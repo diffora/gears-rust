@@ -137,6 +137,10 @@ def normalise(verdict, neighbourhood):
 
     out = dict(verdict)
     notes = []
+    # What the judge actually answered. The downgrades below are this report's
+    # work, not the judge's, so the `proposed_fix` test at the end has to read
+    # this pair rather than the downgraded one — see the note there.
+    submitted = (verdict["coverage"], verdict["agreement"])
 
     specifies = [r for r in out["regions"] if r["role"] == "specifies"]
     # `contradicts-declaration` is exempt: its two sides are one account and side A,
@@ -177,7 +181,12 @@ def normalise(verdict, neighbourhood):
             )
             out["agreement"] = "consistent"
 
-    if not (out["coverage"] == "specified" and out["agreement"] == "consistent"):
+    # Judged against `submitted`, not `out`: the agent contract asks for a fix
+    # unless the judge's *own* verdict is specified + consistent, and a verdict
+    # this report downgraded had no way to know it would be. Testing `out` here
+    # made every honest single-account `consistent` verdict a `judge-failed` row
+    # — 4 of pricing's 52 on 2026-07-30, reproduced by retry.
+    if submitted != ("specified", "consistent"):
         if not str(out.get("proposed_fix") or "").strip():
             raise VerdictError(
                 "`proposed_fix` is required for every verdict other than specified + "

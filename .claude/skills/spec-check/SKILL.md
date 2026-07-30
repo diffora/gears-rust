@@ -183,6 +183,19 @@ requirements against two models on identical prompts — is
 **Opus**. Between them the two runs turned up **five real document defects**, four of
 which nothing else had found.
 
+The first **whole-gear** run followed on 2026-07-30 — all 52 of pricing's judged
+neighbourhoods, 14 dispatches, report in `docs/spec-check/N1-pricing.md`. The pinned
+histogram reproduced exactly. It found **two `contradicts-declaration`, both
+eye-verified and both real**: `fr-invoice-currency-binding` (the PRD makes an optional
+add-on's currency gap a publish-time MUST-reject; `inst-cb-addon` moves it to
+attachment time) and `fr-plan-phases` (the PRD's phase-coverage MUST is unconditional;
+`inst-ph-coverage` carves out one-time and usage-only plans, and `inst-ph-terminal-stable`
+concedes that leaves usage-only plans unguarded). Both design-side changes are marked
+*flagged for veto* — the PRD was never moved to match, which is exactly the class N1
+exists to catch and P1/P2 cannot see. **Zero `divergent`**: no two design accounts
+contradict each other anywhere in the gear. It also surfaced the `proposed_fix`
+downgrade bug below.
+
 ### The runbook
 
 Four commands, two of them deterministic, one dispatch loop. Run from the
@@ -429,6 +442,17 @@ References in the report are plain `path:line` text, not links, because
 - **A citation outside every fragment of its own neighbourhood is `judge-failed`.**
   Beyond the design, and it is what turns "the judge has no repository access" from a
   claim about the harness into something the pipeline verifies.
+- **A missing `proposed_fix` is `judge-failed` — but judged on what the judge
+  submitted, never on what this report downgraded it to.** The agent contract asks
+  for a fix unless the judge's *own* verdict is `specified` + `consistent`, so a
+  verdict the two-specifies rule later moved to `not-applicable` cannot be charged
+  for a field it had no reason to fill. Testing the downgraded pair instead made
+  **every honest single-account `consistent` verdict a `judge-failed` row**: measured
+  on the 2026-07-30 pricing run it cost **4 of 52** dispatches, and a full retry
+  reproduced all four unchanged — the judge was right each time. Fixed the same day;
+  `tests/test_judge_report.py` pins both directions, since the mirror error is worse
+  (a genuine defect verdict that never names a fix costs the reader the whole
+  investigation).
 
 ### What N1 still cannot tell you
 
@@ -478,8 +502,8 @@ References in the report are plain `path:line` text, not links, because
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-216 tests, no third-party runtime dependencies — 110 for the deterministic layer
-and 106 for N1. Four of them are the oracles this port was accepted against, and
+217 tests, no third-party runtime dependencies — 110 for the deterministic layer
+and 107 for N1. Four of them are the oracles this port was accepted against, and
 they are the ones to distrust a change that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against

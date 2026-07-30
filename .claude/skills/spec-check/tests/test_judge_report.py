@@ -149,6 +149,30 @@ def test_a_specified_consistent_verdict_needs_no_proposed_fix(tmp_path):
     assert "judge-failed" not in report
 
 
+def test_a_downgrade_does_not_retroactively_require_a_proposed_fix(tmp_path):
+    # The judge's contract asks for `proposed_fix` unless its own verdict is
+    # specified + consistent. This one is, so it legitimately omits the field —
+    # and only the report's own two-specifies downgrade makes the agreement
+    # `not-applicable`. Charging the judge for that downgrade turns every honest
+    # single-account verdict into a `judge-failed` row: measured 2026-07-30, it
+    # cost 4 of pricing's 52 dispatches, and a retry reproduces it exactly.
+    one_account = verdict(
+        regions=[
+            {"file": "design/03-c.md", "lines": [88, 99],
+             "role": "specifies", "usefulness": "decisive"},
+            {"file": "design/09-i.md", "lines": [145, 156],
+             "role": "mentions", "usefulness": "noise"},
+        ],
+        agreement="consistent",
+        proposed_fix="",
+        citations=[{"file": "design/03-c.md", "line": 92, "quote": "freezes the snapshot"}],
+    )
+    proc, report = run(tmp_path, envelope(judged()), [one_account])
+    assert "judge-failed" not in report
+    assert "| fr-thing | specified |" in report
+    assert "consistent → not-applicable" in report
+
+
 def test_a_malformed_verdict_is_recorded_not_dropped(tmp_path):
     proc, report = run(
         tmp_path, envelope(judged()), [{"id": "requirement/cpt-cf-bss-ledger-fr-thing"}]
