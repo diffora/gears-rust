@@ -113,9 +113,12 @@ kind (`fr` and `nfr`). Designed in
 
 **Advisory, like everything else here. Nothing gates. The report is the output.**
 
-**Status:** steps 1, 2 and 4 below are built, tested and pinned. Step 3 — the judge
-dispatches — has never been run, so no requirement has a verdict yet and the
-evaluation the design asks for is still owed.
+**Status:** all four steps are built, tested and pinned, and step 3 has been run once
+— the ledger evaluation sample of 16, judged in 5 dispatches on 2026-07-30. Its
+reading is `docs/spec-check/N1-ledger-step1-findings.md`; the generated report beside
+it is `N1-ledger-step1.md`. The second evaluation the design asks for — a
+hand-labelled sample scored against the judge — is still owed, so **how good the judge
+is remains unmeasured**; what one run showed is recorded in the findings document.
 
 ### The runbook
 
@@ -341,9 +344,13 @@ References in the report are plain `path:line` text, not links, because
 - **A rule stated in vocabulary the PRD does not share** lands in `no-region` or
   `anchored:no-account`, which say exactly that and no more. Neither is evidence of
   absence.
-- **Whether the judge is any good.** Nothing has been judged. The `usefulness`
-  column the report aggregates is the tuning channel, and it is empty until step 3
-  runs.
+- **Whether the judge is any good.** One run of 6 judged requirements is not a
+  measurement of that. It did show the `usefulness` column earning its place: for
+  `fr-idempotency-per-flow` the only region clearing `SCORE_THRESHOLD` came back
+  `noise` while the decisive one scored **0.000** and was present only because it
+  names the id — so a low score is not low relevance for the compressed vocabulary of
+  a design-response table, and the anchor rule should not be tightened on score.
+  Agreement against hand labels is still unmeasured.
 
 ## Tests
 
@@ -351,8 +358,8 @@ References in the report are plain `path:line` text, not links, because
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-205 tests, no third-party runtime dependencies — 110 for the deterministic layer
-and 95 for N1. Four of them are the oracles this port was accepted against, and
+209 tests, no third-party runtime dependencies — 110 for the deterministic layer
+and 99 for N1. Four of them are the oracles this port was accepted against, and
 they are the ones to distrust a change that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against

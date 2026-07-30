@@ -41,6 +41,10 @@ DEFAULT_BATCH_SIZE = 4
 _SINGLE_INSTRUCTION = """\
 Judge the one requirement below and respond with a single JSON object, exactly as
 your instructions specify. No prose before or after, no code fence.
+
+Copy the `id` verbatim from its `=== … ===` header, including the
+`requirement/` prefix — the `Requirement:` line below does not carry it, and
+`judge_report.py` matches verdicts to neighbourhoods on that exact string.
 """
 
 _BATCH_INSTRUCTION = """\
@@ -50,7 +54,9 @@ before or after the array, no code fence.
 
 They are unrelated and deliberately quote no document in common: a conclusion about
 one tells you nothing about another. Judge each one only from its own fragments, and
-copy each `id` verbatim from its `=== … ===` header.
+copy each `id` verbatim from its `=== … ===` header, including the
+`requirement/` prefix — the `Requirement:` lines below do not carry it, and
+`judge_report.py` matches verdicts to neighbourhoods on that exact string.
 """
 
 

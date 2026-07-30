@@ -202,6 +202,41 @@ def test_covered_strong_is_listed_with_the_reason_it_was_not_judged(tmp_path):
     assert "judge-failed" not in report
 
 
+def test_anchored_no_account_is_not_reported_as_covered(tmp_path):
+    # These two classes are opposites — `covered:strong` means one account cleared
+    # the strong threshold, `anchored:no-account` means nothing cleared the account
+    # bar at all. Sharing a branch made the report assert the reverse of the truth
+    # for 10 of the 16 requirements in the ledger step-1 run.
+    bare = judged(triage="anchored:no-account", ident="cpt-cf-bss-ledger-fr-named")
+    bare["judge"] = False
+    proc, report = run(tmp_path, envelope(bare), [])
+    assert "Not judged — anchored, no account" in report
+    assert "Not judged — covered" not in report
+    assert "at or above the strong threshold" not in report
+    assert "| no-account | 1 |" in report
+
+
+def test_a_specified_consistent_verdict_may_omit_proposed_fix_entirely(tmp_path):
+    # Distinct from the empty-string case above: the agent contract calls the key
+    # optional here, so its absence must be accepted exactly as an empty value is.
+    clean = verdict(agreement="consistent", citations=[
+        {"file": "design/03-c.md", "line": 92, "quote": "freezes the snapshot"},
+        {"file": "design/09-i.md", "line": 151, "quote": "freezes it too"},
+    ])
+    del clean["proposed_fix"]
+    proc, report = run(tmp_path, envelope(judged()), [clean])
+    assert "| fr-thing | specified |" in report
+    assert "judge-failed" not in report
+
+
+def test_a_defect_verdict_omitting_proposed_fix_is_still_a_judge_failure(tmp_path):
+    no_fix = verdict(coverage="claim-only", agreement="not-applicable")
+    del no_fix["proposed_fix"]
+    proc, report = run(tmp_path, envelope(judged()), [no_fix])
+    assert "| fr-thing | judge-failed |" in report
+    assert "proposed_fix" in report
+
+
 def test_usefulness_is_aggregated_by_selection_mechanism(tmp_path):
     # The tuning channel: which mechanism produced decisive regions and which
     # produced noise. Without it, threshold changes are taste.

@@ -160,3 +160,15 @@ def test_the_live_ledger_corpus_batches_into_far_fewer_dispatches(tmp_path):
     # Batching must actually batch. It once did not: comparing files rather than
     # line spans produced one dispatch per neighbourhood on this very corpus.
     assert len(batches) <= (len(judged) + 1) // 2
+
+
+def test_both_prompt_templates_demand_the_prefixed_id():
+    # The judge returned bare ids on every single-requirement batch of the ledger
+    # step-1 run, because only the multi template asked for the header form. Every
+    # verdict then had to be renormalised by hand before the report would render.
+    single = judge_batches.render_batch([item("fr-a", ["design/01.md"])])
+    multi = judge_batches.render_batch([item("fr-a", ["design/01.md"]),
+                                        item("fr-b", ["design/02.md"])])
+    for text in (single, multi):
+        assert "`requirement/` prefix" in text
+        assert "matches verdicts to neighbourhoods on that exact string" in text

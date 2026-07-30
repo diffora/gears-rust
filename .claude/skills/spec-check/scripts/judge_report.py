@@ -25,7 +25,7 @@ ROLE_VALUES = ("specifies", "mentions")
 USEFULNESS_VALUES = ("decisive", "useful", "noise")
 
 _REQUIRED_KEYS = (
-    "id", "regions", "coverage", "agreement", "citations", "reasoning", "proposed_fix",
+    "id", "regions", "coverage", "agreement", "citations", "reasoning",
 )
 
 
@@ -70,6 +70,12 @@ def _check_schema(verdict):
         for key in ("file", "line", "quote"):
             if key not in citation:
                 raise VerdictError("a citation is missing key `{}`".format(key))
+    # `proposed_fix` is deliberately absent from `_REQUIRED_KEYS`: whether it is
+    # required depends on coverage and agreement *after* any downgrade, so the rule
+    # lives in `normalise` and nowhere else. Requiring the key here as well made a
+    # missing key fail differently from an empty one — measured on the ledger step-1
+    # run, that cost `fr-idempotency-per-flow`, the requirement the run existed to
+    # answer, a `judge-failed` row for a verdict its own agent contract calls valid.
 
 
 def _check_citations_inside_fragments(verdict, neighbourhood):
@@ -143,7 +149,7 @@ def normalise(verdict, neighbourhood):
 #: Report order: the outcomes a reader must act on first. Within a verdict, by id.
 _VERDICT_ORDER = (
     "divergent", "judge-failed", "claim-only", "underspecified", "no-region",
-    "no-prose", "specified", "consistent", "not-judged",
+    "no-prose", "specified", "consistent", "no-account", "not-judged",
 )
 
 
@@ -221,6 +227,18 @@ def rows(envelope, verdicts):
             elif neighbourhood["triage"] == "no-region":
                 base["verdict"] = "no-region"
                 base["reasoning"] = neighbourhood["unbuildable"][0]
+            elif neighbourhood["triage"] == "anchored:no-account":
+                # Not `covered:strong` and emphatically not its opposite: the id is
+                # named, and nothing named it carries enough of the requirement's
+                # vocabulary to be an account of it. Reporting these under the
+                # `covered:strong` reason asserted the reverse of the truth for 10 of
+                # the 16 requirements in the ledger step-1 run.
+                base["verdict"] = "no-account"
+                base["reasoning"] = (
+                    "the id is named in the design set, but no region carries enough of "
+                    "the requirement's vocabulary to be an account of it — a fact about "
+                    "the search, not a judgment that the requirement is unspecified"
+                )
             else:
                 base["verdict"] = "not-judged"
                 base["reasoning"] = (
@@ -376,7 +394,7 @@ def render(envelope, report_rows, notes, manifest=None):
     out.append("")
 
     judged_rows = [r for r in report_rows if r["verdict"] not in
-                   ("no-prose", "no-region", "not-judged")]
+                   ("no-prose", "no-region", "no-account", "not-judged")]
     out.append("## Judged")
     out.append("")
     if judged_rows:
@@ -405,6 +423,11 @@ def render(envelope, report_rows, notes, manifest=None):
         ("Not judged — no region", "no-region",
          "Reported as what is actually known: sending an empty neighbourhood to a "
          "judge would produce invention, and calling it `claim-only` would overclaim."),
+        ("Not judged — anchored, no account", "no-account",
+         "The design set names the id, and no location carrying it states enough of "
+         "the rule to be an account of it. Answered deterministically: these were "
+         "never sent to a judge, and they are not evidence that the requirement is "
+         "unspecified — only that term overlap did not find an account."),
         ("Not judged — covered", "not-judged",
          "A single id-anchored region scoring at or above the strong threshold, with "
          "normative prose. Listed with the reason, so a silent skip and a deliberate "
