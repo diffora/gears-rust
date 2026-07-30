@@ -32,7 +32,7 @@ def test_multi_region_outranks_not_normative():
     # the disagreement resolved before the wording is tightened, and the judge sees
     # the vague declaration either way.
     vague = req("The catalog handles overlays somehow.")
-    picked = [region(0.9, "id-anchor"), region(0.5, "term-overlap", "design/02-b.md")]
+    picked = [region(0.9, "id-anchor"), region(0.65, "term-overlap", "design/02-b.md")]
     assert triage.classify(vague, picked) == "suspicious:multi-region"
 
 
@@ -41,9 +41,29 @@ def test_not_normative_for_a_single_region():
     assert triage.classify(vague, [region(0.9, "id-anchor")]) == "suspicious:not-normative"
 
 
-def test_weak_coverage_for_a_single_low_scoring_region():
+def test_weak_coverage_for_a_single_account_below_the_strong_bar():
     normative = req("Publish **MUST** freeze the snapshot.")
-    assert triage.classify(normative, [region(0.5, "id-anchor")]) == "suspicious:weak-coverage"
+    assert triage.classify(normative, [region(0.62, "id-anchor")]) == "suspicious:weak-coverage"
+
+
+def test_regions_that_are_only_citations_are_not_accounts():
+    # `fr-addon-rules` in the live corpus: one anchored region carrying one term of
+    # 53. A citation cannot contradict anything, so counting it towards
+    # multiplicity is what sent 110 of 116 requirements to a judge.
+    normative = req("Publish **MUST** freeze the snapshot.")
+    citations = [region(0.019, "id-anchor"), region(0.14, "id-anchor", "design/02-b.md")]
+    assert triage.classify(normative, citations) == "anchored:no-account"
+
+
+def test_one_account_among_citations_is_still_one_account():
+    normative = req("Publish **MUST** freeze the snapshot.")
+    mixed = [region(0.019, "id-anchor"), region(0.9, "id-anchor", "design/02-b.md")]
+    assert triage.classify(normative, mixed) == "covered:strong"
+
+
+def test_the_new_class_is_deterministic_not_judged():
+    assert "anchored:no-account" in triage.CLASSES
+    assert "anchored:no-account" not in triage.JUDGED
 
 
 def test_an_anchored_region_just_under_the_strong_bar_is_weak_not_covered():

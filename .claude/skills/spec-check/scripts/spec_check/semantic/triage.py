@@ -6,19 +6,20 @@ once, so the *order* is what makes the outcome determinate.
 
 import re
 
-from ..regions import STRONG_SCORE
+from ..regions import STRONG_SCORE, is_substantive
 
 #: In ladder order. The first condition that holds decides.
 CLASSES = (
     "unbuildable:no-prose",
     "no-region",
+    "anchored:no-account",
     "suspicious:multi-region",
     "suspicious:not-normative",
     "suspicious:weak-coverage",
     "covered:strong",
 )
 
-#: The three classes that spend a judge call. The other three are answered
+#: The three classes that spend a judge call. The other four are answered
 #: deterministically — and are reported *with their reason*, never skipped:
 #: zero neighbourhoods and zero findings must never look alike.
 JUDGED = frozenset({
@@ -26,6 +27,17 @@ JUDGED = frozenset({
     "suspicious:not-normative",
     "suspicious:weak-coverage",
 })
+
+#: `anchored:no-account` is the class the design did not have and the corpus
+#: demanded. 47 of the 116 live requirements are named by an id anchor while no
+#: region carries enough of their vocabulary to be an account of them — measured
+#: 2026-07-30, 24 in pricing and 23 in ledger.
+#:
+#: It is deterministic, not judged, for the same reason `no-region` is: the search
+#: found no statement of the rule, and a judge handed a neighbourhood of bare
+#: citations can only invent. Unlike `no-region` it has citations to show, so the
+#: report names them. What it must NOT say is `claim-only` — that is a judgment
+#: about the documents, and this is a fact about the search.
 
 #: Uppercase only, and word-bounded. `MUST` in prose is RFC 2119; `must` is
 #: English. `**MUST**` matches, because the search runs over the raw prose and
@@ -49,15 +61,22 @@ def classify(requirement, regions):
         # count") and not judgeable either (an empty neighbourhood leaves a judge
         # inventing). Its own finding, worded as what is actually known.
         return "no-region"
-    if len(regions) >= 2:
-        # Divergence is possible, so it wins the ladder.
+    accounts = [r for r in regions if is_substantive(r)]
+    if not accounts:
+        # Regions exist — the id is named somewhere — but none of them states the
+        # rule. Reported with its citations, not judged and not called claim-only.
+        return "anchored:no-account"
+    if len(accounts) >= 2:
+        # Two accounts, so divergence is possible: it wins the ladder. Counting
+        # citations here instead of accounts is what made this class swallow 95 %
+        # of the corpus.
         return "suspicious:multi-region"
     if not is_normative(requirement.prose):
         return "suspicious:not-normative"
-    region = regions[0]
+    region = accounts[0]
     if region.selected_by == "id-anchor" and region.score >= STRONG_SCORE:
         return "covered:strong"
-    # A single region that fails either half of `covered:strong`. The class name
-    # is from the common case (score 4–7); the rule is the general one, so an
-    # anchored region scoring 6 and an unanchored one scoring 12 both land here.
+    # A single account that fails either half of `covered:strong`: the rule is
+    # general, so an anchored region scoring 0.65 and an unanchored one scoring
+    # 0.95 both land here.
     return "suspicious:weak-coverage"

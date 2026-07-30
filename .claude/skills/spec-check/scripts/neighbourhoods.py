@@ -95,6 +95,13 @@ def _parse_args(argv):
         help="Keep only this requirement id. Repeatable — this is how an evaluation "
              "run addresses a hand-picked sample.",
     )
+    parser.add_argument(
+        "--only-id-file", dest="only_id_file", default=None,
+        help="A file of requirement ids, one per line, blank lines and `#` comments "
+             "ignored. Use this rather than a shell loop building --only-id flags: "
+             "zsh does not word-split an unquoted variable, so the loop silently "
+             "passes one long string as a --gear path.",
+    )
     return parser.parse_args(argv)
 
 
@@ -102,8 +109,22 @@ def main(argv=None):
     args = _parse_args(sys.argv[1:] if argv is None else argv)
 
     neighbourhoods = build_all(args.gears)
-    if args.only_ids is not None:
-        wanted = set(args.only_ids)
+    wanted = set(args.only_ids or [])
+    if args.only_id_file is not None:
+        with open(args.only_id_file, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    wanted.add(line)
+    if wanted:
+        missing = wanted - {n["requirement_id"] for n in neighbourhoods}
+        if missing:
+            # A typo'd or renamed id must not quietly shrink the sample: an
+            # evaluation run that judges 15 of 16 and says nothing is the exact
+            # failure this tool exists to catch.
+            raise CorpusError(
+                "these requested id(s) are declared by no loaded gear: {}".format(
+                    ", ".join(sorted(missing))))
         neighbourhoods = [n for n in neighbourhoods if n["requirement_id"] in wanted]
     if args.only_classes is not None:
         wanted = set(args.only_classes)

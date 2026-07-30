@@ -184,6 +184,23 @@ class WindowIndex:
         return None
 
 
+def is_substantive(region):
+    """Whether this region is an *account* of the requirement, not just a citation.
+
+    An id anchor is admitted regardless of score, because naming the id is precise
+    evidence of intent — but a window that names the id while sharing almost none of
+    the requirement's vocabulary is a citation, not a statement of the rule.
+    `fr-addon-rules` has exactly that: one anchored region carrying one term of 53,
+    score 0.019.
+
+    The distinction is load-bearing for triage. Divergence needs two *accounts*: a
+    citation cannot contradict anything, so counting it towards multiplicity sent
+    110 of 116 live requirements to a judge, which is the cost the ladder exists to
+    avoid.
+    """
+    return region.score >= SCORE_THRESHOLD
+
+
 def _self_windows(index, requirement):
     """Window keys covering the requirement's own declaration and prose.
 

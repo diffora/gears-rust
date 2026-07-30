@@ -297,7 +297,37 @@ def _cell(text):
     return str(text).replace("|", "\\|").replace("\n", " ").strip()
 
 
-def render(envelope, report_rows, notes):
+def _batching_note(manifest):
+    """One paragraph stating how judging was batched, or that it was not.
+
+    The design requires one neighbourhood per dispatch so verdicts stay
+    independent. Batching trades some of that for cost, and the trade has to be
+    legible in the artifact, not only in the tool that made it.
+    """
+    if manifest is None:
+        return (
+            "Judging was **not batched**, or the batch manifest was not supplied: "
+            "this report cannot say how many dispatches produced these verdicts."
+        )
+    batches = manifest.get("batches", [])
+    sizes = [len(entry.get("ids", [])) for entry in batches]
+    multi = [n for n in sizes if n > 1]
+    if not multi:
+        return (
+            "Judged in {} dispatch(es), one neighbourhood each — verdicts are "
+            "independent, as the design requires.".format(len(batches))
+        )
+    return (
+        "Judged in **{} dispatch(es)** for {} neighbourhood(s), at most {} per "
+        "dispatch. {} dispatch(es) carried more than one, so those verdicts were "
+        "**not produced in isolation** — a deliberate deviation from the design, "
+        "bounded by the batching rule that no two members of a dispatch quote "
+        "overlapping lines of any document.".format(
+            len(batches), sum(sizes), max(sizes), len(multi))
+    )
+
+
+def render(envelope, report_rows, notes, manifest=None):
     """The whole report. No timestamp, no run-dependent ordering: regenerating it
     with unchanged inputs must diff clean.
 
@@ -330,6 +360,10 @@ def render(envelope, report_rows, notes):
         out.append("| {} | {} |".format(key.replace("_", " "), thresholds[key]))
     out.append("")
     out.append("These are starting values, tuned from the region usefulness table below.")
+    out.append("")
+    out.append("## How this was judged")
+    out.append("")
+    out.append(_batching_note(manifest))
     out.append("")
 
     out.append("## Outcomes")
@@ -462,6 +496,14 @@ def _parse_args(argv):
     parser.add_argument("--neighbourhoods", required=True)
     parser.add_argument("--verdicts", required=True)
     parser.add_argument(
+        "--batches", default=None,
+        help="The manifest.json written by judge_batches.py. When judging was "
+             "batched, pass it: the report then states how many dispatches produced "
+             "these verdicts and that members of a batch were not judged in "
+             "isolation. A deviation the reader cannot see is a deviation nobody "
+             "can weigh.",
+    )
+    parser.add_argument(
         "--out", default=None,
         help="Defaults to docs/spec-check/N1-<gear>.md. Never write this inside a "
              "gear's docs/ tree: a corpus loads every *.md under its root, so the "
@@ -475,7 +517,8 @@ def main(argv=None):
     envelope = _load_json(args.neighbourhoods)
     verdicts = _verdict_list(_load_json(args.verdicts))
     report_rows, notes = rows(envelope, verdicts)
-    text = render(envelope, report_rows, notes)
+    manifest = _load_json(args.batches) if args.batches else None
+    text = render(envelope, report_rows, notes, manifest)
 
     out = args.out or _default_out(envelope)
     segments = out.replace(os.sep, "/").split("/")

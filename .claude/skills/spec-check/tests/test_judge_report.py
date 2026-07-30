@@ -235,6 +235,35 @@ def test_the_report_refuses_to_be_written_inside_a_gear_docs_tree(tmp_path):
     assert not (REPO_ROOT / "gears/bss/ledger/docs/N1-ledger.md").exists()
 
 
+def test_the_report_states_that_judging_was_batched(tmp_path):
+    # A deviation the reader cannot see is a deviation nobody can weigh.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"batch_size": 4, "batches": [
+        {"batch": "batch-01.md", "ids": ["requirement/cpt-cf-bss-ledger-fr-thing",
+                                         "requirement/cpt-cf-bss-ledger-fr-other"]},
+    ]}), encoding="utf-8")
+    nb_path = tmp_path / "n.json"
+    v_path = tmp_path / "v.json"
+    out = tmp_path / "N1.md"
+    nb_path.write_text(json.dumps(envelope(judged())), encoding="utf-8")
+    v_path.write_text(json.dumps([verdict()]), encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(JUDGE_REPORT_PY), "--neighbourhoods", str(nb_path),
+         "--verdicts", str(v_path), "--batches", str(manifest), "--out", str(out)],
+        cwd=str(REPO_ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+    )
+    assert proc.returncode == 0, proc.stderr
+    report = out.read_text(encoding="utf-8")
+    assert "How this was judged" in report
+    assert "not produced in isolation" in report
+
+
+def test_without_a_manifest_the_report_says_it_cannot_tell(tmp_path):
+    _proc, report = run(tmp_path, envelope(judged()), [verdict()])
+    assert "cannot say how many dispatches" in report
+
+
 def test_the_report_is_byte_stable_across_runs(tmp_path):
     first_proc, first = run(tmp_path / "a", envelope(judged()), [verdict()])
     second_proc, second = run(tmp_path / "b", envelope(judged()), [verdict()])

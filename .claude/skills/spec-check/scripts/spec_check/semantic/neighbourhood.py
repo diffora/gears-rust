@@ -23,6 +23,11 @@ UNBUILDABLE_REASONS = {
         "no fragment of the corpus matched this requirement's vocabulary — either "
         "it is unaddressed, or the design states it in different words"
     ),
+    "anchored:no-account": (
+        "the id is named in the design set, but no region carries enough of this "
+        "requirement's vocabulary to be an account of it — the citations are real "
+        "and the rule is not in any of them, or it is stated in different words"
+    ),
 }
 
 

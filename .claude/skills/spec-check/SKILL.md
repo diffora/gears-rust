@@ -113,95 +113,127 @@ kind (`fr` and `nfr`). Designed in
 
 **Advisory, like everything else here. Nothing gates. The report is the output.**
 
-**Status: steps 1 and 3 are built, tested and pinned; step 2 has not been run.**
-The live histograms below are frozen in `tests/test_neighbourhoods_cli.py`, and no
-requirement has been judged yet — the evaluation the design asks for (the ledger
-hypothesis, and a hand-labelled sample of 12) is still owed.
+**Status:** steps 1, 2 and 4 below are built, tested and pinned. Step 3 — the judge
+dispatches — has never been run, so no requirement has a verdict yet and the
+evaluation the design asks for is still owed.
 
-Three steps, two durable artifacts, one judge per requirement:
+### The runbook
+
+Four commands, two of them deterministic, one dispatch loop. Run from the
+repository root.
 
 ```bash
-# 1. deterministic: neighbourhoods + a triage histogram
+# 1. build neighbourhoods + print the triage histogram
 python3 .claude/skills/spec-check/scripts/neighbourhoods.py \
   --gear gears/bss/ledger/docs \
   --out .spec-check/neighbourhoods-ledger.json
 
-# 2. judgment: one `spec-check-n1-judge` sub-agent per neighbourhood with
-#    "judge": true, its rendered neighbourhood as the entire prompt. Collect the
-#    JSON objects into a list and write .spec-check/verdicts-ledger.json.
+# 2. group the judged ones into batch prompts, one file per dispatch
+python3 .claude/skills/spec-check/scripts/judge_batches.py \
+  --neighbourhoods .spec-check/neighbourhoods-ledger.json \
+  --out-dir .spec-check/batches-ledger
 
-# 3. deterministic again: validate, enforce the honesty rules, render
+# 3. for each .spec-check/batches-ledger/batch-NN.md: dispatch the
+#    `spec-check-n1-judge` sub-agent with that file's contents as the ENTIRE
+#    prompt. Collect every returned object into one JSON list and write it to
+#    .spec-check/verdicts-ledger.json. Do them one batch at a time, so a bad
+#    first result stops the run instead of paying for all of them.
+
+# 4. validate, enforce the honesty rules, render
 python3 .claude/skills/spec-check/scripts/judge_report.py \
   --neighbourhoods .spec-check/neighbourhoods-ledger.json \
   --verdicts .spec-check/verdicts-ledger.json \
+  --batches .spec-check/batches-ledger/manifest.json \
   --out docs/spec-check/N1-ledger.md
 ```
 
-Render step 2's prompt with the code, never by hand:
+To run a hand-picked sample instead of a whole gear, put the ids in a file, one per
+line, and pass `--only-id-file`. Do **not** build `--only-id` flags in a shell loop:
+zsh does not word-split an unquoted variable, so the loop passes one long string as
+a `--gear` path and the run dies confusingly. A requested id no gear declares is an
+error, never a silently smaller sample.
 
 ```bash
-python3 - <<'PY'
-import json, sys
-sys.path.insert(0, ".claude/skills/spec-check/scripts")
-from spec_check.semantic import neighbourhood
-envelope = json.load(open(".spec-check/neighbourhoods-ledger.json"))
-for item in envelope["neighbourhoods"]:
-    if neighbourhood.judge_needed(item):
-        print("=== {} ===".format(item["id"]))
-        print(neighbourhood.render_for_judge(item))
-PY
+python3 .claude/skills/spec-check/scripts/check.py --gear gears/bss/ledger/docs --format json \
+  | python3 -c "import json,sys,re; print('\n'.join(sorted(re.search(r'(cpt-cf-[a-z0-9-]+)', f['message']).group(1) for f in json.load(sys.stdin)['findings'] if f['invariant']=='P2/fr-multiply-claimed')))" \
+  > .spec-check/step1-ids.txt
+python3 .claude/skills/spec-check/scripts/neighbourhoods.py --gear gears/bss/ledger/docs \
+  --only-id-file .spec-check/step1-ids.txt --out .spec-check/neighbourhoods-ledger-step1.json
 ```
 
-`render_for_judge` withholds `selected_by`, `score` and `triage`. That is the
-control, not a formatting preference: a judge told a region was id-anchored is
-biased toward accepting it, and the premise run was validated blind. Whether
-revealing it helps is the one A/B worth running.
+### What a dispatch costs, and how the cost is controlled
 
-**Run it per gear, not per repository.** The artifacts and the report are
-gear-scoped, and a judge call per requirement is the cost.
+Every dispatch pays for its own context — system prompt, tool schemas, the agent's
+instructions — before it reads a single fragment. That fixed cost dominates a
+neighbourhood's ~1.3–2.4k tokens, so the number of *dispatches* is the bill, not the
+payload. Three controls, in order of effect:
 
-**Where things go, and why it matters:**
+| Control | Effect, measured |
+|---|---|
+| The ladder judges only what needs judging | 116 → **69** judged (52 pricing, 17 ledger) |
+| `judge_batches.py`, 4 per dispatch | 69 → **22 dispatches** (14 pricing, 8 ledger) |
+| The judge runs on **Sonnet**, not the inherited model | per-token, not per-call |
 
-| Artifact | Location | Reason |
-|---|---|---|
-| `neighbourhoods.json`, `verdicts.json` | `.spec-check/` (git-ignored) | Regenerable, and they quote design prose |
-| The report | `docs/spec-check/N1-<gear>.md` | **Never inside a gear's `docs/`** — a corpus loads every `*.md` under its root, so a report written there becomes a document the next run parses and term overlap starts matching the previous run's own output. `judge_report.py` refuses such a path outright |
+The ledger evaluation sample the design asks for — the 16 requirements P2 reports as
+multiply claimed — comes to **6 judged, 5 dispatches**, because 10 of the 16 are
+answered deterministically.
 
-References in the report are plain `path:line` text, not links, because
-`make lychee` walks `docs`.
+Batching is a **deliberate deviation from the design**, which requires one
+neighbourhood per dispatch so verdicts stay independent. It is bounded
+mechanically: `judge_batches.py` never puts two neighbourhoods that quote
+overlapping lines of any document into one dispatch, so a conclusion about one
+paragraph cannot be carried into a verdict about another requirement quoting that
+same paragraph. `judge_report.py --batches` prints the deviation into the report —
+one that the reader cannot see is one nobody can weigh. For a measurement that must
+be beyond argument, pass `--size 1` and pay the full price.
 
-Two rules are enforced by `judge_report.py` rather than by the judge's prompt:
+Note what *sounds* stricter and is useless: batching on shared *files* rather than
+overlapping spans. Every requirement of a gear declares itself in the same `PRD.md`,
+so every pair conflicts and every batch holds one member — measured, ledger's 17
+judged neighbourhoods produced 17 batches.
 
-1. **An unbuildable neighbourhood is a finding, never a skip.** `no-prose` and
-   `no-region` get their own report rows, with the reason and the line the
-   requirement is declared at. Zero neighbourhoods and zero findings must never
-   look alike.
-2. **A finding that cannot cite two sides is discarded.** A `divergent` verdict
-   without `file:line` for the assertion *and* `file:line` for what contradicts
-   it, in distinct locations, is downgraded to `consistent` and the downgrade is
-   recorded in the report.
+A malformed response gets **one retry**, then the neighbourhood is left out of
+`verdicts.json` and `judge_report.py` records it as `judge-failed`. With a batch,
+the retry costs the whole batch, which is the argument against large `--size`.
 
-Plus one check beyond the design: a citation whose `file:line` falls outside every
-fragment of its own neighbourhood makes the verdict `judge-failed`. That is what
-turns "the judge has no repository access" from a claim about the harness into
-something the pipeline verifies.
+### The ladder
 
-### What the thresholds are, and how they were arrived at
+Every requirement lands in exactly one class; the first condition that holds decides.
+A **region** is a window that carries at least `SCORE_THRESHOLD` of the
+requirement's discriminating terms; an **account** is a region that clears that bar.
+An id anchor is admitted as a region whatever it scores, because naming the id is
+precise evidence of intent — but a citation is not an account, and only accounts can
+contradict each other.
+
+| # | Class | Condition | Judge |
+|---|---|---|---|
+| 1 | `unbuildable:no-prose` | the declaration has no prose block | no — a PRD defect |
+| 2 | `no-region` | prose exists, nothing matched at all | no — reported with its reason |
+| 3 | `anchored:no-account` | the id is named, no region is an account | no — reported with its citations |
+| 4 | `suspicious:multi-region` | two or more accounts → divergence possible | **yes** |
+| 5 | `suspicious:not-normative` | one account, prose carries no MUST/SHALL/SHOULD | **yes** |
+| 6 | `suspicious:weak-coverage` | one account, not both anchored and ≥ `STRONG_SCORE` | **yes** |
+| 7 | `covered:strong` | one account, id-anchored, ≥ `STRONG_SCORE`, normative | no — the reason is recorded |
+
+`anchored:no-account` is not in the design. The corpus demanded it: 41 of 116 live
+requirements are named in the design set while no region carries enough of their
+vocabulary to be an account of them. It must not be reported as `claim-only` —
+that is a judgment about the documents, and this is a fact about the search.
+
+### Thresholds, and how they were arrived at
 
 A region's score is the **fraction** of the requirement's discriminating terms the
-window carries, not a count of them. The design specified absolute counts
-(threshold 4 distinct terms, `covered:strong` ≥ 8), derived from a run over
-one-line `**Decision**:` fields. Measured 2026-07-30, that does not transfer to
-requirements, whose prose yields a median 33 terms in pricing and a maximum of 161:
-about 374 of pricing's 1619 windows cleared a threshold of 4 for the median
-requirement, top-3 always filled, and **every one of the 116 live requirements came
-back with 3–5 regions**. Since three of the six triage classes require *exactly
-one* region, they were unreachable, and a requirement's class was in effect a
-function of how long its paragraph happened to be.
+window carries, not a count. The design specified absolute counts (region ≥ 4
+distinct terms, `covered:strong` ≥ 8), derived from a run over one-line
+`**Decision**:` fields. Measured 2026-07-30, that does not transfer: requirement
+prose yields a median 33 terms in pricing and up to 161, so ~374 of pricing's 1619
+windows cleared a threshold of 4 for the median requirement, top-3 always filled,
+and **every one of the 116 requirements came back with 3–5 regions** — three of the
+classes above require exactly one account, so they were unreachable, and a
+requirement's class was in effect a function of how long its paragraph was.
 
-A fraction is scale-free — a requirement of 8 terms and one of 161 are scored
-alike. The two values in use are the knee of the measured distribution, over design
-documents only:
+A fraction is scale-free: a requirement of 8 terms and one of 161 are scored alike.
+The values in use are the knee of the measured distribution over design documents:
 
 | threshold | windows per requirement (pricing / ledger) | requirements with none |
 |---|---|---|
@@ -209,58 +241,89 @@ documents only:
 | **0.60** | **1.4 / 0.8** | **24 / 23** |
 | 0.70 | 0.6 / 0.3 | 45 / 32 |
 
-`SCORE_THRESHOLD = 0.6` is where 0, 1 and 2 regions all occur naturally; 0.5 still
-fills top-3 and 0.7 leaves half of each corpus unmatched. `STRONG_SCORE = 0.75`
-leaves roughly 20 of pricing's 76 requirements with a qualifying window.
+`SCORE_THRESHOLD = 0.6` is where 0, 1 and 2 accounts all occur naturally; 0.5 still
+fills top-3 and 0.7 leaves half of each corpus unmatched. `STRONG_SCORE = 0.75`.
 
-Term-overlap also **excludes the declaring document wholesale**, not just the
+Term overlap **excludes the declaring document wholesale**, not just the
 declaration's own window: 57 % of pricing's term-overlap regions (125 of 220) were
 windows of `PRD.md` itself — neighbouring requirements sharing vocabulary with the
-one being judged — and each spent one of five region slots. N1 asks whether the
-*design set* specifies the requirement, and the PRD is side A of that comparison.
-Duplication within one document is a real defect and a different check. Id anchors
-are unaffected and still reach every document.
+one being judged — each spending one of five region slots. N1 asks whether the
+*design set* specifies the requirement, and the PRD is side A. Duplication within one
+document is a real defect and a different check. Id anchors reach every document.
 
-One thing the cutoff does *not* do at this corpus size: a term must appear in more
-than 405 of pricing's 1619 windows to be dropped, so the document-frequency filter
-takes a median 33 raw terms down to 29. It removes ubiquitous words and nothing
-else; the scale-free score is what makes the numbers comparable.
+One thing the document-frequency cutoff does *not* do at this corpus size: a term
+must appear in more than 405 of pricing's 1619 windows to be dropped, so it takes a
+median 33 raw terms to 29. It removes ubiquitous words and nothing else.
 
 ### The pinned histograms
 
-| class | pricing | ledger | judged |
-|---|---|---|---|
-| `unbuildable:no-prose` | 0 | 0 | no |
-| `no-region` | 6 | 0 | no |
-| `suspicious:multi-region` | 60 | 37 | yes |
-| `suspicious:not-normative` | 0 | 0 | yes |
-| `suspicious:weak-coverage` | 10 | 3 | yes |
-| `covered:strong` | 0 | 0 | no |
-| **total** | **76** | **40** | 70 + 40 judge calls |
+Frozen in `tests/test_neighbourhoods_cli.py`, together with the judge-call count —
+that number is what the ladder exists to control, so a change that quietly doubles
+it must read as a diff.
 
-Hand-checked before being frozen, which is the whole point of a pin:
+| class | pricing | ledger |
+|---|---|---|
+| `unbuildable:no-prose` | 0 | 0 |
+| `no-region` | 6 | 0 |
+| `anchored:no-account` | 18 | 23 |
+| `suspicious:multi-region` | 34 | 9 |
+| `suspicious:not-normative` | 0 | 0 |
+| `suspicious:weak-coverage` | 18 | 8 |
+| `covered:strong` | 0 | 0 |
+| **total / judged** | **76 / 52** | **40 / 17** |
 
-- The six `no-region` requirements are all pricing **NFRs** — read latency, event
-  propagation, multi-currency scale, mass-repricing throughput, availability/DR,
-  size limits. Checked negatively: the design slices mention `p95 < 100ms` in ten
-  places and every one is a reference to a budget the PRD defines. No slice
-  specifies an SLO, so this is the class working, and the finding is real.
-- `suspicious:weak-coverage` behaves as designed: `fr-addon-rules` has one anchored
-  region carrying **one term of 53** (score 0.019). The id is named; the rule is
-  not there.
-- Ledger's `fr-idempotency-per-flow` is anchored in four distinct slices scoring
-  0.000, 0.571, 0.143 and 0.286 — three of the four name it and say nothing, which
-  is exactly what P2 reports as "claimed by five slices" and cannot interpret.
-- `covered:strong` and `not-normative` are **honest zeroes**: the first needs
-  exactly one region, and a requirement named in one slice usually also has a
-  term-overlap region; the second needs non-normative prose, and requirement prose
-  in both corpora is overwhelmingly `MUST`-laden. Both stay in the histogram at
-  zero so a class that stops occurring is distinguishable from one that never
-  existed.
+Hand-checked before being frozen, which is the whole point of a pin. Two findings
+came out of that check, before any judge ran:
 
-Still 110 judge calls for 116 requirements, so triage is currently filtering little
-— the judge's per-region `usefulness`, aggregated by the report, is the channel
-that should tighten it, and that requires actually running step 2.
+- **All six `no-region` requirements are pricing NFRs** — read latency, event
+  propagation, multi-currency scale, mass-repricing throughput, availability/DR, size
+  limits. Checked negatively: the slices mention `p95 < 100ms` in ten places and
+  every one is a reference to a budget the PRD defines. No slice specifies an SLO.
+- **Ten of the sixteen requirements P2 reports as claimed by 2–5 ledger slices are
+  `anchored:no-account`**: the claims are real and not one of those locations states
+  the rule. That is most of the ledger hypothesis answered deterministically.
+
+`covered:strong` and `not-normative` are honest zeroes, kept in the histogram at
+zero so a class that stops occurring is distinguishable from one that never existed.
+
+### Where things go, and why it matters
+
+| Artifact | Location | Reason |
+|---|---|---|
+| `neighbourhoods.json`, `verdicts.json`, batch prompts | `.spec-check/` (git-ignored) | Regenerable, and they quote design prose |
+| The report | `docs/spec-check/N1-<gear>.md` | **Never inside a gear's `docs/`** — a corpus loads every `*.md` under its root, so a report written there becomes a document the next run parses and term overlap starts matching the previous run's own output. `judge_report.py` refuses such a path |
+
+References in the report are plain `path:line` text, not links, because
+`make lychee` walks `docs`.
+
+### What the pipeline enforces rather than asks for
+
+- **`selected_by`, `score` and the triage class are withheld from the judge**, by
+  `render_for_judge` and therefore also from every batch prompt. A judge told a
+  region was id-anchored is biased toward accepting it, and the premise run was
+  validated blind. Whether revealing it helps is the one A/B worth running.
+- **An unbuildable neighbourhood is a finding, never a skip.** `no-prose`,
+  `no-region` and `anchored:no-account` get report rows with their reason and the
+  line the requirement is declared at.
+- **A finding that cannot cite two sides is discarded.** A `divergent` verdict
+  without `file:line` for the assertion *and* for what contradicts it, in distinct
+  locations, is downgraded to `consistent` and the downgrade is printed.
+- **A citation outside every fragment of its own neighbourhood is `judge-failed`.**
+  Beyond the design, and it is what turns "the judge has no repository access" from a
+  claim about the harness into something the pipeline verifies.
+
+### What N1 still cannot tell you
+
+- **Decisions (N2) and error codes (N3)** are designed
+  (`docs/superpowers/specs/2026-07-29-spec-check-semantic-layer-design.md`) and
+  unbuilt. N1 went first because the requirement declaration exists in 25 of 27 PRDs
+  while a `DECISIONS.md` register exists in 3 of 28.
+- **A rule stated in vocabulary the PRD does not share** lands in `no-region` or
+  `anchored:no-account`, which say exactly that and no more. Neither is evidence of
+  absence.
+- **Whether the judge is any good.** Nothing has been judged. The `usefulness`
+  column the report aggregates is the tuning channel, and it is empty until step 3
+  runs.
 
 ## Tests
 
@@ -268,8 +331,8 @@ that should tighten it, and that requires actually running step 2.
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-186 tests, no third-party runtime dependencies — 110 for the deterministic layer
-and 76 for N1. Four of them are the oracles this port was accepted against, and
+204 tests, no third-party runtime dependencies — 110 for the deterministic layer
+and 94 for N1. Four of them are the oracles this port was accepted against, and
 they are the ones to distrust a change that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against
