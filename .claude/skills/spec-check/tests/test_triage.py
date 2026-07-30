@@ -11,7 +11,8 @@ def req(prose, ident="cpt-cf-bss-x-fr-thing"):
 
 
 def region(score, selected_by, path="design/01-a.md"):
-    return regions.Region(path, 1, 12, "text", score, selected_by)
+    """`score` is the fraction of the requirement's terms the window carries."""
+    return regions.Region(path, 1, 12, "text", score, selected_by, matched=int(score * 10))
 
 
 def test_no_prose_wins_over_everything():
@@ -19,7 +20,7 @@ def test_no_prose_wins_over_everything():
         ("PRD.md", "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-bare`\n\n#### Next\n"),
     ])
     bare = requirements.parse(corpus)[0]
-    assert triage.classify(bare, [region(9, "id-anchor")]) == "unbuildable:no-prose"
+    assert triage.classify(bare, [region(0.9, "id-anchor")]) == "unbuildable:no-prose"
 
 
 def test_no_region_when_prose_exists_and_nothing_matched():
@@ -31,35 +32,35 @@ def test_multi_region_outranks_not_normative():
     # the disagreement resolved before the wording is tightened, and the judge sees
     # the vague declaration either way.
     vague = req("The catalog handles overlays somehow.")
-    picked = [region(9, "id-anchor"), region(5, "term-overlap", "design/02-b.md")]
+    picked = [region(0.9, "id-anchor"), region(0.5, "term-overlap", "design/02-b.md")]
     assert triage.classify(vague, picked) == "suspicious:multi-region"
 
 
 def test_not_normative_for_a_single_region():
     vague = req("The catalog handles overlays somehow.")
-    assert triage.classify(vague, [region(9, "id-anchor")]) == "suspicious:not-normative"
+    assert triage.classify(vague, [region(0.9, "id-anchor")]) == "suspicious:not-normative"
 
 
 def test_weak_coverage_for_a_single_low_scoring_region():
     normative = req("Publish **MUST** freeze the snapshot.")
-    assert triage.classify(normative, [region(5, "id-anchor")]) == "suspicious:weak-coverage"
+    assert triage.classify(normative, [region(0.5, "id-anchor")]) == "suspicious:weak-coverage"
 
 
-def test_an_anchored_region_scoring_six_is_weak_not_covered():
+def test_an_anchored_region_just_under_the_strong_bar_is_weak_not_covered():
     # The shape that passes P2 while saying nothing: the id is named, the prose is
     # not there.
     normative = req("Publish **MUST** freeze the snapshot.")
-    assert triage.classify(normative, [region(6, "id-anchor")]) == "suspicious:weak-coverage"
+    assert triage.classify(normative, [region(0.65, "id-anchor")]) == "suspicious:weak-coverage"
 
 
 def test_a_high_scoring_unanchored_region_is_weak_not_covered():
     normative = req("Publish **MUST** freeze the snapshot.")
-    assert triage.classify(normative, [region(12, "term-overlap")]) == "suspicious:weak-coverage"
+    assert triage.classify(normative, [region(0.95, "term-overlap")]) == "suspicious:weak-coverage"
 
 
 def test_covered_strong_needs_anchor_and_score_and_normative_prose():
     normative = req("Publish **MUST** freeze the snapshot.")
-    assert triage.classify(normative, [region(8, "id-anchor")]) == "covered:strong"
+    assert triage.classify(normative, [region(0.75, "id-anchor")]) == "covered:strong"
 
 
 def test_every_normative_keyword_counts():

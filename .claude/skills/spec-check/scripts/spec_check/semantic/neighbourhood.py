@@ -44,6 +44,7 @@ def build(requirement, regions, triage_class):
             "text": region.text,
             "selected_by": region.selected_by,
             "score": region.score,
+            "matched_terms": region.matched,
         })
 
     reason = UNBUILDABLE_REASONS.get(triage_class)

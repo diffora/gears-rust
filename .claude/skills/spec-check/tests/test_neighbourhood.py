@@ -16,11 +16,13 @@ def one_requirement():
 
 
 def anchored():
-    return regions.Region("design/03-c.md", 88, 99, "Publishing freezes it.", 9, "id-anchor")
+    return regions.Region("design/03-c.md", 88, 99, "Publishing freezes it.", 0.9,
+                          "id-anchor", matched=27)
 
 
 def heuristic():
-    return regions.Region("design/02-b.md", 201, 212, "A different account.", 5, "term-overlap")
+    return regions.Region("design/02-b.md", 201, 212, "A different account.", 0.62,
+                          "term-overlap", matched=18)
 
 
 def test_contract_shape():
@@ -49,7 +51,8 @@ def test_region_fragments_carry_selection_provenance_in_the_json():
     nb = neighbourhood.build(one_requirement(), [anchored(), heuristic()],
                              "suspicious:multi-region")
     assert [f.get("selected_by") for f in nb["fragments"][1:]] == ["id-anchor", "term-overlap"]
-    assert [f.get("score") for f in nb["fragments"][1:]] == [9, 5]
+    assert [f.get("score") for f in nb["fragments"][1:]] == [0.9, 0.62]
+    assert [f.get("matched_terms") for f in nb["fragments"][1:]] == [27, 18]
 
 
 def test_judge_rendering_hides_selected_by_and_score():

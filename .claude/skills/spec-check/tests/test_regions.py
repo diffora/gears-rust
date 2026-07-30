@@ -77,7 +77,7 @@ def test_document_frequency_drops_terms_over_the_cutoff():
     assert index.discriminating(frozenset({"common", "rare"})) == frozenset({"rare"})
 
 
-def test_a_region_needs_four_distinct_terms():
+def test_a_region_must_carry_enough_of_the_requirements_vocabulary():
     corpus = padded(
         ("PRD.md",
          "- [ ] `p1` - **ID**: `cpt-cf-bss-x-fr-thing`\n"
@@ -94,6 +94,14 @@ def test_a_region_needs_four_distinct_terms():
     assert [r.file for r in picked] == ["design/02-strong.md"]
     assert picked[0].score >= regions.SCORE_THRESHOLD
     assert picked[0].selected_by == "term-overlap"
+    # A fraction of the requirement's six terms, not a count of them. Five match:
+    # `freezes` is not `freeze` — there is no stemming, deliberately, since a stem
+    # that merges `publish`/`published`/`publisher` also merges words the design set
+    # uses to mean different things.
+    assert picked[0].score == 0.833
+    assert picked[0].matched == 5
+    # The weak slice carries 2 of 6 and is not a region at all.
+    assert "design/01-weak.md" not in [r.file for r in picked]
 
 
 def test_the_requirements_own_declaration_is_never_its_own_region():
@@ -198,5 +206,5 @@ def test_selection_is_deterministic_and_sorted_by_score_then_path():
     twice = [(r.file, r.score) for r in regions.select(index, req)]
     assert once == twice
     assert once == [
-        ("design/02-five.md", 5), ("design/01-four.md", 4), ("design/03-four.md", 4),
+        ("design/02-five.md", 0.833), ("design/01-four.md", 0.667), ("design/03-four.md", 0.667),
     ]

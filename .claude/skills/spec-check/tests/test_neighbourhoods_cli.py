@@ -24,8 +24,8 @@ def test_writes_an_envelope_and_prints_a_histogram(tmp_path):
     assert envelope["gears"] == ["gears/bss/ledger/docs"]
     assert envelope["thresholds"]["window_lines"] == 12
     assert envelope["thresholds"]["window_step"] == 6
-    assert envelope["thresholds"]["score_threshold"] == 4
-    assert envelope["thresholds"]["strong_score"] == 8
+    assert envelope["thresholds"]["score_threshold"] == 0.6
+    assert envelope["thresholds"]["strong_score"] == 0.75
     assert envelope["thresholds"]["document_frequency_cutoff"] == 0.25
     assert envelope["thresholds"]["max_fragments"] == 6
     assert len(envelope["neighbourhoods"]) == 40
@@ -97,10 +97,72 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
     assert proc.returncode == 2
 
 
-# The pinned live triage histogram the plan asks for (task 5, steps 7-8) is
-# deliberately NOT here yet. The first live run puts 116 of 116 requirements in
-# `suspicious:multi-region`, which makes three of the six classes unreachable —
-# see docs/superpowers/plans/2026-07-30-spec-check-n1-requirements.md and the
-# measurement recorded with it. Pinning that histogram would freeze a degenerate
-# triage and call it a baseline, which is exactly what a pin is supposed to
-# prevent.
+#: Verified by hand 2026-07-30 before being frozen, at score threshold 0.6 and
+#: strong 0.75. Not the first output of the code: the first run (absolute term
+#: counts, threshold 4) put 116 of 116 requirements in `suspicious:multi-region`
+#: and was rejected as degenerate rather than pinned.
+#:
+#: What was checked by eye, per the plan's procedure:
+#:
+#: - `no-region` × 6, all of them pricing NFRs (read latency, event propagation,
+#:   multi-currency scale, mass-repricing throughput, availability/DR, size
+#:   limits). Cross-checked negatively: the design slices mention `p95 < 100ms` in
+#:   ten places, every one of them a reference to a budget the PRD defines, and no
+#:   slice specifies an SLO. So the class is reporting what it says it reports —
+#:   either unaddressed, or stated in other words — and here it is the former.
+#: - `suspicious:weak-coverage` × 10, three read: `fr-billing-cycles` scores 0.571
+#:   on its single anchored region, `fr-bundle-composition` 0.333, and
+#:   `fr-addon-rules` 0.019 — one term of 53. The last is exactly the shape the
+#:   design predicted: the id is named and the rule is not there.
+#: - `suspicious:multi-region`, one read in full: ledger's `fr-idempotency-per-flow`
+#:   is anchored in four distinct slices scoring 0.000, 0.571, 0.143 and 0.286 —
+#:   distinct locations, and three of the four name the id while saying nothing.
+#: - `covered:strong` × 0 and `not-normative` × 0 are honest zeroes, not gaps:
+#:   `covered:strong` needs *exactly one* region and a requirement named in one
+#:   slice usually also has a term-overlap region, while requirement prose in both
+#:   corpora is overwhelmingly normative. Both stay in the histogram at zero so a
+#:   class that stops occurring cannot be mistaken for one that never existed.
+PINNED_TRIAGE_PRICING = {
+    "unbuildable:no-prose": 0,
+    "no-region": 6,
+    "suspicious:multi-region": 60,
+    "suspicious:not-normative": 0,
+    "suspicious:weak-coverage": 10,
+    "covered:strong": 0,
+}
+PINNED_TRIAGE_LEDGER = {
+    "unbuildable:no-prose": 0,
+    "no-region": 0,
+    "suspicious:multi-region": 37,
+    "suspicious:not-normative": 0,
+    "suspicious:weak-coverage": 3,
+    "covered:strong": 0,
+}
+
+
+def test_pricing_triage_histogram_is_pinned(tmp_path):
+    out = tmp_path / "n.json"
+    assert run("--gear", "gears/bss/pricing/docs", "--out", str(out)).returncode == 0
+    counts = json.loads(out.read_text(encoding="utf-8"))["counts"]
+    assert counts == PINNED_TRIAGE_PRICING
+    assert sum(counts.values()) == 76
+
+
+def test_ledger_triage_histogram_is_pinned(tmp_path):
+    out = tmp_path / "n.json"
+    assert run("--gear", "gears/bss/ledger/docs", "--out", str(out)).returncode == 0
+    counts = json.loads(out.read_text(encoding="utf-8"))["counts"]
+    assert counts == PINNED_TRIAGE_LEDGER
+    assert sum(counts.values()) == 40
+
+
+def test_the_ladder_reaches_more_than_one_class(tmp_path):
+    # The guard against the failure this configuration replaced: with an absolute
+    # term-count threshold every requirement was `multi-region`, three of the six
+    # classes were unreachable, and the triage spent a judge call on all 116. A
+    # histogram with one populated class is a broken triage, not a clean corpus.
+    out = tmp_path / "n.json"
+    assert run("--gear", "gears/bss/pricing/docs", "--gear", "gears/bss/ledger/docs",
+               "--out", str(out)).returncode == 0
+    counts = json.loads(out.read_text(encoding="utf-8"))["counts"]
+    assert len([name for name, count in counts.items() if count]) >= 3

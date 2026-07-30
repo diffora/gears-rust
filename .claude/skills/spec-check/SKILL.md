@@ -113,12 +113,10 @@ kind (`fr` and `nfr`). Designed in
 
 **Advisory, like everything else here. Nothing gates. The report is the output.**
 
-**Status: the pipeline is built and the triage thresholds are not yet usable.** On
-the live corpora every one of the 116 requirements lands in
-`suspicious:multi-region`, which makes three of the six classes unreachable and
-would spend a judge call on all 116 — see "Why the thresholds are still open"
-below. Steps 1 and 3 are sound and tested; step 2 is not worth running at this
-setting.
+**Status: steps 1 and 3 are built, tested and pinned; step 2 has not been run.**
+The live histograms below are frozen in `tests/test_neighbourhoods_cli.py`, and no
+requirement has been judged yet — the evaluation the design asks for (the ledger
+hypothesis, and a hand-labelled sample of 12) is still owed.
 
 Three steps, two durable artifacts, one judge per requirement:
 
@@ -188,38 +186,81 @@ fragment of its own neighbourhood makes the verdict `judge-failed`. That is what
 turns "the judge has no repository access" from a claim about the harness into
 something the pipeline verifies.
 
-### Why the thresholds are still open
+### What the thresholds are, and how they were arrived at
 
-Measured on the live corpora 2026-07-30, at the design's starting values (window
-12/6, region threshold 4 distinct terms, `covered:strong` ≥ 8):
+A region's score is the **fraction** of the requirement's discriminating terms the
+window carries, not a count of them. The design specified absolute counts
+(threshold 4 distinct terms, `covered:strong` ≥ 8), derived from a run over
+one-line `**Decision**:` fields. Measured 2026-07-30, that does not transfer to
+requirements, whose prose yields a median 33 terms in pricing and a maximum of 161:
+about 374 of pricing's 1619 windows cleared a threshold of 4 for the median
+requirement, top-3 always filled, and **every one of the 116 live requirements came
+back with 3–5 regions**. Since three of the six triage classes require *exactly
+one* region, they were unreachable, and a requirement's class was in effect a
+function of how long its paragraph happened to be.
 
-| | pricing | ledger |
+A fraction is scale-free — a requirement of 8 terms and one of 161 are scored
+alike. The two values in use are the knee of the measured distribution, over design
+documents only:
+
+| threshold | windows per requirement (pricing / ledger) | requirements with none |
 |---|---|---|
-| requirements | 76 | 40 |
-| windows in the corpus | 1619 | 1217 |
-| terms per requirement, median | 33 (max 161) | 28 (max 141) |
-| windows clearing the threshold of 4, per requirement | ~374 | ~239 |
-| regions selected per requirement | 3–5, never fewer | 3–5, never fewer |
-| triage outcome | 76 × `multi-region` | 40 × `multi-region` |
+| 0.50 | 3.3 / 3.6 | 10 / 12 |
+| **0.60** | **1.4 / 0.8** | **24 / 23** |
+| 0.70 | 0.6 / 0.3 | 45 / 32 |
 
-Classes 4–6 of the ladder (`not-normative`, `weak-coverage`, `covered:strong`) all
-require **exactly one** region, so they are unreachable whenever more than one
-window clears the threshold — which, at 4 distinct terms out of a median 33, is
-always. The thresholds were derived from a run over one-line `**Decision**:`
-fields; a requirement paragraph yields an order of magnitude more terms, so the
-absolute counts do not transfer. Two further measurements bear on the fix:
+`SCORE_THRESHOLD = 0.6` is where 0, 1 and 2 regions all occur naturally; 0.5 still
+fills top-3 and 0.7 leaves half of each corpus unmatched. `STRONG_SCORE = 0.75`
+leaves roughly 20 of pricing's 76 requirements with a qualifying window.
 
-- **The document-frequency cutoff barely fires** at this corpus size: median 33
-  raw terms → 29 kept, because a term must appear in more than 405 of pricing's
-  1619 windows to be dropped.
-- **57 % of pricing's term-overlap regions are windows of `PRD.md` itself**
-  (125 of 220) — neighbouring requirements sharing vocabulary with side A, not
-  design prose. Ledger: 34 % (28 of 83).
+Term-overlap also **excludes the declaring document wholesale**, not just the
+declaration's own window: 57 % of pricing's term-overlap regions (125 of 220) were
+windows of `PRD.md` itself — neighbouring requirements sharing vocabulary with the
+one being judged — and each spent one of five region slots. N1 asks whether the
+*design set* specifies the requirement, and the PRD is side A of that comparison.
+Duplication within one document is a real defect and a different check. Id anchors
+are unaffected and still reach every document.
 
-A scale-free score (the *fraction* of a requirement's terms a window carries)
-separates: the best non-self window covers a median 0.78 of them in pricing and
-0.63 in ledger, with a minimum of 0.33. That is a design decision, not a knob, and
-it is open.
+One thing the cutoff does *not* do at this corpus size: a term must appear in more
+than 405 of pricing's 1619 windows to be dropped, so the document-frequency filter
+takes a median 33 raw terms down to 29. It removes ubiquitous words and nothing
+else; the scale-free score is what makes the numbers comparable.
+
+### The pinned histograms
+
+| class | pricing | ledger | judged |
+|---|---|---|---|
+| `unbuildable:no-prose` | 0 | 0 | no |
+| `no-region` | 6 | 0 | no |
+| `suspicious:multi-region` | 60 | 37 | yes |
+| `suspicious:not-normative` | 0 | 0 | yes |
+| `suspicious:weak-coverage` | 10 | 3 | yes |
+| `covered:strong` | 0 | 0 | no |
+| **total** | **76** | **40** | 70 + 40 judge calls |
+
+Hand-checked before being frozen, which is the whole point of a pin:
+
+- The six `no-region` requirements are all pricing **NFRs** — read latency, event
+  propagation, multi-currency scale, mass-repricing throughput, availability/DR,
+  size limits. Checked negatively: the design slices mention `p95 < 100ms` in ten
+  places and every one is a reference to a budget the PRD defines. No slice
+  specifies an SLO, so this is the class working, and the finding is real.
+- `suspicious:weak-coverage` behaves as designed: `fr-addon-rules` has one anchored
+  region carrying **one term of 53** (score 0.019). The id is named; the rule is
+  not there.
+- Ledger's `fr-idempotency-per-flow` is anchored in four distinct slices scoring
+  0.000, 0.571, 0.143 and 0.286 — three of the four name it and say nothing, which
+  is exactly what P2 reports as "claimed by five slices" and cannot interpret.
+- `covered:strong` and `not-normative` are **honest zeroes**: the first needs
+  exactly one region, and a requirement named in one slice usually also has a
+  term-overlap region; the second needs non-normative prose, and requirement prose
+  in both corpora is overwhelmingly `MUST`-laden. Both stay in the histogram at
+  zero so a class that stops occurring is distinguishable from one that never
+  existed.
+
+Still 110 judge calls for 116 requirements, so triage is currently filtering little
+— the judge's per-region `usefulness`, aggregated by the report, is the channel
+that should tighten it, and that requires actually running step 2.
 
 ## Tests
 
@@ -227,8 +268,8 @@ it is open.
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-183 tests, no third-party runtime dependencies — 110 for the deterministic layer
-and 73 for N1. Four of them are the oracles this port was accepted against, and
+186 tests, no third-party runtime dependencies — 110 for the deterministic layer
+and 76 for N1. Four of them are the oracles this port was accepted against, and
 they are the ones to distrust a change that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against

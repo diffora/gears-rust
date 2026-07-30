@@ -17,13 +17,36 @@ from .requirements import derive_terms, tokenize
 WINDOW_LINES = 12
 WINDOW_STEP = 6
 
-#: Below this many distinct shared terms, a window is not a region at all.
-SCORE_THRESHOLD = 4
+#: A region's score is the **fraction** of the requirement's discriminating terms
+#: the window carries — not a count of them.
+#:
+#: The design specified an absolute count (threshold 4, strong 8), derived from a
+#: run over one-line `**Decision**:` fields. Measured 2026-07-30, that does not
+#: transfer to requirements: a requirement's prose yields a median 33 terms in
+#: pricing (max 161), so ~374 of the corpus's 1619 windows clear a threshold of 4
+#: for the median requirement, top-3 always fills, and every one of the 116 live
+#: requirements came back with 3–5 regions. Three of triage's six classes require
+#: *exactly one* region, so they were unreachable, and the class was in any case a
+#: function of how long the requirement's paragraph happened to be.
+#:
+#: A fraction is scale-free: a requirement of 8 terms and one of 161 are scored the
+#: same way. These two values are the knee of the measured distribution, over
+#: design documents only:
+#:
+#:   threshold  windows/requirement (pricing, ledger)  requirements with none
+#:      0.50            3.3   3.6                          10   12
+#:      0.60            1.4   0.8                          24   23
+#:      0.70            0.6   0.3                          45   32
+#:
+#: 0.6 is where 0, 1 and 2 regions all occur naturally; 0.5 still fills top-3 and
+#: 0.7 leaves half the corpus unmatched.
+SCORE_THRESHOLD = 0.6
 
 #: `covered:strong` needs this score *and* an id anchor. A single anchored region
-#: scoring 6 is `weak-coverage`: the design set names the id there and may still
-#: say nothing about it, which is exactly the shape that passes P2.
-STRONG_SCORE = 8
+#: scoring 0.65 is `weak-coverage`: the design set names the id there and may
+#: still say little about it, which is exactly the shape that passes P2. At 0.75
+#: about 20 of pricing's 76 requirements have a qualifying window.
+STRONG_SCORE = 0.75
 
 #: A term present in more than this fraction of the corpus's windows is not
 #: discriminating and is dropped. Computed per corpus, never curated: `pricing`,
@@ -58,17 +81,22 @@ class Window:
 class Region:
     """A window selected for one requirement, with why it was selected."""
 
-    __slots__ = ("file", "start", "end", "text", "score", "selected_by")
+    __slots__ = ("file", "start", "end", "text", "score", "matched", "selected_by")
 
-    def __init__(self, file, start, end, text, score, selected_by):
+    def __init__(self, file, start, end, text, score, selected_by, matched=None):
         self.file = file
         self.start = start
         self.end = end
         self.text = text
-        #: Distinct discriminating terms shared with the requirement's prose.
-        #: Recorded for anchors too: "anchored" and "high-scoring" are independent
-        #: facts and `covered:strong` requires both.
+        #: The fraction of the requirement's discriminating terms this window
+        #: carries, rounded to three places so the JSON stays diffable. Recorded
+        #: for anchors too: "anchored" and "high-scoring" are independent facts and
+        #: `covered:strong` requires both.
         self.score = score
+        #: How many terms that fraction was of. A 0.5 over 8 terms and a 0.5 over
+        #: 120 are the same class and not the same evidence, and the reader of a
+        #: neighbourhood should be able to tell them apart.
+        self.matched = matched
         #: `"id-anchor"` or `"term-overlap"`. Written to `neighbourhoods.json` for
         #: the report and for evaluation, and **hidden from the judge** — see
         #: `semantic.neighbourhood.render_for_judge`.
@@ -172,6 +200,16 @@ def _self_windows(index, requirement):
     return out
 
 
+def _score(terms, window):
+    """The fraction of `terms` present in `window`, and how many that was.
+
+    `terms` is never empty here: `select` returns early when the requirement
+    yields no discriminating term at all.
+    """
+    matched = len(terms & window.terms)
+    return round(matched / float(len(terms)), 3), matched
+
+
 def _anchor_regions(index, requirement, terms, excluded):
     """One region per document that names the id literally, capped.
 
@@ -190,34 +228,47 @@ def _anchor_regions(index, requirement, terms, excluded):
             if window is None or window.key() in excluded or window.key() in seen:
                 continue
             seen.add(window.key())
+            score, matched = _score(terms, window)
             out.append(Region(
                 file=window.file,
                 start=window.start,
                 end=window.end,
                 text=window.text,
-                score=len(terms & window.terms),
+                score=score,
                 selected_by="id-anchor",
+                matched=matched,
             ))
             break  # one anchor per document: four documents beat four paragraphs
     return out[:MAX_ANCHORS]
 
 
-def _overlap_regions(index, terms, excluded):
+def _overlap_regions(index, terms, excluded, declaring_file):
+    """Top-scoring windows outside the declaring document.
+
+    `declaring_file` is excluded wholesale, not just the declaration's own window.
+    N1 asks whether the *design set* specifies the requirement, and the PRD is
+    side A of that comparison: measured 2026-07-30, 57 % of pricing's term-overlap
+    regions (125 of 220) were windows of `PRD.md` itself — neighbouring
+    requirements sharing vocabulary with the one being judged — and each of them
+    spent one of the five region slots. Duplication *within* one document is a real
+    defect and a different check; id anchors are unaffected and still reach any
+    document.
+    """
     scored = []
     for window in index.windows():
-        if window.key() in excluded:
+        if window.key() in excluded or window.file == declaring_file:
             continue
-        score = len(terms & window.terms)
+        score, matched = _score(terms, window)
         if score < SCORE_THRESHOLD:
             continue
-        scored.append((-score, window.file, window.start, window))
+        scored.append((-score, window.file, window.start, window, score, matched))
     scored.sort(key=lambda row: row[:3])
     return [
         Region(
             file=window.file, start=window.start, end=window.end, text=window.text,
-            score=-negated, selected_by="term-overlap",
+            score=score, selected_by="term-overlap", matched=matched,
         )
-        for negated, _path, _start, window in scored[:MAX_OVERLAP_REGIONS]
+        for _negated, _path, _start, window, score, matched in scored[:MAX_OVERLAP_REGIONS]
     ]
 
 
@@ -234,5 +285,5 @@ def select(index, requirement):
     excluded = _self_windows(index, requirement)
     anchors = _anchor_regions(index, requirement, terms, excluded)
     excluded = excluded | {(r.file, r.start) for r in anchors}
-    overlap = _overlap_regions(index, terms, excluded)
+    overlap = _overlap_regions(index, terms, excluded, requirement.file)
     return (anchors + overlap)[:MAX_FRAGMENTS - 1]
