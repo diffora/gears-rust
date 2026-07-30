@@ -81,6 +81,17 @@ Exit codes: `0` clean, `1` the gate tripped **or** a `--gear` directory does not
 exist (that one also prints `Error: …` on stderr — a docs tree that will not load
 is never reported as a clean run), `2` usage error.
 
+## What a run includes
+
+**A bare invocation runs the deterministic layer only** — P1, P2, P3, seconds, free, no
+judge. That is the default because it is the part that costs nothing to repeat.
+
+**N1 runs only when asked for**, because it spends judge dispatches: 52 for pricing, 17
+for ledger, and the caller is paying. Ask for it in words — "including N1", "with the
+semantic layer", "полный прогон" — and follow § N1's four-step runbook. If the request is
+ambiguous, run the deterministic layer, report it, and say what N1 would cost before
+spending it.
+
 ## Standing rules for any run
 
 These hold for every invocation and are the reason `/spec-check <gear>` is the whole
