@@ -31,7 +31,7 @@ UNBUILDABLE_REASONS = {
 }
 
 
-def build(requirement, regions, triage_class):
+def build(requirement, regions, triage_class, also_judge=None):
     """The neighbourhood for one requirement, ready to serialise."""
     fragments = []
     if requirement.prose_lines is not None:
@@ -66,7 +66,13 @@ def build(requirement, regions, triage_class):
         "declaration_file": requirement.file,
         "declaration_line": requirement.line,
         "triage": triage_class,
-        "judge": triage_class in JUDGED,
+        #: `also_judge` promotes classes the ladder answers deterministically. It
+        #: exists for `anchored:no-account`, which is not an answer but an unasked
+        #: question — the id is named and no window carried enough vocabulary to be an
+        #: account, which says nothing about whether one of those places states the
+        #: rule. Opt-in, never default: promoting it takes ledger from 17 judged to 40
+        #: and pricing from 52 to 70, undoing most of what the ladder buys.
+        "judge": triage_class in JUDGED or triage_class in (also_judge or frozenset()),
         "fragments": fragments,
         "unbuildable": [reason] if reason is not None else [],
     }

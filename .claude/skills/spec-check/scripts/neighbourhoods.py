@@ -40,7 +40,7 @@ THRESHOLDS = {
 }
 
 
-def build_all(gears):
+def build_all(gears, also_judge=None):
     """Every requirement of every gear, as a neighbourhood, in a stable order."""
     out = []
     for gear in gears:
@@ -48,7 +48,8 @@ def build_all(gears):
         index = regions.WindowIndex.build(corpus)
         for requirement in requirements.parse(corpus):
             picked = regions.select(index, requirement)
-            out.append(nb.build(requirement, picked, triage.classify(requirement, picked)))
+            out.append(nb.build(requirement, picked,
+                                triage.classify(requirement, picked), also_judge))
     return out
 
 
@@ -64,15 +65,21 @@ def histogram(neighbourhoods):
     return counts
 
 
-def render_histogram(counts):
+def render_histogram(counts, also_judge=None):
+    """The histogram, and the dispatch count a reader budgets from.
+
+    `also_judge` must reach both the per-class label and the total: a run that
+    promotes a class and still prints it as `not judged` understates its own bill.
+    """
+    judged_classes = frozenset(triage.JUDGED) | frozenset(also_judge or ())
     width = max(len(name) for name in counts)
     lines = []
     for name in triage.CLASSES:
-        judged = "judged" if name in triage.JUDGED else "not judged"
+        judged = "judged" if name in judged_classes else "not judged"
         lines.append("{:<{w}}  {:>4}  ({})".format(name, counts[name], judged, w=width))
     lines.append("{:<{w}}  {:>4}".format("total", sum(counts.values()), w=width))
     lines.append("{:<{w}}  {:>4}".format(
-        "judge calls", sum(counts[n] for n in triage.CLASSES if n in triage.JUDGED), w=width
+        "judge calls", sum(counts[n] for n in triage.CLASSES if n in judged_classes), w=width
     ))
     return "\n".join(lines)
 
@@ -96,6 +103,14 @@ def _parse_args(argv):
              "run addresses a hand-picked sample.",
     )
     parser.add_argument(
+        "--judge-anchored", dest="judge_anchored", action="store_true",
+        help="Also judge `anchored:no-account`. That class is not an answer, it is an "
+             "unasked question: the id is named and no window carried enough of the "
+             "requirement's vocabulary to be an account, which says nothing about "
+             "whether one of those places states the rule. Off by default because it "
+             "takes ledger from 17 judge calls to 40 and pricing from 52 to 70.",
+    )
+    parser.add_argument(
         "--only-id-file", dest="only_id_file", default=None,
         help="A file of requirement ids, one per line, blank lines and `#` comments "
              "ignored. Use this rather than a shell loop building --only-id flags: "
@@ -108,7 +123,8 @@ def _parse_args(argv):
 def main(argv=None):
     args = _parse_args(sys.argv[1:] if argv is None else argv)
 
-    neighbourhoods = build_all(args.gears)
+    also_judge = frozenset({"anchored:no-account"}) if args.judge_anchored else frozenset()
+    neighbourhoods = build_all(args.gears, also_judge)
     wanted = set(args.only_ids or [])
     if args.only_id_file is not None:
         with open(args.only_id_file, "r", encoding="utf-8") as handle:
@@ -145,7 +161,7 @@ def main(argv=None):
         json.dump(envelope, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
 
-    print(render_histogram(counts))
+    print(render_histogram(counts, also_judge))
     print("\n{} neighbourhood(s) written to {}".format(len(neighbourhoods), args.out))
     return 0
 

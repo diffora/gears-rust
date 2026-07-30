@@ -242,6 +242,18 @@ requirements are named in the design set while no region carries enough of their
 vocabulary to be an account of them. It must not be reported as `claim-only` —
 that is a judgment about the documents, and this is a fact about the search.
 
+**It is also not an answer — it is an unasked question**, and the largest single
+limit on what a run can tell you: for a third of the corpus the report says "no
+account found", which is not evidence that none exists. `--judge-anchored` promotes
+the class and asks the judge the only question that settles it — *these places name
+the id; does any of them state the rule?* Expect two kinds of answer, both useful:
+`claim-only`, which converts a search artifact into a finding about the documents;
+and `specified`, which is where the terse-prose penalty below lands, since a rule
+stated in one dense line scores low however correct it is.
+
+Opt-in, never default. It takes ledger from 17 judge calls to 40 (11 extra
+dispatches) and pricing from 52 to 70, undoing most of what the ladder buys.
+
 ### Thresholds, and how they were arrived at
 
 A region's score is the **fraction** of the requirement's discriminating terms the
@@ -405,8 +417,8 @@ References in the report are plain `path:line` text, not links, because
 cd .claude/skills/spec-check && python3 -m pytest
 ```
 
-213 tests, no third-party runtime dependencies — 110 for the deterministic layer
-and 103 for N1. Four of them are the oracles this port was accepted against, and
+216 tests, no third-party runtime dependencies — 110 for the deterministic layer
+and 106 for N1. Four of them are the oracles this port was accepted against, and
 they are the ones to distrust a change that reddens them rather than edit:
 
 1. `tests/test_cli.py` — stdout in all three forms, diffed byte-for-byte against

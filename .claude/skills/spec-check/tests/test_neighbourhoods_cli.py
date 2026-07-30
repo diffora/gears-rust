@@ -15,6 +15,47 @@ def run(*args):
     return proc
 
 
+def test_anchored_no_account_is_not_judged_by_default(tmp_path):
+    # The ladder's budget guarantee: promoting this bucket takes ledger from 17
+    # judged to 40, so it must never happen by accident.
+    out = tmp_path / "n.json"
+    assert run("--gear", "gears/bss/ledger/docs", "--out", str(out)).returncode == 0
+    hoods = json.loads(out.read_text(encoding="utf-8"))["neighbourhoods"]
+    anchored = [n for n in hoods if n["triage"] == "anchored:no-account"]
+    assert anchored and not any(n["judge"] for n in anchored)
+
+
+def test_judge_anchored_promotes_the_bucket(tmp_path):
+    # Converting "the search found no account" into an answer someone can act on.
+    out = tmp_path / "n.json"
+    proc = run("--gear", "gears/bss/ledger/docs", "--out", str(out), "--judge-anchored")
+    assert proc.returncode == 0, proc.stderr
+    hoods = json.loads(out.read_text(encoding="utf-8"))["neighbourhoods"]
+    anchored = [n for n in hoods if n["triage"] == "anchored:no-account"]
+    assert anchored and all(n["judge"] for n in anchored)
+    judged = sum(1 for n in hoods if n["judge"])
+    assert judged == 40
+
+
+def test_the_histogram_does_not_lie_about_what_it_will_cost(tmp_path):
+    # The printed line is what a reader budgets from. Under the flag it must say
+    # the bucket is judged and count it into the dispatch total.
+    def line(stdout, label):
+        # Padding depends on the longest class name, so compare on content.
+        for row in stdout.splitlines():
+            if row.startswith(label):
+                return " ".join(row.split())
+        raise AssertionError("no {!r} line in:\n{}".format(label, stdout))
+
+    out = tmp_path / "n.json"
+    default = run("--gear", "gears/bss/ledger/docs", "--out", str(out))
+    promoted = run("--gear", "gears/bss/ledger/docs", "--out", str(out), "--judge-anchored")
+    assert line(default.stdout, "anchored:no-account") == "anchored:no-account 23 (not judged)"
+    assert line(promoted.stdout, "anchored:no-account") == "anchored:no-account 23 (judged)"
+    assert line(default.stdout, "judge calls") == "judge calls 17"
+    assert line(promoted.stdout, "judge calls") == "judge calls 40"
+
+
 def test_writes_an_envelope_and_prints_a_histogram(tmp_path):
     out = tmp_path / "n.json"
     proc = run("--gear", "gears/bss/ledger/docs", "--out", str(out))
