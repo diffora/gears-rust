@@ -170,13 +170,30 @@ PINNED_TRIAGE_PRICING = {
     "suspicious:weak-coverage": 38,
     "covered:strong": 0,
 }
+#: Moved 2026-07-30, multi-region 3 -> 5 and weak-coverage 14 -> 12, after the five
+#: document defects the two N1 evaluations found were fixed. Both movers were checked
+#: by hand before this pin was touched, which is the only reason to touch it:
+#:
+#:   fr-allocation-precedence          weak-coverage -> multi-region
+#:   fr-manual-adjustment-governance   weak-coverage -> multi-region
+#:
+#: Neither is a false account. `fr-allocation-precedence` gained `03:145-156` (§1.6 P4)
+#: and `03:793-804` (§11.2), both of which already said "statutory registry deferred,
+#: out of v1 scope" — they cleared the bar only because rewriting the stale PRD
+#: declaration to match them brought the shared vocabulary up. The rule was stated in
+#: three places all along; the PRD was the lone dissenter. `fr-manual-adjustment-
+#: governance` gained `05:115-126`, the new §1.6 D5 row recording the unresolved
+#: before/after-audit question — genuinely about the requirement, and a judge should
+#: read it as `mentions`, since raising a question is not stating a rule.
+#:
+#: The judged total is unchanged at 17 (5 + 12), so the ladder's budget did not move.
 PINNED_TRIAGE_LEDGER = {
     "unbuildable:no-prose": 0,
     "no-region": 0,
     "anchored:no-account": 23,
-    "suspicious:multi-region": 3,
+    "suspicious:multi-region": 5,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 14,
+    "suspicious:weak-coverage": 12,
     "covered:strong": 0,
 }
 
