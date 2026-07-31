@@ -219,7 +219,7 @@ and bundles (Slice 8) build on.
 **Output**: pass, or the enumerated rejection naming the uncovered currency and the offending component
 
 **Steps**:
-1. [ ] - `p1` - **(i)** A **required** add-on or price-override row lacking a row in a currency the base plan publishes → reject (the subscription could not resolve all lines in one bound currency). An **optional** add-on's currency gap does NOT block the base plan's publish — it is enforced at attachment time (the add-on is not attachable on a market it does not cover; Subscriptions checks via the sellability read) (2026-07-28 review fix, confirmed 2026-07-31) - `inst-cb-addon`
+1. [ ] - `p1` - **(i)** A **required** add-on or price-override target lacking a covering published row for a **`(currency, region)` pair** the base plan sells → reject (the subscription could not resolve all lines on its bound market). **Per pair, not per currency (D-95, 2026-07-31 review fix):** the currency-only reading left the region axis unchecked — a required add-on covering EUR only in `US` while the base sells EUR in `EU` passed publish and died at order assembly (the D-84 asymmetry one level up); the override-target half now states one rule with S2 `inst-cmp-override-home`. An **optional** add-on's coverage gap does NOT block the base plan's publish — it is enforced at attachment time (the add-on is not attachable on a market it does not cover; Subscriptions checks via the sellability read) (2026-07-28 review fix, confirmed 2026-07-31) - `inst-cb-addon`
 2. [ ] - `p1` - **(ii)** A `sum_of_parts` bundle whose component rows do not cover **every** currency the bundle sells → reject (Slice 8 invokes this rule with bundle context) - `inst-cb-bundle-sum`
 3. [ ] - `p1` - **(iii)** An `own_price` bundle whose components do not **each** have a row in **every** currency the bundle sells → reject - `inst-cb-bundle-own`
 4. [ ] - `p1` - Currency **selection** at activation is Subscriptions-owned; this slice guarantees only that every sellable currency is fully covered. `invoiceGroupingKey` is a layout hint and MUST NOT override this invariant (Billing splits currencies regardless) - `inst-cb-boundary`
@@ -342,9 +342,10 @@ tax-inclusive rows `not_sellable_ga` (per market) until Tax Engine GA — cleare
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-currency-binding`
 
 Publish/preview **MUST** reject the three enumerated mixed-currency configurations
-(required-add-on/override gap — optional add-on gaps enforce at attachment, not publish;
+(required-add-on/override gap — evaluated per `(currency, region)` pair the base plan sells,
+D-95; optional add-on gaps enforce at attachment, not publish;
 `sum_of_parts` coverage gap; `own_price` coverage gap),
-naming the component and currency; `invoiceGroupingKey` never overrides the invariant.
+naming the component and market; `invoiceGroupingKey` never overrides the invariant.
 
 **Implements**: `cpt-cf-bss-pricing-algo-currency-binding`
 
@@ -364,7 +365,7 @@ Integration (testcontainers):
 
 - [ ] A plan with 20+ currency rows publishes and the preview reads each `(currency, region)` within the read SLO
 - [ ] Preview of an absent `(currency, region)` fails closed (no base-currency fallback)
-- [ ] A required add-on missing one of the base plan's currencies blocks publish (`CURRENCY_NOT_COVERED`)
+- [ ] A required add-on missing one of the base plan's currencies blocks publish (`CURRENCY_NOT_COVERED`); a required add-on covering the currency but **not the region** of a sold `(currency, region)` pair blocks the same way (D-95)
 - [ ] An **optional** add-on missing one of the base plan's currencies does **not** block publish; the gap surfaces at attachment time (2026-07-28 review fix)
 - [ ] A mixed plan (EU `taxInclusive=true` with EU `tax_rate_present=true`, US exclusive) publishes with `not_sellable_ga` on the EU rows only — the US market stays sellable; the flag clears only via re-publish
 - [ ] The same plan with EU `tax_rate_present=false` blocks publish under the default fail-closed policy (C4 precedes the C3 flag)

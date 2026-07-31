@@ -165,9 +165,9 @@ flowchart TB
 - Re-trigger with the same `run_id` while completed → returns the original result (no double apply)
 
 **Steps**:
-1. [ ] - `p2` - API: POST /v1/pricing/repricing-runs (`run_id`, selector, adjustment) - `inst-mr-api`
+1. [ ] - `p2` - API: POST /v1/pricing/repricing-runs (`run_id`, selector, adjustment, **changeover instant** — one instant for every row of the run, strictly future at submit and ≥ the max batching-delay SLO (D-47: bulk 5 min) in the future at the run's approval commit, `SUPERSESSION_INSTANT_PASSED` otherwise; D-88 — a commit-time changeover would activate successor windows while their rows are not yet addressable in any completed `CatalogVersion`, transiently failing renewals/arrears closed across every repriced key) - `inst-mr-api`
 2. [ ] - `p2` - Expand the selector to a frozen row set; journal per-row progress (`pending → applied | failed`) keyed `(run_id, price_id)` - `inst-mr-journal`
-3. [ ] - `p2` - Apply per row through the standard versioning path (new immutable rows); the new row, its outbox record, and the journal transition `pending → applied` commit in **one transaction** (a crash re-run sees a consistent journal — no double-apply, no compounding); re-runs skip `applied` rows (idempotent, O3); a per-row validation failure marks the row `failed` (+ `failure_reason`); events carry `(run_id, price_id)` dedup keys - `inst-mr-apply`
+3. [ ] - `p2` - Apply per row through the standard versioning path (new immutable rows) — each applied row is a **supersession unit** (D-88, S7 `algo-supersession`: successor row + window shorten/schedule at the run's single changeover instant, executed inside the per-row transaction); the new row, its outbox record, and the journal transition `pending → applied` commit in **one transaction** (a crash re-run sees a consistent journal — no double-apply, no compounding); re-runs skip `applied` rows (idempotent, O3); a per-row validation failure marks the row `failed` (+ `failure_reason`); events carry `(run_id, price_id)` dedup keys - `inst-mr-apply`
 4. [ ] - `p2` - Publishes coalesce into one/few `CatalogVersion` batches (O5); materiality evaluates once per run against the policy (any row over its own-currency threshold trips the run) - `inst-mr-coalesce`
 5. [ ] - `p2` - **RETURN** 202 (run ref + progress endpoint) - `inst-mr-return`
 
@@ -368,6 +368,7 @@ Integration (testcontainers):
 - [ ] A 1k-row import with one invalid row commits nothing and reports the row; fixed, it commits with 3 concurrent-edit conflicts isolated and listed
 - [ ] An interactive PATCH on a bulk-locked row fails naming the bulk operation
 - [ ] A repricing run killed mid-way re-runs to completion without double-applying any row (journal-verified); events deduplicate on the consumer side by `(run_id, price_id)`
+- [ ] A repricing run with a changeover instant closer than the bulk batching-delay SLO at approval commit is rejected (`SUPERSESSION_INSTANT_PASSED`, D-88); an accepted run switches every key at the single named instant with no uncovered interval per key
 - [ ] A material bulk batch blocks in `awaiting_approval` until the batch approval lands; a retry of unchanged conflicted rows publishes without a new approval, a changed row requires one
 - [ ] A clone's publish is blocked by window coverage until fresh windows are scheduled
 - [ ] History export of 100 records within the SLO; entries carry actor + effective dates

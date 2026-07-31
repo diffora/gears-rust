@@ -152,7 +152,7 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-bundle-coverage`
 
 **Steps**:
-1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — the currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule. Coverage/ambiguity evaluates over `priceEligibility = all_subscriptions` (`cohort = none`) rows **only** — grandfathered generations (ADR-0002) are never coverage candidates, so a cutover-touched component's coexisting generation rows neither cover nor count as ambiguous (2026-07-28 review fix, confirmed 2026-07-31) - `inst-bc-coverage`
+1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — the currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule. Coverage/ambiguity evaluates over `priceEligibility = all_subscriptions` (`cohort = none`) rows **only** — grandfathered generations (ADR-0002) are never coverage candidates, so a cutover-touched component's coexisting generation rows neither cover nor count as ambiguous (2026-07-28 review fix, confirmed 2026-07-31). **The narrowing is deliberate for `new_subscriptions_only` too** (2026-07-31 review fix): a component priced solely via `new_subscriptions_only` rows is not coverage-eligible — bundle composition demands the durable `all_subscriptions` base (a new-only promo row expires with its intent); remediation = author an `all_subscriptions` row on the component - `inst-bc-coverage`
 2. [ ] - `p2` - **Recurring** components MUST match `frequency` (a monthly + annual mix cannot sum onto one invoice line set); usage-only components carry no `frequency` and are outside this rule (their charges rate per their own rows — `inst-bb-sum`) - `inst-bc-frequency`
 3. [ ] - `p2` - A missing or ambiguous component row fails publish naming the component + `(currency, region)` - `inst-bc-fail`
 4. [ ] - `p1` - **Bundle sellability (normative):** the Slice 7 gate evaluates a bundle as the **conjunction** over its components — sellable at `t` iff **every** referenced component key passes gate predicates (1)–(5) at `t` (plus the bundle's own `availableFrom`/`availableTo`). Components are **exempt from predicate (6)** — the registry `sellable` flag (D-46) applies to the **bundle SKU itself**, not to component references (`sellable = false` components are exactly the composition-only SKUs bundles exist to package). For `sum_of_parts` there are no own rows, so components are the only inputs; for `own_price` the bundle's **own** rows must pass **and** the component keys too (the matching-currency component set is part of the offer). The frozen component key set spans `priceEligibility = all_subscriptions` (`cohort = none`) keys **only** — grandfathered generations are never gate inputs (2026-07-28 review fix, confirmed 2026-07-31). One unsellable component makes the bundle unsellable, never partially-sellable - `inst-bc-sellability`
@@ -192,13 +192,22 @@ Slice-owned tables (`pricing_` prefix per Foundation §3.7):
 **`pricing_bundle`** (PK `bundle_id`; FK to the registry `bundle`-type SKU): `price_basis`
 (`sum_of_parts | own_price`), `invoice_itemization` (`aggregate | itemize`), lifecycle refs.
 
-**`pricing_bundle_component`** (FK `bundle_id`): `included_sku_id`, `component_plan_id`
-(required for `sum_of_parts`, B1), constraints (min/max qty).
+**Revision discipline (D-92, 2026-07-31 review fix — the D-83 model applied here):** a bundle
+rides its plan's revisions, and the three composition tables below therefore carry
+**`plan_revision`** (copy-on-new-revision): a published revision's composition rows are
+immutable with it, the open draft revision edits **its own copies**, and the projector — warm
+and re-drive alike — reads the published revision's rows, so a draft recomposition can neither
+mutate published truth nor leak into a frozen version through a re-drive.
 
-**`pricing_bundle_revshare`** (FK `bundle_id`): `vendor_sku_id`, `party`, `share_bp` (typed,
-basis points), `effective_share_bp` (published; absorber-adjusted at publish).
+**`pricing_bundle_component`** (keyed `(bundle_id, plan_revision)` — D-92): `included_sku_id`,
+`component_plan_id` (required for `sum_of_parts`, B1), constraints (min/max qty).
 
-**`pricing_bundle_revshare_group`** (FK `bundle_id`; one row per `vendor_sku_id` — 2026-07-28
+**`pricing_bundle_revshare`** (keyed `(bundle_id, plan_revision)` — D-92): `vendor_sku_id`,
+`party`, `share_bp` (typed, basis points), `effective_share_bp` (published;
+absorber-adjusted at publish).
+
+**`pricing_bundle_revshare_group`** (keyed `(bundle_id, plan_revision)` per D-92; one row per
+`vendor_sku_id` within a revision — 2026-07-28
 review fix: the tolerance/exact-sum rule is per group, so the group-scoped values live on a
 group row, not smeared per party or per bundle): `vendor_sku_id`, **`platform_cut_bp`** (the
 group's platform cut — previously a per-party column used once per group), and
@@ -268,6 +277,7 @@ Integration (testcontainers):
 
 - [ ] A two-vendor `sum_of_parts` bundle over two currencies publishes only when every component covers both; dropping one component row blocks with the component + currency named
 - [ ] `itemize` and `aggregate` both project per-SKU rev-share into the read model
+- [ ] A draft recomposition of a published bundle lands on the draft revision's **own copies** (D-92): the published revision's component/rev-share rows are unchanged, and a re-warm re-drive of the published version reflects none of the draft's edits
 
 ## 10. Non-Functional Considerations
 

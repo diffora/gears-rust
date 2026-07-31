@@ -182,7 +182,7 @@ flowchart TB
 1. [ ] - `p1` - Scope ∈ {partner, orgTier, brand, region, customerGroup, global}; scope values validated against their taxonomies (brand → Slice 4; customerGroup → `GroupTaxonomy`) - `inst-plv-scope`
 2. [ ] - `p1` - **Adjustment lines (D-42, CONFIRMED 2026-07-28):** a `PriceOverlay` is a **container of one or more adjustment lines**, each keyed `(planId?, targetSku?)` with its **own** kind ∈ {markup, discount, fixed} + magnitude. The **list-default line** (no `planId`, no `targetSku`) applies to every target of the overlay's `target_ref` — the pre-D-42 single-adjustment overlay is exactly this degenerate one-line case, so nothing existing is lost. Per line the magnitude type is **declared** via `magnitude_kind ∈ {percent_bp, amount}` (NOT NULL — never inferred; `fixed` is always `amount`): a **percent** magnitude is a single basis-points value (currency-neutral); an **amount-based** magnitude (absolute `fixed`/markup/discount) is money and exists only **per currency** (D-08, no-implicit-FX) — the line carries a `pricing_price_overlay_line_amount` value set that MUST cover **every currency the line's resolved target scope sells** (each value at its currency's ISO 4217 minor unit; a missing currency fails save/publish, `ADJUSTMENT_CURRENCY_NOT_COVERED`, naming the line). A base row in a **new** currency published later flags affected amount-based lines `coverage_incomplete` (+ alarm; the uncovered market resolves without that line — normal precedence semantics — until the operator adds the value) - `inst-plv-adjustment`
 2a. [ ] - `p1` - **Line-set rules (D-42):** ≥ 1 line per overlay; a duplicate line key `(planId, targetSku)` within one overlay fails (`OVERLAY_LINE_DUPLICATE`, 422); a `targetSku` line MUST also name its `planId`; every non-default line MUST reference a **published** plan/SKU inside the overlay's `target_ref` scope (`OVERLAY_LINE_TARGET_UNKNOWN`, 422); D-31 dangling-on-retire applies **per line** (a retired target flags the line, remediation = end or retarget it). **Resolution (normative, adopted by Rating step 4):** within one overlay the **most-specific line wins** for the priced row — `(planId, targetSku)` > `(planId)` > list-default — and exactly one line of a list applies per row; **across** overlays nothing changes: class rank + precedence stack as before (`inst-plv-class-tiebreak`). **Amount-incomplete fallback (normative, adopted by Tariffs verbatim):** a line flagged `coverage_incomplete` for the priced currency removes **that overlay entirely** from the stack for that currency — no fallback to a less-specific line of the same overlay; the market resolves from the remaining overlays / base (2026-07-28 review fix, confirmed 2026-07-31). The resolved line set freezes into `pricingSnapshotRef` with the overlay - `inst-plv-lines`
-2b. [ ] - `p1` - **Eligibility filter — grandfathered rows are exempt by default (normative, D-78, 2026-07-30; adopted verbatim by Rating):** the line key carries no eligibility axis, so before D-78 **every** overlay line applied to **every** resolved base row, including `priceEligibility = existing_grandfathered` ones. A single `+2000 bp` markup line therefore repriced a cohort whose price the whole ADR-0002 machinery exists to guarantee — the row immutable, its window live, its generation selected by the pinned price id, and the effective charge moved anyway, without touching a single row. Therefore: a line whose `cohort` is **NULL applies only to rows with `priceEligibility ∈ {all_subscriptions, new_subscriptions_only}`**; a line with `cohort = X` applies **only** to `existing_grandfathered` rows of generation `X`. The axis is a **filter, not a specificity level**: it selects which rows a line is eligible for, and the `inst-plv-lines` most-specific rule (`(planId, targetSku)` > `(planId)` > list-default) then runs unchanged **within** the eligible set, so nothing about existing resolution moves. A `cohort` value that no published `existing_grandfathered` row of the line's target plan carries fails publish (`OVERLAY_LINE_COHORT_UNKNOWN`, 422, naming the line) — the same fail-closed posture as an out-of-scope line target. Adjusting a grandfathered generation is thus possible but never accidental: it takes an explicit line naming that cutover instant, and it routes through the D-50 always-material approval like any other overlay mutation - `inst-plv-eligibility`
+2b. [ ] - `p1` - **Eligibility filter — grandfathered rows are exempt by default (normative, D-78, 2026-07-30; adopted verbatim by Rating):** the line key carries no eligibility axis, so before D-78 **every** overlay line applied to **every** resolved base row, including `priceEligibility = existing_grandfathered` ones. A single `+2000 bp` markup line therefore repriced a cohort whose price the whole ADR-0002 machinery exists to guarantee — the row immutable, its window live, its generation selected by the pinned price id, and the effective charge moved anyway, without touching a single row. Therefore: a line whose `cohort` is **NULL applies only to rows with `priceEligibility ∈ {all_subscriptions, new_subscriptions_only}`**; a line with `cohort = X` applies **only** to `existing_grandfathered` rows of generation `X`. The axis is a **filter, not a specificity level**: it selects which rows a line is eligible for, and the `inst-plv-lines` most-specific rule (`(planId, targetSku)` > `(planId)` > list-default) then runs unchanged **within** the eligible set, so nothing about existing resolution moves. A `cohort` value that no published `existing_grandfathered` row of the line's target plan carries fails publish (`OVERLAY_LINE_COHORT_UNKNOWN`, 422, naming the line) — the same fail-closed posture as an out-of-scope line target; a `cohort` on the **list-default line** (no `plan_id`) is structurally rejected for the same reason — the check has no target plan to run against (§6 CHECK; 2026-07-31 review fix). Adjusting a grandfathered generation is thus possible but never accidental: it takes an explicit line naming that cutover instant, and it routes through the D-50 always-material approval like any other overlay mutation - `inst-plv-eligibility`
 3. [ ] - `p1` - `precedence` unique within one scope class (L2); duplicate rejected at save - `inst-plv-precedence`
 3a. [ ] - `p1` - **Cross-class tie-break (joint contract):** `precedence` is unique only within a class, so overlays from **different** classes can tie. The read model publishes the normative **class-specificity order** — `customerGroup > partner > orgTier > brand > region > global` — as the tie-break Tariffs MUST adopt verbatim; authoring additionally **warns** on an equal-precedence cross-class pair with overlapping targets so the operator sees the tie before relying on the break. **Application cardinality (normative — SEAMS O3 wording confirmed 2026-07-28):** overlay application is **stack-all, never single-winner** — **every** scope-matching overlay contributes exactly one line (its most-specific per `inst-plv-lines`) to a **sequential stack** applied in the total order `precedence → class order → overlay id`; the class order breaks *ties inside the stack*, it never filters an overlay out (partner + brand + region adjustments legitimately compound). Grandfathering eligibility is the opposite semantics (one row selected) and is **not** an analogue of this rule - `inst-plv-class-tiebreak`
 4. [ ] - `p1` - Optional `[effectiveFrom, effectiveTo)` validated per scope + adjustment target (its own interval — **not** on the canonical price-row key; overlays are not price rows); overlapping intervals collide per **line key** `(scope_class, scope_value, planId, targetSku, cohort)` (null-safe defaults — the collision key is per line since D-42, and carries `cohort` since D-78 extended the line key: a cohort-targeted line and a cohort-less line on the same `(plan, sku)` are disjoint by eligibility, so they never collide — matching the within-overlay UNIQUE; 2026-07-30 review fix) and are rejected at authoring (`OVERLAY_INTERVAL_OVERLAP`, 409) — the overlay analogue of window non-overlap (2026-07-28 review fix, confirmed 2026-07-31) - `inst-plv-dating`
@@ -260,10 +260,18 @@ another group; use the move operation — D-09).
 
 Slice-owned tables (`pricing_` prefix per Foundation §3.7):
 
-**`pricing_price_overlay`** (PK `price_overlay_id`):
+**`pricing_price_overlay`** (PK **`(price_overlay_id, revision)`** — draft-revision rows, D-92,
+2026-07-31 review fix: the D-56/D-83/D-90 discipline applied to overlays. A published revision
+row is immutable in content; editing a published overlay opens a **new revision row in `draft`**
+(partial `UNIQUE (price_overlay_id) WHERE lifecycle_state = 'draft'`); the submit/commit
+publishes that revision and flips its predecessor `published → superseded` in the same commit;
+the projector — warm and re-drive alike — reads the **published revision's** rows, so a draft
+edit can neither mutate published truth nor leak into a frozen version):
 
 | Column | Type | Notes |
 |--------|------|-------|
+| `revision` | `int` | PK half; monotonic per overlay (D-92) |
+| `lifecycle_state` | `enum` | `draft \| published \| superseded`; flip-at-commit per D-90 semantics |
 | `scope_class` | `enum` | `partner \| org_tier \| brand \| region \| customer_group \| global` |
 | `scope_value` | `string` | taxonomy-validated per class |
 | `precedence` | `int` | `UNIQUE (tenant_id, scope_class, precedence)` (L2 — per **overlay/list**, unchanged by D-42: within-list ordering is the most-specific line rule, never precedence) |
@@ -272,7 +280,9 @@ Slice-owned tables (`pricing_` prefix per Foundation §3.7):
 | `disclosure` | `enum` | `restricted (default) \| public` — consumer-facing exposure of the overlay (L6); NOT NULL |
 | `target_ref` | `jsonb` | plan/SKU targets; referential-validated |
 
-**`pricing_price_overlay_line`** (PK `line_id`; FK `price_overlay_id` — D-42, ≥ 1 per overlay):
+**`pricing_price_overlay_line`** (PK `line_id`; FK `(price_overlay_id, overlay_revision)` —
+D-42, ≥ 1 per overlay revision; **copy-on-new-revision** with stable line identity where
+unchanged, D-92 — the amount table below rides the same revision through its line):
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -283,9 +293,14 @@ Slice-owned tables (`pricing_` prefix per Foundation §3.7):
 | `magnitude_kind` | `enum` | `percent_bp \| amount`; NOT NULL (2026-07-28 review fix — the line's value type is **declared**, never inferred from the presence of amount rows: implicit-absence semantics are forbidden by the Foundation, and a bp value read as minor units mis-prices by orders of magnitude). `fixed` requires `amount`; `markup`/`discount` may be either |
 | `adjustment_value` | `int` | **basis points; `magnitude_kind = percent_bp` lines only** (NULL otherwise) — amount-based magnitudes live in `pricing_price_overlay_line_amount` (D-08). **Range-bounded (D-67, 2026-07-29 review fix):** on a `discount` line `0 < v ≤ 10000` (a discount above 100% is not authorable); on a `markup` line `v > 0`; amount-based `discount`/`fixed`/`markup` values MUST be `≥ 0` at the currency's ISO 4217 minor unit. Out of range fails save/publish (`ADJUSTMENT_MAGNITUDE_OUT_OF_RANGE`, 422, naming the line). Before this rule the only checks were duplicate line keys, out-of-scope targets, per-currency coverage and tax-basis declaration — so `discount / percent_bp = 15000` (the common "150% of list" data-entry inversion) passed every stated validation, and the `≥ 0` money constraint (DESIGN §2) binds authored **price rows**, not overlay lines |
 
-Key constraints: `UNIQUE (price_overlay_id, plan_id, target_sku, cohort)` (null-safe — one default line,
+Key constraints: `UNIQUE (price_overlay_id, overlay_revision, plan_id, target_sku, cohort)`
+(null-safe — one default line,
 one line per plan, one per `(plan, sku)`, and independently one of each per grandfathered
-generation the overlay explicitly targets — D-78); `CHECK ((magnitude_kind = 'percent_bp') =
+generation the overlay explicitly targets — D-78; per revision since D-92);
+**`CHECK (cohort IS NULL OR plan_id IS NOT NULL)`** (2026-07-31 review fix — a `cohort` filter
+is validated against "the line's target plan" (`inst-plv-eligibility`), which the list-default
+line does not have: targeting a generation across every plan of the scope is authored as
+per-plan lines, never a cohort-carrying default line); `CHECK ((magnitude_kind = 'percent_bp') =
 (adjustment_value IS NOT NULL))` and `CHECK (adjustment_kind <> 'fixed' OR magnitude_kind =
 'amount')`; resolution order `(plan, sku)` > `(plan)` > default
 is the pipeline rule (`inst-plv-lines`), not an index.
@@ -314,7 +329,15 @@ No new frozen event names — every committed overlay/membership mutation is its
 unit through the Foundation engine** (D-06): it requests `CatalogVersion` addressability and
 warms the read model without a dedicated event (consumers observe `CatalogVersionPublished`
 + the warmed content; the registry's batching coalesces chatty membership traffic; the
-increment-trigger taxonomy line rides the open §15 Registry item). Membership changes are
+increment-trigger taxonomy line rides the open §15 Registry item). **What the warm projects
+(D-91, 2026-07-31 review fix):** an overlay publish unit projects **one overlay-subject row**
+into the subject-typed `pricing_read_model` (`subject_kind = price_overlay` — the overlay
+document: lines, amounts, dating, disclosure, lifecycle) and **never re-projects targeted
+plans** (Tariffs joins overlays to base rows at evaluation, so a `global` overlay commit
+writes one row, not a tenant's worth); a membership publish unit projects one
+membership-subject row per payer record (`subject_kind = group_membership`) — the surface
+Tariffs resolves the interval from at its pinned version. Both resolve per subject by the
+greatest-completed-≤-pin rule (Foundation §4.4). Membership changes are
 audited mutations. Alarms:
 `pricing.segment.membership_renewal_backlog` (Info — memberships ended/changed whose
 subscriptions have not yet re-resolved at renewal; expected steady-state visibility),
@@ -390,6 +413,7 @@ Integration (testcontainers):
 - [ ] An immediate re-resolution requires approval (material); a bulk group discount routes material
 - [ ] An overlay/membership committed while **no plan publishes** becomes rateable via its own publish unit at the next `CatalogVersionPublished` batch (within the propagation SLO); a renewal after that commit resolves the new membership — never "waits for an unrelated plan publish"
 - [ ] Publishing a base row in a **new** currency flags targeting amount-based overlays `coverage_incomplete` (+ alarm); the new market resolves at base price until the operator adds the per-currency value
+- [ ] Editing a **published** overlay opens a draft revision row whose line/amount edits land on **its own copies** (D-92): the published revision keeps serving unchanged, a re-warm re-drive of its version reflects none of the draft, and the commit publishes the new revision + flips the predecessor `superseded`
 
 ## 10. Non-Functional Considerations
 

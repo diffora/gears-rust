@@ -22,6 +22,7 @@
   - [Sellability Gate](#sellability-gate)
   - [Grandfathering Eligibility Resolution](#grandfathering-eligibility-resolution)
   - [Grandfathering Cutover (atomic unit)](#grandfathering-cutover-atomic-unit)
+  - [Supersession (atomic unit)](#supersession-atomic-unit)
 - [4. States (CDSL)](#4-states-cdsl)
   - [Price Window State Machine](#price-window-state-machine)
   - [Grandfathered Row Eligibility State Machine](#grandfathered-row-eligibility-state-machine)
@@ -34,6 +35,7 @@
   - [Future Gaps](#future-gaps)
   - [Sellability](#sellability)
   - [Grandfathering](#grandfathering)
+  - [Supersession Unit](#supersession-unit)
 - [9. Acceptance Criteria](#9-acceptance-criteria)
 - [10. Non-Functional Considerations](#10-non-functional-considerations)
 
@@ -123,6 +125,7 @@ Design-introduced names (Slice 7):
 | `CoverageChecker` | Publish-time rule: every billable row's scope key has an active/scheduled window; gap detection across scheduled windows |
 | `SellabilitySurface` | The read-model composite the joint gate evaluates: active-window flag + committed-version flag + `availableFrom/To` + plan lifecycle state + the GA-gate flags (`not_sellable_ga`, prepaid-execution) + the registry `sellable` flag per offered SKU (D-46; mirrored from the pinned `CatalogVersion` — the flag is frozen per version registry-side, so the surface reads it off the same version-pinned projection as predicate (2), no live registry query) |
 | `CutoverOrchestrator` | Builds the W4 atomic unit (shorten + grandfathered copy + successor) as one approval + one **local ACID** transaction |
+| `SupersessionOrchestrator` | Builds the **supersession unit** (D-88): successor row + predecessor-window shorten + successor-window schedule as one approval + one local ACID transaction — the only path to `published → superseded` |
 | `EligibilityExpirySignal` | The published signal that a row's `grandfatherUntil` passed — Subscriptions re-binds at next renewal |
 | `WindowScheduler` | The owned scheduling/cancellation surface: creates `scheduled` windows (overlap-validated per scope key), cancels not-yet-active ones, adjusts a future `effectiveTo` (D-03) |
 | `WindowActivationJob` | Coordination-lease singleton: flips `scheduled → active` at `effectiveFrom` and `active → expired` at `effectiveTo` (UTC, idempotent, ordered per `(tenant, plan)`), emitting `PriceWindowActivated`/`Expired` from the outbox |
@@ -201,7 +204,7 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 
 **Steps**:
 1. [ ] - `p1` - Sort windows by `effectiveFrom`; any uncovered interval between one window's end and the next's start over billable periods → reject, naming `[gapStart, gapEnd)` and the scope key - `inst-fg-detect`
-1a. [ ] - `p1` - **Trailing void (normative, D-62, 2026-07-29 review fix):** `inst-fg-detect` is an *interior* check — it compares each window against its successor and by construction cannot see a void with **no** successor. A cancellation or an `effectiveTo` shortening that removes the last coverage on a key is therefore invisible to it. Any cancel/shorten MUST additionally leave the key covered through `max(current coverage end, now + the longest billing cycle sold on that key)` — otherwise reject (`WINDOW_TRAILING_VOID`, 422), naming the key and the first uncovered instant. The **only** exemption is D-51's, **narrowed by D-80 (2026-07-30 review fix)**: a key with no in-flight subscribers **that is also not currently sellable** — on a sellable key the check always applies (the exemption raced the gate: with zero subscribers *today*, cancelling the sole successor left the key sellable until its active window's end, and anyone subscribing in that interval landed in the void), so cancelling the sole successor of a sellable key is rejected outright. The in-flight-subscriber predicate resolves through the **D-79 Subscriptions inbound lane** (per-scope-key presence over the key's price-id set — PRD §9.2 lane 3), is **re-resolved inside the mutating commit**, and **fails closed on lane outage** (treated as subscribers-present: check + materiality apply). This closes the same hazard D-05 closed on the retirement path: without it one `plan × write` holder can `DELETE` the two-person-approved scheduled successor, let the active window expire at its natural end, and leave every arrears charge and renewal on the key failing closed - `inst-fg-trailing`
+1a. [ ] - `p1` - **Trailing void (normative, D-62, 2026-07-29 review fix):** `inst-fg-detect` is an *interior* check — it compares each window against its successor and by construction cannot see a void with **no** successor. A cancellation or an `effectiveTo` shortening that removes the last coverage on a key is therefore invisible to it. Any cancel/shorten MUST additionally leave the key covered through `max(current coverage end, now + the longest billing cycle sold on that key)` — otherwise reject (`WINDOW_TRAILING_VOID`, 422), naming the key and the first uncovered instant. The **only** exemption is D-51's, **narrowed by D-80 (2026-07-30 review fix)**: a key with no in-flight subscribers **whose plan is also not currently sellable on the key's `(currency, region)` market** — "sellable" evaluated over the full key conjunction (`inst-sg-conjunction`, D-94, 2026-07-31: a usage or phase component key of a sellable plan-market is never exempt, zero subscribers or not — otherwise the exempt cancel reopened the void for that component line while the plan kept selling) — on a sellable plan-market the check always applies (the exemption raced the gate: with zero subscribers *today*, cancelling the sole successor left the key sellable until its active window's end, and anyone subscribing in that interval landed in the void), so cancelling the sole successor of a sellable key is rejected outright. The in-flight-subscriber predicate resolves through the **D-79 Subscriptions inbound lane** (per-scope-key presence over the key's price-id set — PRD §9.2 lane 3), is **re-resolved inside the mutating commit**, and **fails closed on lane outage** (treated as subscribers-present: check + materiality apply). This closes the same hazard D-05 closed on the retirement path: without it one `plan × write` holder can `DELETE` the two-person-approved scheduled successor, let the active window expire at its natural end, and leave every arrears charge and renewal on the key failing closed - `inst-fg-trailing`
 2. [ ] - `p1` - The check runs at publish **and** inside every window-mutating operation (schedule, cancel, `effectiveTo` adjustment, cutover, retirement-triggered cancellation) — windows are slice-owned (D-03), every mutation goes through `WindowScheduler`/`CutoverOrchestrator`, and there is **no side door**: the window tables carry the same REVOKE + column-whitelist trigger discipline as `pricing_price`, so a gap can never be introduced past validation - `inst-fg-when`
 
 ### Sellability Gate
@@ -213,7 +216,8 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 
 **Steps**:
 1. [ ] - `p1` - The read model exposes per key: **active**-window-at-`t` **with the coverage horizon (D-80, 2026-07-30 review fix)** — scheduled-only is NOT sellable, and the key's active-plus-scheduled coverage MUST additionally extend through `now + the longest billing cycle sold on the key` (an open-ended window satisfies it trivially; the surface exposes the per-key **coverage end** so the predicate stays point-in-time evaluable). The horizon is the D-04 margin applied to ordinary keys: a finite-covered key stops selling one full cycle before its coverage ends, so nobody can buy into a trailing void (the D-62 exemption race) — committed-`CatalogVersion` addressability (pending fan-out is NOT sellable), `availableFrom`/`availableTo`, plan **lifecycle state** (`retired` is NOT sellable — Slice 11 retirement blocks through this gate), the **GA-gate flags** (`not_sellable_ga` — Slice 4, evaluated **per scope key / market**, not per plan; the prepaid-execution gate — Slice 10 — is published as the same flag mechanism), and the **registry `sellable` flag** per offered SKU (D-46 — predicate (6), **standalone lines only**; `sellable = false` = composition/metering-only, NOT offerable standalone; mirrored from the pinned `CatalogVersion`, where the registry freezes it per version) - `inst-sg-surface`
-2. [ ] - `p1` - The gate is a **joint rule with Subscriptions**: purchase MUST NOT create while any predicate fails; catalog publishes the surface, Subscriptions enforces at order time - `inst-sg-joint`
+1a. [ ] - `p1` - **Key conjunction (normative, D-94, 2026-07-31 review fix — flagged for veto · joint with Subscriptions):** a purchase binds **every** scope key of the plan on the bound `(currency, region)` — the recurring/usage/`one_time_setup` components and every phase of the chain — so the gate evaluates the **conjunction over all of them**: each `(phase, chargeKind, meter-line)` key the plan publishes there, eligibility-resolved (`new_subscriptions_only` wins over `all_subscriptions` where both exist; grandfathered generations are never gate inputs), passes predicates (1)–(5) **including the D-80 coverage horizon per key**; predicate (6) applies to the offered SKU. One failing component key makes the plan-market **not sellable** — never partially sellable. The pre-D-94 "the bound canonical scope key" (singular) left undefined which key a storefront evaluates, and made the D-80 exemption undecidable for component keys: an exempt cancel of a usage-key window on a zero-subscriber hybrid whose recurring key stayed sellable reopened the trailing void for the usage line (`inst-sg-bundle` is the bundle-specific statement of this same rule) - `inst-sg-conjunction`
+2. [ ] - `p1` - The gate is a **joint rule with Subscriptions**: purchase MUST NOT create while any predicate fails on any bound key (`inst-sg-conjunction`); catalog publishes the surface, Subscriptions enforces at order time - `inst-sg-joint`
 2a. [ ] - `p1` - **Renewal is not a purchase:** the gate governs the creation of **new** subscriptions only — a renewal of an existing subscription is never blocked by it (a retired plan or a passed `availableTo` does not kill in-flight renewals; their lifecycle is owned by the grandfathering/migration mechanics) - `inst-sg-renewal`
 2b. [ ] - `p1` - **Bundle conjunction:** for a `bundle`-type plan the gate is the **conjunction** — every referenced component key passes predicates (1)–(5) at `t` (components are **exempt from (6)**; predicate (6) applies to the **bundle SKU itself** as the standalone offered line) (and, for `own_price` bundles, the bundle's own rows too), plus the bundle's own `availableFrom`/`availableTo`; the `SellabilitySurface` exposes the frozen component key set for this walk — the set spans `priceEligibility = all_subscriptions` (`cohort = none`) keys **only**, grandfathered generations are never gate inputs (2026-07-28 review fix, confirmed 2026-07-31) — (composition rules normative in Slice 8, `inst-bc-sellability`) - `inst-sg-bundle`
 3. [ ] - `p1` - All six predicates are point-in-time evaluable from the pinned read model (no live catalog or registry query at order time beyond the version-pinned read — the `sellable` flag rides the pinned `CatalogVersion`) - `inst-sg-pinned`
@@ -249,6 +253,22 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 5. [ ] - `p1` - **Bound consistency (normative, D-04):** the grandfathered copy carries two clocks — its window and `grandfatherUntil` — and the window MUST cover through **`grandfatherUntil` + the longest billing cycle sold on that key** (open-ended when null). The margin exists because re-bind happens only at the **next renewal** after expiry: a bound period that started before `grandfatherUntil` keeps rating (usage/arrears) against the generation's key until that renewal — with the margin, no legitimate bound interval is ever uncovered; without it, a window ending at `grandfatherUntil` strands subscribers for up to one full cycle. The row sells nothing new past expiry (new subscriptions never bind grandfathered rows), so the margin leaks nothing. Cutover validation rejects a violating unit, and a later `effectiveTo` adjustment below the bound is likewise rejected (`WINDOW_HISTORICAL_IMMUTABLE`/`CUTOVER_GAP` semantics) - `inst-co-bounds`
 6. [ ] - `p1` - **One pending unit per key:** at most one pending approval unit (cutover or supersession) may exist per canonical scope key — a second submit on the same key while one is `submitted` returns 409 (`PENDING_CHANGE_UNIT_EXISTS`); a cutover unit pends **both** keys it touches (the `all_subscriptions` key and the **new generation's** key — prior generations are not pended). ETag protects rows, this rule protects **change units** from approving contradictory window operations - `inst-co-single-pending`
 7. [ ] - `p1` - **Retirement unwind (D-05):** plan retirement with a live cutover unit **unwinds** it inside the retirement transaction (one ACID scope, D-03): the predecessor window's `effectiveTo` is restored to its recorded pre-cutover value (a legal future-`effectiveTo` adjustment), the scheduled copy/successor windows are cancelled (`PriceWindowCancelled` each), and the unit closes as `unwound` (audit keeps both the approval and the unwind); a merely `submitted` unit is voided per the standard Slice 5 pin semantics. Without the unwind, the shortened predecessor + cancelled schedules would strand in-flight subscribers uncovered at the cutover instant — the trailing void no gap check can see. The same trailing-void reasoning now governs **ordinary retirement** too (D-51, 2026-07-28): retirement cancels scheduled windows only for keys with **no** in-flight subscribers; a scheduled window that is a key's continuing coverage (e.g. a supersession successor extending past the active window's `effectiveTo`) is **kept** — retirement blocks selling via the gate's lifecycle predicate, never rating coverage (Slice 11 `inst-rt-cancel`). Retirement with a live cutover is **always material** (registered into the Slice 5 evaluator); prior generations are untouched (active windows run out per retirement semantics) - `inst-co-retirement-unwind`
+
+### Supersession (atomic unit)
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-supersession`
+
+**Input**: the current published row of one canonical scope key + the successor definition + the changeover instant
+**Output**: the D-88 three-operation unit — successor row + predecessor-window shorten + successor-window schedule — gap-free, as one approval + one transaction
+
+The set named the "supersession unit" everywhere (one-pending-unit-per-key, the D-35 key pins, the S5 approval hash) without ever defining what composes one; assembled from the standalone primitives it is unbuildable — the successor's window collides with the predecessor's open-ended window (`WINDOW_OVERLAP`), and shortening the predecessor first is its own always-material D-62 operation that drops the key below the D-80 coverage horizon (a sales outage) until the successor schedules. This algorithm is that definition (D-88, 2026-07-31 review fix); the cutover (`algo-cutover`) is its multi-row sibling.
+
+**Steps**:
+1. [ ] - `p1` - API: POST /v1/pricing/plans/{planId}/supersessions — payload: the target scope key (or the current `priceId`), the successor row definition, the **changeover instant**; idempotent per `(planId, scope key, changeover instant)` - `inst-su-api`
+2. [ ] - `p1` - `SupersessionOrchestrator` composes the unit: (a) the successor **draft** row on the **same canonical scope key** (S3 rules apply — incl. the D-82/D-98 unit guard: same `meter`/`dimensionKey`/`model_kind`/granularities/aggregation+qualification windows on usage rows); (b) the predecessor window's `effectiveTo` shorten to the changeover instant; (c) the successor window scheduled `[changeover, …)`. Gap-freeness across (b)+(c) is validated at compose **and** re-validated at commit — no instant of the key is left uncovered, so neither `WINDOW_OVERLAP` nor `WINDOW_TRAILING_VOID` can arise from a committed unit - `inst-su-compose`
+3. [ ] - `p1` - **Changeover instant floor:** the instant MUST be strictly future at submit **and at least the max batching-delay SLO (D-47: 5 min) in the future at approval commit** (`SUPERSESSION_INSTANT_PASSED`, 422; the unit is recomposed) — an instant inside the batching/warm lag would activate the successor's window while its row is not yet addressable at any completed `CatalogVersion`, transiently failing renewals/arrears closed (the same rule `inst-gc-compose` applies to cutovers; D-88 extends it to the mechanism that runs daily). **Bulk (Slice 12):** a mass-repricing run names **one** changeover instant for all its rows, bounded the same way against the run's approval commit - `inst-su-instant`
+4. [ ] - `p1` - The unit is **one approval unit** (materiality = the standard per-currency price-delta evaluation; it pends the key per `inst-co-single-pending`) and commits as **one local ACID transaction** (D-03): the pipeline re-runs, the successor publishes, the predecessor flips `published → superseded` (S3 `inst-ps-supersede`), and both window operations apply — or everything rolls back. No interim state exists in which the key is shortened without its scheduled successor - `inst-su-commit`
+5. [ ] - `p1` - **RETURN** 202 (unit scheduled); events per §17.5: `PriceUpdated` + `PriceWindowScheduled` (successor), the predecessor's `PriceWindowExpired` firing at the changeover - `inst-su-return`
 
 ## 4. States (CDSL)
 
@@ -286,6 +306,7 @@ per generation row — generations expire independently (ADR-0002)
 | `POST` | `/v1/pricing/prices/{priceId}/windows` | Schedule a window (overlap-validated; D-03 owned surface) | client idempotency key |
 | `PATCH` | `/v1/pricing/price-windows/{windowId}` | Adjust a future `effectiveTo` (shorten/extend; coverage-validated) | ETag |
 | `DELETE` | `/v1/pricing/price-windows/{windowId}` | Cancel a not-yet-active window (emits `PriceWindowCancelled`) | — |
+| `POST` | `/v1/pricing/plans/{planId}/supersessions` | Compose + submit the atomic **supersession unit** (D-88): successor row + predecessor-window shorten + successor-window schedule, one approval unit / one local ACID transaction; changeover instant ≥ approval commit + the max batching-delay SLO | per `(planId, scope key, changeover instant)` |
 | `POST` | `/v1/pricing/plans/{planId}/cutovers` | Compose + submit the atomic grandfathering cutover — **single- or multi-key** (D-28): the payload carries a scope-key selector; all selected keys cut over at **one instant** as **one approval unit** / one local ACID transaction (per-key generations created; the unit pends every touched key; the S5 per-row hash pin covers the whole set) | per `(planId, key-set hash, cutover instant)` |
 | `PATCH` | `/v1/pricing/prices/{priceId}/grandfather-until` | Tighten `grandfatherUntil` (material change) | ETag |
 | `GET` | `/v1/pricing/plans/{planId}/sellability?at=&currency=&region=` | The sellability surface for the joint gate | — |
@@ -302,6 +323,9 @@ successor, `inst-fg-trailing`; names the key and the first uncovered instant),
 `inst-ws-future-start`), `CUTOVER_GAP` (422),
 `CUTOVER_INSTANT_PASSED` (422 — instant in the past at submit, or closer than the max
 batching-delay SLO at approval commit),
+`SUPERSESSION_INSTANT_PASSED` (422 — the supersession unit's changeover instant in the past at
+submit, or closer than the max batching-delay SLO at approval commit; D-88 — the same floor
+`inst-gc-compose` gives cutovers, applied to the everyday mechanism),
 `PENDING_CHANGE_UNIT_EXISTS` (409 — a pending unit already holds one of the touched keys),
 `GRANDFATHER_LOOSEN_FORBIDDEN` (422), `GRANDFATHERED_ROW_IMMUTABLE` (409),
 `AVAILABILITY_OUTSIDE_COVERAGE` (422).
@@ -421,7 +445,10 @@ committed version; availability dates; plan lifecycle state — `retired` blocks
 the GA-gate flags: `not_sellable_ga` / prepaid-execution; the registry `sellable` flag —
 standalone lines only, D-46) point-in-time evaluable
 from a pinned version (the surface exposes the per-key coverage end); the purchase-time gate
-is a joint rule enforced by Subscriptions. For a
+is a joint rule enforced by Subscriptions, evaluated as the **conjunction over every scope key
+the purchase binds on the bound market** — chargeKind components and the phase chain alike,
+eligibility-resolved, grandfathered generations excluded (D-94, `inst-sg-conjunction`) — one
+failing component key blocks the plan-market. For a
 `bundle`-type plan the surface additionally exposes the frozen component key set and the gate
 evaluates the **conjunction** over it on predicates (1)–(5) — components are exempt from (6)
 (own rows too for `own_price`; Slice 8).
@@ -452,6 +479,26 @@ at renewal.
 - DB: `pricing_price` (eligibility axes), `pricing_price_window`, `pricing_approval`
 - Entities: `CutoverOrchestrator`, `EligibilityExpirySignal`
 
+### Supersession Unit
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-supersession-unit`
+
+Superseding a row **MUST** be possible only through the atomic supersession unit (D-88):
+successor row + predecessor-window shorten + successor-window schedule composed gap-free,
+one approval unit pending the key, one local ACID commit that re-runs the pipeline, flips the
+predecessor `published → superseded`, and applies both window operations — no interim state in
+which the key is shortened without its scheduled successor. The changeover instant **MUST** be
+strictly future at submit and ≥ the max batching-delay SLO in the future at approval commit
+(`SUPERSESSION_INSTANT_PASSED`); a mass-repricing run names one changeover instant bounded the
+same way (Slice 12).
+
+**Implements**: `cpt-cf-bss-pricing-algo-supersession`
+
+**Touches**:
+- API: `POST /v1/pricing/plans/{planId}/supersessions`
+- DB: `pricing_price`, `pricing_price_window`, `pricing_approval`
+- Entities: `SupersessionOrchestrator`
+
 ## 9. Acceptance Criteria
 
 Delta over the Foundation testing architecture.
@@ -473,6 +520,8 @@ Integration (testcontainers):
 - [ ] D-80 exemption narrowing: on a **sellable** key with zero in-flight subscribers, cancelling the sole scheduled successor is rejected (`WINDOW_TRAILING_VOID`); the same cancel on an unsellable zero-subscriber key passes exempt, and the key then fails the coverage horizon the moment it would otherwise become sellable again; a lane outage during the check fails the cancel closed (subscribers presumed present — D-79)
 - [ ] Bundle conjunction: one unsellable component key (any predicate of (1)–(5) failing) → the bundle is not sellable; a `sellable = false` **component** does NOT block (exempt from (6)), while `sellable = false` on the **bundle SKU itself** does; an `own_price` bundle additionally requires its own rows sellable
 - [ ] The cutover transaction is atomic: a simulated failure on the successor-schedule step rolls back the shorten and both schedules (no partial window state at any instant)
+- [ ] The supersession unit is atomic (D-88): a simulated failure on the successor-window step rolls back the row publish, the flip, and the shorten; a changeover instant closer than the batching-delay SLO at approval commit is rejected (`SUPERSESSION_INSTANT_PASSED`); at the changeover the predecessor expires and the successor activates with no uncovered instant, and the mid-window counter continues (S3 fixture)
+- [ ] Gate conjunction (D-94): a hybrid whose usage key fails any of predicates (1)–(5) — e.g. its coverage horizon — is not sellable on that market even with the recurring key fully covered; an exempt cancel attempt on that usage key while the plan-market is sellable is rejected (`WINDOW_TRAILING_VOID`); a phased plan with an uncovered future-phase key is likewise not sellable
 
 API:
 

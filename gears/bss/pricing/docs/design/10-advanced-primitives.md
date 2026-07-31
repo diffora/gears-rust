@@ -237,7 +237,7 @@ flowchart TB
 1. [ ] - `p2` - A `minQtyThreshold` MUST declare its floor type: `purchase` (Subscriptions rejects orders below — not silently zero) or `usage` (Tariffs/Rating treats below-floor usage as ineligible, failing closed — never silent zero-rating); untyped fails publish - `inst-ft-typed`
 1a. [ ] - `p2` - **The fallback is authored, not implied:** a `usage` floor MUST declare its fallback on the row; at launch the only supported value is **`exception`** — the below-floor usage line fails closed into the rating exception path (visible, resolvable), never silently zero-rated and never silently charged. Richer fallbacks (e.g. an alternative row) are Future; the declared fallback freezes in the snapshot - `inst-ft-fallback`
 2. [ ] - `p2` - Both MAY be set on one row (distinct fields); type + value freeze in the snapshot - `inst-ft-both`
-3. [ ] - `p2` - Publish **warns** when a floor falls inside a non-zero-priced band (likely authoring error: the floor hides paid quantity) - `inst-ft-warn`
+3. [ ] - `p2` - Publish **warns** when a floor falls inside a non-zero-priced band (likely authoring error: the floor hides paid quantity), **and equally when a `usage` floor falls inside the `[0, N)` allowance band** — compiled (D-45) or hand-authored `$0` first band — where the floor silently voids part of the granted allowance (2026-07-31 review fix: the non-zero-priced wording alone never fired on a `$0` band) - `inst-ft-warn`
 
 ### Trailing-Tier Qualification (Tier Rate-Lock)
 

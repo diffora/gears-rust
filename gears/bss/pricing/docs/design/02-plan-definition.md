@@ -143,8 +143,8 @@ flowchart TB
 
 **Consumed:** published `skuId` + SKU `PlanTier` + `meteringUnit` declarations (registry).
 **Produced:** the plan-shape portion of the read model (cycle, frequency metadata, phase map +
-`displayTrialDays`, add-on rules, descriptor set — `quantitySource` is persisted/validated by
-Slice 3), validated fail-closed at publish.
+`displayTrialDays`, add-on rules, descriptor set, `invoiceGroupingKey` (D-96) —
+`quantitySource` is persisted/validated by Slice 3), validated fail-closed at publish.
 
 ## 2. Actor Flows (CDSL)
 
@@ -205,7 +205,7 @@ Slice 3), validated fail-closed at publish.
 5. [ ] - `p1` - **Custom frequency**: `customEveryN Days(n)` MUST anchor `subscription_start`; `customEveryN Months(n)` MAY anchor `subscription_start` or `calendar_month` with month-end clamp + preserved anchor day (P2, D-20); non-positive/over-cap `n` fails - `inst-cs-customfreq`
 6. [ ] - `p1` - **Setup row**: `chargeKind=one_time_setup` allowed only on recurring/hybrid plans; validated as one-time — no recurrence, no `billingTiming`, no tier fields; first-class row (participates in approval/snapshot/preview), never a synthetic add-on SKU - `inst-cs-setup`
 7. [ ] - `p1` - **Setup charge timing (normative):** the setup row charges **once per subscription lifetime** — at activation, or for a plan with a `trial` phase at entry into the **first non-trial phase** (trial conversion; a cancelled trial is never charged setup). A plan change or `PlanLink` migration **never charges the target plan's setup row at all** — whether or not the origin plan carried one: setup is tied to **subscription activation**, not plan entry, so a plan-change entrant who never paid any setup is still not charged (Slice 11 honors this in the migration contract; wording sharpened 2026-07-30 review fix). The timing is published in the read model for Subscriptions/Billing - `inst-cs-setup-timing`
-8. [ ] - `p1` - **Availability dates (cycle-independent):** a past `availableFrom` is rejected on **every** billing cycle (`AVAILABLE_FROM_IN_PAST`) — the Slice 5 historical-import path is the only sanctioned backdating (rule hoisted from the one-time step, 2026-07-28 review fix, confirmed 2026-07-31) - `inst-cs-availability`
+8. [ ] - `p1` - **Availability dates (cycle-independent):** a past `availableFrom` is rejected on **every** billing cycle (`AVAILABLE_FROM_IN_PAST`) — the Slice 5 historical-import path is the only sanctioned backdating (rule hoisted from the one-time step, 2026-07-28 review fix, confirmed 2026-07-31). The rule binds **newly set or changed** values only (2026-07-31 review fix): a revision re-publishing an **unchanged** `availableFrom` that has legitimately passed since the original publish is not backdating and passes — otherwise every later re-publish (a descriptor fix, a new market) of a once-future-dated plan would be blocked until the operator erased the date - `inst-cs-availability`
 
 ### Plan Composition Validation
 
@@ -218,9 +218,9 @@ Slice 3), validated fail-closed at publish.
 1. [ ] - `p1` - **PlanTier**: declared before publish (optional at draft); MUST equal the parent SKU's `PlanTier` unless an **explicit, audited override** is declared (P3, no silent divergence); the effective tier lands in the read model - `inst-cmp-plantier`
 1a. [ ] - `p1` - **PlanTier drift after publish:** the equality check at publish is not enough — the registry can change the SKU's tier later. The catalog consumes the registry's SKU-tier-change signal and flags every affected **published** plan `tier_divergent` **in the operator-plane flag store (`pricing_operator_flag`, D-85, 2026-07-30 review fix — never the versioned read model: a drift flag has no publish unit, and a frozen `CatalogVersion` never mutates)** (+ the `pricing.plan.tier_divergent` alarm); remediation is a re-publish (re-validating equality) or an explicit audited override. Downstream consumers keep resolving the frozen published tier — the flag is an operator remediation signal on the authoring surfaces, never a silent retro-change (part of the registry joint contract, PRD §15) - `inst-cmp-tier-drift`
 2. [ ] - `p1` - **Meter injectivity**: each usage plan revision maps **exactly one** `meteringUnit` — one priced line per `(meter, dimensionKey)` **per scope-key slice** (`currency`/`region`/`priceOverlay`/`phase`/`priceEligibility`/`cohort` legitimately multiply rows — the `cohort` axis is what lets a second cutover add another grandfathered generation of the same usage line without violating injectivity, ADR-0002); ambiguity fails publish. Multi-meter offerings route to a derived (composite) meter (Slice 10) or separate single-meter SKUs composed via bundle/add-ons (Slice 8) - `inst-cmp-injective`
-2a. [ ] - `p1` - **Usage-source binding (UC3 seam adoption, 2026-07-28 review fix, confirmed 2026-07-31):** every usage row's `meteringUnit` MUST resolve to a registry metering-unit declaration that carries a **`usageTypeRef`** (the usage-collector `gts_id` supplying the meter — products `fr-metering-unit-declaration`, rating SEAMS UC3(a)); a meter with no binding fails publish (`METER_USAGE_TYPE_UNBOUND`) — an unbound meter is unrateable, since Rating quarantines usage it cannot attribute rather than guessing. The **dimension set** the plan prices over that meter (its authored `dimensionKey` values) MUST be a subset of the UsageType's declared `metadata_fields` keys, which the registry holds equal to the meter's declared dimension set (UC3(c) cross-validation); pricing a dimension the source never emits fails publish (`METER_DIMENSION_UNDECLARED`, offending keys named). Both checks read the frozen registry declaration through the same joint contract as `inst-cmp-tier-drift` - `inst-cmp-usagetype`
+2a. [ ] - `p1` - **Usage-source binding (UC3 seam adoption, 2026-07-28 review fix, confirmed 2026-07-31):** every usage row's `meteringUnit` MUST resolve to a registry metering-unit declaration that carries a **`usageTypeRef`** (the usage-collector `gts_id` supplying the meter — products `fr-metering-unit-declaration`, rating SEAMS UC3(a)); a meter with no binding fails publish (`METER_USAGE_TYPE_UNBOUND`) — an unbound meter is unrateable, since Rating quarantines usage it cannot attribute rather than guessing. The **dimension set** the plan prices over that meter (its authored `dimensionKey` values) MUST be a subset of the UsageType's declared `metadata_fields` keys, which the registry holds equal to the meter's declared dimension set (UC3(c) cross-validation); pricing a dimension the source never emits fails publish (`METER_DIMENSION_UNDECLARED`, offending keys named). Both checks read the frozen registry declaration through the same joint contract as `inst-cmp-tier-drift`. **Post-publish drift (2026-07-31 review fix — the tier-drift treatment applied symmetrically):** a later registry change to the meter's `usageTypeRef` binding or declared dimension set flags every affected **published** plan `meter_binding_divergent` in the operator-plane flag store (`pricing_operator_flag`, D-85) + raises `pricing.plan.meter_binding_divergent` (Warn); consumers keep resolving the frozen mapping; remediation = re-publish (re-running this check) - `inst-cmp-usagetype`
 3. [ ] - `p1` - **Add-on rules**: add-on SKUs published + compatible with the base SKU; the dependency/conflict **edges are plan-authored** (D-16): each rule row MAY declare `depends_on` / `conflicts_with` sets referencing **other add-ons of the same plan's set** (an edge pointing outside the set fails; conflicts are normalized symmetric); dependency **cycles** fail publish (graph walk over `depends_on`), conflicting pairs fail when both marked required; a required add-on has `maxQty ≥ 1`; an optional price-override reference persists on the plan snapshot - `inst-cmp-addons`
-4. [ ] - `p1` - **Override home (normative):** `price_override_ref` resolves to a **published `priceId` on a plan of the add-on SKU itself** (an alternative row authored there — it is a normal price row with its own scope key, windows, and coverage). Publish of the base plan validates the reference exists, is published, and covers every `(currency, region)` the base plan sells (Slice 4 case i); the resolved mapping freezes into the base plan's `pricingSnapshotRef`. No override price is ever authored as a detached number on the base plan - `inst-cmp-override-home`
+4. [ ] - `p1` - **Override home (normative):** `price_override_ref` resolves to a **published `priceId` on a plan of the add-on SKU itself** (an alternative row authored there — it is a normal price row with its own scope key, windows, and coverage). **The ref binds that row's canonical scope key, not the id (D-97, 2026-07-31 review fix):** resolution at `t` follows the key through windows exactly as any row resolves, so a supersession's successor legitimately serves the override (supersession is transparent to consumers, and the D-82/D-98 unit guard keeps the key's meaning stable) — the frozen mapping never dangles on a routine price change of the add-on plan. Publish of the base plan validates the referenced **key** is published and covers every `(currency, region)` the base plan sells (Slice 4 case i, per pair — D-95); the resolved mapping freezes into the base plan's `pricingSnapshotRef`. No override price is ever authored as a detached number on the base plan - `inst-cmp-override-home`
 
 ### Phase Schedule Validation
 
@@ -231,10 +231,11 @@ Slice 3), validated fail-closed at publish.
 
 **Steps**:
 1. [ ] - `p1` - Each phase id maps to its price-row references (rows carry the `phase` scope-key axis); ordering persisted - `inst-ph-map`
-2. [ ] - `p1` - `convertsToPhaseId` edges validated: no dangling target, no cycle; **exactly one terminal phase** (`evergreen`, no successor) - `inst-ph-graph`
+2. [ ] - `p1` - `convertsToPhaseId` edges validated: no dangling target, no cycle; **exactly one terminal phase** (`evergreen`, no successor). **The chain is linear (2026-07-31 review fix):** phases are ordered by `ordinal`, the **entry phase is the lowest ordinal** (normative — D-39's "first non-trial phase" and the setup-timing "first non-trial phase" both read this order), and every non-terminal phase's `convertsToPhaseId` MUST target the next phase in ordinal order — a skip, a tree, or an unreachable phase fails publish (`PHASE_CHAIN_NONLINEAR`, 422): acyclicity + single-terminal alone admit dead phases that still demand coverage rows and leave "first" undefined - `inst-ph-graph`
 3. [ ] - `p1` - **Phase duration (normative):** every **non-terminal** phase MUST author `phaseDurationDays > 0` — `convertsToPhaseId` says *where* a phase converts, the duration says *when*; a non-terminal phase without a duration (or a terminal phase with one) fails publish. Subscriptions enforces phase runtime from these published durations (single source) - `inst-ph-duration`
 3a. [ ] - `p1` - **Phase coverage (D-15):** on a plan whose billing cycle carries a **recurring part** (`recurring`/`hybrid` — one-time and usage-only plans are outside the rule's scope, whose literal reading would otherwise block them via their implicit terminal phase; 2026-07-28 review fix, confirmed 2026-07-31), every phase id MUST be referenced by ≥ 1 published **recurring** price row for every `(currency, region)` the plan sells — an uncovered phase fails publish (`PHASE_UNCOVERED`): a phase conversion must never resolve to nothing (the row-based Slice 7 coverage check cannot see a phase that has no rows at all) - `inst-ph-coverage`
 3b. [ ] - `p1` - **Usage rows are phase-invariant by default (D-15):** one usage row (on the **terminal `phase_id`** — D-19) covers **all** phases; an explicit phase-scoped usage row overrides it **for its phase** (phase-specific wins — a published resolution rule of the same class as most-specific-wins eligibility, adopted verbatim by Tariffs; joint fixture). Free trial usage = an explicit trial-phase usage row at 0 — never a silent default - `inst-ph-usage-invariant`
+3c. [ ] - `p1` - **Override unit guard (normative, D-89, 2026-07-31 review fix):** the tier counter `Q` is keyed `(subscription, meter, dimensionKey, window)` — **phase-blind** (S3 `inst-tb-window-continuity`) — so a phase conversion **never resets `Q`**, and the row that serves the meter after conversion inherits the continued counter. A phase-scoped usage override therefore MUST carry the **same unit/counter-determining fields** as the phase-invariant terminal-phase row of its `(meter, dimensionKey)` line — `model_kind`, `billingGranularity`, `aggregationFunction`, `aggregationGranularity`, `tierAggregationWindow`, `tierQualificationWindow` (the D-82/D-98 list) — else publish fails (`PHASE_OVERRIDE_UNIT_MISMATCH`, 422, offending fields named). Without it a `per_hour` trial row converting into a `per_day` evergreen row mid-window applies an hours-denominated continued `Q` to day-denominated bands (the D-77/D-82 ×24 class through the phase axis), and differing window values silently reset the counter. Free-trial pricing stays fully expressible — a `$0` rate or band set **at the same denomination**. The supersession-continuity fixture carries the phase-conversion-mid-window scenario - `inst-ph-override-units`
 4. [ ] - `p1` - A `trial` phase publishes `displayTrialDays` = its `phaseDurationDays` (the PRD-named alias for preview/quoting; one value, two projections) - `inst-ph-trial`
 5. [ ] - `p1` - **Axis typing (D-19):** the `phase` axis is always a `phase_id`. Every plan gets a terminal phase row — authored (phased plans) or **auto-created implicit** (kind `evergreen`; non-phased/one-time plans) at plan creation; non-phased/one-time/setup rows carry that terminal `phase_id` (Foundation §4.1 defaults). The literal `evergreen` is a phase *kind*, never an axis value - `inst-ph-default`
 5a. [ ] - `p1` - **Terminal-phase stability across revisions (normative, D-64, 2026-07-29 review fix):** D-56 pins phase **ids**, but the scope-key default (`inst-ph-default`) and usage phase-invariance (`inst-ph-usage-invariant`) are both defined relative to *which* phase is terminal — so a revision that re-terminalizes silently moves them. Therefore: (a) a revision MUST NOT re-terminalize an existing phase or introduce a **different** terminal phase — the terminal `phase_id` is immutable for the life of the plan (`TERMINAL_PHASE_CHANGED`, 422); (b) a revision MUST re-attach every `phase_id` referenced by a current published `pricing_price` row — dropping such a phase fails publish (`PHASE_IN_USE`, 422). Without (a), a usage-only plan published non-phased (metered row on the implicit terminal `T0`) can be revised to add a trial plus a new evergreen `E`: `T0` becomes non-terminal, the metered row is no longer phase-invariant, a subscription in `E` resolves **no** usage row, and Tariffs fails closed on a published sellable plan. `inst-ph-coverage` cannot catch this — since the 2026-07-28 fix it is scoped to recurring rows on `recurring`/`hybrid` plans, so usage-only plans are entirely unguarded. This is the "sold but unrateable" state D-15 exists to prevent, reintroduced through revisioning - `inst-ph-terminal-stable`
@@ -256,12 +257,13 @@ Slice 3), validated fail-closed at publish.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-plan-lifecycle`
 
-**States**: draft, published, retired
+**States**: draft, published, superseded, retired (per **revision row** — D-56/D-90)
 **Initial State**: draft (mutable, deletable; optional `PlanTier`)
 
 **Transitions**:
 1. [ ] - `p1` - **FROM** draft **TO** published **WHEN** the Foundation pipeline passes (this slice's rules included) and approval (governance slice) completes; shape freezes into the read model - `inst-pl-publish`
-2. [ ] - `p1` - **FROM** published **TO** retired **WHEN** the lifecycle slice retires the plan (Slice 11; blocks new subscriptions, preserves snapshots) - `inst-pl-retire`
+1a. [ ] - `p1` - **FROM** published **TO** superseded **WHEN** the plan's next revision publishes (D-90, 2026-07-31 review fix — the flip happens inside the successor revision's publish commit, mirroring the price rows' flip-at-commit): at most one revision per plan is ever `published` (partial `UNIQUE`), so "the current revision" is unique by construction for the projector (D-83), the sellability lifecycle predicate, and every truth-side referential check; superseded revision rows are immutable history - `inst-pl-supersede`
+2. [ ] - `p1` - **FROM** published **TO** retired **WHEN** the lifecycle slice retires the plan (Slice 11; blocks new subscriptions, preserves snapshots) — the flip targets the plan's **single current published revision** (D-90) - `inst-pl-retire`
 3. [ ] - `p1` - Published plans never return to draft; a change is a **new revision** through the Foundation's versioning (append-only) - `inst-pl-norollback`
 
 ## 5. API Surface
@@ -278,9 +280,15 @@ Slice 3), validated fail-closed at publish.
 line missing a usage row for a sold `(currency, region)`; D-84), `PLANTIER_MISSING`/`PLANTIER_DIVERGENT` (422), `METER_AMBIGUOUS`
 (422), `ADDON_CYCLE`/`ADDON_INCOMPATIBLE` (422), `ADDON_OVERRIDE_UNRESOLVED` (422 —
 `price_override_ref` unpublished or not covering a sold `(currency, region)`),
-`PHASE_GRAPH_INVALID` (422), `PHASE_DURATION_INVALID` (422 — non-terminal phase without
+`PHASE_GRAPH_INVALID` (422), `PHASE_CHAIN_NONLINEAR` (422 — a `convertsToPhaseId` chain that
+skips the ordinal order, branches, or leaves a phase unreachable from the entry phase;
+2026-07-31 review fix), `PHASE_DURATION_INVALID` (422 — non-terminal phase without
 `phaseDurationDays`, or a terminal phase with one), `PHASE_UNCOVERED` (422 — a phase with no
 covering recurring row for a sold `(currency, region)`, D-15),
+`PHASE_OVERRIDE_UNIT_MISMATCH` (422 — a phase-scoped usage override changing the
+unit/counter-determining fields (`model_kind`, granularities, aggregation/qualification
+windows) of the terminal-phase row it overrides; D-89 — the continued `Q` keeps its
+denomination across phase conversion; offending fields named),
 `TERMINAL_PHASE_CHANGED` (422 — a revision re-terminalizing an existing phase or introducing a
 different terminal phase, `inst-ph-terminal-stable`), `PHASE_IN_USE` (422 — a revision dropping
 a phase still referenced by a current published price row), `SETUP_ROW_INVALID` (422 — setup row on a
@@ -302,7 +310,10 @@ draft rows mutable, published rows append-only per Foundation §4.3):
 with **slice-declared columns** (capability semantics owned here): `billing_cycle`
 (`one_time|recurring|usage|hybrid`), `frequency` + `custom_interval_n`/`custom_interval_unit`,
 `plan_tier`, `plan_tier_override` (bool, audited), `available_from`/`available_to`,
-`purchase_min_qty`/`purchase_max_qty` (nullable; one-time plans).
+`purchase_min_qty`/`purchase_max_qty` (nullable; one-time plans), `invoice_grouping_key`
+(nullable string; NULL/empty = no grouping — the PRD-glossary Plan field, homed here by D-96,
+2026-07-31 review fix: a Billing layout hint projected into the read model, shape-checked only,
+never overriding the single-currency-per-invoice invariant — Slice 4 `inst-cb-boundary`).
 
 **`pricing_plan_phase`** (PK **`(phase_id, plan_revision)`** — copy-on-new-revision, D-83; FK `plan_id`). Every plan revision holds ≥ 1 row: phased plans author theirs; non-phased/one-time plans get one **implicit terminal row** (kind `evergreen`) auto-created at plan creation — the default `phase` axis value (D-19). The `phase_id` half is **stable across plan revisions**: a new revision **copies** the phase rows under its own `plan_revision`, ids never re-minted — so the `phase` scope-key axis of continuing price rows (which reference the bare `phase_id`) and same-key supersession are unchanged, while phase **attributes** resolve per revision. A published revision's rows are immutable with it; the open draft edits **its own copies** (D-56 + D-83, 2026-07-30 review fix, confirmed 2026-07-31):
 
@@ -352,7 +363,7 @@ same rule in the pipeline).
 
 ## 7. Events & Alarms
 
-Alarm: `pricing.plan.tier_divergent` (Warn — a registry SKU-tier change diverged from a published plan's frozen tier; remediation = re-publish or audited override). No new event names: this slice rides the Foundation's frozen set — `PlanCreated`,
+Alarms: `pricing.plan.tier_divergent` (Warn — a registry SKU-tier change diverged from a published plan's frozen tier; remediation = re-publish or audited override); `pricing.plan.meter_binding_divergent` (Warn — a registry metering-unit `usageTypeRef`/dimension-set change diverged from a published plan's frozen mapping, `inst-cmp-usagetype`; remediation = re-publish; 2026-07-31 review fix). No new event names: this slice rides the Foundation's frozen set — `PlanCreated`,
 `PlanUpdated` on authoring; `PlanPublished` on successful publish (shape included in the
 warmed read model). Validation failures are synchronous 422 reports, not events. Alarms:
 publish-blocked-by-validation is surfaced as an authoring outcome + the validation-catch-rate
@@ -411,8 +422,9 @@ terminal phase, `phaseDurationDays > 0` on every non-terminal phase (publish fai
 non-terminal phase without a duration), and — on plans whose cycle carries a recurring part
 (`recurring`/`hybrid`, per `inst-ph-coverage`) — **recurring coverage of every phase per sold
 `(currency, region)`** (`PHASE_UNCOVERED` otherwise; usage rows are phase-invariant by
-default with phase-specific override — D-15), and publishing `displayTrialDays` on `trial`
-phases as the single source for Subscriptions runtime.
+default with phase-specific override — D-15, the override preserving the terminal row's
+unit/counter-determining fields — `PHASE_OVERRIDE_UNIT_MISMATCH`, D-89), and publishing
+`displayTrialDays` on `trial` phases as the single source for Subscriptions runtime.
 
 **Implements**: `cpt-cf-bss-pricing-algo-phases`
 
@@ -441,7 +453,7 @@ Delta over the Foundation testing architecture (levels + mocking inherited).
 
 Unit:
 
-- [ ] Cycle-matrix validation per §17.1 (each cycle's required/forbidden fields); custom-`n` bounds + anchoring; hybrid completeness; setup-row one-time constraints; one-time purchase-qty range (`minQty > maxQty` rejected) + past-`availableFrom` rejection (any cycle — `inst-cs-availability`); PlanTier equality/override; add-on cycle detection over plan-authored `depends_on` edges (an edge outside the plan's add-on set fails; conflict symmetry normalized; two required conflicting add-ons fail); add-on override-home resolution (unpublished ref or uncovered `(currency, region)` fails); phase-graph acyclicity + single terminal + non-terminal duration required; descriptor required-set
+- [ ] Cycle-matrix validation per §17.1 (each cycle's required/forbidden fields); custom-`n` bounds + anchoring; hybrid completeness; setup-row one-time constraints; one-time purchase-qty range (`minQty > maxQty` rejected) + past-`availableFrom` rejection (any cycle — `inst-cs-availability`); PlanTier equality/override; add-on cycle detection over plan-authored `depends_on` edges (an edge outside the plan's add-on set fails; conflict symmetry normalized; two required conflicting add-ons fail); add-on override-home resolution (unpublished ref or uncovered `(currency, region)` fails); phase-graph acyclicity + single terminal + non-terminal duration required + **linear chain** (a skip/branch/unreachable phase fails, `PHASE_CHAIN_NONLINEAR`; the entry phase = lowest ordinal — L-3 fix); a phase-scoped usage override changing `billingGranularity`/`model_kind`/a window vs its terminal-phase row fails (`PHASE_OVERRIDE_UNIT_MISMATCH`, D-89) while a `$0` same-denomination trial override passes; a revision re-publishing an **unchanged** now-past `availableFrom` passes while setting a new past value fails (`inst-cs-availability`); descriptor required-set
 
 Integration (testcontainers):
 
@@ -451,7 +463,7 @@ Integration (testcontainers):
 - [ ] `customEveryN Days(30)` with `calendar_month` anchor fails publish
 - [ ] A phased plan trial→intro→evergreen publishes its phase map + `displayTrialDays`; a cyclic `convertsToPhaseId` fails
 - [ ] The same plan with **zero intro-phase recurring rows** fails publish (`PHASE_UNCOVERED`, naming the phase + market); a single phase-invariant usage row satisfies all phases, and an explicit trial-phase usage row at 0 wins over it for the trial phase
-- [ ] A published plan's shape change opens a new `draft` revision row and publishes it as a new revision — append-only applies to plan-revision rows and price/audit rows (the published revision row never mutates in place; D-56)
+- [ ] A published plan's shape change opens a new `draft` revision row and publishes it as a new revision — append-only applies to plan-revision rows and price/audit rows (the published revision row never mutates in place; D-56); the publish commit flips the predecessor revision `published → superseded` (D-90): exactly one revision reads `published` afterwards, and retire flips that single current revision
 - [ ] The draft revision's phase/add-on/descriptor edits land on **its own copies** (D-83): after the edit the published revision's child rows are unchanged, and a re-warm re-drive of the published version reflects none of the draft's changes
 - [ ] The published read model exposes the setup row's charge-timing semantics (once per lifetime; trial-conversion; never re-charged on migration)
 - [ ] A registry SKU-tier change flags the affected published plan `tier_divergent` and raises the alarm; the frozen tier keeps resolving
