@@ -24,7 +24,9 @@ defined operation at all. Remaining: **3 [H]**, **9 [M]**, and a tail of [L].
 > mechanism; L-6 was escalated into D-98). H-1…H-3 and M-1…M-9 are closed as **D-87…D-98**
 > in [`DECISIONS.md`](../DECISIONS.md); the [L] items are text fixes in place. The
 > per-finding mapping is in the [Verification & fix record](#verification--fix-record).
-> **D-93/D-94/D-98 are flagged for veto (D-93/D-94 joint with Subscriptions).**
+> **Veto round (same day, per-item): D-93, D-94, D-98 — all CONFIRMED by the product owner;**
+> the register board carries the statuses (D-93/D-94 joint with Subscriptions — their
+> SEAMS SUB-P1/SUB-P5 adoptions are owed).
 
 Severity scale: **[H]** breaks money/correctness or is unimplementable as written · **[M]**
 teams can build incompatible behavior · **[L]** contained.
