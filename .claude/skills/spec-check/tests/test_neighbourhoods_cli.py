@@ -205,12 +205,29 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 6,
-    "anchored:no-account": 18,
-    "suspicious:multi-region": 14,
+    "anchored:no-account": 15,
+    "suspicious:multi-region": 15,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 38,
+    "suspicious:weak-coverage": 40,
     "covered:strong": 0,
 }
+#: Moved 2026-07-31 (was 18 / 14 / 38, judged 52), re-pinned after the day's three
+#: pricing review fix rounds (D-87…D-122) rewrote fourteen requirement declarations
+#: and their design accounts. All 14 movers were diffed per-id against the 7048660d
+#: (pin-time) tree and the pre-c-wave HEAD before this pin was touched; every one is
+#: a prose-rewrite consequence — scores are recall fractions of the declaration's
+#: vocabulary, and the fix rounds changed that vocabulary; no threshold or selection
+#: code moved. a/b-wave movers (11): fr-addon-rules, fr-migration-safety,
+#: fr-scheduled-migration anchored→weak (their rules gained real design accounts);
+#: fr-catalogversion-increment, fr-grandfathering-eligibility,
+#: fr-pricewindow-coverage multi→weak; fr-billing-descriptors, fr-meter-injective,
+#: fr-plan-retirement, nfr-mutation-latency weak→multi; and the one semantically
+#: notable mover — fr-bundle-composition weak→**anchored:no-account**: D-104's FR
+#: rewrite added evaluator/approval vocabulary the design never repeats, dropping
+#: its former account below 0.6 (the documented terse-prose limitation; worth
+#: `--judge-anchored` at the next N1 run). c-wave movers (3):
+#: fr-consumer-readmodel-resolution anchored→weak (D-114 gave §4.4 a genuine
+#: account), fr-bulk-price-import multi→weak, fr-discount-ref-hook weak→multi.
 #: Moved 2026-07-30, multi-region 3 -> 5 and weak-coverage 14 -> 12, after the five
 #: document defects the two N1 evaluations found were fixed. Both movers were checked
 #: by hand before this pin was touched, which is the only reason to touch it:
@@ -238,10 +255,12 @@ PINNED_TRIAGE_LEDGER = {
     "covered:strong": 0,
 }
 
-#: Judge calls the pinned histograms imply: 52 + 17. Pinned separately because it is
+#: Judge calls the pinned histograms imply: 55 + 17. Pinned separately because it is
 #: the number the ladder exists to control, and a threshold change that quietly
-#: doubles it must read as a diff.
-PINNED_JUDGE_CALLS = {"pricing": 52, "ledger": 17}
+#: doubles it must read as a diff. (Pricing 52 until 2026-07-31 — the day's three
+#: review fix rounds moved the histogram, note above; +3 is document movement, not
+#: ladder drift.)
+PINNED_JUDGE_CALLS = {"pricing": 55, "ledger": 17}
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):

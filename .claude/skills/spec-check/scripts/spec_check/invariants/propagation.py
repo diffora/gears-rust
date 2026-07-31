@@ -238,6 +238,19 @@ def check(corpus, seams, loaded):
 #:   claimed sites (`fr-tax-display-basis`, §17.4) still carry no D-01 citation.
 #:   That per-site gap is below P1's granularity and stays part of the docs round
 #:   this debt tracks.
+#:
+#: - `D-25 -> PRD.md` (removed 2026-07-31, the c-wave pin sweep): D-93's fix round
+#:   (the 2026-07-31a slice review) rewrote `fr-plan-change-contract` with
+#:   "…(D-93, revising D-25's publish-time stamp…)" — a real D-25 citation at the
+#:   exact site D-25 claimed. Same document-granular satisfaction as D-01 above,
+#:   but here the citation sits in the claimed FR itself. Hand-checked at HEAD
+#:   before removal (`git show HEAD:…PRD.md | grep -c D-25` = 1).
+#:
+#: - `D-40 -> design/10-advanced-primitives.md` (removed 2026-07-31, the c-wave
+#:   pin sweep): the 2026-07-31b review's L-2 fix declared the
+#:   `tier_qualification_window` column in S10 §6 with "(D-40; the lock itself is
+#:   Rating-owned — D-60, `inst-tt-lock`)" — the design doc now cites D-40 twice.
+#:   Hand-checked at HEAD before removal.
 PINNED_PROPAGATION_GAPS_2026_07_29 = (
     ("pricing", "D-02", "ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md"),
     ("pricing", "D-02", "DESIGN.md"),
@@ -254,12 +267,10 @@ PINNED_PROPAGATION_GAPS_2026_07_29 = (
     ("pricing", "D-19", "PRD.md"),
     ("pricing", "D-20", "PRD.md"),
     ("pricing", "D-24", "PRD.md"),
-    ("pricing", "D-25", "PRD.md"),
     ("pricing", "D-28", "PRD.md"),
     ("pricing", "D-32", "PRD.md"),
     ("pricing", "D-35", "PRD.md"),
     ("pricing", "D-39", "PRD.md"),
-    ("pricing", "D-40", "design/10-advanced-primitives.md"),
     ("pricing", "D-41", "DESIGN.md"),
     ("pricing", "D-60", "design/03-price-structure.md"),
 )

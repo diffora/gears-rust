@@ -63,13 +63,16 @@ def test_discovery_never_returns_the_gear_itself():
 
 
 def test_auto_context_clears_the_seams_pricing_alone_reports():
-    # The documented symptom: pricing alone reports 6 P1/seam-undefined, every one a
+    # The documented symptom: pricing alone reports 8 P1/seam-undefined, every one a
     # row that does exist in a sibling gear. Auto-context must clear them without the
     # caller knowing the graph. (4 until 2026-07-31; D-79 `SEAMS SUB-P8` and D-80
-    # `SEAMS SUB-P5` joined the honest cross-gear citations that round.)
+    # `SEAMS SUB-P5` joined the honest cross-gear citations that round; 6 until the
+    # 2026-07-31a fix round added D-93 `SEAMS SUB-P1` and D-94 `SEAMS SUB-P5` —
+    # both hand-checked against subscriptions' SEAMS.md, both clearing under
+    # auto-context.)
     alone = run("--gear", "gears/bss/pricing/docs")
     auto = run("--gear", "gears/bss/pricing/docs", "--auto-context")
-    assert alone.stdout.count("seam-undefined") == 6
+    assert alone.stdout.count("seam-undefined") == 8
     assert auto.stdout.count("seam-undefined") == 0
 
 

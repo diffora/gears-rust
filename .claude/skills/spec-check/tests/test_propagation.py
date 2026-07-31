@@ -64,7 +64,10 @@ def test_propagation_gaps_match_the_pinned_2026_07_29_baseline():
 def test_the_pinned_baseline_has_exactly_twenty_three_entries():
     # A transcription guard: the set comparison above would also fail on a typo,
     # but a dropped line is easier to read as a count.
-    assert len(PINNED_PROPAGATION_GAPS_2026_07_29) == 23  # 24 until 2026-07-31; D-01 -> PRD.md removed, note beside the list
+    # 24 until 2026-07-31 (D-01 -> PRD.md removed); 23 until the same day's c-wave
+    # pin sweep (D-25 -> PRD.md, D-40 -> design/10 removed — paid down by the
+    # a/b review fix rounds); notes beside the list.
+    assert len(PINNED_PROPAGATION_GAPS_2026_07_29) == 21
 
 
 def test_cross_gear_propagation_gaps_match_the_expected_set():

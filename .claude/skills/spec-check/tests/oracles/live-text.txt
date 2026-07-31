@@ -7,4 +7,4 @@
 [Low] PRD.md — P2 cannot verify requirement coverage for gears/bss/subscriptions/docs: no slice uses a recognised traceability convention (`**Traces to**:` or `This slice directly addresses:`) — 47 requirement(s) went unchecked as a result; per-id claims are not reported for this gear rather than reporting every requirement as unclaimed (P2/traceability-convention-unknown)
 
 7 finding(s)
-73 known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt to see them
+69 known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt to see them

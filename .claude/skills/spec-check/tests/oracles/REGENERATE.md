@@ -21,6 +21,15 @@ lives:
    targets, `targets.py`). From here on the oracles pin **this implementation's
    own output**, not Rust equivalence.
 
+3. **2026-07-31, second capture — after the day's three pricing review fix
+   rounds** (D-87…D-98, D-99…D-112, D-113…D-122). Four pinned-debt members were
+   paid down by those rounds and left the pins with hand-checked notes beside
+   each list (`D-25 -> PRD.md`, `D-40 -> design/10`, `METER_AMBIGUOUS`,
+   `TAXONOMY_VALUE_IN_USE`), pricing-alone seam-undefined moved 6 → 8 (D-93/D-94
+   citations, both resolving under auto-context), and the suppressed count moved
+   73 → 69. Live findings are unchanged at 7 (the cross-gear coverage
+   statements). No checker code changed in this capture — documents only.
+
 The discipline is unchanged either way: a finding appearing or disappearing here
 is a real claim about the design set, and re-freezing must be a deliberate,
 separately-justified commit — never a way to make a failing change look green.

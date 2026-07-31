@@ -187,6 +187,17 @@ def _check_error_codes(corpus):
 #:   corpus-wide mention outside a Problem-responses block as a reference. The
 #:   code is now referenced by the AC that tests it — a genuine fix, not a
 #:   technicality.
+#:
+#: - `METER_AMBIGUOUS` / design/02 (removed 2026-07-31, the c-wave pin sweep):
+#:   D-103's restated `inst-cmp-injective` (2026-07-31b fix round) names the code
+#:   in the rule body ("a **duplicate line** within one slice is the ambiguity
+#:   that fails publish (`METER_AMBIGUOUS`)") — a rule reference, not a
+#:   Problem-responses row. Hand-checked at HEAD before removal.
+#:
+#: - `TAXONOMY_VALUE_IN_USE` / design/04 (removed 2026-07-31, the c-wave pin
+#:   sweep): D-120's `inst-plv-scope` (S9) now references it from the rule body
+#:   ("a referenced value cannot retire, `TAXONOMY_VALUE_IN_USE`"). A genuine
+#:   fix by the wave that also gave the retire guard its missing overlay scopes.
 PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "ADDON_CYCLE", "design/02-plan-definition.md"),
     ("pricing", "ADDON_INCOMPATIBLE", "design/02-plan-definition.md"),
@@ -220,7 +231,6 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "GRANT_REF_UNDEFINED", "design/06-consumer-contracts.md"),
     ("pricing", "GROUP_UNKNOWN", "design/09-price-overlays.md"),
     ("pricing", "HYBRID_INCOMPLETE", "design/02-plan-definition.md"),
-    ("pricing", "METER_AMBIGUOUS", "design/02-plan-definition.md"),
     ("pricing", "PHASE_DURATION_INVALID", "design/02-plan-definition.md"),
     ("pricing", "PHASE_GRAPH_INVALID", "design/02-plan-definition.md"),
     ("pricing", "PLANTIER_DIVERGENT", "design/02-plan-definition.md"),
@@ -233,7 +243,6 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "RESERVATION_ON_NON_USAGE", "design/10-advanced-primitives.md"),
     ("pricing", "RUN_SELECTOR_EMPTY", "design/12-operator-efficiency.md"),
     ("pricing", "SETUP_ROW_INVALID", "design/02-plan-definition.md"),
-    ("pricing", "TAXONOMY_VALUE_IN_USE", "design/04-currency-tax.md"),
     ("pricing", "TAX_BASIS_INCOMPLETE", "design/04-currency-tax.md"),
     ("pricing", "TIER_BANDS_GAP", "design/03-price-structure.md"),
     ("pricing", "TIER_BANDS_OVERLAP", "design/03-price-structure.md"),

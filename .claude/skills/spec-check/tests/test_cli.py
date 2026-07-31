@@ -44,10 +44,14 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # 15/75 until 2026-07-31: the 2026-07-30 slice-review fix round closed the 8
     # live pricing P1/P2/P3 findings and 2 pinned-debt members (hand-checked,
     # notes beside each pinned list), leaving the cross-gear coverage statements.
+    # 7/73 until the 2026-07-31 c-wave pin sweep: the same day's a/b/c review fix
+    # rounds paid down 4 more pinned members — D-25/PRD (D-93), D-40/design-10
+    # (the b-wave L-2 fix), METER_AMBIGUOUS (D-103), TAXONOMY_VALUE_IN_USE
+    # (D-120) — all hand-checked, notes beside each pinned list.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
     assert len(payload["findings"]) == 7
-    assert payload["known_debt_suppressed"] == 73
+    assert payload["known_debt_suppressed"] == 69
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

@@ -155,7 +155,10 @@ def test_code_unreferenced_findings_match_the_pinned_2026_07_29_baseline():
 
 
 def test_the_pinned_code_baseline_has_exactly_fifty_entries():
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 50  # 51 until 2026-07-31; PACKAGE_FIELDS_INVALID removed, note beside the list
+    # 51 until 2026-07-31 (PACKAGE_FIELDS_INVALID removed); 50 until the same
+    # day's c-wave pin sweep (METER_AMBIGUOUS — D-103's rule reference;
+    # TAXONOMY_VALUE_IN_USE — D-120's rule reference); notes beside the list.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 48
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():
