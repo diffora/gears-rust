@@ -30,8 +30,10 @@ Totals: **4 [H]**, **10 [M]**, **7 [L]**.
 > was rejected or downgraded. H-1…H-4 and M-1…M-10 are closed as **D-99…D-112** in
 > [`DECISIONS.md`](../DECISIONS.md); the [L] items are text fixes in place. The per-finding mapping
 > is in the [Verification & fix record](#verification--fix-record). `spec-check` re-run after the
-> wave: **clean** (pricing, sibling gears loaded). **Awaiting veto: D-103, D-104, D-108, D-109,
-> D-110** — the five that change an authorable surface or add an approval requirement.
+> wave: **clean** (pricing, sibling gears loaded).
+> **Veto round (same day, per-item): D-103, D-104, D-108, D-109, D-110 — all CONFIRMED by the
+> product owner** (D-110 on both halves: `taxCategory` moves to the price row *and* the
+> mixed-basis ban lands); nothing in pricing awaits veto.
 
 Severity scale: **[H]** breaks money/correctness or is unimplementable as written · **[M]**
 teams can build incompatible behavior · **[L]** contained.
