@@ -17,13 +17,6 @@
     {
       "invariant": "P3/code-convention-divergent",
       "severity": "low",
-      "file": "design/04-overlays-precedence.md",
-      "line": null,
-      "message": "design/04-overlays-precedence.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention"
-    },
-    {
-      "invariant": "P3/code-convention-divergent",
-      "severity": "low",
       "file": "design/15-rated-output-balance-effects.md",
       "line": null,
       "message": "design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention"

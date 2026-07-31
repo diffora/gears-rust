@@ -51,7 +51,28 @@ class DeclaredInstructions:
         return ident in self._ids
 
 
-def check(corpus, declared):
+def declared_codes_union(corpora):
+    """Every error code declared inside a Problem-responses block, across every
+    corpus the CLI loaded — the code analogue of `DeclaredInstructions`, and for
+    the same reason: a rating slice that references a pricing-declared code
+    without a local block is a legitimate cross-gear reference, not a slice
+    declaring codes in prose (PR-review fix, 2026-07-31)."""
+    codes = set()
+    for corpus in corpora:
+        for _path, text in corpus.files():
+            in_block = False
+            for line in split_lines(text):
+                if _PROBLEM_RESPONSES in line:
+                    in_block = True
+                elif in_block and line.strip() == "":
+                    in_block = False
+                if in_block:
+                    for match in _CODE.finditer(line):
+                        codes.add(match.group(1))
+    return codes
+
+
+def check(corpus, declared, codes_declared=None):
     """P3 over one corpus.
 
     `declared` is the cross-corpus instruction-id union built once from every
@@ -76,7 +97,7 @@ def check(corpus, declared):
                 "`{}` is referenced but declared by no instruction line".format(ident),
             ))
 
-    findings.extend(_check_error_codes(corpus))
+    findings.extend(_check_error_codes(corpus, codes_declared))
     return findings
 
 
@@ -103,7 +124,7 @@ def is_design_slice(path):
     return rest[:1] in "0123456789" and rest[:1] != ""
 
 
-def _check_error_codes(corpus):
+def _check_error_codes(corpus, codes_declared=None):
     """Error codes declared inside a `**Problem responses (RFC 9457):**` block
     (which runs until the first blank line) and never mentioned again anywhere
     else in the corpus, plus design slices that declare codes without ever opening
@@ -121,11 +142,22 @@ def _check_error_codes(corpus):
     declared = {}
     referenced = set()
     findings = []
+    # Blockless design slices are judged only after the whole corpus'
+    # declarations are known (PR-review fix, 2026-07-31; inherited verbatim from
+    # the Rust port source): the old per-file `saw_code` fired on *any* code, so
+    # a slice that merely referenced sibling-owned codes without opening a block
+    # of its own was misread as declaring them in prose — measured live, rating
+    # `design/04-overlays-precedence.md` drew exactly that false positive. The
+    # finding now fires only when a blockless slice carries at least one code no
+    # loaded document declares — i.e. the slice really is the closest thing the
+    # corpus has to that code's declarer, which is the convention divergence the
+    # check exists for.
+    blockless = []
 
     for path, text in corpus.files():
         in_block = False
         saw_block = False
-        saw_code = False
+        codes_outside = set()
         for line in split_lines(text):
             if _PROBLEM_RESPONSES in line:
                 in_block = True
@@ -133,12 +165,18 @@ def _check_error_codes(corpus):
             elif in_block and line.strip() == "":
                 in_block = False
             for match in _CODE.finditer(line):
-                saw_code = True
                 if in_block:
                     declared.setdefault(match.group(1), path)
                 else:
                     referenced.add(match.group(1))
-        if saw_code and not saw_block and is_design_slice(path):
+                    codes_outside.add(match.group(1))
+        if codes_outside and not saw_block and is_design_slice(path):
+            blockless.append((path, codes_outside))
+
+    known_declarations = codes_declared if codes_declared is not None else set(declared)
+    for path, codes_outside in blockless:
+        if any(code not in declared and code not in known_declarations
+               for code in codes_outside):
             findings.append(Finding(
                 "P3/code-convention-divergent",
                 Severity.LOW,

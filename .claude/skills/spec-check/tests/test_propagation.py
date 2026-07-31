@@ -147,6 +147,38 @@ def test_flags_a_target_that_does_not_cite_the_decision():
     assert "D-99" in findings[0].message and "PRD.md" in findings[0].message
 
 
+def test_a_hyphen_prefixed_sibling_id_is_not_a_citation():
+    # `\b` alone matched `D-99` inside `T-D-99`/`SUB-D-99` (the hyphen is a
+    # non-word character, so the boundary held) — a pricing decision counted as
+    # cited by a document naming only a sibling gear's id. Measured live before
+    # the 2026-07-31 PR-review fix: pricing D-14's PRD claim false-resolved
+    # through the rating id `T-D-14`.
+    corpus = Corpus.from_parts(
+        "synthetic",
+        [
+            ("DECISIONS.md", "#### D-99 [H] Invented\n\n- **Propagated**: PRD §1.\n"),
+            ("PRD.md", "This row is distinct from pools (rating T-D-99) entirely.\n"),
+        ],
+    )
+    findings = check(corpus, SeamIndex(), [])
+    assert len(findings) == 1
+    assert findings[0].invariant == "P1/propagation-missing"
+
+
+def test_compound_and_possessive_mentions_still_count_as_citations():
+    # The fix rejects a word character or hyphen *before* the id only: the
+    # trailing boundary is unchanged, so `D-99-pattern` and `D-99's` remain
+    # citations and `D-9` still cannot match inside `D-99`.
+    corpus = Corpus.from_parts(
+        "synthetic",
+        [
+            ("DECISIONS.md", "#### D-99 [H] Invented\n\n- **Propagated**: PRD §1.\n"),
+            ("PRD.md", "The D-99-pattern guard applies; see D-99's rationale.\n"),
+        ],
+    )
+    assert check(corpus, SeamIndex(), []) == []
+
+
 def test_reports_unresolvable_targets_separately_and_at_low_severity():
     corpus = Corpus.from_parts(
         "synthetic", [("DECISIONS.md", "#### D-98 [L] Vague\n\n- **Propagated**: SEAMS.\n")]

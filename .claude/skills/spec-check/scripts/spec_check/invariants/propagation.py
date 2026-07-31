@@ -169,7 +169,16 @@ def check(corpus, seams, loaded):
                 "loaded gear's SEAMS.md: {}".format(d.id, ident, ", ".join(owners)),
             ))
 
-        cite = re.compile(r"\b" + re.escape(d.id) + r"\b")
+        # `\b` alone admits suffix matches inside hyphenated sibling-gear ids —
+        # `\bD-12\b` matches inside `T-D-12` and `\bD-01\b` inside `SUB-D-01`
+        # (the hyphen is a non-word character, so the boundary holds) — letting a
+        # pricing decision count as "cited" by a document that only names a
+        # rating/subscriptions id (PR-review fix, 2026-07-31; inherited verbatim
+        # from the Rust port source). The lookbehind rejects a word character or
+        # hyphen immediately before the id; the trailing `\b` stays, so
+        # `D-01-pattern` and `D-01's` still count and `D-1` still cannot match
+        # inside `D-12`.
+        cite = re.compile(r"(?<![A-Za-z0-9-])" + re.escape(d.id) + r"\b")
         for path in resolved.paths:
             # Cross-gear targets used to be dropped by a bare `continue` — four of
             # pricing's decisions had their only cross-gear claim silently

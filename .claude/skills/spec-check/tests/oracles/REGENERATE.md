@@ -30,6 +30,24 @@ lives:
    73 → 69. Live findings are unchanged at 7 (the cross-gear coverage
    statements). No checker code changed in this capture — documents only.
 
+4. **2026-07-31, third capture — after two PR-review checker fixes** (the only
+   capture so far justified by *checker* behavior rather than document
+   movement, both inherited verbatim from the Rust source this port was
+   verified against). (i) The citation regex no longer matches a decision id
+   as a suffix of a hyphenated sibling-gear id (`\bD-14\b` matched inside
+   `T-D-14`, `\bD-01\b` inside `SUB-D-01`) — this exposed one genuinely
+   uncited claim, `D-14 -> PRD.md`, which was fixed by citing D-14 at
+   `fr-audit-completeness` (live) and moved the frozen-fixture backtest pin
+   P1 28 → 29 (the fixture PRD's only `D-14` token is `T-D-14`, hand-checked).
+   (ii) The `code-convention-divergent` check now judges a blockless design
+   slice against the cross-corpus code-declaration union (mirroring
+   `DeclaredInstructions`), so rating `design/04-overlays-precedence.md` —
+   whose one prose code is block-declared in pricing — stopped drawing a false
+   positive; rating `design/15` still fires (its `RATED` token is declared
+   nowhere). Live findings 7 → 6; suppressed unchanged at 69. Also
+   `known_debt_suppressed` now reads 0 under `--show-known-debt` (nothing is
+   withheld from that envelope).
+
 The discipline is unchanged either way: a finding appearing or disappearing here
 is a real claim about the design set, and re-freezing must be a deliberate,
 separately-justified commit — never a way to make a failing change look green.

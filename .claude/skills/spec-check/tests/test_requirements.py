@@ -225,7 +225,10 @@ def test_a_known_pricing_requirement_parses_whole():
     req = reqs["cpt-cf-bss-pricing-fr-per-seat"]
     assert (req.file, req.line, req.priority, req.kind) == ("PRD.md", 459, "p1", "fr")
     assert req.prose_lines == (461, 465)
-    assert req.prose.startswith("A `modelKind=per_unit` row **MUST** persist a unit price")
+    # Prose head updated 2026-07-31: the PR-review fix qualified the FR to
+    # non-usage rows (the usage carve-out had lagged the 2026-07-28 kind matrix).
+    assert req.prose.startswith(
+        "A **non-usage** `modelKind=per_unit` row **MUST** persist a unit price")
     assert "**Actors**:" in req.prose  # the judge sees the whole declaration
     terms = requirements.derive_terms(req.prose)
     assert {"persist", "quantity", "catalog", "metering"} <= terms

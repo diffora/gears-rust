@@ -99,7 +99,10 @@ def json_report(live, known_debt, show_known_debt):
     """
     out = {
         "findings": [f.to_json() for f in live],
-        "known_debt_suppressed": len(known_debt),
+        # Zero when the debt is shown: nothing was withheld from this envelope
+        # (PR-review fix, 2026-07-31 — the count previously claimed suppression
+        # even when `known_debt` carried every row).
+        "known_debt_suppressed": 0 if show_known_debt else len(known_debt),
         "known_debt_tracked_as": KNOWN_DEBT_TICKET,
     }
     if show_known_debt:

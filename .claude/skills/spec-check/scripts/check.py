@@ -124,6 +124,7 @@ def main(argv=None):
     resolvable = corpora + context_corpora
     seams = SeamIndex.build(resolvable)
     declared = closure.DeclaredInstructions.build(resolvable)
+    codes_declared = closure.declared_codes_union(resolvable)
 
     # Findings are partitioned into known-debt vs. live *per corpus*, before being
     # accumulated across the whole run — not by flattening every corpus's findings
@@ -137,7 +138,7 @@ def main(argv=None):
         corpus_findings = []
         corpus_findings.extend(propagation.check(corpus, seams, resolvable))
         corpus_findings.extend(fr_coverage.check(corpus))
-        corpus_findings.extend(closure.check(corpus, declared))
+        corpus_findings.extend(closure.check(corpus, declared, codes_declared))
 
         gear = gear_name(corpus) or ""
         failing = failing or is_failing(corpus_findings, gear, args.max_severity)

@@ -48,9 +48,16 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # rounds paid down 4 more pinned members — D-25/PRD (D-93), D-40/design-10
     # (the b-wave L-2 fix), METER_AMBIGUOUS (D-103), TAXONOMY_VALUE_IN_USE
     # (D-120) — all hand-checked, notes beside each pinned list.
+    # 7/69 until the 2026-07-31 PR-review checker fixes: the code-convention
+    # check stopped misreading rating design/04's sibling-owned code reference
+    # as a prose declaration (its one code is block-declared in pricing —
+    # cross-corpus union, mirroring DeclaredInstructions), so one live false
+    # positive left; the stricter citation regex simultaneously exposed
+    # D-14 -> PRD.md (false-resolved through rating's `T-D-14`), fixed by citing
+    # D-14 at `fr-audit-completeness` rather than pinning it.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
-    assert len(payload["findings"]) == 7
+    assert len(payload["findings"]) == 6
     assert payload["known_debt_suppressed"] == 69
     assert payload["known_debt_tracked_as"] == "D-69"
 

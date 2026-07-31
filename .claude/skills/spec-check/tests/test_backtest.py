@@ -65,7 +65,13 @@ FIXTURE = (
 #:     01, 03, 04), and `fr-invoice-currency-binding`, `fr-per-seat`,
 #:     `fr-mutation-idempotency` by 2 each.
 #: P3 did not move.
-PINNED_P1 = 28
+# 28 until 2026-07-31: the citation regex stopped matching a decision id as a
+# suffix of a hyphenated sibling-gear id (PR-review fix — `\bD-14\b` matched
+# inside `T-D-14`). The +1 is `D-14 -> PRD.md`: the fixture PRD's only "D-14"
+# token is the rating id `T-D-14` (hand-checked, `grep -c`/`grep -o`), so the
+# claim had been false-resolving through it. More findings, honestly counted —
+# the fix makes the checker stricter, not the tree worse.
+PINNED_P1 = 29
 PINNED_P2 = 7
 PINNED_P3 = 55
 PINNED_TOTAL = PINNED_P1 + PINNED_P2 + PINNED_P3

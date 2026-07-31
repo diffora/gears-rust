@@ -5,6 +5,7 @@ from spec_check.invariants.closure import (
     PINNED_UNREFERENCED_CODES_2026_07_29,
     DeclaredInstructions,
     check,
+    declared_codes_union,
     is_design_slice,
     is_pinned_baseline,
     unreferenced_pair,
@@ -114,6 +115,40 @@ def test_flags_a_document_that_declares_codes_outside_any_problem_responses_bloc
     assert len(divergences) == 1
     assert divergences[0].severity == Severity.LOW
     assert divergences[0].file == "design/01-a.md"
+
+
+def test_does_not_flag_a_blockless_slice_referencing_sibling_declared_codes():
+    # The measured live false positive (rating design/04-overlays-precedence.md,
+    # PR-review fix 2026-07-31): a design slice with no Problem-responses block
+    # whose every prose code is block-declared in a *sibling corpus* is
+    # referencing, not declaring — judged against the cross-corpus union,
+    # mirroring DeclaredInstructions.
+    owner = Corpus.from_parts(
+        "owner",
+        [("design/03-price-structure.md",
+          "**Problem responses (RFC 9457):** `SOME_CODE` (422 — the rule).\n"
+          "\nProse referencing `SOME_CODE` again.\n")],
+    )
+    referrer = Corpus.from_parts(
+        "referrer",
+        [("design/04-overlays.md", "Evaluation adopts `SOME_CODE` verbatim.\n")],
+    )
+    union = declared_codes_union([owner, referrer])
+    findings = check(referrer, DeclaredInstructions.build([owner, referrer]), union)
+    assert not [f for f in findings if f.invariant == "P3/code-convention-divergent"]
+
+
+def test_still_flags_a_blockless_slice_whose_code_is_declared_nowhere():
+    # The true-positive half stays: a blockless slice carrying a code no loaded
+    # document declares really is the closest thing the corpus has to that
+    # code's declarer (the live rating design/15 case).
+    referrer = Corpus.from_parts(
+        "referrer",
+        [("design/04-overlays.md", "The path fails with `ORPHAN_CODE`.\n")],
+    )
+    union = declared_codes_union([referrer])
+    findings = check(referrer, DeclaredInstructions.build([referrer]), union)
+    assert [f for f in findings if f.invariant == "P3/code-convention-divergent"]
 
 
 def test_does_not_flag_a_non_slice_document_that_references_codes():
