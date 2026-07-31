@@ -14,7 +14,7 @@ Status per finding: `open` → `accepted` (fix agreed) → `fixed` (docs patched
 
 ## Summary (all 9 slices reviewed 2026-07-19)
 
-Tally: **3 × S1, 21 × S2, 14 × S3** (37 findings). The design is architecturally sound — the closed
+Tally: **3 × S1, 21 × S2, 14 × S3** (38 findings). The design is architecturally sound — the closed
 status machine, the single commit path, the WHEN/MATH split, and the many 2026-07-15 review fixes are
 solid. The findings cluster into five themes; fix in this order:
 

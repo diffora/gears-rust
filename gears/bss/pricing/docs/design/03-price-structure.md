@@ -56,7 +56,9 @@ the §17.2 conformance mapping.
 `cpt-cf-bss-pricing-fr-per-seat`,
 `cpt-cf-bss-pricing-fr-level-aggregation`
 (the shared amount/currency/precision checks are Foundation-owned —
-`fr-price-amount-validation` is claimed there, one owner per FR; 2026-07-31 P2 fix)
+`fr-price-amount-validation` is claimed there, one owner per FR; 2026-07-31 P2 fix.
+`fr-level-aggregation` joined this list by D-68, 2026-07-29 — one of the two FRs no
+slice had claimed)
 
 ### 1.2 Purpose
 

@@ -61,6 +61,7 @@ math it implies is evaluated downstream.
 `cpt-cf-bss-pricing-fr-derived-composite-meter`,
 `cpt-cf-bss-pricing-fr-discount-ref-hook`, `cpt-cf-bss-pricing-fr-min-qty-floor`,
 `cpt-cf-bss-pricing-fr-trailing-tier-qualification`
+(the last id joined this list by D-68, 2026-07-29 — one of the two FRs no slice had claimed)
 
 ### 1.2 Purpose
 

@@ -458,7 +458,7 @@ A hybrid Plan **MUST** declare both a recurring base price row and a usage price
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-per-seat`
 
-A `modelKind=per_unit` row **MUST** persist a unit price and a `quantitySource` (`subscription_seat_count` | `manual`; and, for `manual`, the fixed quantity). The catalog **MUST NOT** infer, meter, or compute the quantity (zero metering-unit footprint); the read model **MUST** let Rating/Tariffs resolve the per-period quantity from the declared source.
+A **non-usage** `modelKind=per_unit` row **MUST** persist a unit price and a `quantitySource` (`subscription_seat_count` | `manual`; and, for `manual`, the fixed quantity); on a `per_unit` **usage** row `quantitySource` is **absent** — the meter supplies `Q` and `billingGranularity` is required like on every usage row (§17.1; the 2026-07-28 kind×chargeKind fix — this FR's unqualified wording had lagged it). The catalog **MUST NOT** infer, meter, or compute the quantity (zero metering-unit footprint); the read model **MUST** let Rating/Tariffs resolve the per-period quantity from the declared source.
 
 **Rationale**: Per-seat pricing must be explicit about quantity provenance without metering it.
 
@@ -1092,7 +1092,7 @@ The historical-import path that permits past `availableFrom`/effective dates **M
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-audit-completeness`
 
-Any plan/price mutation **MUST** record actor (as a **pseudonymous principal id** — no display names/emails, keeping operator PII out of the long-retention store), timestamp, before/after version, and approval trail; price history **MUST** be retained **>= 7 years** (tenant/jurisdiction-configurable; the **maximum** applicable minimum where several apply) and stored **append-only / tamper-evident** (hash-chained in the transactional store; optionally anchored to external WORM) so prior versions cannot be mutated or deleted within the retention window.
+Any plan/price mutation **MUST** record actor (as a **pseudonymous principal id** — no display names/emails, keeping operator PII out of the long-retention store), timestamp, before/after version, and approval trail; price history **MUST** be retained **>= 7 years** (tenant/jurisdiction-configurable; the **maximum** applicable minimum where several apply) and stored **append-only / tamper-evident** (hash-chained in the transactional store — D-14; optionally anchored to external WORM) so prior versions cannot be mutated or deleted within the retention window.
 
 **Rationale**: Tamper-evidence and jurisdiction-aware retention are compliance gates.
 
@@ -2326,7 +2326,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 
 | Dependency | Description | Criticality |
 |------------|-------------|-------------|
-| Catalog registry (Product & SKU) | Published `skuId`, `bundle` SKU type, `meteringUnit` declaration, `PlanTier` value/taxonomy, tax/GL codes, and `CatalogVersion` (sole incrementer); increment taxonomy **Proposed** | `p1` |
+| Catalog registry (Product & SKU) | Published `skuId`, `bundle` SKU type, `meteringUnit` declaration, `PlanTier` value/taxonomy, tax/GL codes, and `CatalogVersion` (sole incrementer); increment taxonomy + batching SLO **ratified (D-47, 2026-07-28)** | `p1` |
 | ~~PriceWindow (effective-dating use case)~~ | **Consolidated into this PRD** (§15 answered): window scheduling/activation/events owned by the pricing gear; the legacy UC doc is scenario source material — no external dependency remains | — |
 | Subscriptions | Owns the plan-change boundary/mode + runtime, plan-change classification, trial runtime, entitlement enforcement, `PlanLink` migration, sellability checks from published inputs (proration math = rating gear); proration seam is a GA gate | `p1` |
 | Rating (incl. the evaluation core — former "Tariffs / PLAL"; §3.2) | Consumes events + warmed read models; resolves deterministic inputs; owns Usage -> RatedCharge orchestration. Its **evaluation core** consumes the read model (model kind, tiers, evaluation policy, reserved rate, derived-meter definition, `customerGroup` overlays), evaluates formulas/overlays/FX, composes `pricingSnapshotRef`, and adopts the eight-axis scope key — resolving a grandfathered generation by the pinned price id's `cohort` (ADR-0002). One counterpart gear, not two (2026-07-28 review fix) | `p1` |
