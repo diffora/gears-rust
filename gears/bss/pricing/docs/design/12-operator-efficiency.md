@@ -143,6 +143,7 @@ flowchart TB
 
 **Error Scenarios**:
 - Any Phase-1 failure → `BULK_VALIDATION_FAILED` (422, per-row report; nothing committed)
+- A row addressing a **published** row's scope key with changed content → fails Phase 1 per-row (`IMPORT_TARGETS_PUBLISHED` — the import is draft-plane authoring, D-118; published-price changes are a repricing run)
 - An interactive edit hitting a row under the bulk lock → conflict naming the bulk operation (Foundation `fr-concurrent-edit`)
 
 **Steps**:
@@ -190,7 +191,7 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-bulk-import`
 
 **Steps**:
-1. [ ] - `p2` - **Phase 1 — validate all-or-nothing:** every row runs the registered pipeline rules; one invalid row blocks the whole batch pre-commit with a per-row violation report (nothing partially validated sneaks through). A row whose canonical scope key holds a **pending interactive approval unit** (supersession/cutover — PRD one-pending-unit rule) fails Phase 1 **per-row**, naming the pending unit (D-35) - `inst-bk-phase1`
+1. [ ] - `p2` - **Phase 1 — validate all-or-nothing:** every row runs the registered pipeline rules; one invalid row blocks the whole batch pre-commit with a per-row violation report (nothing partially validated sneaks through). A row whose canonical scope key holds a **pending interactive approval unit** (supersession/cutover — PRD one-pending-unit rule) fails Phase 1 **per-row**, naming the pending unit (D-35). **The import's domain is the draft plane (normative, D-118, 2026-07-31 review fix — flagged for veto):** import rows land as **draft** rows — new scope keys, or edits of existing draft rows under their ETags. A row addressing a **published** row's scope key with changed content fails Phase 1 **per-row** (`IMPORT_TARGETS_PUBLISHED`, remediation named: a **repricing run**). Published rows are append-only and change only through the D-88 supersession units with a bounded changeover instant — machinery the import has neither of (no instant in its API, no window operations), while its sibling, mass repricing, was explicitly rebuilt on them (`inst-mr-api`/`inst-mr-apply`); leaving the domain unstated invited an import-as-bulk-supersession build that reopens the transient fail-closed window D-88 closed. One bulk mechanism for published prices; the ETag/bulk-lock story binds draft rows here and published rows in repricing runs - `inst-bk-phase1`
 2. [ ] - `p2` - **Phase 2 — commit per-row optimistic:** each row commits under its own ETag; a conflict (concurrent manual edit) fails **only that row**; committed rows stand; the report lists conflicted rows for retry — silent overwrite never happens in either direction - `inst-bk-phase2`
 3. [ ] - `p2` - The **bulk lock**: rows in an in-flight import are marked; an interactive edit targeting one fails with a conflict **naming the bulk operation** (Foundation `fr-concurrent-edit`) - `inst-bk-lock`
 4. [ ] - `p2` - Idempotency (O4): the import's client key replays to the original report, including during/after the lock window - `inst-bk-idem`
@@ -247,6 +248,8 @@ flowchart TB
 | `POST` | `/v1/pricing/history/export` | History export (SLO-bound) | client key | `plan × read` (D-12) |
 
 **Problem responses (RFC 9457):** `BULK_VALIDATION_FAILED` (422, per-row),
+`IMPORT_TARGETS_PUBLISHED` (per-row in the Phase-1 report — an import row addressing a
+published row's scope key with changed content; D-118, remediation = a repricing run),
 `BULK_ROW_CONFLICT` (reported per row in the operation report), `RUN_SELECTOR_EMPTY` (422),
 `CLONE_SOURCE_NOT_FOUND` (404). Interactive-vs-bulk conflicts surface as the Foundation's
 concurrent-edit conflict naming the bulk operation.
@@ -316,7 +319,10 @@ source subscriptions untouched.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-dod-bulk-import`
 
-Bulk import **MUST** validate all-or-nothing pre-commit (per-row report), route a material
+Bulk import **MUST** operate on the **draft plane only** (D-118: new scope keys or draft-row
+edits; a row addressing a published row's key with changed content fails Phase 1 per-row,
+`IMPORT_TARGETS_PUBLISHED` — published-price changes are repricing runs, which carry the D-88
+units and instant floor), validate all-or-nothing pre-commit (per-row report), route a material
 batch through the Slice 5 approval **before** commit (per-row hash pin; committed ⊆ approved;
 a retry of unchanged conflicted rows reuses the original approval, a changed row starts a
 fresh one), commit per-row under optimistic locks (a conflict fails only that row; committed
@@ -376,6 +382,7 @@ Unit:
 Integration (testcontainers):
 
 - [ ] A 1k-row import with one invalid row commits nothing and reports the row; fixed, it commits with 3 concurrent-edit conflicts isolated and listed
+- [ ] An import row changing a **published** row's content fails Phase 1 per-row (`IMPORT_TARGETS_PUBLISHED`, D-118) while its sibling rows (new keys / draft edits) validate; the same change lands via a repricing run
 - [ ] An interactive PATCH on a bulk-locked row fails naming the bulk operation
 - [ ] A repricing run killed mid-way re-runs to completion without double-applying any row (journal-verified); events deduplicate on the consumer side by `(run_id, price_id)`
 - [ ] A repricing run with a changeover instant closer than the bulk batching-delay SLO at approval commit is rejected (`SUPERSESSION_INSTANT_PASSED`, D-88); an accepted run switches every key at the single named instant with no uncovered interval per key

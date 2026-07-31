@@ -145,7 +145,7 @@ flowchart TB
 
 **Steps**:
 1. [ ] - `p2` - Basis MUST be declared: `sum_of_parts` or `own_price`; the basis and any explicit price persist and freeze - `inst-bb-declared`
-2. [ ] - `p2` - `sum_of_parts`: component **`planId`s** referenced (B1), each published; a component `planId` MUST NOT itself be a `bundle`-type plan — flat composition at launch, nesting is Future scope (`COMPONENT_IS_BUNDLE`; re-composition is re-validated, so a cycle can never form); the summing itself is Tariffs' — the catalog persists the reference set only. **Usage and usage-carrying components are legal (2026-07-30 review fix, L-8):** a usage-only component plan (e.g. a metered API plan beside a seat plan) composes normally — the "sum" covers the components' **recurring** amounts onto the bundle's recurring line set, while each component's usage charges rate per its own rows and itemize per `invoiceItemization`; the frequency-match rule (`inst-bc-frequency`) binds **recurring components only**, by construction - `inst-bb-sum`
+2. [ ] - `p2` - `sum_of_parts`: component **`planId`s** referenced (B1), each published; a component `planId` MUST NOT itself be a `bundle`-type plan — flat composition at launch, nesting is Future scope (`COMPONENT_IS_BUNDLE`; re-composition is re-validated, so a cycle can never form); the summing itself is Tariffs' — the catalog persists the reference set only. **Usage and usage-carrying components are legal (2026-07-30 review fix, L-8):** a usage-only component plan (e.g. a metered API plan beside a seat plan) composes normally — the "sum" covers the components' **recurring** amounts onto the bundle's recurring line set, while each component's usage charges rate per its own rows and itemize per `invoiceItemization`; the frequency-match rule (`inst-bc-frequency`) binds **recurring components only**, by construction. **Component `one_time_setup`/`one_time` rows never charge under a bundle purchase (2026-07-31c review fix, L-3):** setup is tied to standalone **activation** of the component plan (S2 `inst-cs-setup-timing`), which a bundle purchase is not — the bundle's **own** setup row, if authored, is the only activation charge. **Phased component plans are not composable at launch (2026-07-31c review fix, L-4):** a component whose phase schedule is more than the D-19 implicit terminal phase fails publish (`COMPONENT_PHASED`, 422) — which phase's rows sum, and whether a bundle subscription runs the component's phase schedule, are undecided semantics; a named Future gate, the D-53 posture - `inst-bb-sum`
 3. [ ] - `p2` - `own_price`: the bundle's own price rows live on the canonical scope key like any plan's (Slices 3/4 rules apply); a matching-currency component set is still required (Slice 4 case iii) - `inst-bb-own`
 
 ### Component Coverage Validation
@@ -156,6 +156,7 @@ flowchart TB
 1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — the currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule. Coverage/ambiguity evaluates over `priceEligibility = all_subscriptions` (`cohort = none`) rows **only** — grandfathered generations (ADR-0002) are never coverage candidates, so a cutover-touched component's coexisting generation rows neither cover nor count as ambiguous (2026-07-28 review fix, confirmed 2026-07-31). **The narrowing is deliberate for `new_subscriptions_only` too** (2026-07-31 review fix): a component priced solely via `new_subscriptions_only` rows is not coverage-eligible — bundle composition demands the durable `all_subscriptions` base (a new-only promo row expires with its intent); remediation = author an `all_subscriptions` row on the component - `inst-bc-coverage`
 2. [ ] - `p2` - **Recurring** components MUST match `frequency` (a monthly + annual mix cannot sum onto one invoice line set); usage-only components carry no `frequency` and are outside this rule (their charges rate per their own rows — `inst-bb-sum`) - `inst-bc-frequency`
 3. [ ] - `p2` - A missing or ambiguous component row fails publish naming the component + `(currency, region)` - `inst-bc-fail`
+3a. [ ] - `p1` - **One tax display basis per bundle-market (normative, D-119, 2026-07-31 review fix — flagged for veto):** on every `(currency, region)` the bundle sells, **all** component rows — and the bundle's own rows for `own_price` — MUST carry the **same** `tax_inclusive` value; a mixed market fails publish (`BUNDLE_TAX_BASIS_MIXED`, 422, the divergent components named). D-110 pinned one display basis per market per **plan** ("an invoice is one document"); a bundle composes several plans onto exactly one invoice, and the coverage walk above checks currency/region/frequency only — pre-Tax-Engine the mix is masked incidentally (an inclusive component's flagged market blocks the bundle via the D-94 conjunction), and the moment the Tax Engine GAs the same composition sells a mixed-basis invoice. **Reverse guard (the D-54 pattern):** a component re-publish whose basis change would mix a referencing bundle's market fails the same way, the referencing bundle enumerated — otherwise the bundle-side check is a point-in-time promise a later component publish silently breaks - `inst-bc-taxbasis`
 4. [ ] - `p1` - **Bundle sellability (normative):** the Slice 7 gate evaluates a bundle as the **conjunction** over its components — sellable at `t` iff **every** referenced component key passes gate predicates (1)–(5) at `t` (plus the bundle's own `availableFrom`/`availableTo`). Components are **exempt from predicate (6)** — the registry `sellable` flag (D-46) applies to the **bundle SKU itself**, not to component references (`sellable = false` components are exactly the composition-only SKUs bundles exist to package). For `sum_of_parts` there are no own rows, so components are the only inputs; for `own_price` the bundle's **own** rows must pass **and** the component keys too (the matching-currency component set is part of the offer). The frozen component key set spans `priceEligibility = all_subscriptions` (`cohort = none`) keys **only** — grandfathered generations are never gate inputs (2026-07-28 review fix, confirmed 2026-07-31). One unsellable component makes the bundle unsellable, never partially-sellable - `inst-bc-sellability`
 
 ### Rev-Share Reconciliation
@@ -184,7 +185,11 @@ of Slices 2/11 on their `bundle`-type SKU.
 `CURRENCY_NOT_COVERED` (422), `FREQUENCY_MISMATCH` (422), `REVSHARE_UNBALANCED` (422 —
 structurally malformed shares / missing explicit platform cut), `RESIDUAL_OVER_TOLERANCE`
 (422 — `|Σ − 10000| > 1 bp`; D-07), `REVSHARE_BASIS_UNSUPPORTED` (422 — rev-share on an
-`own_price` bundle; D-55).
+`own_price` bundle; D-55), `BUNDLE_TAX_BASIS_MIXED` (422 — component rows (or own rows) of one
+sold `(currency, region)` disagreeing on `tax_inclusive`; D-119 — also raised on a component
+re-publish that would mix a referencing bundle's market, the bundle enumerated),
+`COMPONENT_PHASED` (422 — a component plan with an authored phase schedule; composition
+semantics for phased components are a named Future gate — L-4, 2026-07-31c).
 
 ## 6. Data Model
 
@@ -255,7 +260,11 @@ synchronous; accrual mismatches are Marketplace-side reconciliation.
 
 A bundle **MUST** declare its basis, reference published SKUs and (for `sum_of_parts`)
 component `planId`s covering every sold `(currency, region)` with matching `frequency`;
-a missing/ambiguous component fails publish naming it. Creation, component add/remove/replace,
+a missing/ambiguous component fails publish naming it; component rows (and own rows) of one
+sold market **MUST** share one `tax_inclusive` basis (`BUNDLE_TAX_BASIS_MIXED`, D-119 — with
+the D-54-pattern reverse guard on component re-publishes); a **phased** component fails
+publish (`COMPONENT_PHASED` — Future gate), and component setup/one-time rows never charge
+under a bundle purchase. Creation, component add/remove/replace,
 any rev-share change, a `price_basis` change and an `invoiceItemization` change are
 **always-material** (D-104, `inst-ba-material`) — they carry no price-row delta, so the G1
 no-delta fail-safe applies wholesale and the commit routes through the two-person workflow
@@ -299,6 +308,7 @@ Integration (testcontainers):
 - [ ] A draft recomposition of a published bundle lands on the draft revision's **own copies** (D-92): the published revision's component/rev-share rows are unchanged, and a re-warm re-drive of the published version reflects none of the draft's edits
 - [ ] A three-component, two-vendor bundle round-trips **all** its rows under one revision (D-105: three `pricing_bundle_component` rows, one `pricing_bundle_revshare_group` row per vendor SKU, one `pricing_bundle_revshare` row per party) and the per-group 100% reconciliation runs over each group independently
 - [ ] Materiality (D-104): swapping one component of a published `sum_of_parts` bundle, and separately re-splitting its rev-share, each open an approval unit and block until an independent approval — **even with a threshold policy configured**, since neither produces a price-row delta; a self-approval attempt returns 403 + audit; the approver reads the pinned composition (D-61)
+- [ ] Tax-basis uniformity (D-119): a bundle whose EU components mix `tax_inclusive = true` and `false` fails publish (`BUNDLE_TAX_BASIS_MIXED`, components named) while all-inclusive EU + all-exclusive US publishes; a component re-publish flipping its EU basis while a published bundle references it fails with the bundle enumerated; a phased component fails (`COMPONENT_PHASED`)
 
 ## 10. Non-Functional Considerations
 

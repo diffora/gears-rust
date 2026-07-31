@@ -113,7 +113,7 @@ Design-introduced names (Slice 4):
 
 | Name | Meaning |
 |------|---------|
-| `TaxonomyValidator` | Registered rules: `region` membership on price rows; `brand` membership on brand-scoped `PriceOverlay`s (rule shared with Slice 9) |
+| `TaxonomyValidator` | Registered rules: `region` membership on price rows; overlay **scope-value** membership per class — `brand`, `region`, `partner`, `orgTier` against their tenant taxonomies (D-120; rule shared with Slice 9, which owns the `customerGroup` analogue) |
 | `TaxDisplayValidator` | Registered rules: `taxInclusive`/`taxCategory` completeness under the tenant tax-display policy (C4) + the GA gate (C3) |
 | `CurrencyBindingChecker` | Registered rules: the three enumerated mixed-currency rejection configs (§3); reused by Slice 8 for bundles |
 | `not_sellable_ga` | Read-model flag on a tax-inclusive **price row** (⇒ per `(currency, region)` market) while Tax Engine is pre-GA: authorable, previewable, **not sellable** on that market |
@@ -194,8 +194,8 @@ and bundles (Slice 8) build on.
 
 **Steps**:
 1. [ ] - `p1` - `region` MUST be a member of the tenant's configured region taxonomy; an unknown/invalid region fails validation **before** publish - `inst-tx-region`
-2. [ ] - `p1` - `brand` is **not** a price-row field (Foundation §4.1): a brand-scoped `PriceOverlay`'s `brand` MUST be a member of the tenant's brand taxonomy, validated at save (rule owned here, exercised by Slice 9) - `inst-tx-brand`
-3. [ ] - `p1` - Taxonomy mutation (add/retire a region/brand value) is tenant-admin config, audited; **retiring** a value is rejected while it is referenced by an active published price row (`region`) **or an active brand-scoped `PriceOverlay` scope (`brand`)** — referential integrity over both referencing shapes - `inst-tx-mutation`
+2. [ ] - `p1` - `brand` is **not** a price-row field (Foundation §4.1): a brand-scoped `PriceOverlay`'s `brand` MUST be a member of the tenant's brand taxonomy, validated at save (rule owned here, exercised by Slice 9). **Generalized to every taxonomy-backed overlay scope (D-120, 2026-07-31 review fix):** a **region**-scoped overlay's value MUST be a member of the tenant's region taxonomy, and **partner**/**orgTier**-scoped values MUST be members of the tenant's `pricing_partner_taxonomy` / `pricing_org_tier_taxonomy` (§6; an unknown value fails save — `PARTNER_UNKNOWN` / `ORG_TIER_UNKNOWN`, 422) — before D-120 those two scope classes had **no declared value universe anywhere** (free-form strings on the axis that selects who receives an adjustment, the §F.2 `rounding_policy_ref` pattern) and region overlay values were never checked at all. The MVP universes are tenant-declared (the D-01 pattern); reconciliation against an external partner SoR (AMS/partner registry), when one exists, is a named Future joint item, and the payer → `(partner, orgTier)` resolution input Tariffs matches against is a registered **needs-decision** on the Tariffs contract ([`../PRD.md`](../PRD.md) §9.2) - `inst-tx-brand`
+3. [ ] - `p1` - Taxonomy mutation (add/retire a region/brand/partner/orgTier value) is tenant-admin config, audited; **retiring** a value is rejected while it is referenced by an active published price row (`region`) **or an active `PriceOverlay` scope of any taxonomy-backed class** — `brand`, `region`, `partner`, `orgTier` (D-120, 2026-07-31 review fix: the guard previously enumerated price rows and brand overlays only, so a region value retired cleanly while region-scoped overlays still named it) — referential integrity over every referencing shape - `inst-tx-mutation`
 
 ### Tax Display Basis and Policy
 
@@ -209,7 +209,7 @@ and bundles (Slice 8) build on.
 2. [ ] - `p1` - Policy check (C4): `taxInclusive=true` in a region whose `RegionTaxReadiness` has `ratePresent=false` **and** `taxInclusive=false` in a region with no configured `taxCategory` are both governed by the tenant tax-display policy — default **fail-closed**, explicit warn allowed. The category predicate evaluates the **effective category** = `coalesce(row.tax_category_ref, readiness.taxCategory)` — a row-level `tax_category_ref` satisfies the check in a region whose taxonomy carries no default category (2026-07-28 review fix, confirmed 2026-07-31). Readiness is resolved per `(tenant, region)`; an unknown region fails closed - `inst-td-policy`
 2a. [ ] - `p1` - **Readiness provider (D-01):** at MVP `RegionTaxReadiness` reads the tenant-declared `tax_category`/`tax_rate_present` columns on `pricing_region_taxonomy` (CatalogAdmin, `config × write`, audited) — it catches **configuration** mistakes; rate correctness is unverifiable before Tax Engine. Once Tax Engine GAs, the provider becomes Tax Engine-backed and the tenant-declared markers are **reconciled** against its registry: a divergence (declared ready, engine disagrees) flags affected published rows **in the operator-plane flag store (`pricing_operator_flag`, D-85 — never the versioned read model: the reconciliation signal has no publish unit, and a frozen `CatalogVersion` never mutates)** + raises `pricing.tax.readiness_divergent` (Warn); remediation is a re-publish — never a silent retro-change - `inst-td-readiness`
 3. [ ] - `p1` - **GA gate (C3):** while Tax Engine is pre-GA a `taxInclusive=true` **row** MAY be authored and previewed but publishes with the read-model flag `not_sellable_ga` — the flag is **per price row, hence per `(currency, region)` market**, not per plan: a plan selling tax-exclusive in US and tax-inclusive in EU is gated **only** on its EU market(s); the sellability gate (Slice 7) evaluates the flag per scope key; MVP sells tax-exclusive - `inst-td-gagate`
-3a. [ ] - `p1` - **One display basis per market (normative, D-110, 2026-07-31 review fix):** every published row of a plan on one `(currency, region)` MUST carry the **same** `tax_inclusive` value — a mixed-basis market fails publish (`TAX_BASIS_MIXED_MARKET`, 422, naming the divergent rows). `tax_inclusive` is a **display** basis and an invoice is one document: a tax-inclusive recurring line beside a tax-exclusive usage line is not renderable coherently, and the descriptor set's line template has no per-line basis to switch on. Nothing constrained this before, and the symptom was misdirected: under the D-94 conjunction one tax-inclusive component key flags its market `not_sellable_ga` and the **whole** plan-market silently becomes unsellable (predicate (5) fails on one bound key), with no publish-time explanation to the operator — post-Tax-Engine-GA the same authoring becomes a mixed-basis invoice instead. The rule is per market, not per plan: a plan selling tax-exclusive in US and tax-inclusive in EU stays legal and is gated only on EU (`inst-td-gagate`) - `inst-td-basis-uniform`
+3a. [ ] - `p1` - **One display basis per market (normative, D-110, 2026-07-31 review fix):** every published row of a plan on one `(currency, region)` MUST carry the **same** `tax_inclusive` value — a mixed-basis market fails publish (`TAX_BASIS_MIXED_MARKET`, 422, naming the divergent rows). `tax_inclusive` is a **display** basis and an invoice is one document: a tax-inclusive recurring line beside a tax-exclusive usage line is not renderable coherently, and the descriptor set's line template has no per-line basis to switch on. Nothing constrained this before, and the symptom was misdirected: under the D-94 conjunction one tax-inclusive component key flags its market `not_sellable_ga` and the **whole** plan-market silently becomes unsellable (predicate (5) fails on one bound key), with no publish-time explanation to the operator — post-Tax-Engine-GA the same authoring becomes a mixed-basis invoice instead. The rule is per market, not per plan: a plan selling tax-exclusive in US and tax-inclusive in EU stays legal and is gated only on EU (`inst-td-gagate`). The **bundle analogue** — one basis across all *component* rows of a bundle-market — is Slice 8's `inst-bc-taxbasis` (D-119): this rule keeps each plan internally uniform, that one keeps a composed invoice uniform - `inst-td-basis-uniform`
 4. [ ] - `p1` - When Tax Engine GAs, clearing `not_sellable_ga` is a re-publish (goes through the pipeline + approval), not a silent flag flip - `inst-td-clear`
 
 ### Single-Currency-per-Invoice Binding
@@ -244,11 +244,13 @@ and bundles (Slice 8) build on.
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
 | `GET` | `/v1/pricing/plans/{planId}/preview` | Base-price preview per `(currency, region)`; fail closed, overlay disclaimer | — |
-| `GET/PUT` | `/v1/pricing/config/taxonomies/{region\|brand}` | Tenant taxonomy read/update (admin, audited) | ETag |
+| `GET/PUT` | `/v1/pricing/config/taxonomies/{region\|brand\|partner\|orgTier}` | Tenant taxonomy read/update (admin, audited; partner/orgTier added by D-120) | ETag |
 | `GET/PUT` | `/v1/pricing/config/tax-display-policy` | Tenant tax-display policy (fail-closed default) | ETag |
 
 **Problem responses (RFC 9457):** `REGION_UNKNOWN` (422), `BRAND_UNKNOWN` (422),
-`TAXONOMY_VALUE_IN_USE` (409, on retire), `TAX_BASIS_INCOMPLETE` (422, per policy),
+`PARTNER_UNKNOWN` (422) / `ORG_TIER_UNKNOWN` (422 — an overlay scope value outside the tenant
+taxonomy; D-120), `TAXONOMY_VALUE_IN_USE` (409, on retire — any referencing shape, incl.
+region/partner/orgTier-scoped overlays), `TAX_BASIS_INCOMPLETE` (422, per policy),
 `TAX_BASIS_MIXED_MARKET` (422 — rows of one plan on one `(currency, region)` disagreeing on
 `tax_inclusive`; D-110, `inst-td-basis-uniform`, divergent rows named),
 `CURRENCY_NOT_COVERED` (422, naming component + currency), `PRICE_ROW_ABSENT` (404 preview,
@@ -258,7 +260,11 @@ fail closed). Price-row authoring codes are Slice 3's.
 
 Slice-owned tables (tenant-scoped, SecureORM; `pricing_` prefix per Foundation §3.7):
 
-**`pricing_region_taxonomy`** / **`pricing_brand_taxonomy`** (PK `(tenant_id, value)`):
+**`pricing_region_taxonomy`** / **`pricing_brand_taxonomy`** / **`pricing_partner_taxonomy`** /
+**`pricing_org_tier_taxonomy`** (PK `(tenant_id, value)`; the last two added by D-120 as the
+MVP value universes for the `partner`/`orgTier` overlay scopes — same shape, same
+CatalogAdmin `config × write` + audit + retire-guard discipline; the `tax_*` columns below are
+region-only):
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -323,9 +329,11 @@ fails closed on preview and publish.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-taxonomy`
 
-`region` on price rows and `brand` on brand-scoped `PriceOverlay`s **MUST** validate against the
-tenant taxonomies before publish (unknown value fails); retiring a referenced taxonomy value
-**MUST** be rejected; taxonomy mutation is admin-scoped and audited.
+`region` on price rows — and every taxonomy-backed `PriceOverlay` scope value: `brand`,
+`region`, `partner`, `orgTier` (D-120) — **MUST** validate against the tenant taxonomies
+before publish (unknown value fails); retiring a referenced taxonomy value **MUST** be
+rejected across every referencing shape (price rows and all scoped overlays); taxonomy
+mutation is admin-scoped and audited.
 
 **Implements**: `cpt-cf-bss-pricing-algo-taxonomy`
 

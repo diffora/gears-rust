@@ -196,7 +196,7 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 4. [ ] - `p1` - Tiered usage rows — **and `package` usage rows** (`inst-pk-window`) — MUST carry `tierAggregationWindow` (`calendar_month | invoice_period | subscription_lifetime | per_event`); derivation of the in-window `Q` is the row's `aggregationFunction` per Q2/D-44 — `sum` (default) window-sum, or the non-`sum` granule fold (`peak`/`time_weighted`, authoring rules in this slice's Level Aggregation algorithm) whose sum-of-folds `Q` is additive, so band math is unchanged either way - `inst-tb-window`
 5. [ ] - `p1` - **Band units (normative):** `fromQty`/`toQty` are expressed in **billable units after `billingGranularity` quantization** (e.g. `per_hour` → band quantities are hours, never raw seconds); the read model documents the unit so catalog and Tariffs cannot diverge on it - `inst-tb-units`
 6. [ ] - `p1` - **Window continuity across supersession (normative):** the tier counter `Q` is derived per **`(subscription, meter, dimensionKey, window)`** (the canonical 4-tuple agreed with Rating — SEAMS M7; `dimensionKey` = the empty tuple until OSS dimensional emission lands, so undimensioned plans read as the single empty-tuple counter) — it belongs to the subscription's usage history, **not** to a price-row version — and the key is **phase-blind** (D-89, 2026-07-31 review fix): a **phase conversion never resets the counter** either, which is why a phase-scoped usage override must preserve the same unit/counter fields (S2 `inst-ph-override-units`). Superseding a row (new bands, new price) does **NOT** reset an in-window counter, and `subscription_lifetime` `Q` in particular survives every supersession/versioning **and every phase conversion**; the new row's bands are simply applied to the continued `Q`. Requires its own joint golden fixture (a supersession mid-window scenario **and a phase-conversion mid-window scenario**, D-89) in the Slice 3 conformance registry - `inst-tb-window-continuity`
-7. [ ] - `p1` - **Supersession unit guard (normative, D-82, 2026-07-30 review fix; `model_kind` added by D-98, 2026-07-31):** because the counter continues, a **usage-row** supersession MUST NOT change the fields the continued `Q` is denominated in, derived from, **or priced by** — the successor MUST carry the predecessor's `meter`, `dimensionKey`, **`model_kind`**, `billingGranularity`, `aggregationFunction`, `aggregationGranularity`, `tierAggregationWindow` and `tierQualificationWindow` unchanged; any difference fails publish (`SUPERSESSION_UNIT_MISMATCH`, 422, offending fields named). Without it a `per_hour` → `per_day` successor applies an hours-denominated continued `Q` to day-denominated bands — the D-77 ×24 band-edge class reintroduced through supersession — a `meter` change silently reads a different counter stream, and a `graduated → volume`/`package` flip mid-window re-prices the **already-accumulated** window total under new math (Variant A applies the selected band's single rate to the whole window `Q`, including units already rated marginally under the predecessor — D-98). Supersession is a **price** change on one key (new amounts, new bands); changing what or how the key meters — or which formula prices it — is **structural** and routes through plan revisioning + migration (Foundation §4.3 mechanism taxonomy). Binds every usage row (`per_unit`/`graduated`/`volume`/`package`); the supersession-continuity fixture carries the negative unit-change **and kind-flip** scenarios - `inst-tb-supersession-units`
+7. [ ] - `p1` - **Supersession unit guard (normative, D-82, 2026-07-30 review fix; `model_kind` added by D-98, 2026-07-31):** because the counter continues, a **usage-row** supersession MUST NOT change the fields the continued `Q` is denominated in, derived from, **or priced by** — the successor MUST carry the predecessor's `meter`, `dimensionKey`, **`model_kind`**, `billingGranularity`, `aggregationFunction`, `aggregationGranularity`, `tierAggregationWindow`, `tierQualificationWindow` **and `package_size`** (D-122, 2026-07-31: block math is non-linear in the window — D-58's own argument — and rating counts blocks by the T-D-12 **cumulative ceil-diff**, which presupposes one block size per window, so a mid-window `package_size` change re-buckets the already-accumulated `used` exactly like the D-98 kind flip; `package_price_minor` remains the legitimate price lever) unchanged; any difference fails publish (`SUPERSESSION_UNIT_MISMATCH`, 422, offending fields named). Without it a `per_hour` → `per_day` successor applies an hours-denominated continued `Q` to day-denominated bands — the D-77 ×24 band-edge class reintroduced through supersession — a `meter` change silently reads a different counter stream, and a `graduated → volume`/`package` flip mid-window re-prices the **already-accumulated** window total under new math (Variant A applies the selected band's single rate to the whole window `Q`, including units already rated marginally under the predecessor — D-98). Supersession is a **price** change on one key (new amounts, new bands); changing what or how the key meters — or which formula prices it — is **structural** and routes through plan revisioning + migration (Foundation §4.3 mechanism taxonomy). Binds every usage row (`per_unit`/`graduated`/`volume`/`package`); the supersession-continuity fixture carries the negative unit-change **and kind-flip** scenarios - `inst-tb-supersession-units`
 
 ### Package Pricing Validation
 
@@ -276,8 +276,9 @@ row, an unknown value, a non-`sum` row with `maxHold` missing or `< 1`, or `maxH
 `aggregationGranularity`** present on a `sum` row; D-44),
 `SUPERSESSION_UNIT_MISMATCH` (422 — a usage-row supersession whose successor changes
 `meter`/`dimensionKey`/`model_kind`/`billingGranularity`/`aggregationFunction`/
-`aggregationGranularity`/`tierAggregationWindow`/`tierQualificationWindow`; D-82 + D-98 — the
-continued `Q` keeps its denomination and its pricing math; offending fields named),
+`aggregationGranularity`/`tierAggregationWindow`/`tierQualificationWindow`/`package_size`;
+D-82 + D-98 + D-122 — the continued `Q` keeps its denomination, its pricing math and its
+block bucketing; offending fields named),
 `LEVEL_UNIT_MISMATCH` (422 — non-`sum` row on a non-gauge meter, or the SKU-declared billable
 unit ≠ level unit × granule; D-44),
 `LEVEL_GRANULARITY_MISMATCH` (422 — on a non-`sum` row `billingGranularity` is not the
@@ -331,7 +332,8 @@ publish. The `variant` axis also keys **cross-cutting scenario fixtures** (e.g.
 the continuity fixture **gates the first publish of any tiered usage kind** (alongside that
 kind's own fixture) — ratified, D-22 — and carries the D-82 negative scenario (a
 unit-changing successor is rejected at publish, `SUPERSESSION_UNIT_MISMATCH`), the D-98
-kind-flip negative scenario, and the D-89 phase-conversion-mid-window continuity scenario. This table is **tenant-global** — an explicit,
+kind-flip negative scenario, the D-122 `package_size`-change negative scenario, and the D-89
+phase-conversion-mid-window continuity scenario. This table is **tenant-global** — an explicit,
 documented carve-out from the SecureORM tenant-binding rule (Foundation §3.1): the fixture
 corpus is a property of the *gear build*, not of any tenant, so the gate must read the same
 rows for every tenant (a tenant-scoped copy would let one tenant's missing fixture pass
@@ -387,9 +389,9 @@ D-17: capping is owned by entitlement quotas / per-period caps) and no zero-widt
 billable units after `billingGranularity` quantization (the read model documents the unit).
 A usage-row supersession **MUST NOT** change the unit/counter-determining fields
 (`meter`, `dimensionKey`, `model_kind`, `billingGranularity`, `aggregationFunction`,
-`aggregationGranularity`, `tierAggregationWindow`, `tierQualificationWindow`) — the successor
-fails publish otherwise (`SUPERSESSION_UNIT_MISMATCH`, D-82 + D-98); structural changes route
-through plan revisioning + migration.
+`aggregationGranularity`, `tierAggregationWindow`, `tierQualificationWindow`,
+`package_size`) — the successor fails publish otherwise (`SUPERSESSION_UNIT_MISMATCH`,
+D-82 + D-98 + D-122); structural changes route through plan revisioning + migration.
 
 **Implements**: `cpt-cf-bss-pricing-algo-tier-bands`
 
@@ -471,7 +473,7 @@ Integration (testcontainers):
 - [ ] A `volume` row publishes as Variant A (no per-band fee field exists to author)
 - [ ] Publish with a `package` row while the registry lacks the package fixture is blocked (`FIXTURE_MISSING`); flipping the registry green unblocks
 - [ ] Superseding a published row creates a new row + closes the window; UPDATE/DELETE of the published row is rejected by the DB role/trigger
-- [ ] A supersession whose successor changes a unit/counter field — `per_hour` → `per_day`, a different `meter`, a different `tierAggregationWindow`, or a `graduated` → `volume` kind flip (D-98) — is rejected (`SUPERSESSION_UNIT_MISMATCH`, the fields named); an identical-unit successor with new bands publishes and the mid-window counter continues (D-82); a phase conversion mid-window continues the same counter against the (same-denomination) phase row (D-89)
+- [ ] A supersession whose successor changes a unit/counter field — `per_hour` → `per_day`, a different `meter`, a different `tierAggregationWindow`, a `graduated` → `volume` kind flip (D-98), or a `package` row's `package_size` (D-122; a `package_price_minor` change alone publishes) — is rejected (`SUPERSESSION_UNIT_MISMATCH`, the fields named); an identical-unit successor with new bands publishes and the mid-window counter continues (D-82); a phase conversion mid-window continues the same counter against the (same-denomination) phase row (D-89)
 - [ ] The supersession-continuity fixture (`variant = supersession_continuity`) is registered green for the tiered kinds before their first publish; a mid-window supersession scenario keeps the tier counter `Q` continuous
 - [ ] A `peak`/`hour` row (cloudlet) and a `time_weighted`/`hour` row (storage GB-month) each publish only with the green `level-aggregation` fixture (`FIXTURE_MISSING` otherwise); the frozen `aggregationFunction`/`aggregationGranularity`/`maxHold` triple appears in the read model exactly as authored; a `time_weighted`/**`day`** row validates its billable unit as level·granule-**days** (GB·day — the `day` granule case, not only `hour`)
 

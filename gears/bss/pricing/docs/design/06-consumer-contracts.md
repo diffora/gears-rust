@@ -220,6 +220,7 @@ Tariffs/Rating compute from.
 3. [ ] - `p1` - `comparabilityRank` REQUIRED for any plan in self-service change (K4 — no `PlanTier`-ordering alternative at launch; 2026-07-28 review fix, confirmed 2026-07-31); rank semantics: higher = upgrade, lower = downgrade, equal = switch (drives proration sign/credit in Subscriptions) - `inst-pc-rank`
 4. [ ] - `p1` - **Edge boundary classification (D-25, revised by D-93, 2026-07-31 — flagged for veto · joint with Subscriptions):** the `in_place` vs `cancel_plus_new` classification is computed **at change time by Subscriptions** from both plans' published facts at its pinned version — the target covers the subscription's frozen `(currency, region)` with matching frequency ⇒ `in_place`, else `cancel_plus_new` (a K3 boundary) — exactly the read-time discipline `comparabilityRank` already uses (both ranks resolve at read; D-54 guards their presence). The pre-D-93 publish-time stamp is **removed**: it promised re-computation "on either side's re-publish", but a target's publish unit warms only the target's own delta (D-86/D-91) and the source's published revision is immutable, so a mechanism never existed and a stale `in_place` would run an in-place change across a boundary (wrong proration). The catalog publishes the **inputs** — each plan's market/frequency facts and the edge list — and the disclosure obligation stands: Subscriptions/storefront disclose credit forfeiture on `cancel_plus_new` before execution - `inst-pc-boundary`
 5. [ ] - `p1` - Change-target edits are plan mutations → versioned, approvable (Slice 5 materiality applies) - `inst-pc-governed`
+6. [ ] - `p1` - **Plan-change usage-counter continuity (normative, D-113, 2026-07-31 review fix — flagged for veto · joint with Rating + Subscriptions):** the plan authors **`usageCounterOnPlanChange ∈ {reset (default) | carry}`** — the snapshot-frozen flag Rating's plan-change boundary consults for tier-`Q` continuity (rating T-D-12 / `design/09`, which named pricing as this flag's home while **no pricing document defined it**: the D-01 class between gears — every mid-window plan change evaluated against an absent flag, and rating's own two absence readings disagreed). Semantics: at an **in-place** plan change Rating routes the **target** plan's frozen flag (the plan whose bands consume the continued `Q` accepts the continuity liability); **absence = `reset`** (an old snapshot without the field is a reset, never a rating failure). **`carry` is honoured per shared `(meter, dimensionKey)` line and only where the D-82/D-98/D-122 unit field set (`model_kind`, `billingGranularity`, `aggregationFunction`, `aggregationGranularity`, `tierAggregationWindow`, `tierQualificationWindow`, `package_size`) matches between the source and target rows across both frozen snapshots** — a mismatched line **resets** (+ a rating-side operator signal), never carries a counter across denominations: the counter key `(subscription, meter, dimensionKey, window)` is plan-blind, publish-time guarding is impossible across independent plans, and an unguarded carry is the ×24 class through its fourth door (supersession — D-82, kind flip — D-98, phase axis — D-89, plan change — here). Commitment-**pool** carry stays Rating/Contracts-side pending the deferred committed-usage authoring: pricing publishes **no** pool flag, and rating's pool default stays reset — stated so that gap is not recreated silently. Owed adoptions: Rating (target-snapshot routing, per-line unit check, absence default, a SEAMS row); Subscriptions (informational — the WHEN/MATH split is unchanged) - `inst-pc-counter-carry`
 
 ### Rating Compatibility Contract
 
@@ -282,6 +283,7 @@ Foundation §3.7):
 | `entitlement_grants` | `jsonb` | `featureFlag`/`quotaKey` entries, or the `PlanTier` reference + the resolved set; optional `perPhase` map keyed by `phase_id` (D-41) — keys referential-validated against the plan's phase schedule, the projection materializes the complete `phase→grant-set map` |
 | `allowed_change_targets` | `jsonb` | explicit `planId` list only — rule-based targets are not authorable at launch (D-23; §17.8 Future); entries `[{planId}]` — the `in_place \| cancel_plus_new` classification is **not stamped** here: it is computed at change time by Subscriptions from both plans' published market/frequency facts at its pinned version (D-93 — a stamped value cannot be re-computed under the frozen per-subject read model); NULL = no self-service change (fail-safe) |
 | `comparability_rank` | `int` | required when participating in self-service change (K4) |
+| `usage_counter_on_plan_change` | `enum` | `reset (default) \| carry` — the snapshot-frozen plan-change tier-`Q` continuity flag Rating consumes from the **target** plan's snapshot (D-113); `carry` honoured per shared `(meter, dimensionKey)` line only under the D-82/D-98/D-122 unit-field match, else that line resets; absence = `reset`. Revision-scoped like every plan column |
 
 Key constraints: `CHECK (billing_timing IS NOT NULL)` enforced at the publish transition (not
 on drafts); `anchor_day BETWEEN 1 AND 31` with last-of-month semantics per K2 documented on
@@ -361,7 +363,10 @@ per-phase key naming no phase of the plan's schedule.
 
 `allowedChangeTargets` **MUST** reference published plans only; absence **MUST** mean no
 self-service change; `comparabilityRank` **MUST** be present for participating plans (no
-`PlanTier`-ordering alternative at launch — K4); target edits are governed mutations.
+`PlanTier`-ordering alternative at launch — K4); target edits are governed mutations. The plan
+**MUST** publish `usageCounterOnPlanChange` (`reset` default; D-113) — the snapshot-frozen
+flag Rating's plan-change boundary consults, with `carry` honoured only per unit-matched
+shared `(meter, dimensionKey)` line (mismatch ⇒ reset, never a cross-denomination carry).
 
 **Implements**: `cpt-cf-bss-pricing-algo-plan-change`
 
@@ -396,6 +401,7 @@ Integration (testcontainers):
 - [ ] A hybrid plan publishes `in_advance` base + implicit `in_arrears` usage; both visible in the read model exactly as authored
 - [ ] The published `prorationBasis` value round-trips byte-identical through snapshot → read model → consumer read (no normalization drift)
 - [ ] A plan without `allowedChangeTargets` reads as no-self-service-change (field absent, not defaulted)
+- [ ] `usageCounterOnPlanChange` round-trips frozen (D-113): unset publishes as `reset`; a `carry` target plan sharing a `(meter, dimensionKey)` line with matching unit fields reads `carry` for that line, while the same pair with a `per_hour` vs `per_day` mismatch resolves `reset` for it (the check runs Rating-side over both frozen snapshots — this AC pins the published inputs)
 - [ ] Grant set resolved from `PlanTier` publishes both the reference and the resolved set
 - [ ] The read model exposes `crossBoundaryChangePolicy = cancel_plus_new` + `crossBoundaryWarningText` on every resolved `plan` subject row (not as a subject-less contract-level record — the D-91 keying has no such subject)
 
