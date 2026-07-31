@@ -249,7 +249,7 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 
 **Transitions**:
 1. [ ] - `p1` - **FROM** draft **TO** published **WHEN** the Foundation pipeline (incl. this slice's validators + the `FixtureGate`) passes and the publish commits; the row becomes append-only - `inst-ps-publish`
-2. [ ] - `p1` - **FROM** published **TO** superseded **WHEN** a supersession within the same canonical scope key closes this row's window and opens the successor's (Foundation §4.3; no in-place mutation, no overlap). The transition executes **only** inside the Slice 7 **supersession unit** (D-88, [`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) `algo-supersession`): successor row + window shorten + window schedule as one approval unit and one ACID commit — there is no primitive-by-primitive path to this flip - `inst-ps-supersede`
+2. [ ] - `p1` - **FROM** published **TO** superseded **WHEN** a supersession within the same canonical scope key closes this row's window and opens the successor's (Foundation §4.3; no in-place mutation, no overlap). The transition executes **only** inside one of the **two** Slice 7 atomic units — never primitive-by-primitive: (a) the **supersession unit** (D-88, [`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) `algo-supersession`): successor row + window shorten + window schedule as one approval unit and one ACID commit; (b) the **grandfathering cutover** (`inst-co-supersede`, **D-100**, 2026-07-31 review fix), whose `all_subscriptions` successor lands on this row's own scope key — only the grandfathered copy moves to a new `cohort` key — so its commit must flip this row too or violate the Foundation's one-published-row-per-key partial `UNIQUE`. Naming the supersession unit as the *sole* path made a committable cutover impossible to build from the documents; Foundation §3.7's trigger whitelist had always anticipated both ("on supersession/**cutover**") - `inst-ps-supersede`
 3. [ ] - `p1` - There is no deleted state for published rows; only never-published `draft` rows are deletable - `inst-ps-nodelete`
 
 ## 5. API Surface
@@ -265,8 +265,9 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 `TIER_BANDS_GAP` (422), `TIER_BAND_EMPTY` (422 — `toQty ≤ fromQty` on a non-open band),
 `TIER_TOP_CLOSED` (422 — the top band must be open; capping belongs to quotas / per-period caps, D-17), `PACKAGE_FIELDS_INVALID` (422),
 `EVAL_POLICY_MISPLACED` (422), `MODEL_KIND_CHARGEKIND_MISMATCH` (422 — `graduated`/`volume`/`package` on a non-usage row, or `flat` on a usage row; D-18 + 2026-07-28 review fix), `EVAL_POLICY_MISSING` (422 — `tierAggregationWindow` unset on a
-tiered usage row, or `billingGranularity` unset on a usage row; the error references the
-allowed values per the PRD Glossary), `QUANTITY_SOURCE_MISSING` (422), `FIXTURE_MISSING` (422),
+tiered **or `package`** usage row (`inst-pk-window`, D-58 — the `package` case had been omitted
+from this description, 2026-07-31 review fix), or `billingGranularity` unset on a usage row; the
+error references the allowed values per the PRD Glossary), `QUANTITY_SOURCE_MISSING` (422), `FIXTURE_MISSING` (422),
 `AMOUNT_PLACEMENT_INVALID` (422 — `amount_minor` NULL on `flat`/`per_unit`, or non-NULL on
 `graduated`/`volume`/`package` where the money lives in the band/package column; §6 per-kind
 amount matrix, 2026-07-28 review fix),

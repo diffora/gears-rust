@@ -123,6 +123,7 @@ Inherits Foundation C-set. Slice-10-specific:
 | `CompositeMeterValidator` | Registered rules: ≥ 2 published constituents, formula-as-data well-formedness, no self-reference, one output unit |
 | `DiscountRefResolver` | Referential-integrity check against the registered external instrument |
 | `FloorTypeValidator` | `purchase` vs `usage` typing + in-band placement warning |
+| `TierQualificationValidator` | Registered rules for `tierQualificationWindow` (D-40/D-60): tiered-usage-only placement, the `tierAggregationWindow` pairing, the `$0`-lowest-band ban, and the `trailing_tier` fixture gate (named in `dod-trailing-tier` since D-69; added to this table by the 2026-07-31 review fix) |
 
 ### 1.8 Context & Dependencies
 
@@ -313,29 +314,46 @@ Columns on Foundation-owned tables + one slice table (`pricing_` prefix per Foun
 | `min_qty_usage` | `bigint` | usage floor (eligibility, Tariffs/Rating) |
 | `min_qty_usage_fallback` | `enum` | REQUIRED when `min_qty_usage` set; launch: `exception` only (rating exception path); frozen in snapshot |
 | `included_allowance` | `jsonb` | authored D-45 declaration `{quantity, rolloverPolicy}`; usage rows only; the compiled artifacts ($0 band rows in `pricing_price_tier_band` + the allowance marker, or the promotional grant) are derived at publish and frozen alongside it |
+| `tier_qualification_window` | `enum` | `current (default) \| trailing_period` (D-40; the lock itself is Rating-owned — D-60, `inst-tt-lock`). **Tiered usage rows only** — an explicit value of any kind on a non-tiered or non-usage row fails publish (`TIER_QUAL_ON_NON_TIERED`, `inst-tt-forbidden`); `trailing_period` additionally requires `tierAggregationWindow ∉ {subscription_lifetime, per_event}` (`inst-tt-window-pair`), a non-`$0` lowest band (`inst-tt-zero-band`) and the green `trailing_tier` fixture (`inst-tt-fixture`). Frozen in the snapshot. *Declared here by the 2026-07-31 review fix: the column was referenced only by `dod-trailing-tier`'s Touches list and appeared in no data-model table of the set* |
 
-**`pricing_plan_grant`** (PK `grant_id`; FK `plan_id` — D-52, 2026-07-28: grants are a
-**table, not a singleton column** — one plan legitimately holds several: an authored prepaid
-grant plus one compiled `carry` allowance grant **per allowance-carrying usage row**
-(`inst-ac-carry`), so a single-jsonb model had nowhere to put the second grant):
+**`pricing_plan_grant`** (PK **`(grant_id, plan_revision)`**; FK `plan_id` — D-52, 2026-07-28:
+grants are a **table, not a singleton column** — one plan legitimately holds several: an authored
+prepaid grant plus one compiled `carry` allowance grant **per allowance-carrying usage row**
+(`inst-ac-carry`), so a single-jsonb model had nowhere to put the second grant).
+**Revision discipline (D-106, 2026-07-31 review fix — the D-83/D-92 model applied here):** a grant
+is plan-shape configuration frozen in the snapshot, so it **versions with the plan revision,
+copy-on-new-revision**, with the `grant_id` half **stable across revisions** (exactly the
+`pricing_plan_phase` shape — the snapshot's grant reference and Billing's drawdown identity must
+not churn on an unrelated revision). A published revision's grant rows are immutable with it and
+are the projection source for warm and re-drive alike; the open draft revision edits **its own
+copies**. Without this, a draft revision changing a grant's `applicability` or `drawdownPriority`
+mutated **published** truth and a degraded-warm re-drive could leak the draft into a frozen
+version — the exact defect D-83 closed for phases/add-ons/descriptors and D-92 for
+bundles/overlays, with the two remaining plan children never swept:
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `grant_id` | `uuid` | PK; the identity `pricing_grant_price` and the compiled-allowance marker reference |
+| `grant_id` | `uuid` | PK half; **stable across plan revisions** (never re-minted) — the identity `pricing_grant_price`, the snapshot and the compiled-allowance marker reference |
+| `plan_revision` | `int` | PK half — the revision this copy belongs to (copy-on-new-revision, D-106) |
 | `source` | `enum` | `authored \| compiled_allowance` — a compiled grant additionally records its source `price_id` (replay lineage; recompiled, never hand-edited) |
 | `expiry_policy` | `enum` | `never \| days(N)` on `authored` rows (D-43); **`periods(N)`** is the **compiled-only** third form (the `inst-ac-carry` carry horizon — anchor-derived billing periods): REQUIRED on `source = compiled_allowance`, forbidden on `authored` (publish-enforced per source) |
 | `grant_amount` / `credit_unit` / `auto_recharge_allowed` / `category` / `drawdown_priority` | — | as before (D-43 field rules unchanged, applied per grant row) |
 | `applicability` | `jsonb` | the **materialized** usage-meter id set or `all_usage`, per grant |
 
-**`pricing_grant_price`** (FK **`grant_id`** — re-keyed by D-52): `currency`, `region`,
-`price_minor` (≥ 0) — the grant's purchase price per market (A3: not on the canonical scope
-key, no `chargeKind`); rows REQUIRED iff that grant's `category = prepaid` (price rows on a
-`promotional` grant fail publish; compiled allowance grants are always `promotional` — never
-priced).
+**`pricing_grant_price`** (FK **`(grant_id, plan_revision)`** — re-keyed on the grant by D-52,
+revision-scoped with it by D-106; `UNIQUE (grant_id, plan_revision, currency, region)`):
+`currency`, `region`, `price_minor` (≥ 0) — the grant's purchase price per market (A3: not on the
+canonical scope key, no `chargeKind`); rows REQUIRED iff that grant's `category = prepaid` (price
+rows on a `promotional` grant fail publish; compiled allowance grants are always `promotional` —
+never priced).
 
-**`pricing_composite_meter`** (PK `composite_id`; FK `plan_id`): `output_unit`,
-`constituent_units` (`jsonb`, ≥ 2 published ids), `formula` (`jsonb` — operands +
-operator/weights, A4), `revision`.
+**`pricing_composite_meter`** (PK **`(composite_id, plan_revision)`**; FK `plan_id`):
+`output_unit`, `constituent_units` (`jsonb`, ≥ 2 published ids), `formula` (`jsonb` — operands +
+operator/weights, A4). **Revision discipline (D-106):** the formula is plan-shape configuration
+that A4 already said is *"versioned with the plan revision"* — it now is, structurally:
+copy-on-new-revision with a **stable `composite_id`**, published rows immutable with their
+revision. The former bare `revision` column, whose referent was never stated, is replaced by
+`plan_revision`.
 
 Key constraints: `CHECK (reservation_flavor IS NULL) = (reserved_rate_minor IS NULL)`;
 `CHECK (grant fields complete)` per `pricing_plan_grant` row at publish; composite self-reference
@@ -490,6 +508,7 @@ Integration (testcontainers):
 - [ ] Allowance compile (D-45): a tiered usage row with `includedAllowance {N, none}` publishes with the `$0` band `[0, N)` prepended, authored bands offset by `+N`, and the marker in the read model; an untiered usage row synthesizes the two-band set; the compiled row resolves amounts identically to the equivalent hand-authored $0-band row (compile-equivalence, AC #90a); a `{N, carry(2)}` declaration materializes a promotional grant (`applicability` = the row's meter, expiry `periods(2)`, no price rows)
 - [ ] Allowance gate: declaration on a recurring row fails (`ALLOWANCE_ON_NON_USAGE`); on a `peak` row fails (`ALLOWANCE_ON_NON_SUM`); with an authored `$0` first band fails (`ALLOWANCE_DOUBLE_FREE`); `quantity = 0` fails; on a `package` row fails (`ALLOWANCE_KIND_UNSUPPORTED`); on a `volume` row fails (`ALLOWANCE_KIND_UNSUPPORTED` — Variant A cliff)
 - [ ] Allowance compile on an untiered `per_unit` usage row rewrites `model_kind` to `graduated`, moves the authored amount into the `[N, null)` band (`amount_minor` NULL), retains the authored kind next to the marker, and the row publishes and freezes as `graduated` (`inst-ac-band`)
+- [ ] Revision discipline (D-106): opening a draft revision of a published plan copies its grant rows and composite-meter rows under the new `plan_revision` with **stable** `grant_id`/`composite_id`; editing the draft's grant `applicability` or composite `formula` leaves the published revision's rows byte-identical, a re-warm re-drive of the published version reflects none of the draft's edits, and the snapshot's grant reference is unchanged by the unrelated revision
 
 ## 10. Non-Functional Considerations
 

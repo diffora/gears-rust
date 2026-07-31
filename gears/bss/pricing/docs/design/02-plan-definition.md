@@ -104,7 +104,7 @@ Inherits Foundation C-set (fail-closed, append-only, UTC, ISO 4217, tenant isola
 | P2 | Custom-frequency anchoring | `customEveryN Days(n)` MUST anchor on `subscription_start` (a `calendar_month`/`fixed_day` anchor fails publish). `customEveryN Months(n)` MAY anchor `subscription_start` or `calendar_month`; a `subscription_start` day beyond the target month clamps to its last day (K2 rule) with the **anchor day preserved** per period (no drift: 31→28→31); UTC; joint anchor fixture with Subscriptions (D-20) | PRD §6.1; D-20 |
 | P3 | PlanTier equality | Plan `PlanTier` = parent SKU `PlanTier` unless an explicit, audited override is declared (default equal, no silent divergence) | PRD §17.3 |
 | P4 | Localization | Plan-owned display content (names, labels, descriptors) is single-language at launch; per-locale authoring is an open registry-owned item | PRD §15 (F-37) |
-| P5 | Descriptor minimum field set | **Pinned (D-48, 2026-07-28)**: descriptor-set entity = line template, tax category, GL code, itemization rule; the fifth element of the v1 contract — `billingTiming` — **rides the price row** (a `pricing_price` column, not a descriptor-set field); additive-only extension; Billing countersigns at its gear PRD | PRD §15, D-48 |
+| P5 | Descriptor minimum field set | **Pinned (D-48, 2026-07-28; composition revised by D-110, 2026-07-31)**: descriptor-set entity = line template, GL code, itemization rule; **two** elements of the v1 five **ride the price row** — `billingTiming` (2026-07-28) and `taxCategory` = the row's `tax_category_ref` (D-110 — a per-plan column could not mirror a per-row source of truth); v1 content unchanged, additive-only extension; Billing countersigns at its gear PRD | PRD §15, D-48, D-110 |
 
 ### 1.7 Naming & Design-Introduced Names
 
@@ -200,7 +200,7 @@ flowchart TB
 **Steps**:
 1. [ ] - `p1` - **One-time**: exactly one `one_time` base row **per sold `(currency, region)`**; optional purchase qty min/max (`purchase_min_qty ≤ purchase_max_qty` when both set) + availability dates (past-`availableFrom` rule: `inst-cs-availability`); recurring-only add-ons rejected - `inst-cs-onetime`
 2. [ ] - `p1` - **Recurring**: ≥ 1 recurring base row per sold `(currency, region)`; `billingTiming` REQUIRED on every recurring row (the requirement is **Slice 6's registered rule** — cross-referenced here, never re-registered; single owner, 2026-07-28 review fix); frequency metadata present; optional `one_time_setup` row allowed - `inst-cs-recurring`
-3. [ ] - `p1` - **Usage-based**: parent SKU `meteringUnit` required; `billingGranularity` on **all** usage rows; `tierAggregationWindow` when tiered. **Per-market line completeness (D-84):** every `(meter, dimensionKey)` line the plan prices MUST have a row in every sold `(currency, region)` of the plan (the union of its usage rows' markets) — `USAGE_MARKET_INCOMPLETE` otherwise, same rule and rationale as `inst-cs-hybrid` - `inst-cs-usage`
+3. [ ] - `p1` - **Usage-based**: parent SKU `meteringUnit` required; `billingGranularity` on **all** usage rows; `tierAggregationWindow` when tiered **or `package`** (Slice 3 `inst-pk-window`, D-58 — block round-up is non-linear in the window; the "when tiered" wording had excluded the `package` case D-70 propagated everywhere else, 2026-07-31 review fix). **Per-market line completeness (D-84):** every `(meter, dimensionKey)` line the plan prices MUST have a row in every sold `(currency, region)` of the plan (the union of its usage rows' markets) — `USAGE_MARKET_INCOMPLETE` otherwise, same rule and rationale as `inst-cs-hybrid` - `inst-cs-usage`
 4. [ ] - `p1` - **Hybrid**: BOTH ≥ 1 recurring **and** ≥ 1 usage row on the same `planId` (distinct `chargeKind` keys); missing either part fails publish; optional `one_time_setup` allowed. **Per-market completeness (D-84, 2026-07-30 review fix):** the usage part is required **per sold market**, not merely anywhere — every `(meter, dimensionKey)` line the plan prices (evaluated over its phase-invariant terminal-phase rows; phase-scoped overrides are additive and exempt) MUST have a published usage row in **every** `(currency, region)` where a recurring row exists, else publish fails (`USAGE_MARKET_INCOMPLETE`, 422, meter/dimension/market named). Otherwise a hybrid selling recurring in EUR+USD with usage only in EUR is sellable in USD, and the USD subscriber's usage events fail closed — the "sold but unrateable" state D-15/D-17 declare impossible by construction. A market where usage is genuinely free is an explicit `$0` row (Slice 3 Q5), never an absence - `inst-cs-hybrid`
 5. [ ] - `p1` - **Custom frequency**: `customEveryN Days(n)` MUST anchor `subscription_start`; `customEveryN Months(n)` MAY anchor `subscription_start` or `calendar_month` with month-end clamp + preserved anchor day (P2, D-20); non-positive/over-cap `n` fails - `inst-cs-customfreq`
 6. [ ] - `p1` - **Setup row**: `chargeKind=one_time_setup` allowed only on recurring/hybrid plans; validated as one-time — no recurrence, no `billingTiming`, no tier fields; first-class row (participates in approval/snapshot/preview), never a synthetic add-on SKU - `inst-cs-setup`
@@ -217,7 +217,7 @@ flowchart TB
 **Steps**:
 1. [ ] - `p1` - **PlanTier**: declared before publish (optional at draft); MUST equal the parent SKU's `PlanTier` unless an **explicit, audited override** is declared (P3, no silent divergence); the effective tier lands in the read model - `inst-cmp-plantier`
 1a. [ ] - `p1` - **PlanTier drift after publish:** the equality check at publish is not enough — the registry can change the SKU's tier later. The catalog consumes the registry's SKU-tier-change signal and flags every affected **published** plan `tier_divergent` **in the operator-plane flag store (`pricing_operator_flag`, D-85, 2026-07-30 review fix — never the versioned read model: a drift flag has no publish unit, and a frozen `CatalogVersion` never mutates)** (+ the `pricing.plan.tier_divergent` alarm); remediation is a re-publish (re-validating equality) or an explicit audited override. Downstream consumers keep resolving the frozen published tier — the flag is an operator remediation signal on the authoring surfaces, never a silent retro-change (part of the registry joint contract, PRD §15) - `inst-cmp-tier-drift`
-2. [ ] - `p1` - **Meter injectivity**: each usage plan revision maps **exactly one** `meteringUnit` — one priced line per `(meter, dimensionKey)` **per scope-key slice** (`currency`/`region`/`priceOverlay`/`phase`/`priceEligibility`/`cohort` legitimately multiply rows — the `cohort` axis is what lets a second cutover add another grandfathered generation of the same usage line without violating injectivity, ADR-0002); ambiguity fails publish. Multi-meter offerings route to a derived (composite) meter (Slice 10) or separate single-meter SKUs composed via bundle/add-ons (Slice 8) - `inst-cmp-injective`
+2. [ ] - `p1` - **Meter injectivity (restated, D-103, 2026-07-31 review fix):** the invariant is **one priced line per `(meter, dimensionKey)` per scope-key slice** (`currency`/`region`/`priceOverlay`/`phase`/`priceEligibility`/`cohort` legitimately multiply rows — the `cohort` axis is what lets a second cutover add another grandfathered generation of the same usage line without violating injectivity, ADR-0002); a **duplicate line** within one slice is the ambiguity that fails publish (`METER_AMBIGUOUS`). A usage plan **MAY** price **several** `meteringUnit`s (a PaaS plan pricing cloudlets, storage and egress is one plan, not three) — the earlier "each usage plan revision maps **exactly one** `meteringUnit`" was the stronger claim, and it was contradicted by three rules of this set and enforced by none: D-84's per-market completeness ranges over "every `(meter, dimensionKey)` line the plan prices", this slice's own D-84 integration AC exercises a plan pricing M1 and M2, D-43's grant `applicability` scopes to "a **set** of published `meteringUnit` ids … usage lines of the grant-bearing plan", and the enforcing partial `UNIQUE` (§6) carries both `meter` and `dimension_key` — i.e. it always implemented the per-line reading. A derived (composite) meter (Slice 10) remains the way to price **several units as one billable line** (vCPU + RAM → one output unit), and separate single-meter SKUs composed via bundle/add-ons (Slice 8) remain available — neither is now the *only* multi-meter path - `inst-cmp-injective`
 2a. [ ] - `p1` - **Usage-source binding (UC3 seam adoption, 2026-07-28 review fix, confirmed 2026-07-31):** every usage row's `meteringUnit` MUST resolve to a registry metering-unit declaration that carries a **`usageTypeRef`** (the usage-collector `gts_id` supplying the meter — products `fr-metering-unit-declaration`, rating SEAMS UC3(a)); a meter with no binding fails publish (`METER_USAGE_TYPE_UNBOUND`) — an unbound meter is unrateable, since Rating quarantines usage it cannot attribute rather than guessing. The **dimension set** the plan prices over that meter (its authored `dimensionKey` values) MUST be a subset of the UsageType's declared `metadata_fields` keys, which the registry holds equal to the meter's declared dimension set (UC3(c) cross-validation); pricing a dimension the source never emits fails publish (`METER_DIMENSION_UNDECLARED`, offending keys named). Both checks read the frozen registry declaration through the same joint contract as `inst-cmp-tier-drift`. **Post-publish drift (2026-07-31 review fix — the tier-drift treatment applied symmetrically):** a later registry change to the meter's `usageTypeRef` binding or declared dimension set flags every affected **published** plan `meter_binding_divergent` in the operator-plane flag store (`pricing_operator_flag`, D-85) + raises `pricing.plan.meter_binding_divergent` (Warn); consumers keep resolving the frozen mapping; remediation = re-publish (re-running this check) - `inst-cmp-usagetype`
 3. [ ] - `p1` - **Add-on rules**: add-on SKUs published + compatible with the base SKU; the dependency/conflict **edges are plan-authored** (D-16): each rule row MAY declare `depends_on` / `conflicts_with` sets referencing **other add-ons of the same plan's set** (an edge pointing outside the set fails; conflicts are normalized symmetric); dependency **cycles** fail publish (graph walk over `depends_on`), conflicting pairs fail when both marked required; a required add-on has `maxQty ≥ 1`; an optional price-override reference persists on the plan snapshot - `inst-cmp-addons`
 4. [ ] - `p1` - **Override home (normative):** `price_override_ref` resolves to a **published `priceId` on a plan of the add-on SKU itself** (an alternative row authored there — it is a normal price row with its own scope key, windows, and coverage). **The ref binds that row's canonical scope key, not the id (D-97, 2026-07-31 review fix):** resolution at `t` follows the key through windows exactly as any row resolves, so a supersession's successor legitimately serves the override (supersession is transparent to consumers, and the D-82/D-98 unit guard keeps the key's meaning stable) — the frozen mapping never dangles on a routine price change of the add-on plan. Publish of the base plan validates the referenced **key** is published and covers every `(currency, region)` the base plan sells (Slice 4 case i, per pair — D-95); the resolved mapping freezes into the base plan's `pricingSnapshotRef`. No override price is ever authored as a detached number on the base plan - `inst-cmp-override-home`
@@ -248,7 +248,7 @@ flowchart TB
 **Output**: pass (set frozen into `CatalogVersion`), or a report listing missing fields
 
 **Steps**:
-1. [ ] - `p1` - Required per manifest §4.1 / D-48 v1: invoice line template, tax category, GL code, composition/itemization rules — plus `billingTiming` on every recurring row (validated by Slice 6's rule; it rides the price row, not this entity); publish blocks on any missing field with the field named in the report - `inst-ds-required`
+1. [ ] - `p1` - Required per manifest §4.1 / D-48 v1: invoice line template, GL code, composition/itemization rules on the descriptor set — plus the two **row-borne** elements: `billingTiming` on every recurring row (validated by Slice 6's rule) and `taxCategory` as each row's `tax_category_ref` (Slice 4 `inst-td-persist`, sole source of truth per D-110); publish blocks on any missing element with the field and, for the row-borne ones, the row named in the report - `inst-ds-required`
 2. [ ] - `p1` - The frozen set MUST be sufficient for Billing/ERP to post without re-querying mutable rows; the minimum field list is confirmed with Billing (P5) and the validator's required-set is config-extensible without a schema change - `inst-ds-sufficient`
 
 ## 4. States (CDSL)
@@ -328,15 +328,18 @@ never overriding the single-currency-per-invoice invariant — Slice 4 `inst-cb-
 | `phase_duration_days` | `int` | REQUIRED > 0 on non-terminal phases; forbidden on the terminal phase |
 | `display_trial_days` | `int` | trial phases: projection of `phase_duration_days` under the PRD name (preview + runtime single source); the equality CHECK below guards drift between the two persisted columns (2026-07-28 review fix) |
 
-**`pricing_plan_addon_rule`** (keyed by `(plan_id, plan_revision)` — copy-on-new-revision, D-83): `addon_sku_id`, `required` (bool), `min_qty`/`max_qty`/`step_qty`,
+**`pricing_plan_addon_rule`** (PK **`(plan_id, plan_revision, addon_sku_id)`** — copy-on-new-revision, D-83; the `addon_sku_id` discriminator restored by **D-105**, 2026-07-31 review fix: the earlier "keyed by `(plan_id, plan_revision)`" admitted **one** add-on rule per revision, which makes the `depends_on` cycle walk, the symmetric-conflict normalization and "two required conflicting add-ons fail" all unsatisfiable — `pricing_plan_phase`'s `(phase_id, plan_revision)` shows the correct shape): `addon_sku_id`, `required` (bool), `min_qty`/`max_qty`/`step_qty`,
 `price_override_ref` (nullable), `depends_on_addon_sku_id[]` / `conflicts_with_addon_sku_id[]`
 (D-16 — values MUST be members of the same plan's add-on set; conflicts stored normalized
 symmetric). Cycle/conflict checks run over these plan-authored edges at publish.
 
-**`pricing_plan_descriptor_set`** (keyed by `(plan_id, plan_revision)` — copy-on-new-revision, D-83): `invoice_line_template`, `tax_category`, `gl_code`,
-`itemization_rule` (+ config-extensible required-field registry, P5). The D-48 v1 contract's
-fifth element, `billingTiming`, is deliberately **not** a column here — it rides `pricing_price`
-(per recurring row) and is delivered with the row.
+**`pricing_plan_descriptor_set`** (keyed by `(plan_id, plan_revision)` — copy-on-new-revision, D-83; genuinely 1:1 per revision, so the key needs no discriminator): `invoice_line_template`, `gl_code`,
+`itemization_rule` (+ config-extensible required-field registry, P5). **Two** of the D-48 v1
+contract's five elements are deliberately **not** columns here — `billingTiming` (2026-07-28) and
+now `taxCategory` (**D-110**, 2026-07-31 review fix: a per-plan column cannot mirror the per-row
+`tax_category_ref` Slice 4 makes the source of truth, and the promised publish-time consistency
+check was undefined whenever two rows of a plan carried different categories) — both ride
+`pricing_price` and are delivered with the row.
 
 Key constraints: at most one terminal phase per plan revision (partial unique on
 `(plan_id, plan_revision) WHERE converts_to_phase_id IS NULL`; **existence** of exactly one
@@ -397,11 +400,13 @@ carried one) projected into the read model.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-composition`
 
 The system **MUST** enforce at publish: parent SKU published; `PlanTier` present and equal to
-the SKU's unless an explicit audited override; exactly one `meteringUnit` per usage plan
-revision (per-row `(meter, dimensionKey)` injectivity); add-on SKUs published + compatible,
+the SKU's unless an explicit audited override; **one priced line per `(meter, dimensionKey)` per
+scope-key slice** — a usage plan MAY price several `meteringUnit`s (D-103); add-on SKUs published + compatible,
 no conflicting pair with **both sides required** (other conflict pairs publish as
 selection-time constraints), no dependency cycles, required add-ons `maxQty ≥ 1`; add-on
-`price_override_ref`s published and covering every sold `(currency, region)`. A post-publish
+`price_override_ref`s published and covering every sold `(currency, region)`. Injectivity is
+**per `(meter, dimensionKey)` line per scope-key slice** — a plan MAY price several meters
+(D-103); a duplicate line within one slice fails (`METER_AMBIGUOUS`). A post-publish
 registry SKU-tier change **MUST** flag affected published plans `tier_divergent` in the
 operator-plane flag store — never the versioned read model (D-85) — (+ the
 `pricing.plan.tier_divergent` alarm; remediation = re-publish or audited override).
@@ -437,8 +442,8 @@ unit/counter-determining fields — `PHASE_OVERRIDE_UNIT_MISMATCH`, D-89), and p
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-descriptors`
 
 The system **MUST NOT** publish without the complete billing descriptor set (manifest §4.1 /
-D-48 v1: the four descriptor-set fields, with `billingTiming` riding each recurring price
-row); the validation report **MUST** name each missing field; the frozen set **MUST** be
+D-48 v1: the **three** descriptor-set fields, with `billingTiming` and `taxCategory` riding the
+price row — D-110); the validation report **MUST** name each missing field; the frozen set **MUST** be
 sufficient for Billing/ERP posting without re-querying mutable rows.
 
 **Implements**: `cpt-cf-bss-pricing-algo-descriptors`
@@ -458,7 +463,8 @@ Unit:
 Integration (testcontainers):
 
 - [ ] A hybrid plan (recurring + usage + setup) publishes; removing either mandatory part fails publish with the part named
-- [ ] A hybrid selling recurring in two markets with a usage line priced in only one fails publish (`USAGE_MARKET_INCOMPLETE`, meter + market named); adding the missing row — a `$0` amount is legal — unblocks; a usage-only plan pricing meter M1 in two markets and M2 in one fails the same way (D-84)
+- [ ] A hybrid selling recurring in two markets with a usage line priced in only one fails publish (`USAGE_MARKET_INCOMPLETE`, meter + market named); adding the missing row — a `$0` amount is legal — unblocks; a usage-only plan pricing meter M1 in two markets and M2 in one fails the same way (D-84) — and **publishes** once M2's second market is added, because a plan pricing several meters is legal (D-103): only a **duplicate** `(meter, dimensionKey)` line within one scope-key slice fails, with `METER_AMBIGUOUS`
+- [ ] A plan carrying **three** add-on rules round-trips: all three persist under the revision (D-105 — the key carries `addon_sku_id`), the `depends_on` cycle walk sees all three edges, and a draft revision's edit copies all three under the new `plan_revision`
 - [ ] A plan against a draft SKU fails publish (`SKU_NOT_PUBLISHED`)
 - [ ] `customEveryN Days(30)` with `calendar_month` anchor fails publish
 - [ ] A phased plan trial→intro→evergreen publishes its phase map + `displayTrialDays`; a cyclic `convertsToPhaseId` fails

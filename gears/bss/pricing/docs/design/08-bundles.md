@@ -134,6 +134,7 @@ flowchart TB
 **Steps**:
 1. [ ] - `p2` - API: POST/PATCH /v1/pricing/bundles (draft; idempotency key) - `inst-ba-author`
 2. [ ] - `p2` - Publish: `BundleValidator` + `RevShareReconciler` run in the Foundation pipeline - `inst-ba-validate`
+2a. [ ] - `p1` - **Composition changes are always material (normative, D-104, 2026-07-31 review fix):** creating a bundle, adding/removing/replacing a **component**, any **rev-share** change (`share_bp`, `platform_cut_bp`, the group's `residual_absorber_party`), a `price_basis` change and an `invoiceItemization` change are **registered always-material triggers** (Slice 5 `inst-mat-registered`) — the commit routes through the two-person workflow before it publishes. The `MaterialityEvaluator` computes per-row deltas over **price rows**, and a `sum_of_parts` recomposition touches none: a component swap or a re-split evaluated `auto_publishable` under any configured threshold and reached consumers with **no approver**, while a $1 price-row change above threshold took two people — the D-50 hole one slice over, and with comparable money (a rev-share split *is* vendor payout; a component swap changes what the customer receives at an unchanged price). It also restores D-11's own premise: that decision dropped `bundle × write` from the publish endpoint because "the composition is protected at publish time by the approval content pin", which a non-material publish never creates. `FinanceReviewer` already holds `bundle × read`, so the D-61 reviewability invariant needs no new grant - `inst-ba-material`
 3. [ ] - `p2` - **RETURN** 202; `BundleUpdated` emitted; composition frozen into the read model / snapshot - `inst-ba-return`
 
 ## 3. Processes / Business Logic (CDSL)
@@ -189,8 +190,12 @@ structurally malformed shares / missing explicit platform cut), `RESIDUAL_OVER_T
 
 Slice-owned tables (`pricing_` prefix per Foundation §3.7):
 
-**`pricing_bundle`** (PK `bundle_id`; FK to the registry `bundle`-type SKU): `price_basis`
-(`sum_of_parts | own_price`), `invoice_itemization` (`aggregate | itemize`), lifecycle refs.
+**`pricing_bundle`** (PK `bundle_id`; FK **`plan_id`** — the bundle's own `bundle`-type plan,
+whose revisions the composition tables below ride, added by **D-105**, 2026-07-31 review fix:
+without it D-92's "a bundle rides its plan's revisions" had no join path and `plan_revision`
+below referenced an unnamed plan; FK to the registry `bundle`-type SKU via that plan):
+`price_basis` (`sum_of_parts | own_price`), `invoice_itemization` (`aggregate | itemize`),
+lifecycle refs.
 
 **Revision discipline (D-92, 2026-07-31 review fix — the D-83 model applied here):** a bundle
 rides its plan's revisions, and the three composition tables below therefore carry
@@ -199,15 +204,25 @@ immutable with it, the open draft revision edits **its own copies**, and the pro
 and re-drive alike — reads the published revision's rows, so a draft recomposition can neither
 mutate published truth nor leak into a frozen version through a re-drive.
 
-**`pricing_bundle_component`** (keyed `(bundle_id, plan_revision)` — D-92): `included_sku_id`,
+**Row discriminators (D-105, 2026-07-31 review fix).** All three tables below are 1:N per
+`(bundle, revision)`, and D-92's "keyed `(bundle_id, plan_revision)`" phrasing dropped their
+discriminators — under those keys a bundle holds **one** component, **one** rev-share party and
+**one** group per revision, which makes "every referenced component", the per-market coverage
+walk and "sum to 100% **per** included vendor SKU" unsatisfiable. The PKs below restore them
+(`pricing_plan_phase`'s `(phase_id, plan_revision)` is the pattern).
+
+**`pricing_bundle_component`** (PK **`(bundle_id, plan_revision, component_plan_id)`** —
+copy-on-new-revision, D-92 + D-105): `included_sku_id`,
 `component_plan_id` (required for `sum_of_parts`, B1), constraints (min/max qty).
 
-**`pricing_bundle_revshare`** (keyed `(bundle_id, plan_revision)` — D-92): `vendor_sku_id`,
+**`pricing_bundle_revshare`** (PK **`(bundle_id, plan_revision, vendor_sku_id, party)`** — D-92 +
+D-105): `vendor_sku_id`,
 `party`, `share_bp` (typed, basis points), `effective_share_bp` (published;
 absorber-adjusted at publish).
 
-**`pricing_bundle_revshare_group`** (keyed `(bundle_id, plan_revision)` per D-92; one row per
-`vendor_sku_id` within a revision — 2026-07-28
+**`pricing_bundle_revshare_group`** (PK **`(bundle_id, plan_revision, vendor_sku_id)`** per
+D-92 + D-105 — one row per
+`vendor_sku_id` within a revision, which the prose already said and the stated key contradicted; 2026-07-28
 review fix: the tolerance/exact-sum rule is per group, so the group-scoped values live on a
 group row, not smeared per party or per bundle): `vendor_sku_id`, **`platform_cut_bp`** (the
 group's platform cut — previously a per-party column used once per group), and
@@ -240,7 +255,11 @@ synchronous; accrual mismatches are Marketplace-side reconciliation.
 
 A bundle **MUST** declare its basis, reference published SKUs and (for `sum_of_parts`)
 component `planId`s covering every sold `(currency, region)` with matching `frequency`;
-a missing/ambiguous component fails publish naming it.
+a missing/ambiguous component fails publish naming it. Creation, component add/remove/replace,
+any rev-share change, a `price_basis` change and an `invoiceItemization` change are
+**always-material** (D-104, `inst-ba-material`) — they carry no price-row delta, so the G1
+no-delta fail-safe applies wholesale and the commit routes through the two-person workflow
+before publishing.
 
 **Implements**: `cpt-cf-bss-pricing-flow-bundle-author`, `cpt-cf-bss-pricing-algo-bundle-basis`, `cpt-cf-bss-pricing-algo-bundle-coverage`
 
@@ -278,6 +297,8 @@ Integration (testcontainers):
 - [ ] A two-vendor `sum_of_parts` bundle over two currencies publishes only when every component covers both; dropping one component row blocks with the component + currency named
 - [ ] `itemize` and `aggregate` both project per-SKU rev-share into the read model
 - [ ] A draft recomposition of a published bundle lands on the draft revision's **own copies** (D-92): the published revision's component/rev-share rows are unchanged, and a re-warm re-drive of the published version reflects none of the draft's edits
+- [ ] A three-component, two-vendor bundle round-trips **all** its rows under one revision (D-105: three `pricing_bundle_component` rows, one `pricing_bundle_revshare_group` row per vendor SKU, one `pricing_bundle_revshare` row per party) and the per-group 100% reconciliation runs over each group independently
+- [ ] Materiality (D-104): swapping one component of a published `sum_of_parts` bundle, and separately re-splitting its rev-share, each open an approval unit and block until an independent approval — **even with a threshold policy configured**, since neither produces a price-row delta; a self-approval attempt returns 403 + audit; the approver reads the pinned composition (D-61)
 
 ## 10. Non-Functional Considerations
 

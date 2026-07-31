@@ -209,6 +209,7 @@ and bundles (Slice 8) build on.
 2. [ ] - `p1` - Policy check (C4): `taxInclusive=true` in a region whose `RegionTaxReadiness` has `ratePresent=false` **and** `taxInclusive=false` in a region with no configured `taxCategory` are both governed by the tenant tax-display policy — default **fail-closed**, explicit warn allowed. The category predicate evaluates the **effective category** = `coalesce(row.tax_category_ref, readiness.taxCategory)` — a row-level `tax_category_ref` satisfies the check in a region whose taxonomy carries no default category (2026-07-28 review fix, confirmed 2026-07-31). Readiness is resolved per `(tenant, region)`; an unknown region fails closed - `inst-td-policy`
 2a. [ ] - `p1` - **Readiness provider (D-01):** at MVP `RegionTaxReadiness` reads the tenant-declared `tax_category`/`tax_rate_present` columns on `pricing_region_taxonomy` (CatalogAdmin, `config × write`, audited) — it catches **configuration** mistakes; rate correctness is unverifiable before Tax Engine. Once Tax Engine GAs, the provider becomes Tax Engine-backed and the tenant-declared markers are **reconciled** against its registry: a divergence (declared ready, engine disagrees) flags affected published rows **in the operator-plane flag store (`pricing_operator_flag`, D-85 — never the versioned read model: the reconciliation signal has no publish unit, and a frozen `CatalogVersion` never mutates)** + raises `pricing.tax.readiness_divergent` (Warn); remediation is a re-publish — never a silent retro-change - `inst-td-readiness`
 3. [ ] - `p1` - **GA gate (C3):** while Tax Engine is pre-GA a `taxInclusive=true` **row** MAY be authored and previewed but publishes with the read-model flag `not_sellable_ga` — the flag is **per price row, hence per `(currency, region)` market**, not per plan: a plan selling tax-exclusive in US and tax-inclusive in EU is gated **only** on its EU market(s); the sellability gate (Slice 7) evaluates the flag per scope key; MVP sells tax-exclusive - `inst-td-gagate`
+3a. [ ] - `p1` - **One display basis per market (normative, D-110, 2026-07-31 review fix):** every published row of a plan on one `(currency, region)` MUST carry the **same** `tax_inclusive` value — a mixed-basis market fails publish (`TAX_BASIS_MIXED_MARKET`, 422, naming the divergent rows). `tax_inclusive` is a **display** basis and an invoice is one document: a tax-inclusive recurring line beside a tax-exclusive usage line is not renderable coherently, and the descriptor set's line template has no per-line basis to switch on. Nothing constrained this before, and the symptom was misdirected: under the D-94 conjunction one tax-inclusive component key flags its market `not_sellable_ga` and the **whole** plan-market silently becomes unsellable (predicate (5) fails on one bound key), with no publish-time explanation to the operator — post-Tax-Engine-GA the same authoring becomes a mixed-basis invoice instead. The rule is per market, not per plan: a plan selling tax-exclusive in US and tax-inclusive in EU stays legal and is gated only on EU (`inst-td-gagate`) - `inst-td-basis-uniform`
 4. [ ] - `p1` - When Tax Engine GAs, clearing `not_sellable_ga` is a re-publish (goes through the pipeline + approval), not a silent flag flip - `inst-td-clear`
 
 ### Single-Currency-per-Invoice Binding
@@ -248,6 +249,8 @@ and bundles (Slice 8) build on.
 
 **Problem responses (RFC 9457):** `REGION_UNKNOWN` (422), `BRAND_UNKNOWN` (422),
 `TAXONOMY_VALUE_IN_USE` (409, on retire), `TAX_BASIS_INCOMPLETE` (422, per policy),
+`TAX_BASIS_MIXED_MARKET` (422 — rows of one plan on one `(currency, region)` disagreeing on
+`tax_inclusive`; D-110, `inst-td-basis-uniform`, divergent rows named),
 `CURRENCY_NOT_COVERED` (422, naming component + currency), `PRICE_ROW_ABSENT` (404 preview,
 fail closed). Price-row authoring codes are Slice 3's.
 
@@ -272,9 +275,18 @@ Slice-owned tables (tenant-scoped, SecureORM; `pricing_` prefix per Foundation �
 **`pricing_price` (Foundation-owned; Slice-4 columns)** — `currency` (scope key), `region`
 (scope key), `tax_inclusive` (bool), `tax_category_ref` (string), and the projected
 `not_sellable_ga` flag in `pricing_read_model` (derived at publish, not authored).
-`tax_category_ref` is the **source of truth** for a row's tax category: the D-48
-billing-descriptor set's tax-category field mirrors it, with a publish-time consistency
-check — a mismatch fails publish (2026-07-28 review fix, confirmed 2026-07-31).
+`tax_category_ref` is the **source of truth** for a row's tax category, and it is the **only**
+place a tax category lives (**D-110**, 2026-07-31 review fix): the D-48 descriptor set's
+per-plan `tax_category` column is **removed** and the "mirrors it, with a publish-time
+consistency check" rule with it. That rule was a cardinality error — `pricing_plan_descriptor_set`
+holds one value per `(plan_id, plan_revision)` while `tax_category_ref` is per **row**, so the
+check was undefined the moment two rows of a plan differed (subscription vs data transfer, or
+region to region) and, read literally, forced one tax category per plan, which no rule states and
+which the per-row column exists to avoid. The descriptor **contract** is unchanged in content:
+`taxCategory` remains one of D-48's v1 five elements, now **riding the price row** — exactly the
+treatment `billingTiming` already received in the same decision (D-48's 2026-07-28 amendment), so
+the v1 five stay five: **three** descriptor-set fields plus two row-borne elements. Billing's pending
+countersign covers the shape.
 
 Key constraints: FK-like validation (application-level, at save + publish) from
 `pricing_price.region` to `pricing_region_taxonomy(active)`; the ≥ 20-currency floor is a
@@ -326,8 +338,12 @@ tenant taxonomies before publish (unknown value fails); retiring a referenced ta
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-tax-display`
 
-The catalog **MUST** persist `taxInclusive` + `taxCategory` only (no scheme/calc), govern the
-two incomplete-basis cases by the tenant tax-display policy (default fail-closed), and flag
+The catalog **MUST** persist `taxInclusive` + `taxCategory` **on the price row** (the row is the
+sole home of the tax category — D-110 removes the per-plan descriptor-set column that claimed to
+mirror it; `taxCategory` rides the row exactly as `billingTiming` does) only (no scheme/calc),
+govern the two incomplete-basis cases by the tenant tax-display policy (default fail-closed),
+reject a **mixed `taxInclusive` basis among the rows of one `(currency, region)`**
+(`TAX_BASIS_MIXED_MARKET`, D-110 — one invoice, one display basis), and flag
 tax-inclusive rows `not_sellable_ga` (per market) until Tax Engine GA — cleared only by re-publish.
 
 **Implements**: `cpt-cf-bss-pricing-algo-tax-display`, `cpt-cf-bss-pricing-state-tax-sellability`
@@ -369,6 +385,8 @@ Integration (testcontainers):
 - [ ] An **optional** add-on missing one of the base plan's currencies does **not** block publish; the gap surfaces at attachment time (2026-07-28 review fix)
 - [ ] A mixed plan (EU `taxInclusive=true` with EU `tax_rate_present=true`, US exclusive) publishes with `not_sellable_ga` on the EU rows only — the US market stays sellable; the flag clears only via re-publish
 - [ ] The same plan with EU `tax_rate_present=false` blocks publish under the default fail-closed policy (C4 precedes the C3 flag)
+- [ ] A hybrid whose EU recurring row is `taxInclusive=true` while its EU usage row is `taxInclusive=false` fails publish (`TAX_BASIS_MIXED_MARKET`, both rows named — D-110), while the same plan tax-inclusive across **all** EU rows and tax-exclusive across all US rows publishes (the rule is per market)
+- [ ] Two rows of one plan carrying **different** `tax_category_ref` values publish (D-110 — the category is per row; there is no per-plan descriptor column left to disagree with), and each row's category reaches Billing on the row
 - [ ] Retiring a region referenced by an active published row is rejected (409)
 
 API:

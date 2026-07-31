@@ -168,6 +168,7 @@ flowchart TB
 1. [ ] - `p2` - API: POST /v1/pricing/repricing-runs (`run_id`, selector, adjustment, **changeover instant** — one instant for every row of the run, strictly future at submit and ≥ the max batching-delay SLO (D-47: bulk 5 min) in the future at the run's approval commit, `SUPERSESSION_INSTANT_PASSED` otherwise; D-88 — a commit-time changeover would activate successor windows while their rows are not yet addressable in any completed `CatalogVersion`, transiently failing renewals/arrears closed across every repriced key) - `inst-mr-api`
 2. [ ] - `p2` - Expand the selector to a frozen row set; journal per-row progress (`pending → applied | failed`) keyed `(run_id, price_id)` - `inst-mr-journal`
 3. [ ] - `p2` - Apply per row through the standard versioning path (new immutable rows) — each applied row is a **supersession unit** (D-88, S7 `algo-supersession`: successor row + window shorten/schedule at the run's single changeover instant, executed inside the per-row transaction); the new row, its outbox record, and the journal transition `pending → applied` commit in **one transaction** (a crash re-run sees a consistent journal — no double-apply, no compounding); re-runs skip `applied` rows (idempotent, O3); a per-row validation failure marks the row `failed` (+ `failure_reason`); events carry `(run_id, price_id)` dedup keys - `inst-mr-apply`
+3a. [ ] - `p1` - **What the per-row commit re-validates (normative, D-111, 2026-07-31 review fix):** the supersession unit's commit "re-runs the pipeline" (S7 `inst-su-commit`), and the pipeline is the **aggregate** rule set — D-21 puts window/phase coverage, hybrid completeness, meter injectivity and the fixture gate at publish only. Taken literally inside a per-row transaction that is N whole-plan validations for N rows of one plan, i.e. **O(rows × plan-validation cost)** against a throughput SLO (O3) ratified before D-88 existed and sized only for the window writes (§10). Therefore, in a bulk run: the **per-row** commit re-runs the **row-local** rule set (D-21's save-time set: kind shape and the kind×chargeKind matrix, band geometry, precision, evaluation-policy placement, the D-82/D-98 unit guard) **plus the touched key's** window overlap/gap/trailing-void check — the checks whose inputs the row itself changes — while the **plan-level aggregate** pass runs **once per plan per run**, inside the run's approval-to-commit boundary, over the run's frozen row set. This is sound because the aggregate checks evaluate identical content for every row of a plan, and it is safe because the run's row set is frozen at selector expansion (`inst-mr-journal`) — nothing outside it can invalidate the aggregate result mid-run, and an interactive edit on a contained key is already blocked (`inst-mp-pending`, the bulk lock). A plan whose aggregate pass fails marks **all** of that plan's rows `failed` with the shared reason, never a partial plan - `inst-mr-validate-scope`
 4. [ ] - `p2` - Publishes coalesce into one/few `CatalogVersion` batches (O5); materiality evaluates once per run against the policy (any row over its own-currency threshold trips the run) - `inst-mr-coalesce`
 5. [ ] - `p2` - **RETURN** 202 (run ref + progress endpoint) - `inst-mr-return`
 
@@ -264,9 +265,15 @@ created), `applied_at` — the idempotency spine (O3). A run is **complete** whe
 rows remain; `failed` rows are listed on the run report and are retryable only via a
 corrected **new** run.
 
-**Bulk lock** — a marker on `pricing_price` rows (`bulk_operation_id` nullable column or a
-lock side-table, implementation choice) that the Foundation's concurrent-edit check reads to
-name the conflicting operation. **Release path (D-37):** the bulk runner holds a
+**Bulk lock** — **`pricing_bulk_row_lock`** (PK `(tenant_id, price_id)`, columns
+`bulk_operation_id`, `locked_at`), a **side table**, which the Foundation's concurrent-edit check
+reads to name the conflicting operation. It is deliberately not a column on `pricing_price`
+(2026-07-31 review fix — the earlier "nullable column **or** a lock side-table, implementation
+choice" offered an illegal option): the rows a run locks are **published** rows, and the
+append-only trigger's column whitelist permits exactly two UPDATEs on those — the state-machine
+`lifecycle_state` flip and monotonic `grandfather_until` tightening (Foundation §3.7) — so writing
+a lock marker onto the row is rejected by the trigger. The side table also releases without
+touching truth data. **Release path (D-37):** the bulk runner holds a
 **coordination lease** (the library named in DESIGN §3.4); on crash, lease takeover
 **re-drives** Phase 2 from the journal/report (idempotent); additionally an operator
 **abort** (`POST /v1/pricing/bulk-imports/{id}:abort`, `plan × write`) transitions
@@ -331,7 +338,10 @@ A mass adjustment **MUST** be re-run-safe via the per-row journal (no re-apply; 
 + journal flip commit in one transaction), structurally exclude `existing_grandfathered` rows
 (an explicit inclusion fails that row per-row, never a silent skip), emit deduplicated
 events, coalesce versions per the registry batching, route materiality once per run, and meet
-the ratified throughput SLO (≥ 50 rows/sec, O3, 2026-07-28).
+the ratified throughput SLO (≥ 50 rows/sec, O3, 2026-07-28) — with the per-row commit scoped to
+the **row-local** rule set plus the touched key's window checks and the **plan-level aggregate
+pass run once per plan per run** (D-111, `inst-mr-validate-scope`: a literal per-row pipeline
+re-run makes the run O(rows × plan-validation cost), which the ratified figure never covered).
 
 **Implements**: `cpt-cf-bss-pricing-flow-mass-repricing`, `cpt-cf-bss-pricing-algo-mass-repricing`
 
@@ -375,11 +385,12 @@ Integration (testcontainers):
 
 NFR verification:
 
-- [ ] Throughput load test against the ratified O3 value over the tenant worst-case row count
+- [ ] Throughput load test against the ratified O3 value over the tenant worst-case row count — exercising the D-88 per-row window operations **and** the D-111 validation split (row-local per row, plan-level aggregate once per plan per run); a control run with a literal per-row pipeline re-run is expected to miss the SLO, which is what the split exists to avoid
+- [ ] An interactive PATCH on a bulk-locked row fails naming the bulk operation, and the lock lives in `pricing_bulk_row_lock` — no UPDATE is attempted against the published `pricing_price` row (which the append-only trigger would reject)
 
 ## 10. Non-Functional Considerations
 
-- **Performance**: Phase-1 validation parallelizes per row (shared-nothing rules); Phase-2 commit is row-transactional; the repricing journal adds one indexed write per row. The O3 throughput value and the plan/tier caps are committed launch defaults (ratified 2026-07-28; O3 perf-test-verified — [`../PRD.md`](../PRD.md) §14).
+- **Performance**: Phase-1 validation parallelizes per row (shared-nothing rules); Phase-2 commit is row-transactional; the repricing journal adds one indexed write per row. **Per-row commit cost (D-111)**: row-local rules + the touched key's window overlap/gap/trailing-void check + 2 window writes + row + outbox + journal, all inside one transaction — the plan-level aggregate pass is amortized **once per plan per run**, which is what keeps the run O(rows) rather than O(rows × plan size); the D-99 window publish units coalesce per O5 into the run's batched `CatalogVersion`s, so read-model propagation adds one delta row per affected plan per batch, not 2N. The O3 throughput value and the plan/tier caps are committed launch defaults (ratified 2026-07-28; O3 perf-test-verified — [`../PRD.md`](../PRD.md) §14); the perf test **MUST** exercise the D-88 window operations and this validation split (the ratified figure predates both).
 - **Observability**: `pricing_bulk_rows_total{outcome}`, `pricing_repricing_rows_per_second`, `pricing_bulk_conflicts_total`, run-progress gauges.
 - **Security & AuthZ**: bulk carries **no new authority** — `plan × write/publish` + the same materiality/approval policy; price history/export is `plan × read` (D-12), while the audit trail stays `audit × read/export`, Auditor-only (Slice 5 catalog).
 - **Risks & open items**: a mass run's coalesced `CatalogVersion` rides the registry's batching-delay SLO (D-47: bulk ≤ 5 min hard max) — the bound caps how long a batch can delay snapshot pinning for the run. **Bulk window operations**: an N-row repricing implies N supersession window open/close operations — since the window consolidation (D-03) these are local writes to the gear-owned `pricing_price_window` store inside the per-row transactions, so their throughput is part of this slice's own O3 sizing (no cross-component contract).

@@ -290,7 +290,12 @@ published-plan lookups).
 
 **`pricing_read_model` (contract-level fields)**: `crossBoundaryChangePolicy`
 (`cancel_plus_new` — the K3 marker) + `crossBoundaryWarningText` (the operator/storefront
-warning that in-place credit is forfeited), projected once per contract version.
+warning that in-place credit is forfeited), projected **on every `plan` subject row** (2026-07-31
+review fix: "projected once per contract version" named no subject, and since D-91 the store is
+keyed `(tenant_id, catalog_version, subject_kind, subject_ref)` with no tenant- or
+contract-level subject to hold a free-floating pair. They are launch-constant, tenant-wide
+values, so riding the plan subject costs nothing and keeps the resolution rule uniform — a
+consumer reading a plan already has them; no new `subject_kind` is introduced for two constants).
 
 ## 7. Events & Alarms
 
@@ -392,7 +397,7 @@ Integration (testcontainers):
 - [ ] The published `prorationBasis` value round-trips byte-identical through snapshot → read model → consumer read (no normalization drift)
 - [ ] A plan without `allowedChangeTargets` reads as no-self-service-change (field absent, not defaulted)
 - [ ] Grant set resolved from `PlanTier` publishes both the reference and the resolved set
-- [ ] The read model exposes `crossBoundaryChangePolicy = cancel_plus_new` + `crossBoundaryWarningText` at the contract level
+- [ ] The read model exposes `crossBoundaryChangePolicy = cancel_plus_new` + `crossBoundaryWarningText` on every resolved `plan` subject row (not as a subject-less contract-level record — the D-91 keying has no such subject)
 
 Conformance (joint, K5):
 
