@@ -67,7 +67,12 @@ Rating alone reports 7 `P3/inst-dangling`, subscriptions alone 1. All 12
 disappear when the three gears are loaded together. Honest, but useless.
 
 `P1/propagation-target-not-loaded` is the same class for a *file* target no loaded
-gear provides; this repository's corpora currently produce none of it.
+gear provides. Since 2026-07-31 a register may cite one **explicitly** as
+`../../<gear>/docs/<file>.md` — the D-66 entry does, its targets being entirely
+rating- and subscriptions-side — and shorthand tokens inside such a path (`PRD` in
+`../../subscriptions/docs/PRD.md`) are part of the path, never a second own-gear
+claim. Run pricing alone, those 6 targets report exactly this class; with the
+gears loaded they resolve and the citation is actually verified.
 
 Flags:
 
@@ -137,9 +142,11 @@ Two lines at the end matter as much as the findings:
 
 - `N finding(s)` — the live set.
 - `N known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt
-  to see them` — pinned, accepted debt (24 propagation gaps + 51 unreferenced
-  error codes = 75), withheld by default. The three-gear invocation above
-  currently prints `15` and `75`.
+  to see them` — pinned, accepted debt (23 propagation gaps + 50 unreferenced
+  error codes = 73 since 2026-07-31; two members left the 2026-07-29 pin of
+  24 + 51, hand-checked, notes beside each pinned list), withheld by default. The
+  three-gear invocation above currently prints `7` and `73` (it printed `15` and
+  `75` until the 2026-07-30 slice-review findings were fixed on 2026-07-31).
 
 Several invariants report **their own coverage** rather than staying silent when
 they cannot read something. These are not defects in the documents; they say what

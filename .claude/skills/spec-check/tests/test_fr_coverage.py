@@ -80,8 +80,12 @@ def test_one_slice_claiming_a_requirement_twice_is_not_multiply_claimed():
 
 def test_multiply_claimed_pricing_requirements_match_what_the_live_design_set_shows():
     # Not accepted debt and deliberately not in a pinned register: these stay live
-    # Low findings for a human to rule on. This only keeps the set stable — a
-    # fifth appearing, or one being resolved, must both fail here.
+    # Low findings for a human to rule on. This only keeps the set stable — one
+    # appearing, or one being resolved, must both fail here. The four found on
+    # 2026-07-30 were ruled on and resolved 2026-07-31: each FR kept exactly one
+    # owning slice (S4 invoice-currency-binding, S1 mutation-idempotency +
+    # price-amount-validation, S3 per-seat), the pruned slices carrying a
+    # delegation note in place of the claim.
     actual = sorted(
         (
             f.message.split()[0],
@@ -90,12 +94,7 @@ def test_multiply_claimed_pricing_requirements_match_what_the_live_design_set_sh
         for f in check(pricing())
         if f.invariant == "P2/fr-multiply-claimed"
     )
-    assert actual == [
-        ("cpt-cf-bss-pricing-fr-invoice-currency-binding", 2),
-        ("cpt-cf-bss-pricing-fr-mutation-idempotency", 2),
-        ("cpt-cf-bss-pricing-fr-per-seat", 2),
-        ("cpt-cf-bss-pricing-fr-price-amount-validation", 3),
-    ]
+    assert actual == []
 
 
 def test_flags_a_slice_tracing_to_a_requirement_that_does_not_exist():

@@ -51,7 +51,9 @@ tax **scheme determination and calculation** are explicitly not here (Tax Engine
 
 **Traces to**: `cpt-cf-bss-pricing-fr-multi-currency-rows`,
 `cpt-cf-bss-pricing-fr-region-brand-taxonomy`, `cpt-cf-bss-pricing-fr-tax-display-basis`,
-`cpt-cf-bss-pricing-fr-invoice-currency-binding`, `cpt-cf-bss-pricing-fr-price-amount-validation`
+`cpt-cf-bss-pricing-fr-invoice-currency-binding`
+(the shared amount/currency/precision checks are Foundation-owned —
+`fr-price-amount-validation` is claimed there, one owner per FR; 2026-07-31 P2 fix)
 
 ### 1.2 Purpose
 
@@ -204,8 +206,8 @@ and bundles (Slice 8) build on.
 
 **Steps**:
 1. [ ] - `p1` - Persist `taxInclusive` (display basis) and the `taxCategory` reference **only** — no scheme determination, no calculation, no `region` → jurisdiction mapping (Tax Engine) - `inst-td-persist`
-2. [ ] - `p1` - Policy check (C4): `taxInclusive=true` in a region whose `RegionTaxReadiness` has `ratePresent=false` **and** `taxInclusive=false` in a region with no configured `taxCategory` are both governed by the tenant tax-display policy — default **fail-closed**, explicit warn allowed. The category predicate evaluates the **effective category** = `coalesce(row.tax_category_ref, readiness.taxCategory)` — a row-level `tax_category_ref` satisfies the check in a region whose taxonomy carries no default category (2026-07-28 review fix, flagged for veto). Readiness is resolved per `(tenant, region)`; an unknown region fails closed - `inst-td-policy`
-2a. [ ] - `p1` - **Readiness provider (D-01):** at MVP `RegionTaxReadiness` reads the tenant-declared `tax_category`/`tax_rate_present` columns on `pricing_region_taxonomy` (CatalogAdmin, `config × write`, audited) — it catches **configuration** mistakes; rate correctness is unverifiable before Tax Engine. Once Tax Engine GAs, the provider becomes Tax Engine-backed and the tenant-declared markers are **reconciled** against its registry: a divergence (declared ready, engine disagrees) flags affected published rows + raises `pricing.tax.readiness_divergent` (Warn); remediation is a re-publish — never a silent retro-change - `inst-td-readiness`
+2. [ ] - `p1` - Policy check (C4): `taxInclusive=true` in a region whose `RegionTaxReadiness` has `ratePresent=false` **and** `taxInclusive=false` in a region with no configured `taxCategory` are both governed by the tenant tax-display policy — default **fail-closed**, explicit warn allowed. The category predicate evaluates the **effective category** = `coalesce(row.tax_category_ref, readiness.taxCategory)` — a row-level `tax_category_ref` satisfies the check in a region whose taxonomy carries no default category (2026-07-28 review fix, confirmed 2026-07-31). Readiness is resolved per `(tenant, region)`; an unknown region fails closed - `inst-td-policy`
+2a. [ ] - `p1` - **Readiness provider (D-01):** at MVP `RegionTaxReadiness` reads the tenant-declared `tax_category`/`tax_rate_present` columns on `pricing_region_taxonomy` (CatalogAdmin, `config × write`, audited) — it catches **configuration** mistakes; rate correctness is unverifiable before Tax Engine. Once Tax Engine GAs, the provider becomes Tax Engine-backed and the tenant-declared markers are **reconciled** against its registry: a divergence (declared ready, engine disagrees) flags affected published rows **in the operator-plane flag store (`pricing_operator_flag`, D-85 — never the versioned read model: the reconciliation signal has no publish unit, and a frozen `CatalogVersion` never mutates)** + raises `pricing.tax.readiness_divergent` (Warn); remediation is a re-publish — never a silent retro-change - `inst-td-readiness`
 3. [ ] - `p1` - **GA gate (C3):** while Tax Engine is pre-GA a `taxInclusive=true` **row** MAY be authored and previewed but publishes with the read-model flag `not_sellable_ga` — the flag is **per price row, hence per `(currency, region)` market**, not per plan: a plan selling tax-exclusive in US and tax-inclusive in EU is gated **only** on its EU market(s); the sellability gate (Slice 7) evaluates the flag per scope key; MVP sells tax-exclusive - `inst-td-gagate`
 4. [ ] - `p1` - When Tax Engine GAs, clearing `not_sellable_ga` is a re-publish (goes through the pipeline + approval), not a silent flag flip - `inst-td-clear`
 
@@ -217,7 +219,7 @@ and bundles (Slice 8) build on.
 **Output**: pass, or the enumerated rejection naming the uncovered currency and the offending component
 
 **Steps**:
-1. [ ] - `p1` - **(i)** A **required** add-on or price-override row lacking a row in a currency the base plan publishes → reject (the subscription could not resolve all lines in one bound currency). An **optional** add-on's currency gap does NOT block the base plan's publish — it is enforced at attachment time (the add-on is not attachable on a market it does not cover; Subscriptions checks via the sellability read) (2026-07-28 review fix, flagged for veto) - `inst-cb-addon`
+1. [ ] - `p1` - **(i)** A **required** add-on or price-override row lacking a row in a currency the base plan publishes → reject (the subscription could not resolve all lines in one bound currency). An **optional** add-on's currency gap does NOT block the base plan's publish — it is enforced at attachment time (the add-on is not attachable on a market it does not cover; Subscriptions checks via the sellability read) (2026-07-28 review fix, confirmed 2026-07-31) - `inst-cb-addon`
 2. [ ] - `p1` - **(ii)** A `sum_of_parts` bundle whose component rows do not cover **every** currency the bundle sells → reject (Slice 8 invokes this rule with bundle context) - `inst-cb-bundle-sum`
 3. [ ] - `p1` - **(iii)** An `own_price` bundle whose components do not **each** have a row in **every** currency the bundle sells → reject - `inst-cb-bundle-own`
 4. [ ] - `p1` - Currency **selection** at activation is Subscriptions-owned; this slice guarantees only that every sellable currency is fully covered. `invoiceGroupingKey` is a layout hint and MUST NOT override this invariant (Billing splits currencies regardless) - `inst-cb-boundary`
@@ -272,7 +274,7 @@ Slice-owned tables (tenant-scoped, SecureORM; `pricing_` prefix per Foundation �
 `not_sellable_ga` flag in `pricing_read_model` (derived at publish, not authored).
 `tax_category_ref` is the **source of truth** for a row's tax category: the D-48
 billing-descriptor set's tax-category field mirrors it, with a publish-time consistency
-check — a mismatch fails publish (2026-07-28 review fix, flagged for veto).
+check — a mismatch fails publish (2026-07-28 review fix, confirmed 2026-07-31).
 
 Key constraints: FK-like validation (application-level, at save + publish) from
 `pricing_price.region` to `pricing_region_taxonomy(active)`; the ≥ 20-currency floor is a

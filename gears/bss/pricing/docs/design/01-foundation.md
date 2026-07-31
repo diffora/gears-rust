@@ -161,7 +161,8 @@ Normative: [§4.3](#43-immutability-and-change-mechanisms-normative).
 
 Amounts are stored as integer minor units at the currency's ISO 4217 scale (0 for JPY/KRW, 2
 default, 3 for BHD/KWD/OMR); a flat 2-decimal cap MUST NOT be assumed; amounts are `≥ 0`
-(negatives rejected); no implicit FX — a missing `(currency, region)` row fails closed.
+(a negative amount is rejected — `AMOUNT_NEGATIVE`); a code that is not valid ISO 4217 is
+rejected (`CURRENCY_INVALID`); no implicit FX — a missing `(currency, region)` row fails closed.
 
 #### Author-driven mutation; UTC time
 
@@ -237,7 +238,8 @@ The base-price **preview** (`cpt-cf-bss-pricing-interface-price-preview`) and th
 integration contracts ([`../PRD.md`](../PRD.md) §9.2) are refined in the slices that own their
 payloads. Concrete schemas, proto, and **slice-specific** error taxonomies are owned by these
 slice designs. Failure modes of the engine itself carry **Foundation-owned** RFC 9457 problem
-types, referenced (never redefined) by slices: `DUPLICATE_SCOPE_KEY` (409 — canonical
+types, referenced (never redefined) by slices. **Problem responses (RFC 9457):**
+`DUPLICATE_SCOPE_KEY` (409 — canonical
 scope-key uniqueness), `STALE_VERSION` (409 — ETag/row-version conflict),
 `IDEMPOTENCY_PAYLOAD_MISMATCH` (409 — same key, different payload),
 `ROUNDING_POLICY_UNRESOLVED` (422 — a published row resolves neither a row-level
@@ -297,15 +299,27 @@ of this gear carries the gear-name prefix **`pricing_`** — matching the siblin
 names (`Plan`, `Price`, `ReadModel`) stay unprefixed; the prefix applies to physical tables
 only, including slice-owned tables in every other slice design.
 
-- **`pricing_plan`** — keyed **`(plan_id, revision)`** (composite PK — the draft-revision-row model, D-56, 2026-07-28 review fix, flagged for veto), `tenant_id`, `sku_id`, `plan_tier`, `billing_cycle`, `lifecycle_state` (`draft`|`published`|`retired`), `available_from`/`available_to`, `created_by` (pseudonymous principal id of the authoring actor — 2026-07-28 review fix: the Slice-12 history surface reads it under `plan × read`, so actor identity never requires the Auditor-only `pricing_audit_log`), ETag/row-version. Published revision rows are immutable; only the plan's single open `draft` revision row mutates, through DraftStateMachine transitions (partial `UNIQUE (plan_id) WHERE lifecycle_state = 'draft'`; `revision` increments monotonically, `lifecycle_state` per §3.2), fully audited — the normative revision model is §4.3; physical append-only enforcement via REVOKE/trigger applies to `pricing_price`.
-- **`pricing_price`** — `price_id` (PK), `tenant_id`, the **canonical scope-key columns** (`plan_id`, `currency`, `region`, `price_overlay`, `phase`, `price_eligibility`, `charge_kind`, `cohort` — `none` unless `existing_grandfathered`, ADR-0002), `amount_minor`, `model_kind`, `tax_inclusive`, `billing_timing` (recurring), evaluation-policy columns (usage), `rounding_policy_ref` (nullable named rounding-policy id — PRD §17.4: publish resolves the row-level reference, else the tenant default from `pricing_policy_object`, else fails `ROUNDING_POLICY_UNRESOLVED`; the **resolved** policy id freezes into the read model / snapshot, definition + application stay downstream in Tariffs/Billing), `grandfather_until`, `supersedes_price_id`, `lifecycle_state`, `created_by` (pseudonymous authoring principal — the history-export actor field, Slice 12). **Partial `UNIQUE`** on the scope key over **current** rows (`lifecycle_state = 'published'` and not superseded, via the supersession link) enforces at most one current row per key — **temporal `PriceWindow` non-overlap and coverage are enforced by the publish-time validation pipeline (Slice 7, gear-owned per D-03), not by this index**, so a published predecessor and its scheduled successor legally coexist. Append-only via `REVOKE UPDATE, DELETE` + `BEFORE UPDATE/DELETE` trigger with a **column whitelist**: the trigger rejects any UPDATE of a published row except (a) `lifecycle_state` transitions permitted by the state machine (`published → superseded` on supersession/cutover) and (b) monotonic tightening of `grandfather_until` (setting it when null, or moving it earlier); all price/scope/model columns are immutable and DELETE is always rejected — controlled transitions run through the engine's transition path, never ad-hoc SQL.
+- **`pricing_plan`** — keyed **`(plan_id, revision)`** (composite PK — the draft-revision-row model, D-56, 2026-07-28 review fix, confirmed 2026-07-31), `tenant_id`, `sku_id`, `plan_tier`, `billing_cycle`, `lifecycle_state` (`draft`|`published`|`retired`), `available_from`/`available_to`, `created_by` (pseudonymous principal id of the authoring actor — 2026-07-28 review fix: the Slice-12 history surface reads it under `plan × read`, so actor identity never requires the Auditor-only `pricing_audit_log`), ETag/row-version. Published revision rows are immutable **in content** — their only sanctioned in-place mutation is the state-machine `lifecycle_state` flip (`published → retired`; D-56's own framing: in-place mutation survives only as state-machine flips — 2026-07-30 review fix); only the plan's single open `draft` revision row mutates content, through DraftStateMachine transitions (partial `UNIQUE (plan_id) WHERE lifecycle_state = 'draft'`; `revision` increments monotonically, `lifecycle_state` per §3.2), fully audited — the normative revision model is §4.3; **child shape tables version with the revision, copy-on-new-revision (D-83 — [`02-plan-definition.md`](./02-plan-definition.md) §6)**; physical append-only enforcement via REVOKE/trigger applies to `pricing_price`.
+- **`pricing_price`** — `price_id` (PK), `tenant_id`, the **canonical scope-key columns** (`plan_id`, `currency`, `region`, `price_overlay`, `phase`, `price_eligibility`, `charge_kind`, `cohort` — `none` unless `existing_grandfathered`, ADR-0002), `amount_minor`, `model_kind`, `tax_inclusive`, `billing_timing` (recurring), evaluation-policy columns (usage), `rounding_policy_ref` (nullable named rounding-policy id — PRD §17.4: publish resolves the row-level reference, else the tenant default from `pricing_policy_object`, else fails `ROUNDING_POLICY_UNRESOLVED`; the **resolved** policy id freezes into the read model / snapshot, definition + application stay downstream in Tariffs/Billing), `grandfather_until`, `supersedes_price_id`, `lifecycle_state`, `created_by` (pseudonymous authoring principal — the history-export actor field, Slice 12). **Partial `UNIQUE`** on the scope key over **current** rows (`WHERE lifecycle_state = 'published'` — sufficient on its own under the flip-at-commit rule (§4.3: the predecessor reads `superseded` the instant its successor commits), and the only expressible form anyway — a partial-index predicate sees the row's own columns, and the supersession link lives on the **successor** row; 2026-07-30 review fix) enforces at most one current row per key — **temporal `PriceWindow` non-overlap and coverage are enforced by the publish-time validation pipeline (Slice 7, gear-owned per D-03), not by this index**, so a **superseded** predecessor (its window still active until the changeover) and its published successor with a scheduled window legally coexist. Append-only via `REVOKE UPDATE, DELETE` + `BEFORE UPDATE/DELETE` trigger with a **column whitelist**: the trigger rejects any UPDATE of a published row except (a) `lifecycle_state` transitions permitted by the state machine (`published → superseded` on supersession/cutover) and (b) monotonic tightening of `grandfather_until` (setting it when null, or moving it earlier); all price/scope/model columns are immutable and DELETE is always rejected — controlled transitions run through the engine's transition path, never ad-hoc SQL.
 - **Price history** — history is the set of superseded rows retained **in `pricing_price` itself**, keyed by `supersedes_price_id`; no rows are ever moved or deleted (no separate history table).
-- **`pricing_read_model`** — the projected frozen view keyed by `(tenant_id, catalog_version, plan_id)` with a `warm_completed` marker; monotonic per `catalog_version`.
+- **`pricing_read_model`** — the projected frozen view keyed by `(tenant_id, catalog_version, plan_id)` with a `warm_completed` marker; monotonic per `catalog_version`. **Storage is a per-plan delta (D-86, 2026-07-30)**: a version's rows are exactly the plans of the publishes that produced it — never a full tenant copy (≤ 5s interactive coalescing would explode one) — and resolving `(pin V, plan P)` reads P's row with the greatest `catalog_version ≤ V` whose `warm_completed` is set (one indexed read on `(tenant_id, plan_id, catalog_version DESC)`, inside the p95 < 100ms budget). **Retention**: delta rows are retained on the same horizon as the append-only truth history (≥ 7y, jurisdiction-configurable, audit-aligned) — growth is O(publishes), the truth tables' own order; compacting superseded deltas beyond the horizon is an ops knob, never a semantics change.
 - **`pricing_catalog_version_ref`** — `pending` vs `committed` version linkage per publish.
 - **`pricing_policy_object`** — the approval-threshold and tax-display policies (fail-safe defaults), the tenant **default rounding policy** (a named rounding-policy id; optional — a tenant without one simply requires every published row to carry its own `rounding_policy_ref`, per the §17.4 fail-closed rule), and the **enforced-migration notice period** (days; default floor 60 — D-49, validated by Slice 11 at scheduling).
+- **`pricing_operator_flag`** — operator-plane drift/divergence flags, keyed `(tenant_id, subject_ref, flag)`; set/cleared by the external-signal handlers (audited): `tier_divergent` (Slice 2), `grants_divergent` (Slice 6), the tax-readiness divergence (Slice 4). **Never part of `pricing_read_model`** (D-85): a drift flag has no publish unit — consumers keep resolving the frozen values; operators read the flags via the authoring surfaces (`plan × read`) and the existing alarms.
 - **`pricing_idempotency_dedup`** — PK `(tenant_id, operation, client_key)` + a request-payload hash; the at-most-once gate + replay-response source. A replay with a matching hash returns the stored response; a mismatching hash is rejected with `IDEMPOTENCY_PAYLOAD_MISMATCH` (never replayed, never re-executed); the idempotency check precedes the ETag check.
 - **`pricing_outbox`** — the transactional event outbox (frozen event names, dedup/correlation keys, `(tenantId, aggregateId)` ordering).
 - **`pricing_audit_log`** — append-only actor/before-after/approval trail, hash-chained per D-14 (normative: [`05-governance.md`](./05-governance.md)); ≥ 7-year configurable retention.
+
+**Governed backdated reference rows are NOT in `pricing_price` (D-76).** The historical-import
+path writes a disjoint Slice-5-owned store, `pricing_historical_price`
+([`05-governance.md`](./05-governance.md) `inst-bd-store`), which is never window-linked, never
+projected into `pricing_read_model`, and never an input to coverage, sellability or
+`CatalogVersion` addressability; its only reader is snapshot synthesis
+([`11-lifecycle.md`](./11-lifecycle.md) `inst-sy-select`). Every statement in this design about
+published `pricing_price` rows — §4.3 immutability, the scope-key partial `UNIQUE`, the
+REVOKE/trigger discipline, "consumers resolve only committed versions" — therefore holds
+**without an exception class**, and a reference row cannot reach live resolution through a
+forgotten query predicate.
 
 ### 3.8 Deployment Topology
 
@@ -376,19 +390,25 @@ are deletable; there is no deletion event to fan out. Change over time uses four
 composable** mechanisms ([`../PRD.md`](../PRD.md) §17.5):
 
 - **Versioning** — captures a structural/price change as a new immutable revision; prior rows retained as history (`PlanUpdated` / `PriceCreated`).
-- **Supersession** — versioning scoped to **one canonical scope key**: a new immutable row plus opening/closing the corresponding `PriceWindow` (never overlap), within one `priceEligibility` class and one `chargeKind` (`PriceUpdated`). The predecessor's `lifecycle_state` flips `published → superseded` at the supersession **commit**, not at window activation — effectiveness over time lives solely in the `PriceWindow`, so the scope-key partial `UNIQUE` always sees exactly one current row per key (2026-07-28 review fix, flagged for veto).
+- **Supersession** — versioning scoped to **one canonical scope key**: a new immutable row plus opening/closing the corresponding `PriceWindow` (never overlap), within one `priceEligibility` class and one `chargeKind` — and, on usage rows, with the unit/counter-determining fields preserved (meter, granularities, aggregation windows; `SUPERSESSION_UNIT_MISMATCH` otherwise — D-82, Slice 3 rule) (`PriceUpdated`). The predecessor's `lifecycle_state` flips `published → superseded` at the supersession **commit**, not at window activation — effectiveness over time lives solely in the `PriceWindow`, so the scope-key partial `UNIQUE` always sees exactly one current row per key (2026-07-28 review fix, confirmed 2026-07-31).
 - **`PriceWindow`** — schedules **when** a versioned/superseded row is effective (window store, state machine, and activation job owned by Slice 7 in this gear — D-03).
 - **Grandfathering cutover** — one atomic approval unit that shortens the current `all_subscriptions` window `effectiveTo` to the cutover and schedules (a) an immutable `existing_grandfathered` copy and (b) the `all_subscriptions` successor, so **no coverage gap opens**.
 
-**Plan revisions (D-56, 2026-07-28 review fix, flagged for veto):** `pricing_plan` is keyed
-`(plan_id, revision)`. A published revision row is **immutable**; a shape change on a published
+**Plan revisions (D-56, 2026-07-28 review fix, confirmed 2026-07-31; child tables per D-83):**
+`pricing_plan` is keyed
+`(plan_id, revision)`. A published revision row is **immutable in content** (its only in-place
+mutation is the sanctioned `lifecycle_state` flip, `published → retired`); a shape change on a published
 plan opens a **new** revision row in `draft` (at most one open draft per plan — partial
 `UNIQUE (plan_id) WHERE lifecycle_state = 'draft'`) that publishes through the standard §4.2
 path and becomes the current revision. The plan's identity, the scope-key axes, and the
-`pricing_price` attachment stay on `plan_id` (unchanged), and phase rows **re-attach** to the
-new revision with stable `phase_id`s ([`02-plan-definition.md`](./02-plan-definition.md) §6) —
-so "published plans never return to draft" means the published revision row never mutates;
-change is always a new revision row.
+`pricing_price` attachment stay on `plan_id` (unchanged), and the child shape tables — phases,
+add-on rules, descriptor set — **version with the revision, copy-on-new-revision** (D-83,
+2026-07-30 review fix): the new revision copies them with stable `phase_id`s (so the `phase`
+scope-key axis and same-key supersession are untouched), the open draft edits **its own
+copies**, and a published revision's child rows are immutable with it
+([`02-plan-definition.md`](./02-plan-definition.md) §6) —
+so "published plans never return to draft" means the published revision row and its child rows
+never mutate; change is always a new revision row.
 
 An `existing_grandfathered` row is **immutable in price** and MUST NOT be superseded; the only
 permitted mutation is **setting or tightening `grandfatherUntil`** (never loosening, never the
@@ -417,17 +437,36 @@ SLO**; on completion it sets the warm-completion marker (the version becomes res
 monotonicity unaffected) and clears the degraded mark, raising an operations alarm meanwhile;
 no new event name is introduced — consumers observe completion via the marker.
 
+The projection **source** is the published revision's own truth rows — the `(plan_id,
+revision)` row, its revision-scoped child rows (D-83), and the published price rows — for the
+initial warm and every re-drive alike; the projector **never reads the open draft revision**,
+so a degraded-warm re-drive cannot leak draft edits into a frozen version (2026-07-30 review
+fix). Versions store **per-plan deltas** (D-86): resolving `(pin, plan)` reads the plan's
+greatest completed version ≤ the pin — monotonicity is unaffected, completed versions never
+mutate, and retention follows the truth-history horizon (§3.7). The versioned read model
+carries **no operator-plane state** (D-85): drift/divergence flags live in
+`pricing_operator_flag` and never appear in a frozen version.
+
 ## 5. Traceability
 
 - **PRD**: [`../PRD.md`](../PRD.md) — §2.2 (canonical scope key), §6.2/§6.7 (model kind, publish, events), §6.8 (versioning/immutability/supersession), §6.9 (consumer resolution), §9 (interfaces), §17.4 (validation rules), §17.5 (change mechanisms + `CatalogVersion` increment)
 - **DESIGN**: [`../DESIGN.md`](../DESIGN.md) — canonical index (slice map, dependency order, cross-cutting statements)
 - **ADRs**: [`../ADR/`](../ADR/) — `cpt-cf-bss-pricing-adr-canonical-scope-key`, `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis`, `cpt-cf-bss-pricing-adr-pricewindow-consolidation`
 
-This slice directly addresses:
+**Traces to**: `cpt-cf-bss-pricing-fr-publish-validation-failclosed`,
+`cpt-cf-bss-pricing-fr-published-rows-append-only`, `cpt-cf-bss-pricing-fr-plan-versioning`,
+`cpt-cf-bss-pricing-fr-supersession`, `cpt-cf-bss-pricing-fr-pricing-snapshot`,
+`cpt-cf-bss-pricing-fr-consumer-readmodel-resolution`,
+`cpt-cf-bss-pricing-fr-catalogversion-increment`,
+`cpt-cf-bss-pricing-fr-publish-fanout-atomicity`, `cpt-cf-bss-pricing-fr-event-contract`,
+`cpt-cf-bss-pricing-fr-price-amount-validation`, `cpt-cf-bss-pricing-fr-mutation-idempotency`,
+`cpt-cf-bss-pricing-fr-concurrent-edit`
 
-- `cpt-cf-bss-pricing-fr-publish-validation-failclosed` — the aggregate fail-closed validation pipeline
-- `cpt-cf-bss-pricing-fr-published-rows-append-only` / `cpt-cf-bss-pricing-fr-plan-versioning` / `cpt-cf-bss-pricing-fr-supersession` — append-only history + versioning/supersession
-- `cpt-cf-bss-pricing-fr-pricing-snapshot` / `cpt-cf-bss-pricing-fr-consumer-readmodel-resolution` — snapshot + monotonic read model
-- `cpt-cf-bss-pricing-fr-catalogversion-increment` / `cpt-cf-bss-pricing-fr-publish-fanout-atomicity` / `cpt-cf-bss-pricing-fr-event-contract` — `CatalogVersion` request, degraded handling, frozen event set
-- `cpt-cf-bss-pricing-fr-price-amount-validation` / `cpt-cf-bss-pricing-fr-mutation-idempotency` / `cpt-cf-bss-pricing-fr-concurrent-edit` — money/precision, idempotency, optimistic concurrency
-- `cpt-cf-bss-pricing-interface-authoring-publish` / `cpt-cf-bss-pricing-interface-catalog-read-model` — the two primary API contracts
+Grouped by theme:
+
+- the aggregate fail-closed validation pipeline (`fr-publish-validation-failclosed`)
+- append-only history + versioning/supersession (`fr-published-rows-append-only` / `fr-plan-versioning` / `fr-supersession`)
+- snapshot + monotonic read model (`fr-pricing-snapshot` / `fr-consumer-readmodel-resolution`)
+- `CatalogVersion` request, degraded handling, frozen event set (`fr-catalogversion-increment` / `fr-publish-fanout-atomicity` / `fr-event-contract`)
+- money/precision, idempotency, optimistic concurrency (`fr-price-amount-validation` / `fr-mutation-idempotency` / `fr-concurrent-edit`)
+- the two primary API contracts (`cpt-cf-bss-pricing-interface-authoring-publish` / `cpt-cf-bss-pricing-interface-catalog-read-model`)

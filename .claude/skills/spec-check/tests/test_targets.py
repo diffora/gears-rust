@@ -161,3 +161,41 @@ def test_text_at_finds_a_cross_gear_target_in_a_sibling_corpus():
     # A target no loaded corpus provides is None, which the caller must *report*
     # rather than skip.
     assert text_at(beta, "../../alpha/docs/SEAMS.md", [beta]) is None
+
+
+def test_resolves_explicit_cross_gear_paths_as_written():
+    r = resolve(
+        "cross-gear only — `../../rating/docs/DESIGN.md`, "
+        "`../../subscriptions/docs/design/05-entitlements.md` (3 sites).",
+        pricing(),
+        SeamIndex(),
+    )
+    assert r.paths == [
+        "../../rating/docs/DESIGN.md",
+        "../../subscriptions/docs/design/05-entitlements.md",
+    ]
+    assert r.unresolved == []
+
+
+def test_shorthand_tokens_inside_a_cross_gear_path_are_part_of_that_path():
+    # `PRD` and `DESIGN` occur inside the paths; neither may become a second,
+    # own-gear claim against pricing's PRD.md / DESIGN.md.
+    r = resolve(
+        "`../../subscriptions/docs/PRD.md`; `../../rating/docs/DESIGN.md`.",
+        pricing(),
+        SeamIndex(),
+    )
+    assert r.paths == [
+        "../../rating/docs/DESIGN.md",
+        "../../subscriptions/docs/PRD.md",
+    ]
+
+
+def test_a_cross_gear_path_naming_the_citing_gear_folds_to_the_in_corpus_path():
+    r = resolve("`../../pricing/docs/PRD.md`", pricing(), SeamIndex())
+    assert r.paths == ["PRD.md"]
+
+
+def test_a_shorthand_token_outside_the_path_still_resolves_own_gear():
+    r = resolve("PRD §9.2; also `../../rating/docs/DESIGN.md`", pricing(), SeamIndex())
+    assert r.paths == ["../../rating/docs/DESIGN.md", "PRD.md"]

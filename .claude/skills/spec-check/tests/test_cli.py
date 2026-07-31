@@ -38,13 +38,16 @@ def test_show_known_debt_output_is_byte_identical_to_the_rust_binary():
     assert code == 0
 
 
-def test_the_run_reports_fifteen_live_findings_and_seventy_five_suppressed():
+def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # The handoff's headline numbers, asserted directly rather than only through
     # the byte diff — so a failure says *what* moved, not just that something did.
+    # 15/75 until 2026-07-31: the 2026-07-30 slice-review fix round closed the 8
+    # live pricing P1/P2/P3 findings and 2 pinned-debt members (hand-checked,
+    # notes beside each pinned list), leaving the cross-gear coverage statements.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
-    assert len(payload["findings"]) == 15
-    assert payload["known_debt_suppressed"] == 75
+    assert len(payload["findings"]) == 7
+    assert payload["known_debt_suppressed"] == 73
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

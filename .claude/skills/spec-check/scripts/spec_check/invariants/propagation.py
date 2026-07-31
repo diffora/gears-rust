@@ -228,8 +228,17 @@ def check(corpus, seams, loaded):
 #: rating's SEAMS.md — was deliberately never listed here, and was closed by fixing
 #: the document instead. This register holds *accepted* debt, whose contents are a
 #: human decision; adding a brand-new finding would have buried it.
+#:
+#: Deliberate removals, hand-checked per the rule above:
+#:
+#: - `D-01 -> PRD.md` (removed 2026-07-31): the D-79 lane text added to PRD §9.2
+#:   reads "…have no data source (the D-01 defect class)", and this invariant is
+#:   *document*-granular — any `D-01` token in PRD.md satisfies it. The finding
+#:   legitimately no longer reproduces, but note the residual: D-01's originally
+#:   claimed sites (`fr-tax-display-basis`, §17.4) still carry no D-01 citation.
+#:   That per-site gap is below P1's granularity and stays part of the docs round
+#:   this debt tracks.
 PINNED_PROPAGATION_GAPS_2026_07_29 = (
-    ("pricing", "D-01", "PRD.md"),
     ("pricing", "D-02", "ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md"),
     ("pricing", "D-02", "DESIGN.md"),
     ("pricing", "D-02", "PRD.md"),

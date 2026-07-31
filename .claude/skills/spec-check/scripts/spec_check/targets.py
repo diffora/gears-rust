@@ -10,6 +10,17 @@ from .corpus import split_lines
 
 _TOKEN = re.compile(r"\b(S(\d{1,2})|Foundation|PRD|DESIGN|SEAMS|ADR-(\d{4}))\b")
 
+# Explicit cross-gear file target: `../../<gear>/docs/<path>.md`, the exact form
+# `text_at` already knows how to read across loaded corpora and the SEAMS branch
+# already mints. Until 2026-07-31 no *authored* citation could name one — the
+# only cross-gear channel was `SEAMS <id>` — so an honest cross-gear file claim
+# (D-66's, whose every target lives in rating/subscriptions) was forced to choose
+# between `propagation-uninterpretable` and false `propagation-missing` against
+# the citing gear's own same-named documents. A path this shape resolves as
+# written; whether the named gear is loaded is the *caller's* concern
+# (`propagation-target-not-loaded`), exactly as for a seam target.
+_CROSS_GEAR = re.compile(r"\.\./\.\./([a-z0-9_-]+)/docs/((?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md)\b")
+
 # `\**` tolerates markdown bold around the seam id — the real citation in
 # DECISIONS.md (D-65) reads "subscriptions SEAMS **SUB-P7**.", and without it that
 # seam id is invisible to this regex, so the token falls back to bare SEAMS and
@@ -205,13 +216,20 @@ def _first_path_with_prefix(corpus, want):
 def resolve(raw, corpus, seams):
     """Maps the register's propagation shorthand onto corpus-relative paths.
 
-    Cross-gear targets (`SEAMS <id>`) are resolved against `seams` — the seam ids
-    every loaded gear corpus actually defines a row for — rather than inferred from
-    the id's prefix, and are returned as `../../<gear>/docs/SEAMS.md` so a finding
-    names something a reader can open. A citation from within the defining gear's
-    own corpus resolves to the in-corpus `SEAMS.md` instead of escaping and
-    returning via `../../`. An id no loaded gear defines, or one two gears both
-    define, is reported on `Resolved` rather than silently guessed.
+    Cross-gear targets are resolved two ways. `SEAMS <id>` is resolved against
+    `seams` — the seam ids every loaded gear corpus actually defines a row for —
+    rather than inferred from the id's prefix, and is returned as
+    `../../<gear>/docs/SEAMS.md` so a finding names something a reader can open.
+    An **explicit path** of that same shape (`../../<gear>/docs/<file>.md`,
+    2026-07-31) resolves as written; one naming the citing gear itself folds to
+    the in-corpus path, exactly as a same-gear seam citation does. A citation
+    from within the defining gear's own corpus resolves to the in-corpus
+    `SEAMS.md` instead of escaping and returning via `../../`. An id no loaded
+    gear defines, or one two gears both define, is reported on `Resolved` rather
+    than silently guessed. A shorthand token (`PRD`, `DESIGN`, …) occurring
+    *inside* an explicit cross-gear path — `PRD` inside
+    `../../subscriptions/docs/PRD.md` — is part of that path, never a second,
+    own-gear claim.
     """
     paths = set()
     unresolved = set()
@@ -219,7 +237,18 @@ def resolve(raw, corpus, seams):
     seam_conflicts = {}
     citing_gear = gear_name(corpus)
 
+    cross_spans = []
+    for match in _CROSS_GEAR.finditer(raw):
+        cross_spans.append(match.span())
+        gear, sub = match.group(1), match.group(2)
+        if citing_gear == gear:
+            _insert_if_present(corpus, sub, paths, unresolved, match.group(0))
+        else:
+            paths.add("../../{}/docs/{}".format(gear, sub))
+
     for match in _TOKEN.finditer(raw):
+        if any(start <= match.start(1) and match.end(1) <= end for start, end in cross_spans):
+            continue
         whole = match.group(1)
         if whole == "PRD":
             _insert_if_present(corpus, "PRD.md", paths, unresolved, whole)

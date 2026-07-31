@@ -45,8 +45,9 @@ normalized to an exact split at publish, D-07), and `invoiceItemization` (`aggre
 rev-share for Marketplace accrual. The `bundle` SKU **type** is registry-owned; this slice
 authors what the bundle *contains and how it prices*.
 
-**Traces to**: `cpt-cf-bss-pricing-fr-bundle-composition`,
-`cpt-cf-bss-pricing-fr-invoice-currency-binding`
+**Traces to**: `cpt-cf-bss-pricing-fr-bundle-composition` (bundle currency/region coverage
+delegates to Slice 4's `CurrencyBindingChecker` — `fr-invoice-currency-binding` is claimed
+there, one owner per FR; 2026-07-31 P2 fix)
 
 ### 1.2 Purpose
 
@@ -143,7 +144,7 @@ flowchart TB
 
 **Steps**:
 1. [ ] - `p2` - Basis MUST be declared: `sum_of_parts` or `own_price`; the basis and any explicit price persist and freeze - `inst-bb-declared`
-2. [ ] - `p2` - `sum_of_parts`: component **`planId`s** referenced (B1), each published; a component `planId` MUST NOT itself be a `bundle`-type plan — flat composition at launch, nesting is Future scope (`COMPONENT_IS_BUNDLE`; re-composition is re-validated, so a cycle can never form); the summing itself is Tariffs' — the catalog persists the reference set only - `inst-bb-sum`
+2. [ ] - `p2` - `sum_of_parts`: component **`planId`s** referenced (B1), each published; a component `planId` MUST NOT itself be a `bundle`-type plan — flat composition at launch, nesting is Future scope (`COMPONENT_IS_BUNDLE`; re-composition is re-validated, so a cycle can never form); the summing itself is Tariffs' — the catalog persists the reference set only. **Usage and usage-carrying components are legal (2026-07-30 review fix, L-8):** a usage-only component plan (e.g. a metered API plan beside a seat plan) composes normally — the "sum" covers the components' **recurring** amounts onto the bundle's recurring line set, while each component's usage charges rate per its own rows and itemize per `invoiceItemization`; the frequency-match rule (`inst-bc-frequency`) binds **recurring components only**, by construction - `inst-bb-sum`
 3. [ ] - `p2` - `own_price`: the bundle's own price rows live on the canonical scope key like any plan's (Slices 3/4 rules apply); a matching-currency component set is still required (Slice 4 case iii) - `inst-bb-own`
 
 ### Component Coverage Validation
@@ -151,17 +152,17 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-bundle-coverage`
 
 **Steps**:
-1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — the currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule. Coverage/ambiguity evaluates over `priceEligibility = all_subscriptions` (`cohort = none`) rows **only** — grandfathered generations (ADR-0002) are never coverage candidates, so a cutover-touched component's coexisting generation rows neither cover nor count as ambiguous (2026-07-28 review fix, flagged for veto) - `inst-bc-coverage`
-2. [ ] - `p2` - Recurring components MUST match `frequency` (a monthly + annual mix cannot sum onto one invoice line set) - `inst-bc-frequency`
+1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — the currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule. Coverage/ambiguity evaluates over `priceEligibility = all_subscriptions` (`cohort = none`) rows **only** — grandfathered generations (ADR-0002) are never coverage candidates, so a cutover-touched component's coexisting generation rows neither cover nor count as ambiguous (2026-07-28 review fix, confirmed 2026-07-31) - `inst-bc-coverage`
+2. [ ] - `p2` - **Recurring** components MUST match `frequency` (a monthly + annual mix cannot sum onto one invoice line set); usage-only components carry no `frequency` and are outside this rule (their charges rate per their own rows — `inst-bb-sum`) - `inst-bc-frequency`
 3. [ ] - `p2` - A missing or ambiguous component row fails publish naming the component + `(currency, region)` - `inst-bc-fail`
-4. [ ] - `p1` - **Bundle sellability (normative):** the Slice 7 gate evaluates a bundle as the **conjunction** over its components — sellable at `t` iff **every** referenced component key passes gate predicates (1)–(5) at `t` (plus the bundle's own `availableFrom`/`availableTo`). Components are **exempt from predicate (6)** — the registry `sellable` flag (D-46) applies to the **bundle SKU itself**, not to component references (`sellable = false` components are exactly the composition-only SKUs bundles exist to package). For `sum_of_parts` there are no own rows, so components are the only inputs; for `own_price` the bundle's **own** rows must pass **and** the component keys too (the matching-currency component set is part of the offer). The frozen component key set spans `priceEligibility = all_subscriptions` (`cohort = none`) keys **only** — grandfathered generations are never gate inputs (2026-07-28 review fix, flagged for veto). One unsellable component makes the bundle unsellable, never partially-sellable - `inst-bc-sellability`
+4. [ ] - `p1` - **Bundle sellability (normative):** the Slice 7 gate evaluates a bundle as the **conjunction** over its components — sellable at `t` iff **every** referenced component key passes gate predicates (1)–(5) at `t` (plus the bundle's own `availableFrom`/`availableTo`). Components are **exempt from predicate (6)** — the registry `sellable` flag (D-46) applies to the **bundle SKU itself**, not to component references (`sellable = false` components are exactly the composition-only SKUs bundles exist to package). For `sum_of_parts` there are no own rows, so components are the only inputs; for `own_price` the bundle's **own** rows must pass **and** the component keys too (the matching-currency component set is part of the offer). The frozen component key set spans `priceEligibility = all_subscriptions` (`cohort = none`) keys **only** — grandfathered generations are never gate inputs (2026-07-28 review fix, confirmed 2026-07-31). One unsellable component makes the bundle unsellable, never partially-sellable - `inst-bc-sellability`
 
 ### Rev-Share Reconciliation
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-revshare`
 
 **Steps**:
-1. [ ] - `p2` - When set, rev-share MUST sum to **100% per included vendor SKU**, with an explicit per-group platform cut; rev-share is authorable on **`sum_of_parts`** bundles only (D-55 — an `own_price` bundle has no per-vendor-SKU allocation base; `REVSHARE_BASIS_UNSUPPORTED`) - `inst-rs-sum`
+1. [ ] - `p2` - When set, rev-share MUST sum to **100% per included vendor SKU**, with an explicit per-group platform cut; rev-share is authorable on **`sum_of_parts`** bundles only (D-55 — an `own_price` bundle has no per-vendor-SKU allocation base; `REVSHARE_BASIS_UNSUPPORTED`). The percentages apply to the vendor SKU's **entire rated revenue under the bundle — recurring and usage alike** (2026-07-30 review fix, L-8): a usage component's metered charges share on the same per-SKU split, so Marketplace accrual needs no second model - `inst-rs-sum`
 2. [ ] - `p2` - **Residual normalization (B2, D-07):** authoring accepts `|Σ(share_bp) + platform_cut_bp − 10000| ≤ 1 bp`; at publish the **group's `residual_absorber_party`** (a party row within that `(bundle, vendor SKU)` group, or the **platform** sentinel — default platform, so an "unnominated" state cannot exist; 2026-07-28 review fix — a bundle-level vendor-SKU absorber named a group, not a party) has its **effective** share adjusted by the residual, and the read model publishes effective shares summing to **exactly 10000 bp** (typed values retained for audit, the adjustment recorded). A residual over 1 bp fails publish (`RESIDUAL_OVER_TOLERANCE`) — e.g. a six-way even split (6 × 1666 bp = 9996) must be reconciled by the operator. Monetary (cent-level) rounding at settlement is a separate downstream rule and also lands on the absorber - `inst-rs-residual`
 3. [ ] - `p2` - `invoiceItemization` (`aggregate | itemize`) persists and MUST preserve per-SKU rev-share either way (Marketplace accrues per SKU regardless of invoice layout) - `inst-rs-itemization`
 

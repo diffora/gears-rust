@@ -51,8 +51,9 @@ validation pipeline, and the same materiality/approval policy as single-row auth
 bulk is authoring at scale, not a bypass.
 
 **Traces to**: `cpt-cf-bss-pricing-fr-plan-clone`, `cpt-cf-bss-pricing-fr-bulk-price-import`,
-`cpt-cf-bss-pricing-fr-mass-repricing`, `cpt-cf-bss-pricing-fr-mutation-idempotency`,
-`cpt-cf-bss-pricing-fr-price-history-export`
+`cpt-cf-bss-pricing-fr-mass-repricing`, `cpt-cf-bss-pricing-fr-price-history-export`
+(bulk `run_id` / import idempotency reuses the Foundation's dedup machinery —
+`fr-mutation-idempotency` is claimed there, one owner per FR; 2026-07-31 P2 fix)
 
 ### 1.2 Purpose
 

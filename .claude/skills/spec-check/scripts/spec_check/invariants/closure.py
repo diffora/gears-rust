@@ -178,6 +178,15 @@ def _check_error_codes(corpus):
 #: filename is not a unique key across gears — `design/03-...`-shaped filenames in
 #: particular are just as likely in a sibling gear's own design set. The gear name
 #: here is baseline *data*; it must never leak into resolution or matching logic.
+#:
+#: Deliberate removals, hand-checked per the rule above:
+#:
+#: - `PACKAGE_FIELDS_INVALID` / design/03 (removed 2026-07-31): D-70's 2026-07-30
+#:   propagation wrote the code into PRD AC #89 ("publish MUST fail with a
+#:   field-level error (`PACKAGE_FIELDS_INVALID`; …)"), and this check counts a
+#:   corpus-wide mention outside a Problem-responses block as a reference. The
+#:   code is now referenced by the AC that tests it — a genuine fix, not a
+#:   technicality.
 PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "ADDON_CYCLE", "design/02-plan-definition.md"),
     ("pricing", "ADDON_INCOMPATIBLE", "design/02-plan-definition.md"),
@@ -212,7 +221,6 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "GROUP_UNKNOWN", "design/09-price-overlays.md"),
     ("pricing", "HYBRID_INCOMPLETE", "design/02-plan-definition.md"),
     ("pricing", "METER_AMBIGUOUS", "design/02-plan-definition.md"),
-    ("pricing", "PACKAGE_FIELDS_INVALID", "design/03-price-structure.md"),
     ("pricing", "PHASE_DURATION_INVALID", "design/02-plan-definition.md"),
     ("pricing", "PHASE_GRAPH_INVALID", "design/02-plan-definition.md"),
     ("pricing", "PLANTIER_DIVERGENT", "design/02-plan-definition.md"),

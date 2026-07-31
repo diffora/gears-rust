@@ -61,10 +61,10 @@ def test_propagation_gaps_match_the_pinned_2026_07_29_baseline():
     )
 
 
-def test_the_pinned_baseline_has_exactly_twenty_four_entries():
+def test_the_pinned_baseline_has_exactly_twenty_three_entries():
     # A transcription guard: the set comparison above would also fail on a typo,
     # but a dropped line is easier to read as a count.
-    assert len(PINNED_PROPAGATION_GAPS_2026_07_29) == 24
+    assert len(PINNED_PROPAGATION_GAPS_2026_07_29) == 23  # 24 until 2026-07-31; D-01 -> PRD.md removed, note beside the list
 
 
 def test_cross_gear_propagation_gaps_match_the_expected_set():
@@ -114,9 +114,11 @@ def test_every_other_live_p1_finding_class_matches_its_exact_expected_set():
                 continue
             actual.add((gear, f.invariant, _subject_id(f)))
 
+    # Until 2026-07-31 pricing also contributed two `propagation-uninterpretable`
+    # tuples (D-49 "§15 rows ×5.", D-66 "rating ×4 files"): D-49's field now names
+    # PRD, and D-66 cites its cross-gear targets as explicit
+    # `../../<gear>/docs/<file>.md` paths, the form `resolve` learned that day.
     expected = {
-        ("pricing", "P1/propagation-uninterpretable", "D-49"),
-        ("pricing", "P1/propagation-uninterpretable", "D-66"),
         ("rating", "P1/decision-register-unparsed", ""),
         ("subscriptions", "P1/propagation-uninterpretable", "SUB-D-15"),
         ("subscriptions", "P1/propagation-unresolvable", "SUB-D-16"),
