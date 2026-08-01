@@ -1,0 +1,36 @@
+family     = "reserved"
+id         = "consumption-on-level-rejected"
+kind       = "publish"
+provenance = ["inst-rv-level", "D-53", "D-68"]
+
+# On a non-`sum` row the tier-counter exclusion has no single meaning: Q is a
+# sum of per-granule folds of a level, and "subtract the reserved quantity"
+# could net per granule or per window. Rather than pick, the catalog refuses to
+# author the flavor at all until per-granule netting is decided - a named Future
+# gate, and fail-closed rather than a guess that reaches an invoice.
+
+[predecessor]
+model_kind              = "graduated"
+currency                = "USD"
+meter                   = "storage.gb"
+aggregation_function    = "peak"
+aggregation_granularity = "hour"
+max_hold_granules       = 1
+billing_granularity     = "per_hour"
+reserved_rate_minor     = 3
+reservation_flavor      = "capacity"
+
+[successor]
+model_kind              = "graduated"
+currency                = "USD"
+meter                   = "storage.gb"
+aggregation_function    = "peak"
+aggregation_granularity = "hour"
+max_hold_granules       = 1
+billing_granularity     = "per_hour"
+reserved_rate_minor     = 3
+reservation_flavor      = "consumption"
+
+[[assert]]
+expect = { publish = "rejected", error_code = "LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN" }
+why    = "capacity is the only flavor authorable on a non-sum row; consumption fails publish until per-granule netting semantics exist"

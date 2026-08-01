@@ -1,0 +1,4 @@
+family     = "package"
+role       = "publish"
+gates      = ["package"]
+provenance = ["AC#60", "AC#88", "PRD §17.2"]

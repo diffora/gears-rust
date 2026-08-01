@@ -1055,6 +1055,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "bss-fixtures"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
+name = "bss-fixtures-conformance"
+version = "0.0.0"
+dependencies = [
+ "bss-fixtures",
+ "chrono",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "bss-ledger"
 version = "0.0.0"
 dependencies = [
@@ -1110,6 +1131,54 @@ dependencies = [
  "chrono",
  "thiserror 2.0.18",
  "uuid",
+]
+
+[[package]]
+name = "bss-pricing"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "bss-fixtures",
+ "bss-pricing-sdk",
+ "cf-gears-authz-resolver",
+ "cf-gears-authz-resolver-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-db",
+ "cf-gears-toolkit-db-macros",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "cf-gears-types-registry-sdk",
+ "chrono",
+ "coord",
+ "gts",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "bss-pricing-sdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-security",
+ "chrono",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1777,6 +1846,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "bss-ledger",
+ "bss-pricing",
  "calculator",
  "calculator-gateway",
  "cf-chat-engine",

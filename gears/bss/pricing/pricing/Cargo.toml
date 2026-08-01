@@ -1,0 +1,92 @@
+[package]
+name = "bss-pricing"
+edition.workspace = true
+license.workspace = true
+description = "BSS Plan & Price Modeling gear: the catalog publish engine, Postgres persistence in the bss schema"
+
+[lints]
+workspace = true
+
+[dependencies]
+bss-pricing-sdk = { workspace = true }
+
+# The joint golden conformance corpus registry, read by `infra::fixture_gate`.
+# `default-features = false` on purpose: the loader, the case model and `chrono`
+# sit behind the `corpus` feature, and a gear asks the registry exactly one
+# question — is this `modelKind` green — so it has no business carrying the
+# ability to read twenty case files at runtime. The narrow surface is
+# `ModelKind` + `Registry` + `Registry::gate_open_for`.
+bss-fixtures = { workspace = true, default-features = false }
+
+# Shared BSS coordination primitive (`coord_leases` + `LeaseManager`). The
+# read-model warm re-drive is a singleton background job (design 3.8), so this
+# gear splices coord's migration into its own `Migrator` exactly as the sibling
+# ledger does for its recognition run.
+coord = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+# `DateTime<Utc>` for the `cohort` scope-key axis (the UTC cutover instant that
+# created a grandfathering generation) and the pin-frontier instant.
+chrono = { workspace = true }
+serde = { workspace = true }
+# Authz-label stub type-schemas registered at init (`authz::authz_label_type_schemas`).
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+# `db` enables the `DatabaseCapability` trait (gated behind `toolkit/db`); the
+# REST API layer is not feature-gated, so `rest` needs no feature bump.
+toolkit = { workspace = true, features = ["db"] }
+toolkit-db = { workspace = true, features = ["pg", "sqlite"] }
+# `#[derive(Scopable)]` on the storage entities: the SecureORM tenant binding
+# every Foundation table carries.
+toolkit-db-macros = { workspace = true }
+# The entity models (`DeriveEntityModel`) and the raw-SQL `Statement` the
+# migrations execute; both Postgres and SQLite drivers, matching `toolkit-db`.
+sea-orm = { workspace = true, features = ["sqlx-postgres", "sqlx-sqlite"] }
+# `MigrationTrait` / `MigratorTrait` in the `DatabaseCapability` impl and the
+# Foundation migration chain.
+sea-orm-migration = { workspace = true }
+# `CancellationToken` for the `stateful` `serve` lifecycle.
+tokio-util = { workspace = true }
+
+# REST surface: the axum router the capability mounts.
+axum = { workspace = true }
+# `#[toolkit_macros::api_dto(...)]` expands to `#[derive(utoipa::ToSchema)]`, so
+# the crate has to be a direct dependency of every gear carrying REST DTOs.
+utoipa = { workspace = true }
+# Holds the per-process runtime populated in `init()`.
+arc-swap = { workspace = true }
+
+# Declared in `#[toolkit::gear(deps = [...])]`: the PEP the authoring surfaces
+# gate through, and the registry the AuthZ label type-schemas register with.
+# The gear implementations are referenced through the macro expansion only,
+# which is why both are in the workspace `cargo-shear` ignore list; the SDK
+# crates are the contracts `init()` resolves from `ClientHub`.
+authz-resolver = { workspace = true }
+authz-resolver-sdk = { workspace = true }
+types-registry = { workspace = true }
+types-registry-sdk = { workspace = true }
+# `SecurityContext` / `AccessScope` / `pep_properties` in the authz gate.
+toolkit-security = { workspace = true }
+# `AuthzPermissionV1` + `gts_instance!` for the permission catalog.
+toolkit-gts = { workspace = true }
+# `gts_instance!`'s expansion references the `gts` crate directly.
+gts = { workspace = true }
+# `#[domain_model]` marker on the domain types (enforced by dylint DE0309).
+toolkit-macros = { workspace = true }
+# Required as a direct dep by the `#[resource_error(...)]` macro expansion.
+toolkit-canonical-errors = { workspace = true }
+
+[dev-dependencies]
+# Config tests assert the serde contract itself — defaults fill in, unknown keys
+# are denied — which is format-independent, so JSON stands in for the YAML the
+# platform parses at boot.
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toolkit = { workspace = true, features = ["db"] }
+# `tower::ServiceExt::oneshot` drives the REST router in `tests/rest_*.rs`
+# without binding a socket.
+tower = { workspace = true }

@@ -31,6 +31,7 @@ account-management = ["dep:account_management"]
 static-idp = ["dep:static-idp-plugin"]
 file-storage = ["dep:file_storage"]
 bss-ledger = ["dep:bss_ledger"]
+bss-pricing = ["dep:bss_pricing"]
 
 [dependencies]
 mimalloc = { version = "0.1" }
@@ -85,6 +86,9 @@ static-idp-plugin = { package = "cf-gears-static-idp-plugin", path = "../../gear
 
 # Optional BSS Billing Ledger gear
 bss_ledger = { package = "bss-ledger", path = "../../gears/bss/ledger/ledger", optional = true }
+
+# Optional BSS Plan & Price Modeling gear
+bss_pricing = { package = "bss-pricing", path = "../../gears/bss/pricing/pricing", optional = true }
 
 # Optional example module
 users-info = { path = "../../examples/toolkit/users-info/users-info", optional = true }

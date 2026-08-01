@@ -109,7 +109,11 @@ members = [
     "gears/llm-gateway/llm-gateway-sdk",
     "gears/bss/ledger/ledger",
     "gears/bss/ledger/ledger-sdk",
+    "gears/bss/pricing/pricing",
+    "gears/bss/pricing/pricing-sdk",
     "gears/bss/libs/coord",
+    "gears/bss/fixtures/bss-fixtures",
+    "gears/bss/fixtures/bss-fixtures-conformance",
     "gears/system/event-broker/event-broker-sdk",
 ]
 exclude = ["tools/fuzz"]
@@ -308,7 +312,19 @@ usage-collector-sdk = { package = "cf-gears-usage-collector-sdk", version = "0.2
 
 # BSS gears (ported from vhp-core)
 bss-ledger-sdk = { path = "gears/bss/ledger/ledger-sdk" }
+bss-pricing-sdk = { path = "gears/bss/pricing/pricing-sdk" }
 coord = { path = "gears/bss/libs/coord" }
+# The joint golden conformance fixture corpus. `bss-fixtures` carries no charge
+# arithmetic and is the only one a gear may depend on in production; the
+# conformance harness is a dev-dependency only.
+#
+# `default-features = false` here so a **gear** can inherit the narrow
+# production surface (`ModelKind` + `Registry` + `gate_open_for`): Cargo refuses
+# `default-features = false` on an inherited dependency unless the workspace
+# entry states it, so the default is set narrow and the corpus half is opted
+# into by name where it is actually wanted.
+bss-fixtures = { path = "gears/bss/fixtures/bss-fixtures", default-features = false }
+bss-fixtures-conformance = { path = "gears/bss/fixtures/bss-fixtures-conformance" }
 # FIPS-validated SHA-256 for the ledger idempotency payload fingerprint.
 aws-lc-rs = "1.17"
 
@@ -324,6 +340,11 @@ grpc_hub = { package = "cf-gears-grpc-hub", version = "0.2.10", path = "gears/sy
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Parses the golden-fixture corpus (`gears/bss/fixtures/corpus`). Chosen over
+# JSON because the corpus is hand-authored and hand-reviewed as normative text.
+# Pinned to the major already resolved in the lockfile — a second major would
+# duplicate the crate in the tree.
+toml = "1"
 serde-saphyr = "0.0.22"
 secrecy = { version = "0.10", features = ["serde"] }
 serde_urlencoded = "0.7"

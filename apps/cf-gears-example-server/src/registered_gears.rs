@@ -76,3 +76,6 @@ use account_management as _;
 
 #[cfg(feature = "bss-ledger")]
 use bss_ledger as _;
+
+#[cfg(feature = "bss-pricing")]
+use bss_pricing as _;

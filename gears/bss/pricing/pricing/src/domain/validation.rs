@@ -1,0 +1,178 @@
+//! The fail-closed validation pipeline framework.
+//!
+//! The Foundation owns the *mechanism*; slices own the *rules*. A slice
+//! registers [`ValidationRule`] implementations and the pipeline runs the whole
+//! set, collecting every outcome rather than stopping at the first failure —
+//! the aggregate report is what makes a plan remediable in one pass.
+//!
+//! Two properties are normative rather than convenient
+//! (`design/01-foundation.md` §4.2):
+//!
+//! - **A single blocking violation blocks the publish.** There is no severity
+//!   below "blocking" that still publishes; advisory findings are warnings and
+//!   carry no veto.
+//! - **The same rule set runs twice**: as a pre-check at submit, and again
+//!   inside the publish-commit transaction. Approval approves *content*; the
+//!   commit re-validates *state*, because the world moved between the two. A
+//!   commit-time failure voids the approval and returns the subject to draft
+//!   with the report — so a rule must be pure with respect to the state it is
+//!   handed, and must not carry results between the two runs.
+
+use std::fmt;
+
+use toolkit_macros::domain_model;
+
+/// A blocking rule failure. `code` is the machine-readable discriminator the
+/// design set names (`TIER_BAND_OVERLAP`, `SUPERSESSION_UNIT_MISMATCH`, …);
+/// `subject` locates it for the author (a price id, a phase id, a scope key).
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Violation {
+    /// Machine-readable rule code.
+    pub code: String,
+    /// What the violation is about — the row, band, phase or key at fault.
+    pub subject: String,
+    /// Human-readable detail for the authoring surface.
+    pub detail: String,
+}
+
+/// An advisory finding. Surfaced to the author, never a veto — a warning that
+/// could block publish would be a violation, and calling it a warning would
+/// hide a fail-closed rule behind a soft word.
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Advisory {
+    /// Machine-readable advisory code.
+    pub code: String,
+    /// What the advisory is about.
+    pub subject: String,
+    /// Human-readable detail for the authoring surface.
+    pub detail: String,
+}
+
+/// The aggregate outcome of one pipeline run: every blocking violation plus
+/// every advisory finding, in rule-registration order.
+#[domain_model]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValidationReport {
+    /// Blocking failures. Non-empty means the publish does not happen.
+    pub violations: Vec<Violation>,
+    /// Advisory findings. Never affect the verdict.
+    pub warnings: Vec<Advisory>,
+}
+
+impl ValidationReport {
+    /// Does this report permit the publish to proceed?
+    #[must_use]
+    pub fn is_publishable(&self) -> bool {
+        self.violations.is_empty()
+    }
+
+    /// Merge another report into this one, preserving order.
+    pub fn absorb(&mut self, other: Self) {
+        self.violations.extend(other.violations);
+        self.warnings.extend(other.warnings);
+    }
+
+    /// Record a blocking violation.
+    pub fn violate(
+        &mut self,
+        code: impl Into<String>,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) {
+        self.violations.push(Violation {
+            code: code.into(),
+            subject: subject.into(),
+            detail: detail.into(),
+        });
+    }
+
+    /// Record an advisory finding.
+    pub fn warn(
+        &mut self,
+        code: impl Into<String>,
+        subject: impl Into<String>,
+        detail: impl Into<String>,
+    ) {
+        self.warnings.push(Advisory {
+            code: code.into(),
+            subject: subject.into(),
+            detail: detail.into(),
+        });
+    }
+}
+
+impl fmt::Display for ValidationReport {
+    /// Renders the blocking count — the detail belongs in the response
+    /// envelope, not in a log line that would repeat it per rule.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.violations.len())
+    }
+}
+
+/// One registered rule of the aggregate pipeline.
+///
+/// A rule reads the candidate state it is given and appends its findings; it
+/// never short-circuits the run and never mutates the subject. `code_prefix` is
+/// declarative: it lets the pipeline report which slice owns a failing rule
+/// without the rule having to name itself in every violation.
+pub trait ValidationRule<S>: Send + Sync {
+    /// Stable rule name for diagnostics and ownership attribution.
+    fn name(&self) -> &'static str;
+
+    /// Evaluate the rule against `subject`, appending to `report`.
+    fn evaluate(&self, subject: &S, report: &mut ValidationReport);
+}
+
+/// The aggregate pipeline: an ordered set of rules over one subject type.
+///
+/// Rules run in registration order and every one of them runs — the report is
+/// the point. A pipeline with no rules publishes everything, which is why the
+/// Foundation registers the money and rounding rules itself rather than leaving
+/// the base set to whichever slice happens to load first.
+#[domain_model]
+pub struct ValidationPipeline<S> {
+    rules: Vec<Box<dyn ValidationRule<S>>>,
+}
+
+impl<S> ValidationPipeline<S> {
+    /// An empty pipeline.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { rules: Vec::new() }
+    }
+
+    /// Register a rule. Order is preserved and is the order findings appear in.
+    #[must_use]
+    pub fn with_rule(mut self, rule: Box<dyn ValidationRule<S>>) -> Self {
+        self.rules.push(rule);
+        self
+    }
+
+    /// The registered rule names, in order.
+    #[must_use]
+    pub fn rule_names(&self) -> Vec<&'static str> {
+        self.rules.iter().map(|rule| rule.name()).collect()
+    }
+
+    /// Run every rule and return the aggregate report.
+    #[must_use]
+    pub fn run(&self, subject: &S) -> ValidationReport {
+        let mut report = ValidationReport::default();
+        for rule in &self.rules {
+            rule.evaluate(subject, &mut report);
+        }
+        report
+    }
+}
+
+impl<S> Default for ValidationPipeline<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+#[path = "validation_tests.rs"]
+mod validation_tests;

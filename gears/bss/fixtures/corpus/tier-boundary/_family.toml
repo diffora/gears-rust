@@ -1,0 +1,4 @@
+family     = "tier-boundary"
+role       = "publish"
+gates      = ["graduated", "volume"]
+provenance = ["AC#60", "PRD §17.2", "D-17"]

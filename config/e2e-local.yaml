@@ -386,6 +386,17 @@ gears:
       server: "sqlite_users"
       file: "bss_ledger.db"
 
+  bss-pricing:
+    # Gear-specific database (SQLite for E2E, like the other user gears; the
+    # gear ships dual PG/SQLite migrations). No config block needed — the
+    # defaults are correct for E2E, including the in-repository path of the
+    # joint conformance-fixture registry (the publish gate is closed for every
+    # model kind until pricing's validator earns the corpus's `publish` half,
+    # which is the honest state and blocks nothing this gear currently serves).
+    database:
+      server: "sqlite_users"
+      file: "bss_pricing.db"
+
   simple-user-settings:
     # Gear-specific database configuration
     database:

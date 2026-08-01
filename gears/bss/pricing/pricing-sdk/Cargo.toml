@@ -1,0 +1,24 @@
+[package]
+name = "bss-pricing-sdk"
+edition.workspace = true
+license.workspace = true
+description = "BSS Plan & Price Modeling SDK: infrastructure-free contract for ClientHub consumers"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+# `DateTime<Utc>` on the pin frontier's `advanced_at`. No serde feature — this
+# contract crate carries no derives (the gear's REST DTOs own serde and map onto
+# these types), mirroring `bss-ledger-sdk`.
+chrono = { workspace = true }
+# The trait surface returns `CanonicalError` directly: the gear's single
+# `From<DomainError> for CanonicalError` ladder is the authoritative
+# classification, and no consumer exists yet that would need a typed projection
+# of it (`bss-ledger-sdk::LedgerError` is that shape, added when consumers did).
+toolkit-canonical-errors = { workspace = true }
+# Semantic failures of the `CatalogVersion` registry port; the gear maps them
+# onto its own fail-closed publish rejection.
+thiserror = { workspace = true }
+toolkit-security = { workspace = true }

@@ -230,7 +230,7 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 #
 # Use `make clippy-deep` for the full 182-run matrix (nightly / pre-release).
 CLIPPY_FLAGS := -- -D warnings -D clippy::perf
-CLIPPY_HACK_CRATES := -p cf-gears-toolkit -p cf-gears-toolkit-db -p cf-gears-toolkit-http
+CLIPPY_HACK_CRATES := -p cf-gears-toolkit -p cf-gears-toolkit-db -p cf-gears-toolkit-http -p bss-fixtures
 
 clippy:
 	$(call check_rustup_component,clippy)

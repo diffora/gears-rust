@@ -1,0 +1,3 @@
+family     = "level-aggregation"
+role       = "conformance"
+provenance = ["AC#60", "D-44", "T-D-17", "D-77"]

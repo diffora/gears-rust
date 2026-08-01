@@ -1,0 +1,3 @@
+family     = "supersession-continuity"
+role       = "conformance"
+provenance = ["inst-tb-supersession-units", "inst-tb-window-continuity", "D-82", "D-98", "D-122", "D-127", "D-129"]

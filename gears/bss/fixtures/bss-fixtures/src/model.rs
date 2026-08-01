@@ -1,0 +1,471 @@
+//! The corpus case model.
+//!
+//! `Snapshot` carries only fields the pricing design set marks frozen in
+//! `pricingSnapshotRef`; `Runtime` carries what the consumer supplies at
+//! evaluation time. Both deny unknown fields, so the ownership boundary between
+//! the gears is checked at load time rather than asserted in prose — a value the
+//! documents place outside the snapshot (D-60's per-subscription trailing lock,
+//! for one) simply fails to parse in `[snapshot]`.
+
+pub use crate::kinds::ModelKind;
+use serde::Deserialize;
+use serde::de::{self, Deserializer};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Family {
+    TierBoundary,
+    Proration,
+    Package,
+    PerUnit,
+    Flat,
+    Reserved,
+    SupersessionContinuity,
+    LevelAggregation,
+    TrailingTier,
+}
+
+impl Family {
+    /// Every family the corpus knows. Used to report the ones an evaluator
+    /// declines, so an unbuilt family can never read as green.
+    pub const ALL: [Self; 9] = [
+        Self::TierBoundary,
+        Self::Proration,
+        Self::Package,
+        Self::PerUnit,
+        Self::Flat,
+        Self::Reserved,
+        Self::SupersessionContinuity,
+        Self::LevelAggregation,
+        Self::TrailingTier,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseKind {
+    /// Prices something, or apportions a period.
+    Evaluation,
+    /// Asserts what publish does with an authored change.
+    Publish,
+}
+
+/// The upper bound of a tier band. The top band is always open (D-17): "price
+/// undefined above X" is never the commercial intent, so any quantity stays
+/// rateable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BandTop {
+    Open,
+    Closed(u64),
+}
+
+impl<'de> Deserialize<'de> for BandTop {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(u64),
+            Word(String),
+        }
+
+        match Raw::deserialize(d)? {
+            Raw::Int(n) => Ok(BandTop::Closed(n)),
+            Raw::Word(w) if w == "open" => Ok(BandTop::Open),
+            Raw::Word(w) => Err(de::Error::custom(format!(
+                "band top must be an integer or \"open\", got {w:?}"
+            ))),
+        }
+    }
+}
+
+/// A half-open quantity band `[from_qty, to_qty)` with a unit price.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Band {
+    pub from_qty: u64,
+    pub to_qty: BandTop,
+    pub unit_amount_minor: i64,
+}
+
+/// The canonical apportionment convention for a partial period (`PRD.md` 1.4).
+///
+/// Owned by the pricing gear and adopted **verbatim** by Tariffs and
+/// Subscriptions, with the CI gate `pricing.contracts.enum_drift` blocking
+/// drift. Pinned here in code so the corpus itself carries the enum: a value
+/// added or renamed on one side fails to deserialise on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProrationBasis {
+    /// Actual calendar days in the period.
+    CalendarDaysActual,
+    /// Fixed 30-day month, day count capped at 30.
+    ///
+    /// The wire name is pinned explicitly: serde's `snake_case` rule would emit
+    /// `calendar_days30`, dropping the separator before the digit. The enum is
+    /// adopted **verbatim** across three gears under the CI gate
+    /// `pricing.contracts.enum_drift`, so the spelling is part of the contract.
+    #[serde(rename = "calendar_days_30")]
+    CalendarDays30,
+    BySecond,
+    /// No sub-period proration.
+    WholeUnit,
+    /// No proration at all: full-period charge, no partial credit.
+    None,
+}
+
+/// Fields frozen in `pricingSnapshotRef`. Nothing else may appear here.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Snapshot {
+    pub model_kind: ModelKind,
+    pub currency: String,
+    #[serde(default)]
+    pub bands: Vec<Band>,
+    #[serde(default)]
+    pub amount_minor: Option<i64>,
+    #[serde(default)]
+    pub package_size: Option<u64>,
+    #[serde(default)]
+    pub package_price_minor: Option<i64>,
+    #[serde(default)]
+    pub quantity_source: Option<String>,
+    #[serde(default)]
+    pub tier_aggregation_window: Option<String>,
+    #[serde(default)]
+    pub billing_granularity: Option<String>,
+    /// Frozen in `pricingSnapshotRef`; drives all mid-period proration.
+    #[serde(default)]
+    pub proration_basis: Option<ProrationBasis>,
+
+    // The unit/counter-determining fields. A successor landing on an occupied
+    // published scope key must carry all of these unchanged, because the tier
+    // counter `Q` continues across supersession and must keep its denomination
+    // and its pricing math (`inst-tb-supersession-units`).
+    #[serde(default)]
+    pub meter: Option<String>,
+    #[serde(default)]
+    pub dimension_key: Option<String>,
+    #[serde(default)]
+    pub aggregation_function: Option<AggregationFunction>,
+    #[serde(default)]
+    pub aggregation_granularity: Option<AggregationGranularity>,
+    /// `max_hold_granules` — an integer count of granules >= 1. No default: the
+    /// sampling-gap bound is a commercial statement, authored explicitly.
+    #[serde(default)]
+    pub max_hold_granules: Option<u64>,
+    #[serde(default)]
+    pub tier_qualification_window: Option<String>,
+    #[serde(default)]
+    pub included_allowance: Option<IncludedAllowance>,
+    /// Self-service reserved rate, sourced from the snapshot by Tariffs rather
+    /// than from Contracts. Denominated in the row's billable unit, so on a
+    /// level row it is money **per granule** (D-139).
+    #[serde(default)]
+    pub reserved_rate_minor: Option<i64>,
+    #[serde(default)]
+    pub reservation_flavor: Option<ReservationFlavor>,
+}
+
+/// `consumption` prices matched usage at the reserved rate and bands the
+/// remainder; `capacity` bills the allocation whatever the usage.
+///
+/// On a non-`sum` row only `capacity` is authorable — `consumption` fails
+/// publish with `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` until per-granule
+/// netting semantics are decided (D-53).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReservationFlavor {
+    Consumption,
+    Capacity,
+}
+
+/// How `Q` is derived (D-44 / rating T-D-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregationFunction {
+    /// The plain sum of normalised measures; not a fold.
+    Sum,
+    /// Max sample in the granule.
+    Peak,
+    /// Step-integral of the level over the granule.
+    TimeWeighted,
+}
+
+/// The granule the window is cut into. D-77 pins the `billingGranularity`
+/// pairing — `hour ⇒ per_hour`, `day ⇒ per_day` — to keep band edges aligned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregationGranularity {
+    Hour,
+    Day,
+}
+
+impl AggregationGranularity {
+    #[must_use]
+    pub const fn seconds(self) -> u64 {
+        match self {
+            Self::Hour => 3_600,
+            Self::Day => 86_400,
+        }
+    }
+}
+
+/// One gauge observation. The level holds from here until the next sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GaugeSample {
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub level: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RolloverPolicy {
+    None,
+    Carry,
+}
+
+/// `includedAllowance {quantity, rolloverPolicy}` (D-45).
+///
+/// Protected by the succession unit guard only under `carry` (D-129): a carry
+/// allowance compiles into a plan-scoped, revision-immutable grant row that a
+/// supersession cannot rewrite, because a supersession opens no plan revision.
+/// A `none`-policy allowance carries no plan-scoped artifact and stays a free
+/// row-local lever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IncludedAllowance {
+    pub quantity: u64,
+    pub rollover_policy: RolloverPolicy,
+}
+
+/// Per-file inputs the consumer supplies at evaluation time — constant across
+/// the file's assertions. The varying quantity lives in [`Given`].
+///
+/// Empty for the Phase-1 families, which need no consumer-side context beyond
+/// the quantity. It gains fields with `reserved` (allocated quantity),
+/// `level-aggregation` (gauge samples) and `trailing-tier` (the prior-period
+/// total and its pin).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Runtime {
+    /// The rating window the fold runs over. Cut into granules of the row's
+    /// `aggregation_granularity`.
+    #[serde(default)]
+    pub window_start: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub window_end: Option<chrono::DateTime<chrono::Utc>>,
+    /// Gauge observations, consumer-supplied. Not snapshot-frozen: the catalog
+    /// authors the aggregation policy and never sees a measurement.
+    #[serde(default)]
+    pub samples: Vec<GaugeSample>,
+    /// The matched or allocated reserved quantity, supplied at runtime. The
+    /// catalog never meters, allocates, or computes the charge.
+    #[serde(default)]
+    pub reserved_quantity: Option<u64>,
+    /// The reservation's covered duration within the period, in the row's
+    /// billable-unit granules (D-139 / rating T-D-25). Rating-computed coverage,
+    /// never authored or frozen by the catalog.
+    #[serde(default)]
+    pub covered_granules: Option<u64>,
+}
+
+/// The per-assertion input.
+///
+/// `q` serves the charge families. The period trio serves proration, where the
+/// question is what share of a period is chargeable rather than what a quantity
+/// costs. All instants are UTC.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Given {
+    #[serde(default)]
+    pub q: u64,
+    #[serde(default)]
+    pub period_start: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub period_end: Option<chrono::DateTime<chrono::Utc>>,
+    /// Start of the chargeable stretch inside the period.
+    #[serde(default)]
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    /// End of the chargeable stretch; defaults to `period_end`.
+    #[serde(default)]
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// What a case asserts.
+///
+/// Two shapes, because the two seams produce different things. The charge
+/// families assert a final integer amount. Proration asserts a **unit count**,
+/// not money: rating emits prorated components at full intermediate precision
+/// and never rounds — Billing rounds — so a prorated minor amount does not
+/// exist at the pricing↔rating seam and a fixture must not invent one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum Expect {
+    Charge(ChargeExpect),
+    Units(UnitsExpect),
+    Fold(FoldExpect),
+}
+
+/// The output of a granule fold: `Q` in the billable unit, which is the level
+/// unit times the granule duration (GB·h at `hour`, GB·day at `day`).
+///
+/// `Q` is asserted rather than a charge because `Q` is the new thing a level row
+/// introduces — the band and package math over it must be **unchanged** from the
+/// `sum` case, and the other families already pin that math.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FoldExpect {
+    pub folded_q: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChargeExpect {
+    pub charge_minor: i64,
+}
+
+/// The chargeable share of a period, as an exact integer ratio.
+///
+/// The unit depends on the basis: days for the calendar bases, seconds for
+/// `by_second`, and the whole period for `whole_unit` / `none`. Integers
+/// throughout, so the "slice fractions sum to exactly 1" rule (rating T-D-26)
+/// becomes an exact equality rather than a float comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnitsExpect {
+    pub units_charged: u64,
+    pub units_in_basis: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assertion {
+    pub given: Given,
+    pub expect: Expect,
+    /// Why the expected number is what it is. A number without a reason cannot
+    /// be reviewed.
+    #[serde(default)]
+    pub why: Option<String>,
+}
+
+/// A case that prices something, or apportions a period.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluationCase {
+    pub family: Family,
+    pub id: String,
+    pub kind: CaseKind,
+    /// The normative clauses this case encodes. Mandatory.
+    pub provenance: Vec<String>,
+    pub snapshot: Snapshot,
+    #[serde(default)]
+    pub runtime: Runtime,
+    pub assert: Vec<Assertion>,
+}
+
+/// What publish must do with an authored change.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "publish", rename_all = "snake_case")]
+pub enum PublishVerdict {
+    Accepted,
+    /// Rejected, naming the error code the design set specifies. The code is
+    /// mandatory: "publish fails" without saying how is not reviewable, and the
+    /// codes are themselves part of the contract.
+    Rejected {
+        error_code: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishAssertion {
+    pub expect: PublishVerdict,
+    #[serde(default)]
+    pub why: Option<String>,
+}
+
+/// A case that asserts a publish outcome rather than a number.
+///
+/// The successor lands on the predecessor's canonical scope key — that is what
+/// makes it a supersession rather than a new row — so the pair is the unit of
+/// assertion.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishCase {
+    pub family: Family,
+    pub id: String,
+    pub kind: CaseKind,
+    pub provenance: Vec<String>,
+    pub predecessor: Snapshot,
+    pub successor: Snapshot,
+    pub assert: Vec<PublishAssertion>,
+}
+
+/// A corpus case.
+///
+/// Deliberately a plain Rust enum rather than a serde-tagged one: an internally
+/// tagged enum cannot carry `deny_unknown_fields`, and rejecting stray keys is
+/// the property that keeps the snapshot/runtime ownership boundary honest. The
+/// loader reads `kind` first and then parses the whole file into the matching
+/// type.
+#[derive(Debug, Clone)]
+pub enum Case {
+    Evaluation(Box<EvaluationCase>),
+    Publish(Box<PublishCase>),
+}
+
+/// Just enough of a case file to choose its type.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CaseHeader {
+    pub kind: CaseKind,
+}
+
+impl Case {
+    #[must_use]
+    pub fn family(&self) -> Family {
+        match self {
+            Self::Evaluation(c) => c.family,
+            Self::Publish(c) => c.family,
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Evaluation(c) => &c.id,
+            Self::Publish(c) => &c.id,
+        }
+    }
+
+    #[must_use]
+    pub fn provenance(&self) -> &[String] {
+        match self {
+            Self::Evaluation(c) => &c.provenance,
+            Self::Publish(c) => &c.provenance,
+        }
+    }
+
+    /// How many assertions the case carries; zero means it proves nothing.
+    #[must_use]
+    pub fn assertion_count(&self) -> usize {
+        match self {
+            Self::Evaluation(c) => c.assert.len(),
+            Self::Publish(c) => c.assert.len(),
+        }
+    }
+
+    /// The `modelKind` this case exercises. For a publish case that is the
+    /// successor's, since the successor is the row under test.
+    #[must_use]
+    pub fn model_kind(&self) -> ModelKind {
+        match self {
+            Self::Evaluation(c) => c.snapshot.model_kind,
+            Self::Publish(c) => c.successor.model_kind,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod model_tests;
