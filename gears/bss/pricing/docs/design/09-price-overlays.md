@@ -259,7 +259,7 @@ another group; use the move operation — D-09).
 
 ## 6. Data Model
 
-Slice-owned tables (`pricing_` prefix per Foundation §3.7):
+Slice-owned tables (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7):
 
 **`pricing_price_overlay`** (PK **`(price_overlay_id, revision)`** — draft-revision rows, D-92,
 2026-07-31 review fix: the D-56/D-83/D-90 discipline applied to overlays. A published revision

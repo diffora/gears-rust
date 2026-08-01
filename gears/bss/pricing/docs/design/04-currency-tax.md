@@ -258,7 +258,7 @@ fail closed). Price-row authoring codes are Slice 3's.
 
 ## 6. Data Model
 
-Slice-owned tables (tenant-scoped, SecureORM; `pricing_` prefix per Foundation §3.7):
+Slice-owned tables (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7):
 
 **`pricing_region_taxonomy`** / **`pricing_brand_taxonomy`** / **`pricing_partner_taxonomy`** /
 **`pricing_org_tier_taxonomy`** (PK `(tenant_id, value)`; the last two added by D-120 as the
@@ -339,7 +339,7 @@ mutation is admin-scoped and audited.
 
 **Touches**:
 - API: `GET/PUT /v1/pricing/config/taxonomies/*`
-- DB: `pricing_region_taxonomy`, `pricing_brand_taxonomy`
+- DB: `pricing_region_taxonomy`, `pricing_brand_taxonomy`, `pricing_partner_taxonomy`, `pricing_org_tier_taxonomy` (D-120)
 - Entities: `TaxonomyValidator`
 
 ### Tax Display Basis

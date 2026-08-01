@@ -297,7 +297,8 @@ redefined. The publish-time report enumerates all violations.
 ## 6. Data Model
 
 This slice populates the Foundation-owned `pricing_price` and owns `pricing_price_tier_band` (tenant-scoped,
-SecureORM; published rows append-only per Foundation §4.3):
+SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7;
+published rows append-only per Foundation §4.3):
 
 **`pricing_price` (Foundation-owned; Slice-3 columns)**:
 
@@ -336,7 +337,8 @@ kind's own fixture) — ratified, D-22 — and carries the D-82 negative scenari
 unit-changing successor is rejected at publish, `SUPERSESSION_UNIT_MISMATCH`), the D-98
 kind-flip negative scenario, the D-122 `package_size`-change negative scenario, and the D-89
 phase-conversion-mid-window continuity scenario. This table is **tenant-global** — an explicit,
-documented carve-out from the SecureORM tenant-binding rule (Foundation §3.1): the fixture
+documented carve-out from the SecureORM tenant-binding rule (Foundation §2.2
+`constraint-authz-gate-fnd` + S5 `inst-rb-pep`): the fixture
 corpus is a property of the *gear build*, not of any tenant, so the gate must read the same
 rows for every tenant (a tenant-scoped copy would let one tenant's missing fixture pass
 another's publish). It is therefore **read-only to all API paths** — no tenant-facing write

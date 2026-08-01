@@ -251,6 +251,19 @@ code), the aggregate validation
 report envelope (422 — enumerating blocking `violations[]` plus advisory `warnings[]`), and
 publish-accepted/pending (202).
 
+**Collection pagination (normative, D-125, 2026-08-01):** every collection, history and audit
+read surface of this gear **paginates**: `limit` (server default 100, hard cap 1,000 — the
+unit the export SLO is expressed in) plus an **opaque `cursor`**, with `next_cursor` returned
+on every page until the result is exhausted. Ordering is **stable and append-consistent** —
+commit/append order on history and audit reads, so a cursor walk concurrent with writes never
+skips or duplicates a row at or before the cursor; a deterministic key order on catalog lists.
+Offset/`$skip` pagination is not offered (unstable over append-only stores at the ≥ 7-year
+retention). Slice surfaces (`/v1/pricing/plans*`, `…/prices`, `/v1/pricing/price-overlays`,
+`/v1/pricing/approvals`, `/v1/pricing/history`, `/v1/pricing/audit`, batch reports' row lists)
+inherit this contract rather than restating it; exports stream the same order in bounded
+chunks, and the p95 ≤ 5s / 100 records SLO applies **per page/chunk** — before D-125 that SLO
+was expressed per page while no page contract existed anywhere in the set.
+
 ### 3.4 Internal Dependencies
 
 - **`toolkit-db`** — transactional persistence for the append-only history, the owned window store (Slice 7, D-03), the projected read model, the outbox, and the audit store.

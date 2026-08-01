@@ -307,7 +307,8 @@ follow the fail-closed report contract (every violation enumerated).
 
 ## 6. Data Model
 
-This slice extends the Foundation-owned `pricing_plan` with shape tables (tenant-scoped, SecureORM;
+This slice extends the Foundation-owned `pricing_plan` with shape tables (tenant-scoped, SecureORM
+per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7;
 draft rows mutable, published rows append-only per Foundation §4.3):
 
 **`pricing_plan` (Foundation-owned; Slice-2 columns)** — extends the Foundation-owned table

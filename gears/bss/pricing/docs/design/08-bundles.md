@@ -193,7 +193,7 @@ semantics for phased components are a named Future gate — L-4, 2026-07-31c).
 
 ## 6. Data Model
 
-Slice-owned tables (`pricing_` prefix per Foundation §3.7):
+Slice-owned tables (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7):
 
 **`pricing_bundle`** (PK `bundle_id`; FK **`plan_id`** — the bundle's own `bundle`-type plan,
 whose revisions the composition tables below ride, added by **D-105**, 2026-07-31 review fix:

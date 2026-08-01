@@ -176,6 +176,7 @@ Tariffs/Rating compute from.
 1. [ ] - `p1` - All three fields REQUIRED on recurring rows; absence fails publish - `inst-pi-required`
 1a. [ ] - `p1` - **`creditOnDowngrade` semantics (normative):** on a downgrade the governing value is the **source** row's flag (the row whose prepaid period is surrendered), read from the **subscription's frozen snapshot** — never the target row and never the live catalog - `inst-pi-credit-source`
 1b. [ ] - `p1` - **Cross-field consistency:** `creditOnDowngrade = true` on a row with `prorationBasis = none` is a contradiction (credit granted but no basis to compute a partial period) — publish rejects it - `inst-pi-credit-none`
+1c. [ ] - `p1` - **One contract per market (normative, D-123, 2026-07-31d billing-domain review fix — flagged for veto · joint with Subscriptions + Rating):** every published recurring row of a plan on one `(currency, region)` MUST carry the **same** `billingAnchorPolicy` (incl. `anchor_day`), the same `prorationBasis` and the same `creditOnDowngrade` — a divergent market fails publish (`PRORATION_CONTRACT_MIXED_MARKET`, 422, divergent rows and fields named). Phase is a scope-key axis, so under D-15 a phased plan carries one recurring row per charging phase per market — each with its own anchor as authored — while the consuming side reads **one** value per subscription: subscriptions' `billingAnchor` is a single field on the Subscription aggregate ("the PRD's cycle-boundary rule") and its PRD reads `prorationBasis` as one value "applied to all mid-period proration of the recurring component". Nothing related the N authored values to the one consumed value: an intro-pricing plan authoring `subscription_start` on the intro row and `fixed_day(1)` on the terminal row published both anchors into one frozen snapshot with no rule saying which sets the cycle boundary — one implementation keeps the boundary at phase conversion, another shifts it to the 1st and prorates a partial period. The rule is per market, not per plan (anchoring EU on the 1st and US on signup day stays legal — the D-110 shape: "an invoice is one document" → a subscription is one cycle clock); the phase axis is thereby cycle-clock-neutral **by construction** — phase conversion never moves the anchor-derived boundary and never changes proration math (usage rows were already deliberately phase-invariant, S2 `inst-ph-usage-invariant`; this closes the same class on the recurring side). `billingTiming` is **exempt** — deliberately per-row: a hybrid mixes `in_advance` base + `in_arrears` usage (`inst-bt-usage`) and Billing consumes it per line, never as a subscription-level clock. `inst-pi-credit-source` is unchanged: it picks **which snapshot's** value governs across a plan change; this rule guarantees that pick is unambiguous within one market - `inst-pi-uniform`
 2. [ ] - `p1` - `prorationBasis` values per K1 — the canonical enum is **owned here**; Tariffs adopts verbatim; Subscriptions computes the amount from the same frozen value (one source, no drift) - `inst-pi-enum`
 3. [ ] - `p1` - `billingAnchorPolicy` per K2: `fixed_day(d)` beyond month length anchors last-of-month; the same clamp + preserved-anchor-day rule applies to `subscription_start` under `customEveryN Months(n)` (D-20); all anchor math UTC; `customEveryN Days(n)` plans MUST carry `subscription_start` (cross-checked with Slice 2's cycle rule); the anchor math rides the joint proration/anchor fixture - `inst-pi-anchor`
 4. [ ] - `p1` - **Cross-boundary marker (K3):** the contract publishes no cross-currency/region/frequency credit basis; such a mid-cycle change is rejected for in-place proration (cancel + new subscription; operator warned that in-place credit is forfeited — enforcement in Subscriptions). The published artifact is a **contract-level pair of read-model fields**: `crossBoundaryChangePolicy = cancel_plus_new` + `crossBoundaryWarningText`, projected into `pricing_read_model` (§6) - `inst-pi-crossboundary`
@@ -254,7 +255,11 @@ plan/price authoring surfaces. This slice contributes:
 
 **Problem responses (RFC 9457):** `PRORATION_INPUTS_MISSING` (422),
 `PRORATION_INPUTS_CONTRADICTORY` (422 — `creditOnDowngrade = true` with
-`prorationBasis = none`, `inst-pi-credit-none`), `BILLING_TIMING_MISSING`
+`prorationBasis = none`, `inst-pi-credit-none`),
+`PRORATION_CONTRACT_MIXED_MARKET` (422 — recurring rows of one plan on one
+`(currency, region)` disagreeing on `billingAnchorPolicy`/`anchor_day`, `prorationBasis` or
+`creditOnDowngrade`; D-123, `inst-pi-uniform`, divergent rows and fields named),
+`BILLING_TIMING_MISSING`
 (422), `GRANT_REF_UNDEFINED` (422), `GRANT_SET_PHASE_UNKNOWN` (422 — a per-phase grant-set
 key naming no phase of the plan's schedule, or per-phase entries on a non-phased plan —
 non-phased = implicit-terminal-phase-only, incl. an entry on that sole phase; D-41, D-19),
@@ -288,7 +293,10 @@ Foundation §3.7):
 Key constraints: `CHECK (billing_timing IS NOT NULL)` enforced at the publish transition (not
 on drafts); `anchor_day BETWEEN 1 AND 31` with last-of-month semantics per K2 documented on
 the read model; grant/target referential checks are application-level at publish (registry /
-published-plan lookups).
+published-plan lookups). The three proration-contract columns (`billing_anchor_policy` +
+`anchor_day`, `proration_basis`, `credit_on_downgrade`) are additionally **market-uniform per
+plan** (D-123, `inst-pi-uniform`) — a publish-time validation, not a DB constraint (the check
+spans the market's row set).
 
 **`pricing_read_model` (contract-level fields)**: `crossBoundaryChangePolicy`
 (`cancel_plus_new` — the K3 marker) + `crossBoundaryWarningText` (the operator/storefront
@@ -317,7 +325,10 @@ canonical set; drift is a build-time block, the alarm covers runtime registry di
 Every recurring row **MUST** publish `billingAnchorPolicy` (month-end/UTC semantics per K2),
 `prorationBasis` (the canonical K1 enum, adopted verbatim downstream), and
 `creditOnDowngrade`, frozen in `pricingSnapshotRef`; `creditOnDowngrade = true` with
-`prorationBasis = none` is a publish-rejected contradiction; cross-boundary mid-cycle changes
+`prorationBasis = none` is a publish-rejected contradiction; the three fields **MUST** be
+uniform across the recurring rows of one plan-`(currency, region)` (D-123,
+`PRORATION_CONTRACT_MIXED_MARKET` — phase conversion never moves the cycle clock);
+cross-boundary mid-cycle changes
 carry no credit basis and are rejected for in-place proration (cancel + new — the
 `crossBoundaryChangePolicy`/`crossBoundaryWarningText` read-model fields carry the marker).
 
@@ -394,7 +405,7 @@ Delta over the Foundation testing architecture.
 
 Unit:
 
-- [ ] Recurring row missing any of the three proration fields / `billingTiming` fails publish; `creditOnDowngrade=true` with `prorationBasis=none` fails publish (`PRORATION_INPUTS_CONTRADICTORY`); usage row projects `in_arrears`; `fixed_day(31)` in a 30-day month resolves last-of-month (UTC); dangling change target fails; rank-required matrix (K4); grant referential failure per undefined feature/quota/PlanTier; a per-phase grant-set key naming no phase fails publish (`GRANT_SET_PHASE_UNKNOWN`); a phased plan with one authored phase entry publishes a complete map (other phases resolve the plan-level set) and Subscriptions reads the trial phase's tighter quotas by lookup
+- [ ] Recurring row missing any of the three proration fields / `billingTiming` fails publish; `creditOnDowngrade=true` with `prorationBasis=none` fails publish (`PRORATION_INPUTS_CONTRADICTORY`); a phased plan whose intro-phase recurring row anchors `subscription_start` while its terminal row anchors `fixed_day(1)` **on the same market** fails publish (`PRORATION_CONTRACT_MIXED_MARKET`, D-123 — divergent rows and fields named), while the same split across **two** markets publishes; usage row projects `in_arrears`; `fixed_day(31)` in a 30-day month resolves last-of-month (UTC); dangling change target fails; rank-required matrix (K4); grant referential failure per undefined feature/quota/PlanTier; a per-phase grant-set key naming no phase fails publish (`GRANT_SET_PHASE_UNKNOWN`); a phased plan with one authored phase entry publishes a complete map (other phases resolve the plan-level set) and Subscriptions reads the trial phase's tighter quotas by lookup
 
 Integration (testcontainers):
 

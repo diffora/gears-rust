@@ -169,7 +169,7 @@ flowchart TB
 1. [ ] - `p2` - API: POST /v1/pricing/repricing-runs (`run_id`, selector, adjustment, **changeover instant** — one instant for every row of the run, strictly future at submit and ≥ the max batching-delay SLO (D-47: bulk 5 min) in the future at the run's approval commit, `SUPERSESSION_INSTANT_PASSED` otherwise; D-88 — a commit-time changeover would activate successor windows while their rows are not yet addressable in any completed `CatalogVersion`, transiently failing renewals/arrears closed across every repriced key) - `inst-mr-api`
 2. [ ] - `p2` - Expand the selector to a frozen row set; journal per-row progress (`pending → applied | failed`) keyed `(run_id, price_id)` - `inst-mr-journal`
 3. [ ] - `p2` - Apply per row through the standard versioning path (new immutable rows) — each applied row is a **supersession unit** (D-88, S7 `algo-supersession`: successor row + window shorten/schedule at the run's single changeover instant, executed inside the per-row transaction); the new row, its outbox record, and the journal transition `pending → applied` commit in **one transaction** (a crash re-run sees a consistent journal — no double-apply, no compounding); re-runs skip `applied` rows (idempotent, O3); a per-row validation failure marks the row `failed` (+ `failure_reason`); events carry `(run_id, price_id)` dedup keys - `inst-mr-apply`
-3a. [ ] - `p1` - **What the per-row commit re-validates (normative, D-111, 2026-07-31 review fix):** the supersession unit's commit "re-runs the pipeline" (S7 `inst-su-commit`), and the pipeline is the **aggregate** rule set — D-21 puts window/phase coverage, hybrid completeness, meter injectivity and the fixture gate at publish only. Taken literally inside a per-row transaction that is N whole-plan validations for N rows of one plan, i.e. **O(rows × plan-validation cost)** against a throughput SLO (O3) ratified before D-88 existed and sized only for the window writes (§10). Therefore, in a bulk run: the **per-row** commit re-runs the **row-local** rule set (D-21's save-time set: kind shape and the kind×chargeKind matrix, band geometry, precision, evaluation-policy placement, the D-82/D-98 unit guard) **plus the touched key's** window overlap/gap/trailing-void check — the checks whose inputs the row itself changes — while the **plan-level aggregate** pass runs **once per plan per run**, inside the run's approval-to-commit boundary, over the run's frozen row set. This is sound because the aggregate checks evaluate identical content for every row of a plan, and it is safe because the run's row set is frozen at selector expansion (`inst-mr-journal`) — nothing outside it can invalidate the aggregate result mid-run, and an interactive edit on a contained key is already blocked (`inst-mp-pending`, the bulk lock). A plan whose aggregate pass fails marks **all** of that plan's rows `failed` with the shared reason, never a partial plan - `inst-mr-validate-scope`
+3a. [ ] - `p1` - **What the per-row commit re-validates (normative, D-111, 2026-07-31 review fix):** the supersession unit's commit "re-runs the pipeline" (S7 `inst-su-commit`), and the pipeline is the **aggregate** rule set — D-21 puts window/phase coverage, hybrid completeness, meter injectivity and the fixture gate at publish only. Taken literally inside a per-row transaction that is N whole-plan validations for N rows of one plan, i.e. **O(rows × plan-validation cost)** against a throughput SLO (O3) ratified before D-88 existed and sized only for the window writes (§10). Therefore, in a bulk run: the **per-row** commit re-runs the **row-local** rule set (D-21's save-time set: kind shape and the kind×chargeKind matrix, band geometry, precision, evaluation-policy placement, the D-82/D-98 unit guard) **plus the touched key's** window overlap/gap/trailing-void check — the checks whose inputs the row itself changes — while the **plan-level aggregate** pass runs **once per plan per run at the run's entry to `committing`** — inside the bulk lock (`inst-bs-commit`), after approval — **over the plan's full row set as it will stand post-commit** (the plan's published rows with the run's successor rows substituted at the changeover instant), never over the run's frozen row subset alone (**D-124, 2026-08-01, amending D-111**: the aggregate rules — phase coverage, hybrid/per-market completeness, meter injectivity — are properties of the plan's *whole* row set, which a selector matching e.g. only the plan's USD rows cannot evaluate; and D-111's original safety argument cited protections that do not hold in the approval-to-commit window it named — `inst-mp-pending` rejects rows **at selector time** only, blocking nothing submitted later, and the bulk lock provably did not exist yet, since `inst-bs-commit` starts it on entry to `committing` and `inst-bs-approval` states rows are "not locked while awaiting"). This is sound because the aggregate checks evaluate identical content for every row of a plan; it is safe because the pass now runs under the same lock that serializes it against interactive edits on the run's rows, and an interactive plan mutation committing later re-runs its **own** aggregate pass inside its commit transaction (Foundation §3.6 — the symmetric protection). A plan whose aggregate pass fails marks **all** of that plan's rows `failed` with the shared reason, never a partial plan - `inst-mr-validate-scope`
 4. [ ] - `p2` - Publishes coalesce into one/few `CatalogVersion` batches (O5); materiality evaluates once per run against the policy (any row over its own-currency threshold trips the run) - `inst-mr-coalesce`
 5. [ ] - `p2` - **RETURN** 202 (run ref + progress endpoint) - `inst-mr-return`
 
@@ -214,8 +214,8 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-history-export`
 
 **Steps**:
-1. [ ] - `p2` - Chronological immutable price-history records (the append-only `pricing_price` rows) with actor and effective dates — the actor read **from the row's own `created_by` column** (pseudonymous principal, Foundation §3.7; 2026-07-28 review fix: never from `pricing_audit_log`, which D-12 confines to `audit × read` Auditor-only) — under `plan × read` (D-12 — history is plan/price data, Finance-readable by construction; the separate Slice-5 audit trail stays `audit × read`, Auditor-only) - `inst-he-read`
-2. [ ] - `p2` - Export (`plan × read`, D-12) within p95 ≤ 5s per 100 records - `inst-he-export`
+1. [ ] - `p2` - Chronological immutable price-history records (the append-only `pricing_price` rows) with actor and effective dates — the actor read **from the row's own `created_by` column** (pseudonymous principal, Foundation §3.7; 2026-07-28 review fix: never from `pricing_audit_log`, which D-12 confines to `audit × read` Auditor-only) — under `plan × read` (D-12 — history is plan/price data, Finance-readable by construction; the separate Slice-5 audit trail stays `audit × read`, Auditor-only); the read **paginates per the Foundation cursor contract (D-125)** — commit-ordered and cursor-stable over the full ≥ 7-year append-only history - `inst-he-read`
+2. [ ] - `p2` - Export (`plan × read`, D-12) within p95 ≤ 5s per 100 records — the SLO's unit is the **D-125 page/chunk**; export streams the same commit order in bounded chunks - `inst-he-export`
 3. [ ] - `p2` - History is a **read** over existing append-only structures — this slice adds no new history store (the Foundation's immutability IS the history) - `inst-he-nostore`
 
 ## 4. States (CDSL)
@@ -244,8 +244,8 @@ flowchart TB
 | `POST` | `/v1/pricing/bulk-imports/{id}:abort` | Abort a stalled mid-commit run (D-37; boundary rules in §6) | client key | `plan × write` |
 | `POST` | `/v1/pricing/repricing-runs` | Idempotent mass adjustment | `run_id` | `plan × write` |
 | `GET` | `/v1/pricing/repricing-runs/{id}` | Run progress / result | — | `plan × read` |
-| `GET` | `/v1/pricing/history` | Immutable price history (filters) | — | `plan × read` (D-12) |
-| `POST` | `/v1/pricing/history/export` | History export (SLO-bound) | client key | `plan × read` (D-12) |
+| `GET` | `/v1/pricing/history` | Immutable price history (filters; cursor-paginated per D-125) | — | `plan × read` (D-12) |
+| `POST` | `/v1/pricing/history/export` | History export (SLO-bound per D-125 page/chunk) | client key | `plan × read` (D-12) |
 
 **Problem responses (RFC 9457):** `BULK_VALIDATION_FAILED` (422, per-row),
 `IMPORT_TARGETS_PUBLISHED` (per-row in the Phase-1 report — an import row addressing a
@@ -256,7 +256,7 @@ concurrent-edit conflict naming the bulk operation.
 
 ## 6. Data Model
 
-Slice-owned tables (`pricing_` prefix per Foundation §3.7):
+Slice-owned tables (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7):
 
 **`pricing_bulk_operation`** (PK `operation_id`): `kind` (`import | repricing`), `state`,
 `client_key` (idempotency, O4), `report` (`jsonb` — per-row outcomes), `submitted_by`,
@@ -293,7 +293,13 @@ committed row (dedup keys `(run_id | operation_id, price_id)`) and `PlanPublishe
 affected plan publish** (coalesced per O5 — never per row).
 Alarms: `pricing.bulk.run_stalled` (Warn — a run without progress past a horizon),
 `pricing.bulk.conflict_rate_high` (Info — a batch with an unusually high conflicted-row
-share, signalling concurrent-editing contention).
+share, signalling concurrent-editing contention),
+`pricing.bulk.run_failed` (Warn — a run reaching a terminal state with **all** rows `failed`,
+or a failed-row share above a tenant-configurable threshold; reads
+`pricing_bulk_rows_total{outcome}`. 2026-07-31d review fix, C-6: the D-111/D-124
+aggregate-fail shape — a plan's whole row set failing promptly with one shared reason — is
+invisible to both existing alarms, since `run_stalled` requires *absence of progress* and
+`conflict_rate_high` keys on ETag conflicts only).
 
 ## 8. Definitions of Done
 
@@ -346,8 +352,10 @@ A mass adjustment **MUST** be re-run-safe via the per-row journal (no re-apply; 
 events, coalesce versions per the registry batching, route materiality once per run, and meet
 the ratified throughput SLO (≥ 50 rows/sec, O3, 2026-07-28) — with the per-row commit scoped to
 the **row-local** rule set plus the touched key's window checks and the **plan-level aggregate
-pass run once per plan per run** (D-111, `inst-mr-validate-scope`: a literal per-row pipeline
-re-run makes the run O(rows × plan-validation cost), which the ratified figure never covered).
+pass run once per plan per run, at entry to `committing` (inside the bulk lock) over the plan's
+full post-run row set** (D-111 + D-124, `inst-mr-validate-scope`: a literal per-row pipeline
+re-run makes the run O(rows × plan-validation cost), which the ratified figure never covered;
+the run's frozen row subset alone cannot decide plan-level rules).
 
 **Implements**: `cpt-cf-bss-pricing-flow-mass-repricing`, `cpt-cf-bss-pricing-algo-mass-repricing`
 
@@ -364,7 +372,8 @@ The system **MUST** return chronological immutable price history **with actor an
 dates** (`fr-price-history-export`; the actor on the record is the authoring identity —
 distinct from the Auditor-only Slice-5 audit *trail*, whose access D-12 left `audit × read`)
 under `plan × read` — serving Finance and Auditor alike (D-12) — and export within
-p95 ≤ 5s per 100 records, reading existing append-only structures only.
+p95 ≤ 5s per 100 records, reading existing append-only structures only, **paginated per the
+D-125 cursor contract** (commit-ordered; the SLO applies per page/chunk).
 
 **Implements**: `cpt-cf-bss-pricing-algo-history-export`
 
@@ -387,17 +396,18 @@ Integration (testcontainers):
 - [ ] A repricing run killed mid-way re-runs to completion without double-applying any row (journal-verified); events deduplicate on the consumer side by `(run_id, price_id)`
 - [ ] A repricing run with a changeover instant closer than the bulk batching-delay SLO at approval commit is rejected (`SUPERSESSION_INSTANT_PASSED`, D-88); an accepted run switches every key at the single named instant with no uncovered interval per key
 - [ ] A material bulk batch blocks in `awaiting_approval` until the batch approval lands; a retry of unchanged conflicted rows publishes without a new approval, a changed row requires one
+- [ ] A repricing run whose selector matches only one market of a multi-market plan still evaluates the aggregate pass over the plan's **full post-run row set** at entry to `committing` (D-124): a run that would break another market's phase coverage or per-market completeness fails **all** of that plan's rows with the shared reason — never a partial plan, and never a pass that saw only the selected market
 - [ ] A clone's publish is blocked by window coverage until fresh windows are scheduled
 - [ ] History export of 100 records within the SLO; entries carry actor + effective dates
 
 NFR verification:
 
-- [ ] Throughput load test against the ratified O3 value over the tenant worst-case row count — exercising the D-88 per-row window operations **and** the D-111 validation split (row-local per row, plan-level aggregate once per plan per run); a control run with a literal per-row pipeline re-run is expected to miss the SLO, which is what the split exists to avoid
+- [ ] Throughput load test against the ratified O3 value over the tenant worst-case row count — exercising the D-88 per-row window operations **and** the D-111 validation split (row-local per row; plan-level aggregate once per plan per run, at commit entry over the plan's full post-run row set — D-124); a control run with a literal per-row pipeline re-run is expected to miss the SLO, which is what the split exists to avoid
 - [ ] An interactive PATCH on a bulk-locked row fails naming the bulk operation, and the lock lives in `pricing_bulk_row_lock` — no UPDATE is attempted against the published `pricing_price` row (which the append-only trigger would reject)
 
 ## 10. Non-Functional Considerations
 
-- **Performance**: Phase-1 validation parallelizes per row (shared-nothing rules); Phase-2 commit is row-transactional; the repricing journal adds one indexed write per row. **Per-row commit cost (D-111)**: row-local rules + the touched key's window overlap/gap/trailing-void check + 2 window writes + row + outbox + journal, all inside one transaction — the plan-level aggregate pass is amortized **once per plan per run**, which is what keeps the run O(rows) rather than O(rows × plan size); the D-99 window publish units coalesce per O5 into the run's batched `CatalogVersion`s, so read-model propagation adds one delta row per affected plan per batch, not 2N. The O3 throughput value and the plan/tier caps are committed launch defaults (ratified 2026-07-28; O3 perf-test-verified — [`../PRD.md`](../PRD.md) §14); the perf test **MUST** exercise the D-88 window operations and this validation split (the ratified figure predates both).
-- **Observability**: `pricing_bulk_rows_total{outcome}`, `pricing_repricing_rows_per_second`, `pricing_bulk_conflicts_total`, run-progress gauges.
+- **Performance**: Phase-1 validation parallelizes per row (shared-nothing rules); Phase-2 commit is row-transactional; the repricing journal adds one indexed write per row. **Per-row commit cost (D-111)**: row-local rules + the touched key's window overlap/gap/trailing-void check + 2 window writes + row + outbox + journal, all inside one transaction — the plan-level aggregate pass is amortized **once per plan per run** (at entry to `committing`, over the plan's full post-run row set — D-124), which is what keeps the run O(rows) rather than O(rows × plan size); the D-99 window publish units coalesce per O5 into the run's batched `CatalogVersion`s, so read-model propagation adds one delta row per affected plan per batch, not 2N. The O3 throughput value and the plan/tier caps are committed launch defaults (ratified 2026-07-28; O3 perf-test-verified — [`../PRD.md`](../PRD.md) §14); the perf test **MUST** exercise the D-88 window operations and this validation split (the ratified figure predates both).
+- **Observability**: `pricing_bulk_rows_total{outcome}`, `pricing_repricing_rows_per_second`, `pricing_bulk_conflicts_total`, run-progress gauges; `pricing.bulk.run_failed` (§7) alarms on a completed-but-all-failed run — the shape a stall/conflict alarm cannot see.
 - **Security & AuthZ**: bulk carries **no new authority** — `plan × write/publish` + the same materiality/approval policy; price history/export is `plan × read` (D-12), while the audit trail stays `audit × read/export`, Auditor-only (Slice 5 catalog).
 - **Risks & open items**: a mass run's coalesced `CatalogVersion` rides the registry's batching-delay SLO (D-47: bulk ≤ 5 min hard max) — the bound caps how long a batch can delay snapshot pinning for the run. **Bulk window operations**: an N-row repricing implies N supersession window open/close operations — since the window consolidation (D-03) these are local writes to the gear-owned `pricing_price_window` store inside the per-row transactions, so their throughput is part of this slice's own O3 sizing (no cross-component contract).

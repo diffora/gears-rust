@@ -742,7 +742,7 @@ A **material change** (above the configured threshold, or a first publish with n
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-approval-threshold-policy`
 
-The tenant approval-threshold policy **MUST** express materiality as an absolute amount or percentage delta **per currency**; for a multi-currency change each affected row's delta is compared in its **own** currency and the rule trips if **any** row exceeds its threshold. **The delta domain is defined per model kind (D-115, 2026-07-31 review fix — "the row's delta" previously had no operand for the rows that carry tiered revenue, whose `amountMinor` is NULL by construction):** `flat`/`per_unit` → the amount delta; `graduated`/`volume` → the band-wise unit-price vector, comparable **only while the band geometry (bounds and count) is unchanged**; `package` → the package-price delta **only while `packageSize` is unchanged**. Any change to a **quantity-determining/geometry field** — band bounds or count, `packageSize`, `manualQuantity`, `includedAllowance.quantity` — is **material regardless of thresholds** (no effective-price delta is computable catalog-side; a `manualQuantity` 10 → 1000 multiplies the charge at zero amount delta), as is a percent-only evaluation against a zero baseline. **A mutation with no computable price delta is always material (D-115, generalizing the G1 fail-safe):** row contract fields (`billingTiming`, `prorationBasis`, `billingAnchorPolicy`, `creditOnDowngrade`, `taxInclusive`/`taxCategory`, `quantitySource`) and plan-shape revision content (descriptors incl. the GL code, phase graph/durations, the add-on rule set, cycle/frequency, availability dates, the `PlanTier` override, `invoiceGroupingKey`) — a pure-shape revision carries zero price rows, so per-row evaluation alone could never trip on it. Mutating the threshold policy is itself **always material** (direction-agnostic): the change **MUST** take effect only after an independent second approver confirms it through the standard approval workflow — the two-person rule's foundation is never single-person-editable; in-flight submissions keep their submit-time materiality. The system **MUST** apply the two-person rule by default and **MAY** auto-publish with no independent approver **only if** a threshold is explicitly configured **and** the change is below it **and** it is not a first publish. A row with no prior baseline of its own (a new currency/region/phase/chargeKind key added to a published plan) has no computable delta and is therefore **always material** (fail-safe). **Every `PriceOverlay` mutation that changes an adjustment or its audience** (creation; line add/remove; magnitude or kind change; scope/precedence/dating/disclosure change) is likewise **always material** (D-50, 2026-07-28): an overlay line is not a price row — there is no per-currency baseline delta to threshold, and percent lines carry no currency — so the G1 fail-safe applies and the mutation routes through the approval workflow before its publish unit commits.
+The tenant approval-threshold policy **MUST** express materiality as an absolute amount or percentage delta **per currency**; for a multi-currency change each affected row's delta is compared in its **own** currency and the rule trips if **any** row exceeds its threshold. **The delta domain is defined per model kind (D-115, 2026-07-31 review fix — "the row's delta" previously had no operand for the rows that carry tiered revenue, whose `amountMinor` is NULL by construction):** `flat`/`per_unit` → the amount delta; `graduated`/`volume` → the band-wise unit-price vector, comparable **only while the band geometry (bounds and count) is unchanged**; `package` → the package-price delta **only while `packageSize` is unchanged**. Any change to a **quantity-determining/geometry field** — band bounds or count, `packageSize`, `manualQuantity`, `includedAllowance.quantity` — is **material regardless of thresholds** (no effective-price delta is computable catalog-side; a `manualQuantity` 10 → 1000 multiplies the charge at zero amount delta), as is a percent-only evaluation against a zero baseline. **A mutation with no computable price delta is always material (D-115, generalizing the G1 fail-safe):** row contract fields (`billingTiming`, `prorationBasis`, `billingAnchorPolicy`, `creditOnDowngrade`, `taxInclusive`/`taxCategory`, `quantitySource`) and plan-shape revision content (descriptors incl. the GL code, phase graph/durations, the add-on rule set, cycle/frequency, availability dates, the `PlanTier` override, `invoiceGroupingKey`, and the plan-change contract — `usageCounterOnPlanChange` (D-113), `allowedChangeTargets`, `comparabilityRank`) — a pure-shape revision carries zero price rows, so per-row evaluation alone could never trip on it. Mutating the threshold policy is itself **always material** (direction-agnostic): the change **MUST** take effect only after an independent second approver confirms it through the standard approval workflow — the two-person rule's foundation is never single-person-editable; in-flight submissions keep their submit-time materiality. The system **MUST** apply the two-person rule by default and **MAY** auto-publish with no independent approver **only if** a threshold is explicitly configured **and** the change is below it **and** it is not a first publish. A row with no prior baseline of its own (a new currency/region/phase/chargeKind key added to a published plan) has no computable delta and is therefore **always material** (fail-safe). **Every `PriceOverlay` mutation that changes an adjustment or its audience** (creation; line add/remove; magnitude or kind change; scope/precedence/dating/disclosure change) is likewise **always material** (D-50, 2026-07-28): an overlay line is not a price row — there is no per-currency baseline delta to threshold, and percent lines carry no currency — so the G1 fail-safe applies and the mutation routes through the approval workflow before its publish unit commits.
 
 **Rationale**: Fail-safe materiality (two-person rule unless explicitly below an configured threshold) prevents silent large changes.
 
@@ -886,7 +886,7 @@ A submit with a stale version/ETag **MUST** be rejected with a conflict requirin
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-proration-input-contract`
 
-Each recurring price row **MUST** publish `billingAnchorPolicy`, `prorationBasis` (the canonical enum, §1.4, adopted verbatim by Tariffs), and `creditOnDowngrade` (source-row semantics on a downgrade, per §17.6; `true` with `prorationBasis = none` **MUST** fail publish as contradictory), frozen in `pricingSnapshotRef`; Subscriptions owns the change boundary/mode, the rating gear the proration math (rating §6.11/§17.2). A mid-cycle change crossing currency, region, or billing frequency **MUST** be rejected for in-place proration (handled as cancel + new subscription) and the operator **MUST** be warned that in-place credit is forfeited.
+Each recurring price row **MUST** publish `billingAnchorPolicy`, `prorationBasis` (the canonical enum, §1.4, adopted verbatim by Tariffs), and `creditOnDowngrade` (source-row semantics on a downgrade, per §17.6; `true` with `prorationBasis = none` **MUST** fail publish as contradictory), frozen in `pricingSnapshotRef`; Subscriptions owns the change boundary/mode, the rating gear the proration math (rating §6.11/§17.2). The three fields **MUST** be uniform across the recurring rows of one plan-`(currency, region)` (D-123): a phased plan's per-phase recurring rows may vary **price**, never the cycle clock or the proration math — Subscriptions consumes a single `billingAnchor`/`prorationBasis` per subscription, so a mixed market leaves the cycle boundary at phase conversion undefined; publish **MUST** fail the divergent market (`PRORATION_CONTRACT_MIXED_MARKET`), per market, not per plan (`billingTiming` stays per-row — a hybrid legitimately mixes timings). A mid-cycle change crossing currency, region, or billing frequency **MUST** be rejected for in-place proration (handled as cancel + new subscription) and the operator **MUST** be warned that in-place credit is forfeited.
 
 **Rationale**: Deterministic proration requires the same frozen inputs on the catalog and Subscriptions/Tariffs sides.
 
@@ -1050,7 +1050,7 @@ A plan/price create/update call carrying a client idempotency key **MUST** retur
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-fr-price-history-export`
 
-The system **MUST** return chronological immutable price-history records with actor and effective dates under Auditor/Finance filters and **MUST** support export within p95 <= 5s for 100 records.
+The system **MUST** return chronological immutable price-history records with actor and effective dates under Auditor/Finance filters and **MUST** support export within p95 <= 5s for 100 records. History and audit list reads **MUST** paginate (an opaque cursor + a bounded `limit`, stable commit order — no skipped or duplicated rows across a page walk concurrent with writes; D-125): the surfaces read >= 7 years of append-only rows, and the export SLO's unit is the page/chunk.
 
 **Rationale**: Auditors and Finance must reconcile contract and billing disputes from complete immutable history.
 
@@ -1213,6 +1213,16 @@ The system **SHOULD** enforce configurable soft caps on tier-band count per row 
 **Threshold**: <= 100 tier bands/row, <= 500 price rows/plan (soft, tenant-configurable); custom-interval cap `customEveryNDays` <= 366, `customEveryNMonths` <= 24 — ratified 2026-07-28 as launch defaults.
 
 **Rationale**: Unbounded plan size degrades the read and repricing hot paths.
+
+#### Observability and alerting
+
+- [ ] `p2` - **ID**: `cpt-cf-bss-pricing-nfr-observability`
+
+Every alarm a design slice declares (each slice's §7) **MUST** be routed to an owned, acknowledgeable production channel; every **Critical** alarm (`pricing.readmodel.pin_eligibility_overdue`, `pricing.window.changeover_unwarmed`, `pricing.catalogversion.commit_overdue`, `pricing.audit.chain_gap`, `pricing.contracts.enum_drift`) **MUST** carry a runbook naming the remediation its declaring slice states. Slice-declared metrics and alarms are **normative surface**, not implementation suggestions — the slices hang money-facing failure modes (replay divergence, selling into an unwarmed changeover, audit-chain gaps) on them, and an unrouted alarm is a silent failure (2026-07-31d billing-domain review, C-5: the design set declared ~two dozen alarms while the PRD contained no observability requirement obliging any of them to be routed, acknowledged, or given a runbook).
+
+**Threshold**: 100% of declared Critical alarms routed + runbook-linked before GA; alarm-to-acknowledgement tracked for Criticals.
+
+**Rationale**: This gear's availability and RTO targets are already committed (§7.1); the alarms are how those targets and the money-facing invariants are operable.
 
 ### 7.2 NFR Exclusions
 
@@ -1796,6 +1806,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 - **When** an Auditor requests history with filters
 - **Then** the system MUST return chronological immutable records with actor and effective dates
 - **And** MUST support export within p95 <= 5s for 100 records
+- **And** history/audit list reads MUST be cursor-paginated with a stable commit order — a page walk concurrent with writes never skips or duplicates a row at or before the cursor (D-125)
 
 ### Price preview and access control
 
@@ -1954,6 +1965,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 - **When** the publish contract is validated
 - **Then** each field MUST map to a named consuming requirement in Subscriptions (Proration Logic) **and** in Tariffs, which consumes the **same** `prorationBasis` for PriceWindow-split / plan-change proration and MUST adopt the canonical enum **verbatim**
 - **And** a shared golden fixture MUST assert that `calendar_days_30` day-capping and `fixed_day(31)`→February month-end UTC rollover produce identical results on the catalog and Subscriptions sides, **and** a boundary fixture MUST assert that a mid-period **PriceWindow-split** proration produces identical results on the catalog↔Tariffs side
+- **And** the three fields MUST be uniform across the recurring rows of one plan-`(currency, region)` — a divergent market fails publish (`PRORATION_CONTRACT_MIXED_MARKET`, D-123), so phase conversion never moves the anchor-derived cycle boundary and never changes the proration math
 
 **62. Read-model monotonicity and staleness bound**
 - **Given** an in-flight publish fan-out
@@ -2300,8 +2312,8 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 - **And** a retry of conflicted rows with unchanged content MUST reuse the original approval; a changed row MUST require a fresh approval
 
 **112. Single pending approval unit per scope key**
-- **Given** a pending approval unit (supersession or grandfathering cutover) on a canonical scope key
-- **When** a second unit is submitted on the same key
+- **Given** a pending approval unit **of any kind** holding a canonical scope key (supersession, grandfathering cutover, window mutation, retirement, bulk batch — any unit whose change set touches the key)
+- **When** a second unit touching the same key is submitted
 - **Then** the submission MUST be rejected with a conflict (409) naming the pending unit
 - **And** the rule is symmetric with bulk operations: a bulk/repricing row whose key holds a pending interactive unit fails per-row, and a submitted material batch pins its keys against interactive submits (409 naming the bulk operation)
 

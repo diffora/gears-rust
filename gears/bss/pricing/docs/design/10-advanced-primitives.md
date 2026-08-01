@@ -302,7 +302,7 @@ non-`sum` row; capacity flavor only at launch, D-53); warnings:
 
 ## 6. Data Model
 
-Columns on Foundation-owned tables + one slice table (`pricing_` prefix per Foundation §3.7):
+Columns on Foundation-owned tables + one slice table (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7):
 
 **`pricing_price` (Slice-10 columns)**:
 
