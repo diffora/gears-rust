@@ -59,6 +59,17 @@ lives:
    same commit (total 76 → 77 for the new `nfr-observability`; three triage
    movers hand-checked, notes beside `PINNED_TRIAGE_PRICING`).
 
+6. **2026-08-01, sixth capture — after the rating billing-domain review fix
+   wave** (T-D-23…T-D-32 + the #22 traceability conversion). Document movement
+   only, no checker change. **Live findings 6 → 5**: rating's
+   `P2/traceability-convention-unknown` coverage statement is gone because all
+   16 rating slices now open §5 with a `**Traces to**:` block — 43 FRs checked
+   per-id, all single-owner on the first pass (a live finding legitimately
+   resolved by adopting the convention, not suppressed). Suppressed unchanged
+   at 68 (no pinned-debt member is rating-side). One test retired into two:
+   the rating half of `test_rating_and_subscriptions_report_convention_unknown…`
+   became a positive full-coverage assertion for rating.
+
 The discipline is unchanged either way: a finding appearing or disappearing here
 is a real claim about the design set, and re-freezing must be a deliberate,
 separately-justified commit — never a way to make a failing change look green.

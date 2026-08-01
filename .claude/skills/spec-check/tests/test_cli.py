@@ -59,9 +59,13 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # pinned member — REGION_SCOPE_DENIED (referenced by the new
     # `inst-rb-preview-scope` rule body) — hand-checked, note beside the pinned
     # list.
+    # 6/68 until the same day's RATING billing-domain wave: the #22 Traces-to
+    # conversion removed rating's P2/traceability-convention-unknown coverage
+    # statement (43 FRs now checked per-id, all single-owner — a live finding
+    # legitimately resolved, not suppressed); debt unchanged.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
-    assert len(payload["findings"]) == 6
+    assert len(payload["findings"]) == 5
     assert payload["known_debt_suppressed"] == 68
     assert payload["known_debt_tracked_as"] == "D-69"
 

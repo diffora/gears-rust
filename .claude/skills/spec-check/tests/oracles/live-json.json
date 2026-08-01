@@ -8,13 +8,6 @@
       "message": "P1 cannot verify propagation for gears/bss/rating/docs: DECISIONS.md yielded zero decision entries — no `#### <id> …` heading matched the recognised id shape (`D-NN`, optionally gear-prefixed, e.g. `SUB-D-01`) — 0 `**Propagated`-shaped field(s) in that register went unchecked as a result"
     },
     {
-      "invariant": "P2/traceability-convention-unknown",
-      "severity": "low",
-      "file": "PRD.md",
-      "line": null,
-      "message": "P2 cannot verify requirement coverage for gears/bss/rating/docs: no slice uses a recognised traceability convention (`**Traces to**:` or `This slice directly addresses:`) — 43 requirement(s) went unchecked as a result; per-id claims are not reported for this gear rather than reporting every requirement as unclaimed"
-    },
-    {
       "invariant": "P3/code-convention-divergent",
       "severity": "low",
       "file": "design/15-rated-output-balance-effects.md",
