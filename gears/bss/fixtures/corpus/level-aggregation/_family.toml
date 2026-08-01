@@ -1,6 +1,22 @@
 family     = "level-aggregation"
-role       = "conformance"
-provenance = ["AC#60", "D-44", "T-D-17", "D-77"]
+role       = "publish"
+gates      = ["graduated"]
+provenance = ["AC#60", "D-44", "T-D-17", "D-77", "inst-la-fixture"]
+
+# This family gates publish, and it always did on paper. `inst-la-fixture`: the
+# `level-aggregation` variant is a registered `FixtureGate` variant, and publish
+# of any non-`sum` row without the green joint fixture is blocked
+# (`FIXTURE_MISSING`), "exactly like a `modelKind` variant". Recorded as
+# `role = "conformance"` it blocked nothing at all - the registry was keyed by
+# `modelKind` alone, so a `peak` row published on the strength of a `sum` row's
+# fixture and the four cases below gated nothing they describe.
+#
+# It gates `graduated` and only `graduated`, because that is the kind every case
+# here folds. That is not a shorthand for "level rows": a non-`sum` `volume` or
+# `package` row is refused by name (`FIXTURE_MISSING`, variant
+# `level_aggregation`) until a case folds a level on one, which is what
+# `inst-la-fixture` says and what `GatedKindUncovered` would enforce if this list
+# claimed more than the cases cover.
 
 # Every case here is a whole authored row, and every one of them is a
 # `graduated` usage row - so `inst-tb-window` requires `tierAggregationWindow`

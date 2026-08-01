@@ -235,6 +235,12 @@ impl Gear for BssPricingGear {
             info!(
                 registry_path = %config.fixtures.registry_path.display(),
                 open_kinds = ?open_kinds,
+                // The kinds alone are a floor: a kind whose own fixture is green
+                // still cannot publish a level or a tiered usage row unless the
+                // matching cross-cutting variant is green too. Logging the pairs
+                // is what keeps the first such refusal legible as the state of
+                // the corpus rather than as a bug.
+                open_variants = ?fixture_gate.open_variants(),
                 "bss-pricing: joint conformance fixture gate loaded"
             );
         }

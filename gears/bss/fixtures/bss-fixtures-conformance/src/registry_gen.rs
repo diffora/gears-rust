@@ -32,6 +32,13 @@ const HEADER: &str = "\
 # Do not hand-edit: CI asserts regeneration is diff-clean, and a regeneration is
 # committed on its own.
 #
+# A row is keyed `(kind, variant)` - S3 design 6's `model_kind` / `variant` pair.
+# One kind has one row per fixture it needs: its own `model_kind` fixture, plus
+# the cross-cutting scenario fixtures (`level_aggregation`,
+# `supersession_continuity`, `reserved`) for the rows that require them. Which
+# variants a publishing row requires is the gear's question, asked once per
+# variant; a `(kind, variant)` pair absent from this file is never open.
+#
 # `oracle` and `publish` together open pricing's FixtureGate. No flag is set by
 # hand - each is earned by a passing run, and the two runs have different owners:
 # the reference oracle earns `oracle`, pricing's PublishValidator earns `publish`.
@@ -81,20 +88,39 @@ pub fn build(corpus: &Corpus, earned_publish: &[ModelKind]) -> Result<Registry, 
 
     let mut variants: Vec<VariantStatus> = Vec::new();
     for meta in &corpus.families {
+        // The families **are** the variants, so a family that maps to none gates
+        // no publish and writes no row. Only `proration` (AC #61) and the
+        // unbuilt `trailing-tier` are in that state, and a `Publish` family that
+        // fell into it is `GatingFamilyWithoutVariant` above rather than a
+        // silent skip here.
+        let Some(variant) = meta.family.variant() else {
+            continue;
+        };
         let green = report.is_green_for(meta.family);
         for kind in &meta.gates {
             variants.push(VariantStatus {
                 kind: *kind,
+                variant,
                 oracle: green,
                 // Earned by pricing's validator reproducing the publish cases;
                 // handed in, because this crate cannot reach the gear.
+                //
+                // Per **kind**, not per `(kind, variant)`, and deliberately: an
+                // outcome is attributed to `successor.model_kind` and to nothing
+                // else (see `PublishReport::earned_kinds`), so any failing
+                // publish case blocks every variant of its kind. Scoping the
+                // publish half to the case's own family would earn nothing for
+                // anyone -- all four `model_kind` families carry evaluation
+                // cases only.
                 publish: earned_publish.contains(kind),
                 // Earned when rating's evaluator reproduces the corpus.
                 rating: false,
             });
         }
     }
-    variants.sort_by_key(|v| format!("{:?}", v.kind));
+    // Grouped by kind, then by variant, so a reader sees everything one kind
+    // needs in one place.
+    variants.sort_by_key(|v| (format!("{:?}", v.kind), v.variant.wire()));
 
     Ok(Registry { variants })
 }

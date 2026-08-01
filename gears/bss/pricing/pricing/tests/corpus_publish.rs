@@ -13,7 +13,7 @@
 #[path = "../examples/regen_registry/validator.rs"]
 mod validator;
 
-use bss_fixtures::{Corpus, ModelKind, Registry};
+use bss_fixtures::{Corpus, ModelKind, Registry, Variant};
 use bss_fixtures_conformance::registry_gen;
 
 fn corpus() -> Corpus {
@@ -45,16 +45,25 @@ fn the_committed_publish_flags_are_exactly_what_a_run_earned() {
     let committed = Registry::load(&Corpus::corpus_root().join("registry.toml"))
         .expect("committed registry parses");
 
-    for kind in ModelKind::ALL {
-        let variant = committed
-            .variants
-            .iter()
-            .find(|v| v.kind == kind)
-            .unwrap_or_else(|| panic!("{kind:?} must be registered"));
+    // Every row, not one per kind: the publish half is earned per kind and is
+    // written onto each of that kind's variants, so a hand-edited `true` on a
+    // single cross-cutting row would slip past a per-kind spot check.
+    for row in &committed.variants {
         assert_eq!(
-            variant.publish,
-            earned.contains(&kind),
-            "the committed publish flag for {kind:?} is not what a validator run earns"
+            row.publish,
+            earned.contains(&row.kind),
+            "the committed publish flag for {:?}/{} is not what a validator run earns",
+            row.kind,
+            row.variant.wire()
+        );
+    }
+    for kind in ModelKind::ALL {
+        assert!(
+            committed
+                .variants
+                .iter()
+                .any(|v| v.kind == kind && v.variant == Variant::ModelKind),
+            "{kind:?} must be registered on its own model_kind variant"
         );
     }
 }
@@ -125,8 +134,8 @@ fn every_kind_has_earned_its_publish_half() {
         .expect("committed registry parses");
     for kind in ModelKind::ALL {
         assert!(
-            committed.gate_open_for(kind),
-            "{kind:?} earned both halves and must open the fixture gate"
+            committed.gate_open_for(kind, Variant::ModelKind),
+            "{kind:?} earned both halves and must open its own fixture's gate"
         );
     }
 }

@@ -8,6 +8,7 @@
 //! for one) simply fails to parse in `[snapshot]`.
 
 pub use crate::kinds::ModelKind;
+pub use crate::variant::Variant;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
@@ -39,6 +40,35 @@ impl Family {
         Self::LevelAggregation,
         Self::TrailingTier,
     ];
+
+    /// The registry [`Variant`] this family's fixtures are registered under.
+    ///
+    /// **The families are the variants** (§6). Four families are the four
+    /// `modelKind` fixtures; three are the cross-cutting scenario fixtures the
+    /// design set names as variants in their own right. `None` means the family
+    /// gates no publish at all, and there are exactly two:
+    ///
+    /// - `proration` is AC #61, a field-consumption contract shared with
+    ///   Subscriptions and Tariffs. It gates nothing **deliberately**, which is
+    ///   what [`crate::corpus::GateRole::Conformance`] records.
+    /// - `trailing-tier` is Slice 10's `inst-tt-fixture` (D-40). It is a
+    ///   `FixtureGate` variant in the design set and is deliberately **not** one
+    ///   here: the family carries no case and no `_family.toml`, so it could
+    ///   register no fixture and would shut the gate permanently for every
+    ///   `tierQualificationWindow = trailing_period` row. It stays declined,
+    ///   never green and never absent, and the variant lands with the slice.
+    #[must_use]
+    pub const fn variant(self) -> Option<Variant> {
+        match self {
+            Self::TierBoundary | Self::Package | Self::PerUnit | Self::Flat => {
+                Some(Variant::ModelKind)
+            }
+            Self::LevelAggregation => Some(Variant::LevelAggregation),
+            Self::SupersessionContinuity => Some(Variant::SupersessionContinuity),
+            Self::Reserved => Some(Variant::Reserved),
+            Self::Proration | Self::TrailingTier => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

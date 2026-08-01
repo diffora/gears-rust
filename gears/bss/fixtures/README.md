@@ -37,14 +37,15 @@ The corpus fixes where the cliff sits.
 
 ## What a gear actually compiles
 
-The publish gate asks one question — *is this kind green* — and the answer is a small
-generated file. So a gear takes this crate narrow:
+The publish gate asks one question — *is this `(kind, variant)` pair green* — and the answer
+is a small generated file. So a gear takes this crate narrow:
 
 ```toml
 bss-fixtures = { workspace = true, default-features = false }
 ```
 
-That surface is `ModelKind` + `Registry` + `gate_open_for`, over `serde`/`toml`/`thiserror`.
+That surface is `ModelKind` + `Variant` + `Registry` + `gate_open_for`, over
+`serde`/`toml`/`thiserror`.
 The loader, the case model and `chrono` sit behind the `corpus` feature — a gear never reads
 the twenty-odd case files at runtime and has no business carrying the ability to.
 
@@ -55,15 +56,48 @@ without noticing. `tests/production_surface.rs` compiles it on purpose:
 cargo test -p bss-fixtures --no-default-features --test production_surface
 ```
 
+## A registry row is `(kind, variant)`
+
+S3 design §6 keys the registry by `model_kind` **/ `variant`**, and the gate rules are
+written in variants: `inst-la-fixture` makes `level-aggregation` a registered variant whose
+absence blocks any non-`sum` row "exactly like a `modelKind` variant"; §6 registers
+`variant = supersession_continuity` on the tiered kinds and D-22 has it gate their first
+publish; `inst-fx-kinds` gives the reservation variant its own fixture.
+
+**The families are the variants** — `Family::variant()`, not a second field in
+`_family.toml`, so the two cannot drift. Four families are one variant (`model_kind`), three
+are their own, and two map to none: `proration` gates nothing deliberately, and
+`trailing-tier` is Slice 10's `inst-tt-fixture` on a family that carries no case.
+
+So a kind has one row per fixture it needs, and each is earned independently:
+
+| the publishing row is … | needs, on top of everything above |
+|---|---|
+| anything | `model_kind` |
+| non-`sum` | `level_aggregation` |
+| a tiered **usage** kind | `supersession_continuity` (D-22) |
+| reserved | `reserved` (Slice 10) |
+
+Which variants a row requires is the **gear's** question and lives in
+`bss_pricing::infra::fixture_gate::required_variants`; the refusal names the variant, because
+that is the row an operator then looks up here. An unregistered pair is never open, which is
+what refuses a `peak` `volume` row: no case folds a level on one.
+
+Keyed by kind alone — as it was — three of those four said nothing at all.
+
 ## What "green" means
 
-Three flags per variant, none set by hand:
+Three flags per registry row, none set by hand:
 
 | Flag | Earned by |
 |---|---|
 | `oracle` | the reference oracle reproduces every evaluation case |
 | `publish` | pricing's validator reproduces every publish case |
 | `rating` | rating's evaluator reproduces the same evaluation cases |
+
+`oracle` is per family and therefore per variant; `publish` is per **kind** and is written
+onto every variant of it, because a publish outcome is attributed to `successor.model_kind`
+and to nothing else (see [below](#the-role-does-not-scope-what-a-publish-case-earns--on-purpose)).
 
 `FixtureGate` reads `oracle AND publish`. The oracle is the executable §17.2 and stands in
 for Tariffs until Tariffs exists; requiring the `rating` flag would block every publish at
@@ -176,18 +210,35 @@ suite after every such edit and confirm every expected value still holds.
 
 ## Coverage today
 
-`tier-boundary` (gates `graduated`, `volume`), `package`, `per-unit`, and `flat` — together
-they gate **every** catalog `modelKind`, which is what `inst-fx-gate` requires: it blocks
-publish of *any* kind without a green fixture. Plus `proration` (AC #61), which gates no
-kind at all, plus `supersession-continuity`, `level-aggregation` and `reserved`.
+`tier-boundary` (gates `graduated`, `volume`), `package`, `per-unit`, and `flat` are the
+`model_kind` variant — together they gate **every** catalog `modelKind`, which is what
+`inst-fx-gate` requires: it blocks publish of *any* kind without a green fixture. Then the
+three cross-cutting variants: `supersession-continuity` (gates `graduated`, `volume`, per
+D-22), `level-aggregation` (`graduated`) and `reserved` (`graduated`). Plus `proration`
+(AC #61), which gates nothing.
+
+Each cross-cutting family gates exactly the kinds its own cases exercise, and that is a
+floor rather than a shorthand: nothing folds a level on a `volume` row, so a non-`sum`
+`volume` row is refused by name until something does.
 
 Gated is not the same as **answerable**, and the two are checked separately.
-`check_kind_coverage` asks whether a kind is gated by a family; `check_publish_case_coverage`
-asks whether its gate can ever *open*, because `publish` is earned per kind by a passing run
-and a kind the corpus asks no publish question of earns nothing — for ever, and
-indistinguishably from a run that failed. `flat` and `per_unit` sat in exactly that state.
-Both checks run inside the registry generator, where absent coverage becomes a named build
-failure rather than a `false` in a file.
+`check_kind_coverage` asks whether a kind is gated by a family that is its *own* fixture — a
+continuity fixture gating `volume` must not stand in for `tier-boundary` doing so.
+`check_publish_case_coverage` asks whether the gate can ever *open*, because `publish` is
+earned per kind by a passing run and a kind the corpus asks no publish question of earns
+nothing — for ever, and indistinguishably from a run that failed. `flat` and `per_unit` sat
+in exactly that state.
+
+It asks one thing more: at least one of a kind's answerable publish cases must expect
+**`accepted`**. `volume`'s flag rested entirely on `kind-flip-rejected` and `package`'s on
+`package-size-change-rejected`, both expecting a refusal — so `publish = true` meant "the
+gear reproduces one refusal" and nothing said such a row could be published at all. A gear
+that rejected every one of them earned the identical flag. The negative and the positive pin
+different things: the refusal says where the guard bites, the acceptance says the guard has a
+far side, and neither substitutes for the other.
+
+All three checks run inside the registry generator, where absent coverage becomes a named
+build failure rather than a `false` in a file.
 
 **`trailing-tier` is deliberately unbuilt.** SEAMS M12 is open: rating has no counterpart
 for `tierQualificationWindow` at all, so a fixture would pin one side of a contract the
@@ -258,23 +309,32 @@ was wrong" is the part a future reader needs.
 
 Not every joint fixture is a publish gate, so `_family.toml` states which it is:
 
-- **`role = "publish"`** — blocks publish of the `modelKind`s it lists.
+- **`role = "publish"`** — blocks publish of the `modelKind`s it lists, **in this family's
+  variant**. The variant half is not authored here; it is read off the family. So
+  `supersession-continuity` gates `graduated` and `volume` without claiming to be their
+  `modelKind` fixture, which is what D-22 says and what keying by kind alone could not
+  express.
 - **`role = "conformance"`** — a joint regression that blocks nothing. `proration` is this:
   AC #61 is a field-consumption contract shared with Subscriptions and Tariffs.
 
 Stating the role is what separates "gates nothing deliberately" from "someone forgot the
-list" — a publish family with no kinds and a conformance family *with* kinds are both
-violations.
+list" — a publish family with no kinds, a conformance family *with* kinds, and a publish
+family that maps to no variant at all are all violations.
+
+`supersession-continuity`, `level-aggregation` and `reserved` were recorded as `conformance`
+while the registry was keyed by `modelKind` alone, and under that keying the record was
+accurate: there was no row for them to occupy, so they gated nothing however loudly the
+design set said they did.
 
 ### The role does not scope what a publish case earns — on purpose
 
 `PublishReport::earned_kinds` attributes an outcome to `successor.model_kind` and to nothing
-else: not to the case's family, not to that family's `GateRole`, not to its `gates` list. So
-a failing publish case in a **conformance** family blocks the kind its successor carries.
-That is not a corner: today *every* publish case sits in a conformance family
-(`supersession-continuity`, `reserved`), and all four publish families carry only evaluation
-cases — so every `publish` flag in the committed registry is earned across the family
-boundary.
+else: not to the case's family, not to that family's `GateRole`, not to its `gates` list, and
+not to its variant. So a failing publish case blocks **every variant** of the kind its
+successor carries, wherever the case sits. That is not a corner: today every publish case
+lives in a cross-cutting family (`supersession-continuity`, `reserved`), and all four
+`model_kind` families carry only evaluation cases — so every `publish` flag in the committed
+registry is earned across the family boundary.
 
 **Kept as is.** A failed case is a rule of the design set the gear does not reproduce, and
 which directory it was filed in does not make it less so; the flag is a claim about a
@@ -324,10 +384,11 @@ rather than left as a fallback.
 
 Families and kinds are **different axes** — nine families against five kinds, with
 `tier-boundary` gating two — so a kind can quietly belong to no family at all. That is how
-`flat` was missed. `check_kind_coverage` now asserts every kind is gated by some family, and
-`check_publish_case_coverage` asserts every kind is asked at least one answerable publish
-question; both run inside the registry generator, so a sixth kind cannot be added without a
-family to cover it or a publish case to open its gate.
+`flat` was missed. `check_kind_coverage` now asserts every kind is gated by a family that is
+its own `model_kind` fixture, and `check_publish_case_coverage` asserts every kind is asked
+at least one answerable publish question and that at least one of them expects `accepted`;
+both run inside the registry generator, so a sixth kind cannot be added without a family to
+cover it, a publish case to open its gate, and a case that demonstrates it opening.
 
 The unbuilt families are reported **declined**, never green. An empty family is not green
 either: without that rule absent coverage would read as success, which is the exact failure

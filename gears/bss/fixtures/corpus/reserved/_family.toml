@@ -1,3 +1,20 @@
 family     = "reserved"
-role       = "conformance"
-provenance = ["AC#60", "inst-rv-tier-q", "inst-rv-level", "inst-rv-fixture", "D-53", "D-139"]
+role       = "publish"
+gates      = ["graduated"]
+provenance = ["AC#60", "inst-rv-tier-q", "inst-rv-level", "inst-rv-fixture", "inst-fx-kinds", "D-53", "D-139"]
+
+# `inst-fx-kinds`: "the reservation variant of a usage row requires its own
+# fixture (Slice 10 registers it into this gate)". S3 design 6 lists it beside
+# the `modelKind`, `level-aggregation` and `trailing_tier` variants on the
+# `FixtureGate`'s input. Recorded as `role = "conformance"` it gated nothing.
+#
+# `graduated` only, because every case here is a `graduated` usage row - the
+# on-demand ladder the remainder is banded by is what makes a reservation a
+# reservation rather than a flat allocation charge.
+#
+# The gear cannot yet **reach** this gate: `reservedRateMinor` and
+# `reservationFlavor` are Slice-10 fields and `PriceRow` is the Slice-3 shape, so
+# no row it can hold reports itself reserved. That hole is named and tested on
+# the gear side (`bss_pricing::infra::fixture_gate::Reservation`) rather than
+# left as a question nobody asks - the rule is implemented now, so the day the
+# field lands the gate is already right.

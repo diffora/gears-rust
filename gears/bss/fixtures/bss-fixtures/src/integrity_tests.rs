@@ -258,6 +258,28 @@ fn publish_case(id: &str, kind: ModelKind, declined_until: Option<&str>) -> Case
     }))
 }
 
+/// The same, expecting a refusal instead — the shape `volume` and `package`
+/// earned their whole `publish` flag from.
+fn rejecting_publish_case(id: &str, kind: ModelKind) -> Case {
+    use crate::model::{PublishAssertion, PublishCase, PublishVerdict};
+
+    Case::Publish(Box::new(PublishCase {
+        family: Family::SupersessionContinuity,
+        id: id.into(),
+        kind: CaseKind::Publish,
+        provenance: vec!["D-82".into()],
+        predecessor: snapshot(kind),
+        successor: snapshot(kind),
+        assert: vec![PublishAssertion {
+            expect: PublishVerdict::Rejected {
+                error_code: "SUPERSESSION_UNIT_MISMATCH".into(),
+            },
+            why: None,
+        }],
+        declined_until: None,
+    }))
+}
+
 #[test]
 fn a_decline_that_names_no_slice_is_a_violation() {
     // Same discipline as a rejection without a code: a declaration that suspends
@@ -333,6 +355,163 @@ fn a_declined_publish_case_is_not_coverage() {
             kind: ModelKind::Graduated
         }),
         "got: {violations:?}"
+    );
+}
+
+#[test]
+fn a_kind_whose_only_publish_case_expects_a_refusal_is_a_violation() {
+    // The exact state `volume` and `package` were in. `volume`'s `publish` flag
+    // rested entirely on `kind-flip-rejected` and `package`'s on
+    // `package-size-change-rejected`, both expecting a rejection -- so the flag
+    // meant "the gear reproduces one refusal" and nothing said such a row can be
+    // published at all. A gear that refused every one of them earns the same
+    // flag and opens the same gate.
+    let corpus = Corpus {
+        cases: vec![rejecting_publish_case("only-a-refusal", ModelKind::Volume)],
+        families: Vec::new(),
+    };
+
+    let violations = check_publish_case_coverage(&corpus);
+
+    assert!(
+        violations.contains(&IntegrityViolation::ModelKindWithoutAcceptedPublishCase {
+            kind: ModelKind::Volume
+        }),
+        "got: {violations:?}"
+    );
+    // And it is a *different* fault from having no case at all: the kind is
+    // asked a publish question, it just cannot answer it in the affirmative.
+    assert!(
+        !violations.contains(&IntegrityViolation::ModelKindWithoutPublishCase {
+            kind: ModelKind::Volume
+        }),
+        "got: {violations:?}"
+    );
+}
+
+#[test]
+fn a_refusal_beside_an_acceptance_is_coverage() {
+    // The mirror, and the shape the corpus now has for every kind. The two pin
+    // different things -- the refusal says where the guard bites, the acceptance
+    // says the guard has a far side -- so a kind carrying both is complete and
+    // neither substitutes for the other.
+    let corpus = Corpus {
+        cases: vec![
+            rejecting_publish_case("a-refusal", ModelKind::Volume),
+            publish_case("an-acceptance", ModelKind::Volume, None),
+        ],
+        families: Vec::new(),
+    };
+
+    let violations = check_publish_case_coverage(&corpus);
+
+    assert!(
+        !violations.iter().any(|v| matches!(
+            v,
+            IntegrityViolation::ModelKindWithoutAcceptedPublishCase {
+                kind: ModelKind::Volume
+            }
+        )),
+        "got: {violations:?}"
+    );
+}
+
+#[test]
+fn a_declined_acceptance_does_not_satisfy_the_accepted_requirement() {
+    // A case authored against an unbuilt slice cannot pass, so an `accepted`
+    // verdict inside one is not a demonstration that the kind publishes -- the
+    // same rule that keeps a declined case from being coverage at all, one step
+    // in.
+    let corpus = Corpus {
+        cases: vec![
+            rejecting_publish_case("a-refusal", ModelKind::Volume),
+            publish_case("unanswerable", ModelKind::Volume, Some("slice-10")),
+        ],
+        families: Vec::new(),
+    };
+
+    let violations = check_publish_case_coverage(&corpus);
+
+    assert!(
+        violations.contains(&IntegrityViolation::ModelKindWithoutAcceptedPublishCase {
+            kind: ModelKind::Volume
+        }),
+        "got: {violations:?}"
+    );
+}
+
+#[test]
+fn the_committed_corpus_demonstrates_that_every_kind_can_publish() {
+    // Stated separately from the "asks a publish question" test below, because
+    // it is a separate claim: `volume` and `package` passed that one for months
+    // on a refusal apiece.
+    let corpus = Corpus::load(&Corpus::corpus_root()).expect("corpus loads");
+
+    let unproven: Vec<IntegrityViolation> = check_publish_case_coverage(&corpus)
+        .into_iter()
+        .filter(|v| {
+            matches!(
+                v,
+                IntegrityViolation::ModelKindWithoutAcceptedPublishCase { .. }
+            )
+        })
+        .collect();
+
+    assert!(
+        unproven.is_empty(),
+        "every catalog modelKind must carry a publish case expecting `accepted`: {unproven:#?}"
+    );
+}
+
+#[test]
+fn a_publish_family_that_maps_to_no_variant_is_a_violation() {
+    // A `Publish` family whose `Family::variant()` is `None` has no
+    // `(kind, variant)` key for the generator to write its rows under, so it
+    // gates -- silently -- nothing. The louder sibling of `FamilyGatesNothing`:
+    // that one catches a family listing no kinds, this one catches a family
+    // listing kinds nobody can look up.
+    let corpus = Corpus {
+        cases: Vec::new(),
+        families: vec![FamilyMeta {
+            family: Family::Proration,
+            role: GateRole::Publish,
+            gates: vec![ModelKind::Flat],
+            provenance: vec!["AC#61".into()],
+        }],
+    };
+
+    let violations = check_integrity(&corpus);
+
+    assert!(
+        violations.contains(&IntegrityViolation::GatingFamilyWithoutVariant {
+            family: Family::Proration
+        }),
+        "got: {violations:?}"
+    );
+}
+
+#[test]
+fn a_cross_cutting_family_gating_a_kind_is_not_that_kinds_own_fixture() {
+    // `check_kind_coverage` asks for a family whose variant is `ModelKind`.
+    // `supersession-continuity` legitimately gates `volume` (D-22), and if that
+    // satisfied the check then `tier-boundary` could quietly drop `volume` and
+    // leave the kind with a scenario fixture and no formula fixture.
+    let corpus = Corpus {
+        cases: Vec::new(),
+        families: vec![FamilyMeta {
+            family: Family::SupersessionContinuity,
+            role: GateRole::Publish,
+            gates: ModelKind::ALL.to_vec(),
+            provenance: vec!["D-22".into()],
+        }],
+    };
+
+    let violations = check_kind_coverage(&corpus);
+
+    assert_eq!(
+        violations.len(),
+        ModelKind::ALL.len(),
+        "a continuity fixture is not a kind's own fixture: {violations:?}"
     );
 }
 

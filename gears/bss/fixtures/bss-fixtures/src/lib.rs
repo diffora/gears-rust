@@ -9,9 +9,11 @@
 
 pub mod kinds;
 pub mod registry;
+pub mod variant;
 
 pub use kinds::ModelKind;
 pub use registry::{Registry, RegistryError, VariantStatus};
+pub use variant::Variant;
 
 // Everything below reads the corpus from disk. A gear never needs it: the
 // publish gate asks the registry whether a kind is green and nothing more, so

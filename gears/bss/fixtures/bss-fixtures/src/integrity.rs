@@ -10,7 +10,7 @@
 //! instruction ids and error codes. What is checked here is self-contained.
 
 use crate::corpus::{Corpus, GateRole};
-use crate::model::{Case, Family, ModelKind, PublishVerdict};
+use crate::model::{Case, Family, ModelKind, PublishCase, PublishVerdict, Variant};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum IntegrityViolation {
@@ -26,6 +26,14 @@ pub enum IntegrityViolation {
     /// A family claims the `Conformance` role yet lists gated kinds. The two
     /// readings contradict: either it gates publish or it does not.
     ConformanceFamilyGates { family: Family },
+    /// A family claims the `Publish` role but maps to no registry
+    /// [`Variant`], so the generator has no column to write its rows under and
+    /// the gate can never ask about it.
+    ///
+    /// The silent form of [`Self::FamilyGatesNothing`]: that one catches a
+    /// family that lists no kinds, this one catches a family that lists kinds
+    /// nobody can look up.
+    GatingFamilyWithoutVariant { family: Family },
     /// A case carries no assertions, so it proves nothing.
     CaseAssertsNothing { case_id: String },
     /// A publish case expects a rejection but names no error code.
@@ -46,6 +54,22 @@ pub enum IntegrityViolation {
     /// stays shut for that kind forever. Exactly the shape of the `flat` hole —
     /// a rule whose gate nothing can open reads as a rule, and is a wall.
     ModelKindWithoutPublishCase { kind: ModelKind },
+    /// A catalog `modelKind` whose only publish evidence is a **refusal**.
+    ///
+    /// One step past [`Self::ModelKindWithoutPublishCase`], and a subtler hole.
+    /// `volume` earned its `publish` flag entirely from `kind-flip-rejected`
+    /// and `package` entirely from `package-size-change-rejected` — both cases
+    /// expecting a rejection. So for those two kinds `publish = true` meant
+    /// "the gear reproduces one refusal", and **nothing in the corpus
+    /// demonstrated that such a row can successfully publish at all**. A gear
+    /// that rejected every `volume` supersession would have earned the identical
+    /// flag and opened the identical gate.
+    ///
+    /// A flag a refusal alone can buy is not evidence that the kind is
+    /// publishable; it is evidence that one guard fires. Both are needed, so a
+    /// kind with no `accepted` case is a named build failure rather than a
+    /// quietly weaker flag.
+    ModelKindWithoutAcceptedPublishCase { kind: ModelKind },
 }
 
 /// Checks that every catalog `modelKind` is gated by some family.
@@ -58,15 +82,20 @@ pub enum IntegrityViolation {
 /// This is the check that would have caught `flat`: families and kinds are
 /// different axes — nine families against five kinds, with `tier-boundary`
 /// gating two — so a kind can quietly belong to no family at all.
+///
+/// It asks specifically for a family whose [`Variant`] is [`Variant::ModelKind`].
+/// Any other family gating the kind is a *cross-cutting* fixture and is not the
+/// kind's own: `supersession-continuity` gates `volume` (D-22) and would satisfy
+/// a "gated by some family" reading while `tier-boundary` had quietly dropped
+/// it, leaving the kind with a scenario fixture and no formula fixture.
 #[must_use]
 pub fn check_kind_coverage(corpus: &Corpus) -> Vec<IntegrityViolation> {
     ModelKind::ALL
         .iter()
         .filter(|kind| {
-            !corpus
-                .families
-                .iter()
-                .any(|f| f.gates.iter().any(|g| g == *kind))
+            !corpus.families.iter().any(|f| {
+                f.family.variant() == Some(Variant::ModelKind) && f.gates.iter().any(|g| g == *kind)
+            })
         })
         .map(|kind| IntegrityViolation::ModelKindUngated { kind: *kind })
         .collect()
@@ -88,21 +117,61 @@ pub fn check_kind_coverage(corpus: &Corpus) -> Vec<IntegrityViolation> {
 /// counting it would let a kind's only coverage be a case that can never be
 /// answered — the same silence, one level down.
 ///
+/// ## And at least one of them must expect `accepted`
+///
+/// Requiring merely *a* publish case per kind was the same mistake one level in.
+/// `volume`'s flag rested entirely on `kind-flip-rejected` and `package`'s on
+/// `package-size-change-rejected`, both of which expect a **rejection** — so the
+/// flag said "the gear reproduces one refusal" and nothing in the corpus said a
+/// `volume` or `package` row can be published at all. A gear that refused every
+/// such row would have earned the identical flag.
+///
+/// So a kind whose answerable publish cases are all refusals is
+/// [`IntegrityViolation::ModelKindWithoutAcceptedPublishCase`] — a named build
+/// failure in the generator, exactly like a kind with no case. The negative and
+/// the positive pin different things and neither substitutes for the other: the
+/// refusal pins where the guard bites, the acceptance pins that the guard has a
+/// far side.
+///
 /// Kept out of [`check_integrity`] for the same reason as its sibling:
 /// completeness is a property of the committed corpus, not of every partial one
 /// a test builds.
 #[must_use]
 pub fn check_publish_case_coverage(corpus: &Corpus) -> Vec<IntegrityViolation> {
-    ModelKind::ALL
-        .iter()
-        .filter(|kind| {
-            !corpus.cases.iter().any(|case| match case {
-                Case::Publish(p) => p.declined_until.is_none() && p.successor.model_kind == **kind,
-                Case::Evaluation(_) => false,
+    let mut out = Vec::new();
+
+    for kind in ModelKind::ALL {
+        let answerable: Vec<&PublishCase> = corpus
+            .cases
+            .iter()
+            .filter_map(|case| match case {
+                Case::Publish(p)
+                    if p.declined_until.is_none() && p.successor.model_kind == kind =>
+                {
+                    Some(p.as_ref())
+                }
+                _ => None,
             })
-        })
-        .map(|kind| IntegrityViolation::ModelKindWithoutPublishCase { kind: *kind })
-        .collect()
+            .collect();
+
+        if answerable.is_empty() {
+            // Reported alone: "no publish case" and "no accepted publish case"
+            // are one fault, and naming both would make one hole read as two.
+            out.push(IntegrityViolation::ModelKindWithoutPublishCase { kind });
+            continue;
+        }
+
+        let demonstrates_publish = answerable.iter().any(|p| {
+            p.assert
+                .iter()
+                .any(|a| matches!(&a.expect, PublishVerdict::Accepted))
+        });
+        if !demonstrates_publish {
+            out.push(IntegrityViolation::ModelKindWithoutAcceptedPublishCase { kind });
+        }
+    }
+
+    out
 }
 
 #[must_use]
@@ -165,6 +234,14 @@ pub fn check_integrity(corpus: &Corpus) -> Vec<IntegrityViolation> {
                 });
             }
             _ => {}
+        }
+        // A family that gates publish must map to a registry variant, or the
+        // generator has no `(kind, variant)` key to write its rows under and the
+        // gate can never ask about it -- gating, silently, nothing.
+        if matches!(meta.role, GateRole::Publish) && meta.family.variant().is_none() {
+            out.push(IntegrityViolation::GatingFamilyWithoutVariant {
+                family: meta.family,
+            });
         }
         for kind in &meta.gates {
             let covered = corpus

@@ -5,6 +5,12 @@
 //! inside a publish transaction and cannot run an oracle there, so it needs a
 //! static answer.
 //!
+//! A row is keyed `(kind, variant)` — §6's `model_kind` / `variant` pair — so a
+//! kind has as many rows as it has fixtures. This file is **not** the gear-side
+//! table `pricing_conformance_fixture_registry`; see
+//! `bss_pricing::infra::fixture_gate` for what the difference is and who owns
+//! which.
+//!
 //! The generator is an example target of the **gear** rather than a binary of
 //! either fixture crate because the two flags below are earned by two parties
 //! that cannot see each other: the reference oracle lives in
@@ -14,9 +20,16 @@
 //! build in which both halves are visible.
 
 use crate::kinds::ModelKind;
+use crate::variant::Variant;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// One row of the registry: what is known about **one fixture of one kind**.
+///
+/// Keyed by `(kind, variant)`, which is §6's `model_kind` / `variant` pair. Keyed
+/// by kind alone the three cross-cutting variants gate nothing: a `peak` row
+/// would publish on a `sum` row's fixture, because the only question asked would
+/// be "is `graduated` green".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[allow(
@@ -25,6 +38,8 @@ use std::path::Path;
 )]
 pub struct VariantStatus {
     pub kind: ModelKind,
+    /// Which of this kind's fixtures the row records. See [`Variant`].
+    pub variant: Variant,
     /// The reference oracle reproduces every evaluation case for this kind.
     pub oracle: bool,
     /// Pricing's `PublishValidator` reproduces every publish case for this kind.
@@ -77,17 +92,25 @@ impl Registry {
         })
     }
 
-    /// What `FixtureGate` asks.
+    /// What `FixtureGate` asks, **once per variant a row requires**.
     ///
     /// Deliberately `oracle && publish`, not all three. The oracle is the
     /// executable §17.2 and stands in for Tariffs until Tariffs exists; making
     /// the gate wait for `rating` would block every publish at launch, since
-    /// the rating gear has no code. An unregistered kind is never open.
+    /// the rating gear has no code.
+    ///
+    /// An unregistered `(kind, variant)` pair is never open, and that is now the
+    /// load-bearing half: `(volume, level_aggregation)` is absent because no
+    /// case folds a level on a `volume` row, so a non-`sum` `volume` row is
+    /// refused rather than admitted on `(volume, model_kind)`.
+    ///
+    /// Which variants a given row requires is the **gear's** question, not the
+    /// registry's — see `bss_pricing::infra::fixture_gate::required_variants`.
     #[must_use]
-    pub fn gate_open_for(&self, kind: ModelKind) -> bool {
+    pub fn gate_open_for(&self, kind: ModelKind, variant: Variant) -> bool {
         self.variants
             .iter()
-            .any(|v| v.kind == kind && v.oracle && v.publish)
+            .any(|v| v.kind == kind && v.variant == variant && v.oracle && v.publish)
     }
 }
 

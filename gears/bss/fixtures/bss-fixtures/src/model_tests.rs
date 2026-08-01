@@ -174,3 +174,47 @@ fn provenance_is_required() {
 
     toml::from_str::<EvaluationCase>(&bad).expect_err("a case without provenance must not parse");
 }
+
+#[test]
+fn every_family_states_whether_it_is_a_registry_variant() {
+    // The families **are** the variants, so the mapping has to be total and it
+    // has to be exhaustive over `Family::ALL` -- a family added without deciding
+    // what it gates is the shape of the original hole, one axis over.
+    //
+    // Exactly two families map to no variant, and both for a stated reason:
+    // `proration` is AC #61 and gates nothing deliberately; `trailing-tier` is
+    // Slice 10's `inst-tt-fixture` and carries no case, so registering it would
+    // shut the gate permanently for every `trailing_period` row rather than
+    // gate one.
+    let without: Vec<Family> = Family::ALL
+        .into_iter()
+        .filter(|f| f.variant().is_none())
+        .collect();
+
+    assert_eq!(without, vec![Family::Proration, Family::TrailingTier]);
+}
+
+#[test]
+fn the_four_model_kind_families_share_one_variant() {
+    // `tier-boundary`, `package`, `per-unit` and `flat` are the kinds' own
+    // fixtures and are therefore one variant across four families -- which is
+    // why the variant cannot simply be the family name.
+    for family in [
+        Family::TierBoundary,
+        Family::Package,
+        Family::PerUnit,
+        Family::Flat,
+    ] {
+        assert_eq!(family.variant(), Some(Variant::ModelKind), "{family:?}");
+    }
+
+    assert_eq!(
+        Family::LevelAggregation.variant(),
+        Some(Variant::LevelAggregation)
+    );
+    assert_eq!(
+        Family::SupersessionContinuity.variant(),
+        Some(Variant::SupersessionContinuity)
+    );
+    assert_eq!(Family::Reserved.variant(), Some(Variant::Reserved));
+}
