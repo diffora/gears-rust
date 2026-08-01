@@ -11,6 +11,14 @@ provenance = ["inst-rv-level", "D-53", "D-139", "T-D-25"]
 # duration - so it is money per granule, and the period charge multiplies by the
 # reservation's covered granules. Without that factor a disk allocated late in
 # the period would bill as if held all period, with no proration path to fix it.
+#
+# The row carries `tierAggregationWindow` because it is a `graduated` usage row
+# and `inst-tb-window` requires one of every tiered usage row - the bands below
+# are the on-demand ladder the remainder would be priced by, and a band set
+# without a window prices an unbounded accumulation. It touches neither assertion:
+# `capacity` never reads `Q` at all, which is the property both assertions exist
+# to pin, so the counter this window bounds is the counter this case proves is
+# not consulted. `invoice_period` matches the family's other reserved rows.
 
 [snapshot]
 model_kind              = "graduated"
@@ -21,6 +29,7 @@ aggregation_function    = "peak"
 aggregation_granularity = "hour"
 max_hold_granules       = 1
 billing_granularity     = "per_hour"
+tier_aggregation_window = "invoice_period"
 reserved_rate_minor     = 3
 reservation_flavor      = "capacity"
 

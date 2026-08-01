@@ -120,7 +120,8 @@ pub fn describe_answer(answer: &Result<PublishVerdict, EvalError>) -> String {
     }
 }
 
-/// Projects a frozen corpus snapshot onto the gear's authored row shape.
+/// Projects a frozen corpus snapshot onto the gear's authored row shape, and
+/// refuses the snapshot outright if it carries a field that shape cannot hold.
 ///
 /// The two types are field-for-field compatible by design and are still separate
 /// types: the corpus model sits behind the `corpus` feature the gear does not
@@ -128,7 +129,28 @@ pub fn describe_answer(answer: &Result<PublishVerdict, EvalError>) -> String {
 /// Slice-10 reservation pair) that are not Slice-3-owned.
 fn price_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     reject_unrepresentable(snapshot)?;
+    slice3_row(snapshot)
+}
 
+/// The **Slice-3 part** of a snapshot, projected without the
+/// unrepresentable-field gate.
+///
+/// Split out from [`price_row`] because the publish question and the row-shape
+/// question are asked of different things. A publish verdict is a statement
+/// about the whole authored row, so a snapshot carrying a field the gear cannot
+/// represent has to be declined rather than judged. The row-shape rules, by
+/// contrast, are Slice-3 rules over the Slice-3 fields, and they are perfectly
+/// answerable about the Slice-3 part of a snapshot whose remaining fields belong
+/// to a slice nobody has built — which is what
+/// `tests/corpus_snapshot_shape.rs` asks of every snapshot in the corpus,
+/// including the `proration` rows (`proration_basis`) and the `reserved` rows
+/// (the Slice-10 reservation pair).
+///
+/// # Errors
+///
+/// [`EvalError::UnrepresentableField`] for a value outside a gear enum's
+/// vocabulary, or a negative amount the money type refuses.
+pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     Ok(PriceRow {
         charge_kind: charge_kind(snapshot.charge_kind),
         model_kind: Some(snapshot.model_kind),

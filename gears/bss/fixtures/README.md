@@ -109,16 +109,70 @@ asserting a different expected content is how a generated file starts flapping.
 4. Cite the clause the case encodes in `provenance`. It is mandatory.
 5. Say **why** the expected number is what it is, in `why`. A number without a reason cannot
    be reviewed, and a green run over unreviewed numbers proves nothing.
-6. Author the **whole row**, not the delta. A publish case reads as "the only difference is
-   X" and that is what it asserts — but publish is asked of a row, and a row that would not
-   publish on an empty key does not publish on an occupied one either. Every usage row
-   carries `billingGranularity`; every tiered (`inst-tb-window`) and `package`
-   (`inst-pk-window`) usage row carries `tierAggregationWindow`. Authored short, a
-   supersession pair stops at `EVAL_POLICY_MISSING` and the guard under test is never
-   reached.
-7. Run `cargo test -p bss-fixtures -p bss-fixtures-conformance`.
+6. Author the **whole row**, not the delta — every snapshot must describe a row that would
+   actually publish. See [the rule below](#every-snapshot-is-a-publishable-row); it is
+   enforced, over every snapshot of every case.
+7. Run `cargo test -p bss-fixtures -p bss-fixtures-conformance`, and
+   `cargo test -p bss-pricing --test corpus_snapshot_shape --test corpus_publish` for the
+   two halves only the gear can answer.
 8. Regenerate the registry and commit that regeneration **on its own**:
    `cargo run -p bss-pricing --example regen_registry`
+
+## Every snapshot is a publishable row
+
+**Every `[snapshot]`, `[predecessor]` and `[successor]` in the corpus MUST describe a row
+the catalog would publish clean.** Not the row the case is *about* — every row it names.
+
+The corpus is the conformance contract: a case pins what a row costs, or what publish does
+with it, by describing the row. So a snapshot the catalog would refuse is a **specification
+of an impossible row**. It teaches two gears the arithmetic of something that can never be
+published, in the one artifact whose entire purpose is to be the agreed reading — and
+whichever gear later implements the refusal is then in disagreement with a fixture that is
+green.
+
+It also breaks cases quietly rather than loudly, in two different ways:
+
+- A **publish** case authored short stops at the first row-shape rejection, because the
+  validator runs shape before the pair. The guard the case exists to test is never reached
+  and the case passes or fails on something else entirely. Five `supersession-continuity`
+  pairs sat exactly there against `EVAL_POLICY_MISSING`, and
+  `reserved/consumption-on-level-rejected` was authored to assert D-53's
+  `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` while carrying a row that would have been
+  refused for `TIER_BANDS_GAP` first — a case that could never, even once its slice landed,
+  have tested its own rule.
+- An **evaluation** case cannot fail that way at all: no evaluator runs the publish rules,
+  so nothing anywhere looked at the rows those cases describe. Four `level-aggregation`
+  cases, `package/repeating-block-roundup` and `reserved/capacity-on-level` all pinned
+  arithmetic over rows missing the `tierAggregationWindow` their kind requires.
+
+In practice: every usage row carries `billingGranularity` (`inst-tb-window`); every tiered
+(`inst-tb-window`) and `package` (`inst-pk-window`, D-58) usage row carries
+`tierAggregationWindow`; every tiered row carries a band set starting at the origin with an
+open top (`inst-tb-first`, `inst-tb-top`); every non-`sum` row carries `max_hold_granules`
+and the D-77 granularity pairing. The full set is the gear's `price_row_rules()`, and
+reading it is cheaper than guessing.
+
+### How it is enforced, and where
+
+`gears/bss/pricing/pricing/tests/corpus_snapshot_shape.rs` runs `price_row_rules()` over
+every snapshot of every case and names the case, the side and the violation. It lives
+**gear-side** because only the gear has the rules: `bss-fixtures` is the crate a gear takes
+as a production dependency, so a rule set inside it would be the corpus grading the code it
+is supposed to constrain.
+
+The projection it uses deliberately skips the publish validator's unrepresentable-field
+gate. `proration_basis` and the Slice-10 reservation pair belong to other slices and the
+Slice-3 rules have nothing to say about them — but the Slice-3 *part* of a `proration` or
+`reserved` snapshot is still a row whose shape must hold, and excusing those two families
+would exempt eight of the corpus's twenty-seven cases from the rule.
+
+### Adding a field to make a row publish never moves a number
+
+The repair is always to the **row**, never to the assertion. If a field cannot be added
+without changing what the case asserts, that is a finding about the case: report it, and
+leave it red. `tierAggregationWindow` and `meter` are safe on every case here because the
+oracle reads neither — but that is a fact to re-check, not a licence. Re-run the oracle
+suite after every such edit and confirm every expected value still holds.
 
 ## Coverage today
 
@@ -151,6 +205,13 @@ answer rather than a disagreement.
 `reserved/consumption-on-level-rejected` is the one that carries it: it expects Slice 10's
 `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN`, and the only price-row shape that exists is Slice
 3's, which has nowhere to put `reservedRate` / `reservationFlavor`.
+
+A decline suspends the evidence; it does **not** suspend the row. That case carried neither
+tier bands nor `tierAggregationWindow`, so the day Slice 10 landed it would have gone red on
+`TIER_BANDS_GAP` — a verdict about a malformed row, read as a D-53 disagreement, in the very
+run that was supposed to test D-53. Both its rows are now whole and clean under every Slice-3
+rule, so the reservation rule is the first thing its successor can fail on. A declined case
+is a case waiting to be answered, and it has to be answerable the moment its slice arrives.
 
 It suspends **evidence**, never the assertion:
 

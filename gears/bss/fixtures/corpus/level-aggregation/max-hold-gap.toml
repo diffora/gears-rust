@@ -22,6 +22,7 @@ aggregation_function    = "time_weighted"
 aggregation_granularity = "hour"
 max_hold_granules       = 2
 billing_granularity     = "per_hour"
+tier_aggregation_window = "invoice_period"
 
   [[snapshot.bands]]
   from_qty = 0

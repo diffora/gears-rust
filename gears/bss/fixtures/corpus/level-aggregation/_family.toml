@@ -1,3 +1,21 @@
 family     = "level-aggregation"
 role       = "conformance"
 provenance = ["AC#60", "D-44", "T-D-17", "D-77"]
+
+# Every case here is a whole authored row, and every one of them is a
+# `graduated` usage row - so `inst-tb-window` requires `tierAggregationWindow`
+# on all four, exactly as it does on the `supersession-continuity` pairs. Each
+# carries `invoice_period`, the window the rest of the corpus counts against.
+#
+# It is authoring completeness, not arithmetic. These cases assert `folded_q` -
+# the output of the granule fold - and the fold is a function of the runtime
+# window, the samples, `aggregationFunction`, `aggregationGranularity` and
+# `max_hold_granules`. `tierAggregationWindow` bounds the *tier counter*, which
+# is downstream of the fold and which no assertion in this family reaches; the
+# bands are here so the row is a row, not because a band is exercised. So the
+# window cannot move a number, and it was still missing: nothing runs the
+# publish rules over an evaluation case, so four rows the catalog would have
+# refused sat here pinning the fold of a row that could not exist.
+#
+# `tests/corpus_snapshot_shape.rs` in the pricing gear is what now catches that
+# class, over every snapshot of every case.

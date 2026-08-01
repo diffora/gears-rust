@@ -5,13 +5,16 @@ provenance = ["AC#60", "PRD §17.2", "D-17"]
 
 # `volume` is legal on `usage` rows only (`inst-mk-chargekind`, D-18), so `usage`
 # is the only honest chargeKind here - and, exactly as in `graduated-band-edge`,
-# the row then names no `meter`. Same OPEN question, same non-answer: see that
-# case for the reasoning.
+# the row named no `meter`. Same question, same answer, and now closed the same
+# way: see that case for the reasoning. The two cases price the same quantity
+# over the same bands and differ only in the formula, so they name one meter -
+# `api.calls`, counted whole - and the cliff at 1000 is a cliff at 1000 calls.
 
 [snapshot]
 model_kind              = "volume"
 charge_kind             = "usage"
 currency                = "USD"
+meter                   = "api.calls"
 tier_aggregation_window = "invoice_period"
 billing_granularity     = "whole_unit"
 
