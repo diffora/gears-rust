@@ -205,13 +205,38 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 6,
-    "anchored:no-account": 17,
-    "suspicious:multi-region": 15,
+    "anchored:no-account": 16,
+    "suspicious:multi-region": 16,
     "suspicious:not-normative": 0,
     "suspicious:weak-coverage": 39,
     "covered:strong": 0,
 }
-#: Moved again 2026-08-01 (was 15 / 15 / 40, judged 55, total 76), re-pinned after
+#: Moved again 2026-08-01, second time that day (was 17 / 15 / 39, judged 54, total
+#: unchanged at 77), re-pinned after the 2026-08-01 slice review's fix wave
+#: (D-126…D-138 + eight cleanups). Four movers, each diffed per-id against the
+#: pre-wave tree (ab362b19^) and hand-checked; every one is prose movement, no
+#: threshold or selection code was touched:
+#: - `fr-price-history-export` **anchored → weak**: this is the previous pin note's
+#:   own casualty being paid back. That note recorded it falling to anchored because
+#:   "the D-125 pagination sentence added cursor/pagination vocabulary the design
+#:   states once and tersely, dropping both former accounts below 0.6". Cleanup C-6
+#:   (page cap vs the per-100-record SLO) expanded S12 `inst-he-export` and
+#:   `dod-history-export` with exactly that vocabulary, so an account clears the
+#:   threshold again and the id re-enters the judged set. The `--judge-anchored`
+#:   suggestion beside it is no longer needed.
+#: - `fr-audit-completeness` weak → multi: D-135 (audit-chain segmentation) rewrote
+#:   S5 G4 + `inst-au-tamper` + `dod-audit` and touched S1 §3.7, lifting a second
+#:   region above threshold. Stays judged.
+#: - `fr-level-aggregation` weak → multi: window re-chunking from the S3
+#:   `inst-tb-supersession-units` rewrite (D-127 scope clause + the D-129
+#:   `included_allowance` clause) around the aggregation-field list. Stays judged.
+#: - `fr-plan-retirement` multi → weak: D-128 grew the *declaration* (publish unit,
+#:   pending ref, projected lifecycle field, current revision) faster than any one
+#:   account, and scores are recall fractions of the declaration's vocabulary — the
+#:   same class the 2026-07-31 note documents. Stays judged.
+#: Net: anchored 17 → 16 (history-export leaving), multi 15 → 16 (+audit,
+#: +level-aggregation, −retirement), weak unchanged at 39, judged 54 → 55.
+#: Moved 2026-08-01 (was 15 / 15 / 40, judged 55, total 76), re-pinned after
 #: the d-wave billing-domain review (D-123…D-125 + cleanup). Three movers, each
 #: diffed per-id against the pre-wave HEAD tree and hand-checked:
 #: - `nfr-observability` (new, → anchored:no-account): a fresh PRD declaration
@@ -273,8 +298,11 @@ PINNED_TRIAGE_LEDGER = {
 #: the number the ladder exists to control, and a threshold change that quietly
 #: doubles it must read as a diff. (Pricing 52 until 2026-07-31 — the day's three
 #: review fix rounds moved the histogram, note above; +3 is document movement, not
-#: ladder drift.)
-PINNED_JUDGE_CALLS = {"pricing": 54, "ledger": 17}
+#: ladder drift. 55 → 54 on the d-wave re-pin, then back to 55 on the 2026-08-01
+#: fix-wave re-pin when C-6 repaired the terse-prose account that had cost
+#: `fr-price-history-export` its judged slot — both movements are documents, and
+#: both are itemised per-id in the notes above.)
+PINNED_JUDGE_CALLS = {"pricing": 55, "ledger": 17}
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):
