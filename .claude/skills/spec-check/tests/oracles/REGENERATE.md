@@ -70,6 +70,24 @@ lives:
    the rating half of `test_rating_and_subscriptions_report_convention_unknown…`
    became a positive full-coverage assertion for rating.
 
+7. **2026-08-01, seventh capture — after the subscriptions wave-3 review fix
+   wave** (SUB-D-20…SUB-D-26 + the direct-fix tier). Document movement only, no
+   checker change. **Live findings 5 → 2** — all three movers are the wave's
+   #24h item, hand-checked against the diff: (i) SUB-D-15
+   `propagation-uninterpretable` resolved — the citation re-shaped to the
+   resolver grammar (`S3 §4.5; S8 §4.1 registry`) and slice 08's
+   `SubscriptionRampHalted` registry row now cites SUB-D-15, so the claim
+   verifies rather than merely parsing; (ii) SUB-D-16
+   `propagation-unresolvable` resolved — the bare `SEAMS` target now reads
+   `SEAMS **SUB-C1**`; (iii) subscriptions' `P2/traceability-convention-unknown`
+   coverage statement gone — all 8 FR-bearing slices open §5 with a
+   `**Traces to**:` block, 47 FRs checked per-id, all single-owner on the first
+   pass (the same legitimate resolution as rating's sixth-capture conversion).
+   Suppressed unchanged at 68 (no pinned-debt member moved). The two remaining
+   live findings are the rating-side pair the wave did not own
+   (`decision-register-unparsed` for rating's T-D id shape; rating design/15's
+   blockless `RATED` code).
+
 The discipline is unchanged either way: a finding appearing or disappearing here
 is a real claim about the design set, and re-freezing must be a deliberate,
 separately-justified commit — never a way to make a failing change look green.

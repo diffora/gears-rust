@@ -1,8 +1,5 @@
 [Low] DECISIONS.md — P1 cannot verify propagation for gears/bss/rating/docs: DECISIONS.md yielded zero decision entries — no `#### <id> …` heading matched the recognised id shape (`D-NN`, optionally gear-prefixed, e.g. `SUB-D-01`) — 0 `**Propagated`-shaped field(s) in that register went unchecked as a result (P1/decision-register-unparsed)
 [Low] design/15-rated-output-balance-effects.md — design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention (P3/code-convention-divergent)
-[Low] DECISIONS.md:143 — SUB-D-15: propagation citation `slice 03 §4.5; slice 08 registry rows; SUB-D-09 amendment.` names nothing the resolver recognises, so the claim was not verified at all (P1/propagation-uninterpretable)
-[Low] DECISIONS.md:150 — SUB-D-16: propagation target `SEAMS` names no document the resolver can map (P1/propagation-unresolvable)
-[Low] PRD.md — P2 cannot verify requirement coverage for gears/bss/subscriptions/docs: no slice uses a recognised traceability convention (`**Traces to**:` or `This slice directly addresses:`) — 47 requirement(s) went unchecked as a result; per-id claims are not reported for this gear rather than reporting every requirement as unclaimed (P2/traceability-convention-unknown)
 
 Known debt — accepted, tracked as D-69, not new drift (68 finding(s)):
 [Medium] DECISIONS.md:179 — D-02 claims propagation into ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md, but that document never cites D-02 (P1/propagation-missing)
@@ -74,5 +71,5 @@ Known debt — accepted, tracked as D-69, not new drift (68 finding(s)):
 [Low] design/03-price-structure.md — `TIER_BANDS_OVERLAP` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
 [Low] design/07-pricewindow-linkage.md — `WINDOW_GAP` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
 
-5 finding(s)
+2 finding(s)
 68 known-debt finding(s) shown above, tracked as D-69 (accepted, not new drift)

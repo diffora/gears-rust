@@ -63,9 +63,16 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # conversion removed rating's P2/traceability-convention-unknown coverage
     # statement (43 FRs now checked per-id, all single-owner — a live finding
     # legitimately resolved, not suppressed); debt unchanged.
+    # 5/68 until the same day's SUBSCRIPTIONS wave-3 fix wave: its #24h closed
+    # the last three live subscriptions findings — SUB-D-15's citation re-shaped
+    # to the resolver grammar (and slice 08 now cites it), SUB-D-16's bare
+    # `SEAMS` target now names **SUB-C1**, and the Traces-to conversion across
+    # all 8 FR-bearing slices removed the subscriptions
+    # P2/traceability-convention-unknown coverage statement (47 FRs checked
+    # per-id, single-owner on first pass); debt unchanged.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
-    assert len(payload["findings"]) == 5
+    assert len(payload["findings"]) == 2
     assert payload["known_debt_suppressed"] == 68
     assert payload["known_debt_tracked_as"] == "D-69"
 

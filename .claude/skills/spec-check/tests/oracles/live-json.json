@@ -13,27 +13,6 @@
       "file": "design/15-rated-output-balance-effects.md",
       "line": null,
       "message": "design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention"
-    },
-    {
-      "invariant": "P1/propagation-uninterpretable",
-      "severity": "low",
-      "file": "DECISIONS.md",
-      "line": 143,
-      "message": "SUB-D-15: propagation citation `slice 03 §4.5; slice 08 registry rows; SUB-D-09 amendment.` names nothing the resolver recognises, so the claim was not verified at all"
-    },
-    {
-      "invariant": "P1/propagation-unresolvable",
-      "severity": "low",
-      "file": "DECISIONS.md",
-      "line": 150,
-      "message": "SUB-D-16: propagation target `SEAMS` names no document the resolver can map"
-    },
-    {
-      "invariant": "P2/traceability-convention-unknown",
-      "severity": "low",
-      "file": "PRD.md",
-      "line": null,
-      "message": "P2 cannot verify requirement coverage for gears/bss/subscriptions/docs: no slice uses a recognised traceability convention (`**Traces to**:` or `This slice directly addresses:`) — 47 requirement(s) went unchecked as a result; per-id claims are not reported for this gear rather than reporting every requirement as unclaimed"
     }
   ],
   "known_debt_suppressed": 68,

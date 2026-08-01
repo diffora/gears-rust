@@ -181,19 +181,19 @@ def test_flags_a_gear_using_no_known_traceability_convention_instead_of_per_id_n
     assert "2 requirement" in findings[0].message
 
 
-def test_subscriptions_reports_convention_unknown_not_per_id_noise():
-    # The exact unchecked count is asserted — 47 for subscriptions, hand-counted
-    # from its PRD's `**ID**:` rows. Rating left this test on 2026-08-01: the
-    # billing-domain review's #22 converted all 16 rating slices to per-id
-    # `**Traces to**:` blocks (43 FRs, single-owner), so rating is now covered by
-    # the positive sweep below instead of the coverage statement.
-    for gear, unchecked in [("subscriptions", 47)]:
-        corpus = Corpus.load(str(REPO_ROOT / "gears/bss" / gear / "docs"))
-        findings = check(corpus)
-        unknown = [f for f in findings if f.invariant == "P2/traceability-convention-unknown"]
-        assert len(unknown) == 1, gear
-        assert not [f for f in findings if f.invariant == "P2/fr-unclaimed"], gear
-        assert "{} requirement".format(unchecked) in unknown[0].message, gear
+def test_subscriptions_is_fully_claimed_after_the_2026_08_01_conversion():
+    # Rating left the convention-unknown assertion on 2026-08-01 (its #22
+    # conversion), and subscriptions followed the same day: the wave-3 fix wave
+    # (#24h) added `**Traces to**:` blocks to all 8 FR-bearing slices — every
+    # one of its 47 PRD FRs (hand-counted from the `**ID**:` rows) must now be
+    # claimed by exactly one slice, the convention statement gone, the per-id
+    # sweep clean. No live gear reports convention-unknown any more; the
+    # negative shape stays covered by the synthetic-corpus tests below.
+    corpus = Corpus.load(str(REPO_ROOT / "gears/bss/subscriptions/docs"))
+    findings = check(corpus)
+    for invariant in ("P2/traceability-convention-unknown", "P2/fr-unclaimed",
+                      "P2/fr-multiply-claimed", "P2/fr-unknown-id"):
+        assert not [f for f in findings if f.invariant == invariant], invariant
 
 
 def test_rating_is_fully_claimed_after_the_2026_08_01_conversion():

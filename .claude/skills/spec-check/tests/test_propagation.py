@@ -121,10 +121,13 @@ def test_every_other_live_p1_finding_class_matches_its_exact_expected_set():
     # tuples (D-49 "§15 rows ×5.", D-66 "rating ×4 files"): D-49's field now names
     # PRD, and D-66 cites its cross-gear targets as explicit
     # `../../<gear>/docs/<file>.md` paths, the form `resolve` learned that day.
+    # Until 2026-08-01 subscriptions also contributed SUB-D-15
+    # (`propagation-uninterpretable`) and SUB-D-16 (`propagation-unresolvable`):
+    # the wave-3 fix wave (#24h) re-shaped both citations to the resolver
+    # grammar (`S3 §4.5…` / `SEAMS **SUB-C1**`) and slice 08's registry row now
+    # cites SUB-D-15, so both resolve and verify.
     expected = {
         ("rating", "P1/decision-register-unparsed", ""),
-        ("subscriptions", "P1/propagation-uninterpretable", "SUB-D-15"),
-        ("subscriptions", "P1/propagation-unresolvable", "SUB-D-16"),
     }
     assert sorted(actual - expected) == [] and sorted(expected - actual) == []
 
