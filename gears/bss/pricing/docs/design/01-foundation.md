@@ -247,6 +247,11 @@ types, referenced (never redefined) by slices. **Problem responses (RFC 9457):**
 `DUPLICATE_SCOPE_KEY` (409 — canonical
 scope-key uniqueness), `STALE_VERSION` (409 — ETag/row-version conflict),
 `IDEMPOTENCY_PAYLOAD_MISMATCH` (409 — same key, different payload),
+`LIFECYCLE_FORBIDDEN` (422 — a transition the state machine does not permit:
+mutating a published row's content, re-publishing a retired plan, superseding a
+grandfathered row. Named 2026-08-02 while implementing §4.3 — the transitions
+were normative from the start and the refusal had no code, and a refusal a
+consumer cannot discriminate is one it must parse prose to understand),
 `ROUNDING_POLICY_UNRESOLVED` (422 — a published row resolves neither a row-level
 `rounding_policy_ref` nor a tenant default; the §17.4 no-implicit-rounding rule, registered
 into the pipeline by the Foundation itself), the shared money checks (§2.2) —
@@ -459,7 +464,11 @@ charge, evaluates **no** overlay, and performs **no** FX.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-normative-immutability`
 
-Published `pricing_price` rows are **append-only history**: `REVOKE` + a trigger with a
+Published `pricing_price` rows are **append-only history**. A transition this section does not
+sanction is refused with `LIFECYCLE_FORBIDDEN` (§3.3) — mutating a published row's content,
+re-publishing a retired plan, superseding a grandfathered row — and the refusal is enforced
+twice, by the validation pipeline and by the physical guard below, because the engine is not
+the only thing that can reach the table. `REVOKE` + a trigger with a
 **column whitelist** reject any UPDATE except the state-machine `lifecycle_state` transitions
 (`published → superseded`) and monotonic `grandfather_until` tightening — price/scope/model
 columns are immutable and DELETE is always rejected (§3.7); only never-published `draft` rows
