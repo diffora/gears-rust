@@ -297,3 +297,32 @@ fn an_out_of_order_set_with_a_real_gap_still_fails() {
     assert!(!report.is_publishable());
     assert!(codes(&report).contains(&TIER_BANDS_GAP));
 }
+
+#[test]
+fn a_rise_out_of_a_free_opening_band_does_not_warn() {
+    // "N included, then priced" is the canonical allowance shape and the one the
+    // D-45 compile projects. Warning on it would fire on nearly every allowance
+    // row, and a channel that is noisy by default is a channel authors stop
+    // reading.
+    let row = tiered(vec![
+        TierBand::closed(0, 100, minor(0)),
+        TierBand::open(100, minor(5)),
+    ]);
+
+    assert!(findings(&BandGeometry, &row).warnings.is_empty());
+}
+
+#[test]
+fn a_rise_out_of_a_priced_band_still_warns() {
+    // The exemption is narrow on purpose: it is about a free opening band, not
+    // about every ladder whose first step is cheap.
+    let row = tiered(vec![
+        TierBand::closed(0, 100, minor(1)),
+        TierBand::open(100, minor(5)),
+    ]);
+
+    let report = findings(&BandGeometry, &row);
+
+    assert_eq!(report.warnings.len(), 1);
+    assert_eq!(report.warnings[0].code, TIER_BAND_PRICE_INCREASE);
+}

@@ -58,7 +58,16 @@ impl ValidationRule<PriceRow> for BandGeometry {
         ordered.sort_by_key(|band| band.from_qty);
         for (previous, next) in ordered.iter().zip(ordered.iter().skip(1)) {
             check_adjacency(subject, *previous, *next, report);
-            if next.unit_price_minor > previous.unit_price_minor {
+            // A rise out of a free opening band is not the pattern this
+            // advisory is about. "N included, then priced" is how an allowance
+            // is authored by hand and is the shape the D-45 compile projects,
+            // so warning on it would fire on nearly every allowance row and
+            // teach authors that the warnings channel is noise. The rule's
+            // subject is a ladder that gets more expensive as you buy more, and
+            // free-then-priced is not that.
+            let out_of_a_free_opening_band =
+                previous.from_qty == 0 && previous.unit_price_minor.get() == 0;
+            if next.unit_price_minor > previous.unit_price_minor && !out_of_a_free_opening_band {
                 report.warn(
                     TIER_BAND_PRICE_INCREASE,
                     subject.subject(),
