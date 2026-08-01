@@ -114,16 +114,19 @@ fn a_zero_width_band_fails_publish() {
 }
 
 #[test]
-fn bands_authored_out_of_order_read_as_an_overlap() {
-    // Under `[from, to)` a band starting at or below its predecessor's floor
-    // also starts below its predecessor's top, so ordering needs no separate
-    // check — and reporting it as an overlap is the truth about the set.
+fn a_band_below_an_open_top_authored_last_is_not_an_overlap() {
+    // This test previously pinned the opposite reading, and it was wrong: the
+    // set below is a contiguous ladder written bottom-last. The persisted band
+    // table is keyed (price_id, from_qty) with no ordinal, so authoring order
+    // does not survive the store, and a verdict that depended on it would
+    // differ between the save-time pre-check and the identical re-run inside
+    // the publish commit.
     let row = tiered(vec![
         TierBand::open(1_000, minor(5)),
         TierBand::closed(0, 1_000, minor(10)),
     ]);
 
-    assert!(codes(&findings(&BandGeometry, &row)).contains(&TIER_BANDS_OVERLAP));
+    assert!(findings(&BandGeometry, &row).is_publishable());
 }
 
 #[test]
@@ -264,4 +267,33 @@ fn a_package_rows_missing_window_is_reported_once_by_the_package_rule() {
     row.package_price_minor = Some(minor(500));
 
     assert!(findings(&UsageEvaluationPolicy, &row).violations.is_empty());
+}
+
+#[test]
+fn a_band_set_authored_out_of_order_is_judged_on_its_geometry() {
+    // The persisted band table is keyed (price_id, from_qty) and carries no
+    // ordinal, so authoring order does not survive the store. Judging on it
+    // would let this row pass at save and fail the identical re-validation
+    // inside the publish commit — a verdict that depends on how the author
+    // happened to type it.
+    let row = tiered(vec![
+        TierBand::open(1_000, minor(6)),
+        TierBand::closed(0, 1_000, minor(10)),
+    ]);
+
+    assert!(findings(&BandGeometry, &row).is_publishable());
+}
+
+#[test]
+fn an_out_of_order_set_with_a_real_gap_still_fails() {
+    // Sorting must not launder a broken set into a whole one.
+    let row = tiered(vec![
+        TierBand::open(1_500, minor(6)),
+        TierBand::closed(0, 1_000, minor(10)),
+    ]);
+
+    let report = findings(&BandGeometry, &row);
+
+    assert!(!report.is_publishable());
+    assert!(codes(&report).contains(&TIER_BANDS_GAP));
 }

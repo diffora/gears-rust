@@ -23,7 +23,7 @@ use std::fmt;
 use toolkit_macros::domain_model;
 
 /// A blocking rule failure. `code` is the machine-readable discriminator the
-/// design set names (`TIER_BAND_OVERLAP`, `SUPERSESSION_UNIT_MISMATCH`, …);
+/// design set names (`TIER_BANDS_OVERLAP`, `SUPERSESSION_UNIT_MISMATCH`, …);
 /// `subject` locates it for the author (a price id, a phase id, a scope key).
 #[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]

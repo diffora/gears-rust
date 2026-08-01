@@ -108,7 +108,8 @@ impl PublishValidator for EchoesTheCorpus {
     }
 }
 
-/// Declines every case it is handed.
+/// Declines every case it is handed, for the one sanctioned reason: it cannot
+/// hold the row at all.
 struct CannotAssess;
 
 impl PublishValidator for CannotAssess {
@@ -117,7 +118,24 @@ impl PublishValidator for CannotAssess {
         _predecessor: &Snapshot,
         _successor: &Snapshot,
     ) -> Result<PublishVerdict, EvalError> {
-        Err(EvalError::MissingField("everything"))
+        Err(EvalError::UnrepresentableField {
+            field: "everything",
+            value: "this subject holds no row shape at all".to_owned(),
+        })
+    }
+}
+
+/// Fails every case for a reason that is not a decline: it can hold the row, it
+/// just could not process this one.
+struct FailsForAnUnrelatedReason;
+
+impl PublishValidator for FailsForAnUnrelatedReason {
+    fn validate(
+        &self,
+        _predecessor: &Snapshot,
+        _successor: &Snapshot,
+    ) -> Result<PublishVerdict, EvalError> {
+        Err(EvalError::MissingField("dimension_key"))
     }
 }
 
@@ -282,4 +300,26 @@ fn the_unbuilt_families_are_declined_not_green() {
     let f = Family::TrailingTier;
     assert!(report.declined.contains(&f), "{f:?} must be declined");
     assert!(!report.is_green_for(f), "{f:?} must not be green");
+}
+
+#[test]
+fn only_an_unrepresentable_row_buys_the_decline() {
+    // The hole this closes: a subject that has built the declined slice, decided
+    // its rule the opposite way, and then trips on any unrelated defect in the
+    // same row would -- if every error counted as a decline -- stay green
+    // forever. Its disagreement is never answered, so the staleness check, which
+    // fires only on an `Ok`, never fires either. Declining is "I cannot hold this
+    // row"; anything else is a fault and is counted as one.
+    let report = run_publish_suite(&FailsForAnUnrelatedReason, &corpus());
+
+    assert_eq!(
+        report.declined().count(),
+        0,
+        "an unrelated error is not a decline"
+    );
+    assert_eq!(
+        report.failures().count(),
+        report.outcomes.len(),
+        "every case it could not answer is a failure, declared undecidable or not"
+    );
 }

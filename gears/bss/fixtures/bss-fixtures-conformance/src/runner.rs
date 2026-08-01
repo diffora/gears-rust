@@ -142,14 +142,26 @@ impl PublishOutcome {
         matches!(&self.actual, Ok(verdict) if *verdict == self.expected)
     }
 
-    /// The corpus said nothing could answer this yet, and the subject did not.
+    /// The corpus said nothing could answer this yet, and the subject declined
+    /// it **for the sanctioned reason**.
     ///
     /// The anticipated state — the `trailing-tier` reading at case granularity.
     /// It is not a pass and never earns a flag; it is recorded so that absent
     /// evidence stays visible instead of reading as either success or fault.
+    ///
+    /// Only [`EvalError::UnrepresentableField`] buys the suspension, and the
+    /// narrowness is the point. Accepting any error at all would let a subject
+    /// hold a live disagreement with the case and stay green forever: build the
+    /// declined slice, decide the case's rule the opposite way, and then fail on
+    /// any unrelated defect in the same row — the disagreement is never
+    /// answered, so the staleness check (which fires only on an `Ok`) never
+    /// fires either, and the failure is filed as an anticipated decline. The
+    /// only honest decline is "I cannot hold this row"; "I could not process it"
+    /// is a fault and is reported as one.
     #[must_use]
     pub fn anticipated_decline(&self) -> bool {
-        self.declined_until.is_some() && self.actual.is_err()
+        self.declined_until.is_some()
+            && matches!(&self.actual, Err(EvalError::UnrepresentableField { .. }))
     }
 
     /// The corpus said nothing could answer this yet, and something did.

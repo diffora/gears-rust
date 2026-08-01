@@ -73,13 +73,13 @@ fn the_validation_envelope_carries_every_blocking_violation() {
     // One round trip must be enough to remediate a plan: if the envelope
     // truncated, an author would publish N times to discover N problems.
     let mut report = ValidationReport::default();
-    report.violate("TIER_BAND_OVERLAP", "price-1", "bands 2 and 3 overlap");
+    report.violate("TIER_BANDS_OVERLAP", "price-1", "bands 2 and 3 overlap");
     report.violate("TIER_TOP_BAND_CLOSED", "price-1", "top band must be open");
     report.warn("ADVISORY", "price-1", "not blocking");
 
     let body = rendered(DomainError::ValidationFailed(report));
 
-    assert!(body.contains("TIER_BAND_OVERLAP"));
+    assert!(body.contains("TIER_BANDS_OVERLAP"));
     assert!(body.contains("TIER_TOP_BAND_CLOSED"));
     // The advisory rides the success path's report, never the error envelope.
     assert!(!body.contains("ADVISORY"));

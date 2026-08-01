@@ -23,8 +23,15 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 /// `inst-pk-fields`), but a malformed set is still malformed, and reporting its
 /// geometry in the same pass is what lets the author fix both at once.
 ///
-/// The ascending requirement needs no separate check: under `[from, to)` a band
-/// that starts at or below its predecessor's start also starts below its
+/// Geometry is judged over the band set **sorted by `from_qty`**, not over the
+/// order the author happened to write. The persisted band table is keyed
+/// `(price_id, from_qty)` and carries no ordinal, so authoring order does not
+/// survive a round-trip through the store: judging on it would let one row
+/// validate at save and fail the identical re-validation at publish, which is
+/// the one thing the pre-check and the commit-time re-run must never do.
+///
+/// The ascending requirement then needs no separate check: under `[from, to)` a
+/// band that starts at or below its predecessor's start also starts below its
 /// predecessor's end, which is an overlap.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]
@@ -47,7 +54,9 @@ impl ValidationRule<PriceRow> for BandGeometry {
                 );
             }
         }
-        for (previous, next) in subject.bands.iter().zip(subject.bands.iter().skip(1)) {
+        let mut ordered = subject.bands.clone();
+        ordered.sort_by_key(|band| band.from_qty);
+        for (previous, next) in ordered.iter().zip(ordered.iter().skip(1)) {
             check_adjacency(subject, *previous, *next, report);
             if next.unit_price_minor > previous.unit_price_minor {
                 report.warn(
