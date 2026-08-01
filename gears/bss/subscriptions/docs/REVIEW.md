@@ -49,6 +49,12 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
 > resolved the same day as SUB-D-19. Running tally after the sync: **15 fixed / 1 closed / 22 open** of 38.
 > When a decision closes a finding, update both the finding's Status line and the theme list above.
 
+> **Wave 3 (2026-08-01).** The billing-domain + cross-gear + feature-interactions review is recorded in
+> [`reviews/2026-08-01-wave3-billing-domain-review.md`](reviews/2026-08-01-wave3-billing-domain-review.md)
+> — 24 items (19 High, 5 Cleanup, 2 unnumbered hardening notes), **no Blocking**; fix wave pending.
+> New findings are numbered there, not seeded as F-xx entries here; its item 24(j) flags this file's
+> running tally (15 fixed claimed vs 13 `Status: fixed`) and F-05-2 for correction in the fix wave.
+
 ---
 
 ## Slice 01 — Lifecycle Foundation
