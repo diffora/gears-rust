@@ -27,6 +27,7 @@ use bss_fixtures::{ModelKind, Registry};
 use tracing::error;
 
 use crate::domain::error::DomainError;
+use crate::domain::price_row::model_kind_wire;
 
 /// The publish-time conformance gate over a loaded [`Registry`].
 ///
@@ -86,7 +87,7 @@ impl FixtureGate {
         ModelKind::ALL
             .into_iter()
             .filter(|kind| self.registry.gate_open_for(*kind))
-            .map(wire_name)
+            .map(model_kind_wire)
             .collect()
     }
 
@@ -104,25 +105,8 @@ impl FixtureGate {
         }
         Err(DomainError::FixtureMissing(format!(
             "model kind `{}` is not gated by a green joint conformance fixture",
-            wire_name(kind)
+            model_kind_wire(kind)
         )))
-    }
-}
-
-/// The corpus spelling of a kind.
-///
-/// The registry writes kinds in `snake_case`, and the refusal an operator reads
-/// has to be greppable against that file — `PerUnit` is not a string that
-/// appears in `registry.toml`. Exhaustive on purpose: a sixth kind cannot be
-/// added to the enum without this match being extended, which is the same rule
-/// the corpus enforces on itself for family coverage.
-const fn wire_name(kind: ModelKind) -> &'static str {
-    match kind {
-        ModelKind::Flat => "flat",
-        ModelKind::PerUnit => "per_unit",
-        ModelKind::Graduated => "graduated",
-        ModelKind::Volume => "volume",
-        ModelKind::Package => "package",
     }
 }
 
