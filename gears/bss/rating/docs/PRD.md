@@ -913,7 +913,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 
 **Direction**: required from Subscriptions
 
-**Protocol/Format**: active plan phase (`phase_id`) at `t`; `priceEligibility` inputs (`activatedAt`, bound `cohort` via the pinned price id); `quantitySource` seat count for `per_unit`; the plan-change `(changeEffectiveAt, changeMode)` policy (Design).
+**Protocol/Format**: active plan phase (`phase_id`) at `t`; `priceEligibility` inputs (`activatedAt`, bound `cohort` via the pinned price id); `quantitySource` seat count for `per_unit`; the plan-change `(changeEffectiveAt, changeMode)` policy (Design); **the period-fact stream** — `BillableItemCreated(kind=recurring)` per `(subscriptionId, billing period, lineKey)`, money-free, carrying the per-component traceability tuple + `pricingSnapshotRef` + suspended interval(s) with the suspension-billing posture + the period-start `payerTenantId` + the `collectionPaused` marker — consumed as the **synthesis trigger for every period-driven unit** (T-D-33, 2026-08-01; this gear never derives a recurring period itself).
 
 **Compatibility**: Rating consumes — never decides — the change mode; the `(currency, region)` binding is frozen by Subscriptions into `pricingSnapshotRef` at activation.
 
