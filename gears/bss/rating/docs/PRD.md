@@ -973,7 +973,7 @@ Explicit dispositions for domains not owned by this PRD (no silent omissions):
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-rating-usecase-finance-simulation`
 
-> **Deferred to Follow-on (T-D-32, 2026-08-01 — flagged for veto).** No design slice claims
+> **Deferred to Follow-on (T-D-32, 2026-08-01 — confirmed by the product owner 2026-08-01).** No design slice claims
 > this use case, and evaluating a *candidate* (unpublished) `PriceWindow` requires a draft
 > read the pin discipline forbids (`design/11` §4.2). A simulation surface is a named future
 > increment with its own draft-read carve-out; the partner-overlay use case's "simulate
