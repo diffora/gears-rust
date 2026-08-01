@@ -181,7 +181,7 @@
 
 ## Decisions register (to close before Design lock)
 
-**Resolved on this gear (autonomous, flagged for veto — [`DECISIONS.md`](./DECISIONS.md)):**
+**Resolved on this gear (autonomous; ALL 26 CONFIRMED per-item 2026-08-01 — the gear's first veto round; [`DECISIONS.md`](./DECISIONS.md)):**
 - **SUB-D-01** — scheduled lifecycle intents (`cancelMode`, `resumeAt`; pending intents suppress renewal/next-term recurring). Seams SUB-C2, SUB-B2.
 - **SUB-D-02** — `updateQuantity` first-class transition with the change envelope; up/down asymmetry. Seams SUB-R3, SUB-P1.
 - **SUB-D-03** — `collectionPaused` posture on `active`. Seam SUB-B2.

@@ -7,47 +7,53 @@ Decision IDs are `SUB-D-NN`. Autonomous decisions follow the pricing-gear patter
 the docs immediately, **flagged for veto** until Product/Architecture confirms. Severity:
 H (high — commercial/model shape), M (medium), L (low).
 
-> **Confirmation status (2026-08-01): none of SUB-D-01…26 has been confirmed — all 26 still carry the
-> veto flag.** The pricing gear closed its veto batch on 2026-07-28 (D-23/D-34/D-39/D-40/D-41/D-43
-> confirmed by the product owner) and rating carries its own flags, but this gear has never been
-> included in a confirmation round. Five of the flagged items are severity **[H]** and are load-bearing
-> for everything built on top: **SUB-D-06** (the immutable `orderingTenantId` — the partition and
-> ordering key shared with rating), **SUB-D-07** (the money-free recurring split), **SUB-D-19** (the
-> per-component recurring key), **SUB-D-20** (as-of resolution for late cuts), and **SUB-D-21** (the
-> `lineKey` identity + emitter completeness). Until they are confirmed, the gear's foundations are
-> formally provisional — worth putting on the next decision round rather than discovering at
-> implementation.
+> **Confirmation status (2026-08-01, veto round — the gear's first): ALL of SUB-D-01…26 CONFIRMED
+> per-item by the product owner.** The round ratified the five load-bearing **[H]** items —
+> **SUB-D-06** (the immutable `orderingTenantId`), **SUB-D-07** (the money-free recurring split,
+> which is also this gear's ratified position in the rating SB1 recurring-WHEN conflict),
+> **SUB-D-19** (the per-component key), **SUB-D-20** (as-of resolution for late cuts), **SUB-D-21**
+> (`lineKey` identity + emitter completeness) — the new M batch SUB-D-22…25 (incl. the amount-less
+> one-time lane valued by Billing, and the never-ETF reason set with `nonpayment_exhausted` in it),
+> **SUB-D-26 as decided** (the cohort does not carry across *any* cancel+new class — the open
+> Product question is answered: monthly→annual upsell loses protection, disclosed), the legacy
+> M batch SUB-D-01…05/08…18, and the numeric defaults as a set (7d grace; 90d dwell / draft-TTL /
+> cumulative pause-per-term; 30/14/7/1 notices). Inline "flagged for veto" annotations in the
+> decision bodies and slices are historical (accurate as of their decision dates); this note and
+> the Status column govern. Joint qualifiers stay owed where noted: SB1 (rating retires or
+> subordinates its period tick), the SUB-R6 `lineKey` fixture, SUB-P6 contract fields, SUB-P9
+> anchor adoption, and the SUB-B7/B8 obligations on the unauthored Billing gear. Nothing in this
+> gear awaits veto.
 
 ## Status board
 
 | ID | Sev | Decision | Status |
 |----|-----|----------|--------|
-| SUB-D-01 | M | Scheduled lifecycle intents: `cancelMode { immediate, end_of_term, at(date) }` + `resumeAt`, pending intents on the aggregate | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-02 | M | `updateQuantity` as a first-class transition with the plan-change envelope; increases immediate, decreases next-cycle by default | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-03 | M | Billing-only pause = `collectionPaused` posture on `active` (subscription attribute, collection-scoped) | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-04 | M | Ramps: Contracts authors the committed schedule; Subscriptions executes generated scheduled intents; no native schedule aggregate | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-05 | M | Activation date trio (booking / service / acceptance) as attributes + events; no new statuses | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-06 | H | Ordering tenant pinned at creation: transfer rebinds commercial axes, never the ordering/partition key | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-07 | H | Recurring split: Subscriptions emits a money-free period fact; rating prices the recurring line; Billing posts | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-08 | M | Mutation-type inventory completed: `renew`, `unschedule`, `pauseCollection`/`resumeCollection`, `confirmAcceptance`, `extendTrial` | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-09 | M | Secondary producer-event inventory named in design (intents, renewal/grace, notices, pause, quantity, conversion, quota) | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-10 | M | Entitlement check surface: bounded-staleness degraded mode (last-known-good ≤ budget, then fail-closed) | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-11 | M | `draft → cancelled` (void) edge added; draft is exitable without activation | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-12 | M | `collectionPaused` suspends renewal payment pre-check + grace entry for in-window renewals (term extension continues) | **DECIDED (autonomous) 2026-07-15 · flagged for veto** |
-| SUB-D-13 | M | Term boundaries always resolve: `autoRenew = false` ends by a system-derived end-of-term `cancel` (`term_expired`); payment resolution after a grace-driven suspension backdates the new term to the old term end (anchor sequence preserved) | **DECIDED (autonomous) 2026-07-28 · flagged for veto** |
-| SUB-D-14 | M | Renewal snapshot-ref re-resolution is **eligibility-first** (amended by the 2026-07-28 billing pass): non-grandfathered re-binds to the current row each renewal; grandfathered keeps its pinned generation (cohort carried forward) until `grandfatherUntil` passes — re-bind then fires at the next renewal (`EligibilityExpirySignal`, SUB-P6) | **DECIDED (autonomous) 2026-07-28, amended same day · flagged for veto** |
-| SUB-D-15 | M | A manual `changePlan`/`updateQuantity` mid-ramp supersedes the remaining Contract-authored steps (voided + Contracts signalled); operator intent wins | **DECIDED (autonomous) 2026-07-28 · flagged for veto** |
-| SUB-D-16 | M | Nonpayment `suspended` dwell: platform default 90 days (tenant-configurable; Contract ladder overrides), **resolved + snapshotted at suspension** (evaluated deadline — later config changes never move an in-flight one) → system `cancel` (reason `nonpayment_exhausted`); §4.3b revival bounded by the dwell | **DECIDED (autonomous) 2026-07-28 · flagged for veto** |
-| SUB-D-17 | M | Renewal price-change notice input: a pricing-sourced flag (scheduled supersession / `grandfatherUntil` expiry at the renewal instant) arms the 30-day notice as a commercial notice; no money computed here | **DECIDED (autonomous) 2026-07-28 · flagged for veto** |
-| SUB-D-18 | M | Mid-term cancellation money path: the in-flight period fact stands; ETF/refund/credit = Contracts-defined, Billing-materialised from `SubscriptionCancelled` (instant + mode + reason + contract ref); this gear computes no money | **DECIDED (autonomous) 2026-07-28 · flagged for veto** |
-| SUB-D-19 | H | Recurring period fact is **per component**: key `(subscriptionId, billing period, lineKey)` with a per-component traceability tuple — aligns with rating's period-driven unit key; one fact per period could not represent plan + add-ons (closes REVIEW F-08-1) | **DECIDED (autonomous) 2026-07-28 · flagged for veto** |
-| SUB-D-20 | H | A cut resolves **as of what it describes, never as of when it runs**: components enumerated over the period (effective-dated), `payerTenantId` = the payer in force at period start, the §4.3b revival's snapshot re-resolution evaluated as of the backdated term start; a conversion-charge suspension revives without a term-extension step (the term is already in force) | **DECIDED (autonomous) 2026-08-01 · flagged for veto** |
-| SUB-D-21 | H | `lineKey` = the component **interval** (`plan#n` / `addon:{addOnId}#n`, lifetime interval ordinal); one fact per interval overlapping the period; an interval opened mid-period gets a targeted cut in its opening commit; rating derives coverage from the effective-dated read model (early-closed intervals under-cover, never overcharge); terminal-before-cut periods still cut for the served stretch; trial-phase periods cut normally; the quota-cycle reset re-keys to the period | **DECIDED (autonomous) 2026-08-01 · flagged for veto** |
-| SUB-D-22 | M | Dwell deadline lifecycle: voided by payment resolution (the §4.3b signal) or any committed exit from `suspended`; re-resolved from the acquiring payer's ladder on transfer (anchored at the original suspension); a Payments dispute on the blocking charge holds the clock; the terminal cancel is re-derived daily and its deprovision leg is a no-op against already-deprovisioned resources | **DECIDED (autonomous) 2026-08-01 · flagged for veto** |
-| SUB-D-23 | M | Firing-failure taxonomy gains a third class: **parked (state-precondition)** — the firing deadline is suspended while a named aggregate state blocks the firing and re-arms on the unblocking commit; window-end `resumeCollection` and boundary `convertTrial` against `suspended` are the canonical members | **DECIDED (autonomous) 2026-08-01 · flagged for veto** |
-| SUB-D-24 | M | One-time/setup charge lane (T-D-18 adoption formalised): this gear emits an **amount-less** `BillableItemCreated(kind=one_time)` at the qualifying instant, idempotent per `(subscriptionId, priceId)` for the subscription lifetime; **Billing values it from the frozen `pricingSnapshotRef`** (new seam SUB-B8) — no money computed here | **DECIDED (autonomous) 2026-08-01 · flagged for veto** |
-| SUB-D-25 | M | ETF path is reason-aware: only `customer`/`operator` cancels are early-termination class; `term_expired`, `nonpayment_exhausted`, `saga_superseded` never derive an ETF; `SubscriptionCancelled` additionally carries the current term window + billing-period identity as Billing's join key | **DECIDED (autonomous) 2026-08-01 · flagged for veto** |
-| SUB-D-26 | M | The grandfathered cohort does **not** carry across a cancel+new (`supersedesSubscriptionId`) pair — the successor is a fresh purchase gate; the loss of price protection MUST be disclosed on the change preview before execution (same doctrine as credit-forfeiture disclosure) | **DECIDED (autonomous) 2026-08-01 · flagged for veto** |
+| SUB-D-01 | M | Scheduled lifecycle intents: `cancelMode { immediate, end_of_term, at(date) }` + `resumeAt`, pending intents on the aggregate | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-02 | M | `updateQuantity` as a first-class transition with the plan-change envelope; increases immediate, decreases next-cycle by default | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-03 | M | Billing-only pause = `collectionPaused` posture on `active` (subscription attribute, collection-scoped) | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-04 | M | Ramps: Contracts authors the committed schedule; Subscriptions executes generated scheduled intents; no native schedule aggregate | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-05 | M | Activation date trio (booking / service / acceptance) as attributes + events; no new statuses | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-06 | H | Ordering tenant pinned at creation: transfer rebinds commercial axes, never the ordering/partition key | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-07 | H | Recurring split: Subscriptions emits a money-free period fact; rating prices the recurring line; Billing posts | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-08 | M | Mutation-type inventory completed: `renew`, `unschedule`, `pauseCollection`/`resumeCollection`, `confirmAcceptance`, `extendTrial` | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-09 | M | Secondary producer-event inventory named in design (intents, renewal/grace, notices, pause, quantity, conversion, quota) | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-10 | M | Entitlement check surface: bounded-staleness degraded mode (last-known-good ≤ budget, then fail-closed) | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-11 | M | `draft → cancelled` (void) edge added; draft is exitable without activation | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-12 | M | `collectionPaused` suspends renewal payment pre-check + grace entry for in-window renewals (term extension continues) | **DECIDED (autonomous) 2026-07-15 · CONFIRMED 2026-08-01** |
+| SUB-D-13 | M | Term boundaries always resolve: `autoRenew = false` ends by a system-derived end-of-term `cancel` (`term_expired`); payment resolution after a grace-driven suspension backdates the new term to the old term end (anchor sequence preserved) | **DECIDED (autonomous) 2026-07-28 · CONFIRMED 2026-08-01** |
+| SUB-D-14 | M | Renewal snapshot-ref re-resolution is **eligibility-first** (amended by the 2026-07-28 billing pass): non-grandfathered re-binds to the current row each renewal; grandfathered keeps its pinned generation (cohort carried forward) until `grandfatherUntil` passes — re-bind then fires at the next renewal (`EligibilityExpirySignal`, SUB-P6) | **DECIDED (autonomous) 2026-07-28, amended same day · CONFIRMED 2026-08-01** |
+| SUB-D-15 | M | A manual `changePlan`/`updateQuantity` mid-ramp supersedes the remaining Contract-authored steps (voided + Contracts signalled); operator intent wins | **DECIDED (autonomous) 2026-07-28 · CONFIRMED 2026-08-01** |
+| SUB-D-16 | M | Nonpayment `suspended` dwell: platform default 90 days (tenant-configurable; Contract ladder overrides), **resolved + snapshotted at suspension** (evaluated deadline — later config changes never move an in-flight one) → system `cancel` (reason `nonpayment_exhausted`); §4.3b revival bounded by the dwell | **DECIDED (autonomous) 2026-07-28 · CONFIRMED 2026-08-01** |
+| SUB-D-17 | M | Renewal price-change notice input: a pricing-sourced flag (scheduled supersession / `grandfatherUntil` expiry at the renewal instant) arms the 30-day notice as a commercial notice; no money computed here | **DECIDED (autonomous) 2026-07-28 · CONFIRMED 2026-08-01** |
+| SUB-D-18 | M | Mid-term cancellation money path: the in-flight period fact stands; ETF/refund/credit = Contracts-defined, Billing-materialised from `SubscriptionCancelled` (instant + mode + reason + contract ref); this gear computes no money | **DECIDED (autonomous) 2026-07-28 · CONFIRMED 2026-08-01** |
+| SUB-D-19 | H | Recurring period fact is **per component**: key `(subscriptionId, billing period, lineKey)` with a per-component traceability tuple — aligns with rating's period-driven unit key; one fact per period could not represent plan + add-ons (closes REVIEW F-08-1) | **DECIDED (autonomous) 2026-07-28 · CONFIRMED 2026-08-01** |
+| SUB-D-20 | H | A cut resolves **as of what it describes, never as of when it runs**: components enumerated over the period (effective-dated), `payerTenantId` = the payer in force at period start, the §4.3b revival's snapshot re-resolution evaluated as of the backdated term start; a conversion-charge suspension revives without a term-extension step (the term is already in force) | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
+| SUB-D-21 | H | `lineKey` = the component **interval** (`plan#n` / `addon:{addOnId}#n`, lifetime interval ordinal); one fact per interval overlapping the period; an interval opened mid-period gets a targeted cut in its opening commit; rating derives coverage from the effective-dated read model (early-closed intervals under-cover, never overcharge); terminal-before-cut periods still cut for the served stretch; trial-phase periods cut normally; the quota-cycle reset re-keys to the period | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
+| SUB-D-22 | M | Dwell deadline lifecycle: voided by payment resolution (the §4.3b signal) or any committed exit from `suspended`; re-resolved from the acquiring payer's ladder on transfer (anchored at the original suspension); a Payments dispute on the blocking charge holds the clock; the terminal cancel is re-derived daily and its deprovision leg is a no-op against already-deprovisioned resources | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
+| SUB-D-23 | M | Firing-failure taxonomy gains a third class: **parked (state-precondition)** — the firing deadline is suspended while a named aggregate state blocks the firing and re-arms on the unblocking commit; window-end `resumeCollection` and boundary `convertTrial` against `suspended` are the canonical members | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
+| SUB-D-24 | M | One-time/setup charge lane (T-D-18 adoption formalised): this gear emits an **amount-less** `BillableItemCreated(kind=one_time)` at the qualifying instant, idempotent per `(subscriptionId, priceId)` for the subscription lifetime; **Billing values it from the frozen `pricingSnapshotRef`** (new seam SUB-B8) — no money computed here | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
+| SUB-D-25 | M | ETF path is reason-aware: only `customer`/`operator` cancels are early-termination class; `term_expired`, `nonpayment_exhausted`, `saga_superseded` never derive an ETF; `SubscriptionCancelled` additionally carries the current term window + billing-period identity as Billing's join key | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
+| SUB-D-26 | M | The grandfathered cohort does **not** carry across a cancel+new (`supersedesSubscriptionId`) pair — the successor is a fresh purchase gate; the loss of price protection MUST be disclosed on the change preview before execution (same doctrine as credit-forfeiture disclosure) | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
 
 ## Decisions
 

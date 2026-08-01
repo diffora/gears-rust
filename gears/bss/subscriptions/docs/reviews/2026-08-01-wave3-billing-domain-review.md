@@ -38,9 +38,11 @@ was re-grounded on lines that do exist — see items 11 and 12.
 > ACs 30–34, `SubscriptionRampHalted`/`SeatBound` naming, spec-check citations, the `**Traces to**:`
 > convention across all 8 FR-bearing slices — 47 FRs now single-owner, REVIEW tally corrected +
 > F-05-2 closed). Hardening: draft-void TTL 90-day platform default (SUB-D-11 amendment); the
-> pause-day limit made cumulative-per-term with a 90-day default. **Flagged for veto:
-> SUB-D-20…26**; joint follow-ups ride SEAMS (SB1 recurring-WHEN, SUB-P9 anchor fixture,
-> `lineKey` → rating T-D-15).
+> pause-day limit made cumulative-per-term with a 90-day default. **Veto round 2026-08-01 (same
+> day): SUB-D-20…26 — and the gear's entire register SUB-D-01…19 with the numeric defaults — ALL
+> CONFIRMED per-item by the product owner** (SUB-D-26 as decided: no cancel+new class carries the
+> cohort); joint follow-ups ride SEAMS (SB1 recurring-WHEN, SUB-P9 anchor fixture, `lineKey` →
+> rating T-D-15, SUB-B7/B8 obligations on the unauthored Billing gear).
 
 ## Summary
 

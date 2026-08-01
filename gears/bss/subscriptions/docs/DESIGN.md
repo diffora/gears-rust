@@ -453,7 +453,7 @@ for the p95 < 100ms target. Deployment specifics are platform-standard for a BSS
 - **Closed manifest enum (SUB-D-03/05/11):** trials, billing-only pause, and scheduled intents are attributes/postures/pending-intents, never new statuses; `draft → cancelled` (void) completes the edge set so drafts are exitable.
 - **One commit path, complete inventories (SUB-D-08/09):** every FR-mandated mutation has a `TransitionRequest.type`; every FR-mandated auditable event has a name in the slice-08 registry.
 
-**Autonomous decisions** — [`DECISIONS.md`](./DECISIONS.md) SUB-D-01…26 (flagged for veto):
+**Autonomous decisions** — [`DECISIONS.md`](./DECISIONS.md) SUB-D-01…26 (**ALL CONFIRMED per-item 2026-08-01** — the gear's first veto round; joint qualifiers per SEAMS stay owed):
 scheduled intents, `updateQuantity`, `collectionPaused`, ramps, activation date-trio, pinned
 ordering tenant, recurring split, mutation-type completion, event-inventory naming, check-surface
 staleness budget, draft void, pause × renewal interplay (01…12); term-boundary resolution,
