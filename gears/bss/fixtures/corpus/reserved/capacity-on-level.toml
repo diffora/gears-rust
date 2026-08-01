@@ -14,6 +14,7 @@ provenance = ["inst-rv-level", "D-53", "D-139", "T-D-25"]
 
 [snapshot]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "storage.gb"
 aggregation_function    = "peak"

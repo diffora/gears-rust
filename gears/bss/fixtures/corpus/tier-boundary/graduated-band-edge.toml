@@ -3,8 +3,20 @@ id         = "graduated-band-edge"
 kind       = "evaluation"
 provenance = ["AC#60", "PRD §17.2", "D-17"]
 
+# `graduated` is legal on `usage` rows only (`inst-mk-chargekind`, D-18), so
+# `usage` is the only honest chargeKind here.
+#
+# OPEN, for the corpus owner: the row then names no `meter`, and a usage row's
+# `Q` comes from one - `meter` is also one of the four fields the continued tier
+# counter is keyed on (`inst-tb-window-continuity`). It still publishes as
+# authored: no Slice-3 row-local rule requires `meter`, because meter injectivity
+# is an aggregate publish check (`inst-pr-return`) that this gear does not
+# implement. So this is not a rejection waiting to happen - it is a case that
+# describes a metered row without saying what it meters. No meter has been added.
+
 [snapshot]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 tier_aggregation_window = "invoice_period"
 billing_granularity     = "whole_unit"

@@ -5,6 +5,7 @@ provenance = ["AC#60", "PRD §17.2"]
 
 [snapshot]
 model_kind      = "per_unit"
+charge_kind     = "recurring"
 currency        = "USD"
 amount_minor    = 1500
 quantity_source = "subscription_seat_count"

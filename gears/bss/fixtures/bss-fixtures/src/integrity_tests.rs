@@ -1,12 +1,14 @@
 use super::*;
 use crate::corpus::{Corpus, FamilyMeta, GateRole};
 use crate::model::{
-    Assertion, Case, CaseKind, ChargeExpect, EvaluationCase, Expect, Given, Runtime, Snapshot,
+    Assertion, Case, CaseKind, ChargeExpect, ChargeKind, EvaluationCase, Expect, Given, Runtime,
+    Snapshot,
 };
 
 fn snapshot(kind: ModelKind) -> Snapshot {
     Snapshot {
         model_kind: kind,
+        charge_kind: ChargeKind::Recurring,
         currency: "USD".into(),
         bands: Vec::new(),
         amount_minor: Some(100),

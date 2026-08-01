@@ -3,8 +3,14 @@ id         = "volume-variant-a-cliff"
 kind       = "evaluation"
 provenance = ["AC#60", "PRD §17.2", "D-17"]
 
+# `volume` is legal on `usage` rows only (`inst-mk-chargekind`, D-18), so `usage`
+# is the only honest chargeKind here - and, exactly as in `graduated-band-edge`,
+# the row then names no `meter`. Same OPEN question, same non-answer: see that
+# case for the reasoning.
+
 [snapshot]
 model_kind              = "volume"
+charge_kind             = "usage"
 currency                = "USD"
 tier_aggregation_window = "invoice_period"
 billing_granularity     = "whole_unit"

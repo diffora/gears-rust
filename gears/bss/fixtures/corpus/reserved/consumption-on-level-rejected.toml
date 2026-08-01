@@ -27,6 +27,7 @@ declined_until = "slice-10-advanced-primitives"
 
 [predecessor]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "storage.gb"
 aggregation_function    = "peak"
@@ -38,6 +39,7 @@ reservation_flavor      = "capacity"
 
 [successor]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "storage.gb"
 aggregation_function    = "peak"

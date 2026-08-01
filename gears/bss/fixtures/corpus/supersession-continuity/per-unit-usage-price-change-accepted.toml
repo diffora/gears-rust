@@ -24,6 +24,7 @@ provenance = ["inst-tb-supersession-units", "inst-mk-chargekind", "inst-tb-windo
 
 [predecessor]
 model_kind          = "per_unit"
+charge_kind         = "usage"
 currency            = "USD"
 meter               = "api.calls"
 billing_granularity = "whole_unit"
@@ -31,6 +32,7 @@ amount_minor        = 40
 
 [successor]
 model_kind          = "per_unit"
+charge_kind         = "usage"
 currency            = "USD"
 meter               = "api.calls"
 billing_granularity = "whole_unit"

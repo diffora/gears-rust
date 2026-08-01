@@ -155,11 +155,54 @@ pub enum BillingGranularity {
     WholeUnit,
 }
 
+/// The `chargeKind` axis of the canonical scope key: which charge component of a
+/// plan the row prices (`PRD.md` glossary, `design/01-foundation.md` 4.1).
+///
+/// Pinned here in code alongside [`ProrationBasis`], [`TierAggregationWindow`]
+/// and [`BillingGranularity`], and for a sharper version of the same reason. It
+/// is an **axis of the key** and it is frozen into `pricingSnapshotRef`, so a
+/// subject that cannot read it has to invent it — and two subjects invent two
+/// different things, which is the whole class of divergence this corpus exists
+/// to prevent. The pricing gear invented "a row that names a `meter` is a usage
+/// row"; nothing said so, nothing checked it, and no second gear was bound by it.
+///
+/// It also made one of the four model-kind rules unstateable. `inst-mk-chargekind`
+/// is a `kind x chargeKind` matrix, and while the corpus carried no `chargeKind`
+/// no case could describe a `flat` usage row or a `graduated` recurring row —
+/// the two shapes the matrix exists to refuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChargeKind {
+    /// A recurring subscription charge.
+    Recurring,
+    /// A metered usage charge — the only component with a metered `Q` for the
+    /// tier, block and fold machinery to read.
+    Usage,
+    /// A one-off charge that is not a setup fee: a one-time plan's base row.
+    OneTime,
+    /// A setup charge on a recurring or hybrid plan. Distinct from
+    /// [`ChargeKind::OneTime`] so a hybrid plan can carry both without them
+    /// colliding on one scope key.
+    OneTimeSetup,
+}
+
 /// Fields frozen in `pricingSnapshotRef`. Nothing else may appear here.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
     pub model_kind: ModelKind,
+    /// Scope-key axis 7, and **required** — the one snapshot field besides
+    /// `model_kind` and `currency` that every case must state.
+    ///
+    /// Required rather than optional because there is no row without one: a
+    /// published row sits on exactly one charge component of exactly one plan,
+    /// and the axis is part of the key that makes it that row. A
+    /// `#[serde(default)]` would put the deleted inference back one layer down —
+    /// a case that forgot to say would silently read `recurring`, and the rules
+    /// that turn on this axis (`inst-mk-chargekind`, `inst-mk-forbidden`,
+    /// `inst-tb-window`, `inst-pk-window`, `inst-tb-supersession-units`) would
+    /// judge a row nobody authored.
+    pub charge_kind: ChargeKind,
     pub currency: String,
     #[serde(default)]
     pub bands: Vec<Band>,

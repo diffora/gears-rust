@@ -27,8 +27,9 @@ kind       = "evaluation"
 provenance = ["AC#60"]
 
 [snapshot]
-model_kind = "graduated"
-currency   = "USD"
+model_kind  = "graduated"
+charge_kind = "usage"
+currency    = "USD"
 
   [[snapshot.bands]]
   from_qty = 0

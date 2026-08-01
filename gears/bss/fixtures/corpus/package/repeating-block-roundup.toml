@@ -3,8 +3,24 @@ id         = "repeating-block-roundup"
 kind       = "evaluation"
 provenance = ["AC#60", "AC#88", "PRD §17.2"]
 
+# `package` is legal on `usage` rows only (`inst-mk-chargekind`, D-18), so `usage`
+# is the only honest chargeKind this case can carry - there is no reading of a
+# block-priced row that is not metered.
+#
+# OPEN, for the corpus owner: as a `usage` row this snapshot would not publish.
+# `inst-pk-window` (D-58) requires `tierAggregationWindow` on every `package`
+# usage row - it is the window `used` accumulates over *before* the block
+# round-up, and 150 units folds to 2 blocks under `invoice_period` and to 30
+# under a daily fold - and this case states none. The block arithmetic asserted
+# below is correct and does not depend on which window it is; the row it is
+# asserted about is under-authored, exactly as five supersession pairs were
+# before they carried the window. Nothing has been guessed in: neither a window
+# nor a `meter`, because picking one to make the row publishable is picking what
+# the case means.
+
 [snapshot]
 model_kind          = "package"
+charge_kind         = "usage"
 currency            = "USD"
 package_size        = 1000
 package_price_minor = 2500

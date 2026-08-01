@@ -11,6 +11,7 @@ provenance = ["inst-rv-tier-q", "AC#60"]
 
 [snapshot]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "compute.seconds"
 billing_granularity     = "per_hour"

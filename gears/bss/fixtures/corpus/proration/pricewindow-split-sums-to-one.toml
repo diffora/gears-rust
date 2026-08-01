@@ -10,6 +10,7 @@ provenance = ["AC#61", "T-D-26"]
 
 [snapshot]
 model_kind      = "flat"
+charge_kind     = "recurring"
 currency        = "USD"
 amount_minor    = 9900
 proration_basis = "calendar_days_actual"

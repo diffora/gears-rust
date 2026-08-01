@@ -41,7 +41,7 @@
 use bss_fixtures::{
     AggregationFunction as CorpusAggregationFunction,
     AggregationGranularity as CorpusAggregationGranularity, Band, BandTop as CorpusBandTop,
-    BillingGranularity as CorpusBillingGranularity, Corpus,
+    BillingGranularity as CorpusBillingGranularity, ChargeKind as CorpusChargeKind, Corpus,
     IncludedAllowance as CorpusIncludedAllowance, ProrationBasis, PublishVerdict,
     ReservationFlavor, RolloverPolicy as CorpusRolloverPolicy, Snapshot,
     TierAggregationWindow as CorpusTierAggregationWindow,
@@ -130,7 +130,7 @@ fn price_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     reject_unrepresentable(snapshot)?;
 
     Ok(PriceRow {
-        charge_kind: charge_kind(snapshot),
+        charge_kind: charge_kind(snapshot.charge_kind),
         model_kind: Some(snapshot.model_kind),
         amount_minor: optional_amount(snapshot.amount_minor, "amount_minor")?,
         bands: tier_bands(&snapshot.bands)?,
@@ -164,17 +164,26 @@ fn price_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     })
 }
 
-/// The `chargeKind` axis, which the snapshot does not carry.
+/// The `chargeKind` axis, **read** from the snapshot.
 ///
-/// It is a scope-key axis rather than a row field, so it has to be inferred —
-/// and the inference is the one the design set already states: a row that names
-/// a `meter` is a metered usage row, and a row that does not has no metered
-/// quantity stream at all. Every publish case in the corpus names a meter.
-fn charge_kind(snapshot: &Snapshot) -> ChargeKind {
-    if snapshot.meter.is_some() {
-        ChargeKind::Usage
-    } else {
-        ChargeKind::Recurring
+/// It used to be inferred here — "a row that names a `meter` is a usage row,
+/// and a row that does not is recurring" — because the corpus did not carry the
+/// axis. The inference is deleted rather than kept as a fallback: an axis a
+/// subject guesses is an axis two subjects can guess differently, which is the
+/// class of divergence the corpus exists to prevent, and a surviving fallback is
+/// a second reading waiting for the first case that does not fit it. It also
+/// left `inst-mk-chargekind` — the `kind x chargeKind` matrix — unstateable: a
+/// `flat` usage row and a `graduated` recurring row are the two shapes the
+/// matrix refuses, and under the inference neither could be written down.
+///
+/// Total, like the other corpus-to-gear enum maps: a fifth `chargeKind` on
+/// either side cannot appear without this match being extended.
+const fn charge_kind(kind: CorpusChargeKind) -> ChargeKind {
+    match kind {
+        CorpusChargeKind::Recurring => ChargeKind::Recurring,
+        CorpusChargeKind::Usage => ChargeKind::Usage,
+        CorpusChargeKind::OneTime => ChargeKind::OneTime,
+        CorpusChargeKind::OneTimeSetup => ChargeKind::OneTimeSetup,
     }
 }
 

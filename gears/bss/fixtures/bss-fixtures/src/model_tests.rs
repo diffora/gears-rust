@@ -8,6 +8,7 @@ provenance = ["AC#60", "PRD 17.2", "D-17"]
 
 [snapshot]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 tier_aggregation_window = "invoice_period"
 billing_granularity     = "whole_unit"
@@ -36,6 +37,7 @@ fn parses_a_graduated_evaluation_case() {
     assert_eq!(case.id, "graduated-band-edge");
     assert_eq!(case.kind, CaseKind::Evaluation);
     assert_eq!(case.snapshot.model_kind, ModelKind::Graduated);
+    assert_eq!(case.snapshot.charge_kind, ChargeKind::Usage);
     assert_eq!(case.snapshot.bands.len(), 2);
     assert_eq!(case.snapshot.bands[0].to_qty, BandTop::Closed(1000));
     assert_eq!(case.snapshot.bands[1].to_qty, BandTop::Open);
@@ -130,6 +132,38 @@ fn rejects_a_billing_granularity_no_document_defines() {
 
     assert!(
         err.to_string().contains("per_unit"),
+        "error should quote the bad value, got: {err}"
+    );
+}
+
+#[test]
+fn charge_kind_is_required() {
+    // The axis has no default, and that is the point of the field. A
+    // `#[serde(default)]` would put the deleted inference back one layer down:
+    // a case that forgot to say would load as `recurring`, and the whole matrix
+    // `inst-mk-chargekind` states would be judged against a row nobody authored.
+    let bad = GRADUATED.replace("charge_kind             = \"usage\"\n", "");
+
+    let err = toml::from_str::<EvaluationCase>(&bad)
+        .expect_err("a snapshot without charge_kind must not load");
+
+    assert!(
+        err.to_string().contains("charge_kind"),
+        "error should name the missing field, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_a_charge_kind_no_document_defines() {
+    // The fourth pinned vocabulary, for the same reason as the other three: an
+    // axis of the canonical scope key cannot gain a value on one side only.
+    let bad = GRADUATED.replace("\"usage\"", "\"metered\"");
+
+    let err = toml::from_str::<EvaluationCase>(&bad)
+        .expect_err("a chargeKind outside the scope-key axis must not load");
+
+    assert!(
+        err.to_string().contains("metered"),
         "error should quote the bad value, got: {err}"
     );
 }

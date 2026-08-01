@@ -14,6 +14,7 @@ provenance = ["inst-tb-supersession-units", "D-129", "D-43", "D-45"]
 
 [predecessor]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "storage.gb"
 billing_granularity     = "per_day"
@@ -27,6 +28,7 @@ included_allowance      = { quantity = 100, rollover_policy = "carry" }
 
 [successor]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "storage.gb"
 billing_granularity     = "per_day"

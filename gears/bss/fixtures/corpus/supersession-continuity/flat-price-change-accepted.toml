@@ -35,11 +35,13 @@ provenance = ["inst-tb-supersession-units", "inst-mk-chargekind", "inst-mk-forbi
 
 [predecessor]
 model_kind   = "flat"
+charge_kind  = "recurring"
 currency     = "USD"
 amount_minor = 9900
 
 [successor]
 model_kind   = "flat"
+charge_kind  = "recurring"
 currency     = "USD"
 amount_minor = 12900
 

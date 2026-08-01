@@ -16,6 +16,7 @@ provenance = ["AC#60", "D-44", "T-D-17"]
 
 [snapshot]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "cloudlet.count"
 aggregation_function    = "peak"

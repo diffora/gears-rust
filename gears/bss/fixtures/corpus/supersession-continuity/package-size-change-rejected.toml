@@ -13,6 +13,7 @@ provenance = ["inst-tb-supersession-units", "D-122", "D-58"]
 
 [predecessor]
 model_kind              = "package"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "api.calls"
 billing_granularity     = "per_hour"
@@ -22,6 +23,7 @@ package_price_minor     = 2500
 
 [successor]
 model_kind              = "package"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "api.calls"
 billing_granularity     = "per_hour"

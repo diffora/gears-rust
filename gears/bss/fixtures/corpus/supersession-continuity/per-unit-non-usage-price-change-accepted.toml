@@ -27,12 +27,14 @@ provenance = ["inst-tb-supersession-units", "inst-mk-chargekind", "inst-mk-requi
 
 [predecessor]
 model_kind      = "per_unit"
+charge_kind     = "recurring"
 currency        = "USD"
 quantity_source = "subscription_seat_count"
 amount_minor    = 1500
 
 [successor]
 model_kind      = "per_unit"
+charge_kind     = "recurring"
 currency        = "USD"
 quantity_source = "subscription_seat_count"
 amount_minor    = 1900

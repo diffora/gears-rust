@@ -33,8 +33,8 @@ pub use integrity::{
 #[cfg(feature = "corpus")]
 pub use model::{
     AggregationFunction, AggregationGranularity, Assertion, Band, BandTop, BillingGranularity,
-    Case, CaseHeader, CaseKind, ChargeExpect, EvaluationCase, Expect, Family, FoldExpect,
-    GaugeSample, Given, IncludedAllowance, ProrationBasis, PublishAssertion, PublishCase,
-    PublishVerdict, ReservationFlavor, RolloverPolicy, Runtime, Snapshot, TierAggregationWindow,
-    UnitsExpect,
+    Case, CaseHeader, CaseKind, ChargeExpect, ChargeKind, EvaluationCase, Expect, Family,
+    FoldExpect, GaugeSample, Given, IncludedAllowance, ProrationBasis, PublishAssertion,
+    PublishCase, PublishVerdict, ReservationFlavor, RolloverPolicy, Runtime, Snapshot,
+    TierAggregationWindow, UnitsExpect,
 };

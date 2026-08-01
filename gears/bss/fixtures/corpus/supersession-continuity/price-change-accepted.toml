@@ -10,6 +10,7 @@ provenance = ["inst-tb-supersession-units", "D-82"]
 
 [predecessor]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "compute.seconds"
 billing_granularity     = "per_hour"
@@ -27,6 +28,7 @@ tier_aggregation_window = "invoice_period"
 
 [successor]
 model_kind              = "graduated"
+charge_kind             = "usage"
 currency                = "USD"
 meter                   = "compute.seconds"
 billing_granularity     = "per_hour"

@@ -99,18 +99,25 @@ asserting a different expected content is how a generated file starts flapping.
    `[runtime]`. Both deny unknown fields, so the gear ownership boundary is checked when the
    corpus loads — D-60's per-subscription trailing lock cannot be written into `[snapshot]`
    at all.
-3. Cite the clause the case encodes in `provenance`. It is mandatory.
-4. Say **why** the expected number is what it is, in `why`. A number without a reason cannot
+3. State `charge_kind`. It is **required** — `recurring | usage | one_time | one_time_setup`,
+   the scope key's seventh axis — and it has no default, because a default is an inference
+   and the gear used to carry one ("a row that names a `meter` is a usage row"). Derive it
+   from what the case *means*, then check it against the `inst-mk-chargekind` matrix: `flat`
+   and `per_unit` are the non-usage kinds; `per_unit`, `graduated`, `volume` and `package`
+   are the usage kinds. If the honest value makes the row unpublishable, that is a finding
+   about the case — raise it, do not swap the value or add the field that hides it.
+4. Cite the clause the case encodes in `provenance`. It is mandatory.
+5. Say **why** the expected number is what it is, in `why`. A number without a reason cannot
    be reviewed, and a green run over unreviewed numbers proves nothing.
-5. Author the **whole row**, not the delta. A publish case reads as "the only difference is
+6. Author the **whole row**, not the delta. A publish case reads as "the only difference is
    X" and that is what it asserts — but publish is asked of a row, and a row that would not
    publish on an empty key does not publish on an occupied one either. Every usage row
    carries `billingGranularity`; every tiered (`inst-tb-window`) and `package`
    (`inst-pk-window`) usage row carries `tierAggregationWindow`. Authored short, a
    supersession pair stops at `EVAL_POLICY_MISSING` and the guard under test is never
    reached.
-6. Run `cargo test -p bss-fixtures -p bss-fixtures-conformance`.
-7. Regenerate the registry and commit that regeneration **on its own**:
+7. Run `cargo test -p bss-fixtures -p bss-fixtures-conformance`.
+8. Regenerate the registry and commit that regeneration **on its own**:
    `cargo run -p bss-pricing --example regen_registry`
 
 ## Coverage today
@@ -198,6 +205,24 @@ Stating the role is what separates "gates nothing deliberately" from "someone fo
 list" — a publish family with no kinds and a conformance family *with* kinds are both
 violations.
 
+### The role does not scope what a publish case earns — on purpose
+
+`PublishReport::earned_kinds` attributes an outcome to `successor.model_kind` and to nothing
+else: not to the case's family, not to that family's `GateRole`, not to its `gates` list. So
+a failing publish case in a **conformance** family blocks the kind its successor carries.
+That is not a corner: today *every* publish case sits in a conformance family
+(`supersession-continuity`, `reserved`), and all four publish families carry only evaluation
+cases — so every `publish` flag in the committed registry is earned across the family
+boundary.
+
+**Kept as is.** A failed case is a rule of the design set the gear does not reproduce, and
+which directory it was filed in does not make it less so; the flag is a claim about a
+`modelKind`, so it follows the row under test. The alternative — count an outcome only when a
+`role = "publish"` family lists that kind and the case belongs to it — is more precise about
+what a gate means and strictly less safe: on this corpus it would earn nothing for any kind,
+and it would let a real `supersession-continuity` disagreement sit beside an open gate.
+Fail-closed and slightly over-broad, deliberately.
+
 ## What proration asserts, and why it is not money
 
 `proration` reports a **unit ratio**, never an amount. Rating emits prorated components at
@@ -226,6 +251,15 @@ noticed by a consumer that could not map them, which reported *itself* as unable
 
 An undefined value is now a **load** failure. The corpus carries its own vocabulary, so a
 value added or renamed on one side cannot ride into a case file on the other.
+
+`chargeKind` is the fourth, and it was worse than a wrong value: the corpus carried **no**
+value at all. It is an axis of the canonical scope key and it is snapshot-frozen, so the
+pricing gear had to *infer* it — "a row that names a `meter` is a usage row" — to answer the
+publish cases. An inferred axis is an axis a second gear can infer differently, and it made
+one of the four model-kind rules unstateable: while no case could say `chargeKind`, no case
+could describe the `flat` usage row or the `graduated` recurring row that `inst-mk-chargekind`
+exists to refuse. It is now a required field on every snapshot, and the inference is deleted
+rather than left as a fallback.
 
 Families and kinds are **different axes** — nine families against five kinds, with
 `tier-boundary` gating two — so a kind can quietly belong to no family at all. That is how

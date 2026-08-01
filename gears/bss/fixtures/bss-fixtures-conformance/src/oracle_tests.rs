@@ -119,6 +119,10 @@ fn flat_ignores_the_quantity_where_per_unit_scales_by_it() {
     // multiplies a flat row has silently swapped one for the other.
     let flat = bss_fixtures::Snapshot {
         model_kind: bss_fixtures::ModelKind::Flat,
+        // `flat` is legal on non-usage rows only, and this pair is the whole
+        // point of `inst-mk-chargekind`: the two kinds it separates are these
+        // two, on the same charge component.
+        charge_kind: bss_fixtures::ChargeKind::Recurring,
         currency: "USD".into(),
         bands: Vec::new(),
         amount_minor: Some(9900),

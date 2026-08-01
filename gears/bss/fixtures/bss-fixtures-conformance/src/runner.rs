@@ -204,6 +204,37 @@ impl PublishReport {
     /// *only* publish cases are declined is therefore still unearned — and
     /// `check_publish_case_coverage` refuses that corpus outright, so the state
     /// cannot be reached quietly.
+    ///
+    /// ## The `GateRole` coupling is deliberate
+    ///
+    /// A publish outcome is attributed to `successor.model_kind` and to nothing
+    /// else. It is **not** filtered by the case's family, nor by whether that
+    /// family's `GateRole` is `Publish`, nor by whether the family's `gates`
+    /// list names the kind. So a failing case in a `Conformance` family blocks
+    /// the kind its successor carries, even though that family gates no publish
+    /// at all — and today every publish case lives in a `Conformance` family
+    /// (`supersession-continuity`, `reserved`), while all four `Publish`
+    /// families carry only evaluation cases. Every `publish` flag in the
+    /// committed registry is therefore earned across the family boundary.
+    ///
+    /// **This is the chosen behaviour: any failing publish case blocks its
+    /// kind.** A failed case is a rule of the design set the gear does not
+    /// reproduce, and which family file it was filed under does not make it less
+    /// so. Attribution follows the row under test, which is what a `modelKind`
+    /// flag is a claim about; a `graduated` supersession the gear gets wrong is
+    /// evidence against publishing `graduated`, wherever the case sits.
+    ///
+    /// The alternative was to scope the earning to a kind's gating families —
+    /// count an outcome only when some family with `GateRole::Publish` lists the
+    /// kind in `gates` *and* the case belongs to it. That is more precise about
+    /// what a gate means and strictly less safe: on the corpus as it stands it
+    /// would earn **nothing** for any kind, because no `Publish` family carries
+    /// a publish case, and it would let a real disagreement in
+    /// `supersession-continuity` sit beside an open gate. Fail-closed and
+    /// slightly over-broad beats precise and permissive here — the cost of the
+    /// choice is that a gate can be held shut by a case about a rule its own
+    /// family does not gate, and a reader who meets that should read it here
+    /// rather than diagnose it.
     #[must_use]
     pub fn earned_kinds(&self) -> Vec<ModelKind> {
         ModelKind::ALL

@@ -11,6 +11,7 @@ provenance = ["AC#60", "PRD 17.2", "PRD 6.2"]
 
 [snapshot]
 model_kind   = "flat"
+charge_kind  = "recurring"
 currency     = "USD"
 amount_minor = 9900
 

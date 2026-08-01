@@ -25,6 +25,7 @@ provenance = ["inst-tb-supersession-units", "inst-tb-units", "inst-mk-chargekind
 
 [predecessor]
 model_kind          = "per_unit"
+charge_kind         = "usage"
 currency            = "USD"
 meter               = "compute.seconds"
 billing_granularity = "per_hour"
@@ -32,6 +33,7 @@ amount_minor        = 40
 
 [successor]
 model_kind          = "per_unit"
+charge_kind         = "usage"
 currency            = "USD"
 meter               = "compute.seconds"
 billing_granularity = "per_day"
