@@ -55,10 +55,14 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # positive left; the stricter citation regex simultaneously exposed
     # D-14 -> PRD.md (false-resolved through rating's `T-D-14`), fixed by citing
     # D-14 at `fr-audit-completeness` rather than pinning it.
+    # 6/69 until the 2026-08-01 d-wave billing-domain review paid down one more
+    # pinned member — REGION_SCOPE_DENIED (referenced by the new
+    # `inst-rb-preview-scope` rule body) — hand-checked, note beside the pinned
+    # list.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
     assert len(payload["findings"]) == 6
-    assert payload["known_debt_suppressed"] == 69
+    assert payload["known_debt_suppressed"] == 68
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

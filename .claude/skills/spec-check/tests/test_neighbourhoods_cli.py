@@ -81,8 +81,8 @@ def test_every_requirement_gets_exactly_one_neighbourhood(tmp_path):
     assert run("--gear", "gears/bss/pricing/docs", "--out", str(out)).returncode == 0
     envelope = json.loads(out.read_text(encoding="utf-8"))
     ids = [n["requirement_id"] for n in envelope["neighbourhoods"]]
-    assert len(ids) == 76
-    assert len(set(ids)) == 76
+    assert len(ids) == 77
+    assert len(set(ids)) == 77
     assert all(n["triage"] for n in envelope["neighbourhoods"])
 
 
@@ -205,12 +205,26 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 6,
-    "anchored:no-account": 15,
+    "anchored:no-account": 17,
     "suspicious:multi-region": 15,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 40,
+    "suspicious:weak-coverage": 39,
     "covered:strong": 0,
 }
+#: Moved again 2026-08-01 (was 15 / 15 / 40, judged 55, total 76), re-pinned after
+#: the d-wave billing-domain review (D-123…D-125 + cleanup). Three movers, each
+#: diffed per-id against the pre-wave HEAD tree and hand-checked:
+#: - `nfr-observability` (new, → anchored:no-account): a fresh PRD declaration
+#:   (C-5) whose id is named only by the review doc so far — no design account
+#:   yet, correctly not judged; total 76 → 77.
+#: - `fr-price-history-export` multi → **anchored:no-account**: the D-125
+#:   pagination sentence added cursor/pagination vocabulary the design states
+#:   once and tersely, dropping both former accounts below 0.6 — the documented
+#:   terse-prose recall limitation, same class as fr-bundle-composition below;
+#:   worth `--judge-anchored` at the next N1 run, not a document defect (S12
+#:   `dod-history-export` cites the id and states the rule).
+#: - `fr-grandfathering-eligibility` weak → multi: window re-chunking from the
+#:   S7 `inst-co-single-pending` rewrite (C-3); stays judged.
 #: Moved 2026-07-31 (was 18 / 14 / 38, judged 52), re-pinned after the day's three
 #: pricing review fix rounds (D-87…D-122) rewrote fourteen requirement declarations
 #: and their design accounts. All 14 movers were diffed per-id against the 7048660d
@@ -260,7 +274,7 @@ PINNED_TRIAGE_LEDGER = {
 #: doubles it must read as a diff. (Pricing 52 until 2026-07-31 — the day's three
 #: review fix rounds moved the histogram, note above; +3 is document movement, not
 #: ladder drift.)
-PINNED_JUDGE_CALLS = {"pricing": 55, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 54, "ledger": 17}
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):
@@ -268,7 +282,7 @@ def test_pricing_triage_histogram_is_pinned(tmp_path):
     assert run("--gear", "gears/bss/pricing/docs", "--out", str(out)).returncode == 0
     counts = json.loads(out.read_text(encoding="utf-8"))["counts"]
     assert counts == PINNED_TRIAGE_PRICING
-    assert sum(counts.values()) == 76
+    assert sum(counts.values()) == 77
 
 
 def test_ledger_triage_histogram_is_pinned(tmp_path):

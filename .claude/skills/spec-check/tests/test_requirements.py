@@ -186,8 +186,12 @@ def ledger():
 #: output. pricing PRD: 92 declarations = 65 fr + 11 nfr + 8 usecase + 5 contract
 #: + 3 interface. ledger PRD: 48 = 35 + 5 + 3 + 3 + 2. A PRD edit that drops or
 #: adds a declaration must be loud, not silent.
+#: pricing nfr 11 → 12 (2026-08-01, d-wave billing-domain review): the PRD gained
+#: `cpt-cf-bss-pricing-nfr-observability` (§7.1) — a deliberate declaration
+#: addition (C-5: ~two dozen slice-declared alarms, several Critical and
+#: money-facing, with no PRD requirement obliging routing/runbooks), not drift.
 PINNED_COUNTS_2026_07_30 = {
-    "pricing": {"fr": 65, "nfr": 11, "total": 76},
+    "pricing": {"fr": 65, "nfr": 12, "total": 77},
     "ledger": {"fr": 35, "nfr": 5, "total": 40},
 }
 

@@ -236,6 +236,12 @@ def _check_error_codes(corpus, codes_declared=None):
 #:   sweep): D-120's `inst-plv-scope` (S9) now references it from the rule body
 #:   ("a referenced value cannot retire, `TAXONOMY_VALUE_IN_USE`"). A genuine
 #:   fix by the wave that also gave the retire guard its missing overlay scopes.
+#:
+#: - `REGION_SCOPE_DENIED` / design/05 (removed 2026-08-01, the d-wave
+#:   billing-domain review): the new `inst-rb-preview-scope` (N-1 — the preview
+#:   grant's explicit pricing-region set) names the code in the rule body
+#:   ("`REGION_SCOPE_DENIED` (403) otherwise"), so the 403 finally has the rule
+#:   that fires it. Hand-checked at the working tree before removal.
 PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "ADDON_CYCLE", "design/02-plan-definition.md"),
     ("pricing", "ADDON_INCOMPATIBLE", "design/02-plan-definition.md"),
@@ -277,7 +283,6 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "PURCHASE_QTY_RANGE_INVALID", "design/02-plan-definition.md"),
     ("pricing", "QUANTITY_SOURCE_MISSING", "design/03-price-structure.md"),
     ("pricing", "REASON_REQUIRED", "design/05-governance.md"),
-    ("pricing", "REGION_SCOPE_DENIED", "design/05-governance.md"),
     ("pricing", "RESERVATION_ON_NON_USAGE", "design/10-advanced-primitives.md"),
     ("pricing", "RUN_SELECTOR_EMPTY", "design/12-operator-efficiency.md"),
     ("pricing", "SETUP_ROW_INVALID", "design/02-plan-definition.md"),

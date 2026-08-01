@@ -48,6 +48,17 @@ lives:
    `known_debt_suppressed` now reads 0 under `--show-known-debt` (nothing is
    withheld from that envelope).
 
+5. **2026-08-01, fifth capture — after the d-wave billing-domain review fix
+   round** (D-123…D-125 + the cleanup tier). Document movement only, no checker
+   change. One pinned-debt member paid down and removed with a hand-checked
+   note beside the pinned list: `REGION_SCOPE_DENIED` / design/05 — the new
+   `inst-rb-preview-scope` rule (N-1, the preview grant's explicit
+   pricing-region set) names the code in its rule body, so the 403 finally has
+   the rule that fires it. Suppressed 69 → 68; live findings unchanged at 6
+   (the cross-gear coverage statements). The neighbourhood pins moved in the
+   same commit (total 76 → 77 for the new `nfr-observability`; three triage
+   movers hand-checked, notes beside `PINNED_TRIAGE_PRICING`).
+
 The discipline is unchanged either way: a finding appearing or disappearing here
 is a real claim about the design set, and re-freezing must be a deliberate,
 separately-justified commit — never a way to make a failing change look green.

@@ -43,6 +43,6 @@
       "message": "P2 cannot verify requirement coverage for gears/bss/subscriptions/docs: no slice uses a recognised traceability convention (`**Traces to**:` or `This slice directly addresses:`) — 47 requirement(s) went unchecked as a result; per-id claims are not reported for this gear rather than reporting every requirement as unclaimed"
     }
   ],
-  "known_debt_suppressed": 69,
+  "known_debt_suppressed": 68,
   "known_debt_tracked_as": "D-69"
 }
