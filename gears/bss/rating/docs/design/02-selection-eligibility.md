@@ -308,6 +308,8 @@ candidate-set provenance for diagnosis:
 
 ## 5. Traceability
 
+**Traces to**: `cpt-cf-bss-rating-fr-base-catalog-selection`, `cpt-cf-bss-rating-fr-price-eligibility-grandfathering`, `cpt-cf-bss-rating-fr-plan-phases`
+
 - **PRD**: §6.3 `fr-base-catalog-selection` + steps 1–2 slots of `fr-evaluation-order`; §6.5 `fr-price-eligibility-grandfathering`, `fr-plan-phases`; §17.1 steps 1–2 (normative order).
 - **Seams**: K1 (full 8-axis key), K2 (cohort by pinned price id), K4 (class order), K5 (`phase_id` typing), F1 (phase-invariant fallback) — [`../SEAMS.md`](../SEAMS.md).
 - **Decisions**: T-D-01, T-D-08 (F1 part) — [`../DECISIONS.md`](../DECISIONS.md).

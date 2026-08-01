@@ -299,7 +299,7 @@ transport's (unacked offsets), never a silent drop.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-rating-normative-usage-dedup-ing`
 
-- The **usage key** is `(sourceSystem, meterId, sourceEventId)`; where a source cannot supply a stable event id, a content digest over the canonical fields is the fallback key (recorded so the choice is auditable). Dedup is a unique-index upsert: a first sighting persists, a duplicate returns the recorded `UsageRecord` id and **does not** re-count into `Q`.
+- The **usage key** is `(sourceSystem, meterId, sourceEventId)`; where a source cannot supply a stable event id, a content digest over the canonical fields is the fallback key (recorded so the choice is auditable). **The digest is pinned (2026-07-31 review, #42 — a dedup key must be stable across releases and reproducible on replay)**: SHA-256 over the canonical serialization of exactly `(tenant_id, usageTypeRef, resource_ref, subject_ref, event time, value, unit, metadata as sorted k=v pairs)`, recorded beside the key with **`digest_key_version = 1`** — a field-set or algorithm change bumps the version, and records deduplicate only within one version. Latent at launch: the only launch source (the Usage Collector) always supplies the stable `(tenant_id, gts_id, idempotency_key)` identity (SEAMS UC4), so the branch is not exercised. Dedup is a unique-index upsert: a first sighting persists, a duplicate returns the recorded `UsageRecord` id and **does not** re-count into `Q`.
 - Dedup is **authoritative here** — the single source of truth that a usage event contributes to `Q` at most once (PRD §6.1; core slice [`01`](./01-foundation.md) §4.2). This is a **distinct layer** from the rated-output dedup (slice [`15`](./15-rated-output-balance-effects.md): `RatedCharge` per usage key, `Adjustment` per correction key, T-D-11); the ingestion `usageKey` **propagates** into the rated-output key so the two layers compose ("same key + same snapshot never double-charges").
 - At-least-once transport redelivery, consumer restart, and source-stream replay are all absorbed by the idempotent upsert — none double-counts.
 
@@ -316,10 +316,12 @@ transport's (unacked offsets), never a silent drop.
 - [ ] `p2` - **ID**: `cpt-cf-bss-rating-normative-quarantine-ing`
 
 - An event that cannot be normalized — unknown meter, unresolvable subscription linkage, non-canonical/unknown unit, malformed interval — is routed to `usage_quarantine` with a **typed reason**; it is **never silently dropped and never guessed** (the fail-closed doctrine of core slice [`01`](./01-foundation.md) §2.1).
-- Quarantine is operator-visible and **replayable**: after the upstream defect is fixed (e.g. the meter is declared, the subscription linkage lands), the event replays through normalization deterministically.
+- Quarantine is operator-visible and **replayable**: after the upstream defect is fixed (e.g. the meter is declared, the subscription linkage lands), the event replays through normalization deterministically. **Replay is an authorized operator action** — `usage × replay` under the gear authz catalog (slice [`10`](./10-governance-asc606.md) §4.6): replaying quarantined usage creates billable charges, so it is never an unauthenticated maintenance call; the actor and replayed set are audited (2026-07-31 review, #51).
 - A poison event never blocks its partition: the transport offset commits after quarantine so the consumer group makes progress; correctness is preserved because a quarantined event contributes nothing to `Q` until replayed.
 
 ## 5. Traceability
+
+**Traces to**: `cpt-cf-bss-rating-fr-dimension-population-contract`
 
 - **PRD**: §9.2 (Rating handoff duties — usage dedup, merge), §6.1 (`fr-idempotency` usage family), §6.7 (`dimensionKey` values), §6.10 (correction ingestion), §17.1 step 3 (merge-before-round-up), §7.1 (throughput NFR).
 - **Seams**: M7 (feeds the single-writer Q store), S1 / SUB-R1 (pinned `orderingTenantId`), **UC1–UC6 §J** (Usage Collector ingestion bridge — transport, watermark, attribution join, dedup-key derivation, correction visibility, temporal shape; UC1 gates implementation) — [`../SEAMS.md`](../SEAMS.md).

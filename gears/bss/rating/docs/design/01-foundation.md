@@ -176,7 +176,8 @@ This satisfies the PRD §6.1 requirement that the owner be named before the Adju
 - **`EvaluationContext`** — the frozen input aggregate: tenant axes (`resourceTenantId`, `payerTenantId`, `sellerTenantId`), subscription/plan linkage + active `phase_id`, SKU/meter + `dimensionKey`, quantity or time slice (post-granularity), `tierAggregationWindow`, `t` (UTC), currency/region/brand scope, `periodState`, optional `reservationMatch`, optional `(changeEffectiveAt, changeMode)`, and the snapshot identifiers.
 - **`EvaluationUnit`** — what determinism quantifies over, three kinds (§4.2): a single normalized `UsageRecord` (`per_event`); the window-aggregated `Q` for `(subscription, meter, dimensionKey, window)` — per sub-window slice when the window is split; a **period-driven unit** (recurring lines, capacity-flavor charges, true-up surfacing) keyed `(subscription, priceId, chargeKind, lineKey, AnchorPeriod)`. The three kinds are exhaustive: `one_time` / `one_time_setup` charges have **no** evaluation unit — billed at sale by Subscriptions/Billing (T-D-18).
 - **`ResolvedPriceOutcome`** — effective rates, model kind, tier thresholds, overlay winners + stack lineage, commitment/reservation effects, applied coupon ids + pre/post amounts, FX policy record, `performanceObligationRef`/`sspSnapshotPointer` (nullable), and the composed `pricingSnapshotRef`.
-- **`pricingSnapshotRef`** — the three-writer composite (§4.3); immutable once emitted.
+- **`pricingSnapshotRef`** — the four-writer composite (§4.3 — registry, pricing, Subscriptions, Rating); immutable once emitted.
+- **`lineKey`** — the stable **billable-component line coordinate** within a subscription (2026-07-31 review, #33 — load-bearing in the period-driven key and previously defined nowhere in this set): one value per billable component — the plan's base recurring line, each attached add-on line, each bundle component line — **stable across periods and across sub-window slices** (a split changes `priceId` per slice, never the `lineKey`), and shared with the Subscriptions period-fact key (subscriptions SUB-D-19 cuts its money-free recurring fact per `(subscriptionId, billing period, lineKey)` — deliberately this coordinate, SEAMS §K), so the two gears' period keys differ only in the period coordinate.
 - **Obligations** — `TrueUpObligation` and `PeriodFloorCapObligation` value objects (shapes owned by slices 05/09; the Foundation defines only their emission envelope).
 
 ### 3.2 Component Model
@@ -287,7 +288,7 @@ Selection and non-overlap use the pricing canonical key **verbatim**:
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-determinism-fnd`
 
 - **Evaluation unit** — three kinds: `per_event` ⇒ one normalized `UsageRecord`; windowed models ⇒ the aggregated `Q` for `(subscription, meter, dimensionKey, window)` — **one unit per sub-window slice** when a slice-09 split partitions the window, coupled to earlier slices only through the frozen `bandOffsetQ` input ([`03-metering-models.md`](./03-metering-models.md) §4.3, T-D-12); **period-driven** ⇒ recurring lines, capacity-flavor charges, and period-end true-up surfacing, keyed `(subscription, priceId, chargeKind, lineKey, AnchorPeriod)` and synthesized by Rating's period tick at anchor boundaries ([`11-consumer-contracts.md`](./11-consumer-contracts.md) §4.1, T-D-15) — a zero-usage period still produces its period-driven units. `Q` and the per-slice attribution are materialized and owned by the **rating pipeline** (slice 13 `QMaterializer`; single writer per partition key); **rating-core** never aggregates (core/pipeline per PRD §2.1 — 2026-07-28 review fix).
-- **Frozen tuple**: `(window-aggregated inputs incl. bandOffsetQ for a sub-window slice, pricingSnapshotRef, fxTableVersion)` ⇒ byte-identical monetary outcome across replay, recompute, and cross-region workers. Every unit binds exactly **one** pinned snapshot — a split window is several units (one per slice), never one unit over several snapshots (T-D-12). The `DeterminismGuard` stamps a frozen-input digest into metadata; a divergence without an input change is a defect by definition.
+- **Frozen tuple**: `(window-aggregated inputs incl. bandOffsetQ for a sub-window slice — and, for a `per_unit` line, the sealed quantity pair `(N, source ref)` (2026-07-31 review #18: the seat count is a determinism input with a replay source, not ambient state) — pricingSnapshotRef, fxTableVersion)` ⇒ byte-identical monetary outcome across replay, recompute, and cross-region workers. Every unit binds exactly **one** pinned snapshot — a split window is several units (one per slice), never one unit over several snapshots (T-D-12). The `DeterminismGuard` stamps a frozen-input digest into metadata; a divergence without an input change is a defect by definition.
 - **Serialization**: concurrent re-resolve for one unit serializes on the partition key; there are no cross-partition locks.
 - **Keys**: usage idempotency key (Rating dedup authoritative — same key + same snapshot never double-charges); correction key `(unitKey[, slice], prior-rated-version, snapshot)` for every delta (retry replays, never double-adjusts) — **`unitKey` generalizes over both unit families** (2026-07-28 review fix, Blocking #1): the usage counter key `(subscription, meter, dimensionKey, window)` *or* the period-driven key `(subscription, priceId, chargeKind, lineKey, AnchorPeriod)`, exactly as `rated_output` already keys — a close-time FX re-rate of a recurring line, a true-up recompute, and a capacity-charge correction are deltas too and must collide on retry; the slice coordinate is present iff a slice-09 split partitions a usage window (never on period-driven units). Delta-dedup **owner**: **Rating** (§2.2, T-D-11).
 - **Snapshot-only replay**: open-period re-resolution and posted-period corrections both replay the pinned snapshot; a live catalog read on a correction path is a defect (SEAMS W2).
@@ -296,8 +297,10 @@ Selection and non-overlap use the pricing canonical key **verbatim**:
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-snapshot-composition-fnd`
 
-One ref, three writers, non-overlapping segments; **Rating is the composition SoR** and seals
-the ref at emission — immutable thereafter:
+One ref, **four writers** — registry, pricing, Subscriptions, Rating ("three writers" predated
+the D-66 producer split under which `catalogVersion` is the registry's; the table always had
+four — 2026-07-31 review, #10) — non-overlapping segments; **Rating is the composition SoR**
+and seals the ref at emission — immutable thereafter:
 
 | Segment | Writer | When |
 |---------|--------|------|
@@ -308,7 +311,7 @@ the ref at emission — immutable thereafter:
 | resolved overlay / `priceOverlay` ids | Rating | evaluation |
 | applied coupon id(s) + stacking policy | Rating | evaluation |
 | FX-lock id (if any) | Rating | evaluation |
-| `commitmentReservation` — reservation match (id, flavor, `reservedQuantity`, resolved rate source); pool set (per-pool id, unit, `poolType`, balance-as-of + `balanceVersion`, draw order, rollover); reserved-vs-pool split | Rating | evaluation |
+| `commitmentReservation` — reservation match (id, flavor, `reservedQuantity`, resolved rate source); pool set (per-pool id, unit, `poolType`, balance-as-of + `balanceVersion`, draw order, rollover, optional **`overageRate`** — the T-D-19 residual-pricing selector, frozen at contract publish; 2026-07-31 review #5: this "identical" list had dropped the money selector); reserved-vs-pool split | Rating | evaluation |
 
 The `SnapshotComposer` rejects (fail-closed) a context whose pricing pre-stamp or Subscriptions
 binding is missing or torn; it never fabricates a segment.
@@ -331,6 +334,9 @@ Applied in order at step 9, per line:
 3. **Lineage**: discount lineage (pre/post-overlay, pre/post-coupon amounts + applied ids) and ASC 606 refs (`performanceObligationRef`, `sspSnapshotPointer` — null at MVP) ride the outcome envelope.
 
 ## 5. Traceability
+
+**Traces to**: `cpt-cf-bss-rating-fr-deterministic-evaluation-api`, `cpt-cf-bss-rating-fr-single-outcome-determinism`, `cpt-cf-bss-rating-fr-idempotency`,
+`cpt-cf-bss-rating-fr-non-negative-price`, `cpt-cf-bss-rating-fr-separation`, `cpt-cf-bss-rating-fr-evaluation-order`
 
 - **PRD**: §6.1 (all seven FRs above), §6.3 `fr-evaluation-order`, §7.1 NFRs, §17.1 (normative step order), §4.1 (environment constraints).
 - **Seams**: K1/K3 (key), S1 (snapshot), M7 (counter key), W2 (snapshot replay), M11 (catalog guarantees) — [`../SEAMS.md`](../SEAMS.md).

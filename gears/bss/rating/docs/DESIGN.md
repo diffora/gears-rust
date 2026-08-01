@@ -171,7 +171,11 @@ of the §17.1 order, composed by the Foundation's evaluation pipeline; the five 
 
 _TBD (skeleton)._ The conceptual evaluation contract (context → resolved outcome + `pricingSnapshotRef`)
 and the integration contracts (Rating handoff; Pricing read-model input; Subscriptions, Finance-FX,
-Promotions, Billing) are owned by `11-consumer-contracts` and PRD §9.
+Promotions, Billing, Contracts & Agreements) are owned by `11-consumer-contracts` and PRD §9.
+No simulation/what-if surface exists in this skeleton: `usecase-finance-simulation` (candidate
+future PriceWindows against a sample profile) is **deferred to Follow-on** (T-D-32, 2026-08-01 —
+no slice claims it, and evaluating a *draft/candidate* window conflicts with the pin discipline;
+the partner-overlay use case's "simulate against sample usage" step rides the same gate).
 
 ### 3.4 Internal Dependencies
 
@@ -222,19 +226,21 @@ Horizontal per-partition evaluation with no cross-partition locks on the hot pat
 
 - **Canonical scope key (K1-K5):** selection and non-overlap use the pricing 8-axis key `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)`; `phase` is a `phase_id`; grandfathering selects the generation by the pinned price id's `cohort`.
 - **Overlays (O1-O3):** step 4 **stacks** all PriceOverlay survivors; the class-specificity order `customerGroup > partner > orgTier > brand > region > global` breaks ties, not exclusivity.
-- **Snapshot (S1):** one `pricingSnapshotRef`, three writers — pricing pre-stamps the catalog subset, Rating (composition SoR) adds overlay/coupon/FX-lock, Subscriptions freezes the `(currency, region)` binding.
+- **Snapshot (S1):** one `pricingSnapshotRef`, **four writers** (D-66 producer split; review #10) — the registry commits `catalogVersion`, pricing pre-stamps its catalog subset, Rating (composition SoR) adds overlay/coupon/FX-lock/`commitmentReservation` (T-D-09), Subscriptions freezes the `(currency, region)` binding.
 - **Determinism / corrections (W2, M7):** replay strictly from the pinned snapshot; counter key `(subscription, meter, dimensionKey, window)`.
 - **Governance (G1):** a single pricing Slice 5 approval engine; Rating registers fail-closed validators, never a second workflow; ledger `dual_control` stays a separate bounded context.
 - **Models (M1-M5):** `{flat, per_unit, graduated, volume, package}`; per_unit, package, and composite are in launch; Volume Variant B not authorable; hybrid/committed are compositions.
 - **Enums (P1-P2):** `prorationBasis` (incl. `none`) and `billingAnchorPolicy` adopted verbatim (CI gate `pricing.contracts.enum_drift`).
 
-**Later gear decisions binding every slice** (2026-07-16 / 2026-07-28 — the list above is the frozen 2026-07-10 seam set; full text in [`DECISIONS.md`](./DECISIONS.md)):
+**Later gear decisions binding every slice** (2026-07-11 / 2026-07-16 / 2026-07-28 / 2026-08-01 — the list above is the frozen 2026-07-10 seam set; full text in [`DECISIONS.md`](./DECISIONS.md)):
 
+- **The 2026-07-11 Design-pass wave (T-D-09…T-D-16)** — omitted from this page until the 2026-07-31 review (#25), though several rows amend the seam set above: the **eighth snapshot segment `commitmentReservation`** (T-D-09 — amends the S1 bullet); the **balance write-back protocol** — `CommitmentBalanceEffect`s, Contracts-serialized `balanceVersion`, delta-only cascades (T-D-10); **delta-dedup owner = Rating** (T-D-11); **sub-window slices + frozen `bandOffsetQ`** with the correction key gaining the slice coordinate (T-D-12); the **steps-3–5 reservation-remainder recompute** (T-D-13); **frozen `poolType ∈ {prepaid_drawdown, committed_rate}` + true-up formulas** (T-D-14); **period-driven units synthesized by Rating's period tick** (T-D-15); and the **gear consolidation** itself (T-D-16 / ADR-0002).
 - **Level-based aggregation (T-D-17, joint with pricing D-44) — a `p1` launch capability:** `aggregationFunction ∈ {sum, peak, time_weighted}` with `aggregationGranularity ∈ {hour, day}`; for non-`sum` the window `Q` is the **sum of granule folds**, so it stays additive and every counter invariant (M7 key, supersession continuity, `bandOffsetQ`, band/package math, delta-only corrections) is untouched. Supersedes the former "sum-only at launch" posture. No composite co-occurrence at launch.
 - **One-time charges are not rated (T-D-18):** no evaluation unit is synthesized for `one_time` / `one_time_setup`; the three unit kinds remain exhaustive. Subscriptions/Billing bill them at the qualifying instant from the frozen snapshot; one-time rows still resolve in step-2 selection for coverage/preview/quote.
 - **Overage-rate selector (T-D-19):** a frozen `overageRate` on the `commitmentReservation` segment selects flat-rate vs banded pricing of the post-pool residual — the field's **presence** is the selector.
 - **Coupon cross-scope exclusivity (T-D-20) and its launch gate (T-D-22):** with a `line_total` candidate present, `exclusive_best` widens to one coupon per plan per period. **At launch `line_total` fails closed** — step 7 is per-line and every evaluation unit is sub-plan, so no plan-scoped base exists; T-D-20 is inert until that base is pinned with Promotions.
-- **Administrative re-rate (T-D-21):** the one sanctioned exception to strict pin replay — a *policy* correction replays over the **superseding** snapshot; input corrections stay strictly on the pin.
+- **Administrative re-rate (T-D-21):** the one sanctioned exception to strict pin replay — a *policy* correction replays over the **superseding** snapshot; input corrections stay strictly on the pin — **which it advances (T-D-24, 2026-08-01)**: after a re-rate, later input corrections replay the superseding pin, so a delta never embeds the negation of an approved repricing.
+- **The 2026-08-01 billing-domain wave (T-D-23…T-D-32; review doc `reviews/2026-07-31-billing-domain-review.md`)**: the reservation-remainder **band axis** (`remainderOffsetQ`, window-cumulative — T-D-23); the pin-of-record advance (T-D-24); **capacity-charge accrual by covered granules** (T-D-25); the **boundary-attribution pair** — the `calendar_days_actual` boundary day and a straddling granule both belong to the slice that opened them, fractions sum to 1 (T-D-26); **pool-observation effects + Contracts-side over-draw detection** (T-D-27, joint); the **periodState sequence fence** (T-D-28, joint with Billing); the adoptions of pricing **D-113** (`usageCounterOnPlanChange`, T-D-29), **D-78** (overlay cohort filter, T-D-30) and **D-114** (prefix-closed pin frontier, T-D-31); and the **finance-simulation deferral** (T-D-32). T-D-23…28 and 32 flagged for veto.
 
 **ADR index:**
 

@@ -201,9 +201,15 @@ delivered). Feeds context assembly (slice [`14`](./14-unit-synthesis-period-tick
 
 - [ ] `p3` - **ID**: `cpt-cf-bss-rating-flow-periodstate-relay-bhf`
 
-**periodState relay**: Billing publishes `periodState` transitions; `PeriodStateRelay` makes the
-current value available to slice [`14`](./14-unit-synthesis-period-tick.md) context assembly, which
-freezes it into the `EvaluationContext`; a missing value fails closed at assembly (never guessed).
+**periodState relay**: Billing publishes `periodState` transitions **each carrying a
+per-`(subscription, period)` sequence (T-D-28, 2026-08-01 — joint with Billing, flagged for
+veto)**; `PeriodStateRelay` applies them **highest-sequence-wins** (never last-write-wins — an
+older transition must not overwrite a newer one, and plain forward-only would be wrong since a
+window can legitimately re-open) and makes the current `(periodState, sequence)` pair available
+to slice [`14`](./14-unit-synthesis-period-tick.md) context assembly, which freezes it into the
+`EvaluationContext`; correction routing re-reads the projection at route time and records the
+observed pair (core slice [`08`](./08-retroactivity-corrections.md) §4.3); a missing value fails
+closed at assembly (never guessed).
 
 ### 3.7 Database Schemas and Tables
 
@@ -212,7 +218,7 @@ freezes it into the `EvaluationContext`; a missing value fails closed at assembl
 **Owned (partitioned by the pinned `orderingTenantId`, UTC):**
 
 - `billing_delivery_outbox` — the transactional outbox for `BillableItemDelivery` (committed with slice 15's `rated_output`); at-least-once, idempotency-keyed on the usage/correction key, ordered per M7 partition.
-- `period_state` — the relayed Billing `periodState` per subscription/period (a projection, non-authoritative — Billing is the SoR; refreshed on Billing events).
+- `period_state` — the relayed Billing `(periodState, sequence)` per subscription/period (a projection, non-authoritative — Billing is the SoR; refreshed on Billing events, **highest-sequence-wins**, T-D-28).
 
 Concrete DDL is Design. No monetary computation, no floor/cap, no rounding here.
 

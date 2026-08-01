@@ -29,6 +29,7 @@
   - [4.3 Ledger Separation Rationale (normative)](#43-ledger-separation-rationale-normative)
   - [4.4 ASC 606 Reference Emission (normative)](#44-asc-606-reference-emission-normative)
   - [4.5 Bundle Rev-Share Pass-Through (normative)](#45-bundle-rev-share-pass-through-normative)
+  - [4.6 AuthZ Resource and Action Catalog (normative)](#46-authz-resource-and-action-catalog-normative)
 - [5. Traceability](#5-traceability)
 
 <!-- /toc -->
@@ -213,7 +214,7 @@ formalizes the cross-gear surface.
 |------------|--------------------|----------|
 | Pricing Slice 5 (governance) | The single approval engine: `MaterialityEvaluator`, `ApprovalWorkflow`, `approval_policy` (FinanceReviewer); the hash-chained audit trail (D-14) | [`../../../pricing/docs/design/05-governance.md`](../../../pricing/docs/design/05-governance.md); SEAMS G1 |
 | Pricing Foundation (publish path) | The aggregate fail-closed validation pipeline — the registration surface; submit pre-check + commit re-run | [`../../../pricing/docs/design/01-foundation.md`](../../../pricing/docs/design/01-foundation.md) |
-| Pricing Slice 8 (bundles) | `sum_of_parts` component `planId` sets; `effective_share_bp` + `platform_cut_bp` normalized at publish onto the residual absorber (default platform, D-07) | [`../../../pricing/docs/design/08-bundles.md`](../../../pricing/docs/design/08-bundles.md); SEAMS B1 |
+| Pricing Slice 8 (bundles) | `sum_of_parts` component `planId` sets; `effective_share_bp` + `platform_cut_bp` normalized at publish per `(bundle, vendor SKU)` onto the typed `residual_absorber_party` (D-07 as re-typed by pricing D-55) | [`../../../pricing/docs/design/08-bundles.md`](../../../pricing/docs/design/08-bundles.md); SEAMS B1 |
 | Contracts | Contract-overlay governance (step 5 overrides) stays there; validator 4 checks the published Plan/SKU dimension set | SEAMS G1; [`../PRD.md`](../PRD.md) §17.1 step 5 |
 | Finance / Billing | Consume ASC refs and `glCode`; own recognition schedules and journal entries | [`../PRD.md`](../PRD.md) §5.2, §7.2 |
 
@@ -278,15 +279,24 @@ slice and the failure semantics are the pipeline's.
 
 Identities per [`../PRD.md`](../PRD.md) §6.12; check content per the underlying §17.1 rules:
 
-| # | Validator | Checks (fail-closed at publish) | PRD anchor |
-|---|-----------|--------------------------------|------------|
-| 1 | Ambiguous precedence | Equal `precedence` among `PriceOverlay`s with overlapping scope within one class is rejected; the runtime class-order + `priceOverlayId` tie-break stays a safety net, never a license to publish ambiguity | §6.12; §17.1 step 4 |
-| 2 | Ambiguous meter mapping | The `(meter, dimensionKey)` → charge-line mapping MUST be injective per plan revision; a non-injective mapping is a configuration error | §6.12; §17.1 step 3 |
-| 3 | Missing anti-drift cap on material chains | A material multi-link overlay chain (partner → reseller → customer) without a configured `maxCumulativeMarkup` fails publish; single-link/non-material overlays MAY warn | §6.12; §17.1 step 4; §15 |
-| 4 | Undeclared-dimension overlay | A contract overlay MUST NOT introduce metering dimensions absent from the published Plan/SKU revision | §6.12; §17.1 step 5 |
+| # | Validator (id) | Failure code | Checks (fail-closed at publish) | PRD anchor |
+|---|-----------|--------------|--------------------------------|------------|
+| 1 | Ambiguous precedence (`rating-val-01`) | `RATING_OVERLAY_PRECEDENCE_AMBIGUOUS` | Equal `precedence` among `PriceOverlay`s with overlapping scope within one class is rejected; the runtime class-order + `priceOverlayId` tie-break stays a safety net, never a license to publish ambiguity | §6.12; §17.1 step 4 |
+| 2 | Ambiguous meter mapping (`rating-val-02`) | `RATING_METER_MAPPING_AMBIGUOUS` | The `(meter, dimensionKey)` → charge-line mapping MUST be injective per plan revision; a non-injective mapping is a configuration error | §6.12; §17.1 step 3 |
+| 3 | Chain-depth cap presence (`rating-val-03`) | `RATING_CHAIN_CAP_MISSING` | An **overlay composition chain** — computed from the submitted publish unit as the set of stackable overlay layers reaching one priced row across the partner → reseller → customer scope classes — of **depth ≥ 2** without a configured `maxCumulativeMarkup` (and no Finance-set default in force) fails publish; a single-layer, sub-threshold overlay MAY warn. *(Renamed from "material multi-link chain" — review #30: "material" was defined nowhere and collided with pricing's unrelated change-materiality; the predicate is structural: chain depth over the submitted unit.)* | §6.12; §17.1 step 4; §15 |
+| 4 | Undeclared-dimension overlay (`rating-val-04`) | `RATING_OVERLAY_DIMENSION_UNDECLARED` | A contract overlay MUST NOT introduce metering dimensions absent from the published Plan/SKU revision | §6.12; §17.1 step 5 |
 
-- **Failure semantics**: any failing validator blocks the publish (no `PlanPublished`, no read-model warm); a commit-time failure voids the pending approval; a validator that cannot evaluate its subject fails closed. Findings are enumerated so authoring can remediate in one pass.
-- **Open** ([`../PRD.md`](../PRD.md) §15): the default `maxCumulativeMarkup` value and the clamp-vs-hard-fail mode for validator 3's runtime counterpart — the publish-time cap-presence rule above is normative regardless.
+- **Failure semantics**: any failing validator blocks the publish (no `PlanPublished`, no read-model warm); a commit-time failure voids the pending approval; a validator that cannot evaluate its subject fails closed. Findings are enumerated so authoring can remediate in one pass. Ids + failure codes above complete the `ValidatorSpec` shape §3.1 requires (review #32 — the table had prose names only; the codes follow the host pipeline's RFC 9457 convention, since these verdicts surface through pricing's validation report, and align with the runtime counterparts named at [`03-metering-models.md`](./03-metering-models.md) §3/[`04-overlays-precedence.md`](./04-overlays-precedence.md) §3).
+- **Open** ([`../PRD.md`](../PRD.md) §15): the default `maxCumulativeMarkup` value and the clamp-vs-hard-fail mode for validator 3's runtime counterpart — the publish-time cap-presence rule above is normative regardless (a Finance-set default, once configured, is a configured cap).
+
+**Problem responses (RFC 9457):** the four codes surface through the **pricing publish
+pipeline's validation report envelope** (422, enumerating `violations[]` — pricing design/01
+§3.3; this gear still exposes no synchronous API of its own):
+`RATING_OVERLAY_PRECEDENCE_AMBIGUOUS` (equal precedence, overlapping scope, one class),
+`RATING_METER_MAPPING_AMBIGUOUS` (non-injective `(meter, dimensionKey)` mapping per plan
+revision), `RATING_CHAIN_CAP_MISSING` (an overlay composition chain of depth ≥ 2 with no
+configured `maxCumulativeMarkup` and no Finance default), `RATING_OVERLAY_DIMENSION_UNDECLARED`
+(a contract overlay introducing undeclared metering dimensions).
 - **Open (enforcement point, validator 4)**: [`../PRD.md`](../PRD.md) §6.12 registers the check in the pricing pipeline, while [`../SEAMS.md`](../SEAMS.md) G1 keeps contract-override governance with Contracts; whether the same registered rule additionally gates the Contracts-side override publish (vs gating only the catalog side it can see) needs a joint clarification before Design lock. Recorded, not resolved here.
 
 ### 4.3 Ledger Separation Rationale (normative)
@@ -313,7 +323,7 @@ policy. Explicitly not a launch blocker.
 - [ ] `p2` - **ID**: `cpt-cf-bss-rating-normative-asc606-refs-gov`
 
 - Every resolved outcome carries `performanceObligationRef` and `sspSnapshotPointer` on the envelope, **nullable when not applicable** ([`../PRD.md`](../PRD.md) §6.12, AC 11; 01 §4.4).
-- **Both resolve null at MVP**: pricing supplies `glCode` now and defers SSP catalog support to Future — no contradiction; the fields exist so the envelope shape never changes when sourcing lands (seam ASC). `glCode` flows now as an ordinary frozen pass-through.
+- **Both resolve null at MVP**: pricing supplies `glCode` now and defers SSP catalog support to Future — no contradiction; the fields exist so the envelope shape never changes when sourcing lands (seam ASC). `glCode` flows now as an ordinary frozen pass-through. **Revisit checkpoint (review #52 — the D-48 "Tax Engine GA" pattern, which this posture lacked):** re-open when Catalog/Contracts ships the `performanceObligationRef`/`sspSnapshotPointer` supplier — at that gate the null-at-MVP posture, the emit-once immutability, and Finance's recognition inputs are re-confirmed together.
 - **Immutability**: a non-null reference, once emitted, is immutable; subsequent catalog changes MUST NOT alter an emitted reference. The refs are frozen-input pass-throughs — Catalog/Contracts supply them, Rating consumes and never recomputes ([`../PRD.md`](../PRD.md) §14).
 - **Boundary**: Billing/Finance MAY ignore null fields; recognition schedules, revenue allocation, and journal entries are Finance/Billing — explicitly out of scope here ([`../PRD.md`](../PRD.md) §5.2, §7.2).
 
@@ -321,14 +331,63 @@ policy. Explicitly not a launch blocker.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-revshare-passthrough-gov`
 
-- For a `sum_of_parts` bundle, the **eval-time summing is Rating's**: each referenced component `planId` resolves through the ordinary per-line pipeline, and the bundle-level amount is the sum of component resolved amounts; the catalog persists only the reference set (seam B1; [`../../../pricing/docs/design/08-bundles.md`](../../../pricing/docs/design/08-bundles.md)).
-- **Partial failure fails the bundle**: if any referenced component fails to resolve (no eligible window on its full key at `t`, unsellable market), the whole `sum_of_parts` bundle line **fails closed** — a partial sum is a misprice, never emitted. Component currency/frequency coverage is a pricing publish-time guarantee (pricing design 08) relied on here; a runtime miss is a defensive fail-closed.
+- For a `sum_of_parts` bundle, the **eval-time summing is Rating's**: each referenced component `planId` resolves through the ordinary per-line pipeline, and the bundle-level amount is the sum of the components' **recurring** amounts — **each component's usage charges rate per its own rows and itemize per `invoiceItemization`, never entering the bundle sum** (pricing `inst-bb-sum`, 2026-07-30 review fix L-8, adopted 2026-08-01 — review #4: the unqualified "sum of component resolved amounts" double-counted usage, once inside the sum and once as the component's own usage line; pricing `inst-bc-frequency` correspondingly narrows the frequency-match guarantee to recurring components); the catalog persists only the reference set (seam B1; [`../../../pricing/docs/design/08-bundles.md`](../../../pricing/docs/design/08-bundles.md)).
+- **Partial failure fails the bundle**: if any referenced component fails to resolve **a recurring line the sum requires** (no eligible window on its full key at `t`, unsellable market), the whole `sum_of_parts` bundle line **fails closed** — a partial sum is a misprice, never emitted. A **usage-only component** contributes nothing to the recurring sum and is *not* thereby unresolvable (#4): its usage lines rate independently. Component currency/frequency coverage is a pricing publish-time guarantee (pricing design 08) relied on here; a runtime miss is a defensive fail-closed.
 - **Open — bundle-level coupon attachment**: whether a coupon can target the bundle total (vs the component lines it decomposes into) is unpinned; until settled with Promotions/pricing, coupons attach to component lines per their ordinary `applyScope` (slice 06) and no bundle-total scope exists.
-- **Rev-share arrives normalized**: pricing publish normalizes the residual onto the bundle's absorber (default **platform**) so `SUM(effective_share_bp) + platform_cut_bp = 10000` exactly (D-07); typed authored values stay pricing-side audit material.
+- **Rev-share arrives normalized**: pricing publish normalizes the residual per **`(bundle, vendor SKU)` group onto the typed `residual_absorber_party`** (pricing D-55, superseding D-07's bundle-level "absorber (default platform)" — review #24; this slice's §3.1 `EffectiveRevShare` was already per `(bundle, vendor SKU)`) so `SUM(effective_share_bp) + platform_cut_bp = 10000` exactly per group; typed authored values stay pricing-side audit material.
 - **Pass-through, never re-derivation**: Rating and downstream read **only** effective shares; Rating attaches them to component lineage untouched and never re-normalizes. Monetary cent-level rounding at settlement is a downstream rule (it also lands on the absorber) and is not evaluation math.
 - Component lines remain individually addressable in the lineage so settlement can attribute the summed amount per vendor SKU without recomputation; `invoiceItemization` (`aggregate | itemize`) is a published presentation field consumed downstream, not evaluation math.
 
+### 4.6 AuthZ Resource and Action Catalog (normative)
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-authz-catalog-gov`
+
+Added by the 2026-07-31 review (#21 — a guideline MUST): the eleven SecureORM stores of slices
+12–16 hold per-subscription usage volumes and money amounts — data at least as sensitive as the
+sibling pricing gear's, whose `design/05` carries a dedicated catalog — while this set declared
+no `PolicyEnforcer`/PDP coverage at all. Per
+`docs/toolkit_unified_system/06_authn_authz_secure_orm.md` ("Every sensitive DB access MUST be
+covered by a PDP decision (via PolicyEnforcer)") and `guidelines/GTS.md` §12.7–12.8/§14:
+
+**PEP/PDP model (platform-standard, the pricing S5 / ledger precedent)**: every ctx-bearing
+service path calls the shared `access_scope` gate (`authz_resolver_sdk::PolicyEnforcer`) with a
+`(resource_type, action)` pair from this catalog **before** touching the repository; the
+PDP-compiled `AccessScope` is the SQL filter SecureORM binds to `tenant_id` (reads) and the
+write-target membership assertion (writes). Stub type-schemas for every label register at gear
+init. Deny-by-default both directions; denied attempts are audit-logged (actor, surface, claim
+set).
+
+**Resource-type labels** — GTS ids `gts.cf.bss.rating.<noun>.v1~`, all **OUTSIDE**
+`gts.cf.resources.*` (usage and rated money are commercially sensitive: the built-in
+Reader/Contributor/Owner roles do NOT auto-cover them):
+
+| Label | Object | Actions |
+|-------|--------|---------|
+| `gts.cf.bss.rating.usage.v1~` | `usage_record` / `usage_dedup` / `usage_quarantine` (slice 12) | `read`; `replay` (quarantine replay — creates billable charges, slice 12 §4.5) |
+| `gts.cf.bss.rating.rated_output.v1~` | `rated_output`, `delta_dedup`, `balance_effect_outbox` (slice 15); the `Q` store + attribution (slice 13) | `read` |
+| `gts.cf.bss.rating.rerate.v1~` | The administrative re-rate run (slice 08 §4.1 — T-D-21/T-D-24) | `execute` (operator-initiated, enumerated scope, confirm step) |
+| `gts.cf.bss.rating.operations.v1~` | `period_tick_ledger`, `cascade_lane` (slice 14); `billing_delivery_outbox`, `period_state` (slice 16); lane/backpressure controls | `read`, `operate` |
+
+**Endpoint/surface → `(resource, action)` mapping**: the gear has **no external synchronous
+API** (slices 12/14/16 each say so) — the covered surfaces are the **operator plane**
+(quarantine replay, re-rate trigger, lane controls, operational reads) and every internal
+ctx-bearing repository path of the eleven stores; **service identities** (the Billing handoff
+consumer, the Contracts write-back lane, the usage-collector feed consumer) carry their own
+scoped grants under the platform service trust, never a human role.
+
+**Role → permission matrix**: **RatingOperator** — `usage × read/replay`, `operations ×
+read/operate`, `rerate × execute` (the re-rate additionally requires the pricing-side
+corrective publish to exist — two-person there, D-10/always-material); **Auditor** —
+`usage × read`, `rated_output × read` only; no role combines `replay`/`rerate` with nothing —
+both are audited money-affecting actions.
+
+Slices 12–16 inherit this catalog (their stores are enumerated above rather than re-declaring
+per slice); the tenant-binding rule every §3.7 already states ("partitioned by the pinned
+`orderingTenantId`") is enforced through this gate, not beside it.
+
 ## 5. Traceability
+
+**Traces to**: `cpt-cf-bss-rating-fr-asc606-traceable-identifiers`, `cpt-cf-bss-rating-fr-publish-approval-governance`
 
 - **PRD**: §6.12 (both FRs), §7.1 `nfr-audit-segregation`, §9.2 pricing read-model contract (validator registration + B1 pass-through clauses), §5.1 (bundle summing in-scope row), §5.2/§7.2 (recognition exclusions), §14 (evidence consumed, never recomputed), §15 (anti-drift cap open), AC 11, NFR AC 2, §17.1 steps 3–5 (the rules the validators enforce).
 - **Seams**: G1 (RESOLVED → single engine; governance topology note), B1 (bundle summing + effective-share pass-through), ASC (null at MVP) — [`../SEAMS.md`](../SEAMS.md).

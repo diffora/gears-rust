@@ -140,8 +140,11 @@ correction lane**, coalesced per unit; it never contends with or amplifies onto 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-constraint-pin-discipline-syn`
 
 Exactly one committed `CatalogVersion` per resolution run, pin-eligible only after
-`CatalogVersionPublished` **and** the warm-completion marker (pin lag ≤ 5s); no draft read, no
-default substitution (core slice [`11`](./11-consumer-contracts.md) §4.2; pricing design 01 §4.4).
+`CatalogVersionPublished`, the warm-completion marker, **and every earlier version being itself
+pin-eligible — the prefix-closed frontier (pricing D-114, adopted as T-D-31; this constraint is
+implemented gate-side here, so the stale two-condition rule mattered)** (pin lag ≤ 5s); no draft
+read, no default substitution (core slice [`11`](./11-consumer-contracts.md) §4.2; pricing design
+01 §4.4).
 
 #### Synthesis, not aggregation or evaluation
 
@@ -212,7 +215,8 @@ feed back as cascade triggers).
 
 1. At an `AnchorPeriod` boundary the coordinated `PeriodTick` fires for each due subscription.
 2. It checks the `TickLedgerEntry` for `(subscription, AnchorPeriod)`; if already emitted, it is a no-op (idempotent).
-3. Else `UnitSynthesizer` synthesizes the period-driven units (recurring lines, capacity-flavor charges, true-up surfacing — even for a zero-usage period), `ContextAssembler` freezes their contexts, and the core evaluates them; the ledger entry commits with the emitted-unit set.
+3. Else the tick **records its pin first**: the run's `CatalogVersion` is written to the `TickLedgerEntry` as an **intent** before any unit evaluates — a crashed re-run reuses the recorded pin rather than re-pinning under a newer eligible version, so one period line never yields two rated rows under two pins (2026-07-31 review, #47; defence in depth — the slice-16 usage/period-key idempotency stays the primary absorber).
+4. `UnitSynthesizer` synthesizes the period-driven units (recurring lines, capacity-flavor charges, true-up surfacing — even for a zero-usage period), `ContextAssembler` freezes their contexts (under the recorded pin), and the core evaluates them; the ledger entry commits with the emitted-unit set.
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-rating-flow-cascade-route-syn`
 
@@ -271,7 +275,7 @@ work queue drained by lane workers with backpressure, distinct from the first-ra
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-context-assembly-syn`
 
-- `ContextAssembler` seals one `FrozenContext` per unit: **one committed `CatalogVersion`** (pin-eligible only after `CatalogVersionPublished` **and** the warm-completion marker; pin lag ≤ 5s; no draft read — core slice [`11`](./11-consumer-contracts.md) §4.2), plus the frozen `(Q, qVersion)` (slice [`13`](./13-q-store-attribution.md)), `(balance, balanceVersion)` (Contracts, §4.5), `fxTableVersion` (Finance), coupon snapshot (Promotions), and `periodState` (Billing).
+- `ContextAssembler` seals one `FrozenContext` per unit: **one committed `CatalogVersion`** (pin-eligible per the prefix-closed frontier — §2.2, T-D-31; pin lag ≤ 5s; no draft read — core slice [`11`](./11-consumer-contracts.md) §4.2), plus the frozen `(Q, qVersion)` (slice [`13`](./13-q-store-attribution.md)), `(balance, balanceVersion)` (Contracts, §4.5), **the `per_unit` quantity as a sealed pair `(N, source ref)`** — the seat count / manual quantity with its Subscriptions-side provenance, so a T-D-21 administrative re-rate or a true-up recompute of a per-seat line has a defined replay source for the historical `N` (2026-07-31 review, #18: the sealed-input enumeration had omitted it while the docs already called the value frozen in context), **the payer's `customerGroup`** (resolved from the pinned read model's membership subject — core slice [`11`](./11-consumer-contracts.md) §4.2, review #40: a period-tick unit has no caller claims to read), `fxTableVersion` (Finance), coupon snapshot (Promotions), and `(periodState, sequence)` (Billing — the T-D-28 fence coordinate).
 - A missing or torn required input — no eligible pin, absent `periodState`, a torn snapshot pre-stamp/binding, an unresolvable coupon policy — **fails closed at this boundary** (core slice [`01`](./01-foundation.md) §3.3, slice [`11`](./11-consumer-contracts.md) §2.1); the core is never entered with a partial context.
 - The assembled versions are exactly the determinism tuple `(window-aggregated inputs incl. bandOffsetQ, pricingSnapshotRef, fxTableVersion)` (core slice [`01`](./01-foundation.md) §4.2); re-resolution re-assembles the **same** pins (open-period) or the superseding pin (administrative re-rate — core slice [`08`](./08-retroactivity-corrections.md) §4.1).
 
@@ -280,7 +284,7 @@ work queue drained by lane workers with backpressure, distinct from the first-ra
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-cascade-routing-syn`
 
 - Two frozen inputs couple units, so correcting one re-resolves its dependents (core slice [`08`](./08-retroactivity-corrections.md) §4.4): **(a)** a balance-affecting correction (T-D-10) — Contracts, the `balanceVersion` serializer, emits triggers for every later-`balanceVersion` unit that drew or was rated overage against the pool; **(b)** a `bandOffsetQ` shift (T-D-12) — slice [`13`](./13-q-store-attribution.md) emits triggers for the later slices of the window.
-- **Coalescing**: `CascadeRouter` folds all triggers for the same `(unit, generation)` into **one** pending re-resolution (`cascade_lane` uniqueness) — a unit re-resolves **at most once per generation**, so a storm of triggers for the same unit does not multiply work.
+- **Coalescing**: `CascadeRouter` folds all triggers for the same `(unit, generation)` into **one** pending re-resolution (`cascade_lane` uniqueness) — a unit re-resolves **at most once per generation**, so a storm of triggers for the same unit does not multiply work. **The `generation` is defined (2026-07-31 review, #34 — it was load-bearing and minted nowhere)**: a **per-unit monotonic integer**, scoped to the unit key, incremented each time a *superseding* trigger source enqueues work for that unit — a newer `balanceVersion` (lane a), a newer `qVersion`/offset shift (lane b), or an administrative re-rate run (slice [`08`](./08-retroactivity-corrections.md) §4.1) — with coalescing keeping the **highest** generation (a superseded pending re-resolution is folded away, never run stale, and a correction is never dropped: the highest generation's inputs subsume its predecessors', both lanes being strictly ordered).
 - **Bounding + termination**: each chain is finite and strictly ordered (balance versions / slice index — core slice [`08`](./08-retroactivity-corrections.md) §4.4), so a cascade terminates; the lane is **bounded** with backpressure, so a large fan-out drains at a controlled rate and never amplifies onto the first-rating hot path. Fan-out magnitude is bounded by the number of distinct affected units, each processed once per generation.
 - Every cascade `reresolve` is delta-only under its own correction key `(unitKey[, slice], prior-rated-version, snapshot)` and its own pin; the deltas flow to slice [`15`](./15-rated-output-balance-effects.md), which dedups them (T-D-11).
 
@@ -289,7 +293,7 @@ work queue drained by lane workers with backpressure, distinct from the first-ra
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-balance-freeze-syn`
 
 - Commitment-pool balances enter the `FrozenContext` **frozen at a `balanceVersion`** (the `commitmentReservation` segment — core slice [`01`](./01-foundation.md) §4.3, T-D-09/T-D-10). The core evaluates the step-6 waterfall over the frozen balance and **never reads or waits on a live balance** — so the hot path stays partition-local with **zero cross-partition locks, even for pooled/committed usage** (this is the C1 resolution: the scale NFR holds because the only cross-unit dependency is on the *write-back*, not the *read*).
-- Cross-unit sequencing is asynchronous and off the hot path: slice [`15`](./15-rated-output-balance-effects.md) publishes each outcome's `CommitmentBalanceEffect` to Contracts (idempotent on the outcome key); **Contracts serializes** per-pool `balanceVersion` and freezes `(balance, balanceVersion)` for the next context assembly. A balance-affecting correction then cascades (§4.4) — bounded and coalesced.
+- Cross-unit sequencing is asynchronous and off the hot path: slice [`15`](./15-rated-output-balance-effects.md) publishes each outcome's `CommitmentBalanceEffect` to Contracts (idempotent on the outcome key); **Contracts serializes** per-pool `balanceVersion` and freezes `(balance, balanceVersion)` for the next context assembly; concurrent units sharing a pool at one frozen version can jointly over-draw it — **the steady state under load, detected by Contracts at write-back and cascaded like any balance-affecting correction (T-D-27; core slice [`05`](./05-commitments-reservations.md) §4.1)**. A balance-affecting correction then cascades (§4.4) — bounded and coalesced.
 - Consequence: pooled/committed usage has a **higher correction-cascade cost** than pure usage (a late correction can re-resolve later drawing units) but the **same first-rating cost and scalability** (frozen balance, no lock). The trade — cheap deterministic first rating, bounded asynchronous cascade — is the intended posture.
 
 ## 5. Traceability

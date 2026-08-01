@@ -294,6 +294,8 @@ there is no shared mutable rate state and no cross-partition coordination.
 
 ## 5. Traceability
 
+**Traces to**: `cpt-cf-bss-rating-fr-multi-currency`, `cpt-cf-bss-rating-fr-fx-policy`
+
 - **PRD**: §6.9 (`fr-multi-currency`, `fr-fx-policy`), §17.1 step 8 + step-2 native skip + "Multi-currency (preserved)", §17.2 (billing-currency coupons; floor/cap currency), §12 AC 8, §4.1, §9.2 (Finance FX input contract), §7.1 NFRs.
 - **Seams**: S1 (fx-lock segment — the Rating-written segment owned by this slice), W2 (the close delta replays the pinned snapshot) — [`../SEAMS.md`](../SEAMS.md).
 - **Decisions**: T-D-03 (snapshot composition), T-D-04 (snapshot-only replay for the close delta) — [`../DECISIONS.md`](../DECISIONS.md).
