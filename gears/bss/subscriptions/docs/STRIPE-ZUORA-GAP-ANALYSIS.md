@@ -113,7 +113,7 @@ statuses map onto **status + attributes/phase**, per the PRD's trials decision:
 | Suspend / resume (Zuora suspend/resume) | `suspended` state + Policy-gated `resume`, entitlement freeze/re-issue (PRD §6.4) |
 | Owner transfer (Zuora invoice-owner vs subscription-owner) | `payerTenantId` vs `resourceTenantId` vs `sellerTenantId` axes + `transfer` with Approval + `OwnershipTransfer*` events + delegation proofs (PRD §6.6) — stronger |
 | Duplicate-subscription guard (no first-class vendor equivalent) | `overlapScopeKey` + `maxConcurrentActive` fail-closed on activate (PRD §6.3) |
-| Recurring charge generation (Stripe invoice cycle; Zuora bill runs) | `BillableItem(kind=recurring)` idempotent per `(subscriptionId, period)`; `billingAnchor` + pricing `billingAnchorPolicy` (PRD §6.8) |
+| Recurring charge generation (Stripe invoice cycle; Zuora bill runs) | `BillableItem(kind=recurring)` idempotent per `(subscriptionId, billing period, lineKey)` — per component since SUB-D-19, key updated here 2026-08-01 (wave-3 review #7); `billingAnchor` + pricing `billingAnchorPolicy` (PRD §6.8; adoption parked on SEAMS SUB-P9) |
 | Cancellation reasons / audit (Stripe `cancellation_details`) | TransitionRequest + audit lineage + events (PRD §6.1/§6.7); free-form reason fields are Design |
 | Webhooks / event feed | CloudEvents 1.0 producer inventory + `(tenantId, subscriptionId)` ordering (PRD §6.7) |
 | Quantity-based pricing (Stripe `items.quantity`) | `quantitySource = subscription_seat_count` — Subscriptions supplies the per-period count (pricing D-18); the **update verb** is G-3 |

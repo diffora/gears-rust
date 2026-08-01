@@ -197,8 +197,8 @@ off the commit path ([`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-normative-intervals-cmp`
 
-- `PlanLink`/`AddOn` are **half-open UTC intervals**; a change closes the prior interval at the boundary and opens a new one — never a destructive edit of history ([`../PRD.md`](../PRD.md) §6.2).
-- **Past is immutable; future is replaceable.** Intervals whose `effectiveFrom` has not been reached (a scheduled next-cycle/end-of-term change writes them ahead) MAY be voided or replaced by the owning `unschedule`/superseding change until they take effect — that is an edit of the *future*, evented and audited, never of history. Once `effectiveFrom` passes, the interval is history and immutable.
+- `PlanLink`/`AddOn` are **half-open UTC intervals**; a change closes the prior interval at the boundary and opens a new one — never a destructive edit of history ([`../PRD.md`](../PRD.md) §6.2). **Interval ordinal (SUB-D-21, 2026-08-01):** each component's intervals carry a **1-based lifetime ordinal** assigned at interval open, immutable — it is the occurrence dimension of the billing `lineKey` (`plan#n` / `addon:{addOnId}#n`, slice 08 §3.1), so an add-on removed and re-added within one period yields two intervals, two ordinals, and two period facts instead of colliding on one key.
+- **Past is immutable; future is replaceable.** Intervals whose `effectiveFrom` has not been reached (a scheduled next-cycle/end-of-term change writes them ahead) MAY be voided or replaced by the owning `unschedule`/superseding change — **or by the slice 01 §4.3 terminal sweep, which counts as an owning superseding change** (2026-08-01 wave-3 review #14: an immediate cancel must not leave an un-reached `PlanLink` interval to open on a cancelled subscription; the sweep also closes in-force intervals at the terminal instant) — until they take effect; that is an edit of the *future*, evented and audited, never of history. Once `effectiveFrom` passes, the interval is history and immutable.
 - Rating and Billing resolve the interval **in force @ `t`**; the boundary instant is the one the change owner (slice 03) sets, shared with rating slicing (SUB-R1). The same @-`t` discipline covers the **committed quantity** (`quantity_interval`, slice 03) — `quantity @ t` is part of the rating read model (PRD §9.2).
 - Each committed composition change increments `version` (slice 01 mechanic) for optimistic concurrency + audit lineage.
 
@@ -228,5 +228,7 @@ off the commit path ([`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md
 ## 5. Traceability
 
 - **PRD**: [`../PRD.md`](../PRD.md) §6.2 (`fr-effective-dated-composition`, `fr-monotonic-version`, `fr-snapshot-discipline`, `fr-plantier-derivability`, `fr-sale-brand-attribution`), §6.8 (reproducibility), §7.1 (NFRs).
+
+**Traces to**: `cpt-cf-bss-subscriptions-fr-effective-dated-composition`, `cpt-cf-bss-subscriptions-fr-snapshot-discipline`, `cpt-cf-bss-subscriptions-fr-plantier-derivability`, `cpt-cf-bss-subscriptions-fr-sale-brand-attribution` *(single-owner FR claims — the P2 traceability convention adopted 2026-08-01, wave-3 review #24h; shared mechanics other slices cite stay narrative, each FR has exactly one owning slice)*
 - **Seams**: **SUB-R2** (snapshot segment), **SUB-G2** (PlanTier derivability); feeds **SUB-R1** (composition read model) — [`../SEAMS.md`](../SEAMS.md).
 - **Slices**: [`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md) (commit + version), [`03-plan-changes.md`](./03-plan-changes.md) (boundary), [`06-trials.md`](./06-trials.md) (phase intervals), [`08-events-billing.md`](./08-events-billing.md) (events), [`09-consumer-contracts.md`](./09-consumer-contracts.md) (read-model contract).

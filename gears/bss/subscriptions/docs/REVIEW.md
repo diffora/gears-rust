@@ -31,7 +31,7 @@ solid. The findings cluster into five themes; fix in this order:
    precedence) and F-04-2 (`resume` trapped by an overlap acquired during suspension) were both closed by
    the 2026-07-28 billing pass — grace governs emission, the pause defers only collection, and a resume
    collision now fails closed naming its blocker with an operator remediation path. **F-05-2** (quota-cycle
-   reset under a pause) remains open.
+   reset under a pause) closed 2026-08-01 — the precedence rule already answered it (✅ FULLY FIXED).
 3. **Brand source (contested seam):** F-08-2 (root), F-02-3, F-07-2 — SUB-R5 is unresolved (per-sale
    vs Plan/SKU brand) and slice 02 overstates it as settled; AC 20 is blocked until reconciled.
 4. **Multi-component billing model. ✅ FIXED 2026-07-28 (SUB-D-19).** F-08-1 — the recurring key gains a
@@ -48,12 +48,18 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
 > F-04-2 had been fixed by the 2026-07-28 billing pass while still marked `open` here, and F-08-1 was
 > resolved the same day as SUB-D-19. Running tally after the sync: **15 fixed / 1 closed / 22 open** of 38.
 > When a decision closes a finding, update both the finding's Status line and the theme list above.
+>
+> **Tally correction (2026-08-01, wave-3 review #24j).** The 2026-07-28 sync claimed 15 fixed while only
+> 13 findings carried `Status: fixed` — the count had absorbed F-06-1 (`open — escalated and now tracked`)
+> and F-08-2 (`partially fixed`), neither of which is fixed. With F-05-2 closed by the wave-3 fix wave the
+> running tally is **14 fixed / 1 partially fixed / 1 closed / 22 open (incl. the F-06-1 escalation)** of 38.
 
 > **Wave 3 (2026-08-01).** The billing-domain + cross-gear + feature-interactions review is recorded in
 > [`reviews/2026-08-01-wave3-billing-domain-review.md`](reviews/2026-08-01-wave3-billing-domain-review.md)
-> — 24 items (19 High, 5 Cleanup, 2 unnumbered hardening notes), **no Blocking**; fix wave pending.
-> New findings are numbered there, not seeded as F-xx entries here; its item 24(j) flags this file's
-> running tally (15 fixed claimed vs 13 `Status: fixed`) and F-05-2 for correction in the fix wave.
+> — 24 items (19 High, 5 Cleanup, 2 unnumbered hardening notes), **no Blocking**. **Fix wave landed
+> 2026-08-01 the same day**: SUB-D-20…26 minted where a decision was owed, direct normative fixes
+> otherwise — per-item mapping in the review file's status banner. New findings are numbered there, not
+> seeded as F-xx entries here; its item 24(j) produced this file's tally correction below and closed F-05-2.
 
 ---
 
@@ -366,7 +372,11 @@ The remaining S3s are wording/precision and unvalidated-NFR items. Two findings 
   about reset during a long pause.
 - **Suggested fix**: Define quota-cycle behaviour under a long pause — reset on a logical anchor even
   when the billing cut is deferred, or explicitly hold the cycle and document the consequence.
-- **Status**: open.
+- **Status**: **fixed** (closed 2026-08-01, wave-3 review #24j) — the premise dissolved with the
+  2026-07-28 emission-vs-collection precedence: during a `collectionPaused` window the period fact
+  **is emitted** (marked; only collection defers — slice 08 §4.3 pause marker), so the cut fires and
+  the reset fires with it; only grace suppresses emission, and that case is the deliberate
+  no-reset corollary (slice 05 §4.4(a)). The reset is additionally period-keyed since SUB-D-21.
 
 ### F-05-3 (S2, sharpens F-04-4) — "Issue/revoke in the same commit" is not reconciled with async edges
 - **Where**: `design/05-entitlements.md` §4.1; foundation §3.6 async note; F-03-1.

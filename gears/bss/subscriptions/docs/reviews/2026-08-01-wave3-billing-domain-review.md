@@ -23,6 +23,25 @@ supporting quotes that do not exist in the documents (a fabricated slice-06 "no 
 sentence and a pricing `inst-el-msw` phrase); both survive here only because the underlying gap
 was re-grounded on lines that do exist — see items 11 and 12.
 
+> **Status (fix wave 2026-08-01, same day): ALL 24 ITEMS + BOTH HARDENING NOTES FIXED.**
+> Seven new decisions where one was owed — **SUB-D-20** (#1/#11/#13: as-of revival discipline),
+> **SUB-D-21** (#2/#8/#9/#15/#16: `lineKey` identity + emitter completeness), **SUB-D-22** (#3/#4:
+> dwell lifecycle), **SUB-D-23** (#5: parked firing class), **SUB-D-24** (#6: one-time lane),
+> **SUB-D-25** (#10: ETF reason class + join key), **SUB-D-26** (#12: cancel+new cohort disclosure)
+> — all flagged for veto. Direct normative fixes otherwise: #7 (AC 5 + traceability + §5.1 + vendor
+> row re-scoped), #14 (terminal sweep closes/voids composition intervals), #17 (D-80/D-94 →
+> slice 01 §4.5 + PRD guard row), #18 (SUB-P7 → slice 03 §4.7, SUB-P8 → slice 09 §4.1 + PRD §9.1,
+> B7/B8 ownership rows, DESIGN §1.3 map), #19 (PRD §6.5 rule 2 + SUB-D-14 heading), #20 (SEAMS
+> SUB-P9 + PRD glossary, parked on SB1), #21 (SUB-B1 → CRIT/Joint-OPEN, aligned list fixed, tick
+> ownership recorded), #22 (slice 03 §4.3 → amended SUB-P1), #23 (SUB-D-17 lookahead inputs +
+> `priceChangePending` carrier), #24(a–j) (registers, sequences, Decisions bullets, PRD fields,
+> ACs 30–34, `SubscriptionRampHalted`/`SeatBound` naming, spec-check citations, the `**Traces to**:`
+> convention across all 8 FR-bearing slices — 47 FRs now single-owner, REVIEW tally corrected +
+> F-05-2 closed). Hardening: draft-void TTL 90-day platform default (SUB-D-11 amendment); the
+> pause-day limit made cumulative-per-term with a 90-day default. **Flagged for veto:
+> SUB-D-20…26**; joint follow-ups ride SEAMS (SB1 recurring-WHEN, SUB-P9 anchor fixture,
+> `lineKey` → rating T-D-15).
+
 ## Summary
 
 **24 items. No Blocking item**: both candidates that looked Blocking during the hunt were cut

@@ -46,13 +46,13 @@ normatives, the ADR index, and traceability — is [`../DESIGN.md`](../DESIGN.md
 |-----|--------|-------------|
 | `01-foundation-lifecycle` | §6.1 | SUB-E1, SUB-C4, SUB-N1 |
 | `02-composition-versioning` | §6.2 | SUB-R2, SUB-G2 |
-| `03-plan-changes` | §6.3 | SUB-R1, SUB-R3, SUB-P1, SUB-C2, SUB-G1 |
-| `04-suspension-renewal-grace` | §6.4, §6.5 | SUB-B2, SUB-C1, SUB-F1, SUB-B5, SUB-E2 |
+| `03-plan-changes` | §6.3 | SUB-R1, SUB-R3, SUB-P1, SUB-C2, SUB-G1, SUB-B6, SUB-P7 (§4.7) |
+| `04-suspension-renewal-grace` | §6.4, §6.5 | SUB-B2, SUB-C1, SUB-F1, SUB-B5, SUB-E2, SUB-P6 (§4.3/§4.5) |
 | `05-entitlements` | §6.9 | SUB-P2, SUB-E3, SUB-B4 |
 | `06-trials` | §6.10 | SUB-R4, SUB-P3 |
 | `07-tenancy-transfer` | §6.6 | (AMS delegation; transfer approvals) |
-| `08-events-billing` | §6.7, §6.8 | SUB-B1, SUB-R1 (ordering), SUB-C5 |
-| `09-consumer-contracts` | §9 | SUB-R1, SUB-B1, SUB-C1, SUB-E1/E3, SUB-F1, SUB-G1 |
+| `08-events-billing` | §6.7, §6.8 | SUB-B1, SUB-R1 (ordering), SUB-R6, SUB-C5, SUB-B7, SUB-B8 |
+| `09-consumer-contracts` | §9 | SUB-R1, SUB-B1, SUB-B7/B8 (wire), SUB-C1, SUB-E1/E3, SUB-F1, SUB-G1, SUB-P6, SUB-P8 (§4.1) |
 
 The numeric prefix follows the PRD §6 decomposition and the dependency order in
 [`../DESIGN.md`](../DESIGN.md) §1.3.

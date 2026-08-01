@@ -180,15 +180,24 @@ advance the phase boundary
 (`convertsToPhaseId` at term, or `convertTrial` to `now`) → authorize payment where required (method
 on file, no re-entry) → re-issue entitlements per the target phase's grant set with no access gap →
 emit `SubscriptionTrialConverted` (the composition-changing conversion event, SUB-D-09); idempotent
-(zero missed / zero double). A `suspended` subscription at the boundary parks the conversion retryable
-until resume or terminal (slice 01 §4.2 source-status matrix).
+(zero missed / zero double). A `suspended` subscription at the boundary parks the conversion in the
+**state-precondition class** (SUB-D-23 — the deadline suspends while `suspended` persists and the
+resume commit re-arms it) until resume or terminal (slice 01 §4.2 source-status matrix / §4.3 taxonomy).
 
 **Payment failure at conversion (2026-07-15 review fix):** the boundary advance is **not rolled
 back** — the phase boundary moves at its scheduled instant regardless (deterministic for rating), the
 **target-phase entitlements are issued** (AC 16 continuity — the customer is on the paid phase, with
-paid access), and the failed conversion charge enters the §6.5 grace ladder as its blocked collection;
+paid access), and the failed conversion charge (the SUB-D-24 one-time lane) enters the §6.5 grace ladder as its blocked collection;
 grace failure exits to `suspended`/`cancelled` per the Contract ladder. Access continuity is never
 traded for collection state — the grace ladder, not a grant rollback, is the pressure mechanism.
+**Revival after a conversion-driven suspension (SUB-D-20, 2026-08-01 wave-3 review #11):** there is
+no never-succeeded renewal to re-run — the paid phase and its term are already in force (the boundary
+advance is never rolled back) — so slice 04 §4.3b **degenerates to payment resolution → `resume`**,
+with the blocked one-time conversion billable emitting on the payment-resolved signal; only if the
+term also expired during the suspension does the full backdated-extension ordering apply (to that
+renewal). Before this rule the mandated middle step (term extension) had no object and the resume
+precondition could never be satisfied — a paying customer stayed suspended until the dwell cancelled
+them.
 
 ### 3.7 Database Schemas and Tables
 
@@ -236,7 +245,7 @@ the `ConversionRecord` remains the single audited outcome either way.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-subscriptions-normative-convert-trial-trl`
 
-- `convertTrial` ("skip the trial, start paying now") is a first-class `TransitionRequest` advancing the phase boundary to `now` — the **phase twin of `changePlan`**, the boundary instant consumed by rating like any `changeEffectiveAt`; re-issues entitlements per the target phase, emits `SubscriptionTrialConverted`; Policy-gated where resource-affecting, idempotent on `(subscriptionId, idempotencyKey)` ([`../PRD.md`](../PRD.md) §6.10; gap **G-2**, SEAMS **SUB-R4**).
+- `convertTrial` ("skip the trial, start paying now") is a first-class `TransitionRequest` advancing the phase boundary to `now` — the **phase twin of `changePlan`**, the boundary instant consumed by rating like any `changeEffectiveAt`; re-issues entitlements per the target phase, emits `SubscriptionTrialConverted`; Policy-gated where resource-affecting, idempotent on `(subscriptionId, idempotencyKey)` ([`../PRD.md`](../PRD.md) §6.10; gap **G-2**, SEAMS **SUB-R4**). **Period identity is untouched (SUB-D-21, 2026-08-01 wave-3 review #16):** conversion — scheduled or early — moves the **phase boundary, never the period sequence**; trial-phase periods are cut like any other (rating prices the phase from the frozen snapshot's phase chain, a free phase to its zero-amount row), so a mid-period conversion's first paid stretch is priced from the already-cut period fact split at the boundary this event carries. The one-time conversion charge is the SUB-D-24 lane, qualified at the conversion instant.
 - **From `draft`:** a `convertTrial` on a never-activated trial is an **activate** directly into the target phase (one committed transition, activation guards apply); the trial phase is skipped, not exited.
 - This extends the manifest §4.3 `TransitionRequest.type` list — manifest alignment tracked in slice 01 §4.6 / [`../PRD.md`](../PRD.md) §15. An unconverted trial expiring while still `draft` exits via the `draft → cancelled` void edge (SUB-D-11).
 
@@ -257,5 +266,7 @@ the `ConversionRecord` remains the single audited outcome either way.
 ## 5. Traceability
 
 - **PRD**: [`../PRD.md`](../PRD.md) §6.10 (`fr-trial-provisioning`, `fr-trial-conversion`, `fr-trial-early-conversion`, `fr-trial-expiry`, `fr-trial-extension`), §6.1 (`fr-trials-not-a-status`, `fr-trial-commercial-pattern`), §7.1 (NFRs), §15 (extension-policy open), §17.1 (trial-conversion reconciliation).
+
+**Traces to**: `cpt-cf-bss-subscriptions-fr-trial-commercial-pattern`, `cpt-cf-bss-subscriptions-fr-trial-provisioning`, `cpt-cf-bss-subscriptions-fr-trial-conversion`, `cpt-cf-bss-subscriptions-fr-trial-early-conversion`, `cpt-cf-bss-subscriptions-fr-trial-expiry`, `cpt-cf-bss-subscriptions-fr-trial-extension` *(single-owner FR claims — the P2 traceability convention adopted 2026-08-01, wave-3 review #24h; shared mechanics other slices cite stay narrative, each FR has exactly one owning slice)*
 - **Seams**: **SUB-R4** (phase boundary), **SUB-P3** (trial offer); consumes **SUB-P2** (per-phase grant), **SUB-F1** (conversion auth) — [`../SEAMS.md`](../SEAMS.md).
 - **Slices**: [`01-foundation-lifecycle.md`](./01-foundation-lifecycle.md) (`convertTrial`, approval), [`02-composition-versioning.md`](./02-composition-versioning.md) (phase intervals), [`04-suspension-renewal-grace.md`](./04-suspension-renewal-grace.md) (payment-failure grace), [`05-entitlements.md`](./05-entitlements.md) (per-phase re-issue), [`08-events-billing.md`](./08-events-billing.md) (conversion event).

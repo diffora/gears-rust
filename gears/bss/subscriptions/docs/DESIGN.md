@@ -125,13 +125,15 @@ dependency order in the graph below.
 |-------|-------|--------|-------------|
 | [`design/01-foundation-lifecycle.md`](./design/01-foundation-lifecycle.md) | Lifecycle Foundation | §6.1 | SUB-E1, SUB-C4, SUB-N1 |
 | [`design/02-composition-versioning.md`](./design/02-composition-versioning.md) | Composition & Versioning | §6.2 | SUB-R2, SUB-G2 |
-| [`design/03-plan-changes.md`](./design/03-plan-changes.md) | Plan & Quantity Changes | §6.3 | SUB-R1, SUB-R3, SUB-P1, SUB-C2, SUB-G1 |
-| [`design/04-suspension-renewal-grace.md`](./design/04-suspension-renewal-grace.md) | Suspension, Renewal & Grace | §6.4, §6.5 | SUB-B2, SUB-C1, SUB-F1, SUB-B5, SUB-E2 |
+| [`design/03-plan-changes.md`](./design/03-plan-changes.md) | Plan & Quantity Changes | §6.3 | SUB-R1, SUB-R3, SUB-P1, SUB-C2, SUB-G1, SUB-B6, **SUB-P7** (migration executor, §4.7) |
+| [`design/04-suspension-renewal-grace.md`](./design/04-suspension-renewal-grace.md) | Suspension, Renewal & Grace | §6.4, §6.5 | SUB-B2, SUB-C1, SUB-F1, SUB-B5, SUB-E2, **SUB-P6** (expiry signal + notice lookahead, §4.3/§4.5) |
 | [`design/05-entitlements.md`](./design/05-entitlements.md) | Entitlement Lifecycle | §6.9 | SUB-P2, SUB-E3, SUB-B4 |
 | [`design/06-trials.md`](./design/06-trials.md) | Trial Runtime & Conversion | §6.10 | SUB-R4, SUB-P3 |
 | [`design/07-tenancy-transfer.md`](./design/07-tenancy-transfer.md) | Multi-Tenant Ownership & Transfer | §6.6 | (AMS delegation; transfer approvals) |
-| [`design/08-events-billing.md`](./design/08-events-billing.md) | Event Model & Billing Alignment | §6.7, §6.8 | SUB-B1, SUB-R1 (ordering), SUB-C5 |
-| [`design/09-consumer-contracts.md`](./design/09-consumer-contracts.md) | Consumer & Integration Contracts | §9 | SUB-R1, SUB-B1, SUB-C1, SUB-E1/E3, SUB-F1, SUB-G1 |
+| [`design/08-events-billing.md`](./design/08-events-billing.md) | Event Model & Billing Alignment | §6.7, §6.8 | SUB-B1, SUB-R1 (ordering), SUB-R6, SUB-C5, **SUB-B7** (cancellation money path), **SUB-B8** (one-time lane) |
+| [`design/09-consumer-contracts.md`](./design/09-consumer-contracts.md) | Consumer & Integration Contracts | §9 | SUB-R1, SUB-B1, SUB-B7/B8 (wire payloads), SUB-C1, SUB-E1/E3, SUB-F1, SUB-G1, **SUB-P6** (read contract), **SUB-P8** (presence read, §4.1) |
+
+*(Seam-map completion 2026-08-01, wave-3 review #18: SUB-P6/P7/P8/B7/B8 added to their owning slices — the SEAMS "each slice implements the seams listed for it here" contract had left the 2026-07-28…30 seams with no implementer; SUB-P9 stays parked on SEAMS pending the SB1 resolution.)*
 
 #### Dependency order
 
@@ -385,11 +387,18 @@ usage + prorates at the same instant; no posted-invoice mutation
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-subscriptions-seq-renewal-grace`
 
-Renewal job at term end → payment pre-check → success: extend term + eligibility-first snapshot
+Renewal job at term end → **pending non-renewal intent?** ⇒ the intent fires instead (no extension)
+→ **`autoRenew = false`, no manual `renew`?** ⇒ system end-of-term `cancel` (`term_expired`,
+SUB-D-13 §4.3a) → otherwise payment pre-check → success: extend term + eligibility-first snapshot
 re-resolution (SUB-D-14 as amended — a grandfathered subscription keeps its pinned generation
-until `grandfatherUntil` passes); failure:
+until `grandfatherUntil` passes; the notice job armed the 30-day commercial notice ahead where the
+SUB-D-17 lookahead saw a pending change); failure:
 enter grace (default 7 days, paused next-term recurring), notices, hybrid exit → `suspended`/
-`cancelled` per Contract ladder; keyed to prevent double term extension
+`cancelled` per Contract ladder; keyed to prevent double term extension. From nonpayment-`suspended`:
+payment inside the SUB-D-16 dwell **revives** — backdated term extension per §4.3b with SUB-D-20
+as-of resolution (composition/payer/eligibility as of what the backdated term describes) → `resume`;
+past the (hold-adjusted) dwell deadline the daily sweep fires the terminal `cancel`
+(`nonpayment_exhausted`, SUB-D-22)
 ([`design/04-suspension-renewal-grace.md`](./design/04-suspension-renewal-grace.md)).
 
 #### Point-of-use entitlement check
@@ -436,17 +445,22 @@ for the p95 < 100ms target. Deployment specifics are platform-standard for a BSS
 - **WHEN/MATH split (SUB-R1):** Subscriptions owns `changeEffectiveAt`/`changeMode`; rating owns proration math + usage slicing; shared ordering key `(orderingTenantId, subscriptionId)` — the ordering tenant is **pinned at creation** and immutable across transfers (SUB-D-06).
 - **Recurring split (SUB-D-07, SUB-R6):** Subscriptions cuts the money-free recurring **period fact** (anchor, pauses, intents, the idempotency key); rating **prices** it; Billing posts. No monetary column in this gear.
 - **Snapshot segment (SUB-R2):** Subscriptions writes only the `(currency, region)` segment of `pricingSnapshotRef` at activation; seat provenance and the activation date-trio are **not** snapshot segments — they ride events/read-models.
-- **Adopt the catalog contracts (SUB-P1/P2/P3):** plan-change classification, phase → grant-set map, and trial offer are pricing/catalog-authored and adopted verbatim; Subscriptions authors nothing catalog-side.
+- **Adopt the catalog contracts (SUB-P1/P2/P3/P5):** plan-change classification (boundary class computed here since pricing D-93), phase → grant-set map, trial offer, and the sellability gate (incl. pricing D-80's coverage horizon + D-94's full-conjunction granularity — slice 01 §4.5) are pricing/catalog-authored and adopted; Subscriptions authors nothing catalog-side.
+- **Joint pricing lanes (SUB-P6/P7/P8, added 2026-07-28…30; slice owners assigned 2026-08-01):** the grandfathering expiry signal + notice lookahead + as-of reads (slices 04/09), the plan-migration executor handshake (slice 03 §4.7), and the in-flight-subscriber presence read (slice 09 §4.1). `billingAnchorPolicy` adoption (SUB-P9) is parked on the SB1 recurring-WHEN resolution.
 - **Contracts obligation (SUB-C1):** renewal/grace/regional templates are Contracts SoR; until the upstream Contracts PRD authors them, the platform defaults govern (7-day grace, 30/14/7/1 notices).
-- **Billing invariants (SUB-B1):** recurring idempotency `(subscriptionId, billing period, lineKey)` (per billable component — SUB-D-19), posted-invoice immutability, `{subscriptionId, skuId, planId, priceId}` + `pricingSnapshotRef` traceability; Billing exposes the `billedThroughAt` watermark for the backdating guard (SUB-B6).
+- **Billing invariants (SUB-B1/B7/B8):** recurring idempotency `(subscriptionId, billing period, lineKey)` (per billable component interval — SUB-D-19/21), posted-invoice immutability, **per-component** `{skuId, planId, priceId}` + `pricingSnapshotRef` traceability; every cut resolves **as of what it describes** (SUB-D-20); the one-time lane emits amount-less and Billing values from the frozen ref (SUB-D-24); ETF derivation is reason-scoped with a term/period join key (SUB-D-25); Billing exposes the `billedThroughAt` watermark for the backdating guard (SUB-B6). The recurring-WHEN owner vs rating's period tick is the open SB1 CRIT (SUB-B1).
 - **Fail-closed gate + enforcement split (SUB-E1/E3):** Policy gates resource-affecting transitions fail-closed; Subscriptions serves the entitlement decision state, OSS enforces; the check **read** surface follows the bounded-staleness degraded mode (SUB-D-10), transitions never do.
 - **Closed manifest enum (SUB-D-03/05/11):** trials, billing-only pause, and scheduled intents are attributes/postures/pending-intents, never new statuses; `draft → cancelled` (void) completes the edge set so drafts are exitable.
 - **One commit path, complete inventories (SUB-D-08/09):** every FR-mandated mutation has a `TransitionRequest.type`; every FR-mandated auditable event has a name in the slice-08 registry.
 
-**Autonomous decisions** — [`DECISIONS.md`](./DECISIONS.md) SUB-D-01…12 (flagged for veto):
+**Autonomous decisions** — [`DECISIONS.md`](./DECISIONS.md) SUB-D-01…26 (flagged for veto):
 scheduled intents, `updateQuantity`, `collectionPaused`, ramps, activation date-trio, pinned
 ordering tenant, recurring split, mutation-type completion, event-inventory naming, check-surface
-staleness budget, draft void, pause × renewal interplay.
+staleness budget, draft void, pause × renewal interplay (01…12); term-boundary resolution,
+eligibility-first re-resolution, mid-ramp supersession, nonpayment dwell, price-change notice,
+cancellation money path, per-component recurring key (13…19); as-of cut resolution, `lineKey`
+identity + emitter completeness, dwell lifecycle, parked firing class, one-time lane, ETF reason
+class, cancel+new cohort disclosure (20…26).
 
 **Open cross-team items (Design-lock inputs)** — the highest-risk is the **Contracts** renewal/grace
 SoR (SUB-C1, upstream unauthored); then the rating read-model **field mirror** (SUB-R1, downgraded
@@ -462,7 +476,7 @@ values + intent envelope (SUB-N1) is tracked in [`PRD.md`](./PRD.md) §15, not a
 
 - **PRD**: [`PRD.md`](./PRD.md) (§6 functional; §7 NFR; §9 contracts; §12 acceptance criteria; §15 open questions).
 - **Cross-gear contract**: [`SEAMS.md`](./SEAMS.md) (seam register organised by neighbour + decision log).
-- **Decisions**: [`DECISIONS.md`](./DECISIONS.md) (SUB-D-01…12, flagged for veto).
+- **Decisions**: [`DECISIONS.md`](./DECISIONS.md) (SUB-D-01…26, flagged for veto).
 - **Vendor gap analysis**: [`STRIPE-ZUORA-GAP-ANALYSIS.md`](./STRIPE-ZUORA-GAP-ANALYSIS.md) (G-1…G-6).
 - **ADRs**: [`ADR/`](./ADR/) — [`0001`](./ADR/0001-cpt-cf-bss-subscriptions-adr-manifest-closed-status-machine.md) (manifest-closed status machine), [`0002`](./ADR/0002-cpt-cf-bss-subscriptions-adr-when-not-math-split.md) (WHEN/MATH split), [`0003`](./ADR/0003-cpt-cf-bss-subscriptions-adr-scheduled-intents-on-aggregate.md) (scheduled intents on the aggregate) — all `status: proposed`, flagged for veto.
 - **Slices**: [`design/`](./design/) (per-slice designs) and [`design/README.md`](./design/README.md).
