@@ -108,7 +108,7 @@ Inherits Foundation C-set. Slice-5-specific:
 | G1 | Fail-safe materiality | No configured threshold ⇒ **all** changes material; first publish (no baseline) ⇒ **always** material; auto-publish only below an explicitly configured threshold and not a first publish | PRD §1.4 |
 | G2 | Two distinct principals | Submitter ≠ approver as **principals** (not roles): one human with both roles still cannot self-approve | PRD §6.7 |
 | G3 | Multi-currency materiality | Each affected row's delta compares in its **own** currency; the rule trips if **any** row exceeds its threshold | PRD §6.7 |
-| G4 | Tamper-evidence mechanism | **Hash-chained audit rows in the same database** (D-14; ledger precedent): the audit row commits inside the mutation's ACID transaction — no lost records on crash, and an unavailable audit store cannot exist separately from an unavailable database (fail-closed by construction). A periodic verification job walks the chain (`pricing_audit_chain_verified`); the chain head MAY be **asynchronously anchored** to external WORM/object-lock storage as hardening — never on the mutation path | PRD §6.12; D-14 |
+| G4 | Tamper-evidence mechanism | **Hash-chained audit rows in the same database** (D-14; ledger precedent): the audit row commits inside the mutation's ACID transaction — no lost records on crash, and an unavailable audit store cannot exist separately from an unavailable database (fail-closed by construction). **Chains are segmented per `(tenant_id, chain_id)`** with a periodic per-tenant **roll-up** chaining the segment heads (**D-135**, 2026-08-01 review fix — a single per-tenant chain is a strict sequence, so it serialized *every* audited mutation of a tenant behind one head inside the mutation transaction). A periodic verification job walks every segment and the roll-up (`pricing_audit_chain_verified`); the roll-up head MAY be **asynchronously anchored** to external WORM/object-lock storage as hardening — never on the mutation path | PRD §6.12; D-14; D-135 |
 | G5 | Retention | ≥ 7 years, tenant/jurisdiction-configurable as the **maximum applicable minimum**; jurisdictions imposing a storage-limitation **maximum** are an open Legal item | PRD §15 |
 
 ### 1.7 Naming & Design-Introduced Names
@@ -285,12 +285,13 @@ roles). Each action sits on its **real object** (a noun), never an authz tier:
 | `/v1/pricing/customer-groups/*` (S9: taxonomy + membership) | `customer_group × write` / `read` |
 | `GET/POST /v1/pricing/approvals*` (S5) | `approval × read` / `approve` |
 | `GET/PUT /v1/pricing/config/approval-threshold-policy` (S5) | `approval_policy × read` / `write` |
-| `GET/PUT /v1/pricing/config/taxonomies/{region|brand|partner|orgTier}` (D-120), `GET/PUT /v1/pricing/config/tax-display-policy` (S4) | `config × read` / `write` — the customer-group taxonomy is **not** here: it lives at `/v1/pricing/customer-groups/taxonomy` under `customer_group` (more sensitive) |
+| `GET/PUT /v1/pricing/config/taxonomies/{region\|brand\|partner\|orgTier}` (D-120), `GET/PUT /v1/pricing/config/tax-display-policy` (S4) | `config × read` / `write` — the customer-group taxonomy is **not** here: it lives at `/v1/pricing/customer-groups/taxonomy` under `customer_group` (more sensitive) |
 | `POST /v1/pricing/historical-imports` (S5/S11) | `historical_import × write` |
 | `GET /v1/pricing/historical-imports/{id}` (S5/S11) | `historical_import × read` — the pending import's row set, readable by the approving FinanceReviewer |
 | `GET /v1/pricing/audit` (S5) | `audit × read` / `export` — **Auditor-only** (actor trails, before/after, approval decisions; D-12) |
 | `GET /v1/pricing/history`, `POST /v1/pricing/history/export` (S12) | `plan × read` — price history is plan/price data (chronological view over append-only rows), Finance-readable by construction (D-12) |
 | Bulk import / mass repricing / clone / bulk-import **abort** (`POST /v1/pricing/bulk-imports/{id}:abort`) (S12) | the **same** `plan × write` / `publish` — bulk is authoring at scale (and abort is un-authoring at scale), no new authority |
+| `GET /v1/pricing/catalog-version/frontier` (S1 §3.3 — the D-136 pin-eligibility watermark a consumer pins before a resolution/rating run) | `plan × read` — service identity, alongside the read model itself; the value is tenant-scoped like every read |
 | Published read model (Tariffs/Rating/Subscriptions/Billing) | service-to-service identities with `plan × read` scoped by the platform service trust; never the human preview grant |
 
 **Role → permission matrix** (targeted via the registered label type-schemas):
@@ -332,7 +333,7 @@ hash-blind even where the subject resource is read-restricted.
 **Steps**:
 1. [ ] - `p1` - Record completeness: actor, timestamp, **before/after version refs**, approval trail (submitter/approver/decision/reason), correlation id - `inst-au-complete`
 1a. [ ] - `p1` - **PII minimization:** the audit trail stores **pseudonymous principal ids**, never display names/emails — the 7-year retention then holds no directly-identifying operator PII and GDPR erasure of a departed operator stays an IdP concern, not an audit rewrite - `inst-au-pii`
-2. [ ] - `p1` - Tamper evidence per G4 (D-14): append-only role + triggers (as the Foundation tables) **plus** in-DB hash-chained rows committed in the mutation transaction; **the chain is per tenant** (2026-07-31 review fix — residency-bound tenants live on different cells' databases, so a cross-tenant chain is physically impossible; per-tenant chains also keep verification and WORM anchoring residency-local); a periodic job verifies each chain (`pricing_audit_chain_verified`), and a chain head MAY be async-anchored to external WORM/object-lock storage — prior versions cannot be mutated or deleted within retention - `inst-au-tamper`
+2. [ ] - `p1` - Tamper evidence per G4 (D-14): append-only role + triggers (as the Foundation tables) **plus** in-DB hash-chained rows committed in the mutation transaction; **chains are per tenant** (2026-07-31 review fix — residency-bound tenants live on different cells' databases, so a cross-tenant chain is physically impossible; per-tenant chains also keep verification and WORM anchoring residency-local) **and segmented within a tenant by `chain_id` = the audited subject's aggregate** — plan, overlay, payer, policy, bulk operation (**D-135**, 2026-08-01 review fix). A chain is a strict sequence: writing row *N* needs row *N−1*'s hash, so one chain per tenant meant every audited mutation of that tenant contended on a single head **inside** its mutation transaction — all authoring serialized by construction, against a ≥ 50 rows/s repricing SLO whose per-row cost model did not even list the audit write (S12 §10). Segmented, concurrent mutations of different aggregates proceed independently while a bulk run's rows — one plan, one `chain_id` — extend sequentially inside that plan's own transaction anyway (D-134). Tamper-evidence is preserved by a periodic per-tenant **roll-up** row chaining the current segment heads: deleting a row breaks its segment, deleting a segment breaks the roll-up. The verification job (`pricing_audit_chain_verified`) walks segments and roll-up alike, and the roll-up head MAY be async-anchored to external WORM/object-lock storage — prior versions cannot be mutated or deleted within retention - `inst-au-tamper`
 3. [ ] - `p1` - Retention ≥ 7 years, tenant/jurisdiction-configurable as the **maximum applicable minimum** (G5); the storage-limitation-maximum question is an open Legal item — the retention engine takes a per-jurisdiction config, not a hardcoded value - `inst-au-retention`
 4. [ ] - `p2` - Auditor read surface: the **audit trail** (actor + before/after + approval decisions) under **Auditor-only** filters (`audit × read`); Finance's chronological **price history** is the separate Slice 12 surface under `plan × read` (D-12); export p95 ≤ 5s / 100 records applies to both — and both surfaces **paginate per the Foundation cursor contract (D-125)**: commit-ordered, cursor-stable over the ≥ 7-year append-only store, the SLO applying per page/chunk - `inst-au-read`
 
@@ -532,8 +533,11 @@ still-in-effect legacy price is importable, which is what makes synthesis tier 2
 Every mutation **MUST** record actor/timestamp/before-after/approval trail — the actor as a
 **pseudonymous principal id** (no display names/emails); history retained
 ≥ 7 years (jurisdiction-configurable, maximum applicable minimum) in append-only,
-tamper-evident storage (in-DB hash chain, committed in the mutation transaction; optional
-async WORM anchoring — D-14) — no mutation or deletion within retention.
+tamper-evident storage (in-DB hash chains **segmented per `(tenant_id, chain_id)` with a
+periodic per-tenant roll-up over the segment heads** — D-135, so tamper-evidence no longer
+costs a tenant-wide write serialization inside every mutation transaction — committed in the
+mutation transaction; optional async WORM anchoring of the roll-up head — D-14) — no mutation
+or deletion within retention.
 
 **Implements**: `cpt-cf-bss-pricing-algo-audit`
 
@@ -566,7 +570,7 @@ Integration (testcontainers):
 - [ ] Temporal bounds (D-81): a row with `effective_from` not strictly past is rejected (`BACKDATE_SIDE_EFFECT`); a row with `effective_to` beyond `now` or open-ended (`null`) is **accepted** — and still appears in no read model, coverage report or sellability response; a second row on the key overlapping the open-ended interval is rejected (`null` = +∞)
 - [ ] An import on the scope key of a **still-published** live row is **accepted** (D-76 — the stores are disjoint, so this is not a duplicate); the imported row appears in no read model, no coverage report and no sellability response, and the live row's resolution is unchanged
 - [ ] A mutation on a pricing region outside the caller's authz scope → 403 + audit record
-- [ ] Audit rows resist UPDATE/DELETE (role + trigger); the tamper-evidence check detects a manually corrupted row (G4 mechanism)
+- [ ] Audit rows resist UPDATE/DELETE (role + trigger); the tamper-evidence check detects a manually corrupted row (G4 mechanism) — in its **own segment** and, when a whole segment is removed, via the per-tenant roll-up (D-135); two concurrent mutations of **different** aggregates of one tenant both commit without contending on a chain head, while two mutations of the same aggregate serialize
 
 API:
 
