@@ -132,7 +132,7 @@ flowchart TB
 - Unpublished included SKU / component plan → 422; component row missing for a sold `(currency, region)` or mismatched `frequency` → `CURRENCY_NOT_COVERED` / `FREQUENCY_MISMATCH` (422); rev-share off by more than 1 bp per vendor SKU → `RESIDUAL_OVER_TOLERANCE` (422); structurally missing platform cut / malformed shares → `REVSHARE_UNBALANCED` (422); rev-share authored on an `own_price` bundle → `REVSHARE_BASIS_UNSUPPORTED` (422, D-55)
 
 **Steps**:
-1. [ ] - `p2` - API: POST/PATCH /v1/pricing/bundles (draft; idempotency key) - `inst-ba-author`
+1. [ ] - `p2` - API: POST/PATCH /bss-pricing/v1/bundles (draft; idempotency key) - `inst-ba-author`
 2. [ ] - `p2` - Publish: `BundleValidator` + `RevShareReconciler` run in the Foundation pipeline - `inst-ba-validate`
 2a. [ ] - `p1` - **Composition changes are always material (normative, D-104, 2026-07-31 review fix):** creating a bundle, adding/removing/replacing a **component**, any **rev-share** change (`share_bp`, `platform_cut_bp`, the group's `residual_absorber_party`), a `price_basis` change and an `invoiceItemization` change are **registered always-material triggers** (Slice 5 `inst-mat-registered`) — the commit routes through the two-person workflow before it publishes. The `MaterialityEvaluator` computes per-row deltas over **price rows**, and a `sum_of_parts` recomposition touches none: a component swap or a re-split evaluated `auto_publishable` under any configured threshold and reached consumers with **no approver**, while a $1 price-row change above threshold took two people — the D-50 hole one slice over, and with comparable money (a rev-share split *is* vendor payout; a component swap changes what the customer receives at an unchanged price). It also restores D-11's own premise: that decision dropped `bundle × write` from the publish endpoint because "the composition is protected at publish time by the approval content pin", which a non-material publish never creates. `FinanceReviewer` already holds `bundle × read`, so the D-61 reviewability invariant needs no new grant - `inst-ba-material`
 3. [ ] - `p2` - **RETURN** 202; `BundleUpdated` emitted; composition frozen into the read model / snapshot - `inst-ba-return`
@@ -178,8 +178,8 @@ of Slices 2/11 on their `bundle`-type SKU.
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `POST/PATCH` | `/v1/pricing/bundles` | Author bundle composition (draft) | idempotency key / ETag |
-| `POST` | `/v1/pricing/bundles/{bundleId}/publish` | Validate + publish | per revision |
+| `POST/PATCH` | `/bss-pricing/v1/bundles` | Author bundle composition (draft) | idempotency key / ETag |
+| `POST` | `/bss-pricing/v1/bundles/{bundleId}/publish` | Validate + publish | per revision |
 
 **Problem responses (RFC 9457):** `BASIS_MISSING` (422), `COMPONENT_UNPUBLISHED` (422),
 `COMPONENT_IS_BUNDLE` (422 — flat composition at launch; nesting is Future),
@@ -277,7 +277,7 @@ before publishing.
 **Implements**: `cpt-cf-bss-pricing-flow-bundle-author`, `cpt-cf-bss-pricing-algo-bundle-basis`, `cpt-cf-bss-pricing-algo-bundle-coverage`
 
 **Touches**:
-- API: `POST/PATCH /v1/pricing/bundles`
+- API: `POST/PATCH /bss-pricing/v1/bundles`
 - DB: `pricing_bundle`, `pricing_bundle_component`
 - Entities: `BundleValidator`
 

@@ -164,7 +164,7 @@ flowchart TB
 - Stale ETag → conflict (Foundation optimistic concurrency)
 
 **Steps**:
-1. [ ] - `p1` - API: POST /v1/pricing/plans (draft; idempotency key honored) - `inst-pa-create`
+1. [ ] - `p1` - API: POST /bss-pricing/v1/plans (draft; idempotency key honored) - `inst-pa-create`
 2. [ ] - `p1` - Validate the parent `skuId` is **published** in the registry read model - `inst-pa-sku`
 3. [ ] - `p1` - Persist cycle + frequency metadata (`n` validated > 0 and ≤ cap, P1) - `inst-pa-cycle`
 4. [ ] - `p1` - Attach add-on rules / phases / descriptors via PATCH while `draft` - `inst-pa-attach`
@@ -183,7 +183,7 @@ flowchart TB
 - Any §17.1/§17.3 violation → 422 with the enumerated validation report (fail-closed; no event, no warm)
 
 **Steps**:
-1. [ ] - `p1` - API: POST /v1/pricing/plans/{planId}/publish - `inst-pp-api`
+1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/publish - `inst-pp-api`
 2. [ ] - `p1` - Foundation `ValidationPipeline` executes `CycleShapeValidator` + `CompositionValidator` + `PhaseGraph` + `DescriptorSet` rules (this slice) alongside Slice-3 price rules - `inst-pp-validate`
 3. [ ] - `p1` - On success: Foundation freezes the shape into the read model + snapshot, emits the frozen events, requests `CatalogVersion` ([`01-foundation.md`](./01-foundation.md) §4.2 steps 3–5) - `inst-pp-freeze`
 4. [ ] - `p1` - **RETURN** 202 (publish accepted / pending approval) or 422 (validation report) - `inst-pp-return`
@@ -270,10 +270,10 @@ flowchart TB
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `POST` | `/v1/pricing/plans` | Create a draft plan | client idempotency key |
-| `PATCH` | `/v1/pricing/plans/{planId}` | Update draft shape (cycle, phases, add-ons, descriptors) | ETag |
-| `POST` | `/v1/pricing/plans/{planId}/publish` | Run fail-closed validation + submit for approval/publish | per plan revision |
-| `GET` | `/v1/pricing/plans/{planId}` | Read (draft for authors; published via read model) | — |
+| `POST` | `/bss-pricing/v1/plans` | Create a draft plan | client idempotency key |
+| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape (cycle, phases, add-ons, descriptors) | ETag |
+| `POST` | `/bss-pricing/v1/plans/{planId}/publish` | Run fail-closed validation + submit for approval/publish | per plan revision |
+| `GET` | `/bss-pricing/v1/plans/{planId}` | Read (draft for authors; published via read model) | — |
 
 **Problem responses (RFC 9457):** `SKU_NOT_PUBLISHED` (422), `INVALID_CUSTOM_INTERVAL` (422),
 `HYBRID_INCOMPLETE` (422), `USAGE_MARKET_INCOMPLETE` (422 — a priced `(meter, dimensionKey)`
@@ -398,7 +398,7 @@ carried one) projected into the read model.
 **Implements**: `cpt-cf-bss-pricing-algo-cycle-shape`, `cpt-cf-bss-pricing-flow-plan-author`
 
 **Touches**:
-- API: `POST/PATCH /v1/pricing/plans`, `POST /v1/pricing/plans/{planId}/publish`
+- API: `POST/PATCH /bss-pricing/v1/plans`, `POST /bss-pricing/v1/plans/{planId}/publish`
 - DB: `pricing_plan` (cycle/frequency columns)
 - Entities: `CycleShapeValidator`
 

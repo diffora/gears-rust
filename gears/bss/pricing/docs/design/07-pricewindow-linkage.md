@@ -177,7 +177,7 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 - Attempt to supersede or reprice an `existing_grandfathered` row → rejected (Foundation §4.3; only tightening `grandfatherUntil` is allowed, as a material change)
 
 **Steps**:
-1. [ ] - `p1` - API: POST /v1/pricing/plans/{planId}/cutovers — payload: the cutover instant + **per-selected-key entries** (scope-key selector → successor row ref, per key), with an optional **per-key `grandfatherUntil`** overriding an optional unit-wide default (D-28; 2026-07-28 review fix, confirmed 2026-07-31) - `inst-gc-api`
+1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/cutovers — payload: the cutover instant + **per-selected-key entries** (scope-key selector → successor row ref, per key), with an optional **per-key `grandfatherUntil`** overriding an optional unit-wide default (D-28; 2026-07-28 review fix, confirmed 2026-07-31) - `inst-gc-api`
 2. [ ] - `p1` - `CutoverOrchestrator` composes the W4 unit and validates gap-freeness across the three window operations **before** submission; the cutover instant MUST be in the future at submit **and**, at approval commit, at least the **max batching-delay SLO** (D-47: 5 min) in the future (`CUTOVER_INSTANT_PASSED` otherwise; 2026-07-30 review fix) — an instant inside the batching/warm lag would activate the successor's window while its row is not yet addressable at any completed `CatalogVersion`, transiently failing renewals/arrears on the key closed - `inst-gc-compose`
 3. [ ] - `p1` - Approval (Slice 5, material) → **one local ACID transaction** over the slice-owned window tables (D-03): shorten `effectiveTo` + two window schedules + the two new rows + **the predecessor's `published → superseded` flip** (D-100 — see `inst-co-supersede`) commit or roll back together — no cross-component protocol, no partial state. The grandfathered copy and the successor **pass the Foundation validation pipeline and the commit requests `CatalogVersion` addressability exactly as a supersession publish does** (PRD §17.5) — the successor is sellable only after `CatalogVersionPublished` + warm-completion. Events: `PriceCreated` ×2 (copy + successor) + `PriceWindowScheduled` ×2; `PriceWindowExpired` fires at cutover; `PriceWindowCancelled` only for not-yet-active windows of the old key - `inst-gc-commit`
 4. [ ] - `p1` - **RETURN** 202 (cutover scheduled); the grandfathered copy is immutable in price from birth - `inst-gc-return`
@@ -267,7 +267,7 @@ most-specific-wins semantics, the cutover unit, the expiry signal.
 The set named the "supersession unit" everywhere (one-pending-unit-per-key, the D-35 key pins, the S5 approval hash) without ever defining what composes one; assembled from the standalone primitives it is unbuildable — the successor's window collides with the predecessor's open-ended window (`WINDOW_OVERLAP`), and shortening the predecessor first is its own always-material D-62 operation that drops the key below the D-80 coverage horizon (a sales outage) until the successor schedules. This algorithm is that definition (D-88, 2026-07-31 review fix); the cutover (`algo-cutover`) is its multi-row sibling.
 
 **Steps**:
-1. [ ] - `p1` - API: POST /v1/pricing/plans/{planId}/supersessions — payload: the target scope key (or the current `priceId`), the successor row definition, the **changeover instant**; idempotent per `(planId, scope key, changeover instant)` - `inst-su-api`
+1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/supersessions — payload: the target scope key (or the current `priceId`), the successor row definition, the **changeover instant**; idempotent per `(planId, scope key, changeover instant)` - `inst-su-api`
 2. [ ] - `p1` - `SupersessionOrchestrator` composes the unit: (a) the successor **draft** row on the **same canonical scope key** (S3 rules apply — incl. the D-82/D-98 unit guard: same `meter`/`dimensionKey`/`model_kind`/granularities/aggregation+qualification windows on usage rows); (b) the predecessor window's `effectiveTo` shorten to the changeover instant — a key with no active/open window covering that instant (dormant; coverage already ended) fails compose, the unit presupposing current coverage; revival is a plain publish + window schedule (2026-07-31c review fix, L-5); (c) the successor window scheduled `[changeover, …)`. Gap-freeness across (b)+(c) is validated at compose **and** re-validated at commit — no instant of the key is left uncovered, so neither `WINDOW_OVERLAP` nor `WINDOW_TRAILING_VOID` can arise from a committed unit - `inst-su-compose`
 3. [ ] - `p1` - **Changeover instant floor:** the instant MUST be strictly future at submit **and at least the max batching-delay SLO (D-47: 5 min) in the future at approval commit** (`SUPERSESSION_INSTANT_PASSED`, 422; the unit is recomposed) — an instant inside the batching/warm lag would activate the successor's window while its row is not yet addressable at any completed `CatalogVersion`, transiently failing renewals/arrears closed (the same rule `inst-gc-compose` applies to cutovers; D-88 extends it to the mechanism that runs daily). **Bulk (Slice 12):** a mass-repricing run names **one** changeover instant for all its rows, bounded the same way against the run's approval commit - `inst-su-instant`
 4. [ ] - `p1` - The unit is **one approval unit** (materiality = the standard per-currency price-delta evaluation; it pends the key per `inst-co-single-pending`) and commits as **one local ACID transaction** (D-03): the pipeline re-runs, the successor publishes, the predecessor flips `published → superseded` (S3 `inst-ps-supersede`), and both window operations apply — or everything rolls back. No interim state exists in which the key is shortened without its scheduled successor - `inst-su-commit`
@@ -308,14 +308,14 @@ per generation row — generations expire independently (ADR-0002)
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `POST` | `/v1/pricing/prices/{priceId}/windows` | Schedule a window (overlap-validated; D-03 owned surface). **A publish unit** (D-99): pending `CatalogVersion` ref + plan-subject re-projection, 202 | client idempotency key |
-| `PATCH` | `/v1/pricing/price-windows/{windowId}` | Adjust a future `effectiveTo` (shorten/extend; coverage-validated). **A publish unit** (D-99); a shorten is additionally always-material (D-62) | ETag |
-| `DELETE` | `/v1/pricing/price-windows/{windowId}` | Cancel a not-yet-active window (emits `PriceWindowCancelled`). **A publish unit** (D-99); always-material (D-62) | — |
-| `POST` | `/v1/pricing/plans/{planId}/supersessions` | Compose + submit the atomic **supersession unit** (D-88): successor row + predecessor-window shorten + successor-window schedule, one approval unit / one local ACID transaction; changeover instant ≥ approval commit + the max batching-delay SLO | per `(planId, scope key, changeover instant)` |
-| `POST` | `/v1/pricing/plans/{planId}/cutovers` | Compose + submit the atomic grandfathering cutover — **single- or multi-key** (D-28): the payload carries a scope-key selector; all selected keys cut over at **one instant** as **one approval unit** / one local ACID transaction (per-key generations created; the unit pends every touched key; the S5 per-row hash pin covers the whole set) | per `(planId, key-set hash, cutover instant)` |
-| `PATCH` | `/v1/pricing/prices/{priceId}/grandfather-until` | Tighten `grandfatherUntil` (material change) | ETag |
-| `GET` | `/v1/pricing/plans/{planId}/sellability?at=&currency=&region=` | The sellability surface for the joint gate | — |
-| `GET` | `/v1/pricing/plans/{planId}/coverage` | Coverage/gap report per scope key (operator remediation) | — |
+| `POST` | `/bss-pricing/v1/prices/{priceId}/windows` | Schedule a window (overlap-validated; D-03 owned surface). **A publish unit** (D-99): pending `CatalogVersion` ref + plan-subject re-projection, 202 | client idempotency key |
+| `PATCH` | `/bss-pricing/v1/price-windows/{windowId}` | Adjust a future `effectiveTo` (shorten/extend; coverage-validated). **A publish unit** (D-99); a shorten is additionally always-material (D-62) | ETag |
+| `DELETE` | `/bss-pricing/v1/price-windows/{windowId}` | Cancel a not-yet-active window (emits `PriceWindowCancelled`). **A publish unit** (D-99); always-material (D-62) | — |
+| `POST` | `/bss-pricing/v1/plans/{planId}/supersessions` | Compose + submit the atomic **supersession unit** (D-88): successor row + predecessor-window shorten + successor-window schedule, one approval unit / one local ACID transaction; changeover instant ≥ approval commit + the max batching-delay SLO | per `(planId, scope key, changeover instant)` |
+| `POST` | `/bss-pricing/v1/plans/{planId}/cutovers` | Compose + submit the atomic grandfathering cutover — **single- or multi-key** (D-28): the payload carries a scope-key selector; all selected keys cut over at **one instant** as **one approval unit** / one local ACID transaction (per-key generations created; the unit pends every touched key; the S5 per-row hash pin covers the whole set) | per `(planId, key-set hash, cutover instant)` |
+| `PATCH` | `/bss-pricing/v1/prices/{priceId}/grandfather-until` | Tighten `grandfatherUntil` (material change) | ETag |
+| `GET` | `/bss-pricing/v1/plans/{planId}/sellability?at=&currency=&region=` | The sellability surface for the joint gate | — |
+| `GET` | `/bss-pricing/v1/plans/{planId}/coverage` | Coverage/gap report per scope key (operator remediation) | — |
 
 **Problem responses (RFC 9457):** `WINDOW_COVERAGE_MISSING` (422, names the scope key),
 `WINDOW_GAP` (422, names `[gapStart, gapEnd)`), `WINDOW_OVERLAP` (409 — the scheduled/adjusted
@@ -409,7 +409,7 @@ independent coverage; `availableFrom`/`availableTo` validate against coverage.
 **Implements**: `cpt-cf-bss-pricing-algo-window-coverage`
 
 **Touches**:
-- API: `GET /v1/pricing/plans/{planId}/coverage`
+- API: `GET /bss-pricing/v1/plans/{planId}/coverage`
 - DB: `pricing_price_window`
 - Entities: `CoverageChecker`
 
@@ -432,7 +432,7 @@ version; activation and expiry are **not** publish units, because the read model
 **Implements**: `cpt-cf-bss-pricing-state-price-window`
 
 **Touches**:
-- API: `POST /v1/pricing/prices/{priceId}/windows`, `PATCH/DELETE /v1/pricing/price-windows/{windowId}`
+- API: `POST /bss-pricing/v1/prices/{priceId}/windows`, `PATCH/DELETE /bss-pricing/v1/price-windows/{windowId}`
 - DB: `pricing_price_window`, `pricing_outbox`
 - Entities: `WindowScheduler`, `WindowActivationJob`
 
@@ -470,7 +470,7 @@ evaluates the **conjunction** over it on predicates (1)–(5) — components are
 **Implements**: `cpt-cf-bss-pricing-algo-sellability`
 
 **Touches**:
-- API: `GET /v1/pricing/plans/{planId}/sellability`
+- API: `GET /bss-pricing/v1/plans/{planId}/sellability`
 - DB: `pricing_read_model`
 - Entities: `SellabilitySurface`
 
@@ -497,7 +497,7 @@ at renewal.
 **Implements**: `cpt-cf-bss-pricing-flow-grandfathering-cutover`, `cpt-cf-bss-pricing-algo-eligibility`, `cpt-cf-bss-pricing-algo-cutover`, `cpt-cf-bss-pricing-state-grandfathered`
 
 **Touches**:
-- API: `POST /v1/pricing/plans/{planId}/cutovers`, `PATCH /v1/pricing/prices/{priceId}/grandfather-until`
+- API: `POST /bss-pricing/v1/plans/{planId}/cutovers`, `PATCH /bss-pricing/v1/prices/{priceId}/grandfather-until`
 - DB: `pricing_price` (eligibility axes), `pricing_price_window`, `pricing_approval`
 - Entities: `CutoverOrchestrator`, `EligibilityExpirySignal`
 
@@ -517,7 +517,7 @@ same way (Slice 12).
 **Implements**: `cpt-cf-bss-pricing-algo-supersession`
 
 **Touches**:
-- API: `POST /v1/pricing/plans/{planId}/supersessions`
+- API: `POST /bss-pricing/v1/plans/{planId}/supersessions`
 - DB: `pricing_price`, `pricing_price_window`, `pricing_approval`
 - Entities: `SupersessionOrchestrator`
 

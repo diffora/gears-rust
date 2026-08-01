@@ -211,6 +211,31 @@ PINNED_TRIAGE_PRICING = {
     "suspicious:weak-coverage": 39,
     "covered:strong": 0,
 }
+#: Moved again 2026-08-02, second time that day (was 17 / 38) after the D-140 docs
+#: wave — the REST route-shape reconciliation (`/bss-pricing/v1/{resource}`, actions
+#: as sub-resource segments). Exactly one mover, diffed per-id against the pre-wave
+#: tree in a detached worktree: `fr-level-aggregation` went
+#: `suspicious:multi-region` -> `suspicious:weak-coverage`, losing one of its three
+#: candidate regions — the D-44 body in `DECISIONS.md`. The cause is the fixed
+#: window grid, not the text: windows are cut at `WINDOW_STEP` offsets from line 1,
+#: so the single **status-board row** the decision added slid the grid one line over
+#: the whole register, and the window that used to carry the D-44 body's
+#: discriminating terms now carries a smaller fraction of them, below the 0.6
+#: threshold. Verified by controlled experiment rather than argued: adding one board
+#: row to the pre-wave tree — and nothing else — reproduces this mover exactly and
+#: no other. The requirement's two accounts in `design/03-price-structure.md` are
+#: untouched, D-44 still sits in the register, total unchanged at 77, and no finding
+#: appeared or vanished (`live-text.txt` is byte-identical; the known-debt oracle
+#: differs only in DECISIONS.md line numbers).
+#: Moved 2026-08-02 (was 16 / 39) after the D-139 docs wave — pricing's
+#: adoption of rating T-D-25, the `capacityCharge` covered-granule factor. Exactly
+#: one mover, diffed per-id against the pre-wave tree in a detached worktree:
+#: `nfr-data-residency` went `suspicious:weak-coverage` -> `suspicious:multi-region`.
+#: It is anchored twice in DESIGN.md (the §1.2 NFR-allocation row and §3.8), and the
+#: D-72 register summary in §4 — which D-139 lengthened — sits between them, so the
+#: two anchors' separation crossed the multi-region threshold. Nothing entered or
+#: left the requirement set (total unchanged), no finding appeared or vanished, and
+#: both classes are `suspicious:*` descriptors rather than pass/fail.
 #: Moved again 2026-08-01, second time that day (was 17 / 15 / 39, judged 54, total
 #: unchanged at 77), re-pinned after the 2026-08-01 slice review's fix wave
 #: (D-126…D-138 + eight cleanups). Four movers, each diffed per-id against the

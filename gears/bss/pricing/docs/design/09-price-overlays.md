@@ -148,7 +148,7 @@ flowchart TB
 - Missing tax basis (no declaration, no explicit delegation) → `TAX_BASIS_UNDECLARED` (422)
 
 **Steps**:
-1. [ ] - `p1` - API: POST/PATCH /v1/pricing/price-overlays (idempotency key / ETag) - `inst-pl-author`
+1. [ ] - `p1` - API: POST/PATCH /bss-pricing/v1/price-overlays (idempotency key / ETag) - `inst-pl-author`
 2. [ ] - `p1` - `PriceOverlayValidator` runs the L2/L5 + referential + taxonomy rules - `inst-pl-validate`
 3. [ ] - `p1` - **RETURN** 201/200 — the save lands a **draft** only; nothing publishes from a save (2026-07-28 review fix, confirmed 2026-07-31) - `inst-pl-return`
 4. [ ] - `p1` - Submit/commit → **202**: the commit is **always material** (D-50 — overlay creation, line add/remove, magnitude/kind or audience changes all route through the Slice 5 approval workflow before publishing; an overlay line has no per-currency baseline to threshold, so the G1 no-delta rule applies) and opens a Slice 5 approval unit under the standard R-13 pin semantics (subject stays draft; mutation voids the unit); the approved overlay is then a **publish unit through the Foundation engine** (D-06): validation → pending `CatalogVersion` ref → read-model warm — consumer-visible only at `CatalogVersionPublished` + warm-completion, the same monotonic pinning as plan content (evaluation downstream) (2026-07-28 review fix, confirmed 2026-07-31) - `inst-pl-commit`
@@ -167,7 +167,7 @@ flowchart TB
 - Unknown group value → taxonomy failure (422); overlapping membership intervals for one payer in one group → `MEMBERSHIP_OVERLAP` (409)
 
 **Steps**:
-1. [ ] - `p1` - API: POST /v1/pricing/customer-groups/{group}/members (payer, effective interval) - `inst-gm-api`
+1. [ ] - `p1` - API: POST /bss-pricing/v1/customer-groups/{group}/members (payer, effective interval) - `inst-gm-api`
 2. [ ] - `p1` - `MembershipLedger` validates interval non-overlap per `(payer, group)`; every change audited (actor, before/after, reason) - `inst-gm-ledger`
 3. [ ] - `p1` - Material paths (L4) route through Slice 5 approval before commit - `inst-gm-material`
 4. [ ] - `p1` - **RETURN** 201; the committed membership mutation is a **publish unit through the Foundation engine** (D-06 — pending ref → warm; registry batching coalesces bulk enrollments), so a renewal after the commit always sees it; **Tariffs** resolves the group at `t` and freezes it into the snapshot it composes (`ResolvedGroupFreezer` = the joint contract, D-30 — the catalog has no per-subscription snapshot participation and no resolve-for-payer endpoint) - `inst-gm-return`
@@ -233,13 +233,13 @@ flowchart TB
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `POST/PATCH` | `/v1/pricing/price-overlays` | Author/validate an overlay (draft; a save never publishes) | idempotency key / ETag |
-| `POST` | `/v1/pricing/price-overlays/{overlayId}/submit` | Submit the draft — always-material Slice 5 approval unit (D-50), then the D-06 publish unit (202; 2026-07-28 review fix, confirmed 2026-07-31) | per revision |
-| `GET` | `/v1/pricing/price-overlays` | List overlays (admin/Tariffs read) | — |
-| `GET/PUT` | `/v1/pricing/customer-groups/taxonomy` | The BSS group taxonomy | ETag |
-| `POST` | `/v1/pricing/customer-groups/{group}/members` | Create an effective-dated membership | idempotency key |
-| `PATCH` | `/v1/pricing/customer-groups/{group}/members/{id}` | End/adjust an interval (audited) | ETag |
-| `POST` | `/v1/pricing/customer-groups/{group}/members/{payerId}/move` | Atomic transfer of the payer into `{group}` (the **target** group): ends the active membership + starts the new one (one audited mutation; D-09) | idempotency key |
+| `POST/PATCH` | `/bss-pricing/v1/price-overlays` | Author/validate an overlay (draft; a save never publishes) | idempotency key / ETag |
+| `POST` | `/bss-pricing/v1/price-overlays/{overlayId}/submit` | Submit the draft — always-material Slice 5 approval unit (D-50), then the D-06 publish unit (202; 2026-07-28 review fix, confirmed 2026-07-31) | per revision |
+| `GET` | `/bss-pricing/v1/price-overlays` | List overlays (admin/Tariffs read) | — |
+| `GET/PUT` | `/bss-pricing/v1/customer-groups/taxonomy` | The BSS group taxonomy | ETag |
+| `POST` | `/bss-pricing/v1/customer-groups/{group}/members` | Create an effective-dated membership | idempotency key |
+| `PATCH` | `/bss-pricing/v1/customer-groups/{group}/members/{id}` | End/adjust an interval (audited) | ETag |
+| `POST` | `/bss-pricing/v1/customer-groups/{group}/members/{payerId}/move` | Atomic transfer of the payer into `{group}` (the **target** group): ends the active membership + starts the new one (one audited mutation; D-09) | idempotency key |
 
 **Problem responses (RFC 9457):** `PRECEDENCE_DUPLICATE` (409), `OVERLAY_INTERVAL_OVERLAP`
 (409 — overlapping effective intervals for one line key `(scope_class, scope_value, planId,
@@ -401,7 +401,7 @@ flag-and-remediate on later currency additions — D-08).
 **Implements**: `cpt-cf-bss-pricing-flow-priceoverlay-author`, `cpt-cf-bss-pricing-algo-priceoverlay-validate`
 
 **Touches**:
-- API: `POST/PATCH /v1/pricing/price-overlays`
+- API: `POST/PATCH /bss-pricing/v1/price-overlays`
 - DB: `pricing_price_overlay`, `pricing_price_overlay_line`, `pricing_price_overlay_line_amount`
 - Entities: `PriceOverlayValidator`
 
@@ -423,7 +423,7 @@ membership mutation **MUST** be its own publish unit through the Foundation engi
 **Implements**: `cpt-cf-bss-pricing-flow-group-membership`, `cpt-cf-bss-pricing-algo-group-membership`, `cpt-cf-bss-pricing-algo-membership-materiality`, `cpt-cf-bss-pricing-state-membership`
 
 **Touches**:
-- API: `/v1/pricing/customer-groups/*`
+- API: `/bss-pricing/v1/customer-groups/*`
 - DB: `pricing_customer_group_taxonomy`, `pricing_group_membership`
 - Entities: `GroupTaxonomy`, `MembershipLedger`, `ResolvedGroupFreezer`
 

@@ -249,9 +249,9 @@ plan/price authoring surfaces. This slice contributes:
 
 | Concern | Where it lands |
 |---------|----------------|
-| Proration inputs, `billingTiming` | recurring-row fields on `POST/PATCH /v1/pricing/plans/{planId}/prices` |
-| Grant set / grant reference | plan fields on `POST/PATCH /v1/pricing/plans/{planId}` |
-| Change contract | plan fields on `POST/PATCH /v1/pricing/plans/{planId}` |
+| Proration inputs, `billingTiming` | recurring-row fields on `POST/PATCH /bss-pricing/v1/plans/{planId}/prices` |
+| Grant set / grant reference | plan fields on `POST/PATCH /bss-pricing/v1/plans/{planId}` |
+| Change contract | plan fields on `POST/PATCH /bss-pricing/v1/plans/{planId}` |
 
 **Problem responses (RFC 9457):** `PRORATION_INPUTS_MISSING` (422),
 `PRORATION_INPUTS_CONTRADICTORY` (422 — `creditOnDowngrade = true` with

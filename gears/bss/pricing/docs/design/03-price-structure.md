@@ -163,7 +163,7 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 - Precision above the currency's ISO 4217 minor unit → `PRECISION_EXCEEDED` (422, Foundation)
 
 **Steps**:
-1. [ ] - `p1` - API: POST /v1/pricing/plans/{planId}/prices (draft row; idempotency key honored; scope-key axes defaulted by the Foundation `ScopeKey`) - `inst-pr-create`
+1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/prices (draft row; idempotency key honored; scope-key axes defaulted by the Foundation `ScopeKey`) - `inst-pr-create`
 2. [ ] - `p1` - Persist `modelKind` + kind-specific fields (bands / package / `quantitySource`); shared amount/currency/precision checks run in the Foundation - `inst-pr-fields`
 3. [ ] - `p1` - PATCH while `draft`; published rows are append-only (change = supersession, Foundation §4.3) - `inst-pr-mutate`
 4. [ ] - `p1` - **RETURN** 201 (draft row, ETag). **Validation split (D-21):** all **row-local** checks run at save *and* re-run at publish — model-kind shape (explicit kind, kind×chargeKind matrix, required/forbidden fields), band-set geometry (ordering, overlap, gap/contiguity, zero-width, open top), precision, evaluation-policy placement, scope-key duplication (PRD AC #12's "save/publish MUST fail" for band geometry is satisfied at save). **Aggregate/cross-entity** checks run at publish only: fixtures, window coverage, phase coverage, hybrid completeness, meter injectivity - `inst-pr-return`
@@ -260,10 +260,10 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `POST` | `/v1/pricing/plans/{planId}/prices` | Create a draft price row on the scope key | client idempotency key |
-| `PATCH` | `/v1/pricing/plans/{planId}/prices/{priceId}` | Update a draft row | ETag |
-| `DELETE` | `/v1/pricing/plans/{planId}/prices/{priceId}` | Delete a **draft** row (published rows: 409) | — |
-| `GET` | `/v1/pricing/plans/{planId}/prices` | List rows (draft for authors; published via read model) | — |
+| `POST` | `/bss-pricing/v1/plans/{planId}/prices` | Create a draft price row on the scope key | client idempotency key |
+| `PATCH` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Update a draft row | ETag |
+| `DELETE` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Delete a **draft** row (published rows: 409) | — |
+| `GET` | `/bss-pricing/v1/plans/{planId}/prices` | List rows (draft for authors; published via read model) | — |
 
 **Problem responses (RFC 9457):** `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
 `TIER_BANDS_GAP` (422), `TIER_BAND_EMPTY` (422 — `toQty ≤ fromQty` on a non-open band),
@@ -387,7 +387,7 @@ computes no charge.
 **Implements**: `cpt-cf-bss-pricing-algo-model-kind`, `cpt-cf-bss-pricing-flow-price-author`
 
 **Touches**:
-- API: `POST/PATCH /v1/pricing/plans/{planId}/prices`
+- API: `POST/PATCH /bss-pricing/v1/plans/{planId}/prices`
 - DB: `pricing_price` (model-kind columns)
 - Entities: `ModelKindValidator`
 

@@ -160,7 +160,7 @@ and bundles (Slice 8) build on.
 - Precision above the currency's minor unit → `PRECISION_EXCEEDED` (422, Foundation)
 
 **Steps**:
-1. [ ] - `p1` - API: POST /v1/pricing/plans/{planId}/prices per `(currency, region)` (Slice 3 flow; this slice adds the market-axis rules) - `inst-mc-create`
+1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/prices per `(currency, region)` (Slice 3 flow; this slice adds the market-axis rules) - `inst-mc-create`
 2. [ ] - `p1` - `TaxonomyValidator` checks `region` membership at save **and** publish (C2) - `inst-mc-region`
 3. [ ] - `p1` - No FX derivation ever: a missing `(currency, region)` row is simply absent — preview/publish paths fail closed on it, no base-currency fallback (Future `currencyFallbackPolicy` only) - `inst-mc-nofx`
 4. [ ] - `p1` - **RETURN** 201 per row - `inst-mc-return`
@@ -179,7 +179,7 @@ and bundles (Slice 8) build on.
 - Principal without the preview grant → denied (403, audited; Slice 5)
 
 **Steps**:
-1. [ ] - `p2` - API: GET /v1/pricing/plans/{planId}/preview?currency=&region= - `inst-pv-api`
+1. [ ] - `p2` - API: GET /bss-pricing/v1/plans/{planId}/preview?currency=&region= - `inst-pv-api`
 2. [ ] - `p2` - Resolve from the **published read model only** (no draft read); base list price rows only, `PriceOverlay` adjustments disclaimed - `inst-pv-resolve`
 3. [ ] - `p2` - **RETURN** 200 (base price + disclaimer) or fail closed - `inst-pv-return`
 
@@ -243,9 +243,9 @@ and bundles (Slice 8) build on.
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `GET` | `/v1/pricing/plans/{planId}/preview` | Base-price preview per `(currency, region)`; fail closed, overlay disclaimer | — |
-| `GET/PUT` | `/v1/pricing/config/taxonomies/{region\|brand\|partner\|orgTier}` | Tenant taxonomy read/update (admin, audited; partner/orgTier added by D-120) | ETag |
-| `GET/PUT` | `/v1/pricing/config/tax-display-policy` | Tenant tax-display policy (fail-closed default) | ETag |
+| `GET` | `/bss-pricing/v1/plans/{planId}/preview` | Base-price preview per `(currency, region)`; fail closed, overlay disclaimer | — |
+| `GET/PUT` | `/bss-pricing/v1/config/taxonomies/{region\|brand\|partner\|orgTier}` | Tenant taxonomy read/update (admin, audited; partner/orgTier added by D-120) | ETag |
+| `GET/PUT` | `/bss-pricing/v1/config/tax-display-policy` | Tenant tax-display policy (fail-closed default) | ETag |
 
 **Problem responses (RFC 9457):** `REGION_UNKNOWN` (422), `BRAND_UNKNOWN` (422),
 `PARTNER_UNKNOWN` (422) / `ORG_TIER_UNKNOWN` (422 — an overlay scope value outside the tenant
@@ -321,7 +321,7 @@ fails closed on preview and publish.
 **Implements**: `cpt-cf-bss-pricing-flow-multicurrency-author`, `cpt-cf-bss-pricing-flow-price-preview`
 
 **Touches**:
-- API: `GET /v1/pricing/plans/{planId}/preview`
+- API: `GET /bss-pricing/v1/plans/{planId}/preview`
 - DB: `pricing_price` (currency/region axes)
 - Entities: `TaxonomyValidator`
 
@@ -338,7 +338,7 @@ mutation is admin-scoped and audited.
 **Implements**: `cpt-cf-bss-pricing-algo-taxonomy`
 
 **Touches**:
-- API: `GET/PUT /v1/pricing/config/taxonomies/*`
+- API: `GET/PUT /bss-pricing/v1/config/taxonomies/*`
 - DB: `pricing_region_taxonomy`, `pricing_brand_taxonomy`, `pricing_partner_taxonomy`, `pricing_org_tier_taxonomy` (D-120)
 - Entities: `TaxonomyValidator`
 
@@ -359,7 +359,7 @@ tax-inclusive rows `not_sellable_ga` (per market) until Tax Engine GA — cleare
 **Implements**: `cpt-cf-bss-pricing-algo-tax-display`, `cpt-cf-bss-pricing-state-tax-sellability`
 
 **Touches**:
-- API: `GET/PUT /v1/pricing/config/tax-display-policy`
+- API: `GET/PUT /bss-pricing/v1/config/tax-display-policy`
 - DB: `pricing_price` (tax columns), `pricing_policy_object`, `pricing_read_model` (`not_sellable_ga`)
 - Entities: `TaxDisplayValidator`
 

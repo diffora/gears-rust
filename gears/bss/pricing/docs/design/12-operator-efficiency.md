@@ -147,11 +147,11 @@ flowchart TB
 - An interactive edit hitting a row under the bulk lock → conflict naming the bulk operation (Foundation `fr-concurrent-edit`)
 
 **Steps**:
-1. [ ] - `p2` - API: POST /v1/pricing/bulk-imports (rows + client idempotency key) - `inst-bi-api`
+1. [ ] - `p2` - API: POST /bss-pricing/v1/bulk-imports (rows + client idempotency key) - `inst-bi-api`
 2. [ ] - `p2` - Phase 1: all-or-nothing validation (O2); the report enumerates every violation per row - `inst-bi-validate`
 3. [ ] - `p2` - **A bulk import is never material (normative, D-137, 2026-08-01 review fix).** D-118 pinned the import to the **draft plane**, and materiality is evaluated at the submit of a *publish*, against a published baseline (S5 `inst-ap-materiality`, `inst-mat-*`) — a draft edit produces no consumer-visible delta, so there is nothing to threshold and no approval unit to open. The imported drafts reach consumers only through the ordinary per-plan publish, which carries the full materiality + approval policy as always. The pre-D-137 wording ("a material batch routes through the Slice 5 policy before any commit"), the `awaiting_approval` state on this path, and the per-row hash pin were residue from before D-118; they are retained for **mass repricing**, which does touch published rows - `inst-bi-governed`
 4. [ ] - `p2` - Phase 2 (post-approval): per-row optimistic commit under the bulk lock; ETag conflict fails only that row; result = `{committed[], conflicted[]}`; events emit per committed row (outbox) - `inst-bi-commit`
-5. [ ] - `p2` - **RETURN** 202 (operation ref); the full per-row report is served by `GET /v1/pricing/bulk-imports/{id}`, and an idempotent replay (O4) returns the same operation ref/report; retry of the conflicted subset is a new import referencing fresh ETags - `inst-bi-return`
+5. [ ] - `p2` - **RETURN** 202 (operation ref); the full per-row report is served by `GET /bss-pricing/v1/bulk-imports/{id}`, and an idempotent replay (O4) returns the same operation ref/report; retry of the conflicted subset is a new import referencing fresh ETags - `inst-bi-return`
 
 ### Mass Repricing Run
 
@@ -166,7 +166,7 @@ flowchart TB
 - Re-trigger with the same `run_id` while completed → returns the original result (no double apply)
 
 **Steps**:
-1. [ ] - `p2` - API: POST /v1/pricing/repricing-runs (`run_id`, selector, adjustment, **changeover instant** — one instant for every row of the run, strictly future at submit and ≥ the max batching-delay SLO (D-47: bulk 5 min) in the future at the run's approval commit, `SUPERSESSION_INSTANT_PASSED` otherwise; D-88 — a commit-time changeover would activate successor windows while their rows are not yet addressable in any completed `CatalogVersion`, transiently failing renewals/arrears closed across every repriced key) - `inst-mr-api`
+1. [ ] - `p2` - API: POST /bss-pricing/v1/repricing-runs (`run_id`, selector, adjustment, **changeover instant** — one instant for every row of the run, strictly future at submit and ≥ the max batching-delay SLO (D-47: bulk 5 min) in the future at the run's approval commit, `SUPERSESSION_INSTANT_PASSED` otherwise; D-88 — a commit-time changeover would activate successor windows while their rows are not yet addressable in any completed `CatalogVersion`, transiently failing renewals/arrears closed across every repriced key) - `inst-mr-api`
 2. [ ] - `p2` - Expand the selector to a frozen row set; journal per-row progress (`pending → applied | failed`) keyed `(run_id, price_id)` - `inst-mr-journal`
 3. [ ] - `p2` - Apply through the standard versioning path (new immutable rows) — each applied row is a **supersession unit** (D-88, S7 `algo-supersession`: successor row + window shorten/schedule at the run's single changeover instant); the new rows, their outbox records, and the journal transitions `pending → applied` commit in one transaction (a crash re-run sees a consistent journal — no double-apply, no compounding); re-runs skip `applied` rows (idempotent, O3); events carry `(run_id, price_id)` dedup keys. **The transaction unit is the plan, not the row (normative, D-134, 2026-08-01 review fix):** a run commits **all of one plan's selected rows together**, and a per-row validation failure fails **every** row of that plan with the shared reason — never a partial plan. D-124 put the plan-level aggregate pass on "the plan's full row set **as it will stand post-commit**", which is only a true premise if the whole set actually lands: with per-row commits a row could fail *after* a passing pass and leave the plan in a state the pass would have rejected (per-market completeness, phase coverage, injectivity), with nothing re-checking — the stale-verdict shape D-124 removed from the approval window, displaced into the commit window. Per-row isolation is not lost where it matters: it exists for **bulk import**, whose domain is the draft plane and whose rows are independent (D-118), whereas a repricing run holds the bulk lock over its rows (`inst-bs-commit`) so there is no concurrent editor for a per-row ETag to protect against. The aggregate pass consequently runs **inside** each plan's transaction over its actual post-commit state - `inst-mr-apply`
 3a. [ ] - `p1` - **What the per-row commit re-validates (normative, D-111, 2026-07-31 review fix):** the supersession unit's commit "re-runs the pipeline" (S7 `inst-su-commit`), and the pipeline is the **aggregate** rule set — D-21 puts window/phase coverage, hybrid completeness, meter injectivity and the fixture gate at publish only. Taken literally inside a per-row transaction that is N whole-plan validations for N rows of one plan, i.e. **O(rows × plan-validation cost)** against a throughput SLO (O3) ratified before D-88 existed and sized only for the window writes (§10). Therefore, in a bulk run: the **per-row** commit re-runs the **row-local** rule set (D-21's save-time set: kind shape and the kind×chargeKind matrix, band geometry, precision, evaluation-policy placement, the D-82/D-98 unit guard) **plus the touched key's** window overlap/gap/trailing-void check — the checks whose inputs the row itself changes — while the **plan-level aggregate** pass runs **once per plan per run, inside that plan's own commit transaction** (**D-134**, 2026-08-01, amending D-124's "at the run's entry to `committing`": the pass's premise is the plan's post-commit row set, and only a transaction that also *lands* that set can guarantee it — under per-row commits a later per-row failure silently invalidated the verdict) — inside the bulk lock (`inst-bs-commit`), after approval — **over the plan's full row set as it will stand post-commit** (the plan's published rows with the run's successor rows substituted at the changeover instant), never over the run's frozen row subset alone (**D-124, 2026-08-01, amending D-111**: the aggregate rules — phase coverage, hybrid/per-market completeness, meter injectivity — are properties of the plan's *whole* row set, which a selector matching e.g. only the plan's USD rows cannot evaluate; and D-111's original safety argument cited protections that do not hold in the approval-to-commit window it named — `inst-mp-pending` rejects rows **at selector time** only, blocking nothing submitted later, and the bulk lock provably did not exist yet, since `inst-bs-commit` starts it on entry to `committing` and `inst-bs-approval` states rows are "not locked while awaiting"). This is sound because the aggregate checks evaluate identical content for every row of a plan; it is safe because the pass now runs under the same lock that serializes it against interactive edits on the run's rows, and an interactive plan mutation committing later re-runs its **own** aggregate pass inside its commit transaction (Foundation §3.6 — the symmetric protection). A plan whose aggregate pass fails marks **all** of that plan's rows `failed` with the shared reason, never a partial plan - `inst-mr-validate-scope`
@@ -238,14 +238,14 @@ flowchart TB
 
 | Method | Path | Purpose | Idempotency | AuthZ |
 |--------|------|---------|-------------|-------|
-| `POST` | `/v1/pricing/plans/{planId}/clone` | Clone into a new draft plan | client key | `plan × write` |
-| `POST` | `/v1/pricing/bulk-imports` | Two-phase bulk price import | client key (O4) | `plan × write` |
-| `GET` | `/v1/pricing/bulk-imports/{id}` | Batch report (per-row outcomes) | — | `plan × read` |
-| `POST` | `/v1/pricing/bulk-imports/{id}:abort` | Abort a stalled mid-commit run (D-37; boundary rules in §6) | client key | `plan × write` |
-| `POST` | `/v1/pricing/repricing-runs` | Idempotent mass adjustment | `run_id` | `plan × write` |
-| `GET` | `/v1/pricing/repricing-runs/{id}` | Run progress / result | — | `plan × read` |
-| `GET` | `/v1/pricing/history` | Immutable price history (filters; cursor-paginated per D-125) | — | `plan × read` (D-12) |
-| `POST` | `/v1/pricing/history/export` | History export (SLO-bound per D-125 page/chunk) | client key | `plan × read` (D-12) |
+| `POST` | `/bss-pricing/v1/plans/{planId}/clone` | Clone into a new draft plan | client key | `plan × write` |
+| `POST` | `/bss-pricing/v1/bulk-imports` | Two-phase bulk price import | client key (O4) | `plan × write` |
+| `GET` | `/bss-pricing/v1/bulk-imports/{id}` | Batch report (per-row outcomes) | — | `plan × read` |
+| `POST` | `/bss-pricing/v1/bulk-imports/{id}/abort` | Abort a stalled mid-commit run (D-37; boundary rules in §6) | client key | `plan × write` |
+| `POST` | `/bss-pricing/v1/repricing-runs` | Idempotent mass adjustment | `run_id` | `plan × write` |
+| `GET` | `/bss-pricing/v1/repricing-runs/{id}` | Run progress / result | — | `plan × read` |
+| `GET` | `/bss-pricing/v1/history` | Immutable price history (filters; cursor-paginated per D-125) | — | `plan × read` (D-12) |
+| `POST` | `/bss-pricing/v1/history/export` | History export (SLO-bound per D-125 page/chunk) | client key | `plan × read` (D-12) |
 
 **Problem responses (RFC 9457):** `BULK_VALIDATION_FAILED` (422, per-row),
 `IMPORT_TARGETS_PUBLISHED` (per-row in the Phase-1 report — an import row addressing a
@@ -279,7 +279,7 @@ a lock marker onto the row is rejected by the trigger. The side table also relea
 touching truth data. **Release path (D-37):** the bulk runner holds a
 **coordination lease** (the library named in DESIGN §3.4); on crash, lease takeover
 **re-drives** Phase 2 from the journal/report (idempotent); additionally an operator
-**abort** (`POST /v1/pricing/bulk-imports/{id}:abort`, `plan × write`) transitions
+**abort** (`POST /bss-pricing/v1/bulk-imports/{id}/abort`, `plan × write`) transitions
 `committing → completed_with_conflicts` — uncommitted rows reported as `not-attempted`, the
 lock cleared. A crashed import can never freeze interactive authoring indefinitely.
 
@@ -321,7 +321,7 @@ source subscriptions untouched.
 **Implements**: `cpt-cf-bss-pricing-algo-clone`
 
 **Touches**:
-- API: `POST /v1/pricing/plans/{planId}/clone`
+- API: `POST /bss-pricing/v1/plans/{planId}/clone`
 - DB: `pricing_plan.cloned_from`
 - Entities: `PlanCloner`
 
@@ -343,7 +343,7 @@ idempotently to the original report.
 **Implements**: `cpt-cf-bss-pricing-flow-bulk-import`, `cpt-cf-bss-pricing-algo-bulk-import`, `cpt-cf-bss-pricing-state-bulk-operation`
 
 **Touches**:
-- API: `POST/GET /v1/pricing/bulk-imports*`
+- API: `POST/GET /bss-pricing/v1/bulk-imports*`
 - DB: `pricing_bulk_operation`
 - Entities: `BulkImporter`
 
@@ -369,7 +369,7 @@ still shrink after it runs decides nothing).
 **Implements**: `cpt-cf-bss-pricing-flow-mass-repricing`, `cpt-cf-bss-pricing-algo-mass-repricing`
 
 **Touches**:
-- API: `POST/GET /v1/pricing/repricing-runs*`
+- API: `POST/GET /bss-pricing/v1/repricing-runs*`
 - DB: `pricing_repricing_journal`
 - Entities: `MassRepricer`
 
@@ -389,7 +389,7 @@ collection reads keep the 100 default (C-6) — reading existing append-only str
 **Implements**: `cpt-cf-bss-pricing-algo-history-export`
 
 **Touches**:
-- API: `GET /v1/pricing/history`, `POST /v1/pricing/history/export`
+- API: `GET /bss-pricing/v1/history`, `POST /bss-pricing/v1/history/export`
 - DB: (reads `pricing_price`/`pricing_plan` history incl. their `created_by` actor columns — never `pricing_audit_log`, which stays `audit × read` per D-12)
 - Entities: `HistoryExporter`
 

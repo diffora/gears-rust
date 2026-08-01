@@ -92,6 +92,38 @@ The discipline is unchanged either way: a finding appearing or disappearing here
 is a real claim about the design set, and re-freezing must be a deliberate,
 separately-justified commit — never a way to make a failing change look green.
 
+8. **2026-08-02, eighth capture — after the D-139 docs wave.** Document movement
+   only, no checker change. D-139 is pricing's adoption of rating T-D-25 (the
+   `capacityCharge` covered-granule factor), found while authoring the `reserved`
+   joint fixture rather than by a review pass. **The finding set did not move at
+   all**: `live-text.txt` is byte-identical, and `live-show-known-debt.txt` differs
+   only in line numbers — 21 DECISIONS.md findings shifted by one, from the single
+   board row the decision added. Live findings unchanged, suppressed unchanged.
+   The neighbourhood pins moved in the same commit: `multi-region` 16 -> 17 and
+   `weak-coverage` 39 -> 38, one mover hand-checked per-id against the pre-wave
+   tree in a detached worktree — `nfr-data-residency`, whose two DESIGN.md anchors
+   straddle the D-72 register summary in §4 that D-139 lengthened. Total
+   requirements unchanged.
+
+9. **2026-08-02, ninth capture — after the D-140 docs wave.** Document movement
+   only, no checker change. D-140 is the REST route-shape reconciliation — the
+   design set's `/v1/pricing/{resource}` paths and three colon-suffixed custom
+   methods were both denied by the workspace's `DE0801` lint, so no documented
+   endpoint was implementable; the wave rewrote 167 path strings to
+   `/bss-pricing/v1/…` with actions as sub-resource segments, added the decision,
+   and stated the rule normatively once in `design/01-foundation.md` §3.3. Like
+   the eighth capture, **the finding set did not move**: `live-text.txt` and
+   `live-json.json` are byte-identical, and `live-show-known-debt.txt` differs
+   only in line numbers — the same 21 `DECISIONS.md` findings shifted by one,
+   from the single board row the decision added. The neighbourhood pins moved in
+   the same commit, in the opposite direction to the eighth capture:
+   `multi-region` 17 -> 16 and `weak-coverage` 38 -> 39, one mover
+   (`fr-level-aggregation`) hand-checked per-id against the pre-wave tree in a
+   detached worktree. Its cause is the fixed window grid rather than any text
+   about it: adding one board row to the pre-wave tree and changing nothing else
+   reproduces that mover exactly and no other (controlled run, notes beside
+   `PINNED_TRIAGE_PRICING`). Total requirements unchanged at 77.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

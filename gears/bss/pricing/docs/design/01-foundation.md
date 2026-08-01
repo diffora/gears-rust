@@ -233,7 +233,7 @@ The **published read model** contract (`cpt-cf-bss-pricing-interface-catalog-rea
 per committed `CatalogVersion`, the complete plan/price read model resolvable via
 `pricingSnapshotRef`, monotonic per version, no draft reads, additive-only within a major
 version. It additionally publishes the **pin frontier** —
-`GET /v1/pricing/catalog-version/frontier` → the tenant's current pin-eligible
+`GET /bss-pricing/v1/catalog-version/frontier` → the tenant's current pin-eligible
 `CatalogVersion` + its `advanced_at` (`plan × read`, service identity; D-136, §4.4) — because
 pin-eligibility is a version-level, prefix-closed predicate no consumer can evaluate for
 itself: this is the value a consumer pins at the start of a resolution/rating run, and the
@@ -256,6 +256,20 @@ code), the aggregate validation
 report envelope (422 — enumerating blocking `violations[]` plus advisory `warnings[]`), and
 publish-accepted/pending (202).
 
+**Status rendering — the 422s above are architectural, not wire (normative).** The `422`
+annotations in this set say *unprocessable content*: the request was understood and the
+catalog refuses to publish it. The platform's `CanonicalError` model has **no 422 category**
+at all (`InvalidArgument`, `FailedPrecondition` and `OutOfRange` all render **400**), so every
+architectural 422 in this design set — here and in every slice — reaches the wire as a **400
+carrying its wire code**, and **the code string is the discriminator a consumer matches on,
+not the status**. This is the sibling ledger's rule verbatim
+(`../../ledger/docs/design/02-audit-immutability-observability.md`), and the reason it is
+stated once here rather than per occurrence. Two consequences bind the implementation: a
+rejection is classified by what it *is*, so a retriable conflict on mutable state stays a
+**409** (`ABORTED`) rather than collapsing into the 400 bucket — the three conflicts above are
+exactly that class — and an endpoint MUST NOT declare a 422 response in its `OpenAPI`
+registration, because no path can produce one.
+
 **Collection pagination (normative, D-125, 2026-08-01):** every collection, history and audit
 read surface of this gear **paginates**: `limit` (server default 100, hard cap 1,000 — the
 unit the export SLO is expressed in) plus an **opaque `cursor`**, with `next_cursor` returned
@@ -263,11 +277,20 @@ on every page until the result is exhausted. Ordering is **stable and append-con
 commit/append order on history and audit reads, so a cursor walk concurrent with writes never
 skips or duplicates a row at or before the cursor; a deterministic key order on catalog lists.
 Offset/`$skip` pagination is not offered (unstable over append-only stores at the ≥ 7-year
-retention). Slice surfaces (`/v1/pricing/plans*`, `…/prices`, `/v1/pricing/price-overlays`,
-`/v1/pricing/approvals`, `/v1/pricing/history`, `/v1/pricing/audit`, batch reports' row lists)
+retention). Slice surfaces (`/bss-pricing/v1/plans*`, `…/prices`, `/bss-pricing/v1/price-overlays`,
+`/bss-pricing/v1/approvals`, `/bss-pricing/v1/history`, `/bss-pricing/v1/audit`, batch reports' row lists)
 inherit this contract rather than restating it; exports stream the same order in bounded
 chunks, and the p95 ≤ 5s / 100 records SLO applies **per page/chunk** — before D-125 that SLO
 was expressed per page while no page contract existed anywhere in the set.
+
+**Route shape (normative, D-140, 2026-08-02):** every REST surface of this gear is served
+under the gear's service prefix — `/bss-pricing/v1/{resource}`, where `bss-pricing` is the
+registered gear name — and an action on a resource is a **sub-resource segment**
+(`…/{id}/publish`, `…/{id}/start`), never a colon-suffixed custom method. Slice surfaces
+inherit this shape rather than restating it, as they inherit the pagination contract above.
+The convention is the platform's (`/{service-name}/v{N}/{resource}`, the sibling ledger's
+`/bss-ledger/v1/…`) and is enforced mechanically at build time, so it binds the documented
+paths as well as the implementation.
 
 ### 3.4 Internal Dependencies
 
@@ -324,7 +347,7 @@ only, including slice-owned tables in every other slice design.
 - **Price history** — history is the set of superseded rows retained **in `pricing_price` itself**, keyed by `supersedes_price_id`; no rows are ever moved or deleted (no separate history table).
 - **`pricing_read_model`** — the projected frozen view keyed by **`(tenant_id, catalog_version, subject_kind, subject_ref)`** with a per-row `warm_completed` marker; monotonic per `catalog_version`. **Storage is a per-subject delta (D-86, 2026-07-30; subject-typed by D-91, 2026-07-31)**: `subject_kind ∈ {plan, price_overlay, overlay_index, group_membership}` (extensible), and a version's rows are exactly the subjects of the publish units that produced it — never a full tenant copy (≤ 5s interactive coalescing would explode one). A plan publish projects its plan-subject row (`subject_ref = plan_id`, exactly the D-86 semantics); a **`PriceOverlay` publish unit projects one overlay-subject row** (the overlay document: lines, amounts, dating, disclosure, lifecycle) and **never re-projects targeted plans** — Tariffs joins overlays to base rows at evaluation per the §9.2 contract, so a `global`-scope overlay commit writes one row, not a tenant's worth; a **membership publish unit projects one membership-subject row** per payer record (D-06's units thereby have a defined read-model representation). An overlay publish unit additionally re-projects an **`overlay_index`** subject — the live overlay id set with each overlay's interval and precedence (**D-112**, 2026-07-31 review fix): per-subject resolution answers "overlay X at pin V" but evaluation needs the *set*, and without an index the only path was a `DISTINCT subject_ref` scan over ≥ 7 years of overlay deltas on the order-time p95 < 100ms path ([`09-price-overlays.md`](./09-price-overlays.md) §7). **The index is sharded and horizon-bounded (D-133, 2026-08-01 review fix):** `subject_ref = (scope_class, scope_value)` (a `global` sentinel value for the classless one), and a shard carries only overlays whose own interval intersects `[projection_time − H, ∞)` on the D-121 horizon. D-112's accounting — "two delta rows per commit, still O(publish units)" — counted **rows and not bytes**: as a single tenant-wide document the index was O(live overlay count) per row, rewritten whole on every commit and retained on the ≥ 7-year truth horizon, i.e. O(commits × overlays) of storage and O(overlays) of write amplification per commit, on the object the order-time read path touches. Sharded, a commit rewrites exactly one shard (two, when a revision moves the overlay's scope value), and an evaluation reads the ≤ 6 shards its payer context can match as point lookups. Resolving `(pin V, subject S)` reads S's row with the greatest `catalog_version ≤ V` whose `warm_completed` is set (one indexed read on `(tenant_id, subject_kind, subject_ref, catalog_version DESC)`, inside the p95 < 100ms budget). **Retention**: delta rows are retained on the same horizon as the append-only truth history (≥ 7y, jurisdiction-configurable, audit-aligned) — growth is O(publish units), the truth tables' own order; compacting superseded deltas beyond the horizon is an ops knob, never a semantics change. **Per-delta size** is bounded by the D-121 projected-set rule (§4.4): a plan delta carries the rows/windows intersecting the `H` horizon, never the plan's whole accumulated history.
 - **`pricing_catalog_version_ref`** — `pending` vs `committed` version linkage per publish.
-- **`pricing_pin_frontier`** — PK `tenant_id`; `catalog_version` + `advanced_at`. The materialized **pin-eligibility frontier** (D-136, §4.4): advanced only forward, and only by the ReadModelProjector inside the transaction that completes the frontier's next version in order. It is what `GET /v1/pricing/catalog-version/frontier` serves, what the ≤ 5s pin-lag rule is measured against, and what `pricing.readmodel.pin_eligibility_overdue` reads — the D-101/D-114 predicate is otherwise a recursive scan of the delta store on the p95 < 100 ms path, with no owner and no surface.
+- **`pricing_pin_frontier`** — PK `tenant_id`; `catalog_version` + `advanced_at`. The materialized **pin-eligibility frontier** (D-136, §4.4): advanced only forward, and only by the ReadModelProjector inside the transaction that completes the frontier's next version in order. It is what `GET /bss-pricing/v1/catalog-version/frontier` serves, what the ≤ 5s pin-lag rule is measured against, and what `pricing.readmodel.pin_eligibility_overdue` reads — the D-101/D-114 predicate is otherwise a recursive scan of the delta store on the p95 < 100 ms path, with no owner and no surface.
 - **`pricing_policy_object`** — the approval-threshold and tax-display policies (fail-safe defaults), the tenant **default rounding policy** (a named rounding-policy id; optional — a tenant without one simply requires every published row to carry its own `rounding_policy_ref`, per the §17.4 fail-closed rule), and the **enforced-migration notice period** (days; default floor 60 — D-49, validated by Slice 11 at scheduling).
 - **`pricing_operator_flag`** — operator-plane drift/divergence flags, keyed `(tenant_id, subject_ref, flag)`; set/cleared by the external-signal handlers (audited): `tier_divergent` (Slice 2), `grants_divergent` (Slice 6), the tax-readiness divergence (Slice 4), `meter_binding_divergent` (Slice 2 — a registry metering-unit binding/dimension-set change diverging from a published plan's frozen mapping; 2026-07-31 review fix). **Never part of `pricing_read_model`** (D-85): a drift flag has no publish unit — consumers keep resolving the frozen values; operators read the flags via the authoring surfaces (`plan × read`) and the existing alarms.
 - **`pricing_idempotency_dedup`** — PK `(tenant_id, operation, client_key)` + a request-payload hash; the at-most-once gate + replay-response source. A replay with a matching hash returns the stored response; a mismatching hash is rejected with `IDEMPOTENCY_PAYLOAD_MISMATCH` (never replayed, never re-executed); the idempotency check precedes the ETag check.
@@ -370,7 +393,7 @@ coverage** is:
 ```
 
 - Axis defaults: `priceOverlay = base` (rows authored here always carry `base`; partner/orgTier/brand overlays are separate `PriceOverlay` rows evaluated downstream by Tariffs), `phase =` **the plan's terminal `phase_id`** (D-19: the axis is always uuid-typed — for a phased plan its authored terminal phase; for non-phased/one-time plans an **implicit terminal phase row** (kind `evergreen`) is auto-created at plan creation and its id is the default; the literal `evergreen` survives only as the phase *kind*), `priceEligibility = all_subscriptions`, `chargeKind` per row, `cohort = none`.
-- `cohort` (ADR-0002) is the **grandfathering generation discriminator** — the UTC cutover instant that created the generation. Publish validation enforces `cohort ≠ none ⇔ priceEligibility = existing_grandfathered`; every cutover creates a **new** generation on its own key, so repeated repricing with per-cohort retention never violates non-overlap. Within the `existing_grandfathered` class, Tariffs selects the row whose `cohort` equals the cohort of the subscription's **pinned price id** (`pricingSnapshotRef`) — and, when that pin carries `cohort = none` (the **bootstrap** case, D-126: the subscription predates the key's first cutover, so its pin is on a non-grandfathered row), the generation whose `cohort` equals the **pinned row's window `effectiveTo`**, which is by construction the instant of the cutover that closed it; if no generation carries that instant the class contributes **no** candidate and resolution continues down the class order (the pinned row was closed by a supersession, not a cutover — that subscriber is not grandfathered). Class ordering (most-specific-wins) is unchanged. Unrelated to `customerGroup` segment pricing.
+- `cohort` (ADR-0002) is the **grandfathering generation discriminator** — the UTC cutover instant that created the generation. Publish validation enforces `cohort ≠ none ⇔ priceEligibility = existing_grandfathered` (`COHORT_ELIGIBILITY_MISMATCH` — the rule was normative from the start and had no code of its own; named here 2026-08-02 while implementing the axis, since every other publish-blocking rule in this set carries one and a rule with no code cannot be reported); every cutover creates a **new** generation on its own key, so repeated repricing with per-cohort retention never violates non-overlap. Within the `existing_grandfathered` class, Tariffs selects the row whose `cohort` equals the cohort of the subscription's **pinned price id** (`pricingSnapshotRef`) — and, when that pin carries `cohort = none` (the **bootstrap** case, D-126: the subscription predates the key's first cutover, so its pin is on a non-grandfathered row), the generation whose `cohort` equals the **pinned row's window `effectiveTo`**, which is by construction the instant of the cutover that closed it; if no generation carries that instant the class contributes **no** candidate and resolution continues down the class order (the pinned row was closed by a supersession, not a cutover — that subscriber is not grandfathered). Class ordering (most-specific-wins) is unchanged. Unrelated to `customerGroup` segment pricing.
 - `chargeKind ∈ {recurring, usage, one_time, one_time_setup}` distinguishes the components a single plan legitimately carries at once: a hybrid plan holds a `recurring` **and** a `usage` row (optionally a `one_time_setup` row) on one `planId`, and a one-time plan's base row is `one_time` — so they are **distinct keys**, not duplicates.
 - `brand` is **NOT** a price-row axis: brand-differentiated pricing is a **brand-scoped `PriceOverlay`** overlay (manifest §4.1 invariant).
 - This key **extends the manifest `(plan, currency, region, priceOverlay)` key additively** with `phase`, `priceEligibility`, `chargeKind` (ADR `cpt-cf-bss-pricing-adr-canonical-scope-key`) and `cohort` (ADR `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis`), and **supersedes** the narrower effective-dating `(plan, currency, region, priceOverlay)` key for normative purposes.
@@ -578,7 +601,7 @@ frozen payload, and consumers evaluate from that payload without resolving its i
 read model (a tier-2 reference row exists in no `CatalogVersion` by construction, D-76; a tier-1
 row's historical instant predates any useful pin). Because it resolves through **no** version, it
 needs its own read surface, which the read-model contract does not provide: consumers fetch it
-from `GET /v1/pricing/migrated-origin-snapshots/{subscriptionRef}` (Slice 11 §5, `plan × read`
+from `GET /bss-pricing/v1/migrated-origin-snapshots/{subscriptionRef}` (Slice 11 §5, `plan × read`
 service identity — **D-102**, 2026-07-31 review fix; registered as an inbound lane of the Tariffs
 contract, [`../PRD.md`](../PRD.md) §9.2). Everything else resolves version-pinned as above.
 
