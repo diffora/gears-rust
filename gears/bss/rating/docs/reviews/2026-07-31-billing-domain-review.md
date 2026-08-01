@@ -18,11 +18,13 @@ register. Items whose claim was narrowed during verification say so inline.
 > **Status (fix wave 2026-08-01, on the owner's go): ALL 52 SURVIVING ITEMS FIXED.**
 > Blocking #1–#4 + High #5–#20 → **T-D-23…T-D-31** where a decision was owed, direct
 > normative fixes otherwise; #21 → the slice-10 §4.6 **authz catalog**; #22 → the
-> `**Traces to**:` conversion across all 16 slices (43 FRs now machine-checked, single-owner,
-> P2 clean on first pass); Cleanup #23–#46 and Minor #47–#52 in place. Per-item mapping in the
-> [fix record](#verification--fix-record). **Flagged for veto: T-D-23, T-D-24, T-D-25, T-D-26,
-> T-D-27 (joint Contracts), T-D-28 (joint Billing), T-D-32**; adoptions T-D-29 (pricing D-113 —
-> pricing-side veto pending), T-D-30 (D-78), T-D-31 (D-114) ride the pricing register.
+> `**Traces to**:` conversion across the 12 FR-bearing slices (43 FRs now machine-checked,
+> single-owner, P2 clean on first pass; pipeline slices 13–16 own no PRD FRs); Cleanup #23–#46
+> and Minor #47–#52 in place. Per-item mapping in the
+> [fix record](#verification--fix-record). **Veto round 2026-08-01: T-D-18…T-D-28 and T-D-32
+> all CONFIRMED per-item** (T-D-27/T-D-28 as joint — the Contracts/Billing cross-PRD mirrors
+> stay owed); adoptions T-D-29/30/31 unqualified after pricing's same-day confirmations
+> (D-113 incl.). Nothing in rating awaits veto.
 
 Tier legend: **Blocking** — an implementer following the text builds wrong money today ·
 **High** — money/correctness divergence on a reachable path · **Guideline** — platform MUST ·

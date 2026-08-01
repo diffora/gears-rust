@@ -28,9 +28,10 @@ the severity they were reported at; the tiers below are **post-verification**. T
 > H-1 → **D-123**; M-1 + M-2 → **D-124** (one decision, two clauses — same instruction);
 > M-3 → **D-125**; C-1…C-7 and N-1…N-3 are text/schema fixes in place. The per-finding mapping
 > is in the [Verification & fix record](#verification--fix-record).
-> **Flagged for veto: D-123 (joint with Subscriptions + Rating).** Owed adoptions:
-> Subscriptions + Rating — **informational only** (their existing single-value readings become
-> well-founded; no field or contract change).
+> **Veto round 2026-08-01: D-123 CONFIRMED** (with D-113/115/117…119/122 — nothing in pricing
+> awaits veto). Owed adoptions: Subscriptions + Rating — **informational only** (their existing
+> single-value readings become well-founded; no field or contract change). The six §Unverified
+> candidates remain deliberately unactioned pending their own verification pass.
 
 Severity scale: **[H]** breaks money/correctness or is unimplementable as written · **[M]**
 teams can build incompatible behavior · **Cleanup/Minor** contained, latent, or hygiene.
