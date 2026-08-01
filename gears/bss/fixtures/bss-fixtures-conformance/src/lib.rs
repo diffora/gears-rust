@@ -9,5 +9,7 @@ pub mod runner;
 pub mod traits;
 
 pub use oracle::ReferenceOracle;
-pub use runner::{Outcome, Report, run_evaluation_suite};
-pub use traits::{CorpusEvaluator, EvalError, EvalInput, Evaluated};
+pub use runner::{
+    Outcome, PublishOutcome, PublishReport, Report, run_evaluation_suite, run_publish_suite,
+};
+pub use traits::{CorpusEvaluator, EvalError, EvalInput, Evaluated, PublishValidator};

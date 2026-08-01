@@ -6,8 +6,8 @@ provenance = ["AC#60", "PRD §17.2", "D-17"]
 [snapshot]
 model_kind              = "graduated"
 currency                = "USD"
-tier_aggregation_window = "billing_period"
-billing_granularity     = "per_unit"
+tier_aggregation_window = "invoice_period"
+billing_granularity     = "whole_unit"
 
   [[snapshot.bands]]
   from_qty = 0

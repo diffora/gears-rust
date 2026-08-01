@@ -9,10 +9,11 @@ provenance = ["inst-tb-supersession-units", "D-82", "D-77"]
 # has since been found at four more (D-98, D-89, D-113, D-127).
 
 [predecessor]
-model_kind          = "graduated"
-currency            = "USD"
-meter               = "compute.seconds"
-billing_granularity = "per_hour"
+model_kind              = "graduated"
+currency                = "USD"
+meter                   = "compute.seconds"
+billing_granularity     = "per_hour"
+tier_aggregation_window = "invoice_period"
 
   [[predecessor.bands]]
   from_qty = 0
@@ -20,10 +21,11 @@ billing_granularity = "per_hour"
   unit_amount_minor = 5
 
 [successor]
-model_kind          = "graduated"
-currency            = "USD"
-meter               = "compute.seconds"
-billing_granularity = "per_day"
+model_kind              = "graduated"
+currency                = "USD"
+meter                   = "compute.seconds"
+billing_granularity     = "per_day"
+tier_aggregation_window = "invoice_period"
 
   [[successor.bands]]
   from_qty = 0

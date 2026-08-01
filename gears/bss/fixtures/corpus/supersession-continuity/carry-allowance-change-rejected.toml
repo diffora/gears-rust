@@ -13,11 +13,12 @@ provenance = ["inst-tb-supersession-units", "D-129", "D-43", "D-45"]
 # carries no plan-scoped artifact.
 
 [predecessor]
-model_kind          = "graduated"
-currency            = "USD"
-meter               = "storage.gb"
-billing_granularity = "per_day"
-included_allowance  = { quantity = 100, rollover_policy = "carry" }
+model_kind              = "graduated"
+currency                = "USD"
+meter                   = "storage.gb"
+billing_granularity     = "per_day"
+tier_aggregation_window = "invoice_period"
+included_allowance      = { quantity = 100, rollover_policy = "carry" }
 
   [[predecessor.bands]]
   from_qty = 0
@@ -25,11 +26,12 @@ included_allowance  = { quantity = 100, rollover_policy = "carry" }
   unit_amount_minor = 5
 
 [successor]
-model_kind          = "graduated"
-currency            = "USD"
-meter               = "storage.gb"
-billing_granularity = "per_day"
-included_allowance  = { quantity = 250, rollover_policy = "carry" }
+model_kind              = "graduated"
+currency                = "USD"
+meter                   = "storage.gb"
+billing_granularity     = "per_day"
+tier_aggregation_window = "invoice_period"
+included_allowance      = { quantity = 250, rollover_policy = "carry" }
 
   [[successor.bands]]
   from_qty = 0

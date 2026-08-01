@@ -12,20 +12,22 @@ provenance = ["inst-tb-supersession-units", "D-122", "D-58"]
 # legitimate: the price of a block is the lever, the size of it is not.
 
 [predecessor]
-model_kind          = "package"
-currency            = "USD"
-meter               = "api.calls"
-billing_granularity = "per_hour"
-package_size        = 1000
-package_price_minor = 2500
+model_kind              = "package"
+currency                = "USD"
+meter                   = "api.calls"
+billing_granularity     = "per_hour"
+tier_aggregation_window = "invoice_period"
+package_size            = 1000
+package_price_minor     = 2500
 
 [successor]
-model_kind          = "package"
-currency            = "USD"
-meter               = "api.calls"
-billing_granularity = "per_hour"
-package_size        = 500
-package_price_minor = 1400
+model_kind              = "package"
+currency                = "USD"
+meter                   = "api.calls"
+billing_granularity     = "per_hour"
+tier_aggregation_window = "invoice_period"
+package_size            = 500
+package_price_minor     = 1400
 
 [[assert]]
 expect = { publish = "rejected", error_code = "SUPERSESSION_UNIT_MISMATCH" }

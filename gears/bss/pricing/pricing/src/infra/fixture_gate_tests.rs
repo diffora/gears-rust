@@ -82,16 +82,23 @@ fn a_malformed_registry_yields_a_closed_gate() {
 }
 
 #[test]
-fn the_committed_corpus_is_currently_closed_for_every_kind() {
-    // The honest statement of where the corpus stands. Every row carries
-    // `oracle = true` and `publish = false`, because the `publish` half is
-    // earned by THIS gear's validator reproducing the corpus's publish cases,
-    // and that validator does not exist yet. The gate is `oracle && publish`,
-    // so nothing is green.
+fn the_committed_corpus_is_currently_open_for_every_kind() {
+    // The honest statement of where the corpus stands, re-stated (not deleted)
+    // when the gate changed what it admits -- which is what the previous version
+    // of this test asked its reader to do.
     //
-    // This test is expected to fail on the day the validator lands, and that
-    // failure is the point: it is the signal that the gate has changed what it
-    // admits, and it must be read and re-stated rather than deleted.
+    // It used to read `closed for every kind`: every row carried `oracle = true`
+    // and `publish = false`, because the `publish` half is earned by THIS gear's
+    // validator reproducing the corpus's publish cases and that validator did not
+    // exist. It now exists, it reproduces every publish case, and the corpus
+    // carries at least one answerable publish case per kind -- `flat` and
+    // `per_unit` had none at all, which is why their gates could never have
+    // opened however correct the gear was. So `oracle && publish` holds for all
+    // five.
+    //
+    // The same instruction applies to this version: the day a kind closes again,
+    // this test fails, and that failure is the signal to read why before editing
+    // it.
     let path = committed_registry_path();
     assert!(
         path.exists(),
@@ -101,11 +108,9 @@ fn the_committed_corpus_is_currently_closed_for_every_kind() {
     let gate = FixtureGate::load(&path);
 
     for kind in ModelKind::ALL {
-        let err = gate.check(kind).unwrap_err();
         assert!(
-            matches!(err, DomainError::FixtureMissing(_)),
-            "{kind:?} is not green until pricing's publish validator earns the `publish` \
-             half of the corpus registry, got {err:?}"
+            gate.check(kind).is_ok(),
+            "{kind:?} has earned both halves of the corpus registry and must pass the gate"
         );
     }
 }

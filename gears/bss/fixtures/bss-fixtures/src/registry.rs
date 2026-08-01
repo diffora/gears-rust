@@ -1,8 +1,17 @@
 //! The artifact pricing's `FixtureGate` reads at publish time.
 //!
-//! Generated from the corpus by `regen_registry`, committed, and checked for
-//! freshness in CI. The gate runs inside a publish transaction and cannot run an
-//! oracle there, so it needs a static answer.
+//! Generated from the corpus by pricing's `regen_registry` example, committed,
+//! and checked for freshness by that gear's `corpus_publish` test. The gate runs
+//! inside a publish transaction and cannot run an oracle there, so it needs a
+//! static answer.
+//!
+//! The generator is an example target of the **gear** rather than a binary of
+//! either fixture crate because the two flags below are earned by two parties
+//! that cannot see each other: the reference oracle lives in
+//! `bss-fixtures-conformance`, pricing's validator lives in the gear, and the
+//! harness is a dev-dependency of the gear so that no evaluator reaches it even
+//! transitively. An example compiles with dev-dependencies, so it is the one
+//! build in which both halves are visible.
 
 use crate::kinds::ModelKind;
 use serde::{Deserialize, Serialize};
@@ -18,7 +27,9 @@ pub struct VariantStatus {
     pub kind: ModelKind,
     /// The reference oracle reproduces every evaluation case for this kind.
     pub oracle: bool,
-    /// Pricing's validator reproduces every publish case. False until Slice 3.
+    /// Pricing's `PublishValidator` reproduces every publish case for this kind.
+    /// A kind the corpus carries no publish case for earns nothing — absent
+    /// coverage must never read as success.
     pub publish: bool,
     /// Rating's evaluator reproduces the same cases. False until rating exists;
     /// when it lands it must **agree** with the oracle, and disagreement reddens

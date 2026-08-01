@@ -30,6 +30,16 @@ pub enum EvalError {
     UnsupportedModelKind(ModelKind),
     #[error("required snapshot field `{0}` is absent")]
     MissingField(&'static str),
+    /// A snapshot field the subject's own shape cannot hold at all — an
+    /// out-of-vocabulary value, or a field belonging to a slice the subject has
+    /// not built.
+    ///
+    /// Distinct from [`EvalError::MissingField`] on purpose: absent and
+    /// unrepresentable are different failures. The first says the case did not
+    /// supply something; the second says the subject cannot receive it, which is
+    /// the only honest way to decline a case rather than answer it wrongly.
+    #[error("snapshot field `{field}` holds {value}, which this subject cannot represent")]
+    UnrepresentableField { field: &'static str, value: String },
     #[error("required given field `{0}` is absent")]
     MissingGiven(&'static str),
     #[error("no band covers quantity {0}")]
@@ -74,8 +84,13 @@ pub trait CorpusEvaluator {
 /// Implemented by the **pricing gear**, and by nothing else. The reference
 /// oracle deliberately does not implement it: reproducing the gear's validation
 /// surface would mean checking the gear against a copy of the gear, which tests
-/// nothing and doubles the maintenance. Until pricing's validator exists, the
-/// registry's `publish` half stays unearned — which is exactly what it reports.
+/// nothing and doubles the maintenance.
+///
+/// That asymmetry is why the registry's two halves are earned from different
+/// places. The `oracle` half is earned here; the `publish` half is earned by the
+/// gear running [`crate::run_publish_suite`] over its own validator, which it
+/// does from an `example` target — the one build in which both this crate and
+/// the gear are visible without this crate entering the gear's production graph.
 pub trait PublishValidator {
     /// # Errors
     ///

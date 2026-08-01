@@ -9,8 +9,8 @@ provenance = ["AC#60", "PRD 17.2", "D-17"]
 [snapshot]
 model_kind              = "graduated"
 currency                = "USD"
-tier_aggregation_window = "billing_period"
-billing_granularity     = "per_unit"
+tier_aggregation_window = "invoice_period"
+billing_granularity     = "whole_unit"
 
   [[snapshot.bands]]
   from_qty = 0
@@ -100,6 +100,38 @@ fn an_empty_runtime_section_is_fine() {
     let ok = format!("{GRADUATED}\n[runtime]\n");
 
     toml::from_str::<EvaluationCase>(&ok).expect("an empty runtime section must parse");
+}
+
+#[test]
+fn rejects_a_tier_aggregation_window_no_document_defines() {
+    // `billing_period` is the value four cases carried: a plausible synonym of
+    // `invoice_period` that reads as obviously correct and appears in no
+    // enumeration. While the field was an `Option<String>` it loaded silently and
+    // was only ever noticed by a consumer that could not map it.
+    let bad = GRADUATED.replace("\"invoice_period\"", "\"billing_period\"");
+
+    let err = toml::from_str::<EvaluationCase>(&bad)
+        .expect_err("a window outside inst-tb-window's enumeration must not load");
+
+    assert!(
+        err.to_string().contains("billing_period"),
+        "error should quote the bad value, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_a_billing_granularity_no_document_defines() {
+    // `per_unit` is a `modelKind`, not a granularity - which is exactly why it
+    // was an easy thing to write in this field and a hard thing to see.
+    let bad = GRADUATED.replace("\"whole_unit\"", "\"per_unit\"");
+
+    let err = toml::from_str::<EvaluationCase>(&bad)
+        .expect_err("a granularity outside inst-tb-window's enumeration must not load");
+
+    assert!(
+        err.to_string().contains("per_unit"),
+        "error should quote the bad value, got: {err}"
+    );
 }
 
 #[test]

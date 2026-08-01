@@ -113,6 +113,48 @@ pub enum ProrationBasis {
     None,
 }
 
+/// When the tier counter `Q` resets (`inst-tb-window`; on a `package` row the
+/// window `used` accumulates over before block round-up, `inst-pk-window` /
+/// D-58).
+///
+/// Pinned here in code for the same reason as [`ProrationBasis`]: the corpus
+/// itself carries the enum, so a window the design set does not define fails to
+/// **load** instead of riding through an `Option<String>` into a case nobody can
+/// evaluate. `billing_period` did exactly that — a plausible synonym of
+/// `invoice_period` that four cases carried and no document defines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TierAggregationWindow {
+    CalendarMonth,
+    /// The subscription's invoice period.
+    InvoicePeriod,
+    /// Never resets: the counter runs for the life of the subscription.
+    SubscriptionLifetime,
+    /// Resets every event, so `Q` is one event's quantity.
+    PerEvent,
+}
+
+/// The billable unit a usage row's quantity is quantized into
+/// (`inst-tb-units`), and therefore the unit its band bounds are counted in.
+///
+/// Pinned in code alongside [`TierAggregationWindow`], and for the same reason:
+/// `per_unit` — the name of a `modelKind`, not of a granularity — sat in the
+/// corpus as a `billingGranularity` for as long as the field was a string.
+///
+/// On a non-`sum` row the value must pair with `aggregationGranularity`
+/// (`hour => per_hour`, `day => per_day`, D-77 / `inst-la-granularity`), which
+/// is what keeps `inst-tb-units` and `inst-la-units` naming one unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingGranularity {
+    PerSecond,
+    PerMinute,
+    PerHour,
+    PerDay,
+    /// No sub-unit quantization: the quantity is counted in whole units.
+    WholeUnit,
+}
+
 /// Fields frozen in `pricingSnapshotRef`. Nothing else may appear here.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,9 +172,9 @@ pub struct Snapshot {
     #[serde(default)]
     pub quantity_source: Option<String>,
     #[serde(default)]
-    pub tier_aggregation_window: Option<String>,
+    pub tier_aggregation_window: Option<TierAggregationWindow>,
     #[serde(default)]
-    pub billing_granularity: Option<String>,
+    pub billing_granularity: Option<BillingGranularity>,
     /// Frozen in `pricingSnapshotRef`; drives all mid-period proration.
     #[serde(default)]
     pub proration_basis: Option<ProrationBasis>,
@@ -400,6 +442,24 @@ pub struct PublishCase {
     pub predecessor: Snapshot,
     pub successor: Snapshot,
     pub assert: Vec<PublishAssertion>,
+    /// The slice this case is authored against, when nothing has built it yet.
+    ///
+    /// The `trailing-tier` precedent, one axis over. `trailing-tier` is named in
+    /// [`Family::ALL`], carries no case, and is therefore reported **declined** —
+    /// never green, never absent. A case cannot be declined that way: omitting
+    /// it would delete an authored rule of a slice the design set already
+    /// states. So the corpus says the same thing in the case file, and the
+    /// runner treats a subject's decline as the **anticipated** answer: recorded,
+    /// earning nothing, and never a pass.
+    ///
+    /// It is not an escape hatch. The verdict stays authored and stays checked:
+    /// a subject that *answers* the case is judged against it exactly as before,
+    /// so a wrong verdict is still red. And a subject that answers it **right**
+    /// retires this field — the declaration is then stale, which the runner
+    /// reports, because "this cannot be answered yet" must stop being true the
+    /// moment it stops being true.
+    #[serde(default)]
+    pub declined_until: Option<String>,
 }
 
 /// A corpus case.

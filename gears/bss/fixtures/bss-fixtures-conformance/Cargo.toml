@@ -2,7 +2,7 @@
 name = "bss-fixtures-conformance"
 edition.workspace = true
 license.workspace = true
-description = "Conformance harness over the BSS joint fixture corpus: the ChargeEvaluator trait, the suite runner, and the reference oracle implementing the pricing PRD §17.2 formula matrix. Gears take this as a dev-dependency only."
+description = "Conformance harness over the BSS joint fixture corpus: the CorpusEvaluator and PublishValidator traits, the suite runners, the registry generator, and the reference oracle implementing the pricing PRD §17.2 formula matrix. Gears take this as a dev-dependency only."
 
 [lints]
 workspace = true
@@ -16,6 +16,7 @@ bss-fixtures = { workspace = true, features = ["corpus"] }
 thiserror = { workspace = true }
 # Period arithmetic for the proration family (UTC instants only).
 chrono = { workspace = true }
-# `regen_registry` serialises the generated registry back to TOML.
+# `registry_gen::render` serialises the generated registry back to TOML for the
+# gear's `regen_registry` example, which is what writes the committed file.
 toml = { workspace = true }
 serde = { workspace = true }

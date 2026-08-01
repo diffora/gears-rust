@@ -1142,6 +1142,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bss-fixtures",
+ "bss-fixtures-conformance",
  "bss-pricing-sdk",
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",

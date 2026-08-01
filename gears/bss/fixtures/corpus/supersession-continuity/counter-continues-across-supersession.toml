@@ -19,7 +19,7 @@ model_kind              = "graduated"
 currency                = "USD"
 meter                   = "compute.seconds"
 billing_granularity     = "per_hour"
-tier_aggregation_window = "billing_period"
+tier_aggregation_window = "invoice_period"
 
   [[snapshot.bands]]
   from_qty = 0

@@ -3,9 +3,16 @@
 //! There is no per-case filter on purpose. The only way to decline work is to
 //! omit a family from `supported_families`, which is recorded and is never
 //! green — so a subject cannot quietly skip the family it finds inconvenient.
+//!
+//! Two suites, because the corpus asks two questions of two different subjects:
+//! [`run_evaluation_suite`] drives a [`CorpusEvaluator`] over the evaluation
+//! cases, and [`run_publish_suite`] drives a [`PublishValidator`] over the
+//! publish cases. Both live here rather than with their subjects: the runner is
+//! corpus machinery, and a subject that ran its own cases would be free to
+//! choose which ones.
 
-use crate::traits::{CorpusEvaluator, EvalError, EvalInput, Evaluated};
-use bss_fixtures::{Case, Corpus, Expect, Family};
+use crate::traits::{CorpusEvaluator, EvalError, EvalInput, Evaluated, PublishValidator};
+use bss_fixtures::{Case, Corpus, Expect, Family, ModelKind, PublishVerdict};
 
 #[derive(Debug)]
 pub struct Outcome {
@@ -103,6 +110,149 @@ pub fn run_evaluation_suite<E: CorpusEvaluator>(evaluator: &E, corpus: &Corpus) 
         .collect();
 
     Report { outcomes, declined }
+}
+
+/// One publish assertion answered by a [`PublishValidator`].
+#[derive(Debug)]
+pub struct PublishOutcome {
+    pub case_id: String,
+    pub family: Family,
+    pub index: usize,
+    /// The successor's `modelKind` — the row under test, and therefore the
+    /// registry variant this outcome is evidence about.
+    pub kind: ModelKind,
+    pub expected: PublishVerdict,
+    pub actual: Result<PublishVerdict, EvalError>,
+    /// The case's own `declined_until`, carried through so the report can tell
+    /// "no subject has built this slice" apart from "the subject got it wrong".
+    pub declined_until: Option<String>,
+}
+
+impl PublishOutcome {
+    /// Did the subject answer the verdict the corpus states?
+    ///
+    /// An [`EvalError`] never passes. Declining a case is a legitimate answer —
+    /// a subject must fail rather than guess — but it is not evidence that the
+    /// rule holds, so it cannot earn a flag.
+    ///
+    /// Unchanged by `declined_until`, deliberately: a case the corpus marks
+    /// unanswerable is still judged the moment a subject answers it.
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        matches!(&self.actual, Ok(verdict) if *verdict == self.expected)
+    }
+
+    /// The corpus said nothing could answer this yet, and the subject did not.
+    ///
+    /// The anticipated state — the `trailing-tier` reading at case granularity.
+    /// It is not a pass and never earns a flag; it is recorded so that absent
+    /// evidence stays visible instead of reading as either success or fault.
+    #[must_use]
+    pub fn anticipated_decline(&self) -> bool {
+        self.declined_until.is_some() && self.actual.is_err()
+    }
+
+    /// The corpus said nothing could answer this yet, and something did.
+    ///
+    /// Loud on purpose: the slice landed, so the declaration is stale and the
+    /// case owes the registry its evidence again. A `declined_until` that
+    /// outlives its slice would suppress a real result forever.
+    #[must_use]
+    pub fn stale_decline(&self) -> bool {
+        self.declined_until.is_some() && self.actual.is_ok()
+    }
+}
+
+#[derive(Debug)]
+pub struct PublishReport {
+    pub outcomes: Vec<PublishOutcome>,
+}
+
+impl PublishReport {
+    /// Cases the subject answered differently from the corpus.
+    ///
+    /// An anticipated decline is not one: the corpus itself says the case is
+    /// unanswerable, so refusing it is agreement, not disagreement. Everything
+    /// else — including a *declined* case the subject answered with the wrong
+    /// verdict — is here.
+    pub fn failures(&self) -> impl Iterator<Item = &PublishOutcome> {
+        self.outcomes
+            .iter()
+            .filter(|o| !o.passed() && !o.anticipated_decline())
+    }
+
+    /// Cases suspended because no subject has built their slice.
+    pub fn declined(&self) -> impl Iterator<Item = &PublishOutcome> {
+        self.outcomes.iter().filter(|o| o.anticipated_decline())
+    }
+
+    /// Declarations that have outlived their slice — see
+    /// [`PublishOutcome::stale_decline`].
+    pub fn stale_declines(&self) -> impl Iterator<Item = &PublishOutcome> {
+        self.outcomes.iter().filter(|o| o.stale_decline())
+    }
+
+    /// The kinds whose `publish` half this run **earns**.
+    ///
+    /// Same rule as [`Report::is_green_for`], one axis over: non-empty and every
+    /// assertion reproduced. A kind the corpus carries no publish case for earns
+    /// nothing — absent coverage must never read as success, which is the whole
+    /// reason the corpus exists.
+    ///
+    /// An anticipated decline is skipped entirely: it neither earns the kind nor
+    /// blocks it, because it is not evidence in either direction. A kind whose
+    /// *only* publish cases are declined is therefore still unearned — and
+    /// `check_publish_case_coverage` refuses that corpus outright, so the state
+    /// cannot be reached quietly.
+    #[must_use]
+    pub fn earned_kinds(&self) -> Vec<ModelKind> {
+        ModelKind::ALL
+            .into_iter()
+            .filter(|kind| {
+                let mut seen = false;
+                for outcome in self
+                    .outcomes
+                    .iter()
+                    .filter(|o| o.kind == *kind && !o.anticipated_decline())
+                {
+                    seen = true;
+                    if !outcome.passed() {
+                        return false;
+                    }
+                }
+                seen
+            })
+            .collect()
+    }
+}
+
+/// Drives `validator` over every publish case in `corpus`.
+///
+/// No family filter and no per-case filter: [`PublishValidator`] has no
+/// `supported_families` to decline with, because the publish half has exactly
+/// one implementor and a gear that could skip its own cases would be grading its
+/// own paper.
+pub fn run_publish_suite<V: PublishValidator>(validator: &V, corpus: &Corpus) -> PublishReport {
+    let mut outcomes = Vec::new();
+
+    for case in &corpus.cases {
+        let Case::Publish(case) = case else {
+            continue;
+        };
+        for (index, assertion) in case.assert.iter().enumerate() {
+            outcomes.push(PublishOutcome {
+                case_id: case.id.clone(),
+                family: case.family,
+                index,
+                kind: case.successor.model_kind,
+                expected: assertion.expect.clone(),
+                actual: validator.validate(&case.predecessor, &case.successor),
+                declined_until: case.declined_until.clone(),
+            });
+        }
+    }
+
+    PublishReport { outcomes }
 }
 
 #[cfg(test)]

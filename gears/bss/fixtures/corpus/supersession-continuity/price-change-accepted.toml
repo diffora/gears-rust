@@ -9,10 +9,11 @@ provenance = ["inst-tb-supersession-units", "D-82"]
 # what stays allowed, not only what is forbidden.
 
 [predecessor]
-model_kind          = "graduated"
-currency            = "USD"
-meter               = "compute.seconds"
-billing_granularity = "per_hour"
+model_kind              = "graduated"
+currency                = "USD"
+meter                   = "compute.seconds"
+billing_granularity     = "per_hour"
+tier_aggregation_window = "invoice_period"
 
   [[predecessor.bands]]
   from_qty = 0
@@ -25,10 +26,11 @@ billing_granularity = "per_hour"
   unit_amount_minor = 3
 
 [successor]
-model_kind          = "graduated"
-currency            = "USD"
-meter               = "compute.seconds"
-billing_granularity = "per_hour"
+model_kind              = "graduated"
+currency                = "USD"
+meter                   = "compute.seconds"
+billing_granularity     = "per_hour"
+tier_aggregation_window = "invoice_period"
 
   [[successor.bands]]
   from_qty = 0

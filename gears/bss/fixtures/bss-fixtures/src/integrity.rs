@@ -30,9 +30,22 @@ pub enum IntegrityViolation {
     CaseAssertsNothing { case_id: String },
     /// A publish case expects a rejection but names no error code.
     RejectionWithoutCode { case_id: String },
+    /// A publish case declares itself unanswerable but names no slice.
+    ///
+    /// Same discipline as [`Self::RejectionWithoutCode`]: "nothing can answer
+    /// this yet" without saying what would is not reviewable, and it is the one
+    /// declaration in the corpus that suspends a case's evidence.
+    DeclineWithoutSlice { case_id: String },
     /// A catalog `modelKind` no family gates. `inst-fx-gate` blocks publish of
     /// any kind without a green fixture, so an ungated kind is unpublishable.
     ModelKindUngated { kind: ModelKind },
+    /// A catalog `modelKind` no publish case exercises.
+    ///
+    /// The registry's `publish` half is earned **per kind** by a passing run, so
+    /// a kind the corpus asks no publish question of can never earn it: the gate
+    /// stays shut for that kind forever. Exactly the shape of the `flat` hole —
+    /// a rule whose gate nothing can open reads as a rule, and is a wall.
+    ModelKindWithoutPublishCase { kind: ModelKind },
 }
 
 /// Checks that every catalog `modelKind` is gated by some family.
@@ -56,6 +69,39 @@ pub fn check_kind_coverage(corpus: &Corpus) -> Vec<IntegrityViolation> {
                 .any(|f| f.gates.iter().any(|g| g == *kind))
         })
         .map(|kind| IntegrityViolation::ModelKindUngated { kind: *kind })
+        .collect()
+}
+
+/// Checks that every catalog `modelKind` is exercised by some publish case.
+///
+/// The sibling of [`check_kind_coverage`], on the other half of the registry and
+/// for the same reason. That one asks whether a kind is *gated*; this one asks
+/// whether the gate can ever **open**. `publish` is earned per kind by a passing
+/// run over that kind's publish cases, so a kind with none earns nothing — and
+/// "earns nothing" is indistinguishable, in the committed file, from "failed".
+/// `flat` and `per_unit` sat in exactly that state: gated by a family, green on
+/// their oracle half, and permanently unpublishable because no case existed to
+/// pass.
+///
+/// A case marked `declined_until` does **not** count. It is authored against a
+/// slice nothing has built, so it cannot pass and cannot earn the flag either;
+/// counting it would let a kind's only coverage be a case that can never be
+/// answered — the same silence, one level down.
+///
+/// Kept out of [`check_integrity`] for the same reason as its sibling:
+/// completeness is a property of the committed corpus, not of every partial one
+/// a test builds.
+#[must_use]
+pub fn check_publish_case_coverage(corpus: &Corpus) -> Vec<IntegrityViolation> {
+    ModelKind::ALL
+        .iter()
+        .filter(|kind| {
+            !corpus.cases.iter().any(|case| match case {
+                Case::Publish(p) => p.declined_until.is_none() && p.successor.model_kind == **kind,
+                Case::Evaluation(_) => false,
+            })
+        })
+        .map(|kind| IntegrityViolation::ModelKindWithoutPublishCase { kind: *kind })
         .collect()
 }
 
@@ -84,6 +130,16 @@ pub fn check_integrity(corpus: &Corpus) -> Vec<IntegrityViolation> {
                         case_id: p.id.clone(),
                     });
                 }
+            }
+            // A decline suspends the case's evidence, so the slice that would
+            // restore it has to be named.
+            if p.declined_until
+                .as_ref()
+                .is_some_and(|slice| slice.trim().is_empty())
+            {
+                out.push(IntegrityViolation::DeclineWithoutSlice {
+                    case_id: p.id.clone(),
+                });
             }
         }
         if !corpus.families.iter().any(|f| f.family == case.family()) {

@@ -8,7 +8,7 @@ model_kind          = "package"
 currency            = "USD"
 package_size        = 1000
 package_price_minor = 2500
-billing_granularity = "per_unit"
+billing_granularity = "whole_unit"
 
 [[assert]]
 given  = { q = 0 }

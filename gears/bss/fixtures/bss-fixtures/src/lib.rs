@@ -27,11 +27,14 @@ pub mod model;
 #[cfg(feature = "corpus")]
 pub use corpus::{Corpus, CorpusError, FamilyMeta, GateRole};
 #[cfg(feature = "corpus")]
-pub use integrity::{IntegrityViolation, check_integrity, check_kind_coverage};
+pub use integrity::{
+    IntegrityViolation, check_integrity, check_kind_coverage, check_publish_case_coverage,
+};
 #[cfg(feature = "corpus")]
 pub use model::{
-    AggregationFunction, AggregationGranularity, Assertion, Band, BandTop, Case, CaseHeader,
-    CaseKind, ChargeExpect, EvaluationCase, Expect, Family, FoldExpect, GaugeSample, Given,
-    IncludedAllowance, ProrationBasis, PublishAssertion, PublishCase, PublishVerdict,
-    ReservationFlavor, RolloverPolicy, Runtime, Snapshot, UnitsExpect,
+    AggregationFunction, AggregationGranularity, Assertion, Band, BandTop, BillingGranularity,
+    Case, CaseHeader, CaseKind, ChargeExpect, EvaluationCase, Expect, Family, FoldExpect,
+    GaugeSample, Given, IncludedAllowance, ProrationBasis, PublishAssertion, PublishCase,
+    PublishVerdict, ReservationFlavor, RolloverPolicy, Runtime, Snapshot, TierAggregationWindow,
+    UnitsExpect,
 };
