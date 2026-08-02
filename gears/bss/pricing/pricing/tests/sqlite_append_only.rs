@@ -6,19 +6,21 @@
 //! guard is exercisable without Docker and this suite does not need a
 //! testcontainers test to know the rule holds.
 //!
-//! Four cases, one per branch of the whitelist: a forbidden price mutation, a
+//! One case per branch of the whitelist: a forbidden price mutation, a
 //! forbidden lifecycle transition, a forbidden loosening of `grandfather_until`,
-//! and a forbidden DELETE — plus the two moves that are *supposed* to work, so
-//! the test proves a whitelist rather than a blanket ban. Without the guard an
-//! ad-hoc UPDATE would silently change a frozen `CatalogVersion`'s content at
-//! the next warm re-drive, because the projector reads truth rows.
+//! a forbidden DELETE, a forbidden bump of `row_version`, and a forbidden
+//! re-size of a `package` block — plus the moves that are *supposed* to work,
+//! so the test proves a whitelist rather than a blanket ban. Without the guard
+//! an ad-hoc UPDATE would silently change a frozen `CatalogVersion`'s content
+//! at the next warm re-drive, because the projector reads truth rows.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
-use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
+use sea_orm::DatabaseConnection;
 
-use bss_pricing::infra::storage::migrations::Migrator;
+mod common;
+
+use common::{exec, migrated_db, must_succeed, scalar};
 
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
@@ -27,38 +29,16 @@ const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
 const PUBLISHED: &str = "55555555-5555-5555-5555-555555555555";
 const DRAFT: &str = "66666666-6666-6666-6666-666666666666";
 
-async fn migrated_db() -> DatabaseConnection {
-    let conn = Database::connect("sqlite::memory:")
-        .await
-        .expect("connect in-memory sqlite");
-    let manager = SchemaManager::new(&conn);
-    let mut chain: Vec<Box<dyn MigrationTrait>> = Migrator::migrations();
-    chain.sort_by(|a, b| a.name().cmp(b.name()));
-    for migration in &chain {
-        migration
-            .up(&manager)
-            .await
-            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
-    }
-    conn
-}
-
-async fn exec(conn: &DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
-    conn.execute(Statement::from_string(
-        sea_orm::DatabaseBackend::Sqlite,
-        sql.to_owned(),
-    ))
-    .await
-    .map(|_| ())
-}
-
-async fn must_succeed(conn: &DatabaseConnection, sql: &str) {
-    exec(conn, sql)
-        .await
-        .unwrap_or_else(|e| panic!("statement must succeed: {sql}\n{e}"));
-}
-
-async fn must_be_rejected(conn: &DatabaseConnection, sql: &str) {
+/// Reject, **and** for the stated reason.
+///
+/// The fragment is not decoration. `pricing_price` carries four whitelist
+/// triggers, twenty `CHECK` constraints and two partial `UNIQUE` indexes, and
+/// every one of those names contains the string `pricing_price` — as does the
+/// column list `SQLite` reports for a unique violation. A test that accepted
+/// any error naming the table would therefore pass with the trigger it means to
+/// prove switched off, refused instead by a constraint it never intended to
+/// trip.
+async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
     let err = exec(conn, sql)
         .await
         .err()
@@ -68,18 +48,10 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str) {
         message.contains("pricing_price"),
         "the rejection must name the guard it came from, got: {message}"
     );
-}
-
-async fn scalar(conn: &DatabaseConnection, sql: &str) -> String {
-    let row = conn
-        .query_one(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            sql.to_owned(),
-        ))
-        .await
-        .expect("query")
-        .expect("one row");
-    row.try_get::<String>("", "v").expect("read value")
+    assert!(
+        message.contains(because),
+        "the rejection must be the one under test (`{because}`), got: {message}"
+    );
 }
 
 /// Insert one published `all_subscriptions` row and one draft row on the same
@@ -119,16 +91,19 @@ async fn a_published_price_row_is_immutable_in_content() {
     must_be_rejected(
         &conn,
         &format!("UPDATE pricing_price SET amount_minor = 1 WHERE price_id = '{PUBLISHED}'"),
+        "price, scope, model and entity-tag columns are immutable",
     )
     .await;
     must_be_rejected(
         &conn,
         &format!("UPDATE pricing_price SET currency = 'EUR' WHERE price_id = '{PUBLISHED}'"),
+        "price, scope, model and entity-tag columns are immutable",
     )
     .await;
     must_be_rejected(
         &conn,
         &format!("UPDATE pricing_price SET model_kind = 'volume' WHERE price_id = '{PUBLISHED}'"),
+        "price, scope, model and entity-tag columns are immutable",
     )
     .await;
 
@@ -151,6 +126,7 @@ async fn only_the_sanctioned_lifecycle_transition_is_permitted() {
         &format!(
             "UPDATE pricing_price SET lifecycle_state = 'retired' WHERE price_id = '{PUBLISHED}'"
         ),
+        "lifecycle_state transition is not sanctioned",
     )
     .await;
     must_be_rejected(
@@ -158,6 +134,7 @@ async fn only_the_sanctioned_lifecycle_transition_is_permitted() {
         &format!(
             "UPDATE pricing_price SET lifecycle_state = 'draft' WHERE price_id = '{PUBLISHED}'"
         ),
+        "lifecycle_state transition is not sanctioned",
     )
     .await;
 
@@ -220,12 +197,14 @@ async fn grandfather_until_may_only_be_tightened() {
             "UPDATE pricing_price SET grandfather_until = '2028-01-01 00:00:00 +00:00' \
              WHERE price_id = '{row}'"
         ),
+        "grandfather_until may only be tightened, never loosened",
     )
     .await;
     // Clearing it is a loosening too.
     must_be_rejected(
         &conn,
         &format!("UPDATE pricing_price SET grandfather_until = NULL WHERE price_id = '{row}'"),
+        "grandfather_until may only be tightened, never loosened",
     )
     .await;
 
@@ -245,6 +224,7 @@ async fn published_rows_never_delete_and_drafts_stay_mutable() {
     must_be_rejected(
         &conn,
         &format!("DELETE FROM pricing_price WHERE price_id = '{PUBLISHED}'"),
+        "DELETE of a non-draft row is not permitted",
     )
     .await;
 
@@ -267,4 +247,97 @@ async fn published_rows_never_delete_and_drafts_stay_mutable() {
     )
     .await;
     assert_eq!(remaining, "1", "only the published row survives");
+}
+
+#[tokio::test]
+async fn a_published_rows_entity_tag_is_frozen_with_its_content() {
+    let conn = migrated_db().await;
+    seed(&conn).await;
+
+    // The tag denotes a representation, and this one cannot change. A tag that
+    // moved under frozen content would tell a caller its cached copy is stale
+    // when it is not, and fail every correctly-read `If-Match` submit after it.
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE pricing_price SET row_version = row_version + 1 WHERE price_id = '{PUBLISHED}'"
+        ),
+        "price, scope, model and entity-tag columns are immutable",
+    )
+    .await;
+
+    let version = scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(row_version AS TEXT) AS v FROM pricing_price WHERE price_id = '{PUBLISHED}'"
+        ),
+    )
+    .await;
+    assert_eq!(version, "0", "the rejected bump may not have landed");
+}
+
+#[tokio::test]
+async fn a_published_rows_package_block_size_is_frozen() {
+    let conn = migrated_db().await;
+    let row = "88888888-8888-8888-8888-888888888888";
+    // A published `package` row, so the kind CHECK that ties the package fields
+    // to `model_kind` is already satisfied and the only thing that can reject
+    // the UPDATE below is the append-only whitelist.
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_price (
+                price_id, tenant_id, plan_id, currency, region, phase,
+                charge_kind, model_kind, package_size, package_price_minor,
+                lifecycle_state, created_by, created_at_utc)
+             VALUES ('{row}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
+                'usage', 'package', 100, 5000, 'published', '{ACTOR}',
+                '2026-08-02 10:00:00 +00:00')"
+        ),
+    )
+    .await;
+
+    // `package_size` is a quantity-determining field, not a price lever: block
+    // math is non-linear in the window, so re-sizing a block mid-window
+    // re-buckets an already-accumulated counter (D-122). It is frozen for the
+    // same reason every other model column is.
+    must_be_rejected(
+        &conn,
+        &format!("UPDATE pricing_price SET package_size = 200 WHERE price_id = '{row}'"),
+        "price, scope, model and entity-tag columns are immutable",
+    )
+    .await;
+
+    let size = scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(package_size AS TEXT) AS v FROM pricing_price WHERE price_id = '{row}'"
+        ),
+    )
+    .await;
+    assert_eq!(size, "100", "the rejected re-size may not have landed");
+}
+
+#[tokio::test]
+async fn a_draft_rows_entity_tag_advances_with_each_edit() {
+    let conn = migrated_db().await;
+    seed(&conn).await;
+
+    // The draft plane is where content moves, so it is where the tag moves.
+    must_succeed(
+        &conn,
+        &format!(
+            "UPDATE pricing_price SET row_version = row_version + 1 WHERE price_id = '{DRAFT}'"
+        ),
+    )
+    .await;
+
+    let version = scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(row_version AS TEXT) AS v FROM pricing_price WHERE price_id = '{DRAFT}'"
+        ),
+    )
+    .await;
+    assert_eq!(version, "1", "the authoring edit advanced the draft's tag");
 }

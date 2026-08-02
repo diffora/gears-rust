@@ -1,6 +1,7 @@
 //! `SeaORM` entities for the bss-pricing gear (schema `bss`).
 //!
-//! One module per Foundation-owned table, each tenant-scoped through
+//! One module per physical table — the ten Foundation-owned ones and the
+//! slice-owned tables that follow them — each tenant-scoped through
 //! `SecureORM` (`#[secure(tenant_col = "tenant_id", ...)]`) so cross-tenant
 //! reads are denied in SQL rather than by a forgotten `WHERE` clause. Column
 //! types are chosen to round-trip on **both** backends: `Uuid` reads from
@@ -17,4 +18,5 @@ pub mod pin_frontier;
 pub mod plan;
 pub mod policy_object;
 pub mod price;
+pub mod price_tier_band;
 pub mod read_model;

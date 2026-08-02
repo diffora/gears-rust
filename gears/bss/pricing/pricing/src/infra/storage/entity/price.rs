@@ -9,10 +9,23 @@
 //! Money is integer minor units. `amount_minor` is nullable because its
 //! placement is per-kind (Slice 3): required on `flat` / `per_unit`, and NULL on
 //! the band and package kinds whose money lives elsewhere — so no row ever
-//! carries two competing prices.
+//! carries two competing prices. "Elsewhere" is `package_price_minor` on this
+//! very row for a `package`, and [`super::price_tier_band`] for
+//! `graduated` / `volume`: the per-row Slice-3 columns sit here, and only the
+//! band set, being many-per-row, needed a table.
+//!
+//! `included_allowance` is Slice-10-declared and rides along as opaque JSON.
+//! This entity persists the authored declaration and compiles nothing from it.
+//!
+//! A published row's content is frozen — its only permitted UPDATEs are the
+//! sanctioned `lifecycle_state` flip and a monotonic tightening of
+//! `grandfather_until` — so `row_version` (the `ETag`) is frozen with it:
+//! content that cannot change needs no new entity tag. The migration's module
+//! doc records why the column exists at all, which Foundation §3.7 omits to say.
 
 use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
+use serde_json::Value as JsonValue;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
 
@@ -46,6 +59,20 @@ pub struct Model {
     pub model_kind: Option<String>,
     pub tax_inclusive: bool,
     pub billing_timing: Option<String>,
+    /// `subscription_seat_count` | `manual` — where a **non-usage** `per_unit`
+    /// row gets its quantity. Usage rows never carry it: the meter supplies `Q`,
+    /// and an authored quantity beside a metered one would be two answers to
+    /// "how much was consumed".
+    pub quantity_source: Option<String>,
+    /// The fixed quantity a `manual` [`Model::quantity_source`] promises.
+    pub manual_quantity: Option<i64>,
+    /// Units per block; `package` only, `> 0`. Supersession-preserved (D-122):
+    /// block math is non-linear in the window, so a mid-window change
+    /// re-buckets an already-accumulated counter.
+    pub package_size: Option<i64>,
+    /// Price per block; `package` only. The legitimate price lever on a
+    /// `package` supersession, unlike [`Model::package_size`].
+    pub package_price_minor: Option<i64>,
     // --- evaluation policy (usage rows) ---
     pub meter: Option<String>,
     /// Dimension discriminator. `NOT NULL DEFAULT ''` — the empty string is the
@@ -58,6 +85,11 @@ pub struct Model {
     pub tier_aggregation_window: Option<String>,
     pub tier_qualification_window: Option<String>,
     pub max_hold_granules: Option<i32>,
+    /// The **authored** D-45 declaration `{quantity, rolloverPolicy}`, stored as
+    /// written. Slice-10-declared and Slice-10-compiled; this gear persists and
+    /// returns it and nothing more, because the D-129 supersession guard reads
+    /// it and a round trip that dropped it would report "nothing changed".
+    pub included_allowance: Option<JsonValue>,
     /// The named rounding-policy id resolved at publish (row-level, else the
     /// tenant default, else `ROUNDING_POLICY_UNRESOLVED`).
     pub rounding_policy_ref: Option<String>,
@@ -71,6 +103,10 @@ pub struct Model {
     /// Pseudonymous authoring principal (the Slice-12 history-export actor).
     pub created_by: Uuid,
     pub created_at_utc: DateTime<Utc>,
+    /// The `ETag` / optimistic-concurrency row version. The storage spelling of
+    /// [`crate::domain::concurrency::RowVersion`], which is the one place that
+    /// renders it as an entity tag and parses one back.
+    pub row_version: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

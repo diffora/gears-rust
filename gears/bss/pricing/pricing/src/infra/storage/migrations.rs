@@ -2,9 +2,12 @@
 //!
 //! Greenfield chain: the ten Foundation-owned tables of
 //! `design/01-foundation.md` §3.7, one migration per table, in dependency
-//! order. Slice-owned tables (`pricing_price_tier_band`, the overlay tables,
-//! the window store, `pricing_historical_price`, ...) arrive with their slices
-//! and append to this list.
+//! order, then the slice-owned tables. Slice 3 adds
+//! `pricing_price_tier_band` (`design/03-price-structure.md` §6) — the only
+//! part of a price row that is many-per-row; its per-row Slice-3 columns are
+//! amended onto `pricing_price` itself. The remaining slice-owned tables (the
+//! overlay tables, the window store, `pricing_historical_price`, ...) arrive
+//! with their slices and append to this list.
 //!
 //! **Schema creation.** The chain has no separate `create_bss_schema`
 //! migration: `m20260802_000001_create_pricing_plan` issues
@@ -29,6 +32,7 @@ pub mod m20260802_000007_create_pricing_operator_flag;
 pub mod m20260802_000008_create_pricing_idempotency_dedup;
 pub mod m20260802_000009_create_pricing_outbox;
 pub mod m20260802_000010_create_pricing_audit_log;
+pub mod m20260802_000011_create_pricing_price_tier_band;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -83,6 +87,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000008_create_pricing_idempotency_dedup::Migration),
             Box::new(m20260802_000009_create_pricing_outbox::Migration),
             Box::new(m20260802_000010_create_pricing_audit_log::Migration),
+            Box::new(m20260802_000011_create_pricing_price_tier_band::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. The
             // read-model warm re-drive is a singleton job (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

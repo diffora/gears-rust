@@ -12,6 +12,44 @@
 //! Postgres unique index, so a nullable cohort would let two current rows share
 //! a key.
 //!
+//! Both scope-key indexes lead with **`tenant_id`**, which the key itself does
+//! not carry. The design set's sibling index over the same table — Slice 2's
+//! meter-injectivity partial `UNIQUE` (`02-plan-definition.md` §6) — was
+//! review-fixed *to* `(tenant_id, plan_id, ...)`, and two indexes on one table
+//! that disagree about whether a uniqueness scope starts at the tenant are two
+//! different answers to "how far does this row's uniqueness reach". Nothing
+//! observable moves today, because `plan_id` is a uuid and a plan belongs to one
+//! tenant; what moves is that the index no longer relies on that being true.
+//!
+//! A **second** partial `UNIQUE` covers `lifecycle_state = 'draft'`, and it is
+//! not symmetry. The published index cannot see a draft, so two concurrent
+//! authoring calls on one key both find the key free and both commit — landing
+//! exactly the second draft that `03-price-structure.md` `inst-pr-return`
+//! (D-21) puts scope-key duplication among the save-time checks to refuse, and
+//! leaving publish to discover the ambiguity a round trip later. A repository
+//! pre-check is a read and cannot decide a race; this index is what does, the
+//! way `uq_pricing_plan_open_draft` does for the plan's one editable revision.
+//! The two indexes are disjoint by construction, so a key may still hold a
+//! draft **and** its published predecessor at once — which is the state the
+//! D-88 supersession unit works in, and the reason this is a second index
+//! rather than a widened first one.
+//!
+//! `row_version` — the row's `ETag` — is here because Foundation §3.7 **omits**
+//! it rather than because §3.7 asks for it, and that omission is a defect this
+//! migration reports rather than reconciles. The bullet lists "ETag/row-version"
+//! on `pricing_plan` and leaves it off `pricing_price`, while three normative
+//! surfaces each require a **per-row** entity tag on price rows:
+//! `03-price-structure.md` §5 gives
+//! `PATCH /bss-pricing/v1/plans/{planId}/prices/{priceId}` — "Update a draft
+//! row" — the idempotency column `ETag`; `12-operator-efficiency.md`
+//! `inst-bk-phase1` / `inst-bk-phase2` (D-118) have a bulk import edit "existing
+//! draft rows under their `ETags`" with a conflict failing "only that row",
+//! which is unsayable unless the tag is per row; and
+//! `07-pricewindow-linkage.md` `inst-co-single-pending` draws the boundary
+//! itself — "`ETag` protects rows, this rule protects change units". A per-row
+//! rule needs a per-row column, so the column lands here and the design set is
+//! left to record the omission.
+//!
 //! The physical guard is the append-only trigger with a **column whitelist**
 //! (§4.3). A published row permits exactly two moves: the state-machine
 //! transition `published -> superseded` (its two sanctioned producers are the
@@ -22,6 +60,13 @@
 //! non-draft row is always rejected. Never-published draft rows stay mutable
 //! and deletable.
 //!
+//! `row_version` is frozen by that same whitelist, alongside the content it
+//! tags. An entity tag denotes a representation, and a published row's
+//! representation cannot change — so a tag that moved under it would tell a
+//! caller its cached copy is stale when it is not, and turn every `If-Match`
+//! submit that had correctly read the row into a spurious `STALE_VERSION`. The
+//! tag advances only where content does: on the draft plane.
+//!
 //! **Backend differences.** As in the plan table, Postgres uses one PL/pgSQL
 //! trigger with interpolated messages and `SQLite` uses four `RAISE(ABORT, ...)`
 //! triggers with literal ones. One further `SQLite` caveat is real rather than
@@ -30,10 +75,85 @@
 //! canonical fixed-width UTC rendering `SeaORM` writes. Postgres compares
 //! `timestamptz` values.
 //!
-//! Kind-specific band and package columns (`pricing_price_tier_band`,
-//! `package_size`, `package_price_minor`, `quantity_source`, ...) are
-//! Slice-3-owned (`design/03-price-structure.md` §6) and arrive with that
-//! slice; what lands here is the Foundation-declared set §3.7 enumerates.
+//! **The Slice-3 columns** (`design/03-price-structure.md` §6) —
+//! `quantity_source`, `manual_quantity`, `package_size`,
+//! `package_price_minor` — are slice-owned on this Foundation-owned table, and
+//! they land on the row rather than in a table of their own because each is
+//! single-valued per row: a `package` row's block size belongs to that row the
+//! way `amount_minor` belongs to a `flat` one. Only the band set is
+//! many-per-row, so only the band set gets a child table
+//! (`m20260802_000011_create_pricing_price_tier_band`).
+//!
+//! §6's structural-exclusivity rule splits along that same line, and its
+//! package half is here: package fields are permitted only on
+//! `model_kind = 'package'`, which is a statement about one row and therefore
+//! sayable as a row CHECK. The band half — band rows forbidden unless the kind
+//! is `graduated` or `volume` — reads the parent from the child and is a
+//! trigger over there.
+//!
+//! That CHECK spells the kind test `model_kind IS NOT NULL AND
+//! model_kind = 'package'` rather than the shorter `model_kind = 'package'`,
+//! and the longer form is the whole constraint. `model_kind` is nullable — a
+//! draft may be authored before its kind is — so on a **kindless** row the
+//! short comparison evaluates to NULL, `FALSE OR NULL` is NULL, and both
+//! engines count a NULL CHECK result as satisfied. The rule would then admit
+//! exactly the row it exists to refuse: package block fields with no kind to
+//! give them meaning, which no Slice-3 rule reads and no rating applies. The
+//! band half of the same §6 rule already says this out loud — its trigger tests
+//! `parent_kind IS NULL OR parent_kind NOT IN (...)` and names the state
+//! `kindless` in its message — so the two halves now refuse the same row.
+//!
+//! **Every token column is `CHECK`-constrained to the set its domain enum
+//! renders**, and the ones that are only ever written by this gear are no
+//! exception. `infra::storage::repo::price_repo` reads each of them back
+//! through the inverse of that enum's `as_str()` and answers
+//! [`RepoError::CorruptRow`] for anything else, on the stated ground that a
+//! foreign token is an invariant breach rather than a caller mistake. That
+//! ground is only true if the column cannot hold such a token in the first
+//! place: without the CHECK, one `UPDATE` from a migration script or a
+//! console session leaves a row that every read of it answers as an internal
+//! fault forever, with nothing in the schema having objected at the moment the
+//! value landed. Every one of them therefore has a negative case in
+//! `tests/sqlite_price_checks.rs`, because a repository that writes only legal
+//! values catches a CHECK that is too *narrow* and never one that has stopped
+//! refusing. The one token no row CHECK can reach is `rolloverPolicy`, which
+//! lives **inside** the `included_allowance` jsonb.
+//!
+//! `price_eligibility` admits **three** classes, not the two the grandfathering
+//! cutover moves between: `new_subscriptions_only` is normative in its own right
+//! (PRD §1.4 glossary and §6.9, AC #59, `07-pricewindow-linkage.md` W3 /
+//! `inst-el-fields` / `inst-el-msw`, D-78, D-132) and sits between the other two
+//! in the most-specific-wins order. It pairs with `cohort = 'none'` like
+//! `all_subscriptions` does, so the biconditional below is unaffected — the
+//! cohort axis discriminates *retained* generations and this class retains
+//! nobody — and so is the `grandfather_until` pairing, which stays exclusive to
+//! `existing_grandfathered`.
+//!
+//! `lifecycle_state` is the one token column whose CHECK is deliberately
+//! **narrower** than the enum that renders it. `domain::lifecycle::LifecycleState`
+//! is shared with plan revisions, which legitimately reach `retired`
+//! (`01-foundation.md` §3.7, D-128); the **price-row** state machine
+//! (`03-price-structure.md` §4) has three states — draft, published, superseded
+//! — and no `retired` edge at all. A `retired` price row would fall outside both
+//! partial `UNIQUE` indexes below, so the one-current-row-per-key guarantee
+//! would simply stop covering it: the key would read as free and take a second
+//! published row beside the retired one.
+//!
+//! [`RepoError::CorruptRow`]: crate::infra::storage::RepoError::CorruptRow
+//!
+//! `included_allowance` is a **Slice-10-declared** column
+//! (`design/10-advanced-primitives.md` §6) carried here ahead of its slice, and
+//! nothing of that slice's behaviour comes with it: no declaration is compiled,
+//! no `$0` band is synthesized, no marker is projected (D-45 / D-130 are
+//! Slice-10 work). It is a column because two standing pieces of this gear
+//! already read the field — `domain::price_row::PriceRow` carries it, and the
+//! D-129 supersession-unit guard compares it across a `carry` row's successor —
+//! and a row storage without the column would let the round trip drop the one
+//! field that guard looks at, which the guard would then read as "nothing
+//! changed" rather than as an error.
+//!
+//! All five join the frozen-column whitelist, for the reason the whitelist
+//! exists: they are content, and a published row's content does not move.
 
 use sea_orm_migration::prelude::*;
 
@@ -60,6 +180,10 @@ const PG_UP_STATEMENTS: &[&str] = &[
         model_kind                text,
         tax_inclusive             boolean     NOT NULL DEFAULT false,
         billing_timing            text,
+        quantity_source           text,
+        manual_quantity           bigint,
+        package_size              bigint,
+        package_price_minor       bigint,
         meter                     text,
         dimension_key             text        NOT NULL DEFAULT '',
         billing_granularity       text,
@@ -68,17 +192,20 @@ const PG_UP_STATEMENTS: &[&str] = &[
         tier_aggregation_window   text,
         tier_qualification_window text,
         max_hold_granules         integer,
+        included_allowance        jsonb,
         rounding_policy_ref       text,
         grandfather_until         timestamptz,
         supersedes_price_id       uuid,
         lifecycle_state           text        NOT NULL,
         created_by                uuid        NOT NULL,
         created_at_utc            timestamptz NOT NULL DEFAULT now(),
+        row_version               bigint      NOT NULL DEFAULT 0,
         CONSTRAINT chk_pricing_price_lifecycle_state CHECK (
-            lifecycle_state IN ('draft','published','superseded','retired')),
+            lifecycle_state IN ('draft','published','superseded')),
         CONSTRAINT chk_pricing_price_overlay CHECK (price_overlay = 'base'),
         CONSTRAINT chk_pricing_price_eligibility CHECK (
-            price_eligibility IN ('all_subscriptions','existing_grandfathered')),
+            price_eligibility IN (
+                'all_subscriptions','new_subscriptions_only','existing_grandfathered')),
         CONSTRAINT chk_pricing_price_charge_kind CHECK (
             charge_kind IN ('recurring','usage','one_time','one_time_setup')),
         CONSTRAINT chk_pricing_price_model_kind CHECK (
@@ -90,6 +217,43 @@ const PG_UP_STATEMENTS: &[&str] = &[
             amount_minor IS NULL OR amount_minor >= 0),
         CONSTRAINT chk_pricing_price_max_hold_granules CHECK (
             max_hold_granules IS NULL OR max_hold_granules >= 1),
+        CONSTRAINT chk_pricing_price_quantity_source CHECK (
+            quantity_source IS NULL
+            OR quantity_source IN ('subscription_seat_count','manual')),
+        CONSTRAINT chk_pricing_price_manual_quantity CHECK (
+            manual_quantity IS NULL OR manual_quantity >= 0),
+        CONSTRAINT chk_pricing_price_package_size CHECK (
+            package_size IS NULL OR package_size > 0),
+        CONSTRAINT chk_pricing_price_package_price CHECK (
+            package_price_minor IS NULL OR package_price_minor >= 0),
+        -- The evaluation-policy token columns. Each list is the set the domain
+        -- enum that renders it can produce; see the module doc for why a column
+        -- only this gear writes is constrained anyway.
+        CONSTRAINT chk_pricing_price_billing_granularity CHECK (
+            billing_granularity IS NULL
+            OR billing_granularity IN (
+                'per_second','per_minute','per_hour','per_day','whole_unit')),
+        CONSTRAINT chk_pricing_price_aggregation_function CHECK (
+            aggregation_function IS NULL
+            OR aggregation_function IN ('sum','peak','time_weighted')),
+        CONSTRAINT chk_pricing_price_aggregation_granularity CHECK (
+            aggregation_granularity IS NULL
+            OR aggregation_granularity IN ('hour','day')),
+        CONSTRAINT chk_pricing_price_tier_aggregation_window CHECK (
+            tier_aggregation_window IS NULL
+            OR tier_aggregation_window IN (
+                'calendar_month','invoice_period','subscription_lifetime','per_event')),
+        CONSTRAINT chk_pricing_price_tier_qualification_window CHECK (
+            tier_qualification_window IS NULL
+            OR tier_qualification_window IN ('current','trailing_period')),
+        -- The package half of the structural-exclusivity rule
+        -- (design 03-price-structure 6). The band half is cross-table and
+        -- lives on `pricing_price_tier_band`. `model_kind IS NOT NULL` is not
+        -- redundant: without it a kindless row makes the whole CHECK NULL,
+        -- which both engines count as satisfied. See the module doc.
+        CONSTRAINT chk_pricing_price_package_fields_kind CHECK (
+            (package_size IS NULL AND package_price_minor IS NULL)
+            OR (model_kind IS NOT NULL AND model_kind = 'package')),
         -- The cohort / eligibility biconditional (design 4.1): a cohort is set if
         -- and only if the row is grandfathered. Cheap here, and the domain
         -- re-establishes it on every rehydration because the two axes are read
@@ -105,9 +269,17 @@ const PG_UP_STATEMENTS: &[&str] = &[
     // instant its successor commits.
     "CREATE UNIQUE INDEX uq_pricing_price_scope_key_current
         ON bss.pricing_price (
-            plan_id, currency, region, price_overlay,
+            tenant_id, plan_id, currency, region, price_overlay,
             phase, price_eligibility, charge_kind, cohort)
         WHERE lifecycle_state = 'published'",
+    // At most one DRAFT row per key, which the index above cannot say: it is
+    // partial over `published`, so two concurrent authoring calls would each
+    // read the key as free and both land. See the module doc.
+    "CREATE UNIQUE INDEX uq_pricing_price_scope_key_draft
+        ON bss.pricing_price (
+            tenant_id, plan_id, currency, region, price_overlay,
+            phase, price_eligibility, charge_kind, cohort)
+        WHERE lifecycle_state = 'draft'",
     "CREATE INDEX idx_pricing_price_plan
         ON bss.pricing_price (tenant_id, plan_id, lifecycle_state)",
     // The history chain: walk a key's supersession lineage without a table scan.
@@ -142,6 +314,10 @@ const PG_UP_STATEMENTS: &[&str] = &[
           OR NEW.model_kind                IS DISTINCT FROM OLD.model_kind
           OR NEW.tax_inclusive             IS DISTINCT FROM OLD.tax_inclusive
           OR NEW.billing_timing            IS DISTINCT FROM OLD.billing_timing
+          OR NEW.quantity_source           IS DISTINCT FROM OLD.quantity_source
+          OR NEW.manual_quantity           IS DISTINCT FROM OLD.manual_quantity
+          OR NEW.package_size              IS DISTINCT FROM OLD.package_size
+          OR NEW.package_price_minor       IS DISTINCT FROM OLD.package_price_minor
           OR NEW.meter                     IS DISTINCT FROM OLD.meter
           OR NEW.dimension_key             IS DISTINCT FROM OLD.dimension_key
           OR NEW.billing_granularity       IS DISTINCT FROM OLD.billing_granularity
@@ -150,12 +326,14 @@ const PG_UP_STATEMENTS: &[&str] = &[
           OR NEW.tier_aggregation_window   IS DISTINCT FROM OLD.tier_aggregation_window
           OR NEW.tier_qualification_window IS DISTINCT FROM OLD.tier_qualification_window
           OR NEW.max_hold_granules         IS DISTINCT FROM OLD.max_hold_granules
+          OR NEW.included_allowance        IS DISTINCT FROM OLD.included_allowance
           OR NEW.rounding_policy_ref       IS DISTINCT FROM OLD.rounding_policy_ref
           OR NEW.supersedes_price_id       IS DISTINCT FROM OLD.supersedes_price_id
           OR NEW.created_by                IS DISTINCT FROM OLD.created_by
-          OR NEW.created_at_utc            IS DISTINCT FROM OLD.created_at_utc THEN
+          OR NEW.created_at_utc            IS DISTINCT FROM OLD.created_at_utc
+          OR NEW.row_version               IS DISTINCT FROM OLD.row_version THEN
             RAISE EXCEPTION
-              'pricing_price: row % is published; price, scope and model columns are immutable',
+              'pricing_price: row % is published; price, scope, model and entity-tag columns are immutable',
               OLD.price_id;
           END IF;
 
@@ -215,6 +393,10 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         model_kind                text,
         tax_inclusive             boolean     NOT NULL DEFAULT false,
         billing_timing            text,
+        quantity_source           text,
+        manual_quantity           bigint,
+        package_size              bigint,
+        package_price_minor       bigint,
         meter                     text,
         dimension_key             text        NOT NULL DEFAULT '',
         billing_granularity       text,
@@ -223,17 +405,20 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         tier_aggregation_window   text,
         tier_qualification_window text,
         max_hold_granules         integer,
+        included_allowance        text,
         rounding_policy_ref       text,
         grandfather_until         text,
         supersedes_price_id       text,
         lifecycle_state           text        NOT NULL,
         created_by                text        NOT NULL,
         created_at_utc            text        NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        row_version               bigint      NOT NULL DEFAULT 0,
         CONSTRAINT chk_pricing_price_lifecycle_state CHECK (
-            lifecycle_state IN ('draft','published','superseded','retired')),
+            lifecycle_state IN ('draft','published','superseded')),
         CONSTRAINT chk_pricing_price_overlay CHECK (price_overlay = 'base'),
         CONSTRAINT chk_pricing_price_eligibility CHECK (
-            price_eligibility IN ('all_subscriptions','existing_grandfathered')),
+            price_eligibility IN (
+                'all_subscriptions','new_subscriptions_only','existing_grandfathered')),
         CONSTRAINT chk_pricing_price_charge_kind CHECK (
             charge_kind IN ('recurring','usage','one_time','one_time_setup')),
         CONSTRAINT chk_pricing_price_model_kind CHECK (
@@ -245,6 +430,35 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             amount_minor IS NULL OR amount_minor >= 0),
         CONSTRAINT chk_pricing_price_max_hold_granules CHECK (
             max_hold_granules IS NULL OR max_hold_granules >= 1),
+        CONSTRAINT chk_pricing_price_quantity_source CHECK (
+            quantity_source IS NULL
+            OR quantity_source IN ('subscription_seat_count','manual')),
+        CONSTRAINT chk_pricing_price_manual_quantity CHECK (
+            manual_quantity IS NULL OR manual_quantity >= 0),
+        CONSTRAINT chk_pricing_price_package_size CHECK (
+            package_size IS NULL OR package_size > 0),
+        CONSTRAINT chk_pricing_price_package_price CHECK (
+            package_price_minor IS NULL OR package_price_minor >= 0),
+        CONSTRAINT chk_pricing_price_billing_granularity CHECK (
+            billing_granularity IS NULL
+            OR billing_granularity IN (
+                'per_second','per_minute','per_hour','per_day','whole_unit')),
+        CONSTRAINT chk_pricing_price_aggregation_function CHECK (
+            aggregation_function IS NULL
+            OR aggregation_function IN ('sum','peak','time_weighted')),
+        CONSTRAINT chk_pricing_price_aggregation_granularity CHECK (
+            aggregation_granularity IS NULL
+            OR aggregation_granularity IN ('hour','day')),
+        CONSTRAINT chk_pricing_price_tier_aggregation_window CHECK (
+            tier_aggregation_window IS NULL
+            OR tier_aggregation_window IN (
+                'calendar_month','invoice_period','subscription_lifetime','per_event')),
+        CONSTRAINT chk_pricing_price_tier_qualification_window CHECK (
+            tier_qualification_window IS NULL
+            OR tier_qualification_window IN ('current','trailing_period')),
+        CONSTRAINT chk_pricing_price_package_fields_kind CHECK (
+            (package_size IS NULL AND package_price_minor IS NULL)
+            OR (model_kind IS NOT NULL AND model_kind = 'package')),
         CONSTRAINT chk_pricing_price_cohort_eligibility CHECK (
             (cohort <> 'none') = (price_eligibility = 'existing_grandfathered')),
         CONSTRAINT chk_pricing_price_grandfather_until CHECK (
@@ -252,9 +466,14 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
     )",
     "CREATE UNIQUE INDEX uq_pricing_price_scope_key_current
         ON pricing_price (
-            plan_id, currency, region, price_overlay,
+            tenant_id, plan_id, currency, region, price_overlay,
             phase, price_eligibility, charge_kind, cohort)
         WHERE lifecycle_state = 'published'",
+    "CREATE UNIQUE INDEX uq_pricing_price_scope_key_draft
+        ON pricing_price (
+            tenant_id, plan_id, currency, region, price_overlay,
+            phase, price_eligibility, charge_kind, cohort)
+        WHERE lifecycle_state = 'draft'",
     "CREATE INDEX idx_pricing_price_plan
         ON pricing_price (tenant_id, plan_id, lifecycle_state)",
     "CREATE INDEX idx_pricing_price_supersedes
@@ -277,6 +496,10 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             OR NEW.model_kind                IS NOT OLD.model_kind
             OR NEW.tax_inclusive             IS NOT OLD.tax_inclusive
             OR NEW.billing_timing            IS NOT OLD.billing_timing
+            OR NEW.quantity_source           IS NOT OLD.quantity_source
+            OR NEW.manual_quantity           IS NOT OLD.manual_quantity
+            OR NEW.package_size              IS NOT OLD.package_size
+            OR NEW.package_price_minor       IS NOT OLD.package_price_minor
             OR NEW.meter                     IS NOT OLD.meter
             OR NEW.dimension_key             IS NOT OLD.dimension_key
             OR NEW.billing_granularity       IS NOT OLD.billing_granularity
@@ -285,13 +508,15 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             OR NEW.tier_aggregation_window   IS NOT OLD.tier_aggregation_window
             OR NEW.tier_qualification_window IS NOT OLD.tier_qualification_window
             OR NEW.max_hold_granules         IS NOT OLD.max_hold_granules
+            OR NEW.included_allowance        IS NOT OLD.included_allowance
             OR NEW.rounding_policy_ref       IS NOT OLD.rounding_policy_ref
             OR NEW.supersedes_price_id       IS NOT OLD.supersedes_price_id
             OR NEW.created_by                IS NOT OLD.created_by
-            OR NEW.created_at_utc            IS NOT OLD.created_at_utc)
+            OR NEW.created_at_utc            IS NOT OLD.created_at_utc
+            OR NEW.row_version               IS NOT OLD.row_version)
         BEGIN
           SELECT RAISE(ABORT,
-            'pricing_price: row is published; price, scope and model columns are immutable');
+            'pricing_price: row is published; price, scope, model and entity-tag columns are immutable');
         END",
     "CREATE TRIGGER trg_pricing_price_flip_whitelist
         BEFORE UPDATE ON pricing_price

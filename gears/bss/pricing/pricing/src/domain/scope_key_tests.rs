@@ -105,6 +105,59 @@ fn both_consistent_pairings_are_accepted() {
 }
 
 #[test]
+fn a_new_subscriptions_only_row_is_classless_on_the_cohort_axis() {
+    // The third class retains nobody, so it takes the `none` cohort like
+    // `all_subscriptions` does. Reading the biconditional as "not
+    // all_subscriptions implies a generation" would have made the class
+    // unauthorable the moment it existed.
+    assert!(
+        key(
+            PriceEligibility::NewSubscriptionsOnly,
+            ChargeKind::Recurring,
+            Cohort::None
+        )
+        .is_ok()
+    );
+    let err = key(
+        PriceEligibility::NewSubscriptionsOnly,
+        ChargeKind::Recurring,
+        Cohort::Generation(cutover()),
+    )
+    .expect_err("a cohort on a new_subscriptions_only row must be refused");
+    assert_eq!(violation_codes(&err), vec![COHORT_ELIGIBILITY_MISMATCH]);
+}
+
+#[test]
+fn the_three_eligibility_classes_rank_in_the_most_specific_wins_order() {
+    // W3 (`07-pricewindow-linkage.md`) and PRD 1.4 order the classes
+    // `existing_grandfathered` > `new_subscriptions_only` > `all_subscriptions`.
+    // The derived `Ord` follows declaration order, so a variant inserted in the
+    // wrong place would leave this type ranking its own classes one way while
+    // Tariffs resolves them another — with nothing to say which is the
+    // authority.
+    assert!(PriceEligibility::AllSubscriptions < PriceEligibility::NewSubscriptionsOnly);
+    assert!(PriceEligibility::NewSubscriptionsOnly < PriceEligibility::ExistingGrandfathered);
+}
+
+#[test]
+fn the_eligibility_tokens_are_the_persisted_ones() {
+    // The persisted spelling is also the wire spelling the read model exposes
+    // (PRD 6.9), so a token renamed here silently re-classes stored rows.
+    assert_eq!(
+        PriceEligibility::AllSubscriptions.as_str(),
+        "all_subscriptions"
+    );
+    assert_eq!(
+        PriceEligibility::NewSubscriptionsOnly.as_str(),
+        "new_subscriptions_only"
+    );
+    assert_eq!(
+        PriceEligibility::ExistingGrandfathered.as_str(),
+        "existing_grandfathered"
+    );
+}
+
+#[test]
 fn the_pairing_is_re_checkable_without_a_key() {
     // The two axes come back from storage as two independent columns, so the
     // rehydration path needs the rule without having to build a key first.

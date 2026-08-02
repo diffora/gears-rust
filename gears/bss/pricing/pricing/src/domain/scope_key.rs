@@ -172,6 +172,14 @@ impl fmt::Display for PriceOverlay {
 }
 
 /// The `priceEligibility` axis: which subscriptions a row may price.
+///
+/// Three classes, not two. When more than one holds an active window on the
+/// same remaining axes, Tariffs selects **most-specific-wins** —
+/// `existing_grandfathered` > `new_subscriptions_only` > `all_subscriptions`
+/// (PRD §1.4, `design/07-pricewindow-linkage.md` W3). The variants are declared
+/// in that order **reversed**, least specific first, so the derived [`Ord`]
+/// ranks them exactly as the class order does and no later code can build a
+/// second, disagreeing ranking out of this type.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PriceEligibility {
@@ -179,6 +187,13 @@ pub enum PriceEligibility {
     /// supersession stays inside.
     #[default]
     AllSubscriptions,
+    /// Priced only for subscriptions created on or after the row's cutover.
+    /// Existing subscriptions are never re-bound to it and keep their prior
+    /// snapshot (PRD AC #59). Like [`PriceEligibility::AllSubscriptions`] and
+    /// unlike a grandfathered generation it carries `cohort = none`: the cohort
+    /// axis discriminates *retained* generations, and this class retains
+    /// nobody.
+    NewSubscriptionsOnly,
     /// A grandfathered generation: an immutable copy retained for subscribers
     /// who were on the key when a cutover closed it. Always paired with a
     /// non-`none` [`Cohort`].
@@ -191,6 +206,7 @@ impl PriceEligibility {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AllSubscriptions => "all_subscriptions",
+            Self::NewSubscriptionsOnly => "new_subscriptions_only",
             Self::ExistingGrandfathered => "existing_grandfathered",
         }
     }

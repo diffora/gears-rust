@@ -1140,6 +1140,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "bss-fixtures",
  "bss-fixtures-conformance",

@@ -20,8 +20,20 @@
 //! request bodies here would duplicate the audit trail in a table with no
 //! retention story of its own.
 //!
+//! **The response columns are nullable, and that is the mechanism.** The
+//! at-most-once gate is the `PRIMARY KEY` insert itself, so the row has to exist
+//! *before* the operation it guards has produced anything to store. Seeding a
+//! fabricated status in the meantime would put a value in a column that means
+//! "this is what the caller was told" while nobody had been told anything — and
+//! a row leaking past its transaction would then replay a fiction. `NULL` is the
+//! honest reading of "claimed, not yet answered", and the pairing `CHECK` keeps
+//! the two columns from drifting into a half-recorded answer that no reader
+//! could interpret.
+//!
 //! **Backend differences.** `bytea` becomes `blob` and `jsonb` becomes `text` on
-//! `SQLite`; nothing behavioural changes.
+//! `SQLite`; nothing behavioural changes. Both `CHECK`s are written in the
+//! subset both backends agree on — `IS NULL` yields a comparable value on each,
+//! so the pairing constraint needs no dialect-specific spelling.
 
 use sea_orm_migration::prelude::*;
 
@@ -34,12 +46,14 @@ const PG_UP_STATEMENTS: &[&str] = &[
         operation       text        NOT NULL,
         client_key      text        NOT NULL,
         request_hash    bytea       NOT NULL,
-        response_status integer     NOT NULL,
-        response_body   jsonb       NOT NULL,
+        response_status integer,
+        response_body   jsonb,
         created_at_utc  timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (tenant_id, operation, client_key),
         CONSTRAINT chk_pricing_idempotency_dedup_status CHECK (
-            response_status BETWEEN 100 AND 599)
+            response_status IS NULL OR response_status BETWEEN 100 AND 599),
+        CONSTRAINT chk_pricing_idempotency_dedup_answered CHECK (
+            (response_status IS NULL) = (response_body IS NULL))
     )",
     "CREATE INDEX idx_pricing_idempotency_dedup_created
         ON bss.pricing_idempotency_dedup (tenant_id, created_at_utc)",
@@ -53,12 +67,14 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         operation       text    NOT NULL,
         client_key      text    NOT NULL,
         request_hash    blob    NOT NULL,
-        response_status integer NOT NULL,
-        response_body   text    NOT NULL,
+        response_status integer,
+        response_body   text,
         created_at_utc  text    NOT NULL DEFAULT (CURRENT_TIMESTAMP),
         PRIMARY KEY (tenant_id, operation, client_key),
         CONSTRAINT chk_pricing_idempotency_dedup_status CHECK (
-            response_status BETWEEN 100 AND 599)
+            response_status IS NULL OR response_status BETWEEN 100 AND 599),
+        CONSTRAINT chk_pricing_idempotency_dedup_answered CHECK (
+            (response_status IS NULL) = (response_body IS NULL))
     )",
     "CREATE INDEX idx_pricing_idempotency_dedup_created
         ON pricing_idempotency_dedup (tenant_id, created_at_utc)",

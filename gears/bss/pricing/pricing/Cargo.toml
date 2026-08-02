@@ -26,6 +26,10 @@ coord = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+# FIPS-validated SHA-256 for the idempotency request-payload digest (the same
+# provider the platform installs at bootstrap, exactly as the sibling ledger's
+# posting gate uses); no non-FIPS hasher enters the graph.
+aws-lc-rs = { workspace = true }
 # `DateTime<Utc>` for the `cohort` scope-key axis (the UTC cutover instant that
 # created a grandfathering generation) and the pin-frontier instant.
 chrono = { workspace = true }

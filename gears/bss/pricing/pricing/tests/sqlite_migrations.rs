@@ -1,13 +1,13 @@
-//! The Foundation migration chain, exercised end to end on an in-memory
-//! `SQLite`.
+//! The migration chain — the Foundation tables and the slice-owned ones that
+//! follow them — exercised end to end on an in-memory `SQLite`.
 //!
 //! Three properties, each a real boot failure mode:
 //!
 //! 1. **Completeness, and agreement with the entities** — after `up`, every
-//!    Foundation table can be read through its `SeaORM` entity. That is a
-//!    stronger check than "the table exists": `SeaORM` names every column in the
-//!    `SELECT`, so a migration and an entity that disagree about a column fail
-//!    here rather than at the first production read.
+//!    table can be read through its `SeaORM` entity. That is a stronger check
+//!    than "the table exists": `SeaORM` names every column in the `SELECT`, so
+//!    a migration and an entity that disagree about a column fail here rather
+//!    than at the first production read.
 //! 2. **Re-run safety** — a second boot over the same database applies nothing
 //!    and skips everything. The sibling ledger carries a whole Postgres
 //!    regression for the version of this that bit it (bookkeeping landing in the
@@ -29,7 +29,7 @@
 
 use bss_pricing::infra::storage::entity::{
     audit_log, catalog_version_ref, idempotency_dedup, operator_flag, outbox, pin_frontier, plan,
-    policy_object, price, read_model,
+    policy_object, price, price_tier_band, read_model,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
@@ -43,6 +43,7 @@ use uuid::Uuid;
 const EXPECTED_TABLES: &[&str] = &[
     "pricing_plan",
     "pricing_price",
+    "pricing_price_tier_band",
     "pricing_read_model",
     "pricing_catalog_version_ref",
     "pricing_pin_frontier",
@@ -129,6 +130,7 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         &scope,
         plan::Entity,
         price::Entity,
+        price_tier_band::Entity,
         read_model::Entity,
         catalog_version_ref::Entity,
         pin_frontier::Entity,
