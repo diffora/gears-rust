@@ -40,6 +40,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
@@ -51,15 +52,16 @@ use bss_pricing::domain::price_row::{
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{price, price_tier_band};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, PriceRepo};
+use bss_pricing::infra::storage::{RepoError, repo_failure};
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
+use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -680,6 +682,20 @@ async fn a_grandfathering_horizon_off_its_class_is_the_callers_mistake_not_the_s
         }
     );
 
+    // D-147 made the pairing a rule, so the refusal reaches a consumer under a
+    // code of its own instead of the generic bad-request answer it borrowed
+    // while no document stated it. The code is what a client branches on: it
+    // names the field to clear, which the shared answer never did.
+    let mapped = CanonicalError::from(repo_failure(&err));
+    let body = format!("{mapped:?}");
+    assert!(body.contains("GRANDFATHER_UNTIL_FORBIDDEN"), "got: {body}");
+    assert!(body.contains("grandfather_until"), "got: {body}");
+    assert_eq!(
+        mapped.status_code(),
+        400,
+        "an architectural 422 reaches the wire as a 400 carrying its code"
+    );
+
     // The third class may not carry one either: the horizon expires a *retained
     // generation*, and this class retains nobody.
     let err = repo
@@ -755,6 +771,76 @@ async fn a_grandfathering_horizon_off_its_class_is_the_callers_mistake_not_the_s
     )
     .await
     .expect("a grandfathered generation carries its horizon");
+}
+
+#[tokio::test]
+async fn an_authored_instant_finer_than_the_quantum_never_reaches_a_column() {
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_5d);
+
+    // The horizon is authored content and the column would take a finer value in
+    // silence, which is exactly how a truncating producer and a non-truncating
+    // consumer end up agreeing until the day they do not (D-144).
+    let mut content = flat_content();
+    content.grandfather_until = Some(at(23) + chrono::TimeDelta::microseconds(1));
+    let err = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(
+                price_id,
+                grandfathered_key(ChargeKind::Recurring, at(9)),
+                content.clone(),
+            ),
+        )
+        .await
+        .expect_err("a sub-millisecond horizon must be refused");
+    assert!(
+        matches!(
+            &err,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "grandfatherUntil"
+        ),
+        "got: {err:?}"
+    );
+    let mapped = CanonicalError::from(repo_failure(&err));
+    assert!(format!("{mapped:?}").contains("TIMESTAMP_PRECISION_EXCEEDED"));
+    assert_eq!(mapped.status_code(), 400);
+
+    // Refused before anything was written, and rounding to the quantum is the
+    // whole remedy — the value is not moved on the author's behalf.
+    assert_eq!(
+        repo.find(&scope, tenant(), price_id).await.expect("read"),
+        None
+    );
+    content.grandfather_until = Some(at(23));
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            price_id,
+            grandfathered_key(ChargeKind::Recurring, at(9)),
+            content,
+        ),
+    )
+    .await
+    .expect("an instant on the quantum is storable");
+
+    // The cohort axis is refused by the key itself, one layer earlier: it is
+    // matched for equality against an instant another gear produced, so an
+    // unquantized generation would build a key nobody can find.
+    let err = ScopeKey::new(
+        plan(),
+        CurrencyCode::new("USD").expect("three letters"),
+        Region::new("EU").expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::ExistingGrandfathered,
+        ChargeKind::Recurring,
+        Cohort::Generation(at(9) + chrono::TimeDelta::nanoseconds(1)),
+    )
+    .expect_err("a sub-millisecond cutover cannot become an axis value");
+    assert!(matches!(err, DomainError::TimestampPrecisionExceeded(_)));
+    assert!(format!("{:?}", CanonicalError::from(err)).contains("TIMESTAMP_PRECISION_EXCEEDED"));
 }
 
 #[tokio::test]

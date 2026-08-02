@@ -111,14 +111,28 @@ impl LifecycleState {
 
     /// Assert a transition, refusing every edge the machine does not sanction.
     ///
+    /// One refused edge answers in its own words. Re-publishing a **retired**
+    /// subject is `PLAN_RETIRED_NO_SUCCESSOR` (D-146), which **replaced** that
+    /// clause of the `LIFECYCLE_FORBIDDEN` gloss rather than joining it: the
+    /// operator has no next action at all, where every other refusal here is
+    /// either a caller bug or a request that can be reshaped. Told the same code
+    /// as the rest, a consumer would have to read prose to learn that this one
+    /// can never succeed.
+    ///
     /// # Errors
     ///
-    /// [`DomainError::LifecycleForbidden`] for any edge outside the three legal
-    /// ones — including every self-edge, every move out of a terminal state,
-    /// and every attempt to walk the machine backwards.
+    /// [`DomainError::PlanRetiredNoSuccessor`] for `retired -> published`;
+    /// [`DomainError::LifecycleForbidden`] for every other edge outside the
+    /// three legal ones — including every self-edge, the remaining moves out of
+    /// a terminal state, and every attempt to walk the machine backwards.
     pub fn transition(self, next: Self) -> Result<(), DomainError> {
         if self.can_transition(next) {
             return Ok(());
+        }
+        if matches!((self, next), (Self::Retired, Self::Published)) {
+            return Err(DomainError::PlanRetiredNoSuccessor(format!(
+                "{self} -> {next}"
+            )));
         }
         Err(DomainError::LifecycleForbidden(format!("{self} -> {next}")))
     }

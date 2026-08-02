@@ -33,6 +33,7 @@ use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
 use super::{ClaimOutcome, IdempotencyGate, take_over};
+use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::idempotency_dedup;
 use crate::infra::storage::migrations::Migrator;
 
@@ -168,9 +169,17 @@ async fn a_takeover_matches_the_row_it_read_and_only_that_row() {
     // second UPDATE would match on the primary key alone, both callers would be
     // told they claimed the key, and the guarded mutation would run twice under
     // one idempotency key.
+    //
+    // The loser is refused rather than handed an outcome it has nothing to do
+    // with: the key it lost is claimed and unanswered, and D-143 gives that
+    // state a code the surface can answer with. The refusal names the key the
+    // winner now holds, which is the key the loser must retry.
     assert_eq!(
-        loser_outcome.expect("the second takeover is an outcome, not a failure"),
-        ClaimOutcome::InFlight,
+        loser_outcome.expect_err("the second takeover is refused, not claimed"),
+        RepoError::IdempotencyKeyInFlight {
+            operation: "create_plan".to_owned(),
+            client_key: "ck-race".to_owned(),
+        },
         "the row has moved past the value this caller read, so nothing matches"
     );
 

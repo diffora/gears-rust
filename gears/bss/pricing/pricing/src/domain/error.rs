@@ -41,6 +41,19 @@ pub enum DomainError {
     /// unit. There is no flat two-decimal rule: JPY takes 0, BHD takes 3.
     #[error("precision exceeds the currency minor unit: {0}")]
     PrecisionExceeded(String),
+    /// An authored instant carries finer precision than the millisecond quantum
+    /// every instant this gear publishes or compares is expressed at (D-144).
+    ///
+    /// Refused rather than truncated, which is what an unstated quantum
+    /// degenerates into. Truncation moves the instant a scope-key axis is
+    /// matched on for equality across a gear boundary, so a truncating producer
+    /// and a non-truncating consumer agree until the day they do not, with no
+    /// failure in between — and the generation is then unfindable by exactly the
+    /// subscribers grandfathering retains. The money-side sibling
+    /// [`DomainError::PrecisionExceeded`] takes the same posture for the same
+    /// reason.
+    #[error("timestamp precision exceeds the millisecond quantum: {0}")]
+    TimestampPrecisionExceeded(String),
     /// A negative amount. Typed credit rows are deliberately Future scope, so a
     /// negative price is a mistake, not an unsupported feature.
     #[error("amount must be >= 0: {0}")]
@@ -54,10 +67,37 @@ pub enum DomainError {
     /// how to evaluate.
     #[error("no green conformance fixture: {0}")]
     FixtureMissing(String),
-    /// The state machine forbids the transition — mutating a published row,
-    /// re-publishing a retired plan, superseding a grandfathered row.
+    /// The state machine forbids the transition — mutating a published row's
+    /// content, superseding a grandfathered row.
+    ///
+    /// Narrowed by D-146 to exactly the refusals that describe **no alternative
+    /// action**. The two it used to swallow are back out:
+    /// [`DomainError::PlanRetiredNoSuccessor`] and
+    /// [`DomainError::OpenDraftRevisionExists`] are refusals an operator acts on
+    /// differently, and a consumer that had to parse prose to tell them apart
+    /// could not act on either.
     #[error("lifecycle transition forbidden: {0}")]
     LifecycleForbidden(String),
+    /// A revision was opened on, or a publish attempted for, a plan that is
+    /// retired.
+    ///
+    /// A stop, not a retry and not an alternative: retirement is terminal, so a
+    /// successor would be unpublishable from the moment it was opened. Told as
+    /// [`DomainError::LifecycleForbidden`] this was indistinguishable from
+    /// refusals the operator can work around, and the only remedy the shared
+    /// sentence implied was the very call being refused.
+    #[error("plan is retired and takes no successor revision: {0}")]
+    PlanRetiredNoSuccessor(String),
+    /// A grandfathering horizon on a row whose eligibility class is not
+    /// `existing_grandfathered`.
+    ///
+    /// The horizon expires a *retained generation*, and the other two classes
+    /// retain nobody, so a horizon there names a moment nothing observes. The
+    /// pairing was a physical column check with no rule behind it, which reached
+    /// the caller as an internal fault — a 500 for a request whose author only
+    /// has to clear one field.
+    #[error("grandfathering horizon forbidden off the grandfathered class: {0}")]
+    GrandfatherUntilForbidden(String),
 
     // -- Aborted (conflict; the caller may retry with fresh state) --
     /// Another current row already occupies the canonical scope key.
@@ -73,6 +113,24 @@ pub enum DomainError {
     /// they are.
     #[error("idempotency payload mismatch: {0}")]
     IdempotencyPayloadMismatch(String),
+    /// The idempotency key is claimed and not yet answered, so there is no
+    /// stored response to replay (D-143).
+    ///
+    /// A retry is the whole remedy, and it is one a client can act on: shortly
+    /// after, the answer is either the stored response or
+    /// [`DomainError::IdempotencyPayloadMismatch`]. Without a code of its own
+    /// the surface had to answer a caller with a response nobody had produced —
+    /// the one thing the dedup row exists to make impossible.
+    #[error("idempotency key claimed and not yet answered: {0}")]
+    IdempotencyKeyInFlight(String),
+    /// The plan already holds an open draft revision, named by the refusal.
+    ///
+    /// A uniqueness conflict on the plan's one editable slot, not a state
+    /// machine edge. The operator's next action is a real one — go and edit that
+    /// revision — which is unreachable from a refusal that does not say which
+    /// revision holds the slot.
+    #[error("open draft revision exists: {0}")]
+    OpenDraftRevisionExists(String),
 
     // -- The aggregate validation envelope --
     /// The fail-closed validation pipeline rejected the publish. Carries the

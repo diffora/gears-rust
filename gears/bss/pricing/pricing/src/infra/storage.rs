@@ -131,8 +131,10 @@ pub enum RepoError {
     /// real ground is different too: not that the current revision is frozen —
     /// every publishable predecessor is — but that it can never flip
     /// `superseded`, so the successor would be unpublishable from the moment it
-    /// was opened. Both land on `LIFECYCLE_FORBIDDEN`; only the sentences
-    /// differ, which is the part an operator reads.
+    /// was opened. It carries `PLAN_RETIRED_NO_SUCCESSOR` (D-146) rather than
+    /// the frozen revision's `LIFECYCLE_FORBIDDEN`: what the two refusals ask an
+    /// operator to do differs, and until the codes did too, telling them apart
+    /// meant reading prose.
     #[error(
         "pricing repo: plan {plan_id} stands at a {state} revision, which can never be \
          superseded; it takes no successor"
@@ -149,7 +151,11 @@ pub enum RepoError {
     /// A plan has at most one concurrently editable shape
     /// (`uq_pricing_plan_open_draft`). The refusal names the revision that
     /// holds the slot, so the caller can go and edit it rather than guess which
-    /// of its own requests won.
+    /// of its own requests won — which is why it carries
+    /// `OPEN_DRAFT_REVISION_EXISTS` (D-146) and not the lifecycle refusal it was
+    /// once folded into: a uniqueness conflict on the draft slot is not a
+    /// transition the state machine denies, and the operator's next action is a
+    /// real one.
     #[error("pricing repo: plan {plan_id} already has an open draft at revision {revision}")]
     OpenDraftExists {
         /// The plan whose draft slot is taken.
@@ -191,14 +197,13 @@ pub enum RepoError {
     /// and `grandfather_until` is ordinary caller-supplied content on the draft
     /// plane. Without this refusal the pairing is discovered by the driver, so
     /// the caller is told the store failed and the operator reads a 500 for a
-    /// request they could have fixed by clearing one field. It is
-    /// [`RepoError::ValueOutOfRange`]'s neighbour and lands where it lands, for
-    /// the same reason: the value arrived on a request, and the request can be
-    /// reshaped.
+    /// request they could have fixed by clearing one field.
     ///
-    /// The pairing is a schema fact the design set states nowhere as a rule, so
-    /// this refusal is the code's own and carries no rule code of its own; the
-    /// divergence is recorded rather than written into the documents.
+    /// The pairing is now normative and has a code of its own —
+    /// `GRANDFATHER_UNTIL_FORBIDDEN` (D-147), the `cohort` biconditional's
+    /// sibling: one axis-conditioned field, one code. Before it, this refusal
+    /// was the code's own and could only borrow the generic bad-request answer,
+    /// which told a consumer nothing about which field to clear.
     #[error(
         "pricing repo: only an existing_grandfathered row may carry a grandfathering \
          horizon; this key is {eligibility}"
@@ -226,6 +231,41 @@ pub enum RepoError {
         /// The value, as authored.
         value: String,
     },
+    /// An authored instant carries precision below the millisecond quantum
+    /// (D-144).
+    ///
+    /// Checked where the value enters the store rather than left to the column,
+    /// which would take it: `timestamptz` holds microseconds, so a finer instant
+    /// persists silently and is then compared for equality against one produced
+    /// at the quantum. The field is named because clearing or rounding one value
+    /// is the whole remedy.
+    #[error("pricing repo: {field} {value} is finer than the millisecond quantum")]
+    TimestampPrecisionExceeded {
+        /// The authored field the instant arrived on.
+        field: String,
+        /// The instant, as authored.
+        value: String,
+    },
+    /// A duplicate arrived while the claim it collided with is unanswered
+    /// (D-143).
+    ///
+    /// There is nothing to replay and nothing to re-execute, so the only other
+    /// answer available is a response nobody ever produced. Retrying is the
+    /// remedy and it is one a client can act on: shortly after, the key is
+    /// either answered — and the retry is replayed the stored response — or it
+    /// carries a different payload, and the retry is
+    /// [`RepoError::IdempotencyPayloadMismatch`]. The refusal names the key and
+    /// the operation for the same reason that one does.
+    #[error(
+        "pricing repo: idempotency key {client_key} on operation {operation} \
+         is claimed and not yet answered"
+    )]
+    IdempotencyKeyInFlight {
+        /// The operation the key is scoped to.
+        operation: String,
+        /// The client-supplied key that is held.
+        client_key: String,
+    },
 }
 
 /// Map a storage failure into the gear's rejection vocabulary.
@@ -233,22 +273,36 @@ pub enum RepoError {
 /// A frontier regression is a **precondition** failure, not an internal fault:
 /// the row is intact and the store is healthy, the requested transition is
 /// simply one the watermark's monotonicity forbids — the same shape as any other
-/// refused lifecycle edge, so it lands on the same variant and therefore the
-/// same canonical category. The draft-only refusals join it there: a frozen
-/// revision is state forbidding an operation, not a malformed request. So does
-/// [`RepoError::NoSuccessorRevision`], which is a variant of its own **only**
-/// so that its sentence names the right ground — the category it lands in was
-/// never in question, and minting a wire code for it would have invented one
-/// the design set does not name.
+/// refused lifecycle edge, so it lands on `LIFECYCLE_FORBIDDEN`. The draft-only
+/// refusals join it there: a frozen revision is state forbidding an operation,
+/// not a malformed request. Those two are **all** that variant keeps.
 ///
-/// [`RepoError::ValueOutOfRange`] and [`RepoError::GrandfatherHorizonOffClass`]
-/// are the two arms that land on [`DomainError::InvalidRequest`], and they are
-/// the whole reason that variant exists rather than a second flavour of
-/// [`RepoError::CorruptRow`]: an authored quantity the column cannot hold, and a
-/// horizon on a class that may not carry one, are both things the caller can
-/// change — which is not true of anything on the internal arm. Neither mints a
-/// wire code: they carry the sentence, and the Foundation's existing
-/// bad-request category carries the classification.
+/// **The collapse D-146 exists to undo.** Four refusals used to land on
+/// `LIFECYCLE_FORBIDDEN`, and two of them ask an operator for different things:
+/// [`RepoError::NoSuccessorRevision`] is a **stop** — a retired plan can never
+/// publish again, so no successor of it is publishable — while
+/// [`RepoError::OpenDraftExists`] is a **different and available action**, go
+/// and edit the draft you already have. A consumer that had to read the sentence
+/// to tell those apart could act on neither, so each now carries its own code
+/// (`PLAN_RETIRED_NO_SUCCESSOR`, `OPEN_DRAFT_REVISION_EXISTS`). The second is
+/// also not a state-machine transition at all: it is a uniqueness conflict on
+/// the plan's one draft slot, which is why it leaves the precondition class for
+/// the conflict one and becomes retriable.
+///
+/// The line is held on the other side too. The read model's forward-only pin
+/// frontier is advanced by the projector and is unreachable by a caller, so a
+/// regression there stays where it is: a wire code for it would document an API
+/// no client can provoke.
+///
+/// [`RepoError::ValueOutOfRange`] is the one arm left on
+/// [`DomainError::InvalidRequest`], and it is the reason that arm exists rather
+/// than a second flavour of [`RepoError::CorruptRow`]: an authored quantity the
+/// column cannot hold arrived on a request and the caller can change it, which
+/// is not true of anything on the internal arm. It mints no wire code — it
+/// carries the sentence, and the Foundation's bad-request category carries the
+/// classification. [`RepoError::GrandfatherHorizonOffClass`] stood beside it
+/// only for want of a code and now has one (D-147), which puts it with the
+/// publish refusals it is a sibling of rather than with malformed input.
 ///
 /// [`RepoError::StaleRowVersion`] is rendered into
 /// [`DomainError::StaleVersion`] ending in the **same
@@ -274,10 +328,13 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
             tracing::error!(error = %err, "bss-pricing: storage failure");
             DomainError::Internal(err.to_string())
         }
-        RepoError::FrontierRegression { .. }
-        | RepoError::NotDraft { .. }
-        | RepoError::NoSuccessorRevision { .. }
-        | RepoError::OpenDraftExists { .. } => DomainError::LifecycleForbidden(err.to_string()),
+        RepoError::FrontierRegression { .. } | RepoError::NotDraft { .. } => {
+            DomainError::LifecycleForbidden(err.to_string())
+        }
+        RepoError::NoSuccessorRevision { .. } => {
+            DomainError::PlanRetiredNoSuccessor(err.to_string())
+        }
+        RepoError::OpenDraftExists { .. } => DomainError::OpenDraftRevisionExists(err.to_string()),
         RepoError::NotFound { subject, id } => DomainError::NotFound {
             subject: subject.clone(),
             id: id.clone(),
@@ -294,8 +351,15 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         RepoError::IdempotencyPayloadMismatch { .. } => {
             DomainError::IdempotencyPayloadMismatch(err.to_string())
         }
-        RepoError::ValueOutOfRange { .. } | RepoError::GrandfatherHorizonOffClass { .. } => {
-            DomainError::InvalidRequest(err.to_string())
+        RepoError::IdempotencyKeyInFlight { .. } => {
+            DomainError::IdempotencyKeyInFlight(err.to_string())
+        }
+        RepoError::ValueOutOfRange { .. } => DomainError::InvalidRequest(err.to_string()),
+        RepoError::GrandfatherHorizonOffClass { .. } => {
+            DomainError::GrandfatherUntilForbidden(err.to_string())
+        }
+        RepoError::TimestampPrecisionExceeded { .. } => {
+            DomainError::TimestampPrecisionExceeded(err.to_string())
         }
     }
 }

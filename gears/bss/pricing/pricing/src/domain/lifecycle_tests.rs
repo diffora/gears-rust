@@ -66,8 +66,35 @@ fn retirement_is_terminal() {
     // unit: no later publish could ever re-project the plan to correct a read
     // model that still advertised it as sellable.
     refused(LifecycleState::Retired, LifecycleState::Draft);
-    refused(LifecycleState::Retired, LifecycleState::Published);
     refused(LifecycleState::Retired, LifecycleState::Superseded);
+    // The one edge out of `retired` an operator can actually attempt answers in
+    // its own words; see the test below.
+    assert!(
+        LifecycleState::Retired
+            .transition(LifecycleState::Published)
+            .is_err()
+    );
+}
+
+#[test]
+fn re_publishing_a_retired_subject_is_a_stop_and_not_the_generic_refusal() {
+    // The narrowing D-146 made (the test that would have passed before it and
+    // must fail after): every illegal edge used to answer `LIFECYCLE_FORBIDDEN`,
+    // so this one — the only refusal in the machine with **no** alternative
+    // action, because a retired plan can never publish again — was
+    // indistinguishable from a caller bug the operator can fix.
+    let err = LifecycleState::Retired
+        .transition(LifecycleState::Published)
+        .expect_err("retired is terminal");
+
+    assert!(
+        matches!(err, DomainError::PlanRetiredNoSuccessor(_)),
+        "got: {err:?}"
+    );
+    // And the refusals that keep the generic code are the ones that describe no
+    // operator action either way.
+    refused(LifecycleState::Superseded, LifecycleState::Published);
+    refused(LifecycleState::Published, LifecycleState::Draft);
 }
 
 #[test]

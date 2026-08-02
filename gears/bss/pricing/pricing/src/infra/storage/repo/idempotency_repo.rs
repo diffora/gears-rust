@@ -39,32 +39,37 @@
 //! silent extension of the window when a reaper is down. Reclaiming the storage
 //! an expired row occupies is a separate concern and is not implemented here.
 //!
-//! **[`ClaimOutcome::InFlight`] is an outcome, not an error, and it deliberately
-//! has no wire code.** It is returned rather than guessed at, because the only
-//! alternative is to answer a caller with a response nobody ever produced. Two
-//! paths reach it, and they are not equally likely:
+//! **A duplicate meeting an unanswered claim is a refusal, and it has a code.**
+//! [`RepoError::IdempotencyKeyInFlight`] answers it, because the only
+//! alternative is to hand a caller a response nobody ever produced. Two paths
+//! reach it, and they are not equally likely:
 //!
 //! - *Meeting an unanswered fresh claim.* Unreachable under the one-transaction
 //!   contract: the transaction holding that claim has not committed, so the
 //!   duplicate's insert is still blocked on it and, when released, sees either
 //!   the committed response or nothing left to conflict with. Reaching it here
-//!   means the contract was violated, and reporting it is how that violation
+//!   means the contract was violated, and refusing is how that violation
 //!   becomes visible instead of becoming a fabricated reply.
 //! - *Losing a takeover race.* **Reachable in production, with no contract
 //!   violation by anyone.** Nothing holds an expired row between a transaction's
 //!   conflict check and its takeover UPDATE, so two duplicates arriving on the
 //!   same expired key can both clear the conflict check and both read the same
 //!   expired row. The compare-and-swap in [`take_over`] decides; the loser is
-//!   told `InFlight`. Note that the loser may be carrying a **different**
-//!   payload from the winner — on this one path a mismatching request receives
-//!   `InFlight` rather than the mismatch refusal. At-most-once is intact either
-//!   way, because the loser does not execute.
+//!   refused. Note that the loser may be carrying a **different** payload from
+//!   the winner — on this one path a mismatching request is refused in-flight
+//!   rather than for the mismatch. At-most-once is intact either way, because
+//!   the loser does not execute.
 //!
-//! The design set names no code for "a duplicate arrived while the original is
-//! still running", so none is invented here; this layer returns the typed
-//! outcome and the surface that must answer a client decides. Because of the
-//! second path that gap is a **live** one, not a theoretical one — it cannot be
-//! closed by tightening the transaction contract.
+//! The refusal was an outcome with no error until 2026-08-02, and the reason was
+//! that the design set named no code for "a duplicate arrived while the original
+//! is still running": the layer returned a typed outcome and left the surface to
+//! decide, since the second path makes the gap a **live** one that no tightening
+//! of the transaction contract can close. D-143 named the case —
+//! `IDEMPOTENCY_KEY_IN_FLIGHT` (409), *this key is claimed and not yet answered;
+//! retry, and you will receive either the stored response or
+//! `IDEMPOTENCY_PAYLOAD_MISMATCH`* — so the outcome is now an answer, and it is
+//! shaped like the mismatch beside it: an `Err`, because the guarded mutation
+//! must not run and the caller has something to do about it.
 //!
 //! [`take_over`]: take_over
 //!
@@ -91,6 +96,14 @@ use crate::infra::storage::entity::idempotency_dedup;
 const SUBJECT: &str = "idempotency claim";
 
 /// What a [`IdempotencyGate::claim`] found the key in.
+///
+/// Exactly the two states in which the caller has somewhere to go: it holds the
+/// key and performs the mutation, or the key is answered and the answer is
+/// handed back. Every other state of a duplicate is a refusal
+/// ([`RepoError::IdempotencyPayloadMismatch`],
+/// [`RepoError::IdempotencyKeyInFlight`]), which is what keeps "the guarded
+/// mutation must not run" from being a condition a caller can forget to match
+/// on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClaimOutcome {
     /// The key is now held by this caller, which must go on to perform the
@@ -104,17 +117,6 @@ pub enum ClaimOutcome {
         /// The body the original caller was told.
         body: JsonValue,
     },
-    /// The key is held by a claim that has not answered yet, so there is nothing
-    /// to replay. The guarded mutation must **not** run.
-    ///
-    /// Usually that holder is an identical request — but not always. A caller
-    /// that loses the race to take an **expired** key over is told `InFlight`
-    /// about the winner's claim, and the winner's payload may differ from this
-    /// caller's; on that path a mismatching request is answered `InFlight`
-    /// instead of with the mismatch refusal. At-most-once holds regardless,
-    /// since a caller told `InFlight` executes nothing. See the module doc for
-    /// both paths and for why this is an outcome rather than an error.
-    InFlight,
 }
 
 /// The at-most-once gate over `pricing_idempotency_dedup`.
@@ -156,10 +158,14 @@ impl IdempotencyGate {
     /// # Errors
     /// [`RepoError::IdempotencyPayloadMismatch`] when the key is held by a
     /// request that is not this one — never replayed, never re-executed.
-    /// [`RepoError::Db`] on a scope or storage failure, which includes the
-    /// conflicting row being unreadable inside the transaction that just
-    /// collided with it. [`RepoError::CorruptRow`] when the held row carries
-    /// half an answer, which the table's pairing `CHECK` forbids.
+    /// [`RepoError::IdempotencyKeyInFlight`] when the key is held by a claim
+    /// nobody has answered yet, so there is neither a response to replay nor a
+    /// free key to take; the caller retries and is then replayed or refused for
+    /// the mismatch (D-143). [`RepoError::Db`] on a scope or storage failure,
+    /// which includes the conflicting row being unreadable inside the
+    /// transaction that just collided with it. [`RepoError::CorruptRow`] when
+    /// the held row carries half an answer, which the table's pairing `CHECK`
+    /// forbids.
     #[allow(
         clippy::too_many_arguments,
         reason = "the composite key is three columns and the claim needs the \
@@ -227,7 +233,10 @@ impl IdempotencyGate {
 
         match (held.response_status, held.response_body) {
             (Some(status), Some(body)) => Ok(ClaimOutcome::Replay { status, body }),
-            (None, None) => Ok(ClaimOutcome::InFlight),
+            (None, None) => Err(RepoError::IdempotencyKeyInFlight {
+                operation: operation.to_owned(),
+                client_key: client_key.to_owned(),
+            }),
             // `chk_pricing_idempotency_dedup_answered` makes half an answer
             // impossible, so a row holding one means something reached the
             // table around this gear rather than through it.
@@ -346,12 +355,17 @@ impl IdempotencyGate {
 /// winner already moved, which no longer satisfies `created_at_utc = <the old
 /// value>`.
 ///
-/// The loser is told [`ClaimOutcome::InFlight`], which is the honest reading of
-/// where it stands — another caller now holds a claim nobody has answered. It is
-/// **not** told the mismatch refusal even when its payload differs from the
-/// winner's: this transaction never compared the two, and inventing a comparison
-/// here would refuse a caller on the strength of a digest it never lost a race
-/// to. At-most-once is intact either way, since the loser executes nothing.
+/// The loser is refused [`RepoError::IdempotencyKeyInFlight`], which is the
+/// honest reading of where it stands — another caller now holds a claim nobody
+/// has answered. It is **not** told the mismatch refusal even when its payload
+/// differs from the winner's: this transaction never compared the two, and
+/// inventing a comparison here would refuse a caller on the strength of a digest
+/// it never lost a race to. At-most-once is intact either way, since the loser
+/// executes nothing.
+///
+/// # Errors
+/// [`RepoError::IdempotencyKeyInFlight`] for the loser of the swap;
+/// [`RepoError::Db`] on a scope or storage failure.
 async fn take_over(
     txn: &DbTx<'_>,
     scope: &AccessScope,
@@ -384,7 +398,10 @@ async fn take_over(
         .map_err(|e| RepoError::Db(format!("take over expired idempotency claim: {e}")))?;
 
     if result.rows_affected == 0 {
-        return Ok(ClaimOutcome::InFlight);
+        return Err(RepoError::IdempotencyKeyInFlight {
+            operation: held.operation.clone(),
+            client_key: held.client_key.clone(),
+        });
     }
     Ok(ClaimOutcome::Claimed)
 }

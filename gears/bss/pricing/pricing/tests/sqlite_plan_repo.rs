@@ -17,14 +17,15 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::plan::PlanShapePatch;
 use bss_pricing::domain::scope_key::PlanId;
-use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::plan;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo};
+use bss_pricing::infra::storage::{RepoError, repo_failure};
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, Database, EntityTrait, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
+use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -603,6 +604,174 @@ async fn a_retired_plan_can_never_open_another_revision() {
             state: "retired".to_owned(),
         }
     );
+}
+
+#[tokio::test]
+async fn the_two_refusals_reach_a_consumer_as_two_codes_not_one() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let retired_plan = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let occupied_plan = PlanId::new(Uuid::from_u128(0x9_1a5));
+
+    // One plan retired, one plan holding an open draft: the two refusals
+    // `LIFECYCLE_FORBIDDEN` used to swallow (D-146). Before the narrowing this
+    // test passed with both branches reading `LIFECYCLE_FORBIDDEN`, which is the
+    // whole defect — the operator's next action differs and the consumer could
+    // not see that it did.
+    repo.create_draft(&scope, new_draft(retired_plan, tenant))
+        .await
+        .expect("create");
+    flip_state(
+        &provider,
+        &scope,
+        retired_plan,
+        0,
+        LifecycleState::Published,
+    )
+    .await;
+    flip_state(&provider, &scope, retired_plan, 0, LifecycleState::Retired).await;
+
+    repo.create_draft(&scope, new_draft(occupied_plan, tenant))
+        .await
+        .expect("create");
+    flip_state(
+        &provider,
+        &scope,
+        occupied_plan,
+        0,
+        LifecycleState::Published,
+    )
+    .await;
+    repo.open_revision(
+        &scope,
+        tenant,
+        occupied_plan,
+        Uuid::from_u128(0xac_20),
+        at(12),
+    )
+    .await
+    .expect("the first successor opens");
+
+    let stop = repo
+        .open_revision(
+            &scope,
+            tenant,
+            retired_plan,
+            Uuid::from_u128(0xac_20),
+            at(12),
+        )
+        .await
+        .expect_err("a retired plan takes no further revision");
+    let go_edit = repo
+        .open_revision(
+            &scope,
+            tenant,
+            occupied_plan,
+            Uuid::from_u128(0xac_20),
+            at(13),
+        )
+        .await
+        .expect_err("a second open draft must be refused");
+
+    let stop = CanonicalError::from(repo_failure(&stop));
+    let go_edit = CanonicalError::from(repo_failure(&go_edit));
+    let stop_body = format!("{stop:?}");
+    let go_edit_body = format!("{go_edit:?}");
+
+    assert!(
+        stop_body.contains("PLAN_RETIRED_NO_SUCCESSOR"),
+        "a retired plan is a stop and says so: {stop_body}"
+    );
+    assert!(
+        go_edit_body.contains("OPEN_DRAFT_REVISION_EXISTS"),
+        "an occupied draft slot names a real next action: {go_edit_body}"
+    );
+    assert!(
+        !stop_body.contains("LIFECYCLE_FORBIDDEN") && !go_edit_body.contains("LIFECYCLE_FORBIDDEN"),
+        "neither may still be told the code that hid the difference"
+    );
+    // The status carries the same distinction for a client that reads no body:
+    // retirement is terminal, an occupied slot is a conflict on mutable state.
+    assert_eq!(stop.status_code(), 400);
+    assert_eq!(go_edit.status_code(), 409);
+    assert!(
+        go_edit_body.contains("revision 1"),
+        "and the conflict names the revision to go and edit: {go_edit_body}"
+    );
+}
+
+#[tokio::test]
+async fn an_availability_bound_below_the_quantum_is_refused_on_both_write_paths() {
+    let (repo, _provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+
+    // `timestamptz` would take this and `SQLite`'s text rendering would too, so
+    // nothing below refuses it: the instant persists a resolution finer than the
+    // one the catalog compares at (D-144), and the divergence surfaces as a
+    // window bound that never matches rather than as an error.
+    let mut draft = new_draft(plan_id, tenant);
+    draft.available_from = Some(at(11) + chrono::TimeDelta::microseconds(500));
+    let err = repo
+        .create_draft(&scope, draft)
+        .await
+        .expect_err("a sub-millisecond availability bound must be refused");
+    assert!(
+        matches!(
+            &err,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "availableFrom"
+        ),
+        "got: {err:?}"
+    );
+    let mapped = CanonicalError::from(repo_failure(&err));
+    assert!(format!("{mapped:?}").contains("TIMESTAMP_PRECISION_EXCEEDED"));
+    assert_eq!(
+        mapped.status_code(),
+        400,
+        "an architectural 422 reaches the wire as a 400 carrying its code"
+    );
+
+    // Nothing was written, so the plan is still free to be created properly.
+    repo.create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("clearing the sub-millisecond digits is the whole remedy");
+
+    // And the patch path refuses it too, without moving the row's tag: the
+    // create path's check alone would leave the only editable plane open.
+    let err = repo
+        .update_draft(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            PlanShapePatch {
+                available_to: Some(at(23) + chrono::TimeDelta::nanoseconds(1)),
+                ..PlanShapePatch::default()
+            },
+        )
+        .await
+        .expect_err("a sub-millisecond patch must be refused");
+    assert!(
+        matches!(
+            &err,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "availableTo"
+        ),
+        "got: {err:?}"
+    );
+    let read = repo
+        .find_revision(&scope, tenant, plan_id, 0)
+        .await
+        .expect("read")
+        .expect("present");
+    assert_eq!(
+        read.available_to,
+        Some(at(23)),
+        "the refused edit left nothing"
+    );
+    assert_eq!(read.row_version, RowVersion::new(0), "and moved no tag");
 }
 
 #[tokio::test]

@@ -28,6 +28,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::instant;
 use crate::domain::money::CurrencyCode;
 use crate::domain::validation::ValidationReport;
 
@@ -301,6 +302,10 @@ impl Cohort {
 }
 
 impl fmt::Display for Cohort {
+    /// Epoch milliseconds, and **lossless** because of it: [`ScopeKey::new`]
+    /// refuses a generation below the quantum (D-144), so this rendering can
+    /// never be the place an instant quietly loses precision on its way into a
+    /// key that is then matched for equality.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => f.write_str("none"),
@@ -388,6 +393,11 @@ impl ScopeKey {
     ///
     /// [`DomainError::ValidationFailed`] when `price_eligibility` and `cohort`
     /// disagree; see [`check_cohort_eligibility`].
+    /// [`DomainError::TimestampPrecisionExceeded`] when a generational `cohort`
+    /// carries precision below the millisecond quantum (D-144) — this axis is
+    /// matched for **equality** against an instant a different gear produced, so
+    /// an unquantized value would build a key nobody can find rather than a key
+    /// that is wrong.
     pub fn new(
         plan_id: PlanId,
         currency: CurrencyCode,
@@ -398,6 +408,9 @@ impl ScopeKey {
         cohort: Cohort,
     ) -> Result<Self, DomainError> {
         check_cohort_eligibility(price_eligibility, cohort)?;
+        if let Some(generation) = cohort.generation() {
+            instant::check_quantum("cohort", generation)?;
+        }
         Ok(Self {
             plan_id,
             currency,

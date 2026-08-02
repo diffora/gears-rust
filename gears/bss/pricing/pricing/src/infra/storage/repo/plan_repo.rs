@@ -51,6 +51,7 @@ use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::plan;
+use crate::infra::storage::repo::check_authored_instant;
 
 /// The noun every **compare-and-swap** refusal names, so a caller that failed
 /// to edit revision 3 and a caller that failed to delete it are told about the
@@ -116,6 +117,8 @@ impl PlanRepo {
     /// Create a plan by inserting its revision `0` in `draft`.
     ///
     /// # Errors
+    /// [`RepoError::TimestampPrecisionExceeded`] when an authored availability
+    /// bound is finer than the millisecond quantum (D-144);
     /// [`RepoError::Db`] on a scope or storage failure — which **includes the
     /// collision case**: a plan id that already has a revision `0` is the
     /// table's `PRIMARY KEY` answer, and a second open draft is
@@ -127,6 +130,8 @@ impl PlanRepo {
         draft: NewPlanDraft,
     ) -> Result<PlanRevision, RepoError> {
         let tenant_id = draft.tenant_id;
+        check_authored_instant("availableFrom", draft.available_from)?;
+        check_authored_instant("availableTo", draft.available_to)?;
         let opened = PlanRevision {
             plan_id: draft.plan_id,
             revision: 0,
@@ -275,7 +280,9 @@ impl PlanRepo {
     /// [`RepoError::NotFound`] when no such revision is visible to `scope`;
     /// [`RepoError::NotDraft`] when it is visible but frozen;
     /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
-    /// one is not current; [`RepoError::Db`] on a scope or storage failure;
+    /// one is not current; [`RepoError::TimestampPrecisionExceeded`] when a
+    /// patched availability bound is finer than the millisecond quantum
+    /// (D-144); [`RepoError::Db`] on a scope or storage failure;
     /// [`RepoError::CorruptRow`] when the updated row reads back unusable.
     pub async fn update_draft(
         &self,
@@ -286,6 +293,11 @@ impl PlanRepo {
         expected: RowVersion,
         patch: PlanShapePatch,
     ) -> Result<PlanRevision, RepoError> {
+        // Ahead of the compare-and-swap: an instant the catalog cannot compare
+        // is refused whether or not the caller also holds a current row version,
+        // and refusing it here leaves the row's tag where it was.
+        check_authored_instant("availableFrom", patch.available_from)?;
+        check_authored_instant("availableTo", patch.available_to)?;
         let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
             return Err(self
                 .refuse(scope, tenant_id, plan_id, revision, expected)

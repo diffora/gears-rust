@@ -96,19 +96,19 @@ fn editing_a_frozen_revision_is_forbidden_state_and_never_a_conflict() {
 
 #[test]
 fn a_plan_that_can_never_be_superseded_is_refused_in_its_own_words() {
-    // Same category as a frozen revision, deliberately different sentence. The
-    // caller asked for a successor, not to edit content, so `NotDraft`'s "only
-    // draft content is mutable" would answer a question nobody asked and would
-    // name as the remedy — open the next revision — the very operation being
-    // refused. What an operator branches on is the category; what an operator
-    // reads is the sentence, and only one of the two was ever right.
+    // Its own code as well as its own sentence (D-146). The caller asked for a
+    // successor, not to edit content, so `NotDraft`'s "only draft content is
+    // mutable" would answer a question nobody asked and would name as the remedy
+    // — open the next revision — the very operation being refused. Sharing
+    // `LIFECYCLE_FORBIDDEN` left the sentence carrying that distinction alone,
+    // which is exactly the prose a consumer cannot branch on.
     let err = RepoError::NoSuccessorRevision {
         plan_id: "3f2a".to_owned(),
         state: "retired".to_owned(),
     };
 
-    let DomainError::LifecycleForbidden(detail) = repo_failure(&err) else {
-        panic!("a plan that can never be superseded must map to LIFECYCLE_FORBIDDEN");
+    let DomainError::PlanRetiredNoSuccessor(detail) = repo_failure(&err) else {
+        panic!("a plan that can never be superseded must map to PLAN_RETIRED_NO_SUCCESSOR");
     };
     assert!(detail.contains("3f2a"), "got: {detail}");
     assert!(detail.contains("retired"), "got: {detail}");
@@ -124,18 +124,70 @@ fn a_plan_that_can_never_be_superseded_is_refused_in_its_own_words() {
 }
 
 #[test]
-fn a_second_open_draft_is_forbidden_state_and_names_the_one_that_exists() {
+fn a_second_open_draft_is_a_conflict_and_names_the_one_that_exists() {
     // A plan has at most one concurrently editable shape. The refusal points at
     // the revision holding the slot, so the caller edits it instead of guessing.
+    // It is a uniqueness conflict on that slot rather than a transition the
+    // state machine denies (D-146), which is why it leaves the lifecycle
+    // category entirely.
     let err = RepoError::OpenDraftExists {
         plan_id: "3f2a".to_owned(),
         revision: 2,
     };
 
-    let DomainError::LifecycleForbidden(detail) = repo_failure(&err) else {
-        panic!("a second open draft must map to LIFECYCLE_FORBIDDEN");
+    let DomainError::OpenDraftRevisionExists(detail) = repo_failure(&err) else {
+        panic!("a second open draft must map to OPEN_DRAFT_REVISION_EXISTS");
     };
     assert!(detail.contains("revision 2"), "got: {detail}");
+}
+
+#[test]
+fn a_retired_plan_and_a_taken_draft_slot_are_told_apart_without_reading_prose() {
+    // The test that would have passed before D-146 and must fail after it: both
+    // refusals used to arrive as `LIFECYCLE_FORBIDDEN`, so a consumer branching
+    // on the domain vocabulary saw one answer where the operator has two
+    // actions. "Stop, this plan is retired" ends the attempt; "you already hold
+    // an open draft at revision 2" sends the operator somewhere real.
+    let retired = repo_failure(&RepoError::NoSuccessorRevision {
+        plan_id: "3f2a".to_owned(),
+        state: "retired".to_owned(),
+    });
+    let occupied = repo_failure(&RepoError::OpenDraftExists {
+        plan_id: "3f2a".to_owned(),
+        revision: 2,
+    });
+
+    assert_ne!(
+        std::mem::discriminant(&retired),
+        std::mem::discriminant(&occupied),
+        "one code for two operator actions is the collapse D-146 exists to undo"
+    );
+    assert!(
+        !matches!(retired, DomainError::LifecycleForbidden(_)),
+        "the retired plan keeps the code it was narrowed into: {retired:?}"
+    );
+    assert!(
+        !matches!(occupied, DomainError::LifecycleForbidden(_)),
+        "and so does the occupied draft slot: {occupied:?}"
+    );
+    // What `LIFECYCLE_FORBIDDEN` keeps is the refusals with no alternative
+    // action to describe: a frozen revision, and the projector's own frontier.
+    assert!(matches!(
+        repo_failure(&RepoError::NotDraft {
+            subject: "plan revision".to_owned(),
+            id: "3f2a/0".to_owned(),
+            state: "published".to_owned(),
+        }),
+        DomainError::LifecycleForbidden(_)
+    ));
+    assert!(matches!(
+        repo_failure(&RepoError::FrontierRegression {
+            tenant: "7e11".to_owned(),
+            current: 9,
+            requested: 8,
+        }),
+        DomainError::LifecycleForbidden(_)
+    ));
 }
 
 #[test]
@@ -192,21 +244,66 @@ fn a_quantity_no_column_can_hold_is_the_callers_mistake_not_the_stores() {
 }
 
 #[test]
-fn a_horizon_on_a_class_that_may_not_carry_one_is_a_bad_request_not_a_500() {
+fn a_horizon_on_a_class_that_may_not_carry_one_carries_its_own_code() {
     // The arm that exists because a physical CHECK was reaching callers as a
     // driver error: `grandfather_until` is ordinary draft content, and pairing
     // it with the wrong eligibility class used to become `RepoError::Db` and
     // therefore `Internal` — a 500 for a request whose author only has to clear
-    // one field. The class is named so the sentence says which key refused.
+    // one field. D-147 states the pairing as a rule, so the refusal no longer
+    // borrows the generic bad-request answer, which named no field and told a
+    // consumer nothing about which one to clear. The class is named so the
+    // sentence says which key refused.
     let err = RepoError::GrandfatherHorizonOffClass {
         eligibility: "all_subscriptions".to_owned(),
     };
 
-    let DomainError::InvalidRequest(detail) = repo_failure(&err) else {
-        panic!("a horizon off its class must map to INVALID_REQUEST");
+    let DomainError::GrandfatherUntilForbidden(detail) = repo_failure(&err) else {
+        panic!("a horizon off its class must map to GRANDFATHER_UNTIL_FORBIDDEN");
     };
     assert!(detail.contains("all_subscriptions"), "got: {detail}");
     assert!(detail.contains("existing_grandfathered"), "got: {detail}");
+    // Still not an internal fault, which is the property the arm was added for.
+    assert!(!matches!(repo_failure(&err), DomainError::Internal(_)));
+}
+
+#[test]
+fn an_instant_below_the_quantum_is_refused_where_it_would_have_been_stored() {
+    // `timestamptz` holds microseconds, so nothing downstream refuses this: the
+    // value persists and is then matched for equality against an instant another
+    // gear produced at the quantum (D-144). The field is named because clearing
+    // or rounding one value is the whole remedy.
+    let err = RepoError::TimestampPrecisionExceeded {
+        field: "grandfatherUntil".to_owned(),
+        value: "2026-08-02T12:00:00.000500+00:00".to_owned(),
+    };
+
+    let DomainError::TimestampPrecisionExceeded(detail) = repo_failure(&err) else {
+        panic!("a sub-millisecond instant must map to TIMESTAMP_PRECISION_EXCEEDED");
+    };
+    assert!(detail.contains("grandfatherUntil"), "got: {detail}");
+    assert!(
+        detail.contains("2026-08-02T12:00:00.000500"),
+        "got: {detail}"
+    );
+}
+
+#[test]
+fn a_duplicate_meeting_an_unanswered_claim_is_its_own_refusal() {
+    // Not the payload mismatch beside it, and not a fabricated reply: nothing
+    // has been told to anybody yet, so the only honest answer is that the key is
+    // held and a retry will find it either answered or mismatching (D-143). The
+    // key and the operation survive so an operator can find the caller holding
+    // it.
+    let err = RepoError::IdempotencyKeyInFlight {
+        operation: "create_price".to_owned(),
+        client_key: "ck-9f2a".to_owned(),
+    };
+
+    let DomainError::IdempotencyKeyInFlight(detail) = repo_failure(&err) else {
+        panic!("an unanswered claim must map to IDEMPOTENCY_KEY_IN_FLIGHT");
+    };
+    assert!(detail.contains("ck-9f2a"), "got: {detail}");
+    assert!(detail.contains("create_price"), "got: {detail}");
 }
 
 #[test]

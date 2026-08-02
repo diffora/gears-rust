@@ -8,9 +8,12 @@
 //!
 //! The wire codes are the names the design set uses verbatim
 //! (`DUPLICATE_SCOPE_KEY`, `STALE_VERSION`, `IDEMPOTENCY_PAYLOAD_MISMATCH`,
-//! `ROUNDING_POLICY_UNRESOLVED`, `PRECISION_EXCEEDED`, `AMOUNT_NEGATIVE`,
-//! `CURRENCY_INVALID`, `FIXTURE_MISSING`); a consumer matches the category
-//! coarsely and the code exactly.
+//! `IDEMPOTENCY_KEY_IN_FLIGHT`, `OPEN_DRAFT_REVISION_EXISTS`,
+//! `ROUNDING_POLICY_UNRESOLVED`, `PRECISION_EXCEEDED`,
+//! `TIMESTAMP_PRECISION_EXCEEDED`, `AMOUNT_NEGATIVE`, `CURRENCY_INVALID`,
+//! `FIXTURE_MISSING`, `PLAN_RETIRED_NO_SUCCESSOR`,
+//! `GRANDFATHER_UNTIL_FORBIDDEN`); a consumer matches the category coarsely and
+//! the code exactly.
 //!
 //! **The design set's 422s are architectural, not wire** (normative:
 //! `design/01-foundation.md` §3.3). They say *unprocessable content*; the
@@ -47,6 +50,13 @@ impl From<DomainError> for CanonicalError {
             D::PrecisionExceeded(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation("amount_minor", detail, "PRECISION_EXCEEDED")
                 .create(),
+            // The temporal sibling of the line above, and classified with it
+            // rather than as a malformed argument: the instant parses, it is
+            // simply finer than the quantum the catalog compares instants at
+            // (D-144).
+            D::TimestampPrecisionExceeded(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation("timestamp", detail, "TIMESTAMP_PRECISION_EXCEEDED")
+                .create(),
             D::AmountNegative(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation("amount_minor", detail, "AMOUNT_NEGATIVE")
                 .create(),
@@ -59,6 +69,24 @@ impl From<DomainError> for CanonicalError {
             D::LifecycleForbidden(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation("lifecycle_state", detail, "LIFECYCLE_FORBIDDEN")
                 .create(),
+            // Narrowed out of the line above (D-146). It stays in the
+            // precondition class because retirement really is state forbidding
+            // the operation — what it must not stay is indistinguishable from
+            // the refusals an operator can work around.
+            D::PlanRetiredNoSuccessor(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation("lifecycle_state", detail, "PLAN_RETIRED_NO_SUCCESSOR")
+                .create(),
+            // The `cohort` rule's sibling (D-147): one axis-conditioned field,
+            // one code. It is a publish refusal about the row's eligibility
+            // class, not a malformed request, which is why it lands here and no
+            // longer on the generic bad-request answer.
+            D::GrandfatherUntilForbidden(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation(
+                    "grandfather_until",
+                    detail,
+                    "GRANDFATHER_UNTIL_FORBIDDEN",
+                )
+                .create(),
 
             // -- Aborted (409) -- conflicts the caller can resolve and retry.
             D::DuplicateScopeKey(detail) => PlanResource::aborted(detail)
@@ -69,6 +97,19 @@ impl From<DomainError> for CanonicalError {
                 .create(),
             D::IdempotencyPayloadMismatch(detail) => PlanResource::aborted(detail)
                 .with_reason("IDEMPOTENCY_PAYLOAD_MISMATCH")
+                .create(),
+            // A conflict on mutable state that a retry resolves, so it keeps the
+            // 409 the three above hold rather than collapsing into the 400
+            // bucket (D-143): retry, and the answer is the stored response or
+            // the mismatch refusal.
+            D::IdempotencyKeyInFlight(detail) => PlanResource::aborted(detail)
+                .with_reason("IDEMPOTENCY_KEY_IN_FLIGHT")
+                .create(),
+            // A uniqueness conflict on the plan's one draft slot (D-146), the
+            // `DUPLICATE_SCOPE_KEY` class rather than a state-machine edge —
+            // which is why it is here and not beside `LIFECYCLE_FORBIDDEN`.
+            D::OpenDraftRevisionExists(detail) => PlanResource::aborted(detail)
+                .with_reason("OPEN_DRAFT_REVISION_EXISTS")
                 .create(),
 
             // -- The aggregate validation envelope (architectural 422, rendered 400) --

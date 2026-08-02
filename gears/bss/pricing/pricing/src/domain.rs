@@ -7,6 +7,7 @@
 pub mod concurrency;
 pub mod error;
 pub mod events;
+pub mod instant;
 pub mod lifecycle;
 pub mod money;
 pub mod plan;

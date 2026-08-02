@@ -112,6 +112,7 @@ use crate::domain::scope_key::{
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{price, price_tier_band};
+use crate::infra::storage::repo::check_authored_instant;
 
 /// The noun the authoring refusals name, so one subject word reaches the wire
 /// from every method here.
@@ -302,6 +303,7 @@ impl PriceRepo {
             record.grandfather_until,
             record.scope_key.price_eligibility(),
         )?;
+        check_authored_instant("grandfatherUntil", record.grandfather_until)?;
         // Rendered before the transaction opens: a quantity the column cannot
         // hold is the caller's mistake, and there is no reason to hold a
         // transaction open to find it.
@@ -484,6 +486,10 @@ impl PriceRepo {
         content: PriceContent,
     ) -> Result<PriceRecord, RepoError> {
         let horizon = content.grandfather_until;
+        // Before the row is even read: an instant the catalog cannot compare is
+        // refused wherever it arrives, and this path can reject it without a
+        // round trip.
+        check_authored_instant("grandfatherUntil", horizon)?;
         let assignments = content_assignments(&content_model(&content)?);
         let bands = band_models(tenant_id, price_id, &content.row.bands)?;
         let Some(guard) = swap_guard(tenant_id, price_id, expected) else {
@@ -814,9 +820,14 @@ async fn mutable_draft(
 /// ordinary caller-supplied content on the draft plane — so without this check
 /// the pairing is discovered by the driver, reaches the caller as
 /// [`RepoError::Db`] and renders as a 500 for a request whose author only has to
-/// clear one field. The pairing is a physical CHECK the design set never states
-/// as a rule; this refusal is therefore the code's own and mints no code of its
-/// own.
+/// clear one field.
+///
+/// The pairing was a physical CHECK with no rule behind it when this refusal was
+/// written; D-147 states it normatively and gives it
+/// `GRANDFATHER_UNTIL_FORBIDDEN`, so the refusal now carries a code of its own
+/// instead of borrowing the generic bad-request answer. One direction only: a
+/// grandfathered row with no horizon is indefinite, and this check says nothing
+/// about it.
 ///
 /// # Errors
 /// [`RepoError::GrandfatherHorizonOffClass`] naming the class the key holds.

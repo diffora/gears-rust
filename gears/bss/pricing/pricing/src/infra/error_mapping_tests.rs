@@ -20,8 +20,12 @@ fn rendered(err: DomainError) -> String {
 
 #[test]
 fn conflicts_are_409() {
-    // The three Foundation-owned conflicts. A caller resolves them by refetching
-    // and retrying, which is exactly what 409 tells it to do.
+    // The five Foundation-owned conflicts. A caller resolves them by refetching
+    // and retrying, which is exactly what 409 tells it to do. Two joined the
+    // class in 2026-08-02's wave and were classified by what they are rather
+    // than by the section they were found in: an unanswered claim is resolved by
+    // retrying (D-143), and a second draft revision is a uniqueness conflict on
+    // the plan's one editable slot, not a state-machine edge (D-146).
     let detail = || "detail".to_owned();
 
     assert_eq!(status(DomainError::DuplicateScopeKey(detail())), 409);
@@ -30,6 +34,8 @@ fn conflicts_are_409() {
         status(DomainError::IdempotencyPayloadMismatch(detail())),
         409
     );
+    assert_eq!(status(DomainError::IdempotencyKeyInFlight(detail())), 409);
+    assert_eq!(status(DomainError::OpenDraftRevisionExists(detail())), 409);
 }
 
 #[test]
@@ -42,10 +48,19 @@ fn fail_closed_publish_rejections_render_400_not_the_documented_422() {
 
     assert_eq!(status(DomainError::RoundingPolicyUnresolved(detail())), 400);
     assert_eq!(status(DomainError::PrecisionExceeded(detail())), 400);
+    assert_eq!(
+        status(DomainError::TimestampPrecisionExceeded(detail())),
+        400
+    );
     assert_eq!(status(DomainError::AmountNegative(detail())), 400);
     assert_eq!(status(DomainError::CurrencyInvalid(detail())), 400);
     assert_eq!(status(DomainError::FixtureMissing(detail())), 400);
     assert_eq!(status(DomainError::LifecycleForbidden(detail())), 400);
+    assert_eq!(status(DomainError::PlanRetiredNoSuccessor(detail())), 400);
+    assert_eq!(
+        status(DomainError::GrandfatherUntilForbidden(detail())),
+        400
+    );
 }
 
 #[test]
@@ -66,6 +81,58 @@ fn the_wire_codes_survive_the_ladder() {
         rendered(DomainError::IdempotencyPayloadMismatch(detail()))
             .contains("IDEMPOTENCY_PAYLOAD_MISMATCH")
     );
+    assert!(
+        rendered(DomainError::IdempotencyKeyInFlight(detail()))
+            .contains("IDEMPOTENCY_KEY_IN_FLIGHT")
+    );
+    assert!(
+        rendered(DomainError::OpenDraftRevisionExists(detail()))
+            .contains("OPEN_DRAFT_REVISION_EXISTS")
+    );
+    assert!(
+        rendered(DomainError::TimestampPrecisionExceeded(detail()))
+            .contains("TIMESTAMP_PRECISION_EXCEEDED")
+    );
+    assert!(
+        rendered(DomainError::PlanRetiredNoSuccessor(detail()))
+            .contains("PLAN_RETIRED_NO_SUCCESSOR")
+    );
+    assert!(
+        rendered(DomainError::GrandfatherUntilForbidden(detail()))
+            .contains("GRANDFATHER_UNTIL_FORBIDDEN")
+    );
+}
+
+#[test]
+fn the_narrowed_lifecycle_refusals_are_five_distinct_answers_not_one() {
+    // The test that would have passed before D-146 and must fail after it. Every
+    // refusal the authoring plane collapsed onto `LIFECYCLE_FORBIDDEN` used to
+    // render that one code, so a consumer branching on the code string could
+    // tell none of them apart. Two of them ask an operator for different things
+    // — stop, versus go and edit the draft you already have — and one of them is
+    // not even a state-machine edge.
+    let detail = || "detail".to_owned();
+    let codes = [
+        rendered(DomainError::LifecycleForbidden(detail())),
+        rendered(DomainError::PlanRetiredNoSuccessor(detail())),
+        rendered(DomainError::OpenDraftRevisionExists(detail())),
+    ];
+
+    assert!(codes[0].contains("LIFECYCLE_FORBIDDEN"));
+    assert!(
+        !codes[1].contains("LIFECYCLE_FORBIDDEN"),
+        "a retired plan must not be told the code it was collapsed into: {}",
+        codes[1]
+    );
+    assert!(
+        !codes[2].contains("LIFECYCLE_FORBIDDEN"),
+        "a second open draft must not be told it either: {}",
+        codes[2]
+    );
+    // And the conflict half of the narrowing is visible without reading the
+    // body at all: the retired plan is a stop, the open draft is retriable.
+    assert_eq!(status(DomainError::PlanRetiredNoSuccessor(detail())), 400);
+    assert_eq!(status(DomainError::OpenDraftRevisionExists(detail())), 409);
 }
 
 #[test]

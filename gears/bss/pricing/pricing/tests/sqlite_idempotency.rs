@@ -7,28 +7,29 @@
 //! answer. A test double would keep passing after the conflict clause had been
 //! deleted.
 //!
-//! The suite drives [`ClaimOutcome::InFlight`] directly rather than through
+//! The suite drives the in-flight refusal directly rather than through
 //! concurrency, on both paths that reach it. On `SQLite` a race cannot be staged
 //! anyway — one writer, transactions serialized — so a racing test would prove
 //! nothing while looking like it proved everything. What is worth pinning is
-//! that an unanswered claim is *reported* rather than answered with a response
-//! nobody was ever given. The takeover half of that, which needs a caller
-//! holding a row the store has already moved past, is pinned beside the module
-//! in `src/infra/storage/repo/idempotency_repo_tests.rs`, since no sequence of
-//! public calls can produce a stale read.
+//! that an unanswered claim is *refused with its own code* rather than answered
+//! with a response nobody was ever given. The takeover half of that, which needs
+//! a caller holding a row the store has already moved past, is pinned beside the
+//! module in `src/infra/storage/repo/idempotency_repo_tests.rs`, since no
+//! sequence of public calls can produce a stale read.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use bss_pricing::config::LimitsConfig;
-use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::idempotency_dedup;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{ClaimOutcome, IdempotencyGate};
+use bss_pricing::infra::storage::{RepoError, repo_failure};
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
+use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -312,21 +313,32 @@ async fn a_key_reused_for_a_different_request_is_refused_and_changes_nothing() {
 }
 
 #[tokio::test]
-async fn a_duplicate_meeting_an_unanswered_claim_is_reported_not_answered() {
+async fn a_duplicate_meeting_an_unanswered_claim_is_refused_not_answered() {
     let (provider, gate) = harness().await;
     let scope = AccessScope::for_tenant(owner());
     let req = Request::new();
 
     // Reached here only because both claims run in one transaction with no
-    // mutation between them. The point of the outcome is that a caller in that
-    // position is told the truth instead of being handed a response that does
-    // not exist yet.
+    // mutation between them. The point is that a caller in that position is told
+    // the truth instead of being handed a response that does not exist yet — and
+    // since D-143 the truth has a code, so the refusal names the key the caller
+    // should retry rather than leaving the surface to invent an answer.
+    let err = claim_twice(&provider, &gate, &scope, &req)
+        .await
+        .expect_err("a duplicate meeting a live claim is refused");
     assert_eq!(
-        claim_twice(&provider, &gate, &scope, &req)
-            .await
-            .expect("the duplicate is an outcome, not a failure"),
-        ClaimOutcome::InFlight
+        err,
+        RepoError::IdempotencyKeyInFlight {
+            operation: req.operation.clone(),
+            client_key: req.client_key.clone(),
+        }
     );
+
+    // And the wire code a client branches on is the one the design set names,
+    // 409 rather than the 400 bucket: retrying is the remedy.
+    let mapped = CanonicalError::from(repo_failure(&err));
+    assert_eq!(mapped.status_code(), 409);
+    assert!(format!("{mapped:?}").contains("IDEMPOTENCY_KEY_IN_FLIGHT"));
 
     let row = stored(&provider, &scope, &req)
         .await

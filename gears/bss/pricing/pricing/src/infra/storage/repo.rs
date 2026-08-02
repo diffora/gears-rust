@@ -19,7 +19,46 @@ pub mod pin_frontier_repo;
 pub mod plan_repo;
 pub mod price_repo;
 
+use chrono::{DateTime, Utc};
+
+use crate::domain::instant;
+use crate::infra::storage::RepoError;
+
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
 pub use pin_frontier_repo::PinFrontierRepo;
 pub use plan_repo::{NewPlanDraft, PlanRepo};
 pub use price_repo::{NewPriceDraft, PriceRepo};
+
+/// Refuse an authored instant finer than the millisecond quantum (D-144).
+///
+/// Here rather than in each repository because both of them store instants an
+/// operator authored — `grandfatherUntil`, `availableFrom`/`availableTo` — and
+/// the quantum is one rule. The predicate itself stays in
+/// [`crate::domain::instant`]: the resolution the catalog compares at is a
+/// domain fact, and this is only the storage boundary refusing to write past it.
+///
+/// The columns will not do it for us. `timestamptz` holds microseconds and
+/// `SQLite`'s text rendering holds whatever it is handed, so a finer instant
+/// persists in silence and is then matched for equality against one produced at
+/// the quantum in another gear.
+///
+/// `None` is nothing authored, which is not a precision fault.
+///
+/// # Errors
+/// [`RepoError::TimestampPrecisionExceeded`] naming `field` and the instant, so
+/// the author corrects one value rather than resubmitting and guessing.
+pub(crate) fn check_authored_instant(
+    field: &str,
+    at: Option<DateTime<Utc>>,
+) -> Result<(), RepoError> {
+    let Some(at) = at else {
+        return Ok(());
+    };
+    if instant::is_quantized(at) {
+        return Ok(());
+    }
+    Err(RepoError::TimestampPrecisionExceeded {
+        field: field.to_owned(),
+        value: at.to_rfc3339(),
+    })
+}
