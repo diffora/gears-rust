@@ -206,11 +206,37 @@ PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 6,
     "anchored:no-account": 15,
-    "suspicious:multi-region": 19,
+    "suspicious:multi-region": 20,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 37,
+    "suspicious:weak-coverage": 36,
     "covered:strong": 0,
 }
+#: Moved again 2026-08-02, fourth time that day (was 15 / 19 / 37, judged 56, total
+#: unchanged at 77) after the **D-143 veto-status edit** — the register recording the
+#: 2026-08-02 veto round (D-143 CONFIRMED as decided against block-and-replay; the
+#: `abandon` endpoint D-145 implies put to the owner in the same round and kept). A
+#: status-word edit is not supposed to move this histogram at all, and the deterministic
+#: layer agrees: `--gear gears/bss/pricing/docs --auto-context` still reports 0 live and
+#: 68 suppressed, and the frozen stdout oracles came back **byte-identical** — the edit
+#: added no line, so not even a line number shifted. **One mover**, diffed per-id against
+#: the pre-edit tree (`eb10a408`) in a detached worktree:
+#: - `fr-tax-display-basis` weak → multi, on **one term**. Its declaration
+#:   (`PRD.md:627`) contains "not the plan as a **whole**", so `whole` is one of its 101
+#:   discriminating terms. The `DECISIONS.md:19-30` window — the register's status
+#:   paragraph — already carried 60 of those 101 (**0.594**), one term under
+#:   `SCORE_THRESHOLD = 0.6`; the appended veto-round sentence contains "preserves the
+#:   **MUST** whole", taking it to 61/101 (**0.604**) and over. The window becomes a third
+#:   candidate region and the class flips. Isolated in both directions by controlled
+#:   experiment: applying the veto patch to the pre-edit tree reproduces 20 / 36 exactly
+#:   and no other mover, and changing that one word to "unqualified" and nothing else
+#:   restores 19 / 37.
+#: What the movement is **not**: a second account of `fr-tax-display-basis`. The status
+#: paragraph says nothing about tax display basis — this is a fraction-threshold artifact
+#: on a common English word, the same class as the terse-prose and window-grid movers the
+#: next two notes record. The wording was deliberately **left as written**: choosing a
+#: document's words to push a score back under a threshold is standing rule 6's vice from
+#: the other side, and would leave the register carrying a word picked by the scorer
+#: rather than by the author.
 #: Moved again 2026-08-02, third time that day (was 16 / 16 / 39, judged 55, total
 #: unchanged at 77) after the **D-141…D-148 docs wave** — the second implementation-side
 #: wave, and the first raised by writing code *against* the documents (Group G3, the

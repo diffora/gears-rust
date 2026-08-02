@@ -170,6 +170,36 @@ separately-justified commit — never a way to make a failing change look green.
     `6k+1` boundary by D-144's insertion, and inserting 20 **blank** lines at that
     same point in the pre-wave tree reproduces the mover exactly and no other.
 
+11. **2026-08-02, eleventh entry — the D-143 veto-status edit. Nothing was
+    re-captured.** This entry exists to say so. The edit records the 2026-08-02
+    veto round in the pricing register — D-143 CONFIRMED as decided against
+    block-and-replay, and the `abandon` endpoint D-145 implies put to the owner
+    in the same round and kept — as a status-board flip, a preamble paragraph, two
+    entry-body provenance additions and the matching `DESIGN.md` §4 sentence. Every
+    one is an edit *within* an existing line, so the wave added no line and **not
+    even a line number shifted**: all three oracle files are byte-identical to the
+    tenth capture and were left untouched. `--gear gears/bss/pricing/docs
+    --auto-context` reports 0 live and 68 suppressed, unchanged.
+
+    **The triage pin moved anyway, and that is the whole point of this entry** —
+    "the oracles did not move but the pin did" is the case the next person will
+    want to have been told about, because the two layers answer different
+    questions and a byte-identical stdout is no evidence at all about N1.
+    `suspicious:multi-region` 19 → 20 and `suspicious:weak-coverage` 36 ← 37,
+    judged unchanged at 56 (both classes are judged, so the swap is
+    judge-neutral), total unchanged at 77. **One mover**, `fr-tax-display-basis`,
+    weak → multi, isolated to **one term**: its declaration says "not the plan as a
+    **whole**", the register's status-paragraph window already carried 60 of its 101
+    discriminating terms (0.594, one term under the 0.6 threshold), and the new
+    veto-round sentence says "preserves the **MUST** whole" — 61/101, 0.604, over.
+    Controlled in both directions against the pre-edit tree (`eb10a408`) in a
+    detached worktree: applying the patch reproduces 20 / 36 and no other mover;
+    changing that single word and nothing else restores 19 / 37. It is a
+    fraction-threshold artifact on a common English word, not a second account —
+    the status paragraph says nothing about tax display basis. The per-id record,
+    and the reason the wording was left as written rather than tuned to the
+    scorer, are beside `PINNED_TRIAGE_PRICING`.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:
