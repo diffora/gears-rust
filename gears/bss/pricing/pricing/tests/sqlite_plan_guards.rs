@@ -148,6 +148,51 @@ async fn a_discarded_draft_flips_to_abandoned_and_the_tombstone_freezes() {
 }
 
 #[tokio::test]
+async fn a_draft_leaves_only_by_publishing_or_by_being_abandoned() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &insert(PLAN, 0, "draft")).await;
+
+    // The draft plane is unguarded in its **columns**, not in its exits. A
+    // hand-run flip to `retired` mints a row that satisfies
+    // `uq_pricing_plan_current` — the row the projector sources a plan subject
+    // from — without that row ever having published, and a flip to `superseded`
+    // makes history out of something that was never current. The domain machine
+    // refuses both; so must the table, or the two disagree about the edge set
+    // and the one that drifted is discovered as a revision nothing can move.
+    for state in ["retired", "superseded"] {
+        must_be_rejected(
+            &conn,
+            &format!(
+                "UPDATE pricing_plan SET lifecycle_state = '{state}' WHERE plan_id = '{PLAN}'"
+            ),
+            "not a sanctioned flip",
+        )
+        .await;
+    }
+    assert_eq!(state_of(&conn, 0).await, "draft");
+
+    // Editing a draft's content is still free — this is a whitelist on the way
+    // out, not a freeze.
+    must_succeed(
+        &conn,
+        &format!(
+            "UPDATE pricing_plan SET plan_tier = 'silver', row_version = row_version + 1 \
+             WHERE plan_id = '{PLAN}'"
+        ),
+    )
+    .await;
+
+    // And the two sanctioned exits work: publishing here, abandoning in
+    // `a_discarded_draft_flips_to_abandoned_and_the_tombstone_freezes`.
+    must_succeed(
+        &conn,
+        &format!("UPDATE pricing_plan SET lifecycle_state = 'published' WHERE plan_id = '{PLAN}'"),
+    )
+    .await;
+    assert_eq!(state_of(&conn, 0).await, "published");
+}
+
+#[tokio::test]
 async fn no_revision_row_is_ever_deleted_not_even_a_draft() {
     let conn = migrated_db().await;
     must_succeed(&conn, &insert(PLAN, 0, "published")).await;

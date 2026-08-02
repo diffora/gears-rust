@@ -28,11 +28,16 @@
 //! published, retired or abandoned revision's content is frozen, and the only
 //! sanctioned in-place mutations are the state-machine `lifecycle_state` flips
 //! (`published -> superseded` when the successor revision commits,
-//! `published -> retired` at retire, and `draft -> abandoned` at discard, which
-//! passes through the freely-mutable draft plane). Draft revisions stay freely
-//! mutable; nothing on this table is deletable. Without the guard an ad-hoc
-//! UPDATE would silently change a frozen `CatalogVersion`'s content at the next
-//! warm re-drive, since the projector reads truth rows (§4.4).
+//! `published -> retired` at retire, `draft -> published` at publish and
+//! `draft -> abandoned` at discard). Draft revisions stay freely mutable **in
+//! content**, and the guard restates the machine's edges on that plane too:
+//! `draft -> superseded` and `draft -> retired` are refused here as they are in
+//! `domain::lifecycle`, because a hand-run flip to `retired` mints a row that
+//! satisfies `uq_pricing_plan_current` without ever having published — and the
+//! projector sources a plan subject from exactly that row. Nothing on this table
+//! is deletable. Without the guard an ad-hoc UPDATE would silently change a
+//! frozen `CatalogVersion`'s content at the next warm re-drive, since the
+//! projector reads truth rows (§4.4).
 //!
 //! **Backend differences.** Postgres raises through a PL/pgSQL
 //! `RAISE EXCEPTION` carrying the offending value; `SQLite` has no PL/pgSQL and
@@ -99,14 +104,28 @@ const PG_UP_STATEMENTS: &[&str] = &[
               OLD.revision, OLD.plan_id;
           END IF;
 
-          -- The draft plane is where content moves, so it is unguarded - and
-          -- the discard flip `draft -> abandoned` rides through here. What the
-          -- branch below then holds is the tombstone: once abandoned, the row
-          -- is frozen in content and no flip leaves it, so the number it
-          -- consumed can never be attached to a different shape.
+          -- The draft plane is where content moves, so its columns are
+          -- unguarded - but its **exits** are not. A draft leaves by publishing
+          -- or by being abandoned, and `NEW = draft` is the ordinary edit.
+          -- Without the check a hand-run flip could mint a `retired` row that
+          -- never published - one that satisfies the current-revision partial
+          -- UNIQUE and is what the projector then sources a plan subject from.
+          -- Membership is tested rather than change: a
+          -- `NEW IS DISTINCT FROM OLD` conjunct would let the SQLite mirror
+          -- accept a no-op UPDATE this branch refuses, and a backend divergence
+          -- is worse than the hole it would close.
           IF OLD.lifecycle_state = 'draft' THEN
+            IF NEW.lifecycle_state NOT IN ('draft','published','abandoned') THEN
+              RAISE EXCEPTION 'pricing_plan: lifecycle_state % -> % is not a sanctioned flip',
+                OLD.lifecycle_state, NEW.lifecycle_state;
+            END IF;
             RETURN NEW;
           END IF;
+
+          -- Past here the row is published, superseded, retired or abandoned.
+          -- Once abandoned it is a tombstone: frozen in content by the whitelist
+          -- below and left by no flip, so the number it consumed can never be
+          -- attached to a different shape.
 
           IF NEW.plan_id        IS DISTINCT FROM OLD.plan_id
           OR NEW.revision       IS DISTINCT FROM OLD.revision
@@ -151,9 +170,11 @@ const PG_DOWN_STATEMENTS: &[&str] = &[
 // * schema prefix `bss.` dropped (single namespace);
 // * `uuid` -> `text`, `timestamptz` -> `text`;
 // * `now()` -> `(CURRENT_TIMESTAMP)`;
-// * the single PL/pgSQL trigger becomes three `RAISE(ABORT, ...)` triggers
+// * the single PL/pgSQL trigger becomes four `RAISE(ABORT, ...)` triggers
 //   (SQLite has no `BEFORE UPDATE OR DELETE`, no procedural language, and no
-//   message interpolation), and `IS DISTINCT FROM` becomes `IS NOT`.
+//   message interpolation), and `IS DISTINCT FROM` becomes `IS NOT`. The
+//   fourth is the draft plane's exit whitelist, spelled as the same membership
+//   test the Postgres branch uses so the two planes cannot drift apart.
 // Every CHECK, index and PK is preserved.
 
 const SQLITE_UP_STATEMENTS: &[&str] = &[
@@ -208,6 +229,13 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft'
           AND NOT (OLD.lifecycle_state = 'published'
                    AND NEW.lifecycle_state IN ('superseded','retired'))
+        BEGIN
+          SELECT RAISE(ABORT, 'pricing_plan: lifecycle_state transition is not a sanctioned flip');
+        END",
+    "CREATE TRIGGER trg_pricing_plan_draft_flip_whitelist
+        BEFORE UPDATE ON pricing_plan
+        FOR EACH ROW WHEN OLD.lifecycle_state = 'draft'
+          AND NEW.lifecycle_state NOT IN ('draft','published','abandoned')
         BEGIN
           SELECT RAISE(ABORT, 'pricing_plan: lifecycle_state transition is not a sanctioned flip');
         END",

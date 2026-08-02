@@ -384,14 +384,32 @@ impl PlanRepo {
     /// row's **last** tag: nothing can move a terminal row again, so the value
     /// handed back here, unlike `update_draft`'s, cannot already be stale.
     ///
-    /// # The child-copy gap (D-83) — open, and owned by G4
+    /// # Three things this does not do yet, and who owes them
     ///
-    /// D-145 drops the discarded revision's child copies in the same
-    /// transaction. Those tables do not exist yet (see
-    /// [`PlanRepo::open_revision`], which owes them the mirror-image copy), so
-    /// this flips the revision row and nothing else. The anchor in
-    /// `tests/sqlite_plan_repo.rs` fails the moment the first child table
-    /// appears.
+    /// **The child copies (D-83), owed by G4.** D-145 drops the discarded
+    /// revision's child copies in the same transaction. Those tables do not
+    /// exist yet (see [`PlanRepo::open_revision`], which owes them the
+    /// mirror-image copy), so this flips the revision row and nothing else. The
+    /// anchor in `tests/sqlite_plan_repo.rs` fails the moment the first child
+    /// table appears.
+    ///
+    /// **The audit record, owed by whoever builds the audit path.** D-145 is
+    /// explicit that the flip "is audited exactly as the deletion was", and the
+    /// deletion it replaces was audited too. This gear has a
+    /// `pricing_audit_log` table and no writer for it, so nothing is written
+    /// here — deliberately, rather than by oversight. There is no anchor to
+    /// stand behind that the way the child tables have one; the debt lives in
+    /// this sentence.
+    ///
+    /// **The plan-level refusal, owed by the authoring surface (G7).** This
+    /// method names the revision it discards, so a caller that names one the
+    /// plan does not have is told [`RepoError::NotFound`] — a 404. S2 §5 says
+    /// abandoning a plan **that holds no open draft revision** answers
+    /// `LIFECYCLE_FORBIDDEN`, which is a different question about a different
+    /// subject: it is asked of the *plan*, and answering it means resolving the
+    /// plan's open draft first. `POST …/plans/{planId}/abandon` is the surface
+    /// that resolves it, so the discrimination belongs there, over
+    /// [`PlanRepo::find_open_draft`] and this call.
     ///
     /// # Errors
     /// [`RepoError::NotFound`] when no such revision is visible to `scope`;

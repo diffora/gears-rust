@@ -774,7 +774,7 @@ async fn a_grandfathering_horizon_off_its_class_is_the_callers_mistake_not_the_s
 }
 
 #[tokio::test]
-async fn an_authored_instant_finer_than_the_quantum_never_reaches_a_column() {
+async fn an_authored_instant_finer_than_the_quantum_is_refused_on_both_write_paths() {
     let (repo, _provider) = harness().await;
     let scope = AccessScope::for_tenant(tenant());
     let price_id = Uuid::from_u128(0xb_5d);
@@ -820,11 +820,46 @@ async fn an_authored_instant_finer_than_the_quantum_never_reaches_a_column() {
         draft(
             price_id,
             grandfathered_key(ChargeKind::Recurring, at(9)),
-            content,
+            content.clone(),
         ),
     )
     .await
     .expect("an instant on the quantum is storable");
+
+    // **And the edit path refuses it too**, which is the half that matters most
+    // on this plane: tightening `grandfather_until` on a draft row is the
+    // sanctioned authoring move (`inst-gs-tighten`), so it is the likely way a
+    // sub-millisecond horizon actually arrives. Guarding only creation would
+    // leave the store one `PATCH` away from a column holding an instant finer
+    // than the one the catalog compares at — and `timestamptz` takes it in
+    // silence, so nothing downstream would ever report it.
+    content.grandfather_until = Some(at(20) + chrono::TimeDelta::microseconds(1));
+    let err = repo
+        .update_draft(&scope, tenant(), price_id, RowVersion::new(0), content)
+        .await
+        .expect_err("a sub-millisecond horizon must be refused on the edit path too");
+    assert!(
+        matches!(
+            &err,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "grandfatherUntil"
+        ),
+        "got: {err:?}"
+    );
+
+    // Refused ahead of the compare-and-swap, so the row keeps the horizon it
+    // had and its tag never moved — an author who resubmits at the quantum is
+    // still holding a current `ETag`.
+    let read = repo
+        .find(&scope, tenant(), price_id)
+        .await
+        .expect("read")
+        .expect("present");
+    assert_eq!(
+        read.grandfather_until,
+        Some(at(23)),
+        "the refused edit left nothing"
+    );
+    assert_eq!(read.row_version, RowVersion::new(0), "and moved no tag");
 
     // The cohort axis is refused by the key itself, one layer earlier: it is
     // matched for equality against an instant another gear produced, so an

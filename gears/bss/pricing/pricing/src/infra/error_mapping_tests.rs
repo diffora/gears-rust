@@ -104,7 +104,7 @@ fn the_wire_codes_survive_the_ladder() {
 }
 
 #[test]
-fn the_narrowed_lifecycle_refusals_are_five_distinct_answers_not_one() {
+fn the_narrowed_lifecycle_refusals_are_three_distinct_codes_not_one() {
     // The test that would have passed before D-146 and must fail after it. Every
     // refusal the authoring plane collapsed onto `LIFECYCLE_FORBIDDEN` used to
     // render that one code, so a consumer branching on the code string could
