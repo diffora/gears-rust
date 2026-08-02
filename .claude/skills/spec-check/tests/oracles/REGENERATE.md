@@ -124,6 +124,52 @@ separately-justified commit — never a way to make a failing change look green.
    reproduces that mover exactly and no other (controlled run, notes beside
    `PINNED_TRIAGE_PRICING`). Total requirements unchanged at 77.
 
+10. **2026-08-02, tenth capture — after the D-141…D-148 docs wave.** Document
+    movement only, no checker change. This is the **second implementation-side
+    wave** and the first raised not by a lint refusing to build the documents
+    (that was D-140) but by writing Group **G3**, the gear's draft-authoring
+    plane, *against* them: fifteen places where the code needed a rule the design
+    set did not state, twelve of which became eight decisions — D-141 the
+    per-price-row ETag presented by every draft mutation including `DELETE`;
+    D-142 the two-state dedup row with expiry evaluated at claim time and before
+    the payload digest; D-143 `IDEMPOTENCY_KEY_IN_FLIGHT` (409); D-144 instants
+    UTC at millisecond resolution; D-145 `revision` as an identity with a
+    terminal `abandoned` state; D-146 two codes narrowed out of
+    `LIFECYCLE_FORBIDDEN`; D-147 `grandfatherUntil` confined to grandfathered
+    rows; D-148 a draft-plane partial `UNIQUE` on the canonical scope key.
+
+    Like the eighth and ninth captures, **the finding set did not move**:
+    `live-text.txt` and `live-json.json` are byte-identical, and
+    `live-show-known-debt.txt` differs only in line numbers — the same 21
+    `DECISIONS.md` findings, every one shifted **uniformly +8**, one per
+    status-board row the eight decisions added. Live findings unchanged at 2,
+    suppressed unchanged at 68; `--gear gears/bss/pricing/docs --auto-context`
+    still reports 0 live and 68 suppressed, so no pinned-debt member was paid
+    down and none was added.
+
+    The neighbourhood pins moved in the same commit, and this time the headline
+    arithmetic hid compensating moves: **seven** movers net to +3
+    `multi-region`, −1 `anchored:no-account`, −2 `weak-coverage`, judged 55 → 56,
+    total unchanged at 77. Every one was diffed per-id against the pre-wave tree
+    (`3b6fa985`) in a detached worktree and hand-checked against the wave's own
+    edits; the full per-id record is beside `PINNED_TRIAGE_PRICING`. In short:
+    `fr-bulk-price-import`, `fr-concurrent-edit`, `fr-mutation-idempotency` and
+    `fr-pricewindow-coverage` gained genuine second accounts the wave wrote (the
+    rewritten S1 §3.7 `pricing_price` / `pricing_idempotency_dedup` bullets and
+    the D-141/D-142/D-143 register entries, two of which name their requirement
+    id verbatim); `fr-published-rows-append-only` gained two accounts that are
+    **register-digest prose** rather than rule statements, so a judge should be
+    expected to answer `mentions`. The two losses were the ones worth the check,
+    and neither is a document defect: `fr-grandfathering-eligibility` fell two
+    steps to `anchored:no-account` because D-147 grew its *declaration* 53 → 93
+    terms while its two accounts matched **more** terms than before in absolute
+    count (36 → 45, 34 → 45) — the documented terse-prose recall limitation, with
+    D-147 verifiably propagated to `design/07-pricewindow-linkage.md` 236/300/343
+    and P1 silent; and `nfr-mutation-latency` fell one step purely on the fixed
+    window grid — its lost region is byte-identical, shifted +20 lines off a
+    `6k+1` boundary by D-144's insertion, and inserting 20 **blank** lines at that
+    same point in the pre-wave tree reproduces the mover exactly and no other.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

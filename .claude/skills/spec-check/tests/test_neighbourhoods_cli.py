@@ -205,12 +205,81 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 6,
-    "anchored:no-account": 16,
-    "suspicious:multi-region": 16,
+    "anchored:no-account": 15,
+    "suspicious:multi-region": 19,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 39,
+    "suspicious:weak-coverage": 37,
     "covered:strong": 0,
 }
+#: Moved again 2026-08-02, third time that day (was 16 / 16 / 39, judged 55, total
+#: unchanged at 77) after the **D-141…D-148 docs wave** — the second implementation-side
+#: wave, and the first raised by writing code *against* the documents (Group G3, the
+#: gear's draft-authoring plane) rather than by a lint or a review pass. **Seven movers**,
+#: not the three the headline arithmetic (+3 multi, −1 anchored, −2 weak) suggests: that
+#: is a net of movements in both directions. Every one was diffed per-id against the
+#: pre-wave tree (3b6fa985) in a detached worktree and hand-checked against the wave's own
+#: edits. Five are new accounts the wave wrote; two are losses, and both losses have a
+#: cause that is not a document defect:
+#: - `fr-bulk-price-import` weak → multi: D-141/D-148 rewrote the S1 §3.7 `pricing_price`
+#:   bullet, which now states the per-row-ETag conflict rule and the draft-plane index's
+#:   bulk consequence by name ("a batch carrying two rows on one key now fails the second
+#:   **on the index**"). That window, `design/01-foundation.md:391-402`, went 0.152 →
+#:   0.621 and is a second account. Its S12 account rose 0.803 → 0.864 as well (the D-141
+#:   `DELETE` precondition landing in `inst-bk-phase2`).
+#: - `fr-concurrent-edit` weak → multi: the declaration itself gained a whole D-141
+#:   paragraph (terms 26 → 75) and two accounts appeared — the D-141 register entry
+#:   (`DECISIONS.md:1189-1200`, 0.720) and the §3.7 bullet that names `fr-concurrent-edit`
+#:   verbatim ("the lost update `fr-concurrent-edit` closes for `PATCH`", 0.707). Its old
+#:   S12 account dropped out on the grown denominator; the id stays judged, on better
+#:   evidence than before.
+#: - `fr-mutation-idempotency` anchored → multi (two steps): the declaration gained two
+#:   whole paragraphs (D-142 the-TTL-is-a-bound, D-143 in-flight), terms 25 → 102, and the
+#:   wave's own D-142/D-143 register entries (`DECISIONS.md:1195-1206`, 0.686) plus the
+#:   rewritten `pricing_idempotency_dedup` bullet (0.627 — it too names the id verbatim)
+#:   are two real accounts. It had **zero** candidate accounts pre-wave, which is why it
+#:   sat in `anchored:no-account` with two bare citations.
+#: - `fr-pricewindow-coverage` weak → multi: declaration untouched (identical 27-term
+#:   set), its S7 account unchanged at exactly 0.778, one account added — D-148's
+#:   draft-plane index text states where `PriceWindow` non-overlap and coverage are
+#:   enforced and how the two partial `UNIQUE` predicates coexist (0.667). Pre-wave **no**
+#:   `design/01-foundation.md` window cleared 0.6 for this id; post-wave one does.
+#: - `fr-published-rows-append-only` anchored → multi (two steps): declaration untouched
+#:   (identical 16-term set), its three id anchors unchanged; `DESIGN.md:499-510` went
+#:   0.438 → 0.688 and `DECISIONS.md:19-30` 0.438 → 0.625. Topically genuine — D-145 is
+#:   exactly "flipped to a terminal `abandoned` state **instead of being deleted**" and
+#:   D-148 is the canonical scope key — but **both new accounts are register-digest
+#:   prose**, the DESIGN.md decision-register bullet and the DECISIONS.md status preamble,
+#:   not statements of the rule. Expect `mentions` from the judge; same shape as the
+#:   eighth capture's `nfr-data-residency`, which also moved on a register summary.
+#: - `fr-grandfathering-eligibility` multi → **anchored:no-account** (two steps DOWN):
+#:   D-147 appended three justification sentences to the FR's single-line paragraph,
+#:   taking it 53 → 93 discriminating terms. Both former accounts matched **more** terms
+#:   afterwards in absolute count (36 → 45 and 34 → 45) and still fell to 0.484, because a
+#:   score is the *recall* of the declaration's vocabulary — the documented terse-prose
+#:   limitation, same class as `fr-bundle-composition` (2026-07-31) and
+#:   `fr-plan-retirement` (2026-08-01). **Not a propagation gap**: D-147 is stated in
+#:   `design/07-pricewindow-linkage.md` at 236, 300 and 343, and again in DESIGN.md and
+#:   `design/01-foundation.md`; P1 reports nothing against it. The added vocabulary is
+#:   narrative the design has no reason to repeat (`homes`, `unreconciled`, `fault`,
+#:   `glossary`, `converse`). What is lost is coverage in the *report*, not in the
+#:   documents — worth `--judge-anchored` at the next N1 run.
+#: - `nfr-mutation-latency` multi → weak (DOWN): **the fixed window grid, not any text
+#:   about it** — the same cause as the ninth capture's `fr-level-aggregation`.
+#:   Declaration untouched (identical 7-term set); the lost region
+#:   `design/01-foundation.md:223-234` is **byte-identical** post-wave, merely shifted +20
+#:   lines by D-144's insertion at line 175, so it no longer begins on a `6k+1` window
+#:   boundary and its five matched terms split across two windows (`create/update/
+#:   validation` 3/7 and `complete/within` 2/7), both under 0.6. With only 7 terms one
+#:   term is decisive. Verified by controlled experiment rather than argued: inserting 20
+#:   **blank** lines at the wave's own insertion point in the pre-wave tree, and changing
+#:   nothing else, reproduces this mover exactly and no other.
+#: Net: anchored 16 → 15 (−idempotency, −append-only, +grandfathering), multi 16 → 19
+#: (+bulk-import, +concurrent-edit, +idempotency, +pricewindow-coverage, +append-only,
+#: −grandfathering, −mutation-latency), weak 39 → 37 (−bulk-import, −concurrent-edit,
+#: −pricewindow-coverage, +mutation-latency), judged 55 → 56, total unchanged at 77. No
+#: finding appeared or vanished: `live-text.txt` and `live-json.json` are byte-identical
+#: and the known-debt oracle differs only in `DECISIONS.md` line numbers, all 21 shifted
+#: uniformly **+8** — one per status-board row the eight decisions added.
 #: Moved again 2026-08-02, second time that day (was 17 / 38) after the D-140 docs
 #: wave — the REST route-shape reconciliation (`/bss-pricing/v1/{resource}`, actions
 #: as sub-resource segments). Exactly one mover, diffed per-id against the pre-wave
@@ -319,15 +388,19 @@ PINNED_TRIAGE_LEDGER = {
     "covered:strong": 0,
 }
 
-#: Judge calls the pinned histograms imply: 55 + 17. Pinned separately because it is
+#: Judge calls the pinned histograms imply: 56 + 17. Pinned separately because it is
 #: the number the ladder exists to control, and a threshold change that quietly
 #: doubles it must read as a diff. (Pricing 52 until 2026-07-31 — the day's three
 #: review fix rounds moved the histogram, note above; +3 is document movement, not
 #: ladder drift. 55 → 54 on the d-wave re-pin, then back to 55 on the 2026-08-01
 #: fix-wave re-pin when C-6 repaired the terse-prose account that had cost
 #: `fr-price-history-export` its judged slot — both movements are documents, and
-#: both are itemised per-id in the notes above.)
-PINNED_JUDGE_CALLS = {"pricing": 55, "ledger": 17}
+#: both are itemised per-id in the notes above. 55 → 56 on the 2026-08-02
+#: D-141…D-148 re-pin: four ids entered the judged set — `fr-mutation-idempotency`
+#: and `fr-published-rows-append-only` promoted out of `anchored:no-account`, and
+#: `fr-grandfathering-eligibility` demoted into it — a +1 net over seven movers, all
+#: of them documents and all itemised per-id above.)
+PINNED_JUDGE_CALLS = {"pricing": 56, "ledger": 17}
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):
