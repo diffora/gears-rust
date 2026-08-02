@@ -12,15 +12,27 @@
 //! `uq_pricing_plan_open_draft` keeps a plan from having two concurrently
 //! editable shapes.
 //!
+//! **A `revision` number is never freed** (D-145). A discarded draft revision is
+//! flipped to the terminal `abandoned` state rather than deleted, so no DELETE
+//! is permitted on this table at all — not even of a draft. Deleting one
+//! returned `max(revision)` to its previous value, the next opened draft minted
+//! the **same** number, and `(plan_id, revision)` — the name the grant table is
+//! keyed by, every revision-scoped child copies under, and the audit trail
+//! records — then denoted two different rows over a plan's lifetime, under which
+//! a stale entity tag passes its precondition against the wrong one.
+//! `abandoned` falls outside **both** partial predicates above, which is what
+//! lets a tombstone accumulate without disturbing either uniqueness rule: a
+//! replacement draft opens immediately, and "the current revision" is untouched.
+//!
 //! The physical guard is append-only enforcement with a **column whitelist**: a
-//! published or retired revision's content is frozen, its only sanctioned
-//! in-place mutation is the state-machine `lifecycle_state` flip
+//! published, retired or abandoned revision's content is frozen, and the only
+//! sanctioned in-place mutations are the state-machine `lifecycle_state` flips
 //! (`published -> superseded` when the successor revision commits,
-//! `published -> retired` at retire), and DELETE of a non-draft revision is
-//! always rejected. Draft revisions stay freely mutable and deletable. Without
-//! it an ad-hoc UPDATE would silently change a frozen `CatalogVersion`'s
-//! content at the next warm re-drive, since the projector reads truth rows
-//! (§4.4).
+//! `published -> retired` at retire, and `draft -> abandoned` at discard, which
+//! passes through the freely-mutable draft plane). Draft revisions stay freely
+//! mutable; nothing on this table is deletable. Without the guard an ad-hoc
+//! UPDATE would silently change a frozen `CatalogVersion`'s content at the next
+//! warm re-drive, since the projector reads truth rows (§4.4).
 //!
 //! **Backend differences.** Postgres raises through a PL/pgSQL
 //! `RAISE EXCEPTION` carrying the offending value; `SQLite` has no PL/pgSQL and
@@ -59,16 +71,20 @@ const PG_UP_STATEMENTS: &[&str] = &[
         row_version     bigint      NOT NULL DEFAULT 0,
         PRIMARY KEY (plan_id, revision),
         CONSTRAINT chk_pricing_plan_lifecycle_state CHECK (
-            lifecycle_state IN ('draft','published','superseded','retired')),
+            lifecycle_state IN ('draft','abandoned','published','superseded','retired')),
         CONSTRAINT chk_pricing_plan_revision CHECK (revision >= 0),
         CONSTRAINT chk_pricing_plan_availability CHECK (
             available_from IS NULL OR available_to IS NULL OR available_to > available_from)
     )",
     // At most one CURRENT revision per plan (D-128 widened the predicate).
+    // `abandoned` is outside it: a tombstone never published, so it is not the
+    // plan's current revision and a plan may hold any number of them.
     "CREATE UNIQUE INDEX uq_pricing_plan_current
         ON bss.pricing_plan (plan_id)
         WHERE lifecycle_state IN ('published','retired')",
-    // At most one open draft revision per plan.
+    // At most one open draft revision per plan. `abandoned` is outside this one
+    // too, which is what lets the replacement draft open in the same
+    // transaction that discards its predecessor.
     "CREATE UNIQUE INDEX uq_pricing_plan_open_draft
         ON bss.pricing_plan (plan_id)
         WHERE lifecycle_state = 'draft'",
@@ -78,13 +94,16 @@ const PG_UP_STATEMENTS: &[&str] = &[
     "CREATE OR REPLACE FUNCTION bss.pricing_plan_append_only() RETURNS trigger AS $$
         BEGIN
           IF TG_OP = 'DELETE' THEN
-            IF OLD.lifecycle_state <> 'draft' THEN
-              RAISE EXCEPTION 'pricing_plan: DELETE of a % revision is not permitted',
-                OLD.lifecycle_state;
-            END IF;
-            RETURN OLD;
+            RAISE EXCEPTION
+              'pricing_plan: DELETE of revision % of plan % is not permitted; a discarded draft revision is abandoned',
+              OLD.revision, OLD.plan_id;
           END IF;
 
+          -- The draft plane is where content moves, so it is unguarded - and
+          -- the discard flip `draft -> abandoned` rides through here. What the
+          -- branch below then holds is the tombstone: once abandoned, the row
+          -- is frozen in content and no flip leaves it, so the number it
+          -- consumed can never be attached to a different shape.
           IF OLD.lifecycle_state = 'draft' THEN
             RETURN NEW;
           END IF;
@@ -153,7 +172,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         row_version     bigint  NOT NULL DEFAULT 0,
         PRIMARY KEY (plan_id, revision),
         CONSTRAINT chk_pricing_plan_lifecycle_state CHECK (
-            lifecycle_state IN ('draft','published','superseded','retired')),
+            lifecycle_state IN ('draft','abandoned','published','superseded','retired')),
         CONSTRAINT chk_pricing_plan_revision CHECK (revision >= 0),
         CONSTRAINT chk_pricing_plan_availability CHECK (
             available_from IS NULL OR available_to IS NULL OR available_to > available_from)
@@ -194,9 +213,10 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         END",
     "CREATE TRIGGER trg_pricing_plan_no_delete
         BEFORE DELETE ON pricing_plan
-        FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft'
+        FOR EACH ROW
         BEGIN
-          SELECT RAISE(ABORT, 'pricing_plan: DELETE of a non-draft revision is not permitted');
+          SELECT RAISE(ABORT,
+            'pricing_plan: DELETE of a revision is not permitted; a discarded draft revision is abandoned');
         END",
 ];
 

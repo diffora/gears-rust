@@ -11,8 +11,8 @@ fn refused(from: LifecycleState, to: LifecycleState) {
 }
 
 #[test]
-fn the_three_legal_edges_are_the_only_legal_edges() {
-    // Enumerating the whole 4x4 product is the point: a new variant, or a
+fn the_four_legal_edges_are_the_only_legal_edges() {
+    // Enumerating the whole 5x5 product is the point: a new variant, or a
     // widened `matches!` arm, changes this count and has to be argued for.
     let legal: Vec<(LifecycleState, LifecycleState)> = LifecycleState::ALL
         .iter()
@@ -27,6 +27,7 @@ fn the_three_legal_edges_are_the_only_legal_edges() {
     assert_eq!(
         legal,
         vec![
+            (LifecycleState::Draft, LifecycleState::Abandoned),
             (LifecycleState::Draft, LifecycleState::Published),
             (LifecycleState::Published, LifecycleState::Superseded),
             (LifecycleState::Published, LifecycleState::Retired),
@@ -123,14 +124,31 @@ fn no_state_transitions_to_itself() {
 }
 
 #[test]
-fn a_draft_can_only_go_to_published() {
+fn a_draft_publishes_or_is_abandoned_and_does_nothing_else() {
+    assert!(
+        LifecycleState::Draft
+            .transition(LifecycleState::Abandoned)
+            .is_ok()
+    );
     refused(LifecycleState::Draft, LifecycleState::Superseded);
     refused(LifecycleState::Draft, LifecycleState::Retired);
 }
 
 #[test]
+fn abandonment_is_terminal() {
+    // The tombstone's whole job is to hold the `revision` number the discarded
+    // draft consumed. An edge out of it would put a live row back at a number
+    // that has already been referenced as a durable name, which is the state
+    // D-145 removed by refusing to delete the row in the first place.
+    for state in LifecycleState::ALL {
+        refused(LifecycleState::Abandoned, *state);
+    }
+}
+
+#[test]
 fn only_a_draft_has_mutable_content() {
     assert!(LifecycleState::Draft.is_content_mutable());
+    assert!(!LifecycleState::Abandoned.is_content_mutable());
     assert!(!LifecycleState::Published.is_content_mutable());
     assert!(!LifecycleState::Superseded.is_content_mutable());
     assert!(!LifecycleState::Retired.is_content_mutable());
@@ -145,6 +163,11 @@ fn a_retired_revision_is_still_the_current_one() {
     assert!(LifecycleState::Published.is_current_revision());
     assert!(!LifecycleState::Draft.is_current_revision());
     assert!(!LifecycleState::Superseded.is_current_revision());
+    // A tombstone is not a revision anyone may resolve: it never published, so
+    // it was never projected, and the partial index that decides "current"
+    // restates this predicate — counting it in would collide the plan's real
+    // current revision with every draft it ever discarded.
+    assert!(!LifecycleState::Abandoned.is_current_revision());
 }
 
 #[test]

@@ -292,11 +292,11 @@ async fn a_published_revision_refuses_the_edit_by_name_not_by_trigger() {
         }
     );
 
-    // Deleting it is refused the same way, and again before the trigger.
+    // Abandoning it is refused the same way, and again before the trigger.
     let err = repo
-        .delete_draft(&scope, tenant, plan_id, 0, RowVersion::new(0))
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(0))
         .await
-        .expect_err("only a never-published draft is deletable");
+        .expect_err("only an open draft revision is abandonable");
     assert!(matches!(err, RepoError::NotDraft { .. }));
 }
 
@@ -346,12 +346,12 @@ async fn frozen_beats_stale_when_a_write_is_both() {
         "a write that is both frozen and stale must be refused as frozen"
     );
 
-    // `delete_draft` shares the arms, so it inherits the precedence and has to
+    // `abandon_draft` shares the arms, so it inherits the precedence and has to
     // be held to it too.
     let err = repo
-        .delete_draft(&scope, tenant, plan_id, 0, RowVersion::new(9))
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(9))
         .await
-        .expect_err("a published revision is undeletable whatever tag is submitted");
+        .expect_err("a published revision is unabandonable whatever tag is submitted");
     assert_eq!(
         err,
         RepoError::NotDraft {
@@ -359,7 +359,7 @@ async fn frozen_beats_stale_when_a_write_is_both() {
             id: format!("{plan_id}/0"),
             state: "published".to_owned(),
         },
-        "a delete that is both frozen and stale must be refused as frozen"
+        "an abandon that is both frozen and stale must be refused as frozen"
     );
 }
 
@@ -449,7 +449,7 @@ async fn an_absent_revision_is_not_found_rather_than_stale() {
 }
 
 #[tokio::test]
-async fn a_draft_is_deletable_only_under_its_own_version() {
+async fn a_draft_is_abandoned_only_under_its_own_version_and_the_row_stays() {
     let (repo, _provider) = harness().await;
     let tenant = Uuid::from_u128(0x7e_11);
     let scope = AccessScope::for_tenant(tenant);
@@ -462,9 +462,9 @@ async fn a_draft_is_deletable_only_under_its_own_version() {
     // Abandoning a draft is a write like any other: a caller working from a
     // read it did not refresh would otherwise discard an edit it never saw.
     let err = repo
-        .delete_draft(&scope, tenant, plan_id, 0, RowVersion::new(4))
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(4))
         .await
-        .expect_err("a stale tag must not delete");
+        .expect_err("a stale tag must not discard a draft");
     assert_eq!(
         err,
         RepoError::StaleRowVersion {
@@ -475,14 +475,143 @@ async fn a_draft_is_deletable_only_under_its_own_version() {
         }
     );
 
-    repo.delete_draft(&scope, tenant, plan_id, 0, RowVersion::new(0))
+    let tombstone = repo
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(0))
         .await
-        .expect("the current tag deletes");
+        .expect("the current tag discards");
+    assert_eq!(tombstone.lifecycle_state, LifecycleState::Abandoned);
     assert_eq!(
-        repo.find_revision(&scope, tenant, plan_id, 0)
+        tombstone.row_version,
+        RowVersion::new(1),
+        "the representation changed, so the tag moved with it"
+    );
+
+    // The row **survives**, which is the whole mechanism: it is what holds the
+    // revision number so nothing can mint it a second time. A delete here
+    // returned the number to the pool and let a stale tag pass its precondition
+    // against a different row wearing the same name.
+    let read = repo
+        .find_revision(&scope, tenant, plan_id, 0)
+        .await
+        .expect("read")
+        .expect("the tombstone is still there");
+    assert_eq!(read, tombstone);
+    assert_eq!(
+        read.plan_tier.as_deref(),
+        Some("gold"),
+        "frozen as authored"
+    );
+
+    // And it occupies neither of the two slots a plan has, so it disturbs
+    // nothing: not the draft slot, not the current revision.
+    assert_eq!(
+        repo.find_open_draft(&scope, tenant, plan_id)
             .await
-            .expect("read"),
+            .expect("read open draft"),
         None
+    );
+    assert_eq!(
+        repo.find_current(&scope, tenant, plan_id)
+            .await
+            .expect("read current"),
+        None
+    );
+
+    // A second abandon — a retry, or a second operator — is refused as frozen,
+    // naming the state. Under a delete this was a not-found, which reads as "no
+    // such revision" rather than "that revision is already discarded".
+    let err = repo
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(1))
+        .await
+        .expect_err("a tombstone is not an open draft");
+    assert_eq!(
+        err,
+        RepoError::NotDraft {
+            subject: "plan revision".to_owned(),
+            id: format!("{plan_id}/0"),
+            state: "abandoned".to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_abandoned_revisions_number_is_never_minted_again() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+
+    repo.create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create");
+    flip_state(&provider, &scope, plan_id, 0, LifecycleState::Published).await;
+
+    // Open a successor and discard it. The plan's **current** revision is still
+    // 0 — nothing about abandoning revision 1 moved it — so a mint derived from
+    // the current revision hands out 1 again, which is the defect D-145 exists
+    // to prevent: `plan/1` would name the tombstone *and* the live draft, and a
+    // caller holding the tombstone's tag would `PATCH` the new row of that name
+    // with a precondition that passes at its initial version.
+    let first = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(12))
+        .await
+        .expect("the first successor opens");
+    assert_eq!(first.revision, 1);
+    repo.abandon_draft(&scope, tenant, plan_id, 1, first.row_version)
+        .await
+        .expect("discard it");
+
+    let second = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(13))
+        .await
+        .expect("the replacement opens straight away");
+    assert_ne!(
+        second.revision, first.revision,
+        "the discarded revision's number must never be minted again"
+    );
+    assert_eq!(second.revision, 2, "minting is max(revision) + 1");
+
+    // Twice, because one tombstone is also what "one past the current revision
+    // plus one" would produce by accident. Two prove the maximum is taken over
+    // the whole chain and not over some fixed offset from the current row.
+    repo.abandon_draft(&scope, tenant, plan_id, 2, second.row_version)
+        .await
+        .expect("discard the replacement too");
+    let third = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(14))
+        .await
+        .expect("and again");
+    assert_eq!(third.revision, 3);
+
+    // The gap is visible and deliberate: rev 0 published, 1 and 2 abandoned,
+    // 3 open. Every number ever minted still resolves to the row that minted it.
+    for (revision, state) in [
+        (0, LifecycleState::Published),
+        (1, LifecycleState::Abandoned),
+        (2, LifecycleState::Abandoned),
+        (3, LifecycleState::Draft),
+    ] {
+        let row = repo
+            .find_revision(&scope, tenant, plan_id, revision)
+            .await
+            .expect("read")
+            .unwrap_or_else(|| panic!("revision {revision} must still be there"));
+        assert_eq!(row.lifecycle_state, state, "revision {revision}");
+    }
+    assert_eq!(
+        repo.find_current(&scope, tenant, plan_id)
+            .await
+            .expect("read current")
+            .map(|row| row.revision),
+        Some(0),
+        "two tombstones later, the current revision is where it was"
+    );
+    assert_eq!(
+        repo.find_open_draft(&scope, tenant, plan_id)
+            .await
+            .expect("read open draft")
+            .map(|row| row.revision),
+        Some(3)
     );
 }
 
@@ -855,9 +984,9 @@ async fn another_tenants_plan_is_invisible_and_unwritable() {
     assert!(matches!(err, RepoError::NotFound { .. }));
 
     let err = repo
-        .delete_draft(&scope, theirs, plan_id, 0, RowVersion::new(0))
+        .abandon_draft(&scope, theirs, plan_id, 0, RowVersion::new(0))
         .await
-        .expect_err("a foreign draft is not deletable");
+        .expect_err("a foreign draft is not discardable");
     assert!(matches!(err, RepoError::NotFound { .. }));
 
     let err = repo
@@ -915,17 +1044,19 @@ async fn a_plan_may_not_be_created_into_another_tenant() {
 }
 
 /// D-83's copy-on-new-revision requires the child shape tables to travel with
-/// the revision. They do not exist yet — they are Slice-2 storage and land in
-/// **G4** — so `PlanRepo::open_revision` copies the plan's own columns and
-/// nothing else.
+/// the revision, and D-145 requires an abandoned revision's copies to be dropped
+/// with it. They do not exist yet — they are Slice-2 storage and land in **G4** —
+/// so `PlanRepo::open_revision` copies the plan's own columns and nothing else,
+/// and `PlanRepo::abandon_draft` flips the revision row and nothing else.
 ///
-/// This is the anchor for that gap, not an endorsement of it. It interrogates
+/// This is the anchor for both gaps, not an endorsement of them. It interrogates
 /// the **schema** rather than migration names on purpose: a G4 migration named
 /// for its slice rather than its tables (`m..._create_slice2_plan_shape`) would
 /// create all three and leave a name-matching anchor green, which is exactly the
 /// silence the gap must not be allowed. The moment any of the three tables
 /// exists this fails, and the fix is to make `open_revision` copy it forward
-/// with stable `phase_id`s — never to relax the assertion.
+/// with stable `phase_id`s and `abandon_draft` drop it — never to relax the
+/// assertion.
 #[tokio::test]
 async fn no_child_shape_table_exists_yet_for_a_new_revision_to_copy_d83() {
     const CHILD_TABLES: [&str; 3] = [
@@ -968,7 +1099,8 @@ async fn no_child_shape_table_exists_yet_for_a_new_revision_to_copy_d83() {
             found, 0,
             "{table} now exists, so D-83's copy-on-new-revision is no longer \
              discharged by copying columns: PlanRepo::open_revision must copy \
-             it forward with stable phase ids"
+             it forward with stable phase ids, and PlanRepo::abandon_draft must \
+             drop the discarded revision's copies of it"
         );
     }
 }

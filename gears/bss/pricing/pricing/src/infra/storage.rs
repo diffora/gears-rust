@@ -216,8 +216,8 @@ pub enum RepoError {
     /// hold.
     ///
     /// The domain counts quantities in `u64` because a quantity only ever goes
-    /// up, while the columns are `bigint` and `integer`, so the top of the
-    /// domain range has no storage at all. Deliberately **not**
+    /// up, while every column that stores one is a signed `bigint`, so the top
+    /// half of the domain range has no storage at all. Deliberately **not**
     /// [`RepoError::CorruptRow`]: the same mismatch read *out* of a column
     /// means the table was written around, while a value arriving *on a
     /// request* is a caller mistake and the request can be reshaped — which is

@@ -3,10 +3,11 @@
 //!
 //! At most one revision is the plan's **current** one (`published` or
 //! `retired`, D-128) and at most one is an open `draft`; both are partial
-//! `UNIQUE` indexes on the table. A published revision's content is frozen —
-//! the only permitted UPDATE is the sanctioned `lifecycle_state` flip — so
-//! `row_version` (the `ETag`) is frozen with it: content that cannot change
-//! needs no new entity tag.
+//! `UNIQUE` indexes on the table, and a discarded draft's `abandoned` tombstone
+//! is outside both, so a plan may hold any number of them (D-145). A published
+//! revision's content is frozen — the only permitted UPDATE is the sanctioned
+//! `lifecycle_state` flip — so `row_version` (the `ETag`) is frozen with it:
+//! content that cannot change needs no new entity tag.
 
 use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
@@ -25,8 +26,8 @@ pub struct Model {
     pub sku_id: Option<Uuid>,
     pub plan_tier: Option<String>,
     pub billing_cycle: Option<String>,
-    /// `draft` | `published` | `superseded` | `retired`. `CHECK`-constrained to
-    /// those four; the legal edges between them are
+    /// `draft` | `abandoned` | `published` | `superseded` | `retired`.
+    /// `CHECK`-constrained to those five; the legal edges between them are
     /// `domain::lifecycle::LifecycleState`.
     pub lifecycle_state: String,
     pub available_from: Option<DateTime<Utc>>,

@@ -10,9 +10,20 @@
 //!
 //! ```text
 //! draft      -> published
+//! draft      -> abandoned
 //! published  -> superseded
 //! published  -> retired
 //! ```
+//!
+//! `draft -> abandoned` is how a revision is **discarded**, and it exists
+//! because the obvious alternative does not survive the key (D-145). Deleting
+//! the row frees its `revision`, `(plan_id, revision)` is a durable name — the
+//! grant table is keyed by it, every revision-scoped child copies under it, the
+//! audit trail records it — and the next draft mints the number again. A client
+//! holding the discarded `plan/2`'s row version then submits against the *new*
+//! `plan/2` and its precondition **passes**, most reachably at the initial
+//! version every freshly minted revision carries: a lost update arriving through
+//! the key instead of the version.
 //!
 //! `published -> superseded` has exactly **two** sanctioned producers: the
 //! supersession unit, and the grandfathering cutover commit (D-100) whose
@@ -37,6 +48,14 @@ pub enum LifecycleState {
     /// Authoring state. The only state whose content may still change.
     #[default]
     Draft,
+    /// A discarded draft revision, kept as a tombstone. **Terminal**, and a
+    /// **plan-revision** state only: `pricing_price` draft rows stay deletable
+    /// (§4.3, `inst-ps-nodelete`), so its `CHECK` does not admit this token.
+    ///
+    /// The tombstone is the whole mechanism: it holds the `revision` number the
+    /// discarded draft consumed, so minting never hands that number out twice
+    /// (D-145).
+    Abandoned,
     /// Live and consumer-visible: projected into the read model, pinnable,
     /// covered by the append-only discipline.
     Published,
@@ -59,6 +78,7 @@ impl LifecycleState {
     /// Every state, stable order.
     pub const ALL: &'static [Self] = &[
         Self::Draft,
+        Self::Abandoned,
         Self::Published,
         Self::Superseded,
         Self::Retired,
@@ -69,6 +89,7 @@ impl LifecycleState {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Draft => "draft",
+            Self::Abandoned => "abandoned",
             Self::Published => "published",
             Self::Superseded => "superseded",
             Self::Retired => "retired",
@@ -81,6 +102,13 @@ impl LifecycleState {
     /// whitelisted column moves the trigger allows — the state flips this
     /// machine sanctions, and monotonic tightening of `grandfather_until` —
     /// neither of which is content.
+    ///
+    /// `abandoned` is **not** mutable, and it is the answer that matters most
+    /// here: a tombstone that could be edited back into a shape, or re-abandoned
+    /// under a tag a caller still holds, would be a second row living at a number
+    /// the store promises names one thing forever. What a caller who reaches for
+    /// one gets is the frozen refusal, naming the state — the same answer a
+    /// published revision gives, for the same reason.
     #[must_use]
     pub const fn is_content_mutable(self) -> bool {
         matches!(self, Self::Draft)
@@ -95,6 +123,13 @@ impl LifecycleState {
     /// empty plan subject and break resolution for exactly the in-flight
     /// subscribers a retired plan must keep pricing. `superseded` is excluded
     /// because a successor has taken the key.
+    ///
+    /// `abandoned` is excluded too, and that exclusion is what lets the state be
+    /// added at all: a tombstone never published, so nothing was ever projected
+    /// from it and nothing may resolve through it. It is also the predicate the
+    /// `uq_pricing_plan_current` partial index restates, so counting a tombstone
+    /// as current would collide the plan's real current revision with every
+    /// draft it ever discarded.
     #[must_use]
     pub const fn is_current_revision(self) -> bool {
         matches!(self, Self::Published | Self::Retired)
@@ -105,7 +140,8 @@ impl LifecycleState {
     pub const fn can_transition(self, next: Self) -> bool {
         matches!(
             (self, next),
-            (Self::Draft, Self::Published) | (Self::Published, Self::Superseded | Self::Retired)
+            (Self::Draft, Self::Published | Self::Abandoned)
+                | (Self::Published, Self::Superseded | Self::Retired)
         )
     }
 
@@ -123,8 +159,9 @@ impl LifecycleState {
     ///
     /// [`DomainError::PlanRetiredNoSuccessor`] for `retired -> published`;
     /// [`DomainError::LifecycleForbidden`] for every other edge outside the
-    /// three legal ones — including every self-edge, the remaining moves out of
-    /// a terminal state, and every attempt to walk the machine backwards.
+    /// four legal ones — including every self-edge, every move out of a terminal
+    /// state (`abandoned` and `retired` both), and every attempt to walk the
+    /// machine backwards.
     pub fn transition(self, next: Self) -> Result<(), DomainError> {
         if self.can_transition(next) {
             return Ok(());

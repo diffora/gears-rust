@@ -16,6 +16,11 @@
 //! [`PlanShapePatch`] is the mutable surface of an *open draft* and not of a
 //! plan — there is no edit of a published revision for it to describe.
 //!
+//! A draft that is not wanted is **abandoned**, never deleted: the row survives
+//! as a terminal tombstone so the `revision` number it consumed stays consumed
+//! (D-145). What that costs is a gap in the numbering; what it buys is that
+//! `(plan_id, revision)` never names two different rows.
+//!
 //! The child shape tables — phases, add-on rules, descriptor set — version with
 //! the revision and are copied on a new one (D-83); they are Slice-2 storage and
 //! are not modelled here yet.
@@ -40,11 +45,19 @@ pub struct PlanRevision {
     /// when a new revision opens (§4.3), so a reprice never has to chase a
     /// moved parent.
     pub plan_id: PlanId,
-    /// The revision number, incrementing monotonically from `0` within the
-    /// plan.
+    /// The revision number, minted `max(revision) + 1` from `0` within the plan.
     ///
-    /// Together with [`PlanRevision::plan_id`] it is this row's identity. It is
-    /// **not** how "the current revision" is decided — that is the partial
+    /// Together with [`PlanRevision::plan_id`] it is this row's identity, and it
+    /// is an **identity rather than a counter** (D-145): a number minted for a
+    /// plan is never minted again, so the sequence may have **gaps** where a
+    /// draft was discarded — rev 1 published, rev 2 abandoned, rev 3 published.
+    /// A reader that treats the numbers as consecutive is reading a display
+    /// convention that was never promised; what is promised is that
+    /// `(plan_id, revision)` denotes one row for the life of the plan, which is
+    /// what makes it safe as the durable name the grant table, the child copies
+    /// and the audit trail all dereference.
+    ///
+    /// It is **not** how "the current revision" is decided — that is the partial
     /// `UNIQUE` index over `published`/`retired` (D-128), storage-defined
     /// precisely so it is never a max-scan convention that two readers could
     /// implement differently.
@@ -84,9 +97,11 @@ pub struct PlanRevision {
     pub created_at_utc: DateTime<Utc>,
     /// The optimistic-concurrency version this revision is at.
     ///
-    /// It moves only while the revision is a draft: a published revision's
-    /// content is frozen, and a tag that moved under frozen content would tell
-    /// a caller its cached copy is stale when it is not.
+    /// It moves only on the draft plane: an edit advances it, and so does the
+    /// abandon that ends the draft's life — the last tag the row will ever
+    /// carry. A published revision's content is frozen, and a tag that moved
+    /// under frozen content would tell a caller its cached copy is stale when it
+    /// is not.
     pub row_version: RowVersion,
 }
 
@@ -106,7 +121,8 @@ pub struct PlanRevision {
 /// produce it. So this is a **known limitation, stated rather than designed
 /// around**: until G7, a `sku_id`, `plan_tier`, `billing_cycle`,
 /// `available_from` or `available_to` that has been set cannot be cleared
-/// through a patch — only replaced, or abandoned by deleting the draft.
+/// through a patch — only replaced, or discarded by abandoning the draft
+/// revision, which keeps the revision number it consumed (D-145).
 #[domain_model]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanShapePatch {

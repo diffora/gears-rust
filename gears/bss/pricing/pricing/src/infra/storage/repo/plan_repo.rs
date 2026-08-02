@@ -8,8 +8,8 @@
 //! but in a caller's discipline.
 //!
 //! **The compare-and-swap is one statement, not a read then a write.**
-//! [`update_draft`] and [`delete_draft`] match on the row version the caller
-//! read *inside* the UPDATE/DELETE that acts on it, and the bump is
+//! [`update_draft`] and [`abandon_draft`] match on the row version the caller
+//! read *inside* the UPDATE that acts on it, and the bump is
 //! `row_version = row_version + 1` in that same statement. Computing the
 //! successor in Rust would let two writers holding the same current version
 //! compute the same next one and both write it — the silent overwrite
@@ -17,13 +17,21 @@
 //! meant to prevent it. `domain::concurrency::RowVersion` has no increment for
 //! exactly this reason.
 //!
+//! **Nothing here deletes a revision row.** A discarded draft is flipped to the
+//! terminal `abandoned` state, so the `revision` number it consumed stays
+//! consumed and `(plan_id, revision)` names one row for the life of the plan
+//! (D-145). [`open_revision`] mints from `max(revision) + 1` over the plan's own
+//! rows for the same reason — see its own note on what deriving from the
+//! current revision would hand out twice.
+//!
 //! **A failed swap gets three answers, not one.** Zero rows affected is
 //! ambiguous by construction — the predicate is a conjunction — so the row is
 //! read back once and the refusal names which conjunct failed:
 //! [`RepoError::NotFound`] (absent, or another tenant's),
-//! [`RepoError::NotDraft`] (frozen), [`RepoError::StaleRowVersion`] (a read the
-//! caller never refreshed). One undifferentiated conflict would tell an
-//! operator to retry in the one case where retrying can never work.
+//! [`RepoError::NotDraft`] (frozen, which now includes an already-abandoned
+//! revision), [`RepoError::StaleRowVersion`] (a read the caller never
+//! refreshed). One undifferentiated conflict would tell an operator to retry in
+//! the one case where retrying can never work.
 //!
 //! **The draft-only guard is enforced here as well as by the trigger.** §4.3 is
 //! explicit that immutability is enforced twice, and the second enforcement is
@@ -33,15 +41,14 @@
 //! revision" into something a surface can render.
 //!
 //! [`update_draft`]: PlanRepo::update_draft
-//! [`delete_draft`]: PlanRepo::delete_draft
+//! [`abandon_draft`]: PlanRepo::abandon_draft
+//! [`open_revision`]: PlanRepo::open_revision
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
-use toolkit_db::secure::{
-    AccessScope, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
-};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
@@ -115,6 +122,17 @@ impl PlanRepo {
     }
 
     /// Create a plan by inserting its revision `0` in `draft`.
+    ///
+    /// Revision `0` is written literally rather than minted: creating a plan is
+    /// the one call that knows the chain is empty, and the `PRIMARY KEY` is what
+    /// tells it it was wrong. Minting `max(revision) + 1` here instead would
+    /// turn a retried `POST /plans` on an existing plan id into a silent second
+    /// revision of somebody else's plan — the collision below is the answer that
+    /// call needs. The consequence, stated rather than designed around: a plan
+    /// whose only revision is an abandoned `0` cannot be re-created under the
+    /// same id, because the number stays consumed (D-145) and there is no
+    /// current revision to open a successor from. Discarding a never-published
+    /// plan discards the id with it.
     ///
     /// # Errors
     /// [`RepoError::TimestampPrecisionExceeded`] when an authored availability
@@ -345,29 +363,51 @@ impl PlanRepo {
             .ok_or_else(|| not_found(plan_id, revision))
     }
 
-    /// Delete an open draft revision, under the caller's row version.
+    /// Discard an open draft revision, under the caller's row version: the row
+    /// flips to the terminal `abandoned` state and keeps its number.
     ///
-    /// Only a never-published `draft` is deletable (§4.3), and the same
-    /// conjunction that guards [`PlanRepo::update_draft`] guards this. The
-    /// table's DELETE trigger refuses a non-draft row too, and this method
-    /// deliberately does not lean on it: the trigger's answer is a database
-    /// error with no state in it, so a caller that abandons the wrong revision
-    /// would be told the store is broken rather than that the revision is
-    /// published.
+    /// **It is not a delete, and the difference is the whole operation** (D-145).
+    /// Removing the row returned `max(revision)` to what it was before, so the
+    /// next opened draft minted the same number — and `(plan_id, revision)` is a
+    /// durable name the rest of the set dereferences (the grant table is keyed
+    /// by it, every revision-scoped child copies under it, the audit trail
+    /// records it). A caller holding the discarded `plan/2`'s row version would
+    /// then submit against the **new** `plan/2` and its precondition would pass,
+    /// most reachably at the initial version every freshly minted revision
+    /// carries: the lost update `fr-concurrent-edit` exists to refuse, arriving
+    /// through the key instead of the version.
+    ///
+    /// The shape is otherwise [`PlanRepo::update_draft`]'s exactly — one
+    /// statement, the submitted version matched inside it, `lifecycle_state =
+    /// 'draft'` in the same conjunction — and the tag advances with the flip,
+    /// because the representation a caller cached really did change. It is the
+    /// row's **last** tag: nothing can move a terminal row again, so the value
+    /// handed back here, unlike `update_draft`'s, cannot already be stale.
+    ///
+    /// # The child-copy gap (D-83) — open, and owned by G4
+    ///
+    /// D-145 drops the discarded revision's child copies in the same
+    /// transaction. Those tables do not exist yet (see
+    /// [`PlanRepo::open_revision`], which owes them the mirror-image copy), so
+    /// this flips the revision row and nothing else. The anchor in
+    /// `tests/sqlite_plan_repo.rs` fails the moment the first child table
+    /// appears.
     ///
     /// # Errors
     /// [`RepoError::NotFound`] when no such revision is visible to `scope`;
-    /// [`RepoError::NotDraft`] when it is visible but frozen;
+    /// [`RepoError::NotDraft`] when it is visible but frozen — which is also the
+    /// answer to abandoning an already-abandoned revision, naming the state;
     /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
-    /// one is not current; [`RepoError::Db`] on a scope or storage failure.
-    pub async fn delete_draft(
+    /// one is not current; [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when the tombstone reads back unusable.
+    pub async fn abandon_draft(
         &self,
         scope: &AccessScope,
         tenant_id: Uuid,
         plan_id: PlanId,
         revision: u64,
         expected: RowVersion,
-    ) -> Result<(), RepoError> {
+    ) -> Result<PlanRevision, RepoError> {
         let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
             return Err(self
                 .refuse(scope, tenant_id, plan_id, revision, expected)
@@ -377,29 +417,49 @@ impl PlanRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
-        let result = plan::Entity::delete_many()
+        let result = plan::Entity::update_many()
             .secure()
             .scope_with(scope)
+            .col_expr(
+                plan::Column::LifecycleState,
+                Expr::value(LifecycleState::Abandoned.as_str()),
+            )
+            .col_expr(
+                plan::Column::RowVersion,
+                Expr::col(plan::Column::RowVersion).add(1_i64),
+            )
             .filter(guard)
             .exec(&conn)
             .await
-            .map_err(|e| RepoError::Db(format!("delete plan draft: {e}")))?;
+            .map_err(|e| RepoError::Db(format!("abandon plan draft: {e}")))?;
 
         if result.rows_affected == 0 {
             return Err(self
                 .refuse(scope, tenant_id, plan_id, revision, expected)
                 .await);
         }
-        Ok(())
+        self.find_revision(scope, tenant_id, plan_id, revision)
+            .await?
+            .ok_or_else(|| not_found(plan_id, revision))
     }
 
-    /// Open the next revision of a published plan: `revision + 1` in `draft`,
-    /// `row_version = 0`, the current revision's shape copied forward.
+    /// Open the next revision of a published plan: `max(revision) + 1` in
+    /// `draft`, `row_version = 0`, the current revision's shape copied forward.
     ///
     /// This is only the **opening** half of D-90. The new revision publishes
     /// through the standard §4.2 path and flips its predecessor `superseded` in
     /// the same commit; that flip belongs to the publish unit (G5) and nothing
     /// here anticipates it.
+    ///
+    /// # The number comes from the whole chain, not from the current revision
+    ///
+    /// `max(revision) + 1` over the plan's own rows, which is a different
+    /// question from "one past the row this revision succeeds" as soon as the
+    /// chain holds a tombstone. Publish revision 1, open revision 2, abandon it:
+    /// the current revision is still 1, so deriving from it hands out **2** a
+    /// second time — the exact re-mint D-145 forbids, and the one the abandoned
+    /// row was kept to prevent. The tombstone is in the chain precisely so this
+    /// query can see it.
     ///
     /// # The child-copy gap (D-83) — open, and owned by G4
     ///
@@ -431,7 +491,8 @@ impl PlanRepo {
     /// losing the race** for that slot to a concurrent `open_revision`, since
     /// the three checks above are reads and `uq_pricing_plan_open_draft` is
     /// what actually decides the winner; [`RepoError::CorruptRow`] when the
-    /// current revision reads back unusable or has no representable successor.
+    /// current revision reads back unusable, or when the plan's greatest
+    /// revision has no representable successor.
     pub async fn open_revision(
         &self,
         scope: &AccessScope,
@@ -465,10 +526,17 @@ impl PlanRepo {
             });
         }
 
-        let next = current.revision.checked_add(1).ok_or_else(|| {
+        // Over the whole chain, tombstones included — never `current.revision`,
+        // which skips every number an abandoned draft consumed. The fallback is
+        // a formality: `find_current` above read one of the very rows this
+        // maximum ranges over, and no path deletes a revision row.
+        let highest = self
+            .max_revision(scope, tenant_id, plan_id)
+            .await?
+            .unwrap_or(current.revision);
+        let next = highest.checked_add(1).ok_or_else(|| {
             RepoError::CorruptRow(format!(
-                "plan {plan_id} stands at revision {}, which has no successor",
-                current.revision
+                "plan {plan_id} holds revision {highest}, which has no successor"
             ))
         })?;
         let opened = PlanRevision {
@@ -486,6 +554,48 @@ impl PlanRepo {
         };
         self.insert_revision(scope, tenant_id, &opened).await?;
         Ok(opened)
+    }
+
+    /// The greatest `revision` the plan holds — **tombstones included**, which
+    /// is the entire reason this is a query over the chain rather than a read of
+    /// the current revision.
+    ///
+    /// Taken as one ordered row rather than as a `MAX()` aggregate so it runs
+    /// through the same scoped path as every other read here: the maximum has to
+    /// be the maximum *the caller can see*, and the ordered read is served by
+    /// `idx_pricing_plan_tenant`, whose trailing column is `revision`.
+    async fn max_revision(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+    ) -> Result<Option<u64>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
+        let row = plan::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(plan::Column::TenantId.eq(tenant_id))
+                    .add(plan::Column::PlanId.eq(plan_id.get())),
+            )
+            .order_by(plan::Column::Revision, Order::Desc)
+            .limit(1)
+            .one(&conn)
+            .await
+            .map_err(|e| RepoError::Db(format!("read greatest plan revision: {e}")))?;
+        row.map(|row| {
+            u64::try_from(row.revision).map_err(|e| {
+                RepoError::CorruptRow(format!(
+                    "pricing_plan row for plan {plan_id} holds revision {}: {e}",
+                    row.revision
+                ))
+            })
+        })
+        .transpose()
     }
 
     /// Write `revision` as a new row, exactly as the value describes it.
@@ -632,7 +742,7 @@ fn not_found(plan_id: PlanId, revision: u64) -> RepoError {
 /// Map a stored row to the domain value, at this boundary and nowhere else.
 ///
 /// Both readings that can fail are **invariant breaches, not caller mistakes**:
-/// `lifecycle_state` is `CHECK`-constrained to the four tokens the state machine
+/// `lifecycle_state` is `CHECK`-constrained to the five tokens the state machine
 /// knows, and `revision` / `row_version` are `NOT NULL` columns that only ever
 /// count up. A row that reads otherwise means something reached the table
 /// outside this gear, which is why it surfaces as

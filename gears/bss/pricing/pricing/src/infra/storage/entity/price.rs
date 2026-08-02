@@ -84,7 +84,11 @@ pub struct Model {
     pub aggregation_granularity: Option<String>,
     pub tier_aggregation_window: Option<String>,
     pub tier_qualification_window: Option<String>,
-    pub max_hold_granules: Option<i32>,
+    /// How many granules a level fold may carry a stale reading across. A
+    /// `bigint` like every other count on the row: a granule count is a duration
+    /// in the row's own granularity, and at `per_second` an ordinary
+    /// multi-year hold does not fit an `integer`.
+    pub max_hold_granules: Option<i64>,
     /// The **authored** D-45 declaration `{quantity, rolloverPolicy}`, stored as
     /// written. Slice-10-declared and Slice-10-compiled; this gear persists and
     /// returns it and nothing more, because the D-129 supersession guard reads

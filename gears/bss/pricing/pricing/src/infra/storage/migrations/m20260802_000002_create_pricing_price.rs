@@ -132,12 +132,16 @@
 //! `lifecycle_state` is the one token column whose CHECK is deliberately
 //! **narrower** than the enum that renders it. `domain::lifecycle::LifecycleState`
 //! is shared with plan revisions, which legitimately reach `retired`
-//! (`01-foundation.md` §3.7, D-128); the **price-row** state machine
-//! (`03-price-structure.md` §4) has three states — draft, published, superseded
-//! — and no `retired` edge at all. A `retired` price row would fall outside both
-//! partial `UNIQUE` indexes below, so the one-current-row-per-key guarantee
-//! would simply stop covering it: the key would read as free and take a second
-//! published row beside the retired one.
+//! (`01-foundation.md` §3.7, D-128) and `abandoned` (D-145); the **price-row**
+//! state machine (`03-price-structure.md` §4) has three states — draft,
+//! published, superseded — and no edge to either. A row in either state would
+//! fall outside both partial `UNIQUE` indexes below, so the
+//! one-current-row-per-key guarantee would simply stop covering it: the key
+//! would read as free and take a second published row beside it. `abandoned`
+//! has nothing to express here in any case — D-145 is scoped to the plan
+//! revision row, and a never-published **draft price row stays deletable**
+//! (§4.3, `inst-ps-nodelete`), which is why `DELETE` below is rejected for
+//! published rows only while `pricing_plan` rejects it outright.
 //!
 //! [`RepoError::CorruptRow`]: crate::infra::storage::RepoError::CorruptRow
 //!
@@ -191,7 +195,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
         aggregation_granularity   text,
         tier_aggregation_window   text,
         tier_qualification_window text,
-        max_hold_granules         integer,
+        max_hold_granules         bigint,
         included_allowance        jsonb,
         rounding_policy_ref       text,
         grandfather_until         timestamptz,
@@ -404,7 +408,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         aggregation_granularity   text,
         tier_aggregation_window   text,
         tier_qualification_window text,
-        max_hold_granules         integer,
+        max_hold_granules         bigint,
         included_allowance        text,
         rounding_policy_ref       text,
         grandfather_until         text,

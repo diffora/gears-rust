@@ -1697,13 +1697,16 @@ async fn a_granule_bound_no_column_can_hold_is_refused_before_anything_is_writte
     let scope = AccessScope::for_tenant(tenant());
     let price_id = Uuid::from_u128(0xb_c9);
 
-    // `max_hold_granules` is the narrowest count on the row — `u64` in the
-    // domain over an `integer` column — so it is the reachable path to the
-    // refusal that says a value cannot be stored. Checked rather than cast: a
-    // cast would turn an impossible bound into a plausible one and hold a
-    // sampling gap nobody authored.
+    // Every count on the row is a `u64` in the domain over a **signed**
+    // `bigint`, so the top half of the domain range has no storage at all and
+    // the refusal is reachable through any of them; `max_hold_granules` is the
+    // one this case drives. Checked rather than cast: a cast would turn an
+    // impossible bound into a plausible one — `i64::MAX + 1` renders as
+    // `i64::MIN` — and hold a sampling gap nobody authored, on a column whose
+    // own CHECK demands `>= 1`.
     let mut content = graduated_content();
-    content.row.max_hold_granules = Some(u64::from(u32::MAX));
+    let unstorable = u64::try_from(i64::MAX).expect("i64::MAX is a u64") + 1;
+    content.row.max_hold_granules = Some(unstorable);
 
     let err = repo
         .create_draft(
@@ -1725,7 +1728,7 @@ async fn a_granule_bound_no_column_can_hold_is_refused_before_anything_is_writte
         err,
         RepoError::ValueOutOfRange {
             field: "max_hold_granules".to_owned(),
-            value: u32::MAX.to_string(),
+            value: unstorable.to_string(),
         }
     );
 

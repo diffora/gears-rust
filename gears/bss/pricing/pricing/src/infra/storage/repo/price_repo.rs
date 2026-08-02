@@ -968,7 +968,7 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
         tier_qualification_window: Set(row
             .tier_qualification_window
             .map(|w| w.as_str().to_owned())),
-        max_hold_granules: Set(stored_granules(row.max_hold_granules)?),
+        max_hold_granules: Set(stored_count("max_hold_granules", row.max_hold_granules)?),
         included_allowance: Set(row.included_allowance.map(allowance_json)),
         rounding_policy_ref: Set(content.rounding_policy_ref.clone()),
         grandfather_until: Set(content.grandfather_until),
@@ -1168,17 +1168,6 @@ fn stored_count(field: &str, value: Option<u64>) -> Result<Option<i64>, RepoErro
         .map_err(|_| out_of_range(field, value))
 }
 
-/// Render `max_hold_granules` for its **`integer`** column, which is narrower
-/// than every other count on the row.
-fn stored_granules(value: Option<u64>) -> Result<Option<i32>, RepoError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    i32::try_from(value)
-        .map(Some)
-        .map_err(|_| out_of_range("max_hold_granules", value))
-}
-
 /// Render a band bound for its `bigint` column.
 fn stored_bound(field: &str, value: u64) -> Result<i64, RepoError> {
     i64::try_from(value).map_err(|_| out_of_range(field, value))
@@ -1347,10 +1336,7 @@ fn to_price_row(
             AGGREGATION_GRANULARITIES,
             AggregationGranularity::as_str,
         )?,
-        max_hold_granules: read_count(
-            "pricing_price.max_hold_granules",
-            row.max_hold_granules.map(i64::from),
-        )?,
+        max_hold_granules: read_count("pricing_price.max_hold_granules", row.max_hold_granules)?,
         included_allowance: row
             .included_allowance
             .as_ref()
