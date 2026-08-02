@@ -423,6 +423,41 @@ addressability. Its only reader is Slice 11's `SnapshotSynthesizer` (`inst-sy-se
 **`pricing_audit_log` (Foundation-owned; this slice is the writer contract)** — actor,
 timestamp, before/after version refs, approval trail, correlation id, denied-attempt records,
 backdate provenance; append-only + tamper evidence (G4); per-jurisdiction retention config (G5).
+Hash-chained and segmented per `(tenant_id, chain_id)`, `chain_id` being the audited subject's
+aggregate (D-135, Foundation §3.7).
+
+**Its two discriminators are declared here (normative, D-158, 2026-08-03, found while writing
+this table's first writer).** Both had been free text with no vocabulary in any document, while
+`pricing_approval` above carries a typed `subject_kind` — a gap the 2026-07-31d review closed on
+the approval store (C-4: "the kind previously lived only inside `materiality` jsonb, leaving the
+store with no queryable subject type") and left open on the store that keeps the same facts for
+seven years and is the one D-12 confines to the Auditor.
+
+- **`subject_kind`** — **the `pricing_approval` enumeration above, verbatim**: `plan_revision |
+  price_unit | window | overlay | membership | bundle | retirement | policy |
+  historical_import | bulk_batch` (extensible; extended in both places together). Not a parallel
+  vocabulary: the two stores discriminate the *same* aggregates for the *same* audience, and
+  D-135 already keys the chain on the audited subject's aggregate, so two spellings would let
+  the approval record and the audit record of one decision disagree about what the decision was
+  about.
+- **`action`** — a declared, **additive** `snake_case` verb set, opened with exactly the records
+  this design set already requires somebody to write: `publish` (Foundation §4.2), `abandon`
+  (the audited discard flip, D-145), `retire` ([`11-lifecycle.md`](./11-lifecycle.md)),
+  `approve` / `reject` (`inst-tp-record`), `deny` (`inst-rb-audit`, and `inst-tp-selfaudit`'s
+  attempted-violation record), `backdate_import` (`inst-bd-store`), `policy_update` (D-10's
+  threshold-policy mutations). Two constraints hold the set: an action token is **never a frozen
+  event name** — `PlanPublished` is a `CatalogEvent` with one home, and the audit action for the
+  same transaction is `publish` — and a token with **no writer is not declared**, because a
+  vocabulary entry nobody writes reads as coverage to everyone who greps for it. A slice that
+  adds an audited record adds its token here rather than inventing one at the keyboard.
+
+**Contention on a segment is a retriable refusal (D-159, 2026-08-03).** The segment head is
+`MAX(seq)` under the primary key `(tenant_id, chain_id, seq)`, so two mutations of one aggregate
+that read the same head cannot both insert after it: the loser takes a unique violation and its
+**whole mutation transaction** rolls back — the linearity of the chain is a property of the key,
+not of an isolation level, so what is at risk is liveness rather than integrity. That refusal is
+`CONCURRENT_MUTATION` (409, Foundation §3.3), not an internal fault: the caller's request was
+well-formed, its preconditions held, and a retry is expected to succeed.
 
 **Grants** — the catalog-preview read grant and the `BackdateGrant` are IdP/gateway-managed
 claims; this slice defines their semantics and enforcement points, not their administration.
