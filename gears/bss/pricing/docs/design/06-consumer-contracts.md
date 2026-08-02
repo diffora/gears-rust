@@ -189,7 +189,7 @@ Tariffs/Rating compute from.
 **Output**: explicit frozen `billingTiming` per recurring row
 
 **Steps**:
-1. [ ] - `p1` - `billingTiming ∈ {in_advance, in_arrears}` REQUIRED on every recurring row; absence fails publish (also enforced in Slice 2's recurring-cycle rule — one rule, registered once, referenced by both) - `inst-bt-required`
+1. [ ] - `p1` - `billingTiming ∈ {in_advance, in_arrears}` REQUIRED on every recurring row; absence fails publish (`BILLING_TIMING_MISSING`, 422, the row named — the code this slice's catalogue declares for it, and the one Slice 2's descriptor rule cites for the row-borne element it defers here; also enforced in Slice 2's recurring-cycle rule — one rule, registered once, referenced by both) - `inst-bt-required`
 2. [ ] - `p1` - Usage rows are implicitly `in_arrears` (not authored, projected constant); one-time/setup rows likewise project a constant — charged at event (`in_advance`), never authored; a hybrid MAY mix `in_advance` base + `in_arrears` usage - `inst-bt-usage`
 3. [ ] - `p1` - Frozen in `pricingSnapshotRef`; Billing derives deferral policy from it — never from heuristics - `inst-bt-frozen`
 
