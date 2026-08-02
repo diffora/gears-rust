@@ -13,8 +13,8 @@
 //! a key.
 //!
 //! Both scope-key indexes lead with **`tenant_id`**, which the key itself does
-//! not carry. The design set's sibling index over the same table — Slice 2's
-//! meter-injectivity partial `UNIQUE` (`02-plan-definition.md` §6) — was
+//! not carry. The sibling index over the same table — Slice 2's
+//! meter-injectivity partial `UNIQUE` (`02-plan-definition.md` §6, below) — was
 //! review-fixed *to* `(tenant_id, plan_id, ...)`, and two indexes on one table
 //! that disagree about whether a uniqueness scope starts at the tenant are two
 //! different answers to "how far does this row's uniqueness reach". Nothing
@@ -33,6 +33,57 @@
 //! draft **and** its published predecessor at once — which is the state the
 //! D-88 supersession unit works in, and the reason this is a second index
 //! rather than a widened first one.
+//!
+//! A **third** partial `UNIQUE` — `uq_pricing_price_meter_line_current` — is
+//! Slice 2's meter injectivity (`02-plan-definition.md` §6,
+//! `inst-cmp-injective` / D-103) said where it can be enforced, and every way
+//! it departs from the scope-key index above is load-bearing.
+//!
+//! It keys **per line, not per plan**. The rule once read "each usage plan
+//! revision maps exactly one `meteringUnit`", and that stronger claim was
+//! contradicted by three rules of its own slice and enforced by none
+//! (D-103, 2026-07-31 review fix): D-84's per-market completeness ranges over
+//! "every `(meter, dimensionKey)` line the plan prices", D-43's grants scope to
+//! a **set** of metering units on one plan, and this index has always carried
+//! `meter` **and** `dimension_key` — it implemented the per-line reading while
+//! the prose still claimed the per-plan one. A `PaaS` plan pricing cloudlets,
+//! storage and egress is one plan, not three. What is ambiguous, and what fails
+//! publish, is a **duplicate line within one scope-key slice**.
+//!
+//! `charge_kind` is **absent**, which is §6's own spelling and not an omission
+//! this migration should repair. A meter is a usage row's column, so the axis
+//! would discriminate nothing it is here to discriminate — what it would do is
+//! let two rows pricing one line escape each other by disagreeing about their
+//! charge kind, which is the ambiguity rather than an escape from it.
+//!
+//! `dimension_key` is `NOT NULL DEFAULT ''` — the empty-tuple sentinel — for
+//! the reason `cohort` is a `NOT NULL` token (2026-07-28 review fix, confirmed
+//! 2026-07-31). Undimensioned rows are the *ordinary* usage line, and under a
+//! nullable column two of them on one key would compare as distinct here on
+//! both engines and both land: the plan would price one meter twice with
+//! nothing having objected, which is the very ambiguity this index exists to
+//! refuse, in its commonest shape.
+//!
+//! `cohort` is **in** the key, as ADR-0002's generation axis. Without it a
+//! second grandfathering cutover on a usage line would collide with the
+//! generation the first cutover retained — the index would then refuse the
+//! cutover instead of the duplicate, and the one operation that legitimately
+//! adds a row to a line is the one it stopped.
+//!
+//! The predicate is `lifecycle_state = 'published'`, the same one the scope-key
+//! index carries and sufficient for the same reason (2026-07-30 review fix): a
+//! predecessor reads `superseded` the instant its successor commits. It is
+//! deliberately **not** scoped by plan revision — an earlier spelling named a
+//! `plan_revision` column `pricing_price` does not have — and the FR's "per
+//! plan revision" reading is realized as current-rows-per-plan, historical
+//! revisions keeping theirs through the supersession chain.
+//!
+//! `AND meter IS NOT NULL` is this migration's **addition** to that spelling
+//! rather than the design's words, and it is semantically inert: a NULL `meter`
+//! compares as distinct from every other value in a unique index on both
+//! engines, so such a row could not have collided here in any case. What the
+//! conjunct buys is that the index holds no entry at all for the recurring,
+//! one-time and setup rows it can never speak about.
 //!
 //! `row_version` — the row's `ETag` — is here because Foundation §3.7 **omits**
 //! it rather than because §3.7 asks for it, and that omission is a defect this
@@ -284,6 +335,16 @@ const PG_UP_STATEMENTS: &[&str] = &[
             tenant_id, plan_id, currency, region, price_overlay,
             phase, price_eligibility, charge_kind, cohort)
         WHERE lifecycle_state = 'draft'",
+    // Meter injectivity (design 02-plan-definition 6, inst-cmp-injective /
+    // D-103): one priced line per (meter, dimension_key) per scope-key slice.
+    // `charge_kind` is out of the list on purpose and `cohort` is in it on
+    // purpose; `meter IS NOT NULL` is this migration's own conjunct. See the
+    // module doc for all three.
+    "CREATE UNIQUE INDEX uq_pricing_price_meter_line_current
+        ON bss.pricing_price (
+            tenant_id, plan_id, currency, region, price_overlay,
+            phase, price_eligibility, cohort, meter, dimension_key)
+        WHERE lifecycle_state = 'published' AND meter IS NOT NULL",
     "CREATE INDEX idx_pricing_price_plan
         ON bss.pricing_price (tenant_id, plan_id, lifecycle_state)",
     // The history chain: walk a key's supersession lineage without a table scan.
@@ -478,6 +539,11 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             tenant_id, plan_id, currency, region, price_overlay,
             phase, price_eligibility, charge_kind, cohort)
         WHERE lifecycle_state = 'draft'",
+    "CREATE UNIQUE INDEX uq_pricing_price_meter_line_current
+        ON pricing_price (
+            tenant_id, plan_id, currency, region, price_overlay,
+            phase, price_eligibility, cohort, meter, dimension_key)
+        WHERE lifecycle_state = 'published' AND meter IS NOT NULL",
     "CREATE INDEX idx_pricing_price_plan
         ON pricing_price (tenant_id, plan_id, lifecycle_state)",
     "CREATE INDEX idx_pricing_price_supersedes

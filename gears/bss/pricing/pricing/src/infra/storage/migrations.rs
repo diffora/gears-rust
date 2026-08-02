@@ -5,9 +5,14 @@
 //! order, then the slice-owned tables. Slice 3 adds
 //! `pricing_price_tier_band` (`design/03-price-structure.md` §6) — the only
 //! part of a price row that is many-per-row; its per-row Slice-3 columns are
-//! amended onto `pricing_price` itself. The remaining slice-owned tables (the
-//! overlay tables, the window store, `pricing_historical_price`, ...) arrive
-//! with their slices and append to this list.
+//! amended onto `pricing_price` itself. Slice 2 adds the revision-scoped child
+//! tables of a plan's shape — `pricing_plan_phase`, `pricing_plan_addon_rule`
+//! and `pricing_plan_descriptor_set` (`design/02-plan-definition.md` §6), one
+//! migration per table as this chain's convention has it; its per-revision
+//! Slice-2 columns are likewise amended onto `pricing_plan`. The remaining
+//! slice-owned tables (the overlay tables, the window store,
+//! `pricing_historical_price`, ...) arrive with their slices and append to this
+//! list.
 //!
 //! **Schema creation.** The chain has no separate `create_bss_schema`
 //! migration: `m20260802_000001_create_pricing_plan` issues
@@ -33,6 +38,9 @@ pub mod m20260802_000008_create_pricing_idempotency_dedup;
 pub mod m20260802_000009_create_pricing_outbox;
 pub mod m20260802_000010_create_pricing_audit_log;
 pub mod m20260802_000011_create_pricing_price_tier_band;
+pub mod m20260802_000012_create_pricing_plan_phase;
+pub mod m20260802_000013_create_pricing_plan_addon_rule;
+pub mod m20260802_000014_create_pricing_plan_descriptor_set;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -88,6 +96,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000009_create_pricing_outbox::Migration),
             Box::new(m20260802_000010_create_pricing_audit_log::Migration),
             Box::new(m20260802_000011_create_pricing_price_tier_band::Migration),
+            Box::new(m20260802_000012_create_pricing_plan_phase::Migration),
+            Box::new(m20260802_000013_create_pricing_plan_addon_rule::Migration),
+            Box::new(m20260802_000014_create_pricing_plan_descriptor_set::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. The
             // read-model warm re-drive is a singleton job (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

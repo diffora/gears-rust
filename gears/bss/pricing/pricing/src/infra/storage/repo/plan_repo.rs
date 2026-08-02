@@ -24,6 +24,18 @@
 //! rows for the same reason — see its own note on what deriving from the
 //! current revision would hand out twice.
 //!
+//! **A revision never moves without its shape.** D-83 versions the child shape
+//! tables with the revision, so [`open_revision`] copies them forward and
+//! [`abandon_draft`] drops the discarded revision's copies — each inside the
+//! **one transaction** that moves the revision row, because a revision that
+//! exists without its shape is a draft that looks like a plan whose author
+//! deleted everything, and a tombstone that kept its copies is a frozen shape
+//! hanging off a row nothing can reach. The two orderings are opposite and both
+//! forced by the child tables' append-only trigger, which reads the parent
+//! revision: the copy follows the insert because the INSERT arm requires the
+//! **new** parent to be `draft`, and the drop precedes the flip because
+//! `abandoned` is not `draft` and the DELETE arm would refuse it afterwards.
+//!
 //! **A failed swap gets three answers, not one.** Zero rows affected is
 //! ambiguous by construction — the predicate is a conjunction — so the row is
 //! read back once and the refusal names which conjunct failed:
@@ -40,25 +52,42 @@
 //! predicate on these statements is what turns "you are editing a frozen
 //! revision" into something a surface can render.
 //!
+//! **One Slice-2 rule is unreachable through this file, and stays a rule.**
+//! `chk_pricing_plan_purchase_qty` refuses `purchase_min_qty > purchase_max_qty`
+//! at the column, so no row written here can ever be the subject
+//! [`PURCHASE_QTY_RANGE_INVALID`](crate::domain::plan_rules::PURCHASE_QTY_RANGE_INVALID)
+//! describes. The rule is not therefore redundant: the validation pipeline
+//! judges a shape the **caller** assembled, before any of it is a row, and it
+//! owes an author one report enumerating every finding. Deleting the rule would
+//! move that finding onto the driver-error path, where a publish attempt answers
+//! with an internal fault instead of a line somebody can act on.
+//!
 //! [`update_draft`]: PlanRepo::update_draft
 //! [`abandon_draft`]: PlanRepo::abandon_draft
 //! [`open_revision`]: PlanRepo::open_revision
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
-use sea_orm::sea_query::Expr;
+use sea_orm::sea_query::{Expr, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
-use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, DbConn, SecureEntityExt, SecureInsertExt, SecureUpdateExt, TxError,
+};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
+use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::plan;
 use crate::infra::storage::repo::check_authored_instant;
+use crate::infra::storage::repo::plan_shape_repo::{
+    copy_addon_rules, copy_descriptor_set, copy_phases, delete_addon_rules, delete_descriptor_set,
+    delete_phases,
+};
 
 /// The noun every **compare-and-swap** refusal names, so a caller that failed
 /// to edit revision 3 and a caller that failed to delete it are told about the
@@ -101,7 +130,18 @@ pub struct NewPlanDraft {
     /// The plan's tier.
     pub plan_tier: Option<String>,
     /// The plan's billing cycle.
-    pub billing_cycle: Option<String>,
+    pub billing_cycle: Option<BillingCycle>,
+    /// The recurring frequency, interval and all.
+    pub frequency: Option<Frequency>,
+    /// Whether the tier diverges from the parent SKU's under an audited
+    /// override (P3).
+    pub plan_tier_override: bool,
+    /// Minimum purchasable quantity (one-time plans).
+    pub purchase_min_qty: Option<u64>,
+    /// Maximum purchasable quantity (one-time plans).
+    pub purchase_max_qty: Option<u64>,
+    /// The Billing invoice-layout hint (D-96).
+    pub invoice_grouping_key: Option<String>,
     /// Start of the availability window, UTC.
     pub available_from: Option<DateTime<Utc>>,
     /// End of the availability window, UTC.
@@ -137,6 +177,8 @@ impl PlanRepo {
     /// # Errors
     /// [`RepoError::TimestampPrecisionExceeded`] when an authored availability
     /// bound is finer than the millisecond quantum (D-144);
+    /// [`RepoError::ValueOutOfRange`] when an authored purchase quantity or
+    /// custom interval is past what its column can hold;
     /// [`RepoError::Db`] on a scope or storage failure — which **includes the
     /// collision case**: a plan id that already has a revision `0` is the
     /// table's `PRIMARY KEY` answer, and a second open draft is
@@ -156,6 +198,11 @@ impl PlanRepo {
             sku_id: draft.sku_id,
             plan_tier: draft.plan_tier,
             billing_cycle: draft.billing_cycle,
+            frequency: draft.frequency,
+            plan_tier_override: draft.plan_tier_override,
+            purchase_min_qty: draft.purchase_min_qty,
+            purchase_max_qty: draft.purchase_max_qty,
+            invoice_grouping_key: draft.invoice_grouping_key,
             available_from: draft.available_from,
             available_to: draft.available_to,
             lifecycle_state: LifecycleState::Draft,
@@ -163,7 +210,8 @@ impl PlanRepo {
             created_at_utc: draft.created_at_utc,
             row_version: RowVersion::new(0),
         };
-        self.insert_revision(scope, tenant_id, &opened).await?;
+        let row = revision_model(tenant_id, &opened)?;
+        insert_revision(&self.conn()?, scope, row).await?;
         Ok(opened)
     }
 
@@ -182,26 +230,7 @@ impl PlanRepo {
         plan_id: PlanId,
         revision: u64,
     ) -> Result<Option<PlanRevision>, RepoError> {
-        let Some(number) = stored_revision(revision) else {
-            return Ok(None);
-        };
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
-        let row = plan::Entity::find()
-            .secure()
-            .scope_with(scope)
-            .filter(
-                Condition::all()
-                    .add(plan::Column::TenantId.eq(tenant_id))
-                    .add(plan::Column::PlanId.eq(plan_id.get()))
-                    .add(plan::Column::Revision.eq(number)),
-            )
-            .one(&conn)
-            .await
-            .map_err(|e| RepoError::Db(format!("read plan revision: {e}")))?;
-        row.map(to_domain).transpose()
+        load_revision(&self.conn()?, scope, tenant_id, plan_id, revision).await
     }
 
     /// Read the plan's **current** revision.
@@ -224,10 +253,7 @@ impl PlanRepo {
         tenant_id: Uuid,
         plan_id: PlanId,
     ) -> Result<Option<PlanRevision>, RepoError> {
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
+        let conn = self.conn()?;
         let rows = plan::Entity::find()
             .secure()
             .scope_with(scope)
@@ -261,10 +287,7 @@ impl PlanRepo {
         tenant_id: Uuid,
         plan_id: PlanId,
     ) -> Result<Option<PlanRevision>, RepoError> {
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
+        let conn = self.conn()?;
         let row = plan::Entity::find()
             .secure()
             .scope_with(scope)
@@ -300,7 +323,9 @@ impl PlanRepo {
     /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
     /// one is not current; [`RepoError::TimestampPrecisionExceeded`] when a
     /// patched availability bound is finer than the millisecond quantum
-    /// (D-144); [`RepoError::Db`] on a scope or storage failure;
+    /// (D-144); [`RepoError::ValueOutOfRange`] when a patched purchase quantity
+    /// or custom interval is past what its column can hold;
+    /// [`RepoError::Db`] on a scope or storage failure;
     /// [`RepoError::CorruptRow`] when the updated row reads back unusable.
     pub async fn update_draft(
         &self,
@@ -311,36 +336,20 @@ impl PlanRepo {
         expected: RowVersion,
         patch: PlanShapePatch,
     ) -> Result<PlanRevision, RepoError> {
-        // Ahead of the compare-and-swap: an instant the catalog cannot compare
-        // is refused whether or not the caller also holds a current row version,
+        // Ahead of the compare-and-swap: a value the store cannot hold is
+        // refused whether or not the caller also holds a current row version,
         // and refusing it here leaves the row's tag where it was.
         check_authored_instant("availableFrom", patch.available_from)?;
         check_authored_instant("availableTo", patch.available_to)?;
+        let columns = patched_columns(patch)?;
+        let conn = self.conn()?;
         let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-            return Err(self
-                .refuse(scope, tenant_id, plan_id, revision, expected)
-                .await);
+            return Err(refuse(&conn, scope, tenant_id, plan_id, revision, expected).await);
         };
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
 
         let mut update = plan::Entity::update_many().secure().scope_with(scope);
-        if let Some(sku_id) = patch.sku_id {
-            update = update.col_expr(plan::Column::SkuId, Expr::value(sku_id));
-        }
-        if let Some(plan_tier) = patch.plan_tier {
-            update = update.col_expr(plan::Column::PlanTier, Expr::value(plan_tier));
-        }
-        if let Some(billing_cycle) = patch.billing_cycle {
-            update = update.col_expr(plan::Column::BillingCycle, Expr::value(billing_cycle));
-        }
-        if let Some(available_from) = patch.available_from {
-            update = update.col_expr(plan::Column::AvailableFrom, Expr::value(available_from));
-        }
-        if let Some(available_to) = patch.available_to {
-            update = update.col_expr(plan::Column::AvailableTo, Expr::value(available_to));
+        for (column, value) in columns {
+            update = update.col_expr(column, value);
         }
 
         let result = update
@@ -354,11 +363,9 @@ impl PlanRepo {
             .map_err(|e| RepoError::Db(format!("update plan draft: {e}")))?;
 
         if result.rows_affected == 0 {
-            return Err(self
-                .refuse(scope, tenant_id, plan_id, revision, expected)
-                .await);
+            return Err(refuse(&conn, scope, tenant_id, plan_id, revision, expected).await);
         }
-        self.find_revision(scope, tenant_id, plan_id, revision)
+        load_revision(&conn, scope, tenant_id, plan_id, revision)
             .await?
             .ok_or_else(|| not_found(plan_id, revision))
     }
@@ -384,22 +391,38 @@ impl PlanRepo {
     /// row's **last** tag: nothing can move a terminal row again, so the value
     /// handed back here, unlike `update_draft`'s, cannot already be stale.
     ///
-    /// # Three things this does not do yet, and who owes them
+    /// # The child copies (D-83), and why they go first
     ///
-    /// **The child copies (D-83), owed by G4.** D-145 drops the discarded
-    /// revision's child copies in the same transaction. Those tables do not
-    /// exist yet (see [`PlanRepo::open_revision`], which owes them the
-    /// mirror-image copy), so this flips the revision row and nothing else. The
-    /// anchor in `tests/sqlite_plan_repo.rs` fails the moment the first child
-    /// table appears.
+    /// D-145 drops the discarded revision's child copies in the **same
+    /// transaction** as the flip: a tombstone that kept its shape would leave a
+    /// frozen phase set hanging off a revision no path can reach, and the number
+    /// it consumed would still be attached to a shape somebody could read.
+    ///
+    /// The order is mandatory and the child table's trigger is why. That trigger
+    /// permits DML only while the parent revision is `draft`, and `abandoned`
+    /// is **not** `draft` — so the DELETE has to happen before the flip or it is
+    /// refused, by the guard that exists to stop exactly this table being
+    /// rewritten under a frozen revision. Doing it inside the transaction is
+    /// what makes the pair atomic: a compare-and-swap that matches nothing rolls
+    /// the already-issued DELETE back with it.
+    ///
+    /// **All three child tables are dropped here** — the phase chain, the add-on
+    /// rules and the descriptor set, in that order and every one of them before
+    /// the flip. Slice 2 owns no fourth, so D-145's child-copy obligation is
+    /// discharged rather than narrowed; what stands behind it now is a
+    /// behavioural test per table in `tests/sqlite_plan_repo.rs` rather than the
+    /// schema anchor that used to fail the moment a table appeared.
+    ///
+    /// # Two things this does not do yet, and who owes them
     ///
     /// **The audit record, owed by whoever builds the audit path.** D-145 is
     /// explicit that the flip "is audited exactly as the deletion was", and the
     /// deletion it replaces was audited too. This gear has a
     /// `pricing_audit_log` table and no writer for it, so nothing is written
-    /// here — deliberately, rather than by oversight. There is no anchor to
-    /// stand behind that the way the child tables have one; the debt lives in
-    /// this sentence.
+    /// here — deliberately, rather than by oversight. **This debt is still open
+    /// after the child copies were paid**, and it never had an anchor of its own
+    /// the way the child tables did: the debt lives in this sentence, and
+    /// deleting the sentence is how it would be lost.
     ///
     /// **The plan-level refusal, owed by the authoring surface (G7).** This
     /// method names the revision it discards, so a caller that names one the
@@ -426,39 +449,63 @@ impl PlanRepo {
         revision: u64,
         expected: RowVersion,
     ) -> Result<PlanRevision, RepoError> {
-        let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-            return Err(self
-                .refuse(scope, tenant_id, plan_id, revision, expected)
-                .await);
-        };
-        let conn = self
+        let scope = scope.clone();
+        let (_, outcome) = self
             .db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
-        let result = plan::Entity::update_many()
-            .secure()
-            .scope_with(scope)
-            .col_expr(
-                plan::Column::LifecycleState,
-                Expr::value(LifecycleState::Abandoned.as_str()),
-            )
-            .col_expr(
-                plan::Column::RowVersion,
-                Expr::col(plan::Column::RowVersion).add(1_i64),
-            )
-            .filter(guard)
-            .exec(&conn)
-            .await
-            .map_err(|e| RepoError::Db(format!("abandon plan draft: {e}")))?;
+            .db()
+            .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+                        return Err(
+                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
+                        );
+                    };
+                    // Refused before a child row is touched. Each child table's
+                    // own trigger answers a DELETE under a frozen revision with
+                    // a raw driver error carrying no state, and the caller is
+                    // owed the three-way refusal. It is **not** the guard — the
+                    // compare-and-swap below is, and a concurrent publish
+                    // landing in between is closed by the rollback, not by this
+                    // read.
+                    if mutable_draft(txn, &scope, tenant_id, plan_id, revision, expected)
+                        .await?
+                        .is_none()
+                    {
+                        return Err(
+                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
+                        );
+                    }
+                    delete_phases(txn, &scope, tenant_id, plan_id, revision).await?;
+                    delete_addon_rules(txn, &scope, tenant_id, plan_id, revision).await?;
+                    delete_descriptor_set(txn, &scope, tenant_id, plan_id, revision).await?;
+                    let result = plan::Entity::update_many()
+                        .secure()
+                        .scope_with(&scope)
+                        .col_expr(
+                            plan::Column::LifecycleState,
+                            Expr::value(LifecycleState::Abandoned.as_str()),
+                        )
+                        .col_expr(
+                            plan::Column::RowVersion,
+                            Expr::col(plan::Column::RowVersion).add(1_i64),
+                        )
+                        .filter(guard)
+                        .exec(txn)
+                        .await
+                        .map_err(|e| RepoError::Db(format!("abandon plan draft: {e}")))?;
 
-        if result.rows_affected == 0 {
-            return Err(self
-                .refuse(scope, tenant_id, plan_id, revision, expected)
-                .await);
-        }
-        self.find_revision(scope, tenant_id, plan_id, revision)
-            .await?
-            .ok_or_else(|| not_found(plan_id, revision))
+                    if result.rows_affected == 0 {
+                        return Err(
+                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
+                        );
+                    }
+                    load_revision(txn, &scope, tenant_id, plan_id, revision)
+                        .await?
+                        .ok_or_else(|| not_found(plan_id, revision))
+                })
+            })
+            .await;
+        outcome.map_err(tx_failure)
     }
 
     /// Open the next revision of a published plan: `max(revision) + 1` in
@@ -479,23 +526,45 @@ impl PlanRepo {
     /// row was kept to prevent. The tombstone is in the chain precisely so this
     /// query can see it.
     ///
-    /// # The child-copy gap (D-83) — open, and owned by G4
+    /// # The child copy (D-83), with the ids left alone
     ///
-    /// D-83 requires a new revision to **copy its child shape tables** —
-    /// `pricing_plan_phase`, `pricing_plan_addon_rule`,
-    /// `pricing_plan_descriptor_set` — with stable `phase_id`s, so the `phase`
-    /// scope-key axis and same-key supersession survive the revision. Those
-    /// tables **do not exist yet**: they are Slice-2 storage and land in G4.
-    /// This method therefore copies the plan's own columns and nothing else.
+    /// D-83 requires a new revision to **copy its child shape tables** with
+    /// stable `phase_id`s, so the `phase` scope-key axis and same-key
+    /// supersession survive the revision. `pricing_plan_phase` is copied here:
+    /// every phase row of the current revision is written again under the new
+    /// `plan_revision`, `phase_id` **unchanged**. Re-minting an id would move
+    /// every continuing price row onto a key nothing is filed under — the rows
+    /// would stop superseding their predecessors (D-56) and phase coverage
+    /// would judge a chain nobody authored.
     ///
-    /// Until G4 closes it, a revision opened on a plan that has phases, add-on
-    /// rules or a descriptor set would carry **none of them** — the draft would
-    /// look like a plan whose author had deleted its whole shape. There is
-    /// deliberately no copier trait or registry standing in for the missing
-    /// work: an abstraction with zero implementations hides the gap instead of
-    /// stating it, and the gap is pinned by a test in
-    /// `tests/sqlite_plan_repo.rs` that fails the moment the first child table
-    /// appears.
+    /// The copy **follows** the revision insert and shares its transaction. It
+    /// follows because the child table's INSERT trigger reads the *new* parent
+    /// and requires it to be `draft`, so there is nothing to insert under until
+    /// the revision row exists; it shares the transaction because a revision
+    /// that exists without its shape is a draft that looks like a plan whose
+    /// author deleted everything.
+    ///
+    /// `pricing_plan_addon_rule` is copied the same way and in the same
+    /// transaction, its `addon_sku_id` unchanged — that id is the registry's
+    /// rather than this gear's, so the risk there is not a re-mint but a
+    /// **dropped** rule: a successor revision composing with fewer add-ons than
+    /// its predecessor is a plan whose buyers lose an entitlement nobody
+    /// removed.
+    ///
+    /// `pricing_plan_descriptor_set` is copied last, and only when the source
+    /// revision has one: the successor of an unattached set is an unattached
+    /// set, and writing an empty row would tell an authoring surface somebody
+    /// had attached something.
+    ///
+    /// **That completes D-83 for Slice 2** — three child tables, all copied
+    /// inside this transaction. The three calls are written out rather than
+    /// dispatched through a copier trait or a registry: an abstraction over
+    /// three known statements hides which tables are covered, and what a reader
+    /// needs from this method is exactly that list. When a later slice adds a
+    /// revision-scoped child of its own, the compiler will not remind anybody —
+    /// so the guard is a test per table in `tests/sqlite_plan_repo.rs`, which is
+    /// what replaced the schema anchor that stood here while the tables were
+    /// still landing.
     ///
     /// # Errors
     /// [`RepoError::NotFound`] when the plan has no current revision — the
@@ -557,12 +626,18 @@ impl PlanRepo {
                 "plan {plan_id} holds revision {highest}, which has no successor"
             ))
         })?;
+        let source = current.revision;
         let opened = PlanRevision {
             plan_id,
             revision: next,
             sku_id: current.sku_id,
             plan_tier: current.plan_tier,
             billing_cycle: current.billing_cycle,
+            frequency: current.frequency,
+            plan_tier_override: current.plan_tier_override,
+            purchase_min_qty: current.purchase_min_qty,
+            purchase_max_qty: current.purchase_max_qty,
+            invoice_grouping_key: current.invoice_grouping_key,
             available_from: current.available_from,
             available_to: current.available_to,
             lifecycle_state: LifecycleState::Draft,
@@ -570,8 +645,26 @@ impl PlanRepo {
             created_at_utc: now,
             row_version: RowVersion::new(0),
         };
-        self.insert_revision(scope, tenant_id, &opened).await?;
-        Ok(opened)
+        // Rendered before the transaction opens: a value no column can hold is
+        // a caller mistake, and there is no reason to hold a transaction open
+        // to discover it.
+        let row = revision_model(tenant_id, &opened)?;
+
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    insert_revision(txn, &scope, row).await?;
+                    copy_phases(txn, &scope, tenant_id, plan_id, source, next).await?;
+                    copy_addon_rules(txn, &scope, tenant_id, plan_id, source, next).await?;
+                    copy_descriptor_set(txn, &scope, tenant_id, plan_id, source, next).await?;
+                    Ok(opened)
+                })
+            })
+            .await;
+        outcome.map_err(tx_failure)
     }
 
     /// The greatest `revision` the plan holds — **tombstones included**, which
@@ -588,10 +681,7 @@ impl PlanRepo {
         tenant_id: Uuid,
         plan_id: PlanId,
     ) -> Result<Option<u64>, RepoError> {
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
+        let conn = self.conn()?;
         let row = plan::Entity::find()
             .secure()
             .scope_with(scope)
@@ -616,85 +706,205 @@ impl PlanRepo {
         .transpose()
     }
 
-    /// Write `revision` as a new row, exactly as the value describes it.
-    async fn insert_revision(
-        &self,
-        scope: &AccessScope,
-        tenant_id: Uuid,
-        revision: &PlanRevision,
-    ) -> Result<(), RepoError> {
-        let number = stored_revision(revision.revision).ok_or_else(|| {
-            RepoError::CorruptRow(format!(
-                "plan {} revision {} exceeds the storable range",
-                revision.plan_id, revision.revision
-            ))
-        })?;
-        let version = revision.row_version.to_stored().map_err(|e| {
-            RepoError::CorruptRow(format!(
-                "plan {} revision {}: {e}",
-                revision.plan_id, revision.revision
-            ))
-        })?;
-        let conn = self
-            .db
+    /// The non-transactional runner, named once so every read path here spells
+    /// the failure the same way.
+    fn conn(&self) -> Result<DbConn<'_>, RepoError> {
+        self.db
             .conn()
-            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
-        let am = plan::ActiveModel {
-            plan_id: Set(revision.plan_id.get()),
-            revision: Set(number),
-            tenant_id: Set(tenant_id),
-            sku_id: Set(revision.sku_id),
-            plan_tier: Set(revision.plan_tier.clone()),
-            billing_cycle: Set(revision.billing_cycle.clone()),
-            lifecycle_state: Set(revision.lifecycle_state.as_str().to_owned()),
-            available_from: Set(revision.available_from),
-            available_to: Set(revision.available_to),
-            created_by: Set(revision.created_by),
-            created_at_utc: Set(revision.created_at_utc),
-            row_version: Set(version),
-        };
-        plan::Entity::insert(am.clone())
-            .secure()
-            .scope_with_model(scope, &am)
-            .map_err(|e| RepoError::Db(format!("pricing_plan scope: {e}")))?
-            .exec(&conn)
-            .await
-            .map_err(|e| RepoError::Db(format!("insert pricing_plan: {e}")))?;
-        Ok(())
+            .map_err(|e| RepoError::Db(format!("conn: {e}")))
     }
+}
 
-    /// Name which conjunct of a failed compare-and-swap actually failed.
-    ///
-    /// One extra read, taken only on the refusal path. It costs nothing in the
-    /// normal case and is the difference between an operator being told to
-    /// retry and being told to stop retrying.
-    async fn refuse(
-        &self,
-        scope: &AccessScope,
-        tenant_id: Uuid,
-        plan_id: PlanId,
-        revision: u64,
-        expected: RowVersion,
-    ) -> RepoError {
-        match self
-            .find_revision(scope, tenant_id, plan_id, revision)
-            .await
-        {
-            Err(err) => err,
-            Ok(None) => not_found(plan_id, revision),
-            Ok(Some(row)) if !row.lifecycle_state.is_content_mutable() => RepoError::NotDraft {
-                subject: SUBJECT.to_owned(),
-                id: revision_ref(plan_id, revision),
-                state: row.lifecycle_state.to_string(),
-            },
-            Ok(Some(row)) => RepoError::StaleRowVersion {
-                subject: SUBJECT.to_owned(),
-                id: revision_ref(plan_id, revision),
-                current: row.row_version.get(),
-                submitted: expected.get(),
-            },
-        }
+// ---------------------------------------------------------------------------
+// Transaction plumbing.
+// ---------------------------------------------------------------------------
+
+/// Flatten the transaction wrapper back into this repository's vocabulary.
+///
+/// The body's error type is [`RepoError`] rather than the driver's precisely so
+/// a typed refusal survives the rollback: an `abandon_draft` that met a frozen
+/// revision has to reach the caller as [`RepoError::NotDraft`], not as "the
+/// store failed". What arrives as infrastructure is only what happens outside
+/// the body — beginning the transaction, and committing it.
+fn tx_failure(err: TxError<RepoError>) -> RepoError {
+    err.into_domain(|infra| RepoError::Db(format!("plan revision transaction: {infra}")))
+}
+
+// ---------------------------------------------------------------------------
+// Statements, taken through whichever runner the caller holds.
+//
+// Free functions rather than methods because half their callers are inside a
+// transaction, where `Db::conn()` is refused outright by the toolkit's
+// transaction-bypass guard — and because `plan_shape_repo` writes the child
+// rows of these very revisions under the same compare-and-swap.
+// ---------------------------------------------------------------------------
+
+/// Read one revision's stored row by its composite identity, scoped.
+async fn load_revision_row(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Option<plan::Model>, RepoError> {
+    let Some(number) = stored_revision(revision) else {
+        return Ok(None);
+    };
+    plan::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan::Column::TenantId.eq(tenant_id))
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::Revision.eq(number)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read plan revision: {e}")))
+}
+
+/// Read one revision by its composite identity, scoped.
+pub(super) async fn load_revision(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Option<PlanRevision>, RepoError> {
+    load_revision_row(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .map(to_domain)
+        .transpose()
+}
+
+/// Write a rendered revision row.
+async fn insert_revision(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    row: plan::ActiveModel,
+) -> Result<(), RepoError> {
+    plan::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .map_err(|e| RepoError::Db(format!("pricing_plan scope: {e}")))?
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("insert pricing_plan: {e}")))?;
+    Ok(())
+}
+
+/// The revision's row, when it is a `draft` standing at exactly `expected`;
+/// `None` when it is anything else, including absent.
+///
+/// Asked by the paths that touch a **child** row before the compare-and-swap
+/// has answered, so a caller aiming at a frozen revision is told so by this
+/// repository rather than by the child table's trigger — whose refusal is a raw
+/// driver error carrying no state and no subject. It is deliberately not
+/// trusted as the guard: between this read and the swap a concurrent publish
+/// may land, and what closes that window is the rollback.
+///
+/// It hands the stored row back rather than a `bool` because a child row's
+/// `tenant_id` is **copied from the parent revision** and never taken from a
+/// request (Global Constraint 9): the child's foreign key covers the plan key
+/// alone, so nothing in the schema stops a child carrying a foreign tenant, and
+/// under `SecureORM` such a child is invisible to its true owner while still
+/// joined by key to their plan.
+pub(super) async fn mutable_draft(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+) -> Result<Option<plan::Model>, RepoError> {
+    let Some(row) = load_revision_row(runner, scope, tenant_id, plan_id, revision).await? else {
+        return Ok(None);
+    };
+    let state = read_lifecycle(&row)?;
+    let current = read_row_version(&row)?;
+    Ok((state.is_content_mutable() && current == expected).then_some(row))
+}
+
+/// Name which conjunct of a failed compare-and-swap actually failed.
+///
+/// One extra read, taken only on the refusal path. It costs nothing in the
+/// normal case and is the difference between an operator being told to retry
+/// and being told to stop retrying.
+pub(super) async fn refuse(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+) -> RepoError {
+    match load_revision(runner, scope, tenant_id, plan_id, revision).await {
+        Err(err) => err,
+        Ok(None) => not_found(plan_id, revision),
+        Ok(Some(row)) if !row.lifecycle_state.is_content_mutable() => RepoError::NotDraft {
+            subject: SUBJECT.to_owned(),
+            id: revision_ref(plan_id, revision),
+            state: row.lifecycle_state.to_string(),
+        },
+        Ok(Some(row)) => RepoError::StaleRowVersion {
+            subject: SUBJECT.to_owned(),
+            id: revision_ref(plan_id, revision),
+            current: row.row_version.get(),
+            submitted: expected.get(),
+        },
     }
+}
+
+/// Render a revision value into the columns that hold it.
+///
+/// Pure, and separate from the insert, so every caller can refuse a value no
+/// column can hold **before** it opens a transaction.
+///
+/// # Errors
+/// [`RepoError::CorruptRow`] for a revision number or row version past its
+/// column's range; [`RepoError::ValueOutOfRange`] for an authored purchase
+/// quantity or custom interval past its own.
+fn revision_model(
+    tenant_id: Uuid,
+    revision: &PlanRevision,
+) -> Result<plan::ActiveModel, RepoError> {
+    let number = stored_revision(revision.revision).ok_or_else(|| {
+        RepoError::CorruptRow(format!(
+            "plan {} revision {} exceeds the storable range",
+            revision.plan_id, revision.revision
+        ))
+    })?;
+    let version = revision.row_version.to_stored().map_err(|e| {
+        RepoError::CorruptRow(format!(
+            "plan {} revision {}: {e}",
+            revision.plan_id, revision.revision
+        ))
+    })?;
+    let interval = StoredFrequency::render(revision.frequency)?;
+    Ok(plan::ActiveModel {
+        plan_id: Set(revision.plan_id.get()),
+        revision: Set(number),
+        tenant_id: Set(tenant_id),
+        sku_id: Set(revision.sku_id),
+        plan_tier: Set(revision.plan_tier.clone()),
+        billing_cycle: Set(revision
+            .billing_cycle
+            .map(|cycle| cycle.as_str().to_owned())),
+        frequency: Set(interval.token),
+        custom_interval_n: Set(interval.n),
+        custom_interval_unit: Set(interval.unit),
+        plan_tier_override: Set(revision.plan_tier_override),
+        purchase_min_qty: Set(stored_qty("purchaseMinQty", revision.purchase_min_qty)?),
+        purchase_max_qty: Set(stored_qty("purchaseMaxQty", revision.purchase_max_qty)?),
+        invoice_grouping_key: Set(revision.invoice_grouping_key.clone()),
+        lifecycle_state: Set(revision.lifecycle_state.as_str().to_owned()),
+        available_from: Set(revision.available_from),
+        available_to: Set(revision.available_to),
+        created_by: Set(revision.created_by),
+        created_at_utc: Set(revision.created_at_utc),
+        row_version: Set(version),
+    })
 }
 
 /// The stored tokens the domain machine calls **current**.
@@ -716,9 +926,15 @@ fn current_tokens() -> Vec<&'static str> {
 /// **draft** revision.
 ///
 /// `None` when a number the caller supplied cannot be stored at all; every
-/// caller then resolves it through [`PlanRepo::refuse`], because no row can hold
-/// such a value and the truthful answer is the one an absent row already gets.
-fn swap_guard(
+/// caller then resolves it through [`refuse`], because no row can hold such a
+/// value and the truthful answer is the one an absent row already gets.
+///
+/// Shared with `plan_shape_repo` rather than copied: a revision's child rows
+/// are covered by the revision's **own** entity tag (D-141's argument for the
+/// price row's bands, applied to a plan's shape), so the swap that admits a
+/// phase edit has to be the same conjunction, on the same row, as the swap that
+/// admits a column edit. Two spellings of it are two rules free to disagree.
+pub(super) fn swap_guard(
     tenant_id: Uuid,
     plan_id: PlanId,
     revision: u64,
@@ -736,6 +952,138 @@ fn swap_guard(
     )
 }
 
+/// The columns a patch moves, paired with the values it moves them to.
+///
+/// Built before the compare-and-swap rather than inside it, so a value no
+/// column can hold is refused with the row's tag exactly where it was — the
+/// same posture `check_authored_instant` takes one line above the call.
+///
+/// # Errors
+/// [`RepoError::ValueOutOfRange`] for a purchase quantity or custom interval
+/// past its column's range.
+fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExpr)>, RepoError> {
+    let mut columns: Vec<(plan::Column, SimpleExpr)> = Vec::new();
+    if let Some(sku_id) = patch.sku_id {
+        columns.push((plan::Column::SkuId, Expr::value(sku_id)));
+    }
+    if let Some(plan_tier) = patch.plan_tier {
+        columns.push((plan::Column::PlanTier, Expr::value(plan_tier)));
+    }
+    if let Some(billing_cycle) = patch.billing_cycle {
+        columns.push((
+            plan::Column::BillingCycle,
+            Expr::value(billing_cycle.as_str()),
+        ));
+    }
+    // One value, three columns. Moving the token on its own would leave a fixed
+    // frequency wearing the interval of the custom one it replaced - the
+    // pairing `chk_pricing_plan_custom_interval_pairing` refuses and
+    // `Frequency` cannot represent - so the interval columns travel with it,
+    // NULL and all.
+    if let Some(frequency) = patch.frequency {
+        let interval = StoredFrequency::render(Some(frequency))?;
+        columns.push((plan::Column::Frequency, Expr::value(interval.token)));
+        columns.push((plan::Column::CustomIntervalN, Expr::value(interval.n)));
+        columns.push((plan::Column::CustomIntervalUnit, Expr::value(interval.unit)));
+    }
+    if let Some(plan_tier_override) = patch.plan_tier_override {
+        columns.push((
+            plan::Column::PlanTierOverride,
+            Expr::value(plan_tier_override),
+        ));
+    }
+    if let Some(min_qty) = stored_qty("purchaseMinQty", patch.purchase_min_qty)? {
+        columns.push((plan::Column::PurchaseMinQty, Expr::value(min_qty)));
+    }
+    if let Some(max_qty) = stored_qty("purchaseMaxQty", patch.purchase_max_qty)? {
+        columns.push((plan::Column::PurchaseMaxQty, Expr::value(max_qty)));
+    }
+    if let Some(grouping_key) = patch.invoice_grouping_key {
+        columns.push((plan::Column::InvoiceGroupingKey, Expr::value(grouping_key)));
+    }
+    if let Some(available_from) = patch.available_from {
+        columns.push((plan::Column::AvailableFrom, Expr::value(available_from)));
+    }
+    if let Some(available_to) = patch.available_to {
+        columns.push((plan::Column::AvailableTo, Expr::value(available_to)));
+    }
+    Ok(columns)
+}
+
+/// The three columns a [`Frequency`] occupies, rendered together.
+///
+/// One type rather than three expressions, because the three columns are one
+/// fact: `frequency` alone cannot say what interval was authored, and the
+/// interval pair alone cannot say the frequency is the custom one. Rendering
+/// them at separate call sites is precisely how a `monthly` row acquires an
+/// interval — the state `Frequency` cannot represent and
+/// `chk_pricing_plan_custom_interval_pairing` refuses.
+struct StoredFrequency {
+    /// The `frequency` column: the bare discriminator, `None` when unauthored.
+    token: Option<String>,
+    /// `custom_interval_n`, set on the custom frequency and on nothing else.
+    n: Option<i32>,
+    /// `custom_interval_unit`, set on the custom frequency and on nothing else.
+    unit: Option<String>,
+}
+
+impl StoredFrequency {
+    /// Decompose an authored frequency into its three columns.
+    ///
+    /// The `match` is exhaustive with no wildcard on purpose: a frequency
+    /// variant added later stops this compiling instead of quietly rendering as
+    /// a fixed one with its payload dropped.
+    fn render(frequency: Option<Frequency>) -> Result<Self, RepoError> {
+        let Some(frequency) = frequency else {
+            return Ok(Self {
+                token: None,
+                n: None,
+                unit: None,
+            });
+        };
+        let token = Some(frequency.as_str().to_owned());
+        match frequency {
+            Frequency::CustomEveryN { n, unit } => Ok(Self {
+                token,
+                n: Some(
+                    i32::try_from(n).map_err(|_| out_of_range("customIntervalN", u64::from(n)))?,
+                ),
+                unit: Some(unit.as_str().to_owned()),
+            }),
+            Frequency::Monthly
+            | Frequency::Quarterly
+            | Frequency::Semiannual
+            | Frequency::Annual => Ok(Self {
+                token,
+                n: None,
+                unit: None,
+            }),
+        }
+    }
+}
+
+/// Render an authored quantity for its `bigint` column.
+///
+/// Checked rather than cast: a cast would turn a quantity no plan could sell
+/// into a plausible one, and the bound would then be enforced against a number
+/// nobody authored.
+fn stored_qty(field: &str, value: Option<u64>) -> Result<Option<i64>, RepoError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    i64::try_from(value)
+        .map(Some)
+        .map_err(|_| out_of_range(field, value))
+}
+
+/// The caller-mistake refusal for a value no column can hold.
+fn out_of_range(field: &str, value: u64) -> RepoError {
+    RepoError::ValueOutOfRange {
+        field: field.to_owned(),
+        value: value.to_string(),
+    }
+}
+
 /// Render a revision number for its `bigint` column, `None` past the range the
 /// column can hold. Checked rather than cast: a cast would turn an impossible
 /// revision into a plausible one and quietly address a different row.
@@ -750,7 +1098,7 @@ fn revision_ref(plan_id: PlanId, revision: u64) -> String {
 
 /// The "absent, or not yours" refusal — deliberately one answer for both, so
 /// the surface leaks no existence.
-fn not_found(plan_id: PlanId, revision: u64) -> RepoError {
+pub(super) fn not_found(plan_id: PlanId, revision: u64) -> RepoError {
     RepoError::NotFound {
         subject: SUBJECT.to_owned(),
         id: revision_ref(plan_id, revision),
@@ -759,11 +1107,12 @@ fn not_found(plan_id: PlanId, revision: u64) -> RepoError {
 
 /// Map a stored row to the domain value, at this boundary and nowhere else.
 ///
-/// Both readings that can fail are **invariant breaches, not caller mistakes**:
-/// `lifecycle_state` is `CHECK`-constrained to the five tokens the state machine
-/// knows, and `revision` / `row_version` are `NOT NULL` columns that only ever
-/// count up. A row that reads otherwise means something reached the table
-/// outside this gear, which is why it surfaces as
+/// Every reading that can fail is an **invariant breach, not a caller
+/// mistake**: `lifecycle_state`, `billing_cycle`, `frequency` and
+/// `custom_interval_unit` are each `CHECK`-constrained to the token set their
+/// domain type renders, and `revision` / `row_version` / the purchase bounds
+/// are columns that only ever hold counts. A row that reads otherwise means
+/// something reached the table outside this gear, which is why it surfaces as
 /// [`RepoError::CorruptRow`] rather than as a not-found.
 fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
     let revision = u64::try_from(row.revision).map_err(|e| {
@@ -772,28 +1121,28 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
             row.plan_id, row.revision
         ))
     })?;
-    let lifecycle_state = LifecycleState::ALL
-        .iter()
-        .copied()
-        .find(|state| state.as_str() == row.lifecycle_state)
-        .ok_or_else(|| {
-            RepoError::CorruptRow(format!(
-                "pricing_plan revision {revision} of plan {} holds lifecycle_state {}",
-                row.plan_id, row.lifecycle_state
-            ))
-        })?;
-    let row_version = RowVersion::from_stored(row.row_version).map_err(|e| {
-        RepoError::CorruptRow(format!(
-            "pricing_plan revision {revision} of plan {}: {e}",
-            row.plan_id
-        ))
-    })?;
+    let lifecycle_state = read_lifecycle(&row)?;
+    let row_version = read_row_version(&row)?;
+    let billing_cycle = read_optional_token(
+        "pricing_plan.billing_cycle",
+        row.billing_cycle.as_deref(),
+        BillingCycle::ALL,
+        BillingCycle::as_str,
+    )?;
+    let frequency = read_frequency(&row)?;
+    let purchase_min_qty = read_qty("pricing_plan.purchase_min_qty", row.purchase_min_qty)?;
+    let purchase_max_qty = read_qty("pricing_plan.purchase_max_qty", row.purchase_max_qty)?;
     Ok(PlanRevision {
         plan_id: PlanId::new(row.plan_id),
         revision,
         sku_id: row.sku_id,
         plan_tier: row.plan_tier,
-        billing_cycle: row.billing_cycle,
+        billing_cycle,
+        frequency,
+        plan_tier_override: row.plan_tier_override,
+        purchase_min_qty,
+        purchase_max_qty,
+        invoice_grouping_key: row.invoice_grouping_key,
         available_from: row.available_from,
         available_to: row.available_to,
         lifecycle_state,
@@ -801,4 +1150,154 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
         created_at_utc: row.created_at_utc,
         row_version,
     })
+}
+
+/// The revision's state, read back into the machine that owns its edges.
+///
+/// Separate from [`to_domain`] because [`mutable_draft`] needs this one reading
+/// and not the whole value: it hands its caller the **stored row**, so that a
+/// child row's `tenant_id` can be copied from the parent rather than trusted
+/// from a request.
+fn read_lifecycle(row: &plan::Model) -> Result<LifecycleState, RepoError> {
+    LifecycleState::ALL
+        .iter()
+        .copied()
+        .find(|state| state.as_str() == row.lifecycle_state)
+        .ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "pricing_plan revision {} of plan {} holds lifecycle_state {}",
+                row.revision, row.plan_id, row.lifecycle_state
+            ))
+        })
+}
+
+/// The revision's entity tag, for the same two readers.
+fn read_row_version(row: &plan::Model) -> Result<RowVersion, RepoError> {
+    RowVersion::from_stored(row.row_version).map_err(|e| {
+        RepoError::CorruptRow(format!(
+            "pricing_plan revision {} of plan {}: {e}",
+            row.revision, row.plan_id
+        ))
+    })
+}
+
+/// Reassemble the three interval columns into the one value the domain holds.
+///
+/// **The `custom_every_n` member of [`Frequency::ALL`] is a variant
+/// representative, not data.** Its `n` is
+/// [`Frequency::CUSTOM_INTERVAL_PLACEHOLDER`] because a token cannot say what
+/// interval somebody authored, so the match below uses that member for its
+/// *shape* and rebuilds `n` and `unit` from the columns that actually hold
+/// them. Keeping what the list carried would read every custom plan back as
+/// "every 1 day" — silently, on the happy path, with no error anywhere.
+///
+/// The two pairings `chk_pricing_plan_custom_interval_pairing` refuses are
+/// refused again here. The half-set pair the CHECK cannot see — one interval
+/// column set under a fixed or absent frequency, where its right-hand side is
+/// already false — is refused **only** here, which is why the reading is
+/// written as a whitelist of the two legal shapes rather than as a lookup that
+/// ignores whatever else the row carries.
+fn read_frequency(row: &plan::Model) -> Result<Option<Frequency>, RepoError> {
+    let Some(token) = row.frequency.as_deref() else {
+        if row.custom_interval_n.is_some() || row.custom_interval_unit.is_some() {
+            return Err(orphan_interval(row));
+        }
+        return Ok(None);
+    };
+    match read_token(
+        "pricing_plan.frequency",
+        token,
+        Frequency::ALL,
+        Frequency::as_str,
+    )? {
+        Frequency::CustomEveryN { .. } => {
+            let (Some(n), Some(unit)) =
+                (row.custom_interval_n, row.custom_interval_unit.as_deref())
+            else {
+                return Err(RepoError::CorruptRow(format!(
+                    "pricing_plan revision {} of plan {} holds frequency custom_every_n \
+                     with no interval",
+                    row.revision, row.plan_id
+                )));
+            };
+            Ok(Some(Frequency::CustomEveryN {
+                n: u32::try_from(n).map_err(|_| {
+                    RepoError::CorruptRow(format!(
+                        "pricing_plan.custom_interval_n holds {n}, not an interval"
+                    ))
+                })?,
+                unit: read_token(
+                    "pricing_plan.custom_interval_unit",
+                    unit,
+                    CustomIntervalUnit::ALL,
+                    CustomIntervalUnit::as_str,
+                )?,
+            }))
+        }
+        fixed @ (Frequency::Monthly
+        | Frequency::Quarterly
+        | Frequency::Semiannual
+        | Frequency::Annual) => {
+            if row.custom_interval_n.is_some() || row.custom_interval_unit.is_some() {
+                return Err(orphan_interval(row));
+            }
+            Ok(Some(fixed))
+        }
+    }
+}
+
+/// An interval column set under a frequency that has no interval.
+fn orphan_interval(row: &plan::Model) -> RepoError {
+    RepoError::CorruptRow(format!(
+        "pricing_plan revision {} of plan {} carries a custom interval under frequency {}",
+        row.revision,
+        row.plan_id,
+        row.frequency.as_deref().unwrap_or("(none)")
+    ))
+}
+
+/// Read a purchase bound back into the unsigned type the domain counts in.
+fn read_qty(column: &str, stored: Option<i64>) -> Result<Option<u64>, RepoError> {
+    let Some(value) = stored else {
+        return Ok(None);
+    };
+    u64::try_from(value)
+        .map(Some)
+        .map_err(|_| RepoError::CorruptRow(format!("{column} holds {value}, not a quantity")))
+}
+
+/// Read a nullable token column.
+fn read_optional_token<T: Copy>(
+    column: &str,
+    token: Option<&str>,
+    candidates: &[T],
+    render: fn(T) -> &'static str,
+) -> Result<Option<T>, RepoError> {
+    let Some(token) = token else {
+        return Ok(None);
+    };
+    read_token(column, token, candidates, render).map(Some)
+}
+
+/// Read a stored token back into the domain value that renders it.
+///
+/// The candidate list is always the enum's own `ALL`, never a copy of it. A
+/// hand-written inverse list is one a variant added later goes missing from
+/// while everything still compiles, and what that produces is a perfectly legal
+/// row read back as a corrupt one.
+///
+/// Shared with `plan_shape_repo`, which reads the same slice's tokens off this
+/// revision's **child** tables: one lookup over one authority, rather than a
+/// second copy a later variant can go missing from.
+pub(super) fn read_token<T: Copy>(
+    column: &str,
+    token: &str,
+    candidates: &[T],
+    render: fn(T) -> &'static str,
+) -> Result<T, RepoError> {
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate| render(*candidate) == token)
+        .ok_or_else(|| RepoError::CorruptRow(format!("{column} holds {token}")))
 }

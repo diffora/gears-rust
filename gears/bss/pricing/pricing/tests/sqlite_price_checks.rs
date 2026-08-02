@@ -1,5 +1,6 @@
-//! The row `CHECK` constraints on `pricing_price`, proven against a real
-//! database.
+//! The row `CHECK` constraints on `pricing_price` — and the one partial
+//! `UNIQUE` index that is a slice rule rather than a key — proven against a
+//! real database.
 //!
 //! A `CHECK` that is silently wrong is a `CHECK` that never refuses anything,
 //! and nothing else in the suite notices: deleting
@@ -26,7 +27,7 @@
 //! cannot hold such a token in the first place", which is a statement about the
 //! schema that only a test reaching past the repository can make.
 //!
-//! Four rules get cases here, and the token sets below are written out as
+//! Five rules get cases here, and the token sets below are written out as
 //! literals rather than derived from the domain enums on purpose — a pin that
 //! moved with the thing it pins would agree with any schema at all.
 //!
@@ -55,6 +56,18 @@
 //!
 //! **The grandfathering pair**: the cohort / eligibility biconditional in both
 //! directions, and the horizon that only the grandfathered class may carry.
+//!
+//! **Meter injectivity** (`design/02-plan-definition.md` §6,
+//! `inst-cmp-injective` / D-103), the one rule here that a `UNIQUE` index says
+//! rather than a `CHECK`: one priced line per `(meter, dimension_key)` per
+//! scope-key slice. Two of its arms are only reachable from a suite that writes
+//! its own rows. The **undimensioned** pair is one — `dimension_key` is
+//! `NOT NULL DEFAULT ''` so that two of them collide, and a case built only
+//! from dimensioned rows would pass just as happily against the nullable column
+//! whose distinct NULLs let the commonest duplicate line through. The other is
+//! the pair that disagrees about `charge_kind`, which no writer in this gear
+//! would produce and which is the only shape that tells this index apart from
+//! the scope-key one beside it.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -77,7 +90,7 @@ const FOREIGN_TOKEN: &str = "sum_of_squares";
 /// Refused, **and** by the named constraint.
 ///
 /// Naming it is what makes the case a proof. `pricing_price` carries twenty
-/// `CHECK` constraints and two partial `UNIQUE` indexes, several of which can
+/// `CHECK` constraints and three partial `UNIQUE` indexes, several of which can
 /// answer the same statement — an INSERT that lands on an occupied scope key is
 /// refused whatever its `model_kind` says — so a test that accepted any error
 /// would pass against a table whose constraint under test had been deleted.
@@ -95,6 +108,27 @@ async fn must_violate(conn: &DatabaseConnection, sql: &str, constraint: &str) {
     assert!(
         message.contains(constraint),
         "the refusal must be `{constraint}`, got: {message}"
+    );
+}
+
+/// Refused by a `UNIQUE` index, **and** by the one whose axis list is given.
+///
+/// `SQLite` names the colliding **columns** rather than the index, so the axis
+/// list — in order — is the index's identity, and `expected` carries the whole
+/// of it rather than a few members. Three partial `UNIQUE` indexes stand over
+/// overlapping column sets of this table, so a case that accepted any unique
+/// violation would pass with the index under test deleted; one that accepted a
+/// subset of the axes would pass against an index that had grown `charge_kind`,
+/// which is the very column §6 leaves out.
+async fn must_collide(conn: &DatabaseConnection, sql: &str, expected: &str) {
+    let err = exec(conn, sql)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("the index must refuse: {sql}"));
+    let message = err.to_string();
+    assert!(
+        message.contains(expected),
+        "the refusal must be `{expected}`, got: {message}"
     );
 }
 
@@ -170,6 +204,79 @@ fn insert_token_row(seq: usize, column: &str, token: &str) -> String {
         chosen("lifecycle_state", "draft"),
     )
 }
+
+/// A row as `uq_pricing_price_meter_line_current` sees it: the axes it keys on
+/// that a case varies, the two columns that decide whether it looks at the row
+/// at all (`lifecycle_state`, `meter`), and the one scope-key axis it
+/// deliberately does not carry (`charge_kind`).
+#[derive(Clone, Copy)]
+struct Line {
+    seq: usize,
+    region: &'static str,
+    charge_kind: &'static str,
+    cohort: &'static str,
+    meter: Option<&'static str>,
+    dimension_key: &'static str,
+    lifecycle_state: &'static str,
+}
+
+/// The published, undimensioned usage line every case below varies one axis of.
+const LINE: Line = Line {
+    seq: 0,
+    region: "EU",
+    charge_kind: "usage",
+    cohort: "none",
+    meter: Some("api_calls"),
+    dimension_key: "",
+    lifecycle_state: "published",
+};
+
+/// The INSERT for one [`Line`].
+///
+/// `price_eligibility` follows `cohort` instead of being an axis of its own,
+/// for the reason [`insert_token_row`] pairs them: the biconditional binds the
+/// two, so a case that set a generation under `all_subscriptions` would be
+/// refused by a `CHECK` rather than by the index under test.
+fn insert_line(line: &Line) -> String {
+    let Line {
+        seq,
+        region,
+        charge_kind,
+        cohort,
+        meter,
+        dimension_key,
+        lifecycle_state,
+    } = *line;
+    let eligibility = if cohort == "none" {
+        "all_subscriptions"
+    } else {
+        "existing_grandfathered"
+    };
+    let meter = meter.map_or_else(|| "NULL".to_owned(), |m| format!("'{m}'"));
+    format!(
+        "INSERT INTO pricing_price (
+            price_id, tenant_id, plan_id, currency, region, phase,
+            price_eligibility, cohort, charge_kind, meter, dimension_key,
+            lifecycle_state, created_by, created_at_utc)
+         VALUES ('eeee0000-0000-0000-0000-{seq:012}', '{TENANT}', '{PLAN}', 'USD',
+            '{region}', '{PHASE}', '{eligibility}', '{cohort}', '{charge_kind}',
+            {meter}, '{dimension_key}', '{lifecycle_state}', '{ACTOR}',
+            '2026-08-02 10:00:00 +00:00')"
+    )
+}
+
+/// What `SQLite` prints when `uq_pricing_price_meter_line_current` is the index
+/// answering — the exact list, in index order.
+///
+/// `charge_kind` is absent from it and that absence is asserted by the list
+/// being complete: the scope-key indexes carry `charge_kind` and carry neither
+/// `meter` nor `dimension_key`, so no other index on this table can produce
+/// this string.
+const LINE_COLLISION: &str = "UNIQUE constraint failed: \
+     pricing_price.tenant_id, pricing_price.plan_id, pricing_price.currency, \
+     pricing_price.region, pricing_price.price_overlay, pricing_price.phase, \
+     pricing_price.price_eligibility, pricing_price.cohort, \
+     pricing_price.meter, pricing_price.dimension_key";
 
 #[tokio::test]
 async fn package_block_fields_need_the_kind_that_gives_them_meaning() {
@@ -617,4 +724,175 @@ async fn the_cohort_pairing_holds_both_ways_and_the_horizon_needs_its_class() {
     )
     .await;
     assert_eq!(landed, "2", "only the two permitted rows landed");
+}
+
+#[tokio::test]
+async fn a_scope_key_slice_prices_a_meter_line_once_dimensioned_or_not() {
+    let conn = migrated_db().await;
+
+    must_succeed(&conn, &insert_line(&LINE)).await;
+
+    // The case that identifies the index. These two rows disagree about
+    // `charge_kind` and about nothing else, so their canonical scope keys
+    // differ and `uq_pricing_price_scope_key_current` admits the second one;
+    // the only index left that can refuse it is the one under test. That is
+    // also the shape §6's column list is *about*: a meter is a usage row's
+    // column, so an index carrying `charge_kind` would let two rows price one
+    // line by disagreeing about their kind.
+    //
+    // Neither row carries a `dimension_key`, so what collides here is the
+    // empty-tuple sentinel. This arm is the one a nullable column loses: two
+    // NULLs compare as distinct in a unique index on both engines, and an
+    // undimensioned line is the ordinary usage row, not an edge of one.
+    must_collide(
+        &conn,
+        &insert_line(&Line {
+            seq: 1,
+            charge_kind: "one_time",
+            ..LINE
+        }),
+        LINE_COLLISION,
+    )
+    .await;
+
+    // And the same on a dimensioned line, so that the sentinel arm above cannot
+    // be the only reason the index is ever consulted.
+    let dimensioned = Line {
+        region: "D0",
+        dimension_key: "region=eu",
+        ..LINE
+    };
+    must_succeed(
+        &conn,
+        &insert_line(&Line {
+            seq: 2,
+            ..dimensioned
+        }),
+    )
+    .await;
+    must_collide(
+        &conn,
+        &insert_line(&Line {
+            seq: 3,
+            charge_kind: "one_time",
+            ..dimensioned
+        }),
+        LINE_COLLISION,
+    )
+    .await;
+
+    // The production shape of the rule: two `usage` rows on one slice pricing
+    // one meter. It is refused — and this arm alone cannot say by which index,
+    // because such a pair violates the scope-key index too and either may
+    // answer first. It is here because it is the duplicate the rule is written
+    // about; the arms above are what pin the index that carries it.
+    let err = exec(&conn, &insert_line(&Line { seq: 4, ..LINE }))
+        .await
+        .expect_err("a second published usage row on one line must not land");
+    assert!(
+        err.to_string().contains("UNIQUE constraint failed"),
+        "a duplicate line must be a unique violation, got: {err}"
+    );
+
+    let landed = scalar(
+        &conn,
+        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price",
+    )
+    .await;
+    assert_eq!(landed, "2", "only the two distinct lines landed");
+}
+
+#[tokio::test]
+async fn the_line_index_admits_what_its_axes_and_its_predicate_distinguish() {
+    let conn = migrated_db().await;
+
+    // `dimension_key` discriminates. `charge_kind` differs too — it has to, or
+    // the scope-key index would answer before this one is reached — and it is
+    // not in this index, so as far as the index is concerned these two rows
+    // differ in the dimension alone. Drop `dimension_key` from the column list
+    // and they collide.
+    let undimensioned = Line {
+        seq: 10,
+        region: "K0",
+        ..LINE
+    };
+    must_succeed(&conn, &insert_line(&undimensioned)).await;
+    must_succeed(
+        &conn,
+        &insert_line(&Line {
+            seq: 11,
+            charge_kind: "one_time",
+            dimension_key: "region=eu",
+            ..undimensioned
+        }),
+    )
+    .await;
+
+    // `cohort` discriminates, which is ADR-0002's case and the reason the axis
+    // is in the key at all: a second grandfathering cutover retains a second
+    // generation of the same usage line. Both rows are `usage`, so nothing but
+    // the generation tells them apart — drop `cohort` and the index refuses the
+    // cutover instead of the duplicate.
+    let generation = Line {
+        seq: 12,
+        region: "K1",
+        cohort: "1780000000000",
+        ..LINE
+    };
+    must_succeed(&conn, &insert_line(&generation)).await;
+    must_succeed(
+        &conn,
+        &insert_line(&Line {
+            seq: 13,
+            cohort: "1790000000000",
+            ..generation
+        }),
+    )
+    .await;
+
+    // A row with no meter prices no line, and the index holds no entry for one.
+    let meterless = Line {
+        seq: 14,
+        region: "K2",
+        charge_kind: "recurring",
+        meter: None,
+        ..LINE
+    };
+    must_succeed(&conn, &insert_line(&meterless)).await;
+    must_succeed(
+        &conn,
+        &insert_line(&Line {
+            seq: 15,
+            charge_kind: "one_time",
+            ..meterless
+        }),
+    )
+    .await;
+
+    // The predicate is partial over `published`, so a draft may restate a line
+    // its published row already prices — which is what authoring a reprice *is*
+    // before it is published. An index without the predicate would refuse the
+    // draft, and there would be no way to author a successor at all.
+    let current = Line {
+        seq: 16,
+        region: "K3",
+        ..LINE
+    };
+    must_succeed(&conn, &insert_line(&current)).await;
+    must_succeed(
+        &conn,
+        &insert_line(&Line {
+            seq: 17,
+            lifecycle_state: "draft",
+            ..current
+        }),
+    )
+    .await;
+
+    let landed = scalar(
+        &conn,
+        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price",
+    )
+    .await;
+    assert_eq!(landed, "8", "every distinguished row landed");
 }

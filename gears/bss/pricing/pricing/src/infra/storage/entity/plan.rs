@@ -25,7 +25,31 @@ pub struct Model {
     pub tenant_id: Uuid,
     pub sku_id: Option<Uuid>,
     pub plan_tier: Option<String>,
+    /// `one_time` | `recurring` | `usage` | `hybrid`, `CHECK`-constrained to
+    /// those four; the value set is `domain::plan_shape::BillingCycle`.
     pub billing_cycle: Option<String>,
+    /// `monthly` | `quarterly` | `semiannual` | `annual` | `custom_every_n`.
+    ///
+    /// The custom token is the bare discriminator: its interval rides the two
+    /// columns below, and `chk_pricing_plan_custom_interval_pairing` binds the
+    /// three together so the only pairings the table admits are the ones
+    /// `domain::plan_shape::Frequency` can represent.
+    pub frequency: Option<String>,
+    /// The interval count of a `custom_every_n` frequency, `> 0`.
+    pub custom_interval_n: Option<i32>,
+    /// `days` | `months` — what [`Model::custom_interval_n`] counts.
+    pub custom_interval_unit: Option<String>,
+    /// Whether the tier deliberately diverges from the parent SKU's under an
+    /// explicit audited override (§6, P3). `NOT NULL DEFAULT false`, so a plan
+    /// that never mentions it is not overriding anything.
+    pub plan_tier_override: bool,
+    /// Minimum purchasable quantity (one-time plans).
+    pub purchase_min_qty: Option<i64>,
+    /// Maximum purchasable quantity (one-time plans), `>=`
+    /// [`Model::purchase_min_qty`] where both are set.
+    pub purchase_max_qty: Option<i64>,
+    /// The Billing invoice-layout hint (D-96). NULL or empty means no grouping.
+    pub invoice_grouping_key: Option<String>,
     /// `draft` | `abandoned` | `published` | `superseded` | `retired`.
     /// `CHECK`-constrained to those five; the legal edges between them are
     /// `domain::lifecycle::LifecycleState`.

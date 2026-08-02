@@ -7,6 +7,7 @@ use crate::domain::money::MinorAmount;
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
     RolloverPolicy, TierAggregationWindow, TierBand, TierQualificationWindow,
+    unit_determining_mismatch,
 };
 use crate::domain::rules::SUPERSESSION_UNIT_MISMATCH;
 use crate::domain::scope_key::ChargeKind;
@@ -298,6 +299,55 @@ fn authoring_the_default_qualification_window_is_not_a_unit_change() {
     ];
 
     assert!(judge(&SupersessionPair::new(before, after)).is_publishable());
+}
+
+#[test]
+fn the_ten_field_list_is_the_shared_seven_between_this_guards_own_three() {
+    // The regression the factoring had to not cause. `mismatched_unit_fields`
+    // is `unit_determining_mismatch` with `meter` and `dimensionKey` in front
+    // and the carry-conditioned allowance behind, in that order - a refactor
+    // that reordered the report, dropped a field, or quietly grew a second copy
+    // of the seven would still compile.
+    let mut successor = predecessor();
+    successor.meter = Some("ingress_bytes".to_owned());
+    successor.dimension_key = "region".to_owned();
+    successor.model_kind = Some(ModelKind::Package);
+    successor.bands = Vec::new();
+    successor.package_size = Some(100);
+    successor.package_price_minor = Some(minor(500));
+    successor.billing_granularity = Some(BillingGranularity::PerDay);
+    successor.aggregation_function = Some(AggregationFunction::Peak);
+    successor.aggregation_granularity = Some(AggregationGranularity::Day);
+    successor.tier_aggregation_window = Some(TierAggregationWindow::InvoicePeriod);
+    successor.tier_qualification_window = Some(TierQualificationWindow::TrailingPeriod);
+    successor.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+
+    let pair = SupersessionPair::new(predecessor(), successor.clone());
+    let changed = pair.mismatched_unit_fields();
+
+    assert_eq!(
+        changed,
+        vec![
+            "meter",
+            "dimensionKey",
+            "model_kind",
+            "billingGranularity",
+            "aggregationFunction",
+            "aggregationGranularity",
+            "tierAggregationWindow",
+            "tierQualificationWindow",
+            "package_size",
+            "included_allowance",
+        ]
+    );
+    // And the middle seven are that function's answer, not a copy of it.
+    assert_eq!(
+        changed[2..9],
+        unit_determining_mismatch(&predecessor(), &successor)
+    );
 }
 
 #[test]

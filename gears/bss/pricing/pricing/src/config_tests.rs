@@ -13,6 +13,11 @@ fn defaults_are_the_ratified_launch_values() {
     assert_eq!(cfg.jobs.catalog_version_overdue_secs, 300);
     assert_eq!(cfg.limits.max_tier_bands_per_row, 100);
     assert_eq!(cfg.limits.max_price_rows_per_plan, 500);
+    // PRD 14: `customEveryNDays <= 366`, `customEveryNMonths <= 24`, ratified
+    // 2026-07-28. Unlike the two above these are hard caps -- P1 rejects an
+    // over-cap interval at authoring rather than clamping it.
+    assert_eq!(cfg.limits.max_custom_interval_days, 366);
+    assert_eq!(cfg.limits.max_custom_interval_months, 24);
     assert_eq!(cfg.limits.idempotency_key_ttl_hours, 24);
     assert_eq!(
         cfg.fixtures.registry_path,
@@ -138,6 +143,23 @@ fn zero_limits_are_rejected_by_field() {
                 ..LimitsConfig::default()
             },
             "limits.max_price_rows_per_plan",
+        ),
+        // A zero interval cap is not a permissive one: P1 also requires
+        // `n > 0`, so no `n` at all could satisfy both bounds and every custom
+        // frequency would be unpublishable.
+        (
+            LimitsConfig {
+                max_custom_interval_days: 0,
+                ..LimitsConfig::default()
+            },
+            "limits.max_custom_interval_days",
+        ),
+        (
+            LimitsConfig {
+                max_custom_interval_months: 0,
+                ..LimitsConfig::default()
+            },
+            "limits.max_custom_interval_months",
         ),
         (
             LimitsConfig {

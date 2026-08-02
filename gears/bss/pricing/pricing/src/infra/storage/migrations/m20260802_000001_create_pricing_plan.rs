@@ -47,6 +47,41 @@
 //! either backend: it names a deployment role this migration does not own, and
 //! `SQLite` has no `GRANT`/`REVOKE` at all — the trigger is the portable half of
 //! the "REVOKE + trigger" discipline the design set describes.
+//!
+//! # The Slice-2 shape columns (`design/02-plan-definition.md` §6)
+//!
+//! The table is Foundation-owned and its **capability semantics** are not:
+//! Slice 2 declares `billing_cycle`'s value set, the `frequency` metadata beside
+//! it, `plan_tier_override`, the one-time purchase-quantity window and D-96's
+//! `invoice_grouping_key`. Each of them joins the frozen-column whitelist above,
+//! and that is not bookkeeping: a column outside the whitelist is a column an
+//! ad-hoc UPDATE can move under a `CatalogVersion` that is already frozen, which
+//! the projector's warm re-drive then re-materializes as though it had always
+//! been that way (§4.4). The whitelist is enumerated per column by
+//! `tests/sqlite_plan_guards.rs` for exactly that reason.
+//!
+//! **The custom-interval pairing.** `Frequency` makes two states unrepresentable
+//! in the domain — a `monthly` frequency carrying an interval, and a custom one
+//! carrying none — and `chk_pricing_plan_custom_interval_pairing` is the
+//! physical half of the same property, because three columns can express what
+//! one enum cannot. It carries an explicit `frequency IS NOT NULL` conjunct: a
+//! bare `frequency = 'custom_every_n'` is NULL when the column is NULL, and both
+//! engines count a NULL CHECK as **satisfied** — the reason
+//! `chk_pricing_price_package_fields_kind` in migration 000002 spells out its
+//! own `IS NOT NULL` the same way. What the biconditional does **not** catch is
+//! a half-set pair under a non-custom frequency (`custom_interval_n` set,
+//! `custom_interval_unit` NULL): its right-hand side is already false, so the
+//! CHECK holds. That row is refused where it is read instead —
+//! `plan_repo::read_frequency` accepts an interval column only on the custom
+//! token — so the typed path fails closed on it, with the schema standing behind
+//! the reading rather than in front of it.
+//!
+//! **`chk_pricing_plan_purchase_qty` makes `PURCHASE_QTY_RANGE_INVALID`
+//! unreachable through `PlanRepo`**, and the rule stays anyway: the validation
+//! pipeline judges a subject the **caller** assembled, before any of it is a
+//! row, and its contract is to enumerate every finding in one report. A pipeline
+//! that let this one arrive as a driver error would answer a publish attempt
+//! with an internal fault instead of a line an author can act on.
 
 use sea_orm_migration::prelude::*;
 
@@ -62,24 +97,55 @@ const PG_UP_STATEMENTS: &[&str] = &[
     // shared `coord` migration, which issues the same statement.
     "CREATE SCHEMA IF NOT EXISTS bss",
     "CREATE TABLE bss.pricing_plan (
-        plan_id         uuid        NOT NULL,
-        revision        bigint      NOT NULL,
-        tenant_id       uuid        NOT NULL,
-        sku_id          uuid,
-        plan_tier       text,
-        billing_cycle   text,
-        lifecycle_state text        NOT NULL,
-        available_from  timestamptz,
-        available_to    timestamptz,
-        created_by      uuid        NOT NULL,
-        created_at_utc  timestamptz NOT NULL DEFAULT now(),
-        row_version     bigint      NOT NULL DEFAULT 0,
+        plan_id              uuid        NOT NULL,
+        revision             bigint      NOT NULL,
+        tenant_id            uuid        NOT NULL,
+        sku_id               uuid,
+        plan_tier            text,
+        billing_cycle        text,
+        frequency            text,
+        custom_interval_n    int,
+        custom_interval_unit text,
+        plan_tier_override   boolean     NOT NULL DEFAULT false,
+        purchase_min_qty     bigint,
+        purchase_max_qty     bigint,
+        invoice_grouping_key text,
+        lifecycle_state      text        NOT NULL,
+        available_from       timestamptz,
+        available_to         timestamptz,
+        created_by           uuid        NOT NULL,
+        created_at_utc       timestamptz NOT NULL DEFAULT now(),
+        row_version          bigint      NOT NULL DEFAULT 0,
         PRIMARY KEY (plan_id, revision),
         CONSTRAINT chk_pricing_plan_lifecycle_state CHECK (
             lifecycle_state IN ('draft','abandoned','published','superseded','retired')),
         CONSTRAINT chk_pricing_plan_revision CHECK (revision >= 0),
         CONSTRAINT chk_pricing_plan_availability CHECK (
-            available_from IS NULL OR available_to IS NULL OR available_to > available_from)
+            available_from IS NULL OR available_to IS NULL OR available_to > available_from),
+        -- The Slice-2 value sets (design 02-plan-definition 6). The domain
+        -- renders exactly these tokens; a near-miss stored here reads back as a
+        -- corrupt row and the revision is unreachable through every typed path.
+        CONSTRAINT chk_pricing_plan_billing_cycle CHECK (
+            billing_cycle IS NULL
+            OR billing_cycle IN ('one_time','recurring','usage','hybrid')),
+        CONSTRAINT chk_pricing_plan_frequency CHECK (
+            frequency IS NULL
+            OR frequency IN ('monthly','quarterly','semiannual','annual','custom_every_n')),
+        CONSTRAINT chk_pricing_plan_custom_interval_unit CHECK (
+            custom_interval_unit IS NULL
+            OR custom_interval_unit IN ('days','months')),
+        CONSTRAINT chk_pricing_plan_custom_interval_n CHECK (
+            custom_interval_n IS NULL OR custom_interval_n > 0),
+        -- The physical half of `Frequency`'s unrepresentable pairing. The
+        -- `frequency IS NOT NULL` conjunct is not redundant: without it a NULL
+        -- frequency makes the whole CHECK NULL, which both engines count as
+        -- satisfied. See the module doc.
+        CONSTRAINT chk_pricing_plan_custom_interval_pairing CHECK (
+            (frequency IS NOT NULL AND frequency = 'custom_every_n')
+            = (custom_interval_n IS NOT NULL AND custom_interval_unit IS NOT NULL)),
+        CONSTRAINT chk_pricing_plan_purchase_qty CHECK (
+            purchase_min_qty IS NULL OR purchase_max_qty IS NULL
+            OR purchase_min_qty <= purchase_max_qty)
     )",
     // At most one CURRENT revision per plan (D-128 widened the predicate).
     // `abandoned` is outside it: a tombstone never published, so it is not the
@@ -127,17 +193,24 @@ const PG_UP_STATEMENTS: &[&str] = &[
           -- below and left by no flip, so the number it consumed can never be
           -- attached to a different shape.
 
-          IF NEW.plan_id        IS DISTINCT FROM OLD.plan_id
-          OR NEW.revision       IS DISTINCT FROM OLD.revision
-          OR NEW.tenant_id      IS DISTINCT FROM OLD.tenant_id
-          OR NEW.sku_id         IS DISTINCT FROM OLD.sku_id
-          OR NEW.plan_tier      IS DISTINCT FROM OLD.plan_tier
-          OR NEW.billing_cycle  IS DISTINCT FROM OLD.billing_cycle
-          OR NEW.available_from IS DISTINCT FROM OLD.available_from
-          OR NEW.available_to   IS DISTINCT FROM OLD.available_to
-          OR NEW.created_by     IS DISTINCT FROM OLD.created_by
-          OR NEW.created_at_utc IS DISTINCT FROM OLD.created_at_utc
-          OR NEW.row_version    IS DISTINCT FROM OLD.row_version THEN
+          IF NEW.plan_id              IS DISTINCT FROM OLD.plan_id
+          OR NEW.revision             IS DISTINCT FROM OLD.revision
+          OR NEW.tenant_id            IS DISTINCT FROM OLD.tenant_id
+          OR NEW.sku_id               IS DISTINCT FROM OLD.sku_id
+          OR NEW.plan_tier            IS DISTINCT FROM OLD.plan_tier
+          OR NEW.billing_cycle        IS DISTINCT FROM OLD.billing_cycle
+          OR NEW.frequency            IS DISTINCT FROM OLD.frequency
+          OR NEW.custom_interval_n    IS DISTINCT FROM OLD.custom_interval_n
+          OR NEW.custom_interval_unit IS DISTINCT FROM OLD.custom_interval_unit
+          OR NEW.plan_tier_override   IS DISTINCT FROM OLD.plan_tier_override
+          OR NEW.purchase_min_qty     IS DISTINCT FROM OLD.purchase_min_qty
+          OR NEW.purchase_max_qty     IS DISTINCT FROM OLD.purchase_max_qty
+          OR NEW.invoice_grouping_key IS DISTINCT FROM OLD.invoice_grouping_key
+          OR NEW.available_from       IS DISTINCT FROM OLD.available_from
+          OR NEW.available_to         IS DISTINCT FROM OLD.available_to
+          OR NEW.created_by           IS DISTINCT FROM OLD.created_by
+          OR NEW.created_at_utc       IS DISTINCT FROM OLD.created_at_utc
+          OR NEW.row_version          IS DISTINCT FROM OLD.row_version THEN
             RAISE EXCEPTION
               'pricing_plan: revision % of plan % is frozen; only a sanctioned lifecycle_state flip is permitted',
               OLD.revision, OLD.plan_id;
@@ -179,24 +252,48 @@ const PG_DOWN_STATEMENTS: &[&str] = &[
 
 const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE pricing_plan (
-        plan_id         text    NOT NULL,
-        revision        bigint  NOT NULL,
-        tenant_id       text    NOT NULL,
-        sku_id          text,
-        plan_tier       text,
-        billing_cycle   text,
-        lifecycle_state text    NOT NULL,
-        available_from  text,
-        available_to    text,
-        created_by      text    NOT NULL,
-        created_at_utc  text    NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-        row_version     bigint  NOT NULL DEFAULT 0,
+        plan_id              text    NOT NULL,
+        revision             bigint  NOT NULL,
+        tenant_id            text    NOT NULL,
+        sku_id               text,
+        plan_tier            text,
+        billing_cycle        text,
+        frequency            text,
+        custom_interval_n    int,
+        custom_interval_unit text,
+        plan_tier_override   boolean NOT NULL DEFAULT 0,
+        purchase_min_qty     bigint,
+        purchase_max_qty     bigint,
+        invoice_grouping_key text,
+        lifecycle_state      text    NOT NULL,
+        available_from       text,
+        available_to         text,
+        created_by           text    NOT NULL,
+        created_at_utc       text    NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        row_version          bigint  NOT NULL DEFAULT 0,
         PRIMARY KEY (plan_id, revision),
         CONSTRAINT chk_pricing_plan_lifecycle_state CHECK (
             lifecycle_state IN ('draft','abandoned','published','superseded','retired')),
         CONSTRAINT chk_pricing_plan_revision CHECK (revision >= 0),
         CONSTRAINT chk_pricing_plan_availability CHECK (
-            available_from IS NULL OR available_to IS NULL OR available_to > available_from)
+            available_from IS NULL OR available_to IS NULL OR available_to > available_from),
+        CONSTRAINT chk_pricing_plan_billing_cycle CHECK (
+            billing_cycle IS NULL
+            OR billing_cycle IN ('one_time','recurring','usage','hybrid')),
+        CONSTRAINT chk_pricing_plan_frequency CHECK (
+            frequency IS NULL
+            OR frequency IN ('monthly','quarterly','semiannual','annual','custom_every_n')),
+        CONSTRAINT chk_pricing_plan_custom_interval_unit CHECK (
+            custom_interval_unit IS NULL
+            OR custom_interval_unit IN ('days','months')),
+        CONSTRAINT chk_pricing_plan_custom_interval_n CHECK (
+            custom_interval_n IS NULL OR custom_interval_n > 0),
+        CONSTRAINT chk_pricing_plan_custom_interval_pairing CHECK (
+            (frequency IS NOT NULL AND frequency = 'custom_every_n')
+            = (custom_interval_n IS NOT NULL AND custom_interval_unit IS NOT NULL)),
+        CONSTRAINT chk_pricing_plan_purchase_qty CHECK (
+            purchase_min_qty IS NULL OR purchase_max_qty IS NULL
+            OR purchase_min_qty <= purchase_max_qty)
     )",
     "CREATE UNIQUE INDEX uq_pricing_plan_current
         ON pricing_plan (plan_id)
@@ -209,17 +306,24 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE TRIGGER trg_pricing_plan_frozen_columns
         BEFORE UPDATE ON pricing_plan
         FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft'
-          AND (NEW.plan_id        IS NOT OLD.plan_id
-            OR NEW.revision       IS NOT OLD.revision
-            OR NEW.tenant_id      IS NOT OLD.tenant_id
-            OR NEW.sku_id         IS NOT OLD.sku_id
-            OR NEW.plan_tier      IS NOT OLD.plan_tier
-            OR NEW.billing_cycle  IS NOT OLD.billing_cycle
-            OR NEW.available_from IS NOT OLD.available_from
-            OR NEW.available_to   IS NOT OLD.available_to
-            OR NEW.created_by     IS NOT OLD.created_by
-            OR NEW.created_at_utc IS NOT OLD.created_at_utc
-            OR NEW.row_version    IS NOT OLD.row_version)
+          AND (NEW.plan_id              IS NOT OLD.plan_id
+            OR NEW.revision             IS NOT OLD.revision
+            OR NEW.tenant_id            IS NOT OLD.tenant_id
+            OR NEW.sku_id               IS NOT OLD.sku_id
+            OR NEW.plan_tier            IS NOT OLD.plan_tier
+            OR NEW.billing_cycle        IS NOT OLD.billing_cycle
+            OR NEW.frequency            IS NOT OLD.frequency
+            OR NEW.custom_interval_n    IS NOT OLD.custom_interval_n
+            OR NEW.custom_interval_unit IS NOT OLD.custom_interval_unit
+            OR NEW.plan_tier_override   IS NOT OLD.plan_tier_override
+            OR NEW.purchase_min_qty     IS NOT OLD.purchase_min_qty
+            OR NEW.purchase_max_qty     IS NOT OLD.purchase_max_qty
+            OR NEW.invoice_grouping_key IS NOT OLD.invoice_grouping_key
+            OR NEW.available_from       IS NOT OLD.available_from
+            OR NEW.available_to         IS NOT OLD.available_to
+            OR NEW.created_by           IS NOT OLD.created_by
+            OR NEW.created_at_utc       IS NOT OLD.created_at_utc
+            OR NEW.row_version          IS NOT OLD.row_version)
         BEGIN
           SELECT RAISE(ABORT,
             'pricing_plan: revision is frozen; only a sanctioned lifecycle_state flip is permitted');

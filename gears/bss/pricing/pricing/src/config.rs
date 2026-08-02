@@ -147,6 +147,26 @@ pub struct LimitsConfig {
     pub max_tier_bands_per_row: u32,
     /// Soft cap on price rows per plan.
     pub max_price_rows_per_plan: u32,
+    /// Largest `n` a `customEveryN Days(n)` frequency may carry
+    /// (`INVALID_CUSTOM_INTERVAL`, PRD §14 / AC #84).
+    ///
+    /// Unlike the two soft caps above this one is **hard**: P1 says an over-cap
+    /// interval is rejected at authoring with no silent clamp, because a
+    /// clamped interval is a billing period the operator did not author and
+    /// would never see.
+    ///
+    /// **Divergence, recorded rather than designed around**: the PRD ratifies
+    /// this value as *tenant-configurable*, and this section is per
+    /// **deployment**. A per-tenant policy store is a thing the gear does not
+    /// have, and inventing one to satisfy the adjective would be a store no
+    /// document describes; every tenant of a deployment therefore shares this
+    /// cap for now.
+    pub max_custom_interval_days: u32,
+    /// Largest `n` a `customEveryN Months(n)` frequency may carry. The
+    /// months cap is separate from the days cap because the two units bound
+    /// different things; see [`LimitsConfig::max_custom_interval_days`] for the
+    /// hard-cap and per-tenant notes.
+    pub max_custom_interval_months: u32,
     /// Client idempotency-key retention. A replay inside the window returns the
     /// stored response; outside it the key is forgotten and the call executes
     /// again, so this is a correctness-relevant duration, not a cache knob.
@@ -158,6 +178,8 @@ impl Default for LimitsConfig {
         Self {
             max_tier_bands_per_row: 100,
             max_price_rows_per_plan: 500,
+            max_custom_interval_days: 366,
+            max_custom_interval_months: 24,
             idempotency_key_ttl_hours: 24,
         }
     }
@@ -172,8 +194,10 @@ impl LimitsConfig {
 
     /// # Errors
     /// [`ConfigError::ZeroLimit`] for a zero cap: a zero band or row cap makes
-    /// every plan unpublishable, and a zero TTL disables idempotency replay
-    /// silently — both fail loudly at boot instead.
+    /// every plan unpublishable, a zero interval cap makes every custom
+    /// frequency unpublishable (P1 requires `n > 0`, so no `n` could satisfy
+    /// both bounds), and a zero TTL disables idempotency replay silently — all
+    /// fail loudly at boot instead.
     pub const fn validate(&self) -> Result<(), ConfigError> {
         if self.max_tier_bands_per_row == 0 {
             return Err(ConfigError::ZeroLimit {
@@ -183,6 +207,16 @@ impl LimitsConfig {
         if self.max_price_rows_per_plan == 0 {
             return Err(ConfigError::ZeroLimit {
                 field: "limits.max_price_rows_per_plan",
+            });
+        }
+        if self.max_custom_interval_days == 0 {
+            return Err(ConfigError::ZeroLimit {
+                field: "limits.max_custom_interval_days",
+            });
+        }
+        if self.max_custom_interval_months == 0 {
+            return Err(ConfigError::ZeroLimit {
+                field: "limits.max_custom_interval_months",
             });
         }
         if self.idempotency_key_ttl_hours == 0 {

@@ -3,14 +3,29 @@
 use std::collections::HashSet;
 
 use super::{
-    AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, ModelKind, PriceRow,
-    TierBand, model_kind_wire,
+    AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
+    ModelKind, PriceRow, RolloverPolicy, TierAggregationWindow, TierBand, TierQualificationWindow,
+    model_kind_wire, unit_determining_mismatch,
 };
 use crate::domain::money::MinorAmount;
 use crate::domain::scope_key::ChargeKind;
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("test amount is non-negative")
+}
+
+/// A graduated metered row, denominated `per_hour` over the calendar month and
+/// authoring none of the three fields that carry a default.
+fn metered() -> PriceRow {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    row.meter = Some("egress_bytes".to_owned());
+    row.billing_granularity = Some(BillingGranularity::PerHour);
+    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+    row.bands = vec![
+        TierBand::closed(0, 1_000, minor(10)),
+        TierBand::open(1_000, minor(6)),
+    ];
+    row
 }
 
 #[test]
@@ -111,4 +126,77 @@ fn only_the_band_kinds_are_tiered() {
     assert!(PriceRow::new(ChargeKind::Usage, Some(ModelKind::Volume)).is_tiered());
     assert!(!PriceRow::new(ChargeKind::Usage, Some(ModelKind::Package)).is_tiered());
     assert!(!PriceRow::new(ChargeKind::Usage, None).is_tiered());
+}
+
+// ---------------------------------------------------------------------------
+// The shared unit comparison
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_unit_comparison_is_exactly_seven_fields_in_the_design_sets_order() {
+    // The list two guards share (`inst-tb-supersession-units` and
+    // `inst-ph-override-units`). This is the definition side of that sharing:
+    // add a field and this test is short, remove one and it is long, and the
+    // rules over both mechanisms move together either way.
+    let mut after = metered();
+    after.model_kind = Some(ModelKind::Package);
+    after.bands = Vec::new();
+    after.package_size = Some(100);
+    after.package_price_minor = Some(minor(500));
+    after.billing_granularity = Some(BillingGranularity::PerDay);
+    after.aggregation_function = Some(AggregationFunction::Peak);
+    after.aggregation_granularity = Some(AggregationGranularity::Day);
+    after.tier_aggregation_window = Some(TierAggregationWindow::InvoicePeriod);
+    after.tier_qualification_window = Some(TierQualificationWindow::TrailingPeriod);
+
+    assert_eq!(
+        unit_determining_mismatch(&metered(), &after),
+        vec![
+            "model_kind",
+            "billingGranularity",
+            "aggregationFunction",
+            "aggregationGranularity",
+            "tierAggregationWindow",
+            "tierQualificationWindow",
+            "package_size",
+        ]
+    );
+    // Symmetric: it answers which fields moved, not which way, so a caller may
+    // pass its pair in whatever order reads chronologically at its call site.
+    assert_eq!(
+        unit_determining_mismatch(&after, &metered()),
+        unit_determining_mismatch(&metered(), &after)
+    );
+}
+
+#[test]
+fn the_unit_comparison_reads_the_three_defaulted_fields_through_their_defaults() {
+    // "Authored nothing" and "authored the default" are the same row. Comparing
+    // the raw Options here would reject a supersession, and refuse a phase
+    // override, that changed nothing at all.
+    let mut spelled_out = metered();
+    spelled_out.aggregation_function = Some(AggregationFunction::Sum);
+    spelled_out.aggregation_granularity = Some(AggregationGranularity::Hour);
+    spelled_out.tier_qualification_window = Some(TierQualificationWindow::Current);
+
+    assert!(unit_determining_mismatch(&metered(), &spelled_out).is_empty());
+}
+
+#[test]
+fn the_unit_comparison_says_nothing_about_the_price_levers() {
+    // The money and the band set are what repricing and free-trial authoring
+    // move; `meter`, `dimensionKey` and the allowance are the supersession
+    // guard's own three, deliberately not in the shared seven.
+    let mut repriced = metered();
+    repriced.bands = vec![TierBand::open(0, minor(0))];
+    repriced.amount_minor = Some(minor(1));
+    repriced.package_price_minor = Some(minor(900));
+    repriced.meter = Some("ingress_bytes".to_owned());
+    repriced.dimension_key = "region".to_owned();
+    repriced.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+
+    assert!(unit_determining_mismatch(&metered(), &repriced).is_empty());
 }

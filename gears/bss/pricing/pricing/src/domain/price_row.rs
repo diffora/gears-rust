@@ -577,6 +577,73 @@ impl PriceRow {
     }
 }
 
+/// The **unit- and counter-determining fields** two rows of one metered line
+/// disagree on, in the spelling the design set names them.
+///
+/// Seven fields — `model_kind`, `billingGranularity`, `aggregationFunction`,
+/// `aggregationGranularity`, `tierAggregationWindow`, `tierQualificationWindow`
+/// and `package_size` (the D-82 / D-98 list, extended by D-122). Empty means the
+/// two rows meter, derive and price the same way, and whatever else differs
+/// between them is a **price** lever.
+///
+/// ## One list, because two guards ask the same question
+///
+/// The tier counter `Q` is keyed `(subscription, meter, dimensionKey, window)`
+/// and belongs to the subscription's usage history rather than to any row. Two
+/// mechanisms hand a subscriber from one row to another **without** resetting
+/// it, and each has its own rule saying the denomination must not move across
+/// the handover:
+///
+/// - **supersession** ([`SupersessionPair::mismatched_unit_fields`](crate::domain::rules::supersession::SupersessionPair::mismatched_unit_fields),
+///   `inst-tb-supersession-units`), which adds `meter`, `dimensionKey` and the
+///   `carry`-conditioned `included_allowance` to this list;
+/// - **phase conversion**
+///   ([`PhaseOverrideUnits`](crate::domain::plan_rules::phase_graph::PhaseOverrideUnits),
+///   `inst-ph-override-units`, D-89), where a `per_hour` trial row converting
+///   into a `per_day` evergreen row applies an hours-denominated `Q` to
+///   day-denominated bands.
+///
+/// Both are the D-77 factor-of-24 class arriving through a different door, so
+/// the list is written **once**. Two hand-maintained copies is exactly how that
+/// class re-enters: the D-127 lesson is that a guard must not be able to differ
+/// by which mechanism asked, and a list that can drift is a guard that differs.
+///
+/// The comparison is **symmetric** — it answers *which fields moved*, not which
+/// way — so a caller passes its two rows in whatever order reads chronologically
+/// at the call site.
+///
+/// `aggregationFunction`, `aggregationGranularity` and `tierQualificationWindow`
+/// are read through the `effective_*` accessors and never through the raw
+/// `Option`s: "authored nothing" and "authored the default" are the same row,
+/// and comparing the `Option`s would report a change on a pair that changed
+/// nothing at all.
+#[must_use]
+pub fn unit_determining_mismatch(before: &PriceRow, after: &PriceRow) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    if before.model_kind != after.model_kind {
+        changed.push("model_kind");
+    }
+    if before.billing_granularity != after.billing_granularity {
+        changed.push("billingGranularity");
+    }
+    if before.effective_aggregation_function() != after.effective_aggregation_function() {
+        changed.push("aggregationFunction");
+    }
+    if before.effective_aggregation_granularity() != after.effective_aggregation_granularity() {
+        changed.push("aggregationGranularity");
+    }
+    if before.tier_aggregation_window != after.tier_aggregation_window {
+        changed.push("tierAggregationWindow");
+    }
+    if before.effective_tier_qualification_window() != after.effective_tier_qualification_window() {
+        changed.push("tierQualificationWindow");
+    }
+    if before.package_size != after.package_size {
+        changed.push("package_size");
+    }
+    changed
+}
+
 /// The corpus / wire spelling of a model kind.
 ///
 /// A free function rather than an inherent method because [`ModelKind`] belongs

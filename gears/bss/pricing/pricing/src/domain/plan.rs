@@ -31,6 +31,7 @@ use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
+use crate::domain::plan_shape::{BillingCycle, Frequency};
 use crate::domain::scope_key::PlanId;
 
 /// One revision of a plan: the unit `pricing_plan` stores, the unit the
@@ -66,15 +67,51 @@ pub struct PlanRevision {
     pub sku_id: Option<Uuid>,
     /// The plan's tier.
     ///
-    /// A `String` on purpose while this is G3 storage: the enumeration and the
-    /// rules that give a tier meaning are Slice-2 semantics. An enum minted
-    /// here would fix the value set before the rules that constrain it exist,
-    /// and the first tier the rules disagreed with would be a migration rather
-    /// than a fix.
+    /// A `String` on purpose, and it stays one now that Slice 2 has landed
+    /// beside it: the `PlanTier` taxonomy is supplied by the **product/SKU
+    /// registry** (§1.3), not enumerated by this gear. An enum minted here
+    /// would fix a value set somebody else owns, and the first tier the
+    /// registry published that it disagreed with would be a migration rather
+    /// than a fix. Slice 2 requires a tier (`PLANTIER_MISSING`) and checks it
+    /// against the parent SKU's; neither of those is a claim about which tiers
+    /// exist.
     pub plan_tier: Option<String>,
-    /// The plan's billing cycle, `String` for the same reason as
-    /// [`PlanRevision::plan_tier`].
-    pub billing_cycle: Option<String>,
+    /// The plan's billing cycle.
+    ///
+    /// Typed, unlike [`PlanRevision::plan_tier`], and for the reason that field
+    /// is not: **Slice 2 owns this value set**. `billing_cycle` was a `String`
+    /// only while the rules that constrain it did not exist; they do now
+    /// ([`crate::domain::plan_shape::BillingCycle`], §17.1), so an enum here
+    /// fixes nothing prematurely — it names what the slice already fixed. The
+    /// tier's taxonomy is still **registry-owned**, which is why it stays a
+    /// `String` and the note on it still holds.
+    ///
+    /// `None` is an authored-but-unfinished draft, never a default: nothing in
+    /// the matrix is implied.
+    pub billing_cycle: Option<BillingCycle>,
+    /// The recurring frequency, with a custom interval riding the variant.
+    ///
+    /// One field, three columns. `frequency`, `custom_interval_n` and
+    /// `custom_interval_unit` can express a `monthly` row carrying an interval
+    /// and a custom row carrying none; [`Frequency`] can express neither, so the
+    /// repository boundary is the only place either can appear and it refuses
+    /// both as corrupt rows.
+    pub frequency: Option<Frequency>,
+    /// Whether the tier deliberately diverges from the parent SKU's under an
+    /// explicit audited override (§6, P3).
+    ///
+    /// Not an `Option`: the column is `NOT NULL DEFAULT false` because "nobody
+    /// said" and "no override" are the same claim about a plan, and a third
+    /// state would make the audited exception depend on which of two absences a
+    /// reader met.
+    pub plan_tier_override: bool,
+    /// Minimum purchasable quantity (one-time plans).
+    pub purchase_min_qty: Option<u64>,
+    /// Maximum purchasable quantity (one-time plans).
+    pub purchase_max_qty: Option<u64>,
+    /// The Billing invoice-layout hint (D-96). `None` or empty means no
+    /// grouping; it never overrides the single-currency-per-invoice invariant.
+    pub invoice_grouping_key: Option<String>,
     /// Start of the plan's availability window, UTC.
     pub available_from: Option<DateTime<Utc>>,
     /// End of the plan's availability window, UTC.
@@ -119,10 +156,26 @@ pub struct PlanRevision {
 /// (G7). Building the double option now would add a state every repository
 /// method and every test has to reason about on behalf of a caller that cannot
 /// produce it. So this is a **known limitation, stated rather than designed
-/// around**: until G7, a `sku_id`, `plan_tier`, `billing_cycle`,
+/// around** — and Slice 2 widens what it costs rather than quietly inheriting
+/// it: until G7, a `sku_id`, `plan_tier`, `billing_cycle`, `frequency`,
+/// `purchase_min_qty`, `purchase_max_qty`, `invoice_grouping_key`,
 /// `available_from` or `available_to` that has been set cannot be cleared
 /// through a patch — only replaced, or discarded by abandoning the draft
 /// revision, which keeps the revision number it consumed (D-145).
+///
+/// Two of the Slice-2 fields fall outside that sentence, and both for reasons
+/// of their own rather than by exception:
+///
+/// * [`PlanShapePatch::plan_tier_override`] is an `Option<bool>` over a
+///   `NOT NULL` column, so `Some(false)` really does withdraw the override —
+///   there is no null state to be unable to reach.
+/// * [`PlanShapePatch::frequency`] moves **three** columns as one value.
+///   Setting a fixed frequency clears `custom_interval_n` and
+///   `custom_interval_unit` with it, because the interval is part of the
+///   variant and not an independently patchable column: a patch that moved only
+///   the token would leave a `monthly` row wearing a custom interval, which is
+///   the pairing both [`Frequency`] and `chk_pricing_plan_custom_interval_pairing`
+///   exist to make unreachable.
 #[domain_model]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanShapePatch {
@@ -131,7 +184,17 @@ pub struct PlanShapePatch {
     /// Move the plan's tier.
     pub plan_tier: Option<String>,
     /// Move the plan's billing cycle.
-    pub billing_cycle: Option<String>,
+    pub billing_cycle: Option<BillingCycle>,
+    /// Move the recurring frequency, interval and all; see the type doc.
+    pub frequency: Option<Frequency>,
+    /// Declare or withdraw the audited tier override (P3).
+    pub plan_tier_override: Option<bool>,
+    /// Move the minimum purchasable quantity.
+    pub purchase_min_qty: Option<u64>,
+    /// Move the maximum purchasable quantity.
+    pub purchase_max_qty: Option<u64>,
+    /// Move the Billing invoice-layout hint (D-96).
+    pub invoice_grouping_key: Option<String>,
     /// Move the start of the availability window, UTC.
     pub available_from: Option<DateTime<Utc>>,
     /// Move the end of the availability window, UTC.

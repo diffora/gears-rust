@@ -1,6 +1,6 @@
 //! The physical guards on `pricing_plan`, proven against a real database: the
-//! append-only whitelist, the two partial `UNIQUE` indexes, and the
-//! `lifecycle_state` CHECK.
+//! append-only whitelist, the two partial `UNIQUE` indexes, and the table's
+//! `CHECK` constraints.
 //!
 //! They are one suite because one rule rests on all three. A `revision` number
 //! is an **identity** — minted once for a plan and never again (D-145) — and
@@ -15,6 +15,15 @@
 //! Postgres carries the whitelist as one PL/pgSQL trigger and `SQLite` mirrors
 //! it as three `RAISE(ABORT, ...)` triggers (see the migration's module doc), so
 //! the guards are exercisable without Docker.
+//!
+//! The Slice-2 shape columns are held to the same two standards, one case each:
+//! their value sets and pairings are `CHECK`-constrained, and **every one of
+//! them is enumerated in the frozen-column whitelist**. The enumeration is the
+//! point of `a_published_revision_freezes_every_column_the_whitelist_names`: a
+//! column added to the table and forgotten in the trigger is a column an ad-hoc
+//! UPDATE can move under a frozen `CatalogVersion`, which the projector's warm
+//! re-drive then re-materializes (§4.4) — the whole class of defect the
+//! whitelist exists to close, and one no smaller test can notice.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -76,13 +85,35 @@ async fn must_be_frozen(conn: &DatabaseConnection, sql: &str) {
 
 /// One revision row of `PLAN`, in whatever state the case needs.
 fn insert(plan: &str, revision: u32, state: &str) -> String {
-    format!(
-        "INSERT INTO pricing_plan (
-            plan_id, revision, tenant_id, plan_tier, lifecycle_state,
-            created_by, created_at_utc)
-         VALUES ('{plan}', {revision}, '{TENANT}', 'gold', '{state}',
-            '{ACTOR}', '{AUTHORED}')"
-    )
+    insert_with(plan, revision, state, &[])
+}
+
+/// The same row, plus whatever Slice-2 columns the case is about.
+///
+/// The values arrive as raw SQL fragments rather than as typed arguments,
+/// because half the cases here exist to store something the typed path would
+/// have refused — a `billing_cycle` of `monthly`, an interval with no custom
+/// frequency. A helper that took domain values could not express the subjects
+/// these CHECKs are for.
+fn insert_with(plan: &str, revision: u32, state: &str, extra: &[(&str, &str)]) -> String {
+    let mut columns = String::from(
+        "plan_id, revision, tenant_id, plan_tier, lifecycle_state, created_by, created_at_utc",
+    );
+    let mut values =
+        format!("'{plan}', {revision}, '{TENANT}', 'gold', '{state}', '{ACTOR}', '{AUTHORED}'");
+    for &(column, value) in extra {
+        columns.push_str(", ");
+        columns.push_str(column);
+        values.push_str(", ");
+        values.push_str(value);
+    }
+    format!("INSERT INTO pricing_plan ({columns}) VALUES ({values})")
+}
+
+/// A distinct plan id per case, for the cases that need one current revision
+/// each and cannot share a plan with the others.
+fn plan_of(index: usize) -> String {
+    format!("333333{index:02}-3333-3333-3333-333333333333")
 }
 
 async fn state_of(conn: &DatabaseConnection, revision: u32) -> String {
@@ -299,4 +330,290 @@ async fn the_lifecycle_check_admits_the_five_states_and_nothing_else() {
         "chk_pricing_plan_lifecycle_state",
     )
     .await;
+}
+
+#[tokio::test]
+async fn the_shape_checks_admit_the_slice_2_tokens_and_nothing_else() {
+    let conn = migrated_db().await;
+
+    // The value sets §6 declares, each stored under its own plan so the two
+    // partial UNIQUE indexes stay out of the way.
+    for (i, cycle) in ["one_time", "recurring", "usage", "hybrid"]
+        .into_iter()
+        .enumerate()
+    {
+        must_succeed(
+            &conn,
+            &insert_with(
+                &plan_of(i),
+                0,
+                "draft",
+                &[("billing_cycle", &format!("'{cycle}'"))],
+            ),
+        )
+        .await;
+    }
+    for (i, frequency) in ["monthly", "quarterly", "semiannual", "annual"]
+        .into_iter()
+        .enumerate()
+    {
+        must_succeed(
+            &conn,
+            &insert_with(
+                &plan_of(i + 10),
+                0,
+                "draft",
+                &[("frequency", &format!("'{frequency}'"))],
+            ),
+        )
+        .await;
+    }
+    for (i, unit) in ["days", "months"].into_iter().enumerate() {
+        must_succeed(
+            &conn,
+            &insert_with(
+                &plan_of(i + 20),
+                0,
+                "draft",
+                &[
+                    ("frequency", "'custom_every_n'"),
+                    ("custom_interval_n", "3"),
+                    ("custom_interval_unit", &format!("'{unit}'")),
+                ],
+            ),
+        )
+        .await;
+    }
+
+    // `monthly` is the near-miss that matters, because it is a real token of the
+    // **other** column: a `frequency` value in the `billing_cycle` slot is the
+    // transposition an authoring surface makes, not a typo.
+    must_be_rejected(
+        &conn,
+        &insert_with(PLAN, 0, "draft", &[("billing_cycle", "'monthly'")]),
+        "chk_pricing_plan_billing_cycle",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &insert_with(PLAN, 0, "draft", &[("frequency", "'biweekly'")]),
+        "chk_pricing_plan_frequency",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &insert_with(
+            PLAN,
+            0,
+            "draft",
+            &[
+                ("frequency", "'custom_every_n'"),
+                ("custom_interval_n", "2"),
+                ("custom_interval_unit", "'weeks'"),
+            ],
+        ),
+        "chk_pricing_plan_custom_interval_unit",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_custom_interval_exists_exactly_when_the_frequency_is_the_custom_one() {
+    let conn = migrated_db().await;
+
+    // `Frequency` makes both of these unrepresentable by carrying the interval
+    // inside the variant. Three columns can express what one enum cannot, so
+    // the table has to refuse them itself — otherwise the illegal pairing is
+    // storable and only discovered on the read that cannot map it back.
+    must_be_rejected(
+        &conn,
+        &insert_with(PLAN, 0, "draft", &[("frequency", "'custom_every_n'")]),
+        "chk_pricing_plan_custom_interval_pairing",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &insert_with(
+            PLAN,
+            0,
+            "draft",
+            &[
+                ("frequency", "'monthly'"),
+                ("custom_interval_n", "3"),
+                ("custom_interval_unit", "'days'"),
+            ],
+        ),
+        "chk_pricing_plan_custom_interval_pairing",
+    )
+    .await;
+
+    // The NULL case is the one the CHECK is written to survive. A bare
+    // `frequency = 'custom_every_n'` is NULL when the column is NULL, and both
+    // engines count a NULL CHECK as satisfied — so without the explicit
+    // `frequency IS NOT NULL` conjunct this row would be storable, and a plan
+    // with no frequency at all would carry an interval nothing could read.
+    must_be_rejected(
+        &conn,
+        &insert_with(
+            PLAN,
+            0,
+            "draft",
+            &[
+                ("custom_interval_n", "3"),
+                ("custom_interval_unit", "'days'"),
+            ],
+        ),
+        "chk_pricing_plan_custom_interval_pairing",
+    )
+    .await;
+
+    // And `n` counts something, so zero is not an interval. §6 names this
+    // constraint explicitly.
+    must_be_rejected(
+        &conn,
+        &insert_with(
+            PLAN,
+            0,
+            "draft",
+            &[
+                ("frequency", "'custom_every_n'"),
+                ("custom_interval_n", "0"),
+                ("custom_interval_unit", "'days'"),
+            ],
+        ),
+        "chk_pricing_plan_custom_interval_n",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_purchase_window_may_not_close_before_it_opens() {
+    let conn = migrated_db().await;
+
+    // §6 names this constraint explicitly. An open-ended window on either side
+    // is legal — a one-time plan with a floor and no ceiling is an ordinary
+    // shape — so the CHECK has to be the three-way one and not `min <= max`.
+    must_succeed(
+        &conn,
+        &insert_with(&plan_of(0), 0, "draft", &[("purchase_min_qty", "2")]),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert_with(&plan_of(1), 0, "draft", &[("purchase_max_qty", "9")]),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert_with(
+            &plan_of(2),
+            0,
+            "draft",
+            &[("purchase_min_qty", "4"), ("purchase_max_qty", "4")],
+        ),
+    )
+    .await;
+
+    must_be_rejected(
+        &conn,
+        &insert_with(
+            PLAN,
+            0,
+            "draft",
+            &[("purchase_min_qty", "10"), ("purchase_max_qty", "2")],
+        ),
+        "chk_pricing_plan_purchase_qty",
+    )
+    .await;
+}
+
+/// Every column of the append-only whitelist, one assertion each.
+///
+/// The vehicle is a **sanctioned `published -> retired` flip carrying the
+/// column change**, and it has to be: an UPDATE that leaves `lifecycle_state`
+/// alone is already refused by the flip whitelist, whatever columns it moves, so
+/// a test built on one would pass with the frozen-column list empty. Under the
+/// flip only the frozen-column arm can answer, which is why the assertion pins
+/// `is frozen` rather than accepting either arm.
+///
+/// A column added to the table and forgotten in the trigger fails **here**, and
+/// nowhere else: it would otherwise be a column an ad-hoc UPDATE moves under a
+/// `CatalogVersion` that is already frozen, which the projector re-materializes
+/// on its next warm re-drive as though the plan had always said so.
+#[tokio::test]
+async fn a_published_revision_freezes_every_column_the_whitelist_names() {
+    // Column, and a value the seed row does not hold. The seed carries a fixed
+    // frequency and no interval, so moving one interval column on its own
+    // leaves the pairing CHECK satisfied and the trigger is the only guard that
+    // can refuse — which is what this case has to observe.
+    const FROZEN: [(&str, &str); 18] = [
+        ("plan_id", "'99999999-9999-9999-9999-999999999999'"),
+        ("revision", "7"),
+        ("tenant_id", "'88888888-8888-8888-8888-888888888888'"),
+        ("sku_id", "'77777777-7777-7777-7777-777777777777'"),
+        ("plan_tier", "'silver'"),
+        ("billing_cycle", "'usage'"),
+        ("frequency", "'quarterly'"),
+        ("custom_interval_n", "3"),
+        ("custom_interval_unit", "'months'"),
+        ("plan_tier_override", "1"),
+        ("purchase_min_qty", "5"),
+        ("purchase_max_qty", "9"),
+        ("invoice_grouping_key", "'q3-bundle'"),
+        ("available_from", "'2027-01-01 00:00:00 +00:00'"),
+        ("available_to", "'2028-01-01 00:00:00 +00:00'"),
+        ("created_by", "'66666666-6666-6666-6666-666666666666'"),
+        ("created_at_utc", "'2027-06-01 00:00:00 +00:00'"),
+        ("row_version", "row_version + 1"),
+    ];
+
+    let conn = migrated_db().await;
+    for (i, (column, value)) in FROZEN.into_iter().enumerate() {
+        // One plan per column: the vehicle consumes the plan's single current
+        // revision slot, and a rejected statement leaves the row published for
+        // the next case to trip over.
+        let plan = plan_of(i);
+        must_succeed(
+            &conn,
+            &insert_with(
+                &plan,
+                0,
+                "published",
+                &[("billing_cycle", "'recurring'"), ("frequency", "'monthly'")],
+            ),
+        )
+        .await;
+        must_be_rejected(
+            &conn,
+            &format!(
+                "UPDATE pricing_plan SET lifecycle_state = 'retired', {column} = {value} \
+                 WHERE plan_id = '{plan}' AND revision = 0"
+            ),
+            "is frozen",
+        )
+        .await;
+    }
+
+    // The vehicle itself must work, or every assertion above proves only that
+    // `published -> retired` is banned — which it is not, and which would make
+    // this whole case vacuous.
+    let plan = plan_of(FROZEN.len());
+    must_succeed(&conn, &insert(&plan, 0, "published")).await;
+    must_succeed(
+        &conn,
+        &format!(
+            "UPDATE pricing_plan SET lifecycle_state = 'retired' \
+             WHERE plan_id = '{plan}' AND revision = 0"
+        ),
+    )
+    .await;
+    let state = scalar(
+        &conn,
+        &format!(
+            "SELECT lifecycle_state AS v FROM pricing_plan \
+             WHERE plan_id = '{plan}' AND revision = 0"
+        ),
+    )
+    .await;
+    assert_eq!(state, "retired", "the sanctioned flip is what it rides on");
 }

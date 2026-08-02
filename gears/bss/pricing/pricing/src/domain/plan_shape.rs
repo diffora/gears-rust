@@ -1,0 +1,719 @@
+//! The **shape of a plan** — the Slice-2 vocabulary
+//! (`design/02-plan-definition.md`).
+//!
+//! Slice 3 owns what one price row costs; this slice owns what the plan around
+//! those rows *is*: the billing-cycle matrix and its frequency metadata, the
+//! phase graph with its `convertsToPhaseId` chain, the add-on composition
+//! rules, the billing descriptor set, and the availability and
+//! purchase-quantity window the plan sells in. Nothing here judges anything —
+//! the four validators (`CycleShapeValidator`, `CompositionValidator`,
+//! `PhaseGraph` rules, `DescriptorSet` rules) register into
+//! [`crate::domain::validation`] the way the Slice-3 rules do, and every code
+//! they report is declared once in [`crate::domain::plan_rules`].
+//!
+//! **Every field is public and unvalidated**, for the reason
+//! [`crate::domain::price_row`] states: the value is the *subject* a
+//! [`ValidationPipeline`](crate::domain::validation::ValidationPipeline) runs
+//! over, and a constructor that refused an unpublishable combination would move
+//! the rules into the type — where they cannot be enumerated into one aggregate
+//! report, which is the whole point of the fail-closed pipeline. A plan is
+//! authored incrementally while it is `draft` (`inst-pa-attach`), so this type
+//! has to be able to hold a shape nobody has finished yet.
+//!
+//! ## `evaluated_at` is a field, never a clock read inside a rule
+//!
+//! [`crate::domain::validation`] states that the same rule set runs **twice** —
+//! as a pre-check at submit and again inside the publish commit — and that a
+//! rule must therefore be pure with respect to the state it is handed. A rule
+//! that read the wall clock would be neither reproducible nor testable, and it
+//! would answer differently in the two runs for no authored reason.
+//! `AVAILABLE_FROM_IN_PAST` (`inst-cs-availability`) is the one Slice-2 rule
+//! that needs a now, so the now is handed to it on
+//! [`PlanShape::evaluated_at`].
+//!
+//! ## `rows` is the candidate set, and `baseline` is the published past
+//!
+//! [`PlanShape::rows`] is the row set **the publish would produce**, supplied
+//! by the caller that holds the plan. No Slice-2 rule filters it by
+//! `lifecycle_state`: published-state facts arrive through
+//! [`PlanShape::baseline`] instead. A rule that re-derived "which rows count"
+//! would be a second answer to a question the publish unit already answered,
+//! and the two answers are free to disagree the day the publish unit changes
+//! what it feeds in.
+//!
+//! ## The `ALL` lists live here, and the parsing does not
+//!
+//! Each of the four token enums exports an `ALL` const — one member per
+//! variant, declaration order — in the shape
+//! [`LifecycleState::ALL`](crate::domain::lifecycle::LifecycleState::ALL) uses.
+//! The *parsing* stays at the storage boundary, where a column is read; what is
+//! exported is the **variant list**, not a parser.
+//!
+//! `price_repo.rs` argues the opposite for the Slice-3 enums — it hand-writes
+//! ten inverse `const` lists beside its own use of `ModelKind::ALL` and
+//! `LifecycleState::ALL` — so a reader will notice the disagreement. The reason
+//! this side is chosen here is that Slice 2's tokens have **three** consuming
+//! call sites ahead of them, not one: the plan-shape repository, the read-model
+//! projector and the authoring surface each have to turn a stored token back
+//! into a value. Three hand-maintained copies of one enum's variant list is
+//! three chances for a variant added later to go missing from a list that
+//! still compiles, and the failure mode is a stored row read back as
+//! `CorruptRow` — or worse, matched by a stale list that quietly no longer
+//! covers the enum. One authority for "what values exist", three call sites
+//! that map it.
+//!
+//! ## One name this module introduces
+//!
+//! The persisted token for a custom frequency is spelled **`custom_every_n`**
+//! here, and **no document fixes it**. §6 decomposes the concept into a
+//! `frequency` column plus `custom_interval_n` / `custom_interval_unit`, and
+//! the PRD writes it as `customEveryN{Days|Months}(n)` — neither states what
+//! the `frequency` column holds when the frequency is the custom one. The
+//! spelling follows the `snake_case` convention every other persisted token in
+//! this crate uses (`one_time_setup`, `all_subscriptions`, `whole_unit`); it is
+//! recorded here because a token invented in code and never written down is
+//! one a later document is free to contradict.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use chrono::{DateTime, Utc};
+use toolkit_macros::domain_model;
+use uuid::Uuid;
+
+use crate::domain::money::CurrencyCode;
+use crate::domain::price_record::PriceRecord;
+use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
+
+/// The §17.1 billing-cycle matrix: what commercial shape the plan is.
+///
+/// The three predicates below are each named for the **rule that reads them**,
+/// so no rule re-derives the cycle set for itself. That matters more than it
+/// looks: `inst-ph-coverage` was scoped to `recurring`/`hybrid` by the
+/// 2026-07-28 review fix precisely because its literal reading blocked one-time
+/// and usage-only plans through their implicit terminal phase, and a rule that
+/// re-spelled the set would be free to re-acquire the defect.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BillingCycle {
+    /// A single charge; no recurrence.
+    OneTime,
+    /// A subscription fee on a [`Frequency`].
+    Recurring,
+    /// Metered consumption only.
+    Usage,
+    /// A recurring base **and** a metered part on one `planId`, on distinct
+    /// `chargeKind` keys.
+    Hybrid,
+}
+
+impl BillingCycle {
+    /// Every cycle, stable order.
+    pub const ALL: &'static [Self] = &[Self::OneTime, Self::Recurring, Self::Usage, Self::Hybrid];
+
+    /// Does the plan carry a recurring part?
+    ///
+    /// This is `inst-ph-coverage`'s **scope**: phase coverage by recurring rows
+    /// is required on `recurring` and `hybrid` plans and on nothing else,
+    /// because a one-time or usage-only plan has no recurring row that could
+    /// ever cover a phase and would fail a rule it can never satisfy.
+    #[must_use]
+    pub const fn has_recurring_part(self) -> bool {
+        matches!(self, Self::Recurring | Self::Hybrid)
+    }
+
+    /// Does the plan owe a metered part?
+    ///
+    /// `inst-cs-hybrid`'s half of `HYBRID_INCOMPLETE`, and the scope of D-84's
+    /// per-market line completeness: on a `hybrid` plan the usage part is
+    /// required **per sold market**, not merely somewhere, or the plan is
+    /// sellable in a market whose usage events fail closed.
+    #[must_use]
+    pub const fn requires_usage_part(self) -> bool {
+        matches!(self, Self::Usage | Self::Hybrid)
+    }
+
+    /// May the plan carry a `one_time_setup` row (`inst-cs-setup`)?
+    ///
+    /// It answers `true` on the same two cycles as
+    /// [`BillingCycle::has_recurring_part`] and is deliberately **not**
+    /// implemented in terms of it: the two are different sentences of the
+    /// design set — one scopes phase coverage, one permits a setup row — that
+    /// happen to name the same cycles today. Deriving one from the other would
+    /// make a future divergence a silent change to the wrong rule.
+    #[must_use]
+    pub const fn admits_setup_row(self) -> bool {
+        matches!(self, Self::Recurring | Self::Hybrid)
+    }
+
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OneTime => "one_time",
+            Self::Recurring => "recurring",
+            Self::Usage => "usage",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
+impl fmt::Display for BillingCycle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The unit a custom recurring interval counts in.
+///
+/// The two units are not interchangeable and they do not share a cap: PRD §14
+/// ratified `customEveryNDays <= 366` and `customEveryNMonths <= 24`, so
+/// `INVALID_CUSTOM_INTERVAL` reads the unit before it reads the bound
+/// ([`crate::config::LimitsConfig`]).
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CustomIntervalUnit {
+    /// Days.
+    Days,
+    /// Months.
+    Months,
+}
+
+impl CustomIntervalUnit {
+    /// Every unit, stable order.
+    pub const ALL: &'static [Self] = &[Self::Days, Self::Months];
+
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Days => "days",
+            Self::Months => "months",
+        }
+    }
+}
+
+impl fmt::Display for CustomIntervalUnit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The recurring frequency, with the custom interval **riding the variant**.
+///
+/// §6 persists this as three columns — `frequency`, `custom_interval_n`,
+/// `custom_interval_unit` — and that decomposition admits two states no plan
+/// may hold: a `monthly` row carrying an interval, and a custom row carrying
+/// none. Here the payload is part of the variant, so neither is representable
+/// and no rule has to exist to reject them. The storage boundary is where the
+/// three columns are reassembled into this, and that is the only place the
+/// illegal pairing can appear at all.
+///
+/// The `custom_every_n` token is this module's own naming decision; see the
+/// module doc.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Frequency {
+    /// Every calendar month.
+    Monthly,
+    /// Every three months.
+    Quarterly,
+    /// Every six months.
+    Semiannual,
+    /// Every twelve months.
+    Annual,
+    /// `customEveryN{Days|Months}(n)`: every `n` of `unit`.
+    CustomEveryN {
+        /// The interval count. `> 0` and within the unit's configured cap
+        /// (`INVALID_CUSTOM_INTERVAL`) — checked by the rule, not here.
+        n: u32,
+        /// What `n` counts.
+        unit: CustomIntervalUnit,
+    },
+}
+
+impl Frequency {
+    /// The interval a [`Frequency::CustomEveryN`] member of
+    /// [`Frequency::ALL`] carries.
+    ///
+    /// It is a **placeholder**, and it is named so that no call site can mistake
+    /// it for data. A custom frequency's interval lives in two sibling columns,
+    /// so the `custom_every_n` token cannot reconstruct it and this value is
+    /// the only thing a variant list has to put there.
+    pub const CUSTOM_INTERVAL_PLACEHOLDER: u32 = 1;
+
+    /// Every frequency, stable order — **one member per variant**.
+    ///
+    /// The four fixed frequencies are whole values. The custom member is a
+    /// *variant* representative carrying
+    /// [`Frequency::CUSTOM_INTERVAL_PLACEHOLDER`] and
+    /// [`CustomIntervalUnit::Days`]: this list answers "what values exist", and
+    /// for the one variant whose payload rides two other columns
+    /// (`custom_interval_n`, `custom_interval_unit`) the token alone cannot
+    /// answer it. **A reader that matches a stored `custom_every_n` against
+    /// this list MUST rebuild `n` and `unit` from those columns** rather than
+    /// keeping what it found here — the placeholder is a shape, not an
+    /// interval.
+    pub const ALL: &'static [Self] = &[
+        Self::Monthly,
+        Self::Quarterly,
+        Self::Semiannual,
+        Self::Annual,
+        Self::CustomEveryN {
+            n: Self::CUSTOM_INTERVAL_PLACEHOLDER,
+            unit: CustomIntervalUnit::Days,
+        },
+    ];
+
+    /// The persisted / wire token of the `frequency` column.
+    ///
+    /// A custom frequency renders as the bare discriminator: `n` and `unit`
+    /// are their own columns, so folding them into this string would give the
+    /// column two spellings of one value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Monthly => "monthly",
+            Self::Quarterly => "quarterly",
+            Self::Semiannual => "semiannual",
+            Self::Annual => "annual",
+            Self::CustomEveryN { .. } => "custom_every_n",
+        }
+    }
+}
+
+impl fmt::Display for Frequency {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The `kind` column of a phase — **never** its terminality.
+///
+/// C-4 exists because the two were conflated: terminality is structural
+/// (`converts_to_phase_id IS NULL`) while this column independently admits all
+/// three values, so nothing rejected a `trial`-terminal chain. That chain
+/// leaves "the **first non-trial phase**" undefined for both setup timing
+/// (`inst-cs-setup-timing`) and migration entry (D-39), and collides with the
+/// `display_trial_days = phase_duration_days` CHECK. The rule that closes it is
+/// `TERMINAL_PHASE_KIND_INVALID`; this type deliberately still **represents**
+/// the illegal combination, because a rule with nothing to reject cannot be
+/// tested.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PhaseKind {
+    /// A free or discounted trial phase; publishes `displayTrialDays`.
+    Trial,
+    /// Introductory pricing before the evergreen rate.
+    Intro,
+    /// The steady-state phase. The only legal kind for the terminal phase.
+    Evergreen,
+}
+
+impl PhaseKind {
+    /// Every kind, stable order.
+    pub const ALL: &'static [Self] = &[Self::Trial, Self::Intro, Self::Evergreen];
+
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Trial => "trial",
+            Self::Intro => "intro",
+            Self::Evergreen => "evergreen",
+        }
+    }
+}
+
+impl fmt::Display for PhaseKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One row of `pricing_plan_phase`, as the rules read it.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanPhase {
+    /// The phase's identity and the value of the `phase` scope-key axis.
+    ///
+    /// Stable across plan revisions (D-56 + D-83): a new revision **copies**
+    /// the phase rows under its own `plan_revision` and never re-mints the id,
+    /// so continuing price rows keep pointing at the same phase.
+    pub phase_id: PhaseId,
+    /// `trial` | `intro` | `evergreen`. Not terminality; see [`PhaseKind`].
+    pub kind: PhaseKind,
+    /// The phase's position in the chain. The **lowest** ordinal is the entry
+    /// phase (`inst-ph-graph`); see [`PhaseGraph::entry`].
+    pub ordinal: i32,
+    /// Where this phase converts to. `None` **is** terminality.
+    pub converts_to_phase_id: Option<PhaseId>,
+    /// How long the phase lasts. Required `> 0` on a non-terminal phase and
+    /// forbidden on the terminal one (`inst-ph-duration`,
+    /// `PHASE_DURATION_INVALID`): `convertsToPhaseId` says *where* a phase
+    /// converts and this says *when*.
+    pub phase_duration_days: Option<u32>,
+    /// The PRD-named projection of [`PlanPhase::phase_duration_days`] on a
+    /// `trial` phase (`inst-ph-trial`) — one value, two projections, with a
+    /// `CHECK` on the table guarding drift between the two persisted columns.
+    pub display_trial_days: Option<u32>,
+}
+
+impl PlanPhase {
+    /// Is this the terminal phase?
+    ///
+    /// **Structural, never the kind.** The absence of a successor is what makes
+    /// a phase terminal; [`PlanPhase::kind`] is an independent column, and
+    /// answering this question from it is exactly the conflation C-4 was
+    /// written to undo.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        self.converts_to_phase_id.is_none()
+    }
+}
+
+/// The ordered phase set with its `convertsToPhaseId` edges.
+///
+/// It has **reading accessors and no validating constructor**. The four
+/// derivations below are the ones more than one rule needs, and they live here
+/// so that "the terminal phase", "the entry phase" and "the ordinal order" have
+/// exactly one definition each — a rule free to re-derive "first phase" as
+/// "first authored" would silently disagree with `inst-ph-graph`, which says
+/// lowest ordinal, and no column records authoring order at all.
+///
+/// [`PhaseGraph::new`] accepts any set: an empty graph, a graph with two
+/// terminals and a graph with a dangling edge are all constructible, because
+/// they are precisely the subjects `PHASE_GRAPH_INVALID` and
+/// `PHASE_CHAIN_NONLINEAR` exist to reject.
+#[domain_model]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PhaseGraph {
+    phases: Vec<PlanPhase>,
+}
+
+impl PhaseGraph {
+    /// Wrap an authored phase set, **unvalidated**.
+    #[must_use]
+    pub fn new(phases: Vec<PlanPhase>) -> Self {
+        Self { phases }
+    }
+
+    /// The phases, in the order they were authored.
+    #[must_use]
+    pub fn phases(&self) -> &[PlanPhase] {
+        &self.phases
+    }
+
+    /// Every phase with no successor.
+    ///
+    /// A `Vec` rather than an `Option`, because **zero and two are exactly the
+    /// states `PHASE_GRAPH_INVALID` reports** and an `Option` collapses them
+    /// into one another: `None` cannot distinguish "no terminal phase" from a
+    /// first-wins pick among two. The partial `UNIQUE` on the table forbids the
+    /// two-terminal case once the rows are written, but the pipeline runs
+    /// *before* the write and §6 says so in as many words — an index cannot
+    /// enforce the `>= 1` half.
+    #[must_use]
+    pub fn terminals(&self) -> Vec<&PlanPhase> {
+        self.phases
+            .iter()
+            .filter(|phase| phase.is_terminal())
+            .collect()
+    }
+
+    /// The phases sorted by [`PlanPhase::ordinal`], ascending.
+    ///
+    /// The sort is stable, so two phases sharing an ordinal keep their authored
+    /// order rather than swapping between runs — a duplicate ordinal is an
+    /// authoring fault `PHASE_CHAIN_NONLINEAR` reports, and a report whose
+    /// contents depended on sort luck would be unreproducible.
+    #[must_use]
+    pub fn in_ordinal_order(&self) -> Vec<&PlanPhase> {
+        let mut ordered: Vec<&PlanPhase> = self.phases.iter().collect();
+        ordered.sort_by_key(|phase| phase.ordinal);
+        ordered
+    }
+
+    /// The entry phase: the **lowest ordinal**, normative per `inst-ph-graph`.
+    ///
+    /// Not the first authored. D-39's "first non-trial phase" and
+    /// `inst-cs-setup-timing`'s both read this order, so if the two readings
+    /// could differ, setup would be charged at one phase and migration entry
+    /// computed at another. Among equal lowest ordinals the first authored
+    /// wins, which is a deterministic tie-break rather than a meaningful one.
+    #[must_use]
+    pub fn entry(&self) -> Option<&PlanPhase> {
+        self.phases.iter().min_by_key(|phase| phase.ordinal)
+    }
+
+    /// The phase carrying `phase_id`, when the graph holds one.
+    ///
+    /// `None` is what a dangling `convertsToPhaseId` looks like from inside a
+    /// rule, and what a price row on a phase this revision dropped looks like
+    /// to `PHASE_IN_USE`.
+    #[must_use]
+    pub fn find(&self, phase_id: PhaseId) -> Option<&PlanPhase> {
+        self.phases.iter().find(|phase| phase.phase_id == phase_id)
+    }
+}
+
+/// One row of `pricing_plan_addon_rule`: an add-on SKU the plan composes with,
+/// its quantity bounds, and its plan-authored graph edges.
+///
+/// The edges are **plan-authored** (D-16) and hold **other add-on SKU ids of
+/// this same plan's add-on set** — an edge pointing outside the set fails
+/// publish under `ADDON_INCOMPATIBLE`, and a cycle over
+/// [`AddonRule::depends_on`] fails under `ADDON_CYCLE`. They are not registry
+/// compatibility metadata: if the registry ever declares intrinsic SKU
+/// compatibility it becomes an *additional* validation input the authored edges
+/// are checked against, which is additive and needs no migration (D-16).
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddonRule {
+    /// The add-on SKU this rule is about, and the discriminator that lets one
+    /// revision hold several rules (D-105).
+    pub addon_sku_id: Uuid,
+    /// Whether the add-on must be taken. A required add-on needs
+    /// `max_qty >= 1`, and two required add-ons that conflict fail publish.
+    pub required: bool,
+    /// Selection-time lower bound.
+    pub min_qty: Option<u32>,
+    /// Selection-time upper bound.
+    pub max_qty: Option<u32>,
+    /// Selection-time quantity step.
+    pub step_qty: Option<u32>,
+    /// An optional alternative price for this add-on when taken with this plan.
+    ///
+    /// It resolves to a published `priceId` on a plan of the **add-on SKU
+    /// itself** and binds that row's canonical scope key as a key *family*
+    /// modulo the market axes (D-97 as amended by D-116). Resolving it needs
+    /// the add-on SKU's plans and `PriceWindow` coverage, neither of which this
+    /// gear has; see [`crate::domain::plan_rules`].
+    pub price_override_ref: Option<Uuid>,
+    /// Add-on SKU ids this one requires. The `ADDON_CYCLE` walk runs over this
+    /// set.
+    pub depends_on: Vec<Uuid>,
+    /// Add-on SKU ids this one excludes. Stored normalized symmetric, so a
+    /// conflict authored on one side is a conflict on both.
+    pub conflicts_with: Vec<Uuid>,
+}
+
+/// The per-plan billing descriptor aggregate (`pricing_plan_descriptor_set`).
+///
+/// **Three named fields, not five.** D-48 pinned a five-element v1 contract and
+/// D-110 revised its composition: `billingTiming` and `taxCategory` **ride the
+/// price row** — the first because Slice 6 owns the rule, the second because
+/// `tax_category_ref` is per row and a per-plan column cannot mirror a per-row
+/// source of truth (the promised consistency check was undefined the moment two
+/// rows of one plan carried different categories). Adding either back as a
+/// column here would be a second, disagreeing home for a value that already has
+/// one.
+///
+/// [`DescriptorSet::additional`] is what makes P5's "config-extensible
+/// required-set without a schema change" reachable: a deployment that must
+/// require a fourth descriptor names it in configuration and carries its value
+/// here, instead of waiting for a migration.
+#[domain_model]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DescriptorSet {
+    /// The invoice line template Billing renders from.
+    pub invoice_line_template: Option<String>,
+    /// The general-ledger code the posting lands on.
+    pub gl_code: Option<String>,
+    /// How the plan's charges are composed into invoice lines.
+    pub itemization_rule: Option<String>,
+    /// Extra descriptor keys a deployment's required-set names (P5).
+    pub additional: BTreeMap<String, String>,
+}
+
+/// What the plan's **current published revision** holds, for the three Slice-2
+/// rules that are comparisons rather than predicates.
+///
+/// `inst-cs-availability` and both arms of `inst-ph-terminal-stable` are each
+/// defined against the *previous* published state, and a rule with no referent
+/// has only two behaviours available to it, both wrong: pass vacuously, which
+/// is the guard silently absent, or treat every value as changed, which blocks
+/// every re-publish. Those are precisely the two failure modes the three fixes
+/// were written to prevent — the availability rule was narrowed on 2026-07-31
+/// so that re-publishing an **unchanged** `availableFrom` that has since passed
+/// is not backdating, and D-64 added the terminal-phase arms because
+/// `inst-ph-coverage` cannot see a usage-only plan at all.
+///
+/// `None` on [`PlanShape::baseline`] means a **first publish**: there is no
+/// previous state, so all three rules have nothing to compare and say nothing.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedBaseline {
+    /// The terminal `phase_id` of the published revision. It is immutable for
+    /// the life of the plan (`TERMINAL_PHASE_CHANGED`).
+    pub terminal_phase_id: PhaseId,
+    /// The phases referenced by the plan's current published `pricing_price`
+    /// rows. A revision that drops one of these fails with `PHASE_IN_USE`.
+    pub phase_ids_in_use: BTreeSet<PhaseId>,
+    /// The published `available_from`, so a re-publish of an unchanged value
+    /// is distinguishable from newly backdating one.
+    pub available_from: Option<DateTime<Utc>>,
+    /// The published `available_to`, for the same reason.
+    pub available_to: Option<DateTime<Utc>>,
+}
+
+/// The subject the Slice-2 pipeline runs over: one plan revision's whole shape,
+/// the rows its publish would produce, and the published state it is measured
+/// against.
+///
+/// It is a **candidate**, not a stored aggregate. The plan revision, its phase
+/// rows, its add-on rules, its descriptor set and its price rows live in five
+/// tables; this is the one value that carries all of them at once, because a
+/// slice whose rules are per-market completeness, phase coverage and meter
+/// injectivity cannot be evaluated from any one of them alone.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanShape {
+    /// The plan under judgement.
+    pub plan_id: PlanId,
+    /// Which revision of it — the second half of the durable name
+    /// `(plan_id, revision)` (D-145).
+    pub revision: u64,
+    /// The §17.1 cycle. `None` is an authored-but-unfinished draft, not a
+    /// default: nothing in the matrix is implied.
+    pub billing_cycle: Option<BillingCycle>,
+    /// The recurring frequency, when the cycle has one.
+    pub frequency: Option<Frequency>,
+    /// The plan's tier. Optional at draft and required at publish
+    /// (`PLANTIER_MISSING`).
+    pub plan_tier: Option<String>,
+    /// Whether the tier deliberately diverges from the parent SKU's under an
+    /// explicit audited override (P3). The equality half of the check needs the
+    /// registry; see [`crate::domain::plan_rules`].
+    pub plan_tier_override: bool,
+    /// Start of the plan's availability window, UTC.
+    pub available_from: Option<DateTime<Utc>>,
+    /// End of the plan's availability window, UTC.
+    pub available_to: Option<DateTime<Utc>>,
+    /// Minimum purchasable quantity (one-time plans).
+    pub purchase_min_qty: Option<u64>,
+    /// Maximum purchasable quantity (one-time plans).
+    pub purchase_max_qty: Option<u64>,
+    /// The Billing invoice-layout hint (D-96). Shape-checked only; it never
+    /// overrides the single-currency-per-invoice invariant.
+    pub invoice_grouping_key: Option<String>,
+    /// The phase chain.
+    pub phases: PhaseGraph,
+    /// The plan's add-on composition rules.
+    pub addon_rules: Vec<AddonRule>,
+    /// The billing descriptor set. `None` is an unauthored set, which
+    /// `DESCRIPTOR_INCOMPLETE` reports the same way an incomplete one is
+    /// reported.
+    pub descriptor_set: Option<DescriptorSet>,
+    /// The candidate row set the publish would produce; see the module doc.
+    pub rows: Vec<PriceRecord>,
+    /// The plan's current published revision, when it has one. `None` is a
+    /// first publish; see [`PublishedBaseline`].
+    pub baseline: Option<PublishedBaseline>,
+    /// The instant the pipeline is being run at; see the module doc.
+    pub evaluated_at: DateTime<Utc>,
+}
+
+impl PlanShape {
+    /// An otherwise-empty shape for `plan_id` at `revision`, evaluated at
+    /// `evaluated_at`.
+    ///
+    /// Every other field starts absent or empty, which is the shape of a plan
+    /// nobody has authored yet — not a publishable one. There is deliberately
+    /// no `Default`: `evaluated_at` would derive to the Unix epoch, and an
+    /// availability rule measured against 1970 answers confidently and wrongly.
+    #[must_use]
+    pub fn new(plan_id: PlanId, revision: u64, evaluated_at: DateTime<Utc>) -> Self {
+        Self {
+            plan_id,
+            revision,
+            billing_cycle: None,
+            frequency: None,
+            plan_tier: None,
+            plan_tier_override: false,
+            available_from: None,
+            available_to: None,
+            purchase_min_qty: None,
+            purchase_max_qty: None,
+            invoice_grouping_key: None,
+            phases: PhaseGraph::default(),
+            addon_rules: Vec::new(),
+            descriptor_set: None,
+            rows: Vec::new(),
+            baseline: None,
+            evaluated_at,
+        }
+    }
+
+    /// How a plan-level finding locates its subject for the author.
+    ///
+    /// The plan-level sibling of
+    /// [`PriceRow::subject`](crate::domain::price_row::PriceRow::subject), and
+    /// here for the same reason: six of this slice's codes name the plan and
+    /// nothing finer, so without one renderer they would name it six ways and a
+    /// consumer grouping a report by subject would see six subjects.
+    #[must_use]
+    pub fn subject(&self) -> String {
+        format!("{}/{}", self.plan_id, self.revision)
+    }
+
+    /// Every `(currency, region)` the plan sells in — the union over its rows.
+    ///
+    /// "Sold market" is a derived fact, and D-84's per-market completeness,
+    /// `inst-ph-coverage`'s per-market coverage and the override-home check all
+    /// range over it. Deriving it once means they cannot disagree about which
+    /// markets a plan is in.
+    #[must_use]
+    pub fn markets(&self) -> BTreeSet<(CurrencyCode, Region)> {
+        self.rows.iter().map(market_of).collect()
+    }
+
+    /// The markets in which the plan carries a row of `charge_kind`.
+    ///
+    /// D-84 is a statement about two of these sets: every market with a
+    /// recurring row must also carry the plan's usage lines.
+    #[must_use]
+    pub fn markets_with(&self, charge_kind: ChargeKind) -> BTreeSet<(CurrencyCode, Region)> {
+        self.rows
+            .iter()
+            .filter(|record| record.scope_key.charge_kind() == charge_kind)
+            .map(market_of)
+            .collect()
+    }
+
+    /// The plan's metered rows.
+    #[must_use]
+    pub fn usage_rows(&self) -> Vec<&PriceRecord> {
+        self.rows
+            .iter()
+            .filter(|record| record.scope_key.charge_kind() == ChargeKind::Usage)
+            .collect()
+    }
+
+    /// The rows filed on one phase.
+    #[must_use]
+    pub fn rows_on_phase(&self, phase_id: PhaseId) -> Vec<&PriceRecord> {
+        self.rows
+            .iter()
+            .filter(|record| record.scope_key.phase() == phase_id)
+            .collect()
+    }
+}
+
+/// The market axes of a row, read from the **scope key**.
+///
+/// Every derivation above reads the key rather than
+/// [`PriceRow::charge_kind`](crate::domain::price_row::PriceRow::charge_kind),
+/// which carries the same axis for the Slice-3 shape rules' convenience. The
+/// two agree by construction, and picking one of them everywhere means no later
+/// rule has to know that.
+fn market_of(record: &PriceRecord) -> (CurrencyCode, Region) {
+    (
+        record.scope_key.currency().clone(),
+        record.scope_key.region().clone(),
+    )
+}
+
+#[cfg(test)]
+#[path = "plan_shape_tests.rs"]
+mod plan_shape_tests;

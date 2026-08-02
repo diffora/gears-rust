@@ -29,7 +29,8 @@
 
 use bss_pricing::infra::storage::entity::{
     audit_log, catalog_version_ref, idempotency_dedup, operator_flag, outbox, pin_frontier, plan,
-    policy_object, price, price_tier_band, read_model,
+    plan_addon_rule, plan_descriptor_set, plan_phase, policy_object, price, price_tier_band,
+    read_model,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
@@ -42,6 +43,9 @@ use uuid::Uuid;
 /// Every table the chain creates, `coord_leases` included.
 const EXPECTED_TABLES: &[&str] = &[
     "pricing_plan",
+    "pricing_plan_phase",
+    "pricing_plan_addon_rule",
+    "pricing_plan_descriptor_set",
     "pricing_price",
     "pricing_price_tier_band",
     "pricing_read_model",
@@ -129,6 +133,9 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         &conn,
         &scope,
         plan::Entity,
+        plan_phase::Entity,
+        plan_addon_rule::Entity,
+        plan_descriptor_set::Entity,
         price::Entity,
         price_tier_band::Entity,
         read_model::Entity,

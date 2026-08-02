@@ -47,10 +47,29 @@
 //! through its fifth door, on the one path that is always material and therefore
 //! felt safe. A signature that asked "which mechanism?" would reopen exactly
 //! that hole, so this one cannot ask.
+//!
+//! ## The seven unit fields are shared, not restated
+//!
+//! Supersession is not the only handover that leaves `Q` running. A **phase
+//! conversion** does too — the counter is phase-blind, so the row serving the
+//! meter after conversion inherits the continued counter — and
+//! `inst-ph-override-units` (D-89, extended by D-122) states the same
+//! requirement over the same seven fields for a phase-scoped usage override.
+//!
+//! So the seven live in one place,
+//! [`unit_determining_mismatch`](crate::domain::price_row::unit_determining_mismatch),
+//! and both guards call it:
+//! [`SupersessionPair::mismatched_unit_fields`] appends the three this guard
+//! adds, and
+//! [`PhaseOverrideUnits`](crate::domain::plan_rules::phase_graph::PhaseOverrideUnits)
+//! uses the seven as they stand. A second hand-maintained copy of that list is
+//! how the factor-of-24 class re-enters through its next door — the D-127 point
+//! restated at field granularity: a guard must not be able to differ by which
+//! mechanism asked, and one that can drift already differs.
 
 use toolkit_macros::domain_model;
 
-use crate::domain::price_row::PriceRow;
+use crate::domain::price_row::{PriceRow, unit_determining_mismatch};
 use crate::domain::rules::SUPERSESSION_UNIT_MISMATCH;
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
@@ -86,6 +105,15 @@ impl SupersessionPair {
     /// field moved is not remediable, and the whole point of the rule is that
     /// the offending field is structural.
     ///
+    /// **Ten fields, seven of them shared.** The middle seven are
+    /// [`unit_determining_mismatch`] — the same list `inst-ph-override-units`
+    /// binds a phase-scoped override to, written once for the reason the module
+    /// doc gives. The three this guard adds are its own because they are
+    /// supersession-specific: `meter` and `dimensionKey` are two of the four
+    /// components of the counter's own key, so a successor that moved either
+    /// would not inherit the counter at all but silently read a different one;
+    /// and `included_allowance` binds only under the D-129 `carry` condition.
+    ///
     /// Deliberately **not** listed, because they are the legitimate price
     /// levers: the band amounts, the band set itself, `amount_minor`,
     /// `package_price_minor`, and a `none`-policy allowance.
@@ -99,35 +127,7 @@ impl SupersessionPair {
         if before.dimension_key != after.dimension_key {
             changed.push("dimensionKey");
         }
-        if before.model_kind != after.model_kind {
-            changed.push("model_kind");
-        }
-        if before.billing_granularity != after.billing_granularity {
-            changed.push("billingGranularity");
-        }
-        // Read through the defaults: an unauthored `aggregationFunction` and an
-        // authored `sum` are the same row, so comparing the raw `Option`s would
-        // fail a supersession that changed nothing at all.
-        if before.effective_aggregation_function() != after.effective_aggregation_function() {
-            changed.push("aggregationFunction");
-        }
-        if before.effective_aggregation_granularity() != after.effective_aggregation_granularity() {
-            changed.push("aggregationGranularity");
-        }
-        if before.tier_aggregation_window != after.tier_aggregation_window {
-            changed.push("tierAggregationWindow");
-        }
-        // Same reading-through as the two above: the PRD states `current` as
-        // this window's default, so an unauthored window and an authored
-        // `current` are one row.
-        if before.effective_tier_qualification_window()
-            != after.effective_tier_qualification_window()
-        {
-            changed.push("tierQualificationWindow");
-        }
-        if before.package_size != after.package_size {
-            changed.push("package_size");
-        }
+        changed.extend(unit_determining_mismatch(before, after));
         if self.carry_allowance_changed() {
             changed.push("included_allowance");
         }

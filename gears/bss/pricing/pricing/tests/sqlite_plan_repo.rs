@@ -13,23 +13,30 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
+
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::plan::PlanShapePatch;
-use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::domain::plan_shape::{
+    AddonRule, BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+};
+use bss_pricing::domain::scope_key::{PhaseId, PlanId};
 use bss_pricing::infra::storage::entity::plan;
 use bss_pricing::infra::storage::migrations::Migrator;
-use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo};
+use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo, PlanShapeRepo};
 use bss_pricing::infra::storage::{RepoError, repo_failure};
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, ConnectionTrait, Database, EntityTrait, Statement};
-use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
+use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm_migration::MigratorTrait;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
+
+mod common;
 
 /// The repository, plus the provider the seeding helper needs to put a row into
 /// a state only the publish unit (G5) will be able to reach.
@@ -48,6 +55,13 @@ fn at(hour: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 2, hour, 0, 0).unwrap()
 }
 
+/// A draft carrying **every** authorable column, the Slice-2 ones included.
+///
+/// The frequency is the custom one on purpose: it is the only value whose
+/// storage is three columns rather than one, and the only one whose member of
+/// `Frequency::ALL` is a placeholder rather than data. A seed that used a fixed
+/// frequency would round-trip through a path where the placeholder can never be
+/// observed.
 fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
         plan_id,
@@ -56,7 +70,15 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         created_at_utc: at(10),
         sku_id: Some(Uuid::from_u128(0x5_c1)),
         plan_tier: Some("gold".to_owned()),
-        billing_cycle: Some("monthly".to_owned()),
+        billing_cycle: Some(BillingCycle::Recurring),
+        frequency: Some(Frequency::CustomEveryN {
+            n: 45,
+            unit: CustomIntervalUnit::Days,
+        }),
+        plan_tier_override: true,
+        purchase_min_qty: Some(2),
+        purchase_max_qty: Some(10),
+        invoice_grouping_key: Some("emea-bundle".to_owned()),
         available_from: Some(at(11)),
         available_to: Some(at(23)),
     }
@@ -119,11 +141,30 @@ async fn a_created_draft_reads_back_whole() {
     assert_eq!(read, created);
     assert_eq!(read.sku_id, Some(Uuid::from_u128(0x5_c1)));
     assert_eq!(read.plan_tier.as_deref(), Some("gold"));
-    assert_eq!(read.billing_cycle.as_deref(), Some("monthly"));
+    assert_eq!(read.billing_cycle, Some(BillingCycle::Recurring));
     assert_eq!(read.available_from, Some(at(11)));
     assert_eq!(read.available_to, Some(at(23)));
     assert_eq!(read.created_by, Uuid::from_u128(0xac_10));
     assert_eq!(read.created_at_utc, at(10));
+
+    // The Slice-2 columns, and one of them is the whole reason this assertion
+    // is spelled out rather than left to `read == created`: `frequency` is
+    // stored as three columns and `Frequency::ALL`'s `custom_every_n` member
+    // carries `CUSTOM_INTERVAL_PLACEHOLDER` — an `n` of 1 — rather than an
+    // authored interval. A reader that matched the token against the list and
+    // kept what it found would hand back "every 1 day" for every custom plan in
+    // the catalog, with nothing anywhere reporting an error.
+    assert_eq!(
+        read.frequency,
+        Some(Frequency::CustomEveryN {
+            n: 45,
+            unit: CustomIntervalUnit::Days,
+        })
+    );
+    assert!(read.plan_tier_override);
+    assert_eq!(read.purchase_min_qty, Some(2));
+    assert_eq!(read.purchase_max_qty, Some(10));
+    assert_eq!(read.invoice_grouping_key.as_deref(), Some("emea-bundle"));
 }
 
 #[tokio::test]
@@ -391,22 +432,47 @@ async fn every_patched_column_reaches_the_row_it_names() {
             PlanShapePatch {
                 sku_id: Some(sku_id),
                 plan_tier: Some("platinum".to_owned()),
-                billing_cycle: Some("annual".to_owned()),
+                billing_cycle: Some(BillingCycle::OneTime),
+                frequency: Some(Frequency::Annual),
+                plan_tier_override: Some(false),
+                purchase_min_qty: Some(3),
+                purchase_max_qty: Some(4),
+                invoice_grouping_key: Some("apac-bundle".to_owned()),
                 available_from: Some(at(14)),
                 available_to: Some(at(20)),
             },
         )
         .await
-        .expect("a five-column patch is one edit");
+        .expect("a ten-column patch is one edit");
 
     // Asymmetric on purpose: `available_from` and `available_to` are both moved,
-    // to distinct instants, and neither may end up holding the other's.
+    // to distinct instants, and neither may end up holding the other's. The two
+    // purchase bounds are moved to adjacent-but-distinct values for the same
+    // reason.
     assert_eq!(updated.sku_id, Some(sku_id));
     assert_eq!(updated.plan_tier.as_deref(), Some("platinum"));
-    assert_eq!(updated.billing_cycle.as_deref(), Some("annual"));
+    assert_eq!(updated.billing_cycle, Some(BillingCycle::OneTime));
     assert_eq!(updated.available_from, Some(at(14)));
     assert_eq!(updated.available_to, Some(at(20)));
+    assert_eq!(updated.purchase_min_qty, Some(3));
+    assert_eq!(updated.purchase_max_qty, Some(4));
+    assert_eq!(updated.invoice_grouping_key.as_deref(), Some("apac-bundle"));
     assert_eq!(updated.row_version, RowVersion::new(1));
+
+    // `plan_tier_override` is the one `Option` here over a `NOT NULL` column, so
+    // `Some(false)` is a real withdrawal of an audited override (P3) rather than
+    // an omission. The seed set it, this patch clears it, and a patch encoding
+    // that dropped `Some(false)` as "nothing to do" would leave the override
+    // standing while telling the author it was gone.
+    assert!(!updated.plan_tier_override);
+
+    // The frequency moved from the custom one to a fixed one, and that is a
+    // **three-column** write: `custom_interval_n` and `custom_interval_unit`
+    // have to travel to NULL with it. Reading `Some(Annual)` back is the proof —
+    // `read_frequency` refuses a fixed frequency that still carries an interval
+    // as a corrupt row, so a patch that moved only the token would fail this
+    // read instead of returning a value.
+    assert_eq!(updated.frequency, Some(Frequency::Annual));
 
     // And it is the stored row that changed, not just the value handed back.
     let read = repo
@@ -643,12 +709,32 @@ async fn a_new_revision_copies_the_current_shape_forward() {
     assert_eq!(opened.created_at_utc, at(12));
 
     // The shape is carried over, so a revision opened to change one field does
-    // not silently blank the rest.
+    // not silently blank the rest. Every authorable column, not a sample: a
+    // copy-forward that missed one would look like an author who had cleared it,
+    // and the miss would only surface when the successor published.
     assert_eq!(opened.sku_id, published.sku_id);
     assert_eq!(opened.plan_tier, published.plan_tier);
     assert_eq!(opened.billing_cycle, published.billing_cycle);
+    assert_eq!(opened.frequency, published.frequency);
+    assert_eq!(opened.plan_tier_override, published.plan_tier_override);
+    assert_eq!(opened.purchase_min_qty, published.purchase_min_qty);
+    assert_eq!(opened.purchase_max_qty, published.purchase_max_qty);
+    assert_eq!(opened.invoice_grouping_key, published.invoice_grouping_key);
     assert_eq!(opened.available_from, published.available_from);
     assert_eq!(opened.available_to, published.available_to);
+
+    // Spelled out rather than left to the pairwise comparisons above, because
+    // those hold just as well when both sides are `None`: the seed's custom
+    // frequency has to survive the copy **with its interval**, which is the one
+    // value a column copy can lose without losing the column.
+    assert_eq!(
+        opened.frequency,
+        Some(Frequency::CustomEveryN {
+            n: 45,
+            unit: CustomIntervalUnit::Days,
+        })
+    );
+    assert!(opened.plan_tier_override);
 
     // Both links of the chain are readable, and each is what it should be.
     assert_eq!(
@@ -1043,64 +1129,690 @@ async fn a_plan_may_not_be_created_into_another_tenant() {
     );
 }
 
-/// D-83's copy-on-new-revision requires the child shape tables to travel with
-/// the revision, and D-145 requires an abandoned revision's copies to be dropped
-/// with it. They do not exist yet — they are Slice-2 storage and land in **G4** —
-/// so `PlanRepo::open_revision` copies the plan's own columns and nothing else,
-/// and `PlanRepo::abandon_draft` flips the revision row and nothing else.
+/// The one pairing the table cannot refuse, refused where the row is read.
 ///
-/// This is the anchor for both gaps, not an endorsement of them. It interrogates
-/// the **schema** rather than migration names on purpose: a G4 migration named
-/// for its slice rather than its tables (`m..._create_slice2_plan_shape`) would
-/// create all three and leave a name-matching anchor green, which is exactly the
-/// silence the gap must not be allowed. The moment any of the three tables
-/// exists this fails, and the fix is to make `open_revision` copy it forward
-/// with stable `phase_id`s and `abandon_draft` drop it — never to relax the
-/// assertion.
+/// `chk_pricing_plan_custom_interval_pairing` compares
+/// `frequency = 'custom_every_n'` against "**both** interval columns present",
+/// so a row carrying only one of them under a fixed or absent frequency has a
+/// false right-hand side and satisfies the CHECK. Nothing in the schema is left
+/// to catch it, which makes `read_frequency`'s whitelist of the two legal
+/// shapes the only guard standing — and a guard with no test behind it is one
+/// that gets simplified away by the next reader who finds it redundant.
+///
+/// Both arms are exercised, because the reading has two: an absent `frequency`
+/// and a fixed one are different branches with the same obligation.
 #[tokio::test]
-async fn no_child_shape_table_exists_yet_for_a_new_revision_to_copy_d83() {
-    const CHILD_TABLES: [&str; 3] = [
-        "pricing_plan_phase",
+async fn a_half_set_interval_the_check_admits_is_refused_where_it_is_read() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+
+    repo.create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create");
+    let conn = provider.conn().expect("conn");
+
+    for frequency in [Some("monthly".to_owned()), None] {
+        // Column-level, the way `flip_state` seeds a state the repository
+        // cannot reach: the typed path is exactly what cannot express this row,
+        // because `Frequency` carries the interval inside the variant and no
+        // `NewPlanDraft` or `PlanShapePatch` can separate them. The draft plane
+        // is unguarded in its columns, so the write lands.
+        let moved = plan::Entity::update_many()
+            .secure()
+            .scope_with(&scope)
+            .col_expr(plan::Column::Frequency, Expr::value(frequency.clone()))
+            .col_expr(plan::Column::CustomIntervalN, Expr::value(Some(3_i32)))
+            .col_expr(
+                plan::Column::CustomIntervalUnit,
+                Expr::value(Option::<String>::None),
+            )
+            .filter(
+                Condition::all()
+                    .add(plan::Column::PlanId.eq(plan_id.get()))
+                    .add(plan::Column::Revision.eq(0_i64)),
+            )
+            .exec(&conn)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("the CHECK admits a half-set pair under {frequency:?}: {e}")
+            });
+        assert_eq!(moved.rows_affected, 1);
+
+        // An interval nothing can interpret is an invariant breach, not a
+        // caller's mistake: the row could only have been written by something
+        // that reached the table outside this gear. Reading it back as
+        // `Some(Monthly)` would silently discard an authored interval; reading
+        // it as a not-found would send an author looking for a revision that
+        // is right there.
+        let err = repo
+            .find_revision(&scope, tenant, plan_id, 0)
+            .await
+            .expect_err("an orphaned interval must not read back as a plan");
+        assert!(
+            matches!(err, RepoError::CorruptRow(_)),
+            "frequency {frequency:?}, got: {err:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D-83 / D-145 against all three revision-scoped child tables.
+//
+// The anchor that stood here while the tables were landing named the tables that
+// did not exist yet, and it went green as each one arrived. Its successor names
+// the **property** instead - the set of revision-scoped tables is closed at
+// three - so it turns red on the fourth, which is exactly when its author needs
+// to be told what else the table owes. See
+// `the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_dropped`.
+// ---------------------------------------------------------------------------
+
+/// A three-phase chain: trial -> intro -> evergreen, the last one terminal.
+///
+/// The ordinals are authored ascending and the ids are not, so a copy that
+/// re-minted ids or a read that returned rows in insertion order would both be
+/// visible in the assertions rather than hidden by a lucky ordering.
+fn three_phases() -> Vec<PlanPhase> {
+    let trial = PhaseId::new(Uuid::from_u128(0xf13));
+    let intro = PhaseId::new(Uuid::from_u128(0xf11));
+    let evergreen = PhaseId::new(Uuid::from_u128(0xf12));
+    vec![
+        PlanPhase {
+            phase_id: trial,
+            kind: PhaseKind::Trial,
+            ordinal: 0,
+            converts_to_phase_id: Some(intro),
+            phase_duration_days: Some(14),
+            // The projection, equal to its source: the table's CHECK is what
+            // stops the two persisted columns drifting.
+            display_trial_days: Some(14),
+        },
+        PlanPhase {
+            phase_id: intro,
+            kind: PhaseKind::Intro,
+            ordinal: 1,
+            converts_to_phase_id: Some(evergreen),
+            phase_duration_days: Some(30),
+            display_trial_days: None,
+        },
+        PlanPhase {
+            phase_id: evergreen,
+            kind: PhaseKind::Evergreen,
+            ordinal: 2,
+            // Terminality is the absent successor, never the kind.
+            converts_to_phase_id: None,
+            phase_duration_days: None,
+            display_trial_days: None,
+        },
+    ]
+}
+
+/// The three add-on rules §9's D-105 acceptance case names, with one conflict
+/// edge authored on one side and one `depends_on` edge.
+///
+/// Three rather than one because that is the number the earlier
+/// `(plan_id, plan_revision)` key could not hold: with one rule per revision the
+/// cycle walk has no edge to walk and the conflict pair has no second side.
+fn three_addon_rules() -> Vec<AddonRule> {
+    let analytics = Uuid::from_u128(0xadd01);
+    let support = Uuid::from_u128(0xadd02);
+    let seats = Uuid::from_u128(0xadd03);
+    vec![
+        AddonRule {
+            addon_sku_id: analytics,
+            required: true,
+            min_qty: Some(1),
+            max_qty: Some(3),
+            step_qty: Some(1),
+            price_override_ref: None,
+            depends_on: Vec::new(),
+            conflicts_with: vec![support],
+        },
+        AddonRule {
+            addon_sku_id: support,
+            required: false,
+            min_qty: None,
+            max_qty: None,
+            step_qty: None,
+            price_override_ref: None,
+            depends_on: Vec::new(),
+            // Authored empty on purpose: the repository closes the conflict
+            // under symmetry, so this row must read back naming analytics.
+            conflicts_with: Vec::new(),
+        },
+        AddonRule {
+            addon_sku_id: seats,
+            required: false,
+            min_qty: None,
+            max_qty: None,
+            step_qty: None,
+            price_override_ref: Some(Uuid::from_u128(0x0_ff1)),
+            depends_on: vec![analytics],
+            conflicts_with: Vec::new(),
+        },
+    ]
+}
+
+/// Create a plan, author `three_phases()` and `three_addon_rules()` on its
+/// revision 0, and publish it.
+///
+/// Returns the shape repository, so a caller can read either revision back.
+///
+/// Both child sets are authored, not just the one a given case asserts on: the
+/// obligations under test are `open_revision` copying **every** child table
+/// forward and `abandon_draft` dropping **every** one, and a seed carrying a
+/// single table would leave a copier that handles exactly one of them green.
+async fn published_plan_with_shape(
+    repo: &PlanRepo,
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plan_id: PlanId,
+) -> PlanShapeRepo {
+    let shapes = PlanShapeRepo::new(provider.clone());
+    repo.create_draft(scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create");
+    shapes
+        .replace_phases(
+            scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            three_phases(),
+        )
+        .await
+        .expect("author the phase chain on the open draft");
+    // Under the tag the phase write advanced to: a revision's child sets share
+    // the revision's entity tag, so authoring the second one is an edit against
+    // the version the first one produced.
+    shapes
+        .replace_addon_rules(
+            scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(1),
+            three_addon_rules(),
+        )
+        .await
+        .expect("author the add-on set on the open draft");
+    shapes
+        .set_descriptor_set(scope, tenant, plan_id, 0, RowVersion::new(2), descriptors())
+        .await
+        .expect("attach the descriptor set on the open draft");
+    flip_state(provider, scope, plan_id, 0, LifecycleState::Published).await;
+    shapes
+}
+
+/// A complete v1 descriptor set plus one P5 extra field.
+fn descriptors() -> DescriptorSet {
+    DescriptorSet {
+        invoice_line_template: Some("Subscription: {plan}".to_owned()),
+        gl_code: Some("4000".to_owned()),
+        itemization_rule: Some("per_plan".to_owned()),
+        additional: BTreeMap::from([("costCentre".to_owned(), "emea-ops".to_owned())]),
+    }
+}
+
+#[tokio::test]
+async fn a_new_revision_carries_its_predecessors_phases_with_the_same_ids_d83() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
+
+    let opened = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .await
+        .expect("open the successor revision");
+    assert_eq!(opened.revision, 1);
+
+    // Field for field, including the `phase_id`s. Stable ids are the whole
+    // point: the `phase` axis of the canonical scope key holds a bare phase id,
+    // so a re-minted one would move every continuing price row onto a key
+    // nothing is filed under and same-key supersession would stop matching.
+    let carried = shapes
+        .list_phases(&scope, tenant, plan_id, 1)
+        .await
+        .expect("read the new revision's phases");
+    assert_eq!(
+        carried,
+        three_phases(),
+        "the successor revision must carry the whole chain, ids and all"
+    );
+
+    // And the published revision still holds its own copies: the copy is a
+    // copy, not a move, and the frozen revision's shape is what the projector
+    // re-reads at every warm re-drive.
+    let frozen = shapes
+        .list_phases(&scope, tenant, plan_id, 0)
+        .await
+        .expect("read the published revision's phases");
+    assert_eq!(
+        frozen,
+        three_phases(),
+        "the published revision's copies must be untouched"
+    );
+}
+
+#[tokio::test]
+async fn an_abandoned_revision_keeps_none_of_its_phase_copies_d145() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
+
+    let opened = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .await
+        .expect("open the successor revision");
+    assert_eq!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .len(),
+        3,
+        "the draft must start from its predecessor's chain"
+    );
+
+    let tombstone = repo
+        .abandon_draft(&scope, tenant, plan_id, 1, opened.row_version)
+        .await
+        .expect("abandon the draft revision");
+    assert_eq!(tombstone.lifecycle_state, LifecycleState::Abandoned);
+
+    // A tombstone that kept its shape would leave a frozen phase set hanging
+    // off a revision no path can reach, and the number it consumed would still
+    // name a shape somebody could read.
+    assert!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .is_empty(),
+        "an abandoned revision must hold no phase rows"
+    );
+    assert_eq!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read"),
+        three_phases(),
+        "the published revision's chain must still stand"
+    );
+}
+
+/// §9's D-105 acceptance case: "A plan carrying **three** add-on rules
+/// round-trips: all three persist under the revision, the `depends_on` cycle
+/// walk sees all three edges, and a draft revision's edit copies all three under
+/// the new `plan_revision`."
+///
+/// Three is the load-bearing number. The pre-D-105 key admitted one rule per
+/// revision, so a suite exercising a single add-on would have passed against a
+/// table that cannot express a dependency edge at all.
+#[tokio::test]
+async fn a_new_revision_carries_all_three_add_on_rules_d105() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
+
+    let published = shapes
+        .list_addon_rules(&scope, tenant, plan_id, 0)
+        .await
+        .expect("read the published revision's add-on rules");
+    assert_eq!(published.len(), 3, "all three persist under the revision");
+
+    let opened = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .await
+        .expect("open the successor revision");
+    assert_eq!(opened.revision, 1);
+
+    // Field for field under the new `plan_revision`, the edges included: the
+    // cycle walk on the successor has to see the same graph the predecessor's
+    // author drew, or a revision opened to change a price silently changes what
+    // the plan composes with.
+    let carried = shapes
+        .list_addon_rules(&scope, tenant, plan_id, 1)
+        .await
+        .expect("read the new revision's add-on rules");
+    assert_eq!(carried, published, "the successor carries the whole set");
+    assert_eq!(
+        carried
+            .iter()
+            .map(|row| row.depends_on.len() + row.conflicts_with.len())
+            .sum::<usize>(),
+        // One `depends_on` edge, and the conflict on both of its ends.
+        3,
+        "every authored edge, and the back-edge symmetry added on write"
+    );
+
+    // And the published revision keeps its own copies: the copy is a copy, not a
+    // move, and the frozen revision's composition is what the projector re-reads
+    // at every warm re-drive.
+    assert_eq!(
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read"),
+        published,
+        "the published revision's copies must be untouched"
+    );
+}
+
+#[tokio::test]
+async fn an_abandoned_revision_keeps_none_of_its_add_on_rules_d145() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
+
+    let opened = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .await
+        .expect("open the successor revision");
+    assert_eq!(
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .len(),
+        3,
+        "the draft must start from its predecessor's composition"
+    );
+
+    repo.abandon_draft(&scope, tenant, plan_id, 1, opened.row_version)
+        .await
+        .expect("abandon the draft revision");
+
+    // The drop has to precede the flip: `abandoned` is not `draft`, and the
+    // table's DELETE trigger refuses everything afterwards. A tombstone that
+    // kept its rules would leave a frozen composition hanging off a revision no
+    // path can reach.
+    assert!(
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .is_empty(),
+        "an abandoned revision must hold no add-on rules"
+    );
+    assert_eq!(
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read")
+            .len(),
+        3,
+        "the published revision's composition must still stand"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The whole shape, and the argument the retired anchor was holding.
+// ---------------------------------------------------------------------------
+
+/// A revision copies **every** revision-scoped child table it has, and the two
+/// cases below are what stands behind that now.
+///
+/// They replace a schema anchor. While the three child tables were landing one
+/// per task, `no_child_shape_table_exists_yet_for_a_new_revision_to_copy_d83`
+/// queried `sqlite_master` and failed the moment a table it named appeared —
+/// deliberately interrogating the schema rather than migration names, because a
+/// migration named for its slice rather than its tables
+/// (`m..._create_slice2_plan_shape`) would have created several and left a
+/// name-matching anchor green. Its purpose was to make "add revision-scoped
+/// storage" and "teach `open_revision` to copy it and `abandon_draft` to drop
+/// it" one indivisible piece of work.
+///
+/// Slice 2 owns no fourth table, so the anchor has nothing left to name and is
+/// gone. **The obligation is not**: a later slice adding a revision-scoped child
+/// gets no compiler error and no failing anchor, so these two cases are where
+/// its copy and its drop have to be asserted, and a reader who adds a table
+/// without touching this file has left the same gap the anchor existed to close.
+#[tokio::test]
+async fn a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
+
+    let opened = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .await
+        .expect("open the successor revision");
+    assert_eq!(opened.revision, 1);
+
+    // All three tables, in one case, because "the shape travels" is one fact
+    // about a revision rather than three about three tables: a successor that
+    // carried its phases and lost its descriptors is a plan whose next publish
+    // is blocked by `DESCRIPTOR_INCOMPLETE` for a set its author never removed.
+    assert_eq!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read the successor's phases"),
+        three_phases(),
+        "the phase chain travels, phase ids and all (D-83/D-56)"
+    );
+    assert_eq!(
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read the successor's add-on rules"),
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read the predecessor's add-on rules"),
+        "the add-on set travels, every rule of it (D-105)"
+    );
+    assert_eq!(
+        shapes
+            .find_descriptor_set(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read the successor's descriptor set"),
+        Some(descriptors()),
+        "the descriptor set travels, the P5 extra fields included"
+    );
+
+    // The ids are the load-bearing half of the phase copy: the `phase` axis of
+    // the canonical scope key holds a bare `phase_id` (D-19) and same-key
+    // supersession compares it (D-56), so a re-minted one would move every
+    // continuing price row onto a key nothing is filed under.
+    assert_eq!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .iter()
+            .map(|phase| phase.phase_id)
+            .collect::<Vec<PhaseId>>(),
+        three_phases()
+            .iter()
+            .map(|phase| phase.phase_id)
+            .collect::<Vec<PhaseId>>(),
+    );
+
+    // And the published revision keeps all three of its own: a copy is a copy,
+    // and the frozen revision's shape is what the projector re-reads at every
+    // warm re-drive.
+    assert_eq!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read"),
+        three_phases()
+    );
+    assert_eq!(
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read")
+            .len(),
+        3
+    );
+    assert_eq!(
+        shapes
+            .find_descriptor_set(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read"),
+        Some(descriptors())
+    );
+}
+
+/// The other half of the retired anchor: a discarded revision keeps **none** of
+/// its copies, and its predecessor keeps all of them.
+///
+/// The drop precedes the flip inside one transaction, and that ordering is
+/// forced rather than chosen: `abandoned` is not `draft`, so every child table's
+/// DELETE trigger refuses the drop the moment the revision row has moved. A
+/// tombstone that kept its copies would leave a frozen shape hanging off a
+/// revision no path can reach, under a number that stays consumed forever.
+#[tokio::test]
+async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
+
+    let opened = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .await
+        .expect("open the successor revision");
+    let tombstone = repo
+        .abandon_draft(&scope, tenant, plan_id, 1, opened.row_version)
+        .await
+        .expect("abandon the draft revision");
+    assert_eq!(tombstone.lifecycle_state, LifecycleState::Abandoned);
+
+    assert!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .is_empty(),
+        "no phase rows survive the tombstone"
+    );
+    assert!(
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .is_empty(),
+        "no add-on rules survive the tombstone"
+    );
+    assert_eq!(
+        shapes
+            .find_descriptor_set(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read"),
+        None,
+        "no descriptor set survives the tombstone"
+    );
+
+    // The published revision is untouched by any of it — the drop is scoped to
+    // the discarded revision, not to the plan.
+    assert_eq!(
+        shapes
+            .list_phases(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read"),
+        three_phases()
+    );
+    assert_eq!(
+        shapes
+            .list_addon_rules(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read")
+            .len(),
+        3
+    );
+    assert_eq!(
+        shapes
+            .find_descriptor_set(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read"),
+        Some(descriptors())
+    );
+}
+
+/// **The set of revision-scoped child tables is closed, and every member of it
+/// is copied on `open_revision` and dropped on `abandon_draft`.**
+///
+/// This is the successor to the anchor that stood in this file while the three
+/// tables were landing. That one named the tables that did **not** exist yet and
+/// failed the moment one appeared; it served its purpose and then ran out of
+/// absentees to name. This one names the property instead, so it keeps working
+/// with no absentees left: a fourth revision-scoped table turns it red the
+/// moment it is created, which is precisely when its author needs to be told
+/// that D-83 and D-145 are now partly its problem.
+///
+/// **`plan_revision` is the discriminator**, and it is a sound one here: the
+/// three child tables carry that column and nothing else in the chain does —
+/// `pricing_plan` names its own `revision`, and no other table in this gear has a
+/// revision column at all. The column is what makes a table revision-scoped in
+/// the first place, so the query asks the schema the same question the decision
+/// asks: which rows version with a plan revision? A test listing table names
+/// would go stale the way the old anchor did; this one cannot, because the thing
+/// it enumerates is the thing that creates the obligation.
+///
+/// The **copy and the drop** are asserted by
+/// [`a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83`] and
+/// [`an_abandoned_revision_keeps_none_of_the_whole_shape_d145`] over all three
+/// tables at once, and by a per-table case for each. This test is what points a
+/// fourth table's author at them.
+#[tokio::test]
+async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_dropped() {
+    /// Alphabetical, because that is the order the query returns.
+    const REVISION_SCOPED: [&str; 3] = [
         "pricing_plan_addon_rule",
         "pricing_plan_descriptor_set",
+        "pricing_plan_phase",
     ];
 
-    // A raw `SeaORM` connection, as `sqlite_migrations.rs` uses for the same
-    // question: `sqlite_master` has no entity, and `toolkit-db` deliberately
-    // hands out no raw executor.
-    let conn = Database::connect("sqlite::memory:")
-        .await
-        .expect("connect in-memory sqlite");
-    let manager = SchemaManager::new(&conn);
-    let mut chain: Vec<Box<dyn MigrationTrait>> = Migrator::migrations();
-    chain.sort_by(|a, b| a.name().cmp(b.name()));
-    for migration in &chain {
-        migration
-            .up(&manager)
-            .await
-            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
-    }
+    let conn = common::migrated_db().await;
+    // Every table of the whole chain that carries a `plan_revision` column,
+    // asked of `sqlite_master` and `pragma_table_info` rather than of a list
+    // this file maintains.
+    let found = common::scalar(
+        &conn,
+        "SELECT coalesce(group_concat(name, ','), '') AS v FROM (
+           SELECT m.name AS name
+             FROM sqlite_master m
+             JOIN pragma_table_info(m.name) c
+            WHERE m.type = 'table' AND c.name = 'plan_revision'
+            ORDER BY m.name)",
+    )
+    .await;
 
-    for table in CHILD_TABLES {
-        let sql = format!(
-            "SELECT count(*) AS c FROM sqlite_master WHERE type = 'table' AND name = '{table}'"
-        );
-        let row = conn
-            .query_one(Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                sql,
-            ))
-            .await
-            .expect("query sqlite_master")
-            .expect("count query returns a row");
-        let found: i32 = row.try_get("", "c").expect("read count");
-
-        assert_eq!(
-            found, 0,
-            "{table} now exists, so D-83's copy-on-new-revision is no longer \
-             discharged by copying columns: PlanRepo::open_revision must copy \
-             it forward with stable phase ids, and PlanRepo::abandon_draft must \
-             drop the discarded revision's copies of it"
-        );
-    }
+    assert_eq!(
+        found,
+        REVISION_SCOPED.join(","),
+        "the set of tables carrying `plan_revision` has changed. A revision-scoped \
+         table is one whose rows version with a plan revision, and every one of \
+         them owes two things that nothing else in this gear will supply: \
+         `PlanRepo::open_revision` must copy its rows onto the newly opened \
+         revision, inside that method's transaction and after the revision row is \
+         inserted (the table's INSERT trigger requires the new parent to be \
+         `draft`); and `PlanRepo::abandon_draft` must delete them BEFORE it flips \
+         the revision row, because `abandoned` is not `draft` and the DELETE \
+         trigger refuses everything afterwards. Add both calls in \
+         `src/infra/storage/repo/plan_repo.rs`, add the copier and the dropper \
+         beside the table's other statements in `plan_shape_repo.rs`, extend \
+         `a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83` and \
+         `an_abandoned_revision_keeps_none_of_the_whole_shape_d145` to assert \
+         them, and then add the table here. Do NOT simply add it here: this \
+         assertion is the notice, not the obligation."
+    );
 }

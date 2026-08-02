@@ -13,17 +13,26 @@ use chrono::{TimeZone, Utc};
 use uuid::Uuid;
 
 use super::PlanShapePatch;
+use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
 
 #[test]
-fn the_patch_names_five_columns_and_cannot_mean_clear_any_of_them() {
+fn the_patch_names_ten_columns_and_cannot_mean_clear_nine_of_them() {
     // The exhaustive struct literal is the assertion, and it is a compile-time
     // one: when a slice widens what a draft edit may touch, this stops
     // compiling, so the widening becomes a decision somebody made rather than a
-    // field that appeared.
-    let _five_columns = PlanShapePatch {
+    // field that appeared. Slice 2 widened it by five.
+    let _ten_columns = PlanShapePatch {
         sku_id: Some(Uuid::from_u128(1)),
         plan_tier: Some("silver".to_owned()),
-        billing_cycle: Some("annual".to_owned()),
+        billing_cycle: Some(BillingCycle::Recurring),
+        frequency: Some(Frequency::CustomEveryN {
+            n: 45,
+            unit: CustomIntervalUnit::Days,
+        }),
+        plan_tier_override: Some(true),
+        purchase_min_qty: Some(2),
+        purchase_max_qty: Some(10),
+        invoice_grouping_key: Some("emea-bundle".to_owned()),
         available_from: Some(Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap()),
         available_to: Some(Utc.with_ymd_and_hms(2028, 1, 1, 0, 0, 0).unwrap()),
     };
@@ -33,10 +42,21 @@ fn the_patch_names_five_columns_and_cannot_mean_clear_any_of_them() {
     // can mean "set this column to NULL". A `Default` that pre-filled one field
     // would turn the identity edit into a write nobody asked for, and is the one
     // way this encoding can lie.
+    //
+    // `plan_tier_override` is the field where this matters most and reads least
+    // like it: it is the only `Option` here over a `NOT NULL` column, so a
+    // `Default` of `Some(false)` would be indistinguishable from "leave alone"
+    // to a reader and would silently withdraw an audited override (P3) on every
+    // unrelated edit.
     let empty = PlanShapePatch::default();
     assert!(empty.sku_id.is_none());
     assert!(empty.plan_tier.is_none());
     assert!(empty.billing_cycle.is_none());
+    assert!(empty.frequency.is_none());
+    assert!(empty.plan_tier_override.is_none());
+    assert!(empty.purchase_min_qty.is_none());
+    assert!(empty.purchase_max_qty.is_none());
+    assert!(empty.invoice_grouping_key.is_none());
     assert!(empty.available_from.is_none());
     assert!(empty.available_to.is_none());
 }
