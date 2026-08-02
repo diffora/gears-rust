@@ -32,6 +32,7 @@ use crate::api::rest::frontier::ApiState as CatalogVersionApiState;
 use crate::config::BssPricingConfig;
 use crate::domain::ports::{CatalogVersionRegistryV1, UnconfiguredCatalogVersionRegistryV1};
 use crate::infra::fixture_gate::FixtureGate;
+use crate::infra::publish::PublishService;
 use crate::infra::storage::repo::PinFrontierRepo;
 
 /// Per-process state built by [`Gear::init`] and read by
@@ -56,33 +57,38 @@ pub(crate) struct PricingRuntime {
     /// `register_rest`. Authz is security-critical, so a missing client fails
     /// init — there is no no-op fallback.
     pub enforcer: Arc<authz_resolver_sdk::PolicyEnforcer>,
-    /// The `CatalogVersion` registry, resolved from `ClientHub` with a
-    /// fail-closed default. Unlike the PEP this does NOT hard-fail init: the
-    /// registry gear has no code in this repository yet, and a catalog that
-    /// cannot boot without it could not be developed at all. The cost is paid
-    /// at the right moment instead — publish requests addressability and stops
-    /// when the answer is "unconfigured", so nothing becomes consumer-visible
-    /// without a real version.
-    #[allow(
-        dead_code,
-        reason = "requested by the publish engine, which lands with the publish path"
-    )]
-    pub catalog_version_registry: Arc<dyn CatalogVersionRegistryV1>,
-    /// The joint-conformance publish gate, loaded once at init from
-    /// `config.fixtures.registry_path`.
+    /// The publish engine: the subject assembler, the aggregate rule set and
+    /// the §4.2 step-2 pre-check, over the repositories and the
+    /// joint-conformance gate.
     ///
-    /// Loaded here rather than per publish because the registry is a static
-    /// generated artifact and the gate runs inside a publish transaction, where
-    /// reading a file is not an option. A registry that cannot be read leaves
-    /// the gate CLOSED for every kind (see [`FixtureGate::load`]) and does NOT
-    /// abort the boot: the read path this gear serves to Rating and Tariffs
-    /// keeps working, and every publish then fails per kind with
-    /// `FIXTURE_MISSING` rather than the whole gear disappearing.
+    /// **This is where the fixture gate and the `CatalogVersion` registry now
+    /// live**, and both used to sit on this struct with a `dead_code` allow
+    /// waiting for exactly this field. The registry is still resolved from
+    /// `ClientHub` with a fail-closed default and still does NOT hard-fail init:
+    /// the registry gear has no code in this repository, and a catalog that
+    /// could not boot without it could not be developed at all. The cost is paid
+    /// at the right moment instead — the commit requests addressability and
+    /// stops when the answer is "unconfigured", so nothing becomes
+    /// consumer-visible without a real version.
+    ///
+    /// The gate's own story is the same: it used to sit here with a
+    /// `dead_code` allow reading "consulted by the publish engine, which lands
+    /// with the publish path" — the publish path has landed, the
+    /// gate is consulted by [`PublishService::precheck`], and the field it was
+    /// waiting for is this one. The gate is still loaded once at init rather
+    /// than per publish, because the registry is a static generated artifact and
+    /// the gate runs inside a publish transaction, where reading a file is not
+    /// an option; a registry that cannot be read leaves it CLOSED for every kind
+    /// and does not abort the boot.
+    ///
+    /// The allow that remains is a narrower debt than the one it replaces: the
+    /// engine has no **caller** because this gear has no authoring REST surface
+    /// at all. `POST /bss-pricing/v1/plans/{planId}/publish` is G7's.
     #[allow(
         dead_code,
-        reason = "consulted by the publish engine, which lands with the publish path"
+        reason = "called by the authoring REST surface (G7), which is the only thing that can reach a publish"
     )]
-    pub fixture_gate: FixtureGate,
+    pub publish: PublishService,
     /// Per-request state for the catalog-version REST surface, built here so
     /// `register_rest` composes routers and does no wiring of its own.
     pub catalog_version_api: Arc<CatalogVersionApiState>,
@@ -252,12 +258,22 @@ impl Gear for BssPricingGear {
             pin_frontier: PinFrontierRepo::new(db.clone()),
         });
 
+        // The publish engine takes the gate and the registry by value: it is
+        // the only thing that consults either, and a second holder would be a
+        // second answer to "is this deployment's corpus green for that shape"
+        // and a second place a `CatalogVersion` could be requested from.
+        let publish = PublishService::new(
+            db.clone(),
+            &config.limits,
+            fixture_gate,
+            catalog_version_registry,
+        );
+
         self.runtime.store(Some(Arc::new(PricingRuntime {
             db,
             config,
             enforcer,
-            catalog_version_registry,
-            fixture_gate,
+            publish,
             catalog_version_api,
         })));
         info!("bss-pricing: runtime published");

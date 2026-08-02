@@ -32,14 +32,15 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{AccessScope, SecureUpdateExt};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
 mod common;
 
 /// The repository, plus the provider the seeding helper needs to put a row into
-/// a state only the publish unit (G5) will be able to reach.
+/// a state `PlanRepo::publish_revision` now reaches by the sanctioned path, and
+/// one - `retired` - that still has no producer in this gear (D-128, Slice 11).
 async fn harness() -> (PlanRepo, DBProvider<DbError>) {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
@@ -86,9 +87,11 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
 
 /// Move a revision's `lifecycle_state` directly.
 ///
-/// The publish unit that owns this flip lands in G5, and the append-only
-/// trigger permits it: it fires only when the row is already past `draft`, and
-/// `published -> retired` is one of the two flips it whitelists.
+/// Used only for `published -> retired`, which has no producer in this gear
+/// (D-128 is Slice 11's publish unit); `draft -> published` goes through
+/// `publish_revision` below, because that flip now has one. The append-only
+/// trigger permits this edge: it fires only when the row is already past
+/// `draft`, and `published -> retired` is one of the two flips it whitelists.
 async fn flip_state(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,
@@ -1814,5 +1817,536 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
          `an_abandoned_revision_keeps_none_of_the_whole_shape_d145` to assert \
          them, and then add the table here. Do NOT simply add it here: this \
          assertion is the notice, not the obligation."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-90's flip: the publish unit's two lifecycle moves.
+// ---------------------------------------------------------------------------
+
+/// Count the plan's revisions in one lifecycle state.
+async fn count_in_state(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    plan_id: PlanId,
+    state: LifecycleState,
+) -> u64 {
+    let conn = provider.conn().expect("conn");
+    plan::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::LifecycleState.eq(state.as_str())),
+        )
+        .count(&conn)
+        .await
+        .expect("count revisions")
+}
+
+/// `publish_revision` through a real transaction, which is now what its type
+/// demands.
+///
+/// It takes a `DbTx` rather than any runner because it performs **two**
+/// statements that must not be separable: on a bare connection a
+/// compare-and-swap failing after the demotion would leave the plan with no
+/// current revision at all. These tests therefore drive it the way the publish
+/// commit does.
+async fn publish_revision(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+) -> Result<bss_pricing::domain::plan::PlanRevision, RepoError> {
+    let scope = scope.clone();
+    let (_, outcome) = provider
+        .db()
+        .in_transaction::<bss_pricing::domain::plan::PlanRevision, RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::plan_repo::publish_revision(
+                    txn, &scope, tenant_id, plan_id, revision, expected,
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| {
+        err.into_domain(|infra| RepoError::Db(format!("publish transaction: {infra}")))
+    })
+}
+
+#[tokio::test]
+async fn a_first_publish_leaves_exactly_one_current_revision() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let created = repo
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+
+    let published = publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        created.row_version,
+    )
+    .await
+    .expect("publish the first revision");
+
+    assert_eq!(published.lifecycle_state, LifecycleState::Published);
+    // The tag advances with the flip: the representation a caller cached did
+    // change, and this is the last move it will ever make.
+    assert_eq!(published.row_version, RowVersion::new(1));
+    assert_eq!(
+        count_in_state(&provider, &scope, plan_id, LifecycleState::Published).await,
+        1
+    );
+    assert_eq!(
+        count_in_state(&provider, &scope, plan_id, LifecycleState::Superseded).await,
+        0,
+        "a first publish has no predecessor to demote"
+    );
+    assert_eq!(
+        repo.find_current(&scope, tenant, plan_id)
+            .await
+            .expect("read the current revision")
+            .expect("the plan has one")
+            .revision,
+        created.revision
+    );
+}
+
+#[tokio::test]
+async fn a_second_publish_demotes_the_first_and_still_leaves_exactly_one() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let created = repo
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+    let first = publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        created.row_version,
+    )
+    .await
+    .expect("publish revision 0");
+
+    let opened = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .await
+        .expect("open the successor");
+    publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        opened.revision,
+        opened.row_version,
+    )
+    .await
+    .expect("publish the successor");
+
+    assert_eq!(
+        count_in_state(&provider, &scope, plan_id, LifecycleState::Published).await,
+        1,
+        "uq_pricing_plan_current permits exactly one, and the demotion is what keeps it true"
+    );
+    assert_eq!(
+        count_in_state(&provider, &scope, plan_id, LifecycleState::Superseded).await,
+        1
+    );
+    assert_eq!(
+        repo.find_current(&scope, tenant, plan_id)
+            .await
+            .expect("read the current revision")
+            .expect("the plan has one")
+            .revision,
+        opened.revision
+    );
+
+    // The demoted predecessor keeps the entity tag it published under: the
+    // frozen-column guard lists `row_version`, so a demotion that bumped it
+    // would be refused by the trigger, and the tag freezes with the content it
+    // names.
+    let demoted = repo
+        .find_revision(&scope, tenant, plan_id, created.revision)
+        .await
+        .expect("read the predecessor")
+        .expect("it is still there");
+    assert_eq!(demoted.lifecycle_state, LifecycleState::Superseded);
+    assert_eq!(demoted.row_version, first.row_version);
+}
+
+#[tokio::test]
+async fn a_stale_row_version_is_refused_and_nothing_flips() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let created = repo
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+
+    let refusal = publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        RowVersion::new(99),
+    )
+    .await
+    .expect_err("a stale version must be refused");
+
+    assert!(
+        matches!(refusal, RepoError::StaleRowVersion { current, submitted, .. }
+            if current == 0 && submitted == 99),
+        "got {refusal:?}"
+    );
+    assert_eq!(
+        count_in_state(&provider, &scope, plan_id, LifecycleState::Published).await,
+        0,
+        "the refused publish left the revision where it was"
+    );
+    assert_eq!(
+        repo.find_revision(&scope, tenant, plan_id, created.revision)
+            .await
+            .expect("read it back")
+            .expect("it is still there")
+            .lifecycle_state,
+        LifecycleState::Draft
+    );
+}
+
+#[tokio::test]
+async fn publishing_a_revision_twice_is_refused_by_the_state_machine_not_by_the_trigger() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let created = repo
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+    let published = publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        created.row_version,
+    )
+    .await
+    .expect("publish it once");
+
+    // A revision publishes at most once, which is what makes the outbox dedup
+    // key `(event, plan, revision)` sound.
+    let refusal = publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        published.row_version,
+    )
+    .await
+    .expect_err("a second publish of one revision must be refused");
+
+    assert!(
+        matches!(&refusal, RepoError::NotDraft { state, .. } if state == "published"),
+        "got {refusal:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let created = repo
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+    let conn = provider.conn().expect("conn");
+    publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        created.row_version,
+    )
+    .await
+    .expect("publish revision 0");
+    // Retirement is Slice 11's publish unit and has no producer here.
+    flip_state(
+        &provider,
+        &scope,
+        plan_id,
+        i64::try_from(created.revision).expect("a small revision"),
+        LifecycleState::Retired,
+    )
+    .await;
+
+    // A second revision row, fabricated straight at the table: `open_revision`
+    // refuses a retired plan first, and what is under test is the publish.
+    let opened = plan::ActiveModel {
+        plan_id: sea_orm::ActiveValue::Set(plan_id.get()),
+        revision: sea_orm::ActiveValue::Set(1),
+        tenant_id: sea_orm::ActiveValue::Set(tenant),
+        sku_id: sea_orm::ActiveValue::Set(None),
+        plan_tier: sea_orm::ActiveValue::Set(None),
+        billing_cycle: sea_orm::ActiveValue::Set(None),
+        frequency: sea_orm::ActiveValue::Set(None),
+        custom_interval_n: sea_orm::ActiveValue::Set(None),
+        custom_interval_unit: sea_orm::ActiveValue::Set(None),
+        plan_tier_override: sea_orm::ActiveValue::Set(false),
+        purchase_min_qty: sea_orm::ActiveValue::Set(None),
+        purchase_max_qty: sea_orm::ActiveValue::Set(None),
+        invoice_grouping_key: sea_orm::ActiveValue::Set(None),
+        lifecycle_state: sea_orm::ActiveValue::Set(LifecycleState::Draft.as_str().to_owned()),
+        available_from: sea_orm::ActiveValue::Set(None),
+        available_to: sea_orm::ActiveValue::Set(None),
+        created_by: sea_orm::ActiveValue::Set(Uuid::from_u128(0xac_11)),
+        created_at_utc: sea_orm::ActiveValue::Set(at(12)),
+        row_version: sea_orm::ActiveValue::Set(0),
+    };
+    plan::Entity::insert(opened.clone())
+        .secure()
+        .scope_with_model(&scope, &opened)
+        .expect("scope the fabricated draft")
+        .exec(&conn)
+        .await
+        .expect("insert the fabricated draft");
+
+    let refusal = publish_revision(&provider, &scope, tenant, plan_id, 1, RowVersion::new(0))
+        .await
+        .expect_err("a retired plan takes no successor");
+
+    assert!(
+        matches!(&refusal, RepoError::NoSuccessorRevision { state, .. } if state == "retired"),
+        "got {refusal:?}"
+    );
+    assert!(
+        matches!(
+            repo_failure(&refusal),
+            bss_pricing::domain::error::DomainError::PlanRetiredNoSuccessor(_)
+        ),
+        "the refusal reaches a consumer as PLAN_RETIRED_NO_SUCCESSOR and not as a lifecycle refusal"
+    );
+}
+
+#[tokio::test]
+async fn the_child_shape_rows_are_untouched_by_the_flip_and_freeze_with_the_revision() {
+    let (repo, provider) = harness().await;
+    let shapes = PlanShapeRepo::new(provider.clone());
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let created = repo
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+    let terminal = PhaseId::new(Uuid::from_u128(0xfa_5e));
+    let after_phases = shapes
+        .replace_phases(
+            &scope,
+            tenant,
+            plan_id,
+            created.revision,
+            created.row_version,
+            vec![PlanPhase {
+                phase_id: terminal,
+                kind: PhaseKind::Evergreen,
+                ordinal: 0,
+                converts_to_phase_id: None,
+                phase_duration_days: None,
+                display_trial_days: None,
+            }],
+        )
+        .await
+        .expect("attach the phase chain");
+
+    publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        after_phases.row_version,
+    )
+    .await
+    .expect("publish the revision");
+
+    let phases = shapes
+        .list_phases(&scope, tenant, plan_id, created.revision)
+        .await
+        .expect("read the phases back");
+    assert_eq!(phases.len(), 1);
+    assert_eq!(
+        phases[0].phase_id, terminal,
+        "the id is stable across the flip"
+    );
+
+    // And they are frozen with it: the child table's trigger refuses DML under
+    // a parent that is no longer `draft`.
+    let refusal = shapes
+        .replace_phases(
+            &scope,
+            tenant,
+            plan_id,
+            created.revision,
+            RowVersion::new(after_phases.row_version.get() + 1),
+            Vec::new(),
+        )
+        .await
+        .expect_err("a published revision's shape is immutable");
+    assert!(
+        matches!(&refusal, RepoError::NotDraft { state, .. } if state == "published"),
+        "got {refusal:?}"
+    );
+}
+
+/// The premise `publish_revision`'s flip order rests on, asserted against the
+/// database rather than against the repository.
+///
+/// `uq_pricing_plan_current` is partial on `lifecycle_state IN
+/// ('published','retired')` and both backends evaluate a unique index **per
+/// statement**. So publishing the successor before demoting its predecessor
+/// would, for the duration of that one statement, put two rows of one plan
+/// inside the predicate — and the index rejects. Demoting first leaves the slot
+/// empty. This test is what makes a later "simplification" of that order fail
+/// here rather than at somebody's second publish.
+#[tokio::test]
+async fn two_current_revisions_of_one_plan_are_rejected_by_the_index() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let created = repo
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+    let conn = provider.conn().expect("conn");
+    publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        created.row_version,
+    )
+    .await
+    .expect("publish revision 0");
+
+    let opened = repo
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .await
+        .expect("open the successor");
+    // The successor's flip, taken alone and with the predecessor left standing:
+    // exactly what the wrong order would issue.
+    let refused = plan::Entity::update_many()
+        .secure()
+        .scope_with(&scope)
+        .col_expr(
+            plan::Column::LifecycleState,
+            Expr::value(LifecycleState::Published.as_str()),
+        )
+        .filter(
+            Condition::all()
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(
+                    plan::Column::Revision
+                        .eq(i64::try_from(opened.revision).expect("a small revision")),
+                ),
+        )
+        .exec(&conn)
+        .await;
+
+    assert!(
+        refused.is_err(),
+        "the partial UNIQUE must refuse a second current revision"
+    );
+}
+
+/// The postcondition of a refused repeat publish — and an honest note about
+/// what does and does not stand behind it.
+///
+/// The defect this group fixed was that `publish_revision` read the current
+/// revision first, so a repeat publish of an already-published revision found
+/// **itself** as current, demoted it, and only then discovered it was not a
+/// draft — leaving the plan with no current revision at all.
+///
+/// **This test does not prove that fix, and an earlier version of this comment
+/// claimed it did.** Reintroducing the defect leaves this test green. The reason
+/// is the other half of the same round of work: `publish_revision` now takes a
+/// `DbTx`, so a stray demotion is always rolled back with the refusal and the
+/// bad state is not observable through the API at all. The **type** is what
+/// excludes it; the `mutable_draft` pre-read is belt to that braces, and what it
+/// actually buys is a precise refusal taken before a write is wasted.
+///
+/// What this test pins is the postcondition itself, which is worth pinning
+/// cheaply: a refused publish leaves the plan its current revision and demotes
+/// nothing. It would earn its keep again the day something calls
+/// `publish_revision` outside a transaction — which the signature now forbids,
+/// and which is the point.
+#[tokio::test]
+async fn a_refused_repeat_publish_leaves_the_plan_its_current_revision() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let created = repo
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+    let published = publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        created.row_version,
+    )
+    .await
+    .expect("publish it once");
+
+    let _refusal = publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        published.row_version,
+    )
+    .await
+    .expect_err("a second publish of one revision is refused");
+
+    let current = repo
+        .find_current(&scope, tenant, plan_id)
+        .await
+        .expect("read the current revision")
+        .expect("the plan must still have one");
+    assert_eq!(current.revision, created.revision);
+    assert_eq!(current.lifecycle_state, LifecycleState::Published);
+    assert_eq!(
+        count_in_state(&provider, &scope, plan_id, LifecycleState::Superseded).await,
+        0,
+        "the refused publish must not have demoted the revision it was refusing to publish"
     );
 }

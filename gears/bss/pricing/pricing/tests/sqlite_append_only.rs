@@ -2,12 +2,13 @@
 //! database.
 //!
 //! Postgres carries the whitelist as one PL/pgSQL trigger; `SQLite` mirrors it
-//! as four `RAISE(ABORT, ...)` triggers (see the migration's module doc), so the
+//! as five `RAISE(ABORT, ...)` triggers (see the migration's module doc), so the
 //! guard is exercisable without Docker and this suite does not need a
 //! testcontainers test to know the rule holds.
 //!
 //! One case per branch of the whitelist: a forbidden price mutation, a
-//! forbidden lifecycle transition, a forbidden loosening of `grandfather_until`,
+//! forbidden lifecycle transition on the published plane **and on the draft one
+//! (D-153)**, a forbidden loosening of `grandfather_until`,
 //! a forbidden DELETE, a forbidden bump of `row_version`, and a forbidden
 //! re-size of a `package` block — plus the moves that are *supposed* to work,
 //! so the test proves a whitelist rather than a blanket ban. Without the guard
@@ -31,7 +32,7 @@ const DRAFT: &str = "66666666-6666-6666-6666-666666666666";
 
 /// Reject, **and** for the stated reason.
 ///
-/// The fragment is not decoration. `pricing_price` carries four whitelist
+/// The fragment is not decoration. `pricing_price` carries five whitelist
 /// triggers, twenty `CHECK` constraints and two partial `UNIQUE` indexes, and
 /// every one of those names contains the string `pricing_price` — as does the
 /// column list `SQLite` reports for a unique violation. A test that accepted
@@ -152,6 +153,60 @@ async fn only_the_sanctioned_lifecycle_transition_is_permitted() {
     )
     .await;
     assert_eq!(state, "superseded");
+}
+
+#[tokio::test]
+async fn a_draft_row_may_only_go_to_published_d153() {
+    // The draft plane's own whitelist. A column whitelist is scoped to
+    // *published* rows by construction, so before D-153 this trigger returned
+    // early for a draft row and `draft -> superseded` was physically possible.
+    // Such a ghost lands outside **both** partial `UNIQUE` predicates — its key
+    // reads free on the published plane and on the draft plane — undoing the
+    // guarantee D-148 bought, and `inst-ps-nodelete` then makes it undeletable
+    // on a key no supersession chain reaches.
+    let conn = migrated_db().await;
+    seed(&conn).await;
+
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE pricing_price SET lifecycle_state = 'superseded' WHERE price_id = '{DRAFT}'"
+        ),
+        "lifecycle_state transition is not sanctioned",
+    )
+    .await;
+    assert_eq!(
+        scalar(
+            &conn,
+            &format!("SELECT lifecycle_state AS v FROM pricing_price WHERE price_id = '{DRAFT}'"),
+        )
+        .await,
+        "draft",
+        "the refused transition must not have taken effect"
+    );
+
+    // The two edges the machine does sanction from `draft`: staying put while
+    // content is edited, and publishing.
+    must_succeed(
+        &conn,
+        &format!("UPDATE pricing_price SET amount_minor = 4242 WHERE price_id = '{DRAFT}'"),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "UPDATE pricing_price SET lifecycle_state = 'published' WHERE price_id = '{DRAFT}'"
+        ),
+    )
+    .await;
+    assert_eq!(
+        scalar(
+            &conn,
+            &format!("SELECT lifecycle_state AS v FROM pricing_price WHERE price_id = '{DRAFT}'"),
+        )
+        .await,
+        "published"
+    );
 }
 
 #[tokio::test]

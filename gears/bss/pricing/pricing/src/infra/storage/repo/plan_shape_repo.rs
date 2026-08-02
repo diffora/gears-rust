@@ -215,11 +215,7 @@ impl PlanShapeRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
-        load_phases(&conn, scope, tenant_id, plan_id, revision)
-            .await?
-            .iter()
-            .map(to_domain)
-            .collect()
+        load_phase_set(&conn, scope, tenant_id, plan_id, revision).await
     }
 
     /// Replace an open draft revision's whole add-on rule set, under the
@@ -334,11 +330,7 @@ impl PlanShapeRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
-        load_addon_rules(&conn, scope, tenant_id, plan_id, revision)
-            .await?
-            .iter()
-            .map(to_addon_rule)
-            .collect()
+        load_addon_rule_set(&conn, scope, tenant_id, plan_id, revision).await
     }
 
     /// Attach an open draft revision's billing descriptor set, under the
@@ -442,11 +434,7 @@ impl PlanShapeRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
-        load_descriptor_set(&conn, scope, tenant_id, plan_id, revision)
-            .await?
-            .as_ref()
-            .map(to_descriptor_set)
-            .transpose()
+        load_descriptor(&conn, scope, tenant_id, plan_id, revision).await
     }
 }
 
@@ -459,6 +447,81 @@ impl PlanShapeRepo {
 /// store failed".
 fn tx_failure(err: TxError<RepoError>) -> RepoError {
     err.into_domain(|infra| RepoError::Db(format!("plan shape transaction: {infra}")))
+}
+
+// ---------------------------------------------------------------------------
+// The revision's shape, through whichever runner the caller holds.
+//
+// Public and runner-taking because the publish path assembles the subject
+// **twice** — once as the §4.2 step-2 pre-check and again inside the commit
+// transaction, where `Db::conn()` is refused by the toolkit's
+// transaction-bypass guard. One implementation with two entry points, because
+// two queries are two things the two runs could disagree about, and that
+// disagreement is what §4.2's re-validation exists to detect rather than to
+// create.
+// ---------------------------------------------------------------------------
+
+/// A revision's phase chain, in the total order [`PlanShapeRepo::list_phases`]
+/// promises.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when a stored row cannot be read as the domain
+/// value its columns are `CHECK`-constrained to hold.
+pub async fn load_phase_set(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Vec<PlanPhase>, RepoError> {
+    load_phases(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .iter()
+        .map(to_domain)
+        .collect()
+}
+
+/// A revision's add-on rule set; see [`load_phase_set`] for why this shape
+/// exists.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when a stored row cannot be read as the domain
+/// value its columns are constrained to hold — including an edge column that is
+/// not a JSON array of uuids.
+pub async fn load_addon_rule_set(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Vec<AddonRule>, RepoError> {
+    load_addon_rules(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .iter()
+        .map(to_addon_rule)
+        .collect()
+}
+
+/// A revision's billing descriptor set; see [`load_phase_set`].
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when `additional_fields` is not a JSON object of
+/// strings.
+pub async fn load_descriptor(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Option<DescriptorSet>, RepoError> {
+    load_descriptor_set(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .as_ref()
+        .map(to_descriptor_set)
+        .transpose()
 }
 
 // ---------------------------------------------------------------------------

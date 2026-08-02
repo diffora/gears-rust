@@ -111,6 +111,25 @@
 //! non-draft row is always rejected. Never-published draft rows stay mutable
 //! and deletable.
 //!
+//! **The draft plane is guarded for transitions too (D-153, 2026-08-03, amended
+//! in place while building the publish commit).** A column whitelist is scoped
+//! to *published* rows by construction, so it says nothing about where a
+//! **draft** row may go — and this trigger returned early for one. The price
+//! row's state machine (`03-price-structure.md` §4) has exactly one edge out of
+//! `draft`, to `published`, and until now nothing physical held it. A draft row
+//! moved straight to `superseded` satisfies every constraint on this table and
+//! lands **outside both** partial `UNIQUE` predicates: its key reads free on the
+//! published plane *and* on the draft plane, so the guarantee D-148 had just
+//! bought — the second concurrent creator is refused — is undone by one UPDATE,
+//! and `inst-ps-nodelete` then makes the ghost undeletable, on a key no
+//! supersession chain reaches because the row was never current. The trigger now
+//! constrains the draft row's `lifecycle_state` as well: `draft -> draft |
+//! published` and nothing else, exactly as `pricing_plan`'s
+//! `trg_pricing_plan_draft_flip_whitelist` does for its own state set (D-145).
+//! **No new code** — no API offers the transition and no caller can provoke it;
+//! this is the physical floor under a state machine the engine already honours,
+//! the same posture as the D-148 index itself.
+//!
 //! `row_version` is frozen by that same whitelist, alongside the content it
 //! tags. An entity tag denotes a representation, and a published row's
 //! representation cannot change — so a tag that moved under it would tell a
@@ -119,7 +138,7 @@
 //! tag advances only where content does: on the draft plane.
 //!
 //! **Backend differences.** As in the plan table, Postgres uses one PL/pgSQL
-//! trigger with interpolated messages and `SQLite` uses four `RAISE(ABORT, ...)`
+//! trigger with interpolated messages and `SQLite` uses five `RAISE(ABORT, ...)`
 //! triggers with literal ones. One further `SQLite` caveat is real rather than
 //! cosmetic: `grandfather_until` is `text` there, so the monotonicity comparison
 //! is **lexicographic**, which coincides with chronological order only for the
@@ -362,6 +381,11 @@ const PG_UP_STATEMENTS: &[&str] = &[
           END IF;
 
           IF OLD.lifecycle_state = 'draft' THEN
+            IF NEW.lifecycle_state NOT IN ('draft', 'published') THEN
+              RAISE EXCEPTION
+                'pricing_price: lifecycle_state draft -> % is not a sanctioned transition',
+                NEW.lifecycle_state;
+            END IF;
             RETURN NEW;
           END IF;
 
@@ -437,7 +461,7 @@ const PG_DOWN_STATEMENTS: &[&str] = &[
 //
 // Systematic transforms: `bss.` dropped, `uuid` -> `text`,
 // `timestamptz` -> `text`, `now()` -> `(CURRENT_TIMESTAMP)`,
-// `IS DISTINCT FROM` -> `IS NOT`, and the one PL/pgSQL trigger split into four
+// `IS DISTINCT FROM` -> `IS NOT`, and the one PL/pgSQL trigger split into five
 // literal-message `RAISE(ABORT, ...)` triggers. Every CHECK, index and PK is
 // preserved. See the module doc for the lexicographic `grandfather_until`
 // caveat.
@@ -594,6 +618,13 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
           AND NEW.lifecycle_state IS NOT OLD.lifecycle_state
           AND NOT (OLD.lifecycle_state = 'published'
                    AND NEW.lifecycle_state = 'superseded')
+        BEGIN
+          SELECT RAISE(ABORT, 'pricing_price: lifecycle_state transition is not sanctioned');
+        END",
+    "CREATE TRIGGER trg_pricing_price_draft_flip_whitelist
+        BEFORE UPDATE ON pricing_price
+        FOR EACH ROW WHEN OLD.lifecycle_state = 'draft'
+          AND NEW.lifecycle_state NOT IN ('draft','published')
         BEGIN
           SELECT RAISE(ABORT, 'pricing_price: lifecycle_state transition is not sanctioned');
         END",

@@ -71,7 +71,7 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use toolkit_db::secure::{
-    AccessScope, DBRunner, DbConn, SecureEntityExt, SecureInsertExt, SecureUpdateExt, TxError,
+    AccessScope, DBRunner, DbConn, DbTx, SecureEntityExt, SecureInsertExt, SecureUpdateExt, TxError,
 };
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -253,26 +253,7 @@ impl PlanRepo {
         tenant_id: Uuid,
         plan_id: PlanId,
     ) -> Result<Option<PlanRevision>, RepoError> {
-        let conn = self.conn()?;
-        let rows = plan::Entity::find()
-            .secure()
-            .scope_with(scope)
-            .filter(
-                Condition::all()
-                    .add(plan::Column::TenantId.eq(tenant_id))
-                    .add(plan::Column::PlanId.eq(plan_id.get()))
-                    .add(plan::Column::LifecycleState.is_in(current_tokens())),
-            )
-            .all(&conn)
-            .await
-            .map_err(|e| RepoError::Db(format!("read current plan revision: {e}")))?;
-        if rows.len() > 1 {
-            return Err(RepoError::CorruptRow(format!(
-                "plan {plan_id} holds {} current revisions; uq_pricing_plan_current permits one",
-                rows.len()
-            )));
-        }
-        rows.into_iter().next().map(to_domain).transpose()
+        load_current(&self.conn()?, scope, tenant_id, plan_id).await
     }
 
     /// Read the plan's open `draft` revision, when it has one.
@@ -287,20 +268,7 @@ impl PlanRepo {
         tenant_id: Uuid,
         plan_id: PlanId,
     ) -> Result<Option<PlanRevision>, RepoError> {
-        let conn = self.conn()?;
-        let row = plan::Entity::find()
-            .secure()
-            .scope_with(scope)
-            .filter(
-                Condition::all()
-                    .add(plan::Column::TenantId.eq(tenant_id))
-                    .add(plan::Column::PlanId.eq(plan_id.get()))
-                    .add(plan::Column::LifecycleState.eq(LifecycleState::Draft.as_str())),
-            )
-            .one(&conn)
-            .await
-            .map_err(|e| RepoError::Db(format!("read open plan draft: {e}")))?;
-        row.map(to_domain).transpose()
+        load_open_draft(&self.conn()?, scope, tenant_id, plan_id).await
     }
 
     /// Apply `patch` to an open draft revision, under the caller's row version.
@@ -415,14 +383,23 @@ impl PlanRepo {
     ///
     /// # Two things this does not do yet, and who owes them
     ///
-    /// **The audit record, owed by whoever builds the audit path.** D-145 is
+    /// **The audit record, now owed by the authoring surface (G7).** D-145 is
     /// explicit that the flip "is audited exactly as the deletion was", and the
-    /// deletion it replaces was audited too. This gear has a
-    /// `pricing_audit_log` table and no writer for it, so nothing is written
-    /// here — deliberately, rather than by oversight. **This debt is still open
-    /// after the child copies were paid**, and it never had an anchor of its own
-    /// the way the child tables did: the debt lives in this sentence, and
-    /// deleting the sentence is how it would be lost.
+    /// deletion it replaces was audited too. The debt is **narrower** than it
+    /// was, and narrower is not paid: there is now a writer —
+    /// [`audit_repo::append`](super::audit_repo::append), which lands with the
+    /// publish commit and takes a runner precisely so a record can join a
+    /// mutation's own transaction — and nothing is still written here. The
+    /// reason is no longer "there is nowhere to write it" but **this method is
+    /// not given an actor**: `inst-au-complete` requires an actor principal and
+    /// a correlation id on every record, [`PlanRepo::create_draft`] takes a
+    /// `created_by` and this signature takes neither, and supplying them means
+    /// changing a signature whose only caller is the REST surface that has not
+    /// been built. So the remainder belongs to **G7**, with the surface that
+    /// supplies one. **This debt is still open after the child copies were paid
+    /// and after the writer arrived**, and it never had an anchor of its own the
+    /// way the child tables did: the debt lives in this sentence, and deleting
+    /// the sentence is how it would be lost.
     ///
     /// **The plan-level refusal, owed by the authoring surface (G7).** This
     /// method names the revision it discards, so a caller that names one the
@@ -513,8 +490,8 @@ impl PlanRepo {
     ///
     /// This is only the **opening** half of D-90. The new revision publishes
     /// through the standard §4.2 path and flips its predecessor `superseded` in
-    /// the same commit; that flip belongs to the publish unit (G5) and nothing
-    /// here anticipates it.
+    /// the same commit; that flip is [`publish_revision`]'s, and nothing here
+    /// anticipates it.
     ///
     /// # The number comes from the whole chain, not from the current revision
     ///
@@ -762,6 +739,237 @@ async fn load_revision_row(
         .one(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read plan revision: {e}")))
+}
+
+/// D-90's flip, both halves of it, inside the caller's transaction.
+///
+/// Two moves in **this order**, and the order is forced by an index rather than
+/// chosen:
+///
+/// 1. the plan's current revision, if it has one, `published -> superseded`;
+/// 2. the named draft revision `draft -> published`, under a compare-and-swap
+///    on its row version.
+///
+/// **Publishing the draft first does not work.** `uq_pricing_plan_current` is
+/// partial on `lifecycle_state IN ('published','retired')`, and both backends
+/// evaluate a unique index per statement rather than deferring to commit — so
+/// for the duration of that first statement two rows of one plan would satisfy
+/// the predicate and the index would reject. Demoting the predecessor first
+/// leaves the slot empty for its successor. A later reader "simplifying" the
+/// order reintroduces exactly that.
+///
+/// **The demotion must not touch `row_version`.** The plan table's frozen-column
+/// guard fires on any UPDATE of a non-draft row that moves a listed column, and
+/// `row_version` is on that list — the entity tag freezes with the content it
+/// names (D-141's argument, applied to the plan's own row). The draft's flip
+/// **does** bump it, because that row is still `draft` when the statement runs
+/// and the representation a caller cached really did change.
+///
+/// **Takes a transaction handle, not a runner, and the type is the contract.**
+/// This call performs *two* statements that must not be separable: on a bare
+/// connection a compare-and-swap failing after the demotion leaves the plan with
+/// **no current revision at all** — the exact defect the `mutable_draft` read
+/// below was added to close, reachable again through the runner. The
+/// [`IdempotencyGate`](super::idempotency_repo::IdempotencyGate) takes a
+/// transaction handle for the same reason, and says so in the same words. It
+/// still opens no transaction of its own: it is one step of the publish commit,
+/// and the flips, the version request, the outbox row and the audit row either
+/// all commit or none do.
+///
+/// # Errors
+/// [`RepoError::NoSuccessorRevision`] when the plan's current revision can never
+/// be superseded — a `retired` plan, asked of the state machine rather than
+/// matched on, exactly as [`PlanRepo::open_revision`] asks it;
+/// [`RepoError::NotFound`] when the named revision is not visible to `scope`;
+/// [`RepoError::NotDraft`] when it is visible but already frozen — which is what
+/// a second publish of one revision gets, and is why the revision publishes at
+/// most once; [`RepoError::StaleRowVersion`] carrying both versions when the
+/// submitted one is not current; [`RepoError::Db`] on a scope or storage
+/// failure, **including losing the current-revision slot to a concurrent
+/// publish** between the read and the demotion — no wire code names that
+/// contention, so it is not distinguishable here and the caller's transaction
+/// retry is what decides it; [`RepoError::CorruptRow`] when the published row
+/// reads back unusable.
+pub async fn publish_revision(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+) -> Result<PlanRevision, RepoError> {
+    // Read before anything is demoted. It is **not** the guard — the
+    // compare-and-swap below is, and a concurrent writer landing in between is
+    // closed by the caller's rollback.
+    //
+    // What it buys is precision and a wasted write avoided. Without it a repeat
+    // publish of an already-published revision finds that revision *as the
+    // current one*, demotes it, and only then discovers it is not a draft. That
+    // demotion is no longer *observable* — this function takes a `DbTx`, so it
+    // rolls back with the refusal — but it is still a write issued on the way to
+    // saying no, taken against the very row the caller was asking about.
+    // [`PriceRepo::update_draft`] takes the identical read for the identical
+    // reason.
+    if mutable_draft(txn, scope, tenant_id, plan_id, revision, expected)
+        .await?
+        .is_none()
+    {
+        return Err(refuse(txn, scope, tenant_id, plan_id, revision, expected).await);
+    }
+
+    if let Some(current) = load_current(txn, scope, tenant_id, plan_id).await? {
+        // Asked of the state machine rather than matched on `Retired`: what
+        // blocks the successor is the predecessor's inability to be superseded.
+        if !current
+            .lifecycle_state
+            .can_transition(LifecycleState::Superseded)
+        {
+            return Err(RepoError::NoSuccessorRevision {
+                plan_id: plan_id.to_string(),
+                state: current.lifecycle_state.to_string(),
+            });
+        }
+        supersede_current(txn, scope, tenant_id, plan_id, current.revision).await?;
+    }
+
+    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+        return Err(refuse(txn, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    let result = plan::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            plan::Column::LifecycleState,
+            Expr::value(LifecycleState::Published.as_str()),
+        )
+        .col_expr(
+            plan::Column::RowVersion,
+            Expr::col(plan::Column::RowVersion).add(1_i64),
+        )
+        .filter(guard)
+        .exec(txn)
+        .await
+        .map_err(|e| RepoError::Db(format!("publish plan revision: {e}")))?;
+    if result.rows_affected == 0 {
+        return Err(refuse(txn, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    load_revision(txn, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))
+}
+
+/// Demote the plan's published revision, leaving its entity tag where it is.
+///
+/// The predicate names `published` explicitly rather than reusing
+/// [`current_tokens`]: `retired` is refused by the caller above with a refusal
+/// an operator can act on, and a predicate that swept it in would produce the
+/// forbidden `retired -> superseded` edge as a raw trigger error instead.
+async fn supersede_current(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<(), RepoError> {
+    let Some(number) = stored_revision(revision) else {
+        return Err(RepoError::CorruptRow(format!(
+            "plan {plan_id} holds a current revision {revision} no column can address"
+        )));
+    };
+    let result = plan::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            plan::Column::LifecycleState,
+            Expr::value(LifecycleState::Superseded.as_str()),
+        )
+        .filter(
+            Condition::all()
+                .add(plan::Column::TenantId.eq(tenant_id))
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::Revision.eq(number))
+                .add(plan::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("supersede plan revision: {e}")))?;
+    if result.rows_affected == 0 {
+        return Err(RepoError::Db(format!(
+            "plan {plan_id} revision {revision} read as published and is no longer; \
+             a concurrent publish took the current-revision slot"
+        )));
+    }
+    Ok(())
+}
+
+/// Read the plan's **current** revision through whichever runner the caller
+/// holds.
+///
+/// Public and runner-taking because the publish path reads it **twice** and the
+/// second read is inside the commit transaction, where `Db::conn()` is refused
+/// outright by the toolkit's transaction-bypass guard. One implementation with
+/// two entry points, rather than a second query the two runs could disagree
+/// about — the disagreement being exactly what §4.2's re-validation exists to
+/// detect.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when more than one revision answers — the partial
+/// `UNIQUE` index makes that impossible, so seeing it means the index is gone
+/// and "the current revision" has stopped being well defined.
+pub async fn load_current(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<Option<PlanRevision>, RepoError> {
+    let rows = plan::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan::Column::TenantId.eq(tenant_id))
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::LifecycleState.is_in(current_tokens())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read current plan revision: {e}")))?;
+    if rows.len() > 1 {
+        return Err(RepoError::CorruptRow(format!(
+            "plan {plan_id} holds {} current revisions; uq_pricing_plan_current permits one",
+            rows.len()
+        )));
+    }
+    rows.into_iter().next().map(to_domain).transpose()
+}
+
+/// Read the plan's open `draft` revision through whichever runner the caller
+/// holds; see [`load_current`] for why this shape exists.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when the stored row cannot be read as the domain
+/// value its columns are `CHECK`-constrained to hold.
+pub async fn load_open_draft(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<Option<PlanRevision>, RepoError> {
+    let row = plan::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan::Column::TenantId.eq(tenant_id))
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::LifecycleState.eq(LifecycleState::Draft.as_str())),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read open plan draft: {e}")))?;
+    row.map(to_domain).transpose()
 }
 
 /// Read one revision by its composite identity, scoped.

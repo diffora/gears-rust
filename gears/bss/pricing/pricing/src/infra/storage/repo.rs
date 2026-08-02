@@ -18,8 +18,22 @@
 //!
 //! The remaining tables get their repositories with the paths that write them —
 //! a repository nothing calls is dead code, and dead code fails CI here.
+//! Three of them arrive together with the publish commit — `pricing_audit_log`,
+//! `pricing_outbox` and `pricing_catalog_version_ref` — because that is the
+//! first path that has an actor, a subject and a transaction to commit inside
+//! of. All three are shaped differently from the six above and deliberately so:
+//! they take a **runner** rather than a provider, because a record, an event or
+//! a pending version handle that could commit separately from the mutation it
+//! describes is evidence of something that may not have happened (D-14 for the
+//! audit row; the outbox's own "an event exists if and only if its commit
+//! happened"; a dangling pending ref that trips the commit-overdue alarm for a
+//! publish that never occurred). [`idempotency_repo`] set that precedent for the
+//! same reason.
 
+pub mod audit_repo;
+pub mod catalog_version_ref_repo;
 pub mod idempotency_repo;
+pub mod outbox_repo;
 pub mod pin_frontier_repo;
 pub mod plan_repo;
 pub mod plan_shape_repo;
@@ -31,7 +45,10 @@ use chrono::{DateTime, Utc};
 use crate::domain::instant;
 use crate::infra::storage::RepoError;
 
+pub use audit_repo::NewAuditEntry;
+pub use catalog_version_ref_repo::PendingVersionRow;
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
+pub use outbox_repo::{NewOutboxEvent, PlanPublishedPayload};
 pub use pin_frontier_repo::PinFrontierRepo;
 pub use plan_repo::{NewPlanDraft, PlanRepo};
 pub use plan_shape_repo::PlanShapeRepo;

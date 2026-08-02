@@ -387,8 +387,10 @@ async fn repo_harness() -> (PlanRepo, PlanShapeRepo, DBProvider<DbError>) {
     )
 }
 
-/// Publish a revision straight at the column. The publish unit that owns this
-/// flip lands in G5, and `pricing_plan`'s append-only trigger whitelists it.
+/// Publish a revision straight at the column, which is the same flip
+/// `plan_repo::publish_revision` performs; `pricing_plan`'s append-only trigger
+/// whitelists it. Fabricated rather than published so this suite stays about
+/// the child table.
 async fn publish(provider: &DBProvider<DbError>, scope: &AccessScope, plan_id: PlanId) {
     let conn = provider.conn().expect("conn");
     let result = plan::Entity::update_many()

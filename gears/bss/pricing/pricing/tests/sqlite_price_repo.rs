@@ -68,7 +68,8 @@ use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
 /// The repository, plus the provider the seeding helper needs to put a row into
-/// a state only the publish unit (G5) will be able to reach.
+/// a state `price_repo::publish_rows` now reaches, and one - `superseded` - that
+/// still has no producer at all (D-88 / D-100, Slice 7).
 async fn harness() -> (PriceRepo, DBProvider<DbError>) {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
@@ -203,10 +204,11 @@ fn draft(price_id: Uuid, scope_key: ScopeKey, content: PriceContent) -> NewPrice
 
 /// Move a row's `lifecycle_state` directly.
 ///
-/// The publish unit that owns this flip lands in G5, and the append-only
-/// trigger permits both edges used here: it fires only when the row is already
-/// past `draft`, and `published -> superseded` is one of the two flips it
-/// whitelists.
+/// `draft -> published` is `price_repo::publish_rows`'s flip and is fabricated
+/// here so a suite about one row does not need a publish unit;
+/// `published -> superseded` still has no producer in this gear at all. The
+/// append-only trigger permits both: it fires only when the row is already past
+/// `draft`, and `published -> superseded` is one of the two flips it whitelists.
 async fn flip_state(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,
@@ -1784,4 +1786,439 @@ async fn a_granule_bound_no_column_can_hold_is_refused_before_anything_is_writte
     )
     .await
     .expect("a storable bound is authored on the same key");
+}
+
+/// `publish_rows` through a real transaction and over an explicit validated
+/// set, which is now what its signature demands.
+///
+/// The set is `(price_id, row_version)` for every row the publish claims to
+/// have judged: the repository publishes exactly those rows at exactly those
+/// versions and re-derives nothing, so a row whose content moved between
+/// validation and the flip is refused naming the row.
+async fn publish_rows(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    validated: Vec<(Uuid, RowVersion)>,
+) -> Result<Vec<Uuid>, RepoError> {
+    let scope = scope.clone();
+    let (_, outcome) = provider
+        .db()
+        .in_transaction::<Vec<Uuid>, RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::price_repo::publish_rows(
+                    txn, &scope, tenant_id, plan_id, &validated,
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| {
+        err.into_domain(|infra| RepoError::Db(format!("publish transaction: {infra}")))
+    })
+}
+
+/// Every `draft` row of the plan, paired with the version it stands at — the
+/// shape a publish subject hands the repository after the rule set has passed.
+async fn validated_drafts(
+    repo: &PriceRepo,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Vec<(Uuid, RowVersion)> {
+    repo.list_for_plan(scope, tenant_id, plan_id, &[LifecycleState::Draft])
+        .await
+        .expect("read the plan's draft rows")
+        .into_iter()
+        .map(|record| (record.price_id, record.row_version))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The publish unit's price-row flip.
+// ---------------------------------------------------------------------------
+
+/// The stored row, whatever the repository would say about it.
+async fn stored_row(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    price_id: Uuid,
+) -> price::Model {
+    let conn = provider.conn().expect("conn");
+    price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(price::Column::PriceId.eq(price_id)))
+        .one(&conn)
+        .await
+        .expect("read the stored row")
+        .expect("the row is there")
+}
+
+#[tokio::test]
+async fn draft_rows_flip_and_published_rows_are_left_alone() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let already = Uuid::from_u128(0xb_0001);
+    let pending = Uuid::from_u128(0xb_0002);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(already, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("author the first row");
+    flip_state(&provider, &scope, already, LifecycleState::Published).await;
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            pending,
+            new_subscriptions_key(ChargeKind::Recurring),
+            flat_content(),
+        ),
+    )
+    .await
+    .expect("author the second row");
+
+    let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
+    let moved = publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect("publish the plan's draft rows");
+
+    assert_eq!(moved, vec![pending], "only the draft row moved");
+    assert_eq!(
+        stored_row(&provider, &scope, pending).await.lifecycle_state,
+        LifecycleState::Published.as_str()
+    );
+    let untouched = stored_row(&provider, &scope, already).await;
+    assert_eq!(
+        untouched.lifecycle_state,
+        LifecycleState::Published.as_str()
+    );
+    assert_eq!(
+        untouched.row_version, 0,
+        "an already-published row is not re-published and its tag does not move"
+    );
+}
+
+#[tokio::test]
+async fn the_published_rows_entity_tag_freezes_with_the_content_it_names() {
+    // D-141 / §3.7: the tag joins the frozen whitelist, and this flip changes no
+    // content. A bump here would move an entity tag under a representation no
+    // caller can write to.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_0001);
+    let authored = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(price_id, base_key(ChargeKind::Recurring), flat_content()),
+        )
+        .await
+        .expect("author the row");
+
+    let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
+    publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect("publish");
+
+    let published = repo
+        .find(&scope, tenant(), price_id)
+        .await
+        .expect("read it back")
+        .expect("it is there");
+    assert_eq!(published.lifecycle_state, LifecycleState::Published);
+    assert_eq!(published.row_version, authored.row_version);
+}
+
+#[tokio::test]
+async fn the_key_moves_from_the_draft_plane_index_to_the_published_plane() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let first = Uuid::from_u128(0xb_0001);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(first, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("author the row");
+
+    let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
+    publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect("publish");
+
+    // The draft-plane index (D-148) released the key as the row left `draft`,
+    // and the published-plane index claimed it as the row arrived — so a second
+    // draft on the same key is now refused by `create_draft`'s occupancy check
+    // rather than by either index.
+    let refusal = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(
+                Uuid::from_u128(0xb_0002),
+                base_key(ChargeKind::Recurring),
+                flat_content(),
+            ),
+        )
+        .await
+        .expect_err("the key is occupied by a published row");
+    assert!(
+        matches!(refusal, RepoError::DuplicateScopeKey(_)),
+        "got {refusal:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_plan_with_no_draft_rows_publishes_nothing_and_says_so() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+
+    let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
+    let moved = publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect("an empty plan is not an error");
+
+    assert!(moved.is_empty());
+}
+
+#[tokio::test]
+async fn another_tenants_draft_rows_are_invisible_to_a_publish() {
+    let (repo, provider) = harness().await;
+    let mine = AccessScope::for_tenant(tenant());
+    let theirs_tenant = Uuid::from_u128(0x7e_22);
+    let theirs = AccessScope::for_tenant(theirs_tenant);
+    let my_row = Uuid::from_u128(0xb_0001);
+    let their_row = Uuid::from_u128(0xb_0002);
+    repo.create_draft(
+        &mine,
+        tenant(),
+        draft(my_row, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("author mine");
+    repo.create_draft(
+        &theirs,
+        theirs_tenant,
+        draft(
+            their_row,
+            new_subscriptions_key(ChargeKind::Recurring),
+            flat_content(),
+        ),
+    )
+    .await
+    .expect("author theirs");
+
+    let validated = validated_drafts(&repo, &mine, tenant(), plan()).await;
+    let moved = publish_rows(&provider, &mine, tenant(), plan(), validated)
+        .await
+        .expect("publish my rows");
+
+    assert_eq!(moved, vec![my_row]);
+    assert_eq!(
+        stored_row(&provider, &theirs, their_row)
+            .await
+            .lifecycle_state,
+        LifecycleState::Draft.as_str(),
+        "SecureORM keeps another tenant's rows out of this plan's publish"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The validated set is the set, and nothing else publishes.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_row_whose_content_moved_since_validation_is_refused_by_its_own_tag() {
+    // The defect this closes: the publish commit validates its subject, makes a
+    // network round-trip to the `CatalogVersion` registry, and only then flips.
+    // `in_transaction` opens the engine default - READ COMMITTED on Postgres -
+    // so every statement takes a fresh snapshot and a concurrent `update_draft`
+    // committing inside that window changes the content of a row the rule set
+    // already passed. A re-derived draft set would publish the mutation. The
+    // row's own entity tag is what refuses it (D-141), naming the row.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_0001);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(price_id, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("author the row");
+
+    let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
+    assert_eq!(validated, vec![(price_id, RowVersion::new(0))]);
+
+    // The world moves: the row's content changes and its tag advances with it.
+    let mut edited = flat_content();
+    edited.row.amount_minor = Some(money(4_242));
+    repo.update_draft(&scope, tenant(), price_id, RowVersion::new(0), edited)
+        .await
+        .expect("edit the draft");
+
+    let refusal = publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect_err("a row that moved since validation must not publish");
+
+    assert!(
+        matches!(refusal, RepoError::StaleRowVersion { current, submitted, .. }
+            if current == 1 && submitted == 0),
+        "got {refusal:?}"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, price_id)
+            .await
+            .lifecycle_state,
+        LifecycleState::Draft.as_str(),
+        "nothing published"
+    );
+}
+
+#[tokio::test]
+async fn a_row_authored_after_validation_is_not_published_by_this_commit() {
+    // The other half of the same window: a `create_draft` committing between the
+    // subject's assembly and the flip inserts a row the rule set never saw. It
+    // is simply not in the set, so it stays `draft` and publishes with the next
+    // revision - correct by construction, because nothing validated it.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let judged = Uuid::from_u128(0xb_0001);
+    let unjudged = Uuid::from_u128(0xb_0002);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(judged, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("author the judged row");
+
+    let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            unjudged,
+            new_subscriptions_key(ChargeKind::Recurring),
+            flat_content(),
+        ),
+    )
+    .await
+    .expect("author the row nobody judged");
+
+    let moved = publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect("the validated row publishes");
+
+    assert_eq!(moved, vec![judged]);
+    assert_eq!(
+        stored_row(&provider, &scope, unjudged)
+            .await
+            .lifecycle_state,
+        LifecycleState::Draft.as_str(),
+        "a row the rule set never saw must not become consumer-visible"
+    );
+}
+
+#[tokio::test]
+async fn a_row_deleted_since_validation_refuses_the_whole_publish() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let kept = Uuid::from_u128(0xb_0001);
+    let dropped = Uuid::from_u128(0xb_0002);
+    for (price_id, key) in [
+        (kept, base_key(ChargeKind::Recurring)),
+        (dropped, new_subscriptions_key(ChargeKind::Recurring)),
+    ] {
+        repo.create_draft(&scope, tenant(), draft(price_id, key, flat_content()))
+            .await
+            .expect("author");
+    }
+    let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
+    repo.delete_draft(&scope, tenant(), dropped, RowVersion::new(0))
+        .await
+        .expect("discard one of them");
+
+    let refusal = publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect_err("a validated row that is gone must refuse the publish");
+
+    assert!(
+        matches!(refusal, RepoError::NotFound { .. }),
+        "got {refusal:?}"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, kept).await.lifecycle_state,
+        LifecycleState::Draft.as_str(),
+        "the transaction took the other row's flip back with it"
+    );
+}
+
+#[tokio::test]
+async fn a_validated_row_of_another_plan_is_caught_by_the_count() {
+    // The count assertion's one reachable arm without concurrency, and the only
+    // thing that tests it at all. The pre-read is scoped by tenant and identity
+    // — it mirrors `mutable_draft`, which does not filter `plan_id` — so a
+    // validated entry naming a draft row of another plan of the same tenant
+    // passes it. The UPDATE's own plan filter then excludes that row, and the
+    // number that moved is one short of the number validated. Without the count
+    // the publish would report success having published fewer rows than it was
+    // handed.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let mine = Uuid::from_u128(0xb_0001);
+    let elsewhere = Uuid::from_u128(0xb_0002);
+    let other_plan = PlanId::new(Uuid::from_u128(0x9_1a5));
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(mine, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("author a row of the plan under publish");
+
+    let foreign_key = ScopeKey::new(
+        other_plan,
+        CurrencyCode::new("USD").expect("three letters"),
+        Region::new("EU").expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("all_subscriptions pairs with cohort none");
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(elsewhere, foreign_key, flat_content()),
+    )
+    .await
+    .expect("author a row of a different plan of the same tenant");
+
+    // Both rows are `draft` at version 0, so both clear the pre-read; only one
+    // of them belongs to the plan being published.
+    let validated = vec![(mine, RowVersion::new(0)), (elsewhere, RowVersion::new(0))];
+    let refusal = publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect_err("a validated set naming a foreign plan's row must not report success");
+
+    assert!(
+        refusal
+            .to_string()
+            .contains("validated 2 price rows and 1 moved"),
+        "the refusal must name the shortfall, got {refusal:?}"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, mine).await.lifecycle_state,
+        LifecycleState::Draft.as_str(),
+        "and the row that did move rolled back with the transaction"
+    );
 }

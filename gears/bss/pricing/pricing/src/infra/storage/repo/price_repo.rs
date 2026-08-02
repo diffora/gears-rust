@@ -92,7 +92,7 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Value};
 use serde_json::{Value as JsonValue, json};
 use toolkit_db::secure::{
-    AccessScope, DBRunner, DbConn, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
+    AccessScope, DBRunner, DbConn, DbTx, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
     SecureUpdateExt, TxError,
 };
 use toolkit_db::{DBProvider, DbError};
@@ -375,55 +375,7 @@ impl PriceRepo {
         plan_id: PlanId,
         states: &[LifecycleState],
     ) -> Result<Vec<PriceRecord>, RepoError> {
-        if states.is_empty() {
-            return Ok(Vec::new());
-        }
-        let tokens: Vec<&str> = states.iter().copied().map(LifecycleState::as_str).collect();
-        let conn = self.conn()?;
-        let rows = price::Entity::find()
-            .secure()
-            .scope_with(scope)
-            .filter(
-                Condition::all()
-                    .add(price::Column::TenantId.eq(tenant_id))
-                    .add(price::Column::PlanId.eq(plan_id.get()))
-                    .add(price::Column::LifecycleState.is_in(tokens)),
-            )
-            .order_by(price::Column::PriceId, Order::Asc)
-            .all(&conn)
-            .await
-            .map_err(|e| RepoError::Db(format!("list plan price rows: {e}")))?;
-
-        // One band query for the whole page rather than one per row: the bands
-        // arrive already sorted, so grouping preserves the `from_qty` order the
-        // read-side guarantee promises.
-        let ids: Vec<Uuid> = rows.iter().map(|row| row.price_id).collect();
-        let mut grouped: HashMap<Uuid, Vec<price_tier_band::Model>> = HashMap::new();
-        if !ids.is_empty() {
-            let bands = price_tier_band::Entity::find()
-                .secure()
-                .scope_with(scope)
-                .filter(
-                    Condition::all()
-                        .add(price_tier_band::Column::TenantId.eq(tenant_id))
-                        .add(price_tier_band::Column::PriceId.is_in(ids)),
-                )
-                .order_by(price_tier_band::Column::PriceId, Order::Asc)
-                .order_by(price_tier_band::Column::FromQty, Order::Asc)
-                .all(&conn)
-                .await
-                .map_err(|e| RepoError::Db(format!("list plan price bands: {e}")))?;
-            for band in bands {
-                grouped.entry(band.price_id).or_default().push(band);
-            }
-        }
-
-        rows.iter()
-            .map(|row| {
-                let bands = grouped.remove(&row.price_id).unwrap_or_default();
-                to_record(row, &bands)
-            })
-            .collect()
+        load_for_plan(&self.conn()?, scope, tenant_id, plan_id, states).await
     }
 
     /// Replace an open draft's content, and its band set, under the caller's
@@ -624,6 +576,297 @@ impl PriceRepo {
 /// body — beginning the transaction, and committing it.
 fn tx_failure(err: TxError<RepoError>) -> RepoError {
     err.into_domain(|infra| RepoError::Db(format!("price draft transaction: {infra}")))
+}
+
+/// Publish **exactly the validated price rows**, inside the caller's
+/// transaction, returning the ids that moved.
+///
+/// # The set is an argument, and that is the whole guard
+///
+/// `validated` is `(price_id, row_version)` for every `draft` row of the subject
+/// the rule set actually judged. This function publishes those rows at those
+/// versions and nothing else — it does **not** re-derive "the plan's draft rows"
+/// for itself.
+///
+/// It used to, and that was a defect. The publish commit assembles its subject,
+/// runs the rules, then makes a network round-trip to the `CatalogVersion`
+/// registry before it flips anything. `in_transaction` opens the engine default,
+/// which on Postgres is READ COMMITTED, so **every statement takes a fresh
+/// snapshot**: a `create_draft` committing inside that window inserts a row the
+/// rule set never saw, and a `update_draft` committing inside it changes the
+/// content of a row the rule set passed. A re-derived set would publish both.
+/// The outcome is a consumer-visible `published` row that never passed §4.2's
+/// rule set — one that could, for instance, carry no `roundingPolicyRef` on a
+/// tenant with no default, which is precisely what the Foundation's rounding
+/// rule exists to block.
+///
+/// **D-141 is what closes it.** Every price row carries its own entity tag
+/// exactly so a per-row conflict means something, and this is that meaning: a
+/// row whose content moved between validation and commit no longer stands at
+/// the version the subject was assembled from, so it does not match and the
+/// publish is refused **naming the row**. A newly inserted row is not in the
+/// set, so it stays `draft` and publishes with the next revision — correct by
+/// construction, because nothing validated it.
+///
+/// The alternative was `SERIALIZABLE`, and it was rejected: it would hold
+/// predicate locks across the registry's network round-trip, which is the one
+/// cost the commit's ordering decision was chosen to bound. See
+/// [`PublishService::commit`](crate::infra::publish::PublishService::commit)'s
+/// CONTRACT paragraph, which now carries the full argument.
+///
+/// # Why the pre-read, and why it is not the guard
+///
+/// The version conjunction is checked **before** the UPDATE as well as by the
+/// UPDATE's own row count, and the order is forced: after the UPDATE this
+/// transaction reads its own writes, so a row that legitimately moved to
+/// `published` is indistinguishable from one that never matched. Taken first,
+/// the read names which conjunct failed — absent, frozen, or stale — the way
+/// every other compare-and-swap in this file does. The **count** is still the
+/// guard, and it covers the one window the read cannot: a concurrent commit
+/// landing between two adjacent statements.
+///
+/// # The rest, unchanged
+///
+/// **One UPDATE, not a per-row negotiation**, and the two partial unique indexes
+/// are why that is safe. The draft-plane index (D-148,
+/// `WHERE lifecycle_state = 'draft'`) releases a key as its row leaves `draft`
+/// and the published-plane index claims it as the row arrives, both inside this
+/// statement. [`PriceRepo::create_draft`] already refuses a scope key occupied by
+/// a `draft` **or** a `published` row, so a plan's draft rows sit on keys nothing
+/// else holds; a concurrent publish of a *second* plan cannot collide because
+/// every key carries `plan_id`.
+///
+/// **`draft -> published` is the row's only edge out of `draft`** and this is the
+/// sanctioned producer of it. The predicate is restated here rather than left to
+/// the table because §4.3 enforces immutability twice and the physical guard's
+/// answer is a raw driver error carrying no state — and the physical half now
+/// exists on this table too: D-153's draft-plane whitelist was missing from
+/// `pricing_price` (the trigger returned early for a draft row) and was amended
+/// into `m20260802_000002` on both backends while this guard was being written.
+///
+/// The `row_version` is deliberately **not** bumped. §3.7 says the tag freezes
+/// with the content it names (D-141) and this flip changes no content; after it
+/// the row is frozen and no caller-driven mutation exists for a precondition to
+/// guard, so a bump would move an entity tag under a representation nobody can
+/// write to.
+///
+/// # Errors
+/// [`RepoError::NotFound`] when a validated row is no longer visible to `scope`;
+/// [`RepoError::NotDraft`] when one has left `draft` since it was validated;
+/// [`RepoError::StaleRowVersion`] carrying both versions when one's content
+/// moved since it was validated — the refusal this whole shape exists to
+/// produce; [`RepoError::Db`] on a scope or storage failure, **including** a
+/// concurrent commit landing between the pre-read and the UPDATE, reported as
+/// the row-count mismatch it is; [`RepoError::CorruptRow`] when a stored row
+/// cannot be read as the domain value its columns are `CHECK`-constrained to
+/// hold.
+pub async fn publish_rows(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    validated: &[(Uuid, RowVersion)],
+) -> Result<Vec<Uuid>, RepoError> {
+    if validated.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Refused before anything flips. See the doc: this is not the guard, it is
+    // the only place a precise refusal can still be produced.
+    //
+    // **One query for the whole set, not one per row.** §14's soft cap is 500
+    // price rows per plan, and a per-row read would put five hundred sequential
+    // round-trips inside a transaction that is already holding the registry's
+    // network call open. The per-row *detail* comes from comparing what the read
+    // returned against what was validated, not from having read them one at a
+    // time — so the refusal below is exactly as precise, and is still taken
+    // through [`refuse`] so its three answers are spelled in one place.
+    let held: HashMap<Uuid, price::Model> =
+        load_rows(txn, scope, tenant_id, validated.iter().map(|(id, _)| *id))
+            .await?
+            .into_iter()
+            .map(|row| (row.price_id, row))
+            .collect();
+    for (price_id, expected) in validated {
+        if !stands_at(held.get(price_id), *expected) {
+            return Err(refuse(txn, scope, tenant_id, *price_id, *expected).await);
+        }
+    }
+
+    let mut identities = Condition::any();
+    for (price_id, expected) in validated {
+        let stored = expected
+            .to_stored()
+            .map_err(|e| RepoError::CorruptRow(format!("price row {price_id} row version: {e}")))?;
+        identities = identities.add(
+            Condition::all()
+                .add(price::Column::PriceId.eq(*price_id))
+                .add(price::Column::RowVersion.eq(stored)),
+        );
+    }
+
+    let result = price::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            price::Column::LifecycleState,
+            Expr::value(LifecycleState::Published.as_str()),
+        )
+        .filter(plan_rows_in_state(tenant_id, plan_id, LifecycleState::Draft).add(identities))
+        .exec(txn)
+        .await
+        .map_err(|e| RepoError::Db(format!("publish plan price rows: {e}")))?;
+
+    // Checked rather than cast: a cast that wrapped would report a mismatched
+    // set as a matching one, which is the one answer this comparison must never
+    // be able to give.
+    let expected_count = u64::try_from(validated.len()).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "plan {plan_id} carries {} validated price rows, more than a row count can hold",
+            validated.len()
+        ))
+    })?;
+    if result.rows_affected != expected_count {
+        return Err(RepoError::Db(format!(
+            "plan {plan_id} validated {expected_count} price rows and {} moved; \
+             a concurrent commit changed one between the check and the flip",
+            result.rows_affected
+        )));
+    }
+    Ok(validated.iter().map(|(price_id, _)| *price_id).collect())
+}
+
+/// Read a set of rows by id, scoped, in one query.
+///
+/// Deliberately **not** filtered by `plan_id`: it mirrors [`mutable_draft`]'s
+/// predicate exactly, which is tenant plus identity. A row of another plan of
+/// the same tenant therefore passes this read and is excluded by the UPDATE's
+/// own plan filter — a mismatch the count assertion catches, which is the one
+/// arm of that assertion reachable without concurrency and is what
+/// `a_validated_row_of_another_plan_is_caught_by_the_count` exercises.
+async fn load_rows(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    ids: impl Iterator<Item = Uuid>,
+) -> Result<Vec<price::Model>, RepoError> {
+    price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PriceId.is_in(ids)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read validated price rows: {e}")))
+}
+
+/// Is this row an editable `draft` standing at exactly `expected`?
+///
+/// The batched half of [`mutable_draft`]'s question, over a row already in hand.
+/// A reading that fails — a `lifecycle_state` or `row_version` the column's
+/// constraints forbid — answers `false` rather than erroring, because the
+/// caller's next move is [`refuse`], which re-reads the row and surfaces the
+/// [`RepoError::CorruptRow`] with the subject attached.
+fn stands_at(row: Option<&price::Model>, expected: RowVersion) -> bool {
+    let Some(row) = row else {
+        return false;
+    };
+    let Ok(state) = read_lifecycle(&row.lifecycle_state) else {
+        return false;
+    };
+    let Ok(current) = read_row_version(row.price_id, row.row_version) else {
+        return false;
+    };
+    state.is_content_mutable() && current == expected
+}
+
+/// A plan's rows in one lifecycle state, as a filter. One spelling, so the read
+/// that names the ids and the UPDATE that moves them cannot address different
+/// sets.
+fn plan_rows_in_state(tenant_id: Uuid, plan_id: PlanId, state: LifecycleState) -> Condition {
+    Condition::all()
+        .add(price::Column::TenantId.eq(tenant_id))
+        .add(price::Column::PlanId.eq(plan_id.get()))
+        .add(price::Column::LifecycleState.eq(state.as_str()))
+}
+
+/// A plan's price rows in the given lifecycle states, through whichever runner
+/// the caller holds.
+///
+/// Public and runner-taking because the publish path assembles its subject
+/// **twice** — once as the §4.2 step-2 pre-check and again inside the commit
+/// transaction, where `Db::conn()` is refused by the toolkit's
+/// transaction-bypass guard. One implementation with two entry points: a second
+/// query is a second thing the two runs could disagree about, and that
+/// disagreement is what §4.2's re-validation exists to detect rather than to
+/// manufacture.
+///
+/// Ordered by `price_id` ascending, and an **empty** `states` selects nothing —
+/// both are [`PriceRepo::list_for_plan`]'s contract and its doc carries the
+/// argument.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when a stored row cannot be read as the domain
+/// value its columns are `CHECK`-constrained to hold.
+pub async fn load_for_plan(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    states: &[LifecycleState],
+) -> Result<Vec<PriceRecord>, RepoError> {
+    if states.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tokens: Vec<&str> = states.iter().copied().map(LifecycleState::as_str).collect();
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PlanId.eq(plan_id.get()))
+                .add(price::Column::LifecycleState.is_in(tokens)),
+        )
+        .order_by(price::Column::PriceId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list plan price rows: {e}")))?;
+
+    // One band query for the whole page rather than one per row: the bands
+    // arrive already sorted, so grouping preserves the `from_qty` order the
+    // read-side guarantee promises.
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.price_id).collect();
+    let mut grouped: HashMap<Uuid, Vec<price_tier_band::Model>> = HashMap::new();
+    if !ids.is_empty() {
+        let bands = price_tier_band::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(price_tier_band::Column::TenantId.eq(tenant_id))
+                    .add(price_tier_band::Column::PriceId.is_in(ids)),
+            )
+            .order_by(price_tier_band::Column::PriceId, Order::Asc)
+            .order_by(price_tier_band::Column::FromQty, Order::Asc)
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("list plan price bands: {e}")))?;
+        for band in bands {
+            grouped.entry(band.price_id).or_default().push(band);
+        }
+    }
+
+    rows.iter()
+        .map(|row| {
+            let bands = grouped.remove(&row.price_id).unwrap_or_default();
+            to_record(row, &bands)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

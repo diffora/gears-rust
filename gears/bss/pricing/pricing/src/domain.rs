@@ -4,6 +4,7 @@
 //! entities and transports live in [`crate::infra`] and [`crate::api`], and the
 //! domain is what stays true regardless of where the rows are stored.
 
+pub mod audit;
 pub mod concurrency;
 pub mod error;
 pub mod events;
@@ -16,6 +17,7 @@ pub mod plan_shape;
 pub mod ports;
 pub mod price_record;
 pub mod price_row;
+pub mod publish;
 pub mod read_model;
 pub mod rules;
 pub mod scope_key;

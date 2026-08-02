@@ -508,7 +508,9 @@ async fn a_frozen_revisions_phase_may_not_be_deleted_and_a_drafts_may() {
 // ---------------------------------------------------------------------------
 
 /// The two repositories, plus the provider the seeding helper needs to put a
-/// revision into a state only the publish unit (G5) will be able to reach.
+/// revision into a state `plan_repo::publish_revision` now reaches - fabricated
+/// here rather than published, so this suite tests the child table and not the
+/// publish unit.
 async fn repo_harness() -> (PlanRepo, PlanShapeRepo, DBProvider<DbError>) {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
@@ -524,8 +526,10 @@ async fn repo_harness() -> (PlanRepo, PlanShapeRepo, DBProvider<DbError>) {
     )
 }
 
-/// Publish a revision straight at the column. The publish unit that owns this
-/// flip lands in G5, and `pricing_plan`'s append-only trigger whitelists it.
+/// Publish a revision straight at the column, which is the same flip
+/// `plan_repo::publish_revision` performs; `pricing_plan`'s append-only trigger
+/// whitelists it. Fabricated rather than published so this suite stays about
+/// the child table.
 async fn publish(provider: &DBProvider<DbError>, scope: &AccessScope, plan_id: PlanId) {
     let conn = provider.conn().expect("conn");
     let result = plan::Entity::update_many()

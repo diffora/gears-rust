@@ -2,19 +2,25 @@
 //! (`design/01-foundation.md` §3.7).
 //!
 //! **One repository over the table, and one method on it — that is the
-//! narrowing this file is.** The row carries four more policies, and each is
+//! narrowing this file is.** The row carries three more policies, and each is
 //! read on a different path at a different moment: the approval threshold at
-//! §4.2 step 3, the tax-display mode in Slice 4, the default rounding policy at
-//! the publish freeze, the notice period when Slice 11 schedules an enforced
-//! migration. None of those paths exists yet, each wants a different value shape,
-//! and each carries its own reading of absence. A method returning the whole row
-//! today would answer four questions nobody is asking and would fix one shape for
-//! four readers that have not been written — so the row's other half gets its
-//! methods **here**, beside this one, when its slices land. A second repository
-//! over one table is what would be wrong; a second method is not.
+//! §4.2 step 3, the tax-display mode in Slice 4, the notice period when Slice 11
+//! schedules an enforced migration. None of those paths exists yet, each wants a
+//! different value shape, and each carries its own reading of absence. A method
+//! returning the whole row today would answer three questions nobody is asking
+//! and would fix one shape for three readers that have not been written — so the
+//! row's other half gets its methods **here**, beside this one, when its slices
+//! land. A second repository over one table is what would be wrong; a second
+//! method is not.
 //!
 //! What this one reads is exactly what the **authoring** path resolves: the four
-//! §14 caps and the descriptor required-set extension D-152 put in this table.
+//! §14 caps and the descriptor required-set extension D-152 put in this table,
+//! and — since 2026-08-03, when the publish path that reads it landed — the
+//! **default rounding policy**. That one joined this method rather than getting
+//! one of its own because it is resolved at the same moment and by the same
+//! caller: the §4.2 step-2 pre-check and the commit's re-validation each build
+//! one rule set for one tenant, and two reads to build it would be two chances
+//! for the two runs to disagree about what the tenant had configured.
 //!
 //! **Read-only, deliberately.** There is no upsert here because a policy change
 //! is not a row write: D-10/D-13 route policy changes through the same approval
@@ -53,7 +59,7 @@
 use std::collections::BTreeSet;
 
 use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue};
-use toolkit_db::secure::{AccessScope, SecureEntityExt};
+use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
@@ -82,6 +88,7 @@ pub struct AuthoringPolicy {
     max_custom_interval_days: u32,
     max_custom_interval_months: u32,
     additional_required_descriptors: Vec<String>,
+    default_rounding_policy_ref: Option<String>,
 }
 
 impl AuthoringPolicy {
@@ -101,6 +108,12 @@ impl AuthoringPolicy {
             max_custom_interval_days: limits.max_custom_interval_days,
             max_custom_interval_months: limits.max_custom_interval_months,
             additional_required_descriptors: Vec::new(),
+            // Absent, and absent is the fail-closed reading: a deployment-wide
+            // rounding default would decide the last minor unit of every charge
+            // of every tenant that never asked for one, which is precisely the
+            // implicit rounding PRD §17.4 refuses. A tenant without an entry
+            // simply requires every published row to carry its own.
+            default_rounding_policy_ref: None,
         }
     }
 
@@ -144,6 +157,19 @@ impl AuthoringPolicy {
     #[must_use]
     pub fn additional_required_descriptors(&self) -> &[String] {
         &self.additional_required_descriptors
+    }
+
+    /// The tenant's default rounding policy, when they have configured one.
+    ///
+    /// `None` is not "no policy applies": it is the state in which **every**
+    /// published row must carry its own `rounding_policy_ref` or the publish
+    /// fails with `ROUNDING_POLICY_UNRESOLVED` (§3.3, PRD §17.4). There is
+    /// deliberately no deployment fallback behind it, unlike the four caps
+    /// above: a cap has a ratified launch number and rounding has no safe
+    /// default at all, which is the whole of why the code exists.
+    #[must_use]
+    pub fn default_rounding_policy_ref(&self) -> Option<&str> {
+        self.default_rounding_policy_ref.as_deref()
     }
 }
 
@@ -197,11 +223,34 @@ impl PolicyObjectRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
+        self.authoring_policy_on(&conn, scope, tenant_id).await
+    }
+
+    /// The same resolution, through whichever runner the caller holds.
+    ///
+    /// The publish commit re-resolves the policy **inside its transaction**,
+    /// where `Db::conn()` is refused by the toolkit's transaction-bypass guard —
+    /// and it re-resolves it rather than carrying the pre-check's copy because
+    /// the caps are part of the state §4.2's second run re-validates. An
+    /// operator lowering a cap between submit and commit is exactly the moved
+    /// world that clause exists to catch.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when a stored cap is not a positive count the
+    /// domain can count in, or `additional_required_descriptors` is not a JSON
+    /// array of strings.
+    pub async fn authoring_policy_on(
+        &self,
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+    ) -> Result<AuthoringPolicy, RepoError> {
         let row = policy_object::Entity::find()
             .secure()
             .scope_with(scope)
             .filter(Condition::all().add(policy_object::Column::TenantId.eq(tenant_id)))
-            .one(&conn)
+            .one(runner)
             .await
             .map_err(|e| RepoError::Db(format!("read policy object: {e}")))?;
         let Some(row) = row else {
@@ -231,6 +280,9 @@ impl PolicyObjectRepo {
             additional_required_descriptors: read_required_keys(
                 &row.additional_required_descriptors,
             )?,
+            // Taken as stored, with no deployment fallback: see
+            // `AuthoringPolicy::default_rounding_policy_ref`.
+            default_rounding_policy_ref: row.default_rounding_policy_ref,
         })
     }
 }

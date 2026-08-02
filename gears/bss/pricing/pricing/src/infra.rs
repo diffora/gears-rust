@@ -3,4 +3,5 @@
 
 pub mod error_mapping;
 pub mod fixture_gate;
+pub mod publish;
 pub mod storage;

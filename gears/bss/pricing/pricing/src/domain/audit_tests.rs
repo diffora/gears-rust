@@ -1,0 +1,355 @@
+//! What the audit encoding promises a verification job seven years from now.
+
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use chrono::{DateTime, TimeZone, Utc};
+use serde_json::json;
+use uuid::Uuid;
+
+use super::{
+    AUDIT_DOMAIN_SEP, AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash,
+    genesis_prev_hash, hex32,
+};
+
+const TENANT: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0001);
+const CHAIN: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0002);
+const ACTOR: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0003);
+const APPROVAL: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0004);
+const CORRELATION: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0005);
+
+fn at() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0).unwrap()
+}
+
+fn record<'a>(
+    subject_ref: &'a str,
+    before: Option<&'a serde_json::Value>,
+    after: Option<&'a serde_json::Value>,
+) -> AuditRecord<'a> {
+    AuditRecord {
+        tenant_id: TENANT,
+        chain_id: CHAIN,
+        seq: 0,
+        recorded_at: at(),
+        actor_principal_id: ACTOR,
+        action: AuditAction::Publish,
+        subject_kind: AuditSubjectKind::PlanRevision,
+        subject_ref,
+        before_state: before,
+        after_state: after,
+        approval_ref: Some(APPROVAL),
+        correlation_id: Some(CORRELATION),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The persisted tokens.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_persisted_tokens_are_asserted_against_literals() {
+    // Not derived from the variant identifiers, exactly as `CatalogEvent`'s
+    // are not: an Auditor surface with a seven-year horizon reads these
+    // strings, so a variant rename must not silently rename a stored token.
+    assert_eq!(AuditAction::Publish.as_str(), "publish");
+    assert_eq!(AuditSubjectKind::PlanRevision.as_str(), "plan_revision");
+    assert_eq!(AuditAction::ALL, &[AuditAction::Publish]);
+    assert_eq!(AuditSubjectKind::ALL, &[AuditSubjectKind::PlanRevision]);
+}
+
+#[test]
+fn the_domain_separation_tag_is_this_gears_own() {
+    assert_eq!(AUDIT_DOMAIN_SEP, b"VHP-BSS-PRICING-AUDIT-v1\x1f");
+}
+
+// ---------------------------------------------------------------------------
+// The frozen byte-repro vector.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_fixed_record_hashes_to_its_frozen_digest() {
+    // The test that makes an accidental encoding change loud. If this fails
+    // and the change was deliberate, bump `AUDIT_DOMAIN_SEP` and regenerate
+    // this vector; if it was not, the chain just stopped verifying.
+    let before = json!({"lifecycle_state": "draft", "row_version": 0});
+    let after = json!({"lifecycle_state": "published", "row_version": 1});
+    let rec = record(
+        "00000000-0000-0000-0000-000000000002/1",
+        Some(&before),
+        Some(&after),
+    );
+    let prev = [7_u8; 32];
+
+    let digest = audit_row_hash(&rec, &prev).expect("hash a fixed record");
+
+    assert_eq!(
+        hex32(&digest),
+        "fdc0d35bbcae82609b60fd96c76e103a9b92b38c47045aba8a309333ff44bdca"
+    );
+}
+
+#[test]
+fn the_digest_is_a_full_thirty_two_bytes() {
+    let rec = record("plan/1", None, None);
+    let digest = audit_row_hash(&rec, &[0_u8; 32]).expect("hash");
+
+    assert_eq!(digest.len(), 32);
+    assert_eq!(hex32(&digest).len(), 64);
+}
+
+// ---------------------------------------------------------------------------
+// Framing: two field boundaries can never collide.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_field_boundaries_over_one_byte_string_never_collide() {
+    // Without the length prefixes these two preimages are identical: the
+    // concatenated field bytes are the same and only the boundary moved. A
+    // chain that cannot tell them apart can be forged by moving a character
+    // across a field border, with every link still verifying.
+    let mut split_early = Vec::new();
+    super::put_str(&mut split_early, "a");
+    super::put_str(&mut split_early, "bc");
+
+    let mut split_late = Vec::new();
+    super::put_str(&mut split_late, "ab");
+    super::put_str(&mut split_late, "c");
+
+    assert_ne!(super::digest32(&split_early), super::digest32(&split_late));
+}
+
+#[test]
+fn an_absent_field_and_an_empty_one_hash_differently() {
+    // The NULL-safe half of the same property: `None` is a bare marker and an
+    // empty value is a marker plus a zero length, so a nulled column and a
+    // cleared one are distinguishable.
+    let empty = json!({});
+    let prev = [0_u8; 32];
+
+    let absent = audit_row_hash(&record("plan/1", None, None), &prev).expect("hash absent");
+    let present =
+        audit_row_hash(&record("plan/1", Some(&empty), None), &prev).expect("hash present");
+
+    assert_ne!(absent, present);
+}
+
+// ---------------------------------------------------------------------------
+// The jsonb columns are hashed canonically.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_key_order_does_not_change_the_hash() {
+    // `jsonb` does not preserve key order, so a value written one way and read
+    // back another is the normal case. Hashing the emitted order would make
+    // the verification job report a break that never happened.
+    let mut forward = serde_json::Map::new();
+    forward.insert("alpha".to_owned(), json!(1));
+    forward.insert("beta".to_owned(), json!(2));
+    let mut backward = serde_json::Map::new();
+    backward.insert("beta".to_owned(), json!(2));
+    backward.insert("alpha".to_owned(), json!(1));
+
+    let forward = serde_json::Value::Object(forward);
+    let backward = serde_json::Value::Object(backward);
+    let prev = [0_u8; 32];
+
+    assert_eq!(
+        audit_row_hash(&record("plan/1", Some(&forward), None), &prev).expect("forward"),
+        audit_row_hash(&record("plan/1", Some(&backward), None), &prev).expect("backward")
+    );
+}
+
+#[test]
+fn nested_json_key_order_does_not_change_the_hash_either() {
+    let forward = json!({"outer": {"a": 1, "b": [ {"x": 1, "y": 2} ]}});
+    let backward = json!({"outer": {"b": [ {"y": 2, "x": 1} ], "a": 1}});
+    let prev = [0_u8; 32];
+
+    assert_eq!(
+        audit_row_hash(&record("plan/1", Some(&forward), None), &prev).expect("forward"),
+        audit_row_hash(&record("plan/1", Some(&backward), None), &prev).expect("backward")
+    );
+}
+
+#[test]
+fn json_array_order_does_change_the_hash() {
+    // Order is semantic in a JSON array, so canonicalization must not sort it.
+    let left = json!({"ids": [1, 2]});
+    let right = json!({"ids": [2, 1]});
+    let prev = [0_u8; 32];
+
+    assert_ne!(
+        audit_row_hash(&record("plan/1", Some(&left), None), &prev).expect("left"),
+        audit_row_hash(&record("plan/1", Some(&right), None), &prev).expect("right")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Genesis is bound to the segment.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn genesis_differs_per_chain_within_one_tenant() {
+    // A genesis bound to the tenant alone would give every one of its segments
+    // the same first link, and a whole segment could then be transplanted onto
+    // another aggregate undetectably.
+    assert_ne!(
+        genesis_prev_hash(TENANT, Uuid::from_u128(10)),
+        genesis_prev_hash(TENANT, Uuid::from_u128(11))
+    );
+}
+
+#[test]
+fn genesis_differs_per_tenant_for_one_chain() {
+    assert_ne!(
+        genesis_prev_hash(Uuid::from_u128(10), CHAIN),
+        genesis_prev_hash(Uuid::from_u128(11), CHAIN)
+    );
+}
+
+#[test]
+fn genesis_is_stable_for_one_segment() {
+    assert_eq!(
+        genesis_prev_hash(TENANT, CHAIN),
+        genesis_prev_hash(TENANT, CHAIN)
+    );
+}
+
+#[test]
+fn a_genesis_seed_is_not_a_row_hash_of_the_same_inputs() {
+    // The two encodings share a domain-separation tag, so the seed and a first
+    // row must be distinguishable by their content and not by luck.
+    let rec = record("plan/1", None, None);
+    let seeded = genesis_prev_hash(TENANT, CHAIN);
+    let hashed = audit_row_hash(&rec, &seeded).expect("hash");
+
+    assert_ne!(seeded, hashed);
+}
+
+// ---------------------------------------------------------------------------
+// Every field is in the encoding.
+// ---------------------------------------------------------------------------
+
+/// Drive the record field by field: each mutation must move the digest, so a
+/// field silently dropped from the encoding fails here rather than years later
+/// when a forged row verifies.
+#[test]
+fn changing_any_single_field_changes_the_hash() {
+    let before = json!({"k": 1});
+    let after = json!({"k": 2});
+    let base = record("plan/1", Some(&before), Some(&after));
+    let prev = [0_u8; 32];
+    let baseline = audit_row_hash(&base, &prev).expect("baseline");
+
+    let other = json!({"k": 99});
+    let mutations: Vec<(&str, AuditRecord<'_>)> = vec![
+        (
+            "tenant_id",
+            AuditRecord {
+                tenant_id: Uuid::from_u128(99),
+                ..base
+            },
+        ),
+        (
+            "chain_id",
+            AuditRecord {
+                chain_id: Uuid::from_u128(99),
+                ..base
+            },
+        ),
+        ("seq", AuditRecord { seq: 1, ..base }),
+        (
+            "recorded_at",
+            AuditRecord {
+                recorded_at: at() + chrono::TimeDelta::milliseconds(1),
+                ..base
+            },
+        ),
+        (
+            "actor_principal_id",
+            AuditRecord {
+                actor_principal_id: Uuid::from_u128(99),
+                ..base
+            },
+        ),
+        (
+            "subject_ref",
+            AuditRecord {
+                subject_ref: "plan/2",
+                ..base
+            },
+        ),
+        (
+            "before_state",
+            AuditRecord {
+                before_state: Some(&other),
+                ..base
+            },
+        ),
+        (
+            "after_state",
+            AuditRecord {
+                after_state: Some(&other),
+                ..base
+            },
+        ),
+        (
+            "approval_ref",
+            AuditRecord {
+                approval_ref: None,
+                ..base
+            },
+        ),
+        (
+            "correlation_id",
+            AuditRecord {
+                correlation_id: None,
+                ..base
+            },
+        ),
+    ];
+
+    for (field, mutated) in mutations {
+        let digest = audit_row_hash(&mutated, &prev).expect("hash a mutated record");
+        assert_ne!(digest, baseline, "moving `{field}` must move the digest");
+    }
+}
+
+#[test]
+fn the_previous_link_is_in_the_hash() {
+    let rec = record("plan/1", None, None);
+
+    assert_ne!(
+        audit_row_hash(&rec, &[0_u8; 32]).expect("first"),
+        audit_row_hash(&rec, &[1_u8; 32]).expect("second")
+    );
+}
+
+#[test]
+fn the_action_and_the_subject_kind_are_in_the_hash() {
+    // Both vocabularies hold one variant today, so the tokens are driven
+    // through the encoding directly: a record hashed without them would be
+    // indistinguishable from one carrying different ones the day a second
+    // variant lands.
+    let rec = record("plan/1", None, None);
+    let prev = [0_u8; 32];
+    let with_tokens = audit_row_hash(&rec, &prev).expect("hash");
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(AUDIT_DOMAIN_SEP);
+    super::put_uuid(&mut buf, rec.tenant_id);
+    super::put_uuid(&mut buf, rec.chain_id);
+    super::put_u64(&mut buf, rec.seq);
+    super::put_i64(&mut buf, rec.recorded_at.timestamp_micros());
+    super::put_uuid(&mut buf, rec.actor_principal_id);
+    // The two tokens deliberately omitted.
+    super::put_str(&mut buf, rec.subject_ref);
+    super::put_opt_json(&mut buf, rec.before_state).expect("before");
+    super::put_opt_json(&mut buf, rec.after_state).expect("after");
+    super::put_opt_uuid(&mut buf, rec.approval_ref);
+    super::put_opt_uuid(&mut buf, rec.correlation_id);
+    super::put(&mut buf, &prev);
+    let without_tokens = super::digest32(&buf);
+
+    assert_ne!(with_tokens, without_tokens);
+}
