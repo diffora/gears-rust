@@ -304,7 +304,13 @@ non-`sum` row; capacity flavor only at launch, D-53); warnings:
 
 Columns on Foundation-owned tables + one slice table (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7):
 
-**`pricing_price` (Slice-10 columns)**:
+**`pricing_price` (Slice-10 columns)** — Slice-10-owned columns **on the Foundation-owned
+`pricing_price`**, not a second table: the set homes a column with the slice that owns its
+semantics, so this list and [`03-price-structure.md`](./03-price-structure.md) §6's are two
+disjoint parts of one physical row. `included_allowance` in particular is declared here rather
+than there because the D-45 compile is this slice's (2026-08-02: the reciprocal pointer was
+missing at both ends, so the column read as absent from the design set when looked for beside the
+other price-shape columns):
 
 | Column | Type | Notes |
 |--------|------|-------|

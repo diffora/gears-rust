@@ -257,14 +257,18 @@ flowchart TB
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-plan-lifecycle`
 
-**States**: draft, published, superseded, retired (per **revision row** — D-56/D-90)
-**Initial State**: draft (mutable, deletable; optional `PlanTier`)
+**States**: draft, abandoned, published, superseded, retired (per **revision row** — D-56/D-90;
+`abandoned` added by **D-145**, 2026-08-02 — terminal, and outside every "current revision"
+predicate)
+**Initial State**: draft (mutable; **never deleted** — a discarded draft revision is *abandoned*,
+so its `revision` number stays consumed (`inst-pl-abandon`, D-145); optional `PlanTier`)
 
 **Transitions**:
 1. [ ] - `p1` - **FROM** draft **TO** published **WHEN** the Foundation pipeline passes (this slice's rules included) and approval (governance slice) completes; shape freezes into the read model - `inst-pl-publish`
 1a. [ ] - `p1` - **FROM** published **TO** superseded **WHEN** the plan's next revision publishes (D-90, 2026-07-31 review fix — the flip happens inside the successor revision's publish commit, mirroring the price rows' flip-at-commit): at most one revision per plan is ever **current** (partial `UNIQUE … WHERE lifecycle_state IN ('published', 'retired')` — widened by D-128 so the predicate keeps holding a row after retirement), so "the current revision" is unique by construction for the projector (D-83), the sellability lifecycle predicate, and every truth-side referential check; superseded revision rows are immutable history - `inst-pl-supersede`
+1b. [ ] - `p1` - **FROM** draft **TO** abandoned **WHEN** the plan's open draft revision is discarded — by its author, or by retirement discarding it inside the retirement transaction ([`11-lifecycle.md`](./11-lifecycle.md) `inst-rt-cancel`, D-128). **The number stays consumed (normative, D-145, 2026-08-02, found while building the draft-authoring plane):** the row is **flipped, not deleted**; its revision-scoped child copies (phase, add-on-rule, descriptor-set and grant rows — D-83/D-92/D-106) are dropped, and the flip is audited exactly as the deletion it replaces was. Revision minting is therefore `max(revision) + 1` over the plan's own rows and consults nothing else, so `(plan_id, revision)` — the durable name `pricing_plan_grant` is keyed by (D-52/D-106), that every revision-scoped child copies under, and that the audit trail records — never denotes two rows over a plan's lifetime. Deleting the row was rejected: `max(revision)` returns to its pre-draft value, the next opened draft mints the **same** number, and a client holding the discarded revision's row version then `PATCH`es the *new* row of that name with a precondition that **passes** — the lost update optimistic concurrency exists to refuse, arriving through the key instead of the version, and most reachable at the initial version every freshly minted revision carries. `abandoned` is **terminal** (no edge leaves it) and sits outside both Foundation §3.7 partial `UNIQUE` predicates — outside `WHERE lifecycle_state = 'draft'`, so a new draft opens immediately, and outside `IN ('published', 'retired')`, so "the current revision" (D-90, widened by D-128) is untouched. Consequence stated plainly: a plan's revision numbers may have **gaps** (rev 1 published, rev 2 abandoned, rev 3 published), which the Slice-12 history surface shows an operator. **Scope:** this is the plan-revision rule only — price-row deletability belongs to [`03-price-structure.md`](./03-price-structure.md) `inst-ps-nodelete` and D-145 does not move it - `inst-pl-abandon`
 2. [ ] - `p1` - **FROM** published **TO** retired **WHEN** the lifecycle slice retires the plan (Slice 11; blocks new subscriptions, preserves snapshots) — the flip targets the plan's **single current published revision** (D-90) and is itself a **publish unit** (D-128: pending `CatalogVersion` ref + plan-subject re-projection, `lifecycle_state` being a projected field the sellability gate reads at the pin). The retired row stays the plan's **current** revision — the partial `UNIQUE` covers `IN ('published', 'retired')` and the projector sources it (Foundation §3.7/§4.4) — so in-flight subscribers keep resolving a warm delta - `inst-pl-retire`
-3. [ ] - `p1` - Published plans never return to draft; a change is a **new revision** through the Foundation's versioning (append-only) - `inst-pl-norollback`
+3. [ ] - `p1` - Published plans never return to draft; a change is a **new revision** through the Foundation's versioning (append-only). **Two refusals on that path answer with codes of their own (normative, D-146, 2026-08-02, found while building the draft-authoring plane):** opening a successor revision on — or re-publishing — a **retired** plan is `PLAN_RETIRED_NO_SUCCESSOR` (422); a second draft on a plan that already holds one is `OPEN_DRAFT_REVISION_EXISTS` (409, naming the open revision). Both are Foundation-owned (§3.3) and **referenced here, never redefined** (R-11). Until this decision both arrived as `LIFECYCLE_FORBIDDEN`, which is the one thing a consumer cannot act on, because the operator's next action differs: the first is a **stop** — a retired plan can never publish again, so any successor is unpublishable by construction ([`11-lifecycle.md`](./11-lifecycle.md) `inst-rt-api`) — while the second names a **different and available** action, go and edit the draft you already have. Discriminating in the detail prose was rejected: a client choosing its next call would have to parse it. The second is not a state-machine transition at all but a uniqueness conflict on the `(plan_id) WHERE lifecycle_state = 'draft'` partial `UNIQUE` (Foundation §3.7), which is why it leaves the 422 bucket for 409 - `inst-pl-norollback`
 
 ## 5. API Surface
 
@@ -273,6 +277,7 @@ flowchart TB
 | `POST` | `/bss-pricing/v1/plans` | Create a draft plan | client idempotency key |
 | `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape (cycle, phases, add-ons, descriptors) | ETag |
 | `POST` | `/bss-pricing/v1/plans/{planId}/publish` | Run fail-closed validation + submit for approval/publish | per plan revision |
+| `POST` | `/bss-pricing/v1/plans/{planId}/abandon` | **Discard the plan's open draft revision** — the author-driven arm of `inst-pl-abandon` (**D-145**): the row flips to the terminal `abandoned` state, its child copies drop, the flip is audited, and the `revision` number stays consumed. It is never deleted, so the verb is not `DELETE` | ETag |
 | `GET` | `/bss-pricing/v1/plans/{planId}` | Read (draft for authors; published via read model) | — |
 
 **Problem responses (RFC 9457):** `SKU_NOT_PUBLISHED` (422), `INVALID_CUSTOM_INTERVAL` (422),
@@ -306,6 +311,36 @@ one-time plan, or carrying recurrence/`billingTiming`/tier fields),
 `metadata_fields` keys; UC3),
 `DESCRIPTOR_INCOMPLETE` (422). Concrete error taxonomy is refined at implementation; names
 follow the fail-closed report contract (every violation enumerated).
+
+**Revision-lifecycle refusals are Foundation-owned and referenced, never redeclared above**
+(R-11; Foundation §3.3). A `PATCH` that would open a successor revision on a plan whose current
+revision is `retired`, and a `POST …/publish` against it, both answer
+`PLAN_RETIRED_NO_SUCCESSOR` (422); a `PATCH` that would open a **second** draft while the plan
+already holds one answers `OPEN_DRAFT_REVISION_EXISTS` (409, naming the open revision) — the
+discrimination `inst-pl-norollback` argues for (**D-146**, 2026-08-02). Neither surface, and no
+other on this table, ever frees a `revision` number: a discarded draft revision is abandoned
+rather than deleted (`inst-pl-abandon`, **D-145**, 2026-08-02), so the ETag a caller holds
+against `plan/N` can never be tested against a *different* row that reused the name.
+
+**The abandon surface is what gives that transition its author-driven caller** (**D-145**,
+2026-08-02, consolidation pass). `inst-pl-abandon` admits two discard paths — by the revision's
+author, or by the retirement transaction that closes it — and only the second had a call:
+[`11-lifecycle.md`](./11-lifecycle.md) `inst-rt-cancel` names the actor, the transaction and the
+endpoint, while this table offered `POST`, `PATCH`, publish and read and **no** way for an author
+to put down a draft revision they no longer want. The initial-state line had asserted the
+capability all along ("draft (mutable, deletable)") without a surface to exercise it, so removing
+*deletable* under D-145 left a state change nothing invoked. `POST …/plans/{planId}/abandon`
+follows the D-140 route shape — the gear prefix, the action as a sub-resource segment, never a
+colon-suffixed custom method — and is the sibling of `…/publish` on the same subject: both act on
+the plan's **open draft revision**, one by promoting it and one by tombstoning it. It carries an
+`ETag` precondition rather than none, because what an unconditional abandon destroys is a
+concurrent editor's uncommitted work — D-141's argument for the price plane's `DELETE`, on the
+one plan-plane verb that leaves nothing behind to reconcile. AuthZ is the table's existing
+`plan × write` (already covered by [`05-governance.md`](./05-governance.md)'s
+`POST/PATCH /bss-pricing/v1/plans*` endpoint-map row — no new `(resource_type, action)` pair).
+Abandoning a plan that holds **no** open draft revision is `LIFECYCLE_FORBIDDEN` (Foundation
+§3.3, referenced not redefined): there is no alternative action to describe, which is exactly the
+line **D-146** leaves that code holding.
 
 ## 6. Data Model
 

@@ -263,7 +263,7 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 |--------|------|---------|-------------|
 | `POST` | `/bss-pricing/v1/plans/{planId}/prices` | Create a draft price row on the scope key | client idempotency key |
 | `PATCH` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Update a draft row | ETag |
-| `DELETE` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Delete a **draft** row (published rows: 409) | — |
+| `DELETE` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Delete a **draft** row (published rows: 409) | ETag (D-141) |
 | `GET` | `/bss-pricing/v1/plans/{planId}/prices` | List rows (draft for authors; published via read model) | — |
 
 **Problem responses (RFC 9457):** `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
@@ -277,8 +277,11 @@ error references the allowed values per the PRD Glossary), `QUANTITY_SOURCE_MISS
 `graduated`/`volume`/`package` where the money lives in the band/package column; §6 per-kind
 amount matrix, 2026-07-28 review fix),
 `LEVEL_FIELDS_INVALID` (422 — `aggregationFunction`/`aggregationGranularity` on a non-usage
-row, an unknown value, a non-`sum` row with `maxHold` missing or `< 1`, or `maxHold` **or
-`aggregationGranularity`** present on a `sum` row; D-44),
+row, an unknown value, a non-`sum` row with `maxHold` missing, `< 1`, **or above the bound the
+column can hold** (2026-08-02 wording fix: the gloss named only the lower half, so a reader had
+no answer for the upper one — this code owns **both** ends, which is why §6 spells the column
+`bigint` and the refusal stays a validation report rather than a storage overflow), or `maxHold`
+**or `aggregationGranularity`** present on a `sum` row; D-44),
 `SUPERSESSION_UNIT_MISMATCH` (422 — a usage row landing on an occupied published scope key —
 the supersession unit **or the cutover successor**, D-127 — whose content changes
 `meter`/`dimensionKey`/`model_kind`/`billingGranularity`/`aggregationFunction`/
@@ -293,11 +296,30 @@ counterpart of `aggregationGranularity` (`hour` ⇒ `per_hour`, `day` ⇒ `per_d
 `inst-la-granularity`, D-77 — otherwise `inst-tb-units` and `inst-la-units` name different band
 units for one row), `LEVEL_COMPOSITE_FORBIDDEN` (422 — non-`sum` on a derived
 (composite) meter; launch, D-44),
-`DUPLICATE_SCOPE_KEY` (409 — Foundation-owned, referenced here), `PRECISION_EXCEEDED` (422 —
+`DUPLICATE_SCOPE_KEY` (409 — Foundation-owned, referenced here; on the **draft** plane too since
+D-148, §6), `STALE_VERSION` (409 — Foundation-owned, referenced here; the ETag precondition of
+**both** `PATCH` and `DELETE`, D-141), `PRECISION_EXCEEDED` (422 —
 Foundation-owned, referenced here; [`01-foundation.md`](./01-foundation.md) §3.3).
 `ALLOWANCE_DOUBLE_FREE` and `ALLOWANCE_ON_NON_SUM` are **Slice-10-owned** (the
 `AllowanceCompiler`), referenced here from `inst-tb-first`/`inst-la-allowance` — never
 redefined. The publish-time report enumerates all violations.
+
+**Every mutating verb on a draft row presents its ETag (normative, D-141, 2026-08-02, found
+while building the draft-authoring plane).** `PATCH` always did; `DELETE`'s idempotency cell was
+**empty**, so a draft row could be destroyed under an unknown version — the lost update
+`fr-concurrent-edit` closes for `PATCH`, reopened on the one verb that leaves nothing behind to
+reconcile. A mismatch is `STALE_VERSION` (409); an absent precondition is a malformed request
+under the Foundation validation envelope, so **no new code** is minted. The token is the price
+row's **own** version column (Foundation §3.7), never derived from the plan's — a per-row bulk
+conflict means nothing if every row of a plan shares one version
+([`12-operator-efficiency.md`](./12-operator-efficiency.md) `inst-bk-phase2`), and the
+interactive editor and that loop meet exactly here. Leaving `DELETE` unconditional because a
+draft row is cheap to recreate was rejected: what a blind delete destroys is a concurrent
+editor's uncommitted work, not the row. Scope stated deliberately — this is the **`pricing_price`
+draft row** rule; `DELETE /bss-pricing/v1/price-windows/{windowId}`
+([`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) §5) carries an empty cell too and is
+**not** moved by it, window cancellation being an always-material publish unit (D-62, D-99)
+governed by `inst-co-single-pending`.
 
 ## 6. Data Model
 
@@ -305,7 +327,17 @@ This slice populates the Foundation-owned `pricing_price` and owns `pricing_pric
 SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7;
 published rows append-only per Foundation §4.3):
 
-**`pricing_price` (Foundation-owned; Slice-3 columns)**:
+**`pricing_price` (Foundation-owned; Slice-3 columns)** — the table below is **this slice's
+share** of the row, never the whole table. The set's convention is that a slice declares a
+`pricing_price` column where it owns that column's semantics, so the rest is homed elsewhere and
+read from there: the `currency`/`region` axes and `tax_category_ref` in
+[`04-currency-tax.md`](./04-currency-tax.md) §6, the recurring/proration columns in
+[`06-consumer-contracts.md`](./06-consumer-contracts.md) §6, `price_eligibility` and
+`grandfather_until` in [`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) §6, and
+`reserved_*`, `discount_ref`, `min_qty_*`, `included_allowance` and `tier_qualification_window`
+in [`10-advanced-primitives.md`](./10-advanced-primitives.md) §6 (2026-08-02: the pointer was
+missing, so this list read as the table and `included_allowance` looked absent from the design
+set):
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -319,7 +351,7 @@ published rows append-only per Foundation §4.3):
 | `billing_granularity` | `enum` | `per_second \| per_minute \| per_hour \| per_day \| whole_unit`; all usage rows. On a **non-`sum`** row it MUST pair with `aggregation_granularity` (`hour` ⇒ `per_hour`, `day` ⇒ `per_day`) — `inst-la-granularity`, D-77 |
 | `aggregation_function` | `enum` | `sum (default) \| peak \| time_weighted`; usage rows only (D-44); frozen in snapshot |
 | `aggregation_granularity` | `enum` | `hour (default) \| day`; non-`sum` rows only (D-44); the granule of the rating-side fold |
-| `max_hold_granules` | `int` | `≥ 1`; REQUIRED on non-`sum` rows, forbidden otherwise (D-44 `hold_last` bound — beyond it the level reads 0 + operator signal, rating-side); frozen in snapshot |
+| `max_hold_granules` | `bigint` | `≥ 1`; REQUIRED on non-`sum` rows, forbidden otherwise (D-44 `hold_last` bound — beyond it the level reads 0 + operator signal, rating-side); frozen in snapshot. `bigint` like every other count on this row (2026-08-02 type fix — the earlier `int` was the only narrow count here, and the bound that matters is `LEVEL_FIELDS_INVALID`'s, so the width must never be the thing that refuses a value) |
 | `meter` | `ref` | the published `meteringUnit` a usage row prices; feeds the Slice-2 injectivity rule |
 | `dimension_key` | `text` | dimension discriminator on the `(meter, dimensionKey)` line (Slice-2 injectivity); **`NOT NULL DEFAULT ''`** — the empty string is the "empty tuple" sentinel, so the Slice-2 injectivity partial `UNIQUE` collides undimensioned rows instead of treating them as distinct NULLs (2026-07-28 review fix, confirmed 2026-07-31). Launch posture (SEAMS M6 joint wording, closed 2026-07-28): *declaration + freeze are in scope now (the catalog persists `dimension_key` structurally, Rating freezes the declared set in the snapshot); pricing dimension **values** are OSS-emission-gated* — rating design/03 §4.2 carries the same sentence |
 
@@ -358,13 +390,37 @@ endpoint exists; rows are populated by **`FixtureRegistrySync`**, a gear backgro
 on refresh, marking a fixture `stale` when its `fixture_ref` no longer matches the corpus
 (2026-07-28 review fix, confirmed 2026-07-31).
 
-Key constraints: `CHECK (package_size > 0)`; `CHECK (unit_price_minor >= 0)`;
+Key constraints: `CHECK (package_size IS NULL OR package_size > 0)` and
+`CHECK (package_price_minor IS NULL OR package_price_minor >= 0)` — both columns are `package`-only
+and therefore NULL on every other kind, so the nullable-tolerant spelling is the one that means
+what the row means (2026-08-02 wording fix: SQL already passes NULL against a bare `> 0`, but a
+reader building the table from the bare form infers `NOT NULL` and gets a schema no other kind can
+insert into); `CHECK (unit_price_minor >= 0)`;
 `CHECK (to_qty IS NULL OR to_qty > from_qty)` (no zero-width bands); structural exclusivity —
 band rows forbidden unless `model_kind IN ('graduated','volume')`, enforced by a trigger or a
 composite FK on `(price_id, model_kind)` (cross-table, not expressible as a row CHECK); the
-package-fields-forbidden-with-bands half is a row CHECK on `pricing_price`; per-row band
+package-fields-forbidden-with-bands half is the row CHECK
+`CHECK ((package_size IS NULL AND package_price_minor IS NULL) OR model_kind = 'package')` on
+`pricing_price` (2026-08-02: written out — the paragraph had described it in prose only); per-row band
 contiguity/non-overlap enforced by the `TierBandValidator` at publish (order-dependent, not
 expressible as a row CHECK); unique `(price_id, from_qty)`.
+
+**Scope-key uniqueness is guarded on the draft plane too (normative, D-148, 2026-08-02, found
+while building the draft-authoring plane):** a **second** partial `UNIQUE` over the same eight
+canonical scope-key columns, predicated `WHERE lifecycle_state = 'draft'`, sits beside Foundation
+§3.7's published-plane index. The two are independent by construction — their predicates are
+disjoint — so a draft successor still coexists with the published row it will supersede, and
+§3.7's only-expressible-form argument is untouched: it was an argument about which rows the
+*published* index can see, never an argument against a second predicate. A violation renders as
+the existing Foundation-owned `DUPLICATE_SCOPE_KEY` (409) — **no new code**. Without the index
+D-21's save-time duplicate check is decided by a read: two concurrent creators on one key both
+read "absent", both insert, and the operator learns of the collision only when one of them
+publishes — told, correctly and uselessly, that a row they authored days ago collides with one
+they cannot see, which is exactly the lateness D-21's save-time placement exists to prevent. That
+check stays the fast, explanatory path; the index becomes the guarantee, the read-then-index
+arrangement the published plane already has. Rejected: (a) leaving the check read-only and relying
+on publish, which is D-21 reversed; (b) widening the published index to `IN ('draft', 'published')`,
+which would make a draft successor collide with the very row it supersedes.
 
 ## 7. Events & Alarms
 
