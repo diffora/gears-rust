@@ -152,16 +152,12 @@ fn a_blank_value_is_not_a_declaration() {
     assert_eq!(missing_fields(&report), vec!["glCode".to_owned()]);
 }
 
-/// P5: a deployment requires a fourth descriptor by naming it, and carries its
-/// value in `additional` — no migration, no new column.
+/// P5: a tenant requires a fourth descriptor by naming it in their
+/// `pricing_policy_object` entry, and carries its value in `additional` — no
+/// migration, no new column, no new wire code (D-152).
 #[test]
 fn a_configured_fourth_requirement_is_satisfied_from_the_extra_fields() {
-    let rule = DescriptorSetComplete::with_required(
-        V1_REQUIRED_DESCRIPTORS
-            .iter()
-            .map(|name| (*name).to_owned())
-            .chain(["costCentre".to_owned()]),
-    );
+    let rule = DescriptorSetComplete::extending_v1(["costCentre".to_owned()]);
 
     let unsatisfied = run(&rule, &plan_with(Some(complete())));
     assert_eq!(missing_fields(&unsatisfied), vec!["costCentre".to_owned()]);
@@ -193,41 +189,87 @@ fn an_extra_field_may_not_stand_in_for_a_named_column() {
     assert_eq!(missing_fields(&report), vec!["glCode".to_owned()]);
 }
 
-/// A configuration that names one field twice is a typo, and reporting one
-/// absence twice reads as two faults to whoever has to fix it.
+/// A tenant entry that names one key twice is a typo, and reporting one absence
+/// twice reads as two faults to whoever has to fix it.
 #[test]
 fn a_duplicated_requirement_is_one_requirement() {
-    let rule = DescriptorSetComplete::with_required([
-        "glCode".to_owned(),
-        "glCode".to_owned(),
-        "invoiceLineTemplate".to_owned(),
+    let rule = DescriptorSetComplete::extending_v1([
+        "costCentre".to_owned(),
+        "costCentre".to_owned(),
+        "profitCentre".to_owned(),
     ]);
 
-    assert_eq!(rule.required(), ["glCode", "invoiceLineTemplate"]);
-    let report = run(&rule, &plan_with(Some(DescriptorSet::default())));
+    assert_eq!(
+        rule.required(),
+        [
+            "invoiceLineTemplate",
+            "glCode",
+            "itemizationRule",
+            "costCentre",
+            "profitCentre"
+        ]
+    );
+    let report = run(&rule, &plan_with(Some(complete())));
     assert_eq!(
         missing_fields(&report),
-        vec!["glCode".to_owned(), "invoiceLineTemplate".to_owned()],
+        vec!["costCentre".to_owned(), "profitCentre".to_owned()],
         "first-seen order is kept, and the duplicate is not a second finding"
     );
 }
 
-/// The v1 default is the documented contract, and nothing here silently repairs
-/// a deployment that configured an empty set — which is why the default lives on
-/// `Default` alone.
+/// D-152: the extension is **additive-only** over the pinned three. Naming a v1
+/// field in a tenant entry can neither duplicate it nor move it out of its own
+/// column, so no tenant configuration can satisfy `glCode` from the extras or
+/// reorder what the report names first.
 #[test]
-fn the_default_required_set_is_the_v1_contract_and_an_empty_one_is_representable() {
+fn naming_a_v1_field_in_the_extension_neither_duplicates_nor_moves_it() {
+    let rule = DescriptorSetComplete::extending_v1(["glCode".to_owned(), "costCentre".to_owned()]);
+
+    assert_eq!(
+        rule.required(),
+        [
+            "invoiceLineTemplate",
+            "glCode",
+            "itemizationRule",
+            "costCentre"
+        ]
+    );
+
+    let report = run(
+        &rule,
+        &plan_with(Some(DescriptorSet {
+            gl_code: None,
+            additional: BTreeMap::from([
+                ("glCode".to_owned(), "4000".to_owned()),
+                ("costCentre".to_owned(), "emea-ops".to_owned()),
+            ]),
+            ..complete()
+        })),
+    );
+    assert_eq!(
+        missing_fields(&report),
+        vec!["glCode".to_owned()],
+        "the extras still do not stand in for a field with a column of its own"
+    );
+}
+
+/// The v1 default is the documented contract, and **no tenant entry can require
+/// less than it**: the only constructor adds. A per-tenant policy that could drop
+/// `glCode` would publish past a pinned element of the contract Billing
+/// countersigns.
+#[test]
+fn the_required_set_can_only_ever_grow_past_the_v1_contract() {
     assert_eq!(
         DescriptorSetComplete::default().required(),
         V1_REQUIRED_DESCRIPTORS
     );
 
-    let nothing_required = DescriptorSetComplete::with_required(Vec::new());
-    assert!(nothing_required.required().is_empty());
-    assert!(
-        run(&nothing_required, &plan_with(None))
-            .violations
-            .is_empty()
+    let no_extension = DescriptorSetComplete::extending_v1(Vec::new());
+    assert_eq!(no_extension, DescriptorSetComplete::default());
+    assert_eq!(
+        run(&no_extension, &plan_with(None)).violations.len(),
+        V1_REQUIRED_DESCRIPTORS.len(),
+        "a tenant that configures nothing is still held to all three"
     );
 }
 

@@ -102,9 +102,9 @@ pub use descriptor_set::DescriptorSetComplete;
 // ---------------------------------------------------------------------------
 
 /// A custom interval `n` that is non-positive or over the configured cap
-/// (`inst-cs-customfreq`, P1; the caps are
-/// [`LimitsConfig`](crate::config::LimitsConfig)). Over-cap is rejected at
-/// authoring rather than silently clamped.
+/// (`inst-cs-customfreq`, P1; the caps are the tenant's, from their
+/// `pricing_policy_object` entry, else the ratified deployment default —
+/// D-152). Over-cap is rejected at authoring rather than silently clamped.
 pub const INVALID_CUSTOM_INTERVAL: &str = "INVALID_CUSTOM_INTERVAL";
 
 /// A `hybrid` plan missing one of its two mandatory parts (`inst-cs-hybrid`).
@@ -243,8 +243,9 @@ pub const PHASE_IN_USE: &str = "PHASE_IN_USE";
 /// A missing element of the descriptor required-set (`inst-ds-required`, D-48
 /// v1 as recomposed by D-110).
 ///
-/// The set is the **three** descriptor-set fields plus whatever a deployment's
-/// config-extensible required-set adds (P5). `billingTiming` and `taxCategory`
+/// The set is the **three** descriptor-set fields plus whatever the tenant's
+/// config-extensible required-set adds (P5, carried per tenant in
+/// `pricing_policy_object` — D-152). `billingTiming` and `taxCategory`
 /// are row-borne and are **not** checked here: the first is Slice 6's
 /// registered rule and the second is each row's `tax_category_ref` (Slice 4),
 /// and a second registration of either would be two owners of one rule, free to
@@ -273,9 +274,9 @@ pub const DESCRIPTOR_INCOMPLETE: &str = "DESCRIPTOR_INCOMPLETE";
 /// can predict from the design set, and a single exception to it is a rule
 /// nobody can locate.
 ///
-/// # Two rules are configured, and that is why this takes arguments
+/// # Two rules are configured **per tenant**, and that is why this takes arguments
 ///
-/// [`CustomIntervalBounds`] carries the deployment's `customEveryN` caps and
+/// [`CustomIntervalBounds`] carries the `customEveryN` caps and
 /// [`DescriptorSetComplete`] carries P5's required-field list. Both hold their
 /// configuration as **fields**, because [`crate::domain::validation`] requires a
 /// rule to be pure with respect to the state it is handed; a rule that read
@@ -283,19 +284,25 @@ pub const DESCRIPTOR_INCOMPLETE: &str = "DESCRIPTOR_INCOMPLETE";
 /// below for no authored reason. Neither can be defaulted into existence here:
 /// `CustomIntervalBounds` deliberately has no `Default`, since zero caps reject
 /// every custom frequency ever authored while looking exactly like a rule that
-/// is switched on. So the caller — the composition root, which is where
-/// `LimitsConfig` lives, `crate::config` being infrastructure the domain does not
-/// import — builds both and hands them in:
+/// is switched on.
+///
+/// Both values are **the authoring tenant's** (D-152) — their
+/// `pricing_policy_object` entry, falling back per column to the ratified
+/// deployment default — so the caller resolves them for the tenant whose plan is
+/// being judged and hands them in. That resolution is a storage read against
+/// `crate::config`'s defaults, and neither is anything the domain may import,
+/// which is the whole of why this function has parameters instead of a body that
+/// looks them up:
 ///
 /// ```ignore
-/// plan_shape_rules(
-///     CustomIntervalBounds::new(
-///         limits.max_custom_interval_days,
-///         limits.max_custom_interval_months,
-///     ),
-///     DescriptorSetComplete::default(),
-/// )
+/// let policy = policies.authoring_policy(scope, tenant_id).await?;
+/// plan_shape_rules(policy.interval_bounds(), policy.descriptor_rule())
 /// ```
+///
+/// The pipeline is therefore built per authoring run rather than once at init.
+/// A pipeline held across tenants would enforce whichever tenant's limits it was
+/// built for, and one held across time would keep rejecting plans after an
+/// operator had raised the cap.
 ///
 /// # What this pipeline is **not**: it is not run here
 ///

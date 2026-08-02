@@ -2,9 +2,18 @@
 //!
 //! Every field has a launch default, so a `gears:` entry with no `config:`
 //! block is a valid deployment. The numbers are the ratified NFR values
-//! (`PRD.md` §14/§15, ratified 2026-07-28), not invented ones; a deployment
-//! that overrides them is stating a tenant-specific policy, never relaxing a
-//! correctness rule (no field here can turn a fail-closed check off).
+//! (`PRD.md` §14/§15, ratified 2026-07-28), not invented ones; no field here can
+//! turn a fail-closed check off.
+//!
+//! **This section is per deployment, and four of its values are per tenant**
+//! (D-152). The four §14 caps in [`LimitsConfig`] are the **default** a tenant
+//! with no `pricing_policy_object` entry takes; the tenant's own value, when
+//! there is one, is resolved by
+//! [`PolicyObjectRepo`](crate::infra::storage::repo::PolicyObjectRepo) and is
+//! what the authoring rules are built from. Reading a cap straight off this
+//! struct on an authoring path is therefore the defect D-152 closed — every
+//! tenant of a deployment sharing one limit — and the reason the caps are not
+//! handed to the domain from here.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -140,32 +149,33 @@ impl JobsConfig {
 }
 
 /// Publish-time size and lifetime limits (ratified 2026-07-28).
+///
+/// **The four caps are deployment *defaults*, not the values in force**
+/// (D-152). Each is what a tenant with no `pricing_policy_object` entry is
+/// governed by, which is what keeps the ratified launch numbers from moving; the
+/// value an authoring run actually enforces comes from
+/// [`PolicyObjectRepo::authoring_policy`](crate::infra::storage::repo::PolicyObjectRepo::authoring_policy).
+/// The TTL below is not one of them — an idempotency window is a property of the
+/// deployment's dedup store, not of a tenant's catalog policy.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LimitsConfig {
-    /// Soft cap on tier bands per price row.
+    /// Default soft cap on tier bands per price row.
     pub max_tier_bands_per_row: u32,
-    /// Soft cap on price rows per plan.
+    /// Default soft cap on price rows per plan.
     pub max_price_rows_per_plan: u32,
-    /// Largest `n` a `customEveryN Days(n)` frequency may carry
+    /// Default largest `n` a `customEveryN Days(n)` frequency may carry
     /// (`INVALID_CUSTOM_INTERVAL`, PRD §14 / AC #84).
     ///
     /// Unlike the two soft caps above this one is **hard**: P1 says an over-cap
     /// interval is rejected at authoring with no silent clamp, because a
     /// clamped interval is a billing period the operator did not author and
     /// would never see.
-    ///
-    /// **Divergence, recorded rather than designed around**: the PRD ratifies
-    /// this value as *tenant-configurable*, and this section is per
-    /// **deployment**. A per-tenant policy store is a thing the gear does not
-    /// have, and inventing one to satisfy the adjective would be a store no
-    /// document describes; every tenant of a deployment therefore shares this
-    /// cap for now.
     pub max_custom_interval_days: u32,
-    /// Largest `n` a `customEveryN Months(n)` frequency may carry. The
+    /// Default largest `n` a `customEveryN Months(n)` frequency may carry. The
     /// months cap is separate from the days cap because the two units bound
     /// different things; see [`LimitsConfig::max_custom_interval_days`] for the
-    /// hard-cap and per-tenant notes.
+    /// hard-cap note.
     pub max_custom_interval_months: u32,
     /// Client idempotency-key retention. A replay inside the window returns the
     /// stored response; outside it the key is forgotten and the call executes

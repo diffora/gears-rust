@@ -1,10 +1,17 @@
 //! `SeaORM` entity for `bss.pricing_policy_object` — the per-tenant policy
 //! object (`design/01-foundation.md` §3.7).
 //!
-//! Absence is meaningful on both nullable policies, and in both cases it is the
-//! fail-safe reading: no approval threshold means the two-person rule always
-//! applies, and no default rounding policy means every published row must carry
-//! its own `rounding_policy_ref` or fail publish.
+//! Absence is meaningful on every nullable column here, and in each case it is
+//! the fail-safe or ratified reading: no approval threshold means the two-person
+//! rule always applies, no default rounding policy means every published row
+//! must carry its own `rounding_policy_ref` or fail publish, and an absent cap
+//! (D-152) means the ratified launch value from the deployment section — so a
+//! tenant that configures nothing is governed by the numbers PRD §14 ratified
+//! rather than by whatever a `NOT NULL DEFAULT` happened to say.
+//!
+//! The four caps and the descriptor required-set extension sit here **for now**:
+//! they are per-tenant settings with no settings gear to live in, and D-152's
+//! confirmation records that they are expected to move once one exists.
 
 use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
@@ -32,6 +39,25 @@ pub struct Model {
     pub default_rounding_policy_ref: Option<String>,
     /// Enforced-migration notice period in days; floor 60 (D-49).
     pub enforced_migration_notice_days: i32,
+    /// Soft cap on tier bands per price row (D-152). `None` => the ratified
+    /// launch value.
+    pub max_tier_bands_per_row: Option<i32>,
+    /// Soft cap on price rows per plan (D-152). `None` => the ratified launch
+    /// value.
+    pub max_price_rows_per_plan: Option<i32>,
+    /// Largest `n` a `customEveryN Days(n)` frequency may carry (D-152).
+    /// `None` => the ratified launch value.
+    pub max_custom_interval_days: Option<i32>,
+    /// Largest `n` a `customEveryN Months(n)` frequency may carry (D-152).
+    /// `None` => the ratified launch value.
+    pub max_custom_interval_months: Option<i32>,
+    /// The descriptor keys this tenant requires **in addition** to D-48 v1's
+    /// pinned three: a JSON array of names matched against
+    /// `pricing_plan_descriptor_set.additional_fields` (`jsonb` on Postgres,
+    /// `text` on `SQLite`). Additive-only — there is no column here that can
+    /// drop a v1 element, because a tenant policy may not publish past a pinned
+    /// element of the contract Billing countersigns.
+    pub additional_required_descriptors: Json,
     pub updated_at_utc: DateTime<Utc>,
     pub updated_by: Uuid,
 }

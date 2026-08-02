@@ -1,11 +1,12 @@
 //! Billing descriptor completeness (`cpt-cf-bss-pricing-algo-descriptors`).
 //!
 //! One rule over a [`PlanShape`]: the descriptor set a publish would freeze
-//! carries every element the deployment requires, and the report names **each**
-//! missing one rather than the first. `inst-ds-required` says "publish blocks on
-//! any missing element with the field named", and an author remediates a plan in
-//! one pass — a rule that stopped at the first absence would send them round the
-//! pipeline once per missing field.
+//! carries every element the **tenant** requires (D-48's pinned three, plus
+//! whatever their `pricing_policy_object` entry adds — D-152), and the report
+//! names **each** missing one rather than the first. `inst-ds-required` says
+//! "publish blocks on any missing element with the field named", and an author
+//! remediates a plan in one pass — a rule that stopped at the first absence
+//! would send them round the pipeline once per missing field.
 //!
 //! ## Three of D-48 v1's five elements, and the other two have owners
 //!
@@ -27,7 +28,7 @@
 //! would be a second owner of one rule, free to disagree with the first, and the
 //! disagreement would be invisible — both readings look right at their own call
 //! site. What this rule owns is the three descriptor-set fields plus whatever a
-//! deployment adds to them.
+//! tenant adds to them.
 //!
 //! The gap that follows is worth stating rather than hiding: this gear's schema
 //! has **no `tax_category_ref` column at all** (Slice 4 has not landed), so
@@ -63,22 +64,31 @@ pub const V1_REQUIRED_DESCRIPTORS: [&str; 3] = ["invoiceLineTemplate", "glCode",
 /// `inst-ds-required` — the descriptor set is complete at publish.
 ///
 /// **The required set is a field, not a constant read** (P5: "the validator's
-/// required-set is config-extensible without a schema change"). A deployment
-/// that must require a fourth descriptor names it in configuration; the value is
-/// carried in [`DescriptorSet::additional`], so the requirement costs no
-/// migration. Holding the list here rather than reaching for configuration
-/// inside `evaluate` is [`crate::domain::validation`]'s purity requirement: the
-/// same rule set runs twice — as the §4.2 step-2 pre-check and again inside the
-/// publish commit — and a rule that read configuration itself could answer
-/// differently in the two runs for no authored reason.
+/// required-set is config-extensible without a schema change"). A tenant that
+/// must require a fourth descriptor names it in their `pricing_policy_object`
+/// entry (D-152) and carries its value in [`DescriptorSet::additional`], so the
+/// requirement costs no migration. Holding the list here rather than reaching
+/// for that entry inside `evaluate` is [`crate::domain::validation`]'s purity
+/// requirement: the same rule set runs twice — as the §4.2 step-2 pre-check and
+/// again inside the publish commit — and a rule that read a policy row itself
+/// could answer differently in the two runs for no authored reason.
+///
+/// **There is exactly one door in, and it can only add** (D-152:
+/// additive-only over the pinned v1 three). The required set is not
+/// constructible from an arbitrary list, because such a list can be one that
+/// *omits* a v1 element — and a per-tenant policy that could drop `glCode`
+/// would publish past a pinned element of the contract Billing countersigns,
+/// which is a decision no tenant holds. Every extension therefore starts from
+/// [`V1_REQUIRED_DESCRIPTORS`] and the configuration only says what comes after
+/// it.
 ///
 /// **It has a `Default`, and [`CustomIntervalBounds`] deliberately does not.**
-/// The contrast is not an inconsistency: the default here is the *documented v1
-/// contract*, three named fields D-48 pins, so a deployment that configures
-/// nothing gets exactly what the design set requires. A defaulted interval cap
-/// would be `0`, which rejects every custom frequency ever authored while
-/// looking exactly like a rule that is switched on. A default is safe when the
-/// absent configuration has a meaning; it is a trap when it does not.
+/// The contrast is not an inconsistency: the absent configuration here means
+/// "no extension", so the default is the *documented v1 contract*, three named
+/// fields D-48 pins. A defaulted interval cap would be `0`, which rejects every
+/// custom frequency ever authored while looking exactly like a rule that is
+/// switched on. A default is safe when the absent configuration has a meaning;
+/// it is a trap when it does not.
 ///
 /// [`CustomIntervalBounds`]: crate::domain::plan_rules::cycle_shape::CustomIntervalBounds
 #[domain_model]
@@ -90,37 +100,30 @@ pub struct DescriptorSetComplete {
 
 impl Default for DescriptorSetComplete {
     fn default() -> Self {
-        Self {
-            required: V1_REQUIRED_DESCRIPTORS
-                .iter()
-                .map(|name| (*name).to_owned())
-                .collect(),
-        }
+        Self::extending_v1(Vec::new())
     }
 }
 
 impl DescriptorSetComplete {
-    /// The rule bound to one deployment's required set.
+    /// The rule bound to one tenant's **extension** of the pinned v1 set.
     ///
-    /// Duplicates are dropped and first-seen order is kept: a configuration that
-    /// names one field twice is a typo, and reporting the same absence twice
-    /// would read as two distinct faults to whoever has to fix it. The order is
-    /// preserved rather than sorted because it is the order the report lists the
-    /// missing fields in, and the v1 order is the one D-48 states.
-    ///
-    /// An **empty** required set is accepted and is not the same as the default:
-    /// it is a deployment declaring that it requires nothing, which is a
-    /// configuration mistake this rule cannot distinguish from an intention. It
-    /// is left representable so that [`DescriptorSetComplete::default`] stays the
-    /// only thing that spells the v1 contract — a constructor that silently
-    /// substituted the default for an empty list would make a misconfigured
-    /// deployment look like a correct one.
+    /// The v1 three come first and `additional` follows, so the report lists
+    /// what D-48 pins in the order D-48 states it and the tenant's own
+    /// requirements after. Duplicates are dropped and first-seen order is kept:
+    /// an entry that names one key twice — or names a v1 field again — is a
+    /// typo, and reporting the same absence twice would read as two distinct
+    /// faults to whoever has to fix it. Naming a v1 field also cannot move it,
+    /// which is what keeps [`declared`] the single answer to where a descriptor
+    /// lives: a field with a column of its own is never satisfied from the
+    /// extras.
     #[must_use]
-    pub fn with_required(names: impl IntoIterator<Item = String>) -> Self {
+    pub fn extending_v1(additional: impl IntoIterator<Item = String>) -> Self {
         let mut seen = BTreeSet::new();
         Self {
-            required: names
-                .into_iter()
+            required: V1_REQUIRED_DESCRIPTORS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .chain(additional)
                 .filter(|name| seen.insert(name.clone()))
                 .collect(),
         }
@@ -169,7 +172,7 @@ impl ValidationRule<PlanShape> for DescriptorSetComplete {
 ///
 /// The three v1 names resolve to their own columns and everything else resolves
 /// through [`DescriptorSet::additional`] — which is what makes the required set
-/// extensible without a schema change (P5), and what keeps a deployment from
+/// extensible without a schema change (P5), and what keeps a tenant from
 /// satisfying `glCode` by putting a `glCode` key in the extras: a field with a
 /// column of its own is read from that column and from nowhere else, so one
 /// descriptor never has two homes.

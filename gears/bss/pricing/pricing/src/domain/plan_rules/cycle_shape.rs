@@ -102,13 +102,14 @@ type LineCoverage = BTreeMap<(String, String), BTreeSet<(CurrencyCode, Region)>>
 /// see: the plan publishes, the invoice arrives on a cadence nobody chose, and
 /// nothing in the catalog records that the authored number was replaced.
 ///
-/// The two caps are **fields**, not a global read. They come from
-/// [`LimitsConfig`](crate::config::LimitsConfig), and
-/// [`crate::domain::validation`] requires a rule to be pure with respect to the
-/// state it is handed, because the same rule set runs twice — once as a
-/// pre-check at submit and again inside the publish commit. A rule that reached
-/// for configuration itself could answer differently in the two runs for no
-/// authored reason.
+/// The two caps are **fields**, not a global read. They are the authoring
+/// tenant's — their `pricing_policy_object` entry, else the ratified deployment
+/// default (D-152) — and [`crate::domain::validation`] requires a rule to be
+/// pure with respect to the state it is handed, because the same rule set runs
+/// twice: once as a pre-check at submit and again inside the publish commit. A
+/// rule that reached for a policy row itself could answer differently in the two
+/// runs for no authored reason, and would put a storage read inside a domain
+/// rule besides.
 ///
 /// The units do not share a cap and do not share a bound check: PRD §14
 /// ratified `customEveryN Days(n) <= 366` and `customEveryN Months(n) <= 24`,
@@ -129,7 +130,7 @@ pub struct CustomIntervalBounds {
 }
 
 impl CustomIntervalBounds {
-    /// The rule bound to one deployment's caps.
+    /// The rule bound to one tenant's caps.
     ///
     /// There is deliberately no `Default`: both caps would derive to `0`, and a
     /// rule holding a zero cap rejects every custom frequency ever authored
