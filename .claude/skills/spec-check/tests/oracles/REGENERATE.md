@@ -287,6 +287,77 @@ separately-justified commit — never a way to make a failing change look green.
     term constant on both sides — excluded at 0.249 or admitted at 0.2503 — removes all
     four and reproduces nothing else. Full per-id record beside `PINNED_TRIAGE_PRICING`.
 
+14. **2026-08-03, fourteenth capture — after the D-155…D-161 docs wave.** Document movement
+    only, no checker change. This is the **fourth implementation-side wave**, raised by
+    building Group **G5** — the **publish commit**: the pipeline re-run inside the commit
+    transaction, the lifecycle flips, the transactional outbox, the fail-closed
+    `CatalogVersion` request and the segmented audit chain. Where G3 (tenth capture) found
+    rules the set did not state and G4 (thirteenth) found rules it states and cannot enforce,
+    G5 found the set **contradicting itself** and **promising values with no producer**. Seven
+    decisions — D-155 the commit flipping exactly the `(price_id, row_version)` set its
+    re-validation judged, with the input enumeration and the Slice-7 premise; D-156 the
+    `CatalogVersion` request inside the transaction, after re-validation and before the writes;
+    D-157 the pending-ref row's `(subject_kind, subject_ref)`; D-158 the audit log's two
+    declared vocabularies; D-159 `CONCURRENT_MUTATION` (409); D-160 the code-carrying advisory
+    channel and its two codes; D-161 the snapshot stamp's absent third segment, forked to the
+    owner — plus two mechanical fixes carrying no id.
+
+    **The finding set did not move.** `live-text.txt` and `live-json.json` are byte-identical
+    and were re-captured to no effect; `live-show-known-debt.txt` differs **only in line
+    numbers** — the same 21 `P1/propagation-missing` members, every one shifted **uniformly
+    +7**, one per status-board row the seven decisions added. Live findings unchanged at 2
+    (both rating-side), suppressed unchanged at 59; `--gear gears/bss/pricing/docs
+    --auto-context` still reports 0 live and 59 suppressed, so no pinned-debt member was paid
+    down and none was added. The three new codes were each declared inside
+    `design/01-foundation.md`'s `**Problem responses (RFC 9457):**` block **and** referenced
+    outside a block — `CONCURRENT_MUTATION` at §3.7 (`pricing_audit_log`, `pricing_outbox`)
+    and `design/05` §6, `TIER_BAND_PRICE_INCREASE` at `design/03` `inst-tb-order`,
+    `PLAN_SIZE_SOFT_CAP_EXCEEDED` at §1.2 and PRD §7.1 — so `P3/code-unreferenced` gains no
+    member.
+
+    **The triage pin moved further than any previous wave: `anchored:no-account` 14 → 10,
+    `multi-region` 28 → 40, `weak-coverage` 30 → 22, judged 57 … 58 → 62, `no-region` and the
+    total unchanged (5, 77).** **Fourteen movers**, every one diffed per-id against the
+    pre-wave tree (`a26991b8`) in a detached worktree, and they split into three causes with a
+    controlled run separating them exactly:
+
+    - **Three are the `catalog` document-frequency artifact**, the same term as the twelfth
+      entry and the thirteenth capture, oscillating around `DF_CUTOFF = 0.25` for the third
+      time: 573/2290 = 0.25022 (rejected) → 580/2324 = 0.24957 (admitted) — its window count
+      **rose** while the corpus grew faster. It is the **only** term in the corpus that crossed
+      the cutoff in either direction (checked exhaustively over all 4,809 terms).
+      `fr-catalogversion-increment` (weak → multi) and `fr-event-contract` (no-account → weak)
+      gained **no new region at all** — their existing regions merely crossed
+      `SCORE_THRESHOLD = 0.6` (0.579/0.632 → 0.600/0.650 and 0.455/0.591 → 0.478/0.609) — and
+      `fr-model-kind-conformance` gained two regions at exactly 0.611 for the same reason.
+      Neutralising that one term on both trees removes all three and reproduces nothing else.
+    - **Two are accounts this wave genuinely wrote**, and both are requirements the wave is
+      about. `nfr-size-limits` (weak → multi) gains `DECISIONS.md:1345-1356` at 0.657 — **D-160's
+      entry**, which gives its ratified soft caps the advisory code they had never had — plus
+      the wave preamble at 0.643; its own PRD declaration was rewritten in the same wave.
+      `fr-pricing-snapshot` (no-account → multi) gains `DESIGN.md:505-516` at 0.771,
+      `DECISIONS.md:19-30` at 0.747 and `DECISIONS.md:1345-1356` at 0.699 — **D-161's entry**,
+      which is the account of what the catalog-side stamp contains. Its two id-anchored regions
+      fell 0.538 → 0.253 in the same move, the documented terse-prose recall effect running in
+      the usual direction: its declaration grew from one sentence to a paragraph, so the
+      discriminating-term set grew and the unchanged anchors match a smaller fraction of it.
+    - **Nine gained register prose and nothing else** — the `mentions` class the tenth capture
+      named, at 0.600–0.646: `fr-addon-rules`, `fr-billing-timing`, `fr-customer-group-pricing`,
+      `fr-grandfathering-eligibility`, `fr-level-aggregation`, `fr-migration-safety`,
+      `fr-plan-change-contract`, `fr-plan-retirement`, `fr-trailing-tier-qualification`. Every
+      new region of all nine is either `DESIGN.md` §4 (the D-72 register digest, windows
+      499-510/505-516) or the `DECISIONS.md` "How to use this document" preamble (windows
+      19-30/25-36). **Not one of the nine gained a region in a design slice**, so no slice edit
+      of this wave created an account for any of them; what grew is the two documents a wave is
+      *obliged* to grow — D-72 requires the digest to stay current, and the preamble records
+      each wave. A judge should be expected to answer `mentions` for all nine.
+
+    The four ids that entered the judged set are `fr-customer-group-pricing`,
+    `fr-event-contract`, `fr-grandfathering-eligibility` and `fr-pricing-snapshot`, all
+    promoted out of `anchored:no-account`; the +12/−8 between `multi-region` and
+    `weak-coverage` is judge-neutral, both classes being in `JUDGED`. Nothing was reworded to
+    move a score back, in either direction. Per-id record beside `PINNED_TRIAGE_PRICING`.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

@@ -205,13 +205,70 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 5,
-    "anchored:no-account": 14,
-    "suspicious:multi-region": 28,
+    "anchored:no-account": 10,
+    "suspicious:multi-region": 40,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 30,
+    "suspicious:weak-coverage": 22,
     "covered:strong": 0,
 }
-#: Moved 2026-08-03 (was 6 / 14 / 21 / 36, judged 57, total unchanged at 77) after the
+#: Moved 2026-08-03, **second move of the day** (was 5 / 14 / 28 / 30, judged 58, total
+#: unchanged at 77) after the **D-155…D-161 docs wave** — the fourth implementation-side
+#: wave, raised by building Group **G5**, the **publish commit** (the pipeline re-run inside
+#: the commit transaction, the lifecycle flips, the transactional outbox, the fail-closed
+#: `CatalogVersion` request, the segmented audit chain). This is the largest move any wave
+#: has produced, and almost none of it is a design slice. **Fourteen movers**, every one
+#: diffed per-id against the pre-wave tree (`a26991b8`) in a detached worktree; three causes,
+#: separated by a controlled run.
+#:
+#: **(a) Three are the `catalog` document-frequency artifact** — the same single term as the
+#: twelfth entry and the thirteenth capture, crossing `DF_CUTOFF = 0.25` for the third time
+#: and in the admitting direction: 573/2290 = 0.25022 (rejected) -> 580/2324 = 0.24957
+#: (admitted). Its own window count **rose**; the corpus grew faster. Checked exhaustively
+#: over all 4,809 terms of the new tree against all 4,716 of the old: it is the **only** term
+#: that crossed in either direction.
+#: - `fr-catalogversion-increment` weak -> multi and `fr-event-contract` no-account -> weak
+#:   gained **no new region at all**. Their existing regions merely crossed
+#:   `SCORE_THRESHOLD = 0.6`: 0.579 / 0.579 / 0.632 -> 0.600 / 0.600 / 0.650, and
+#:   0.455 / 0.591 -> 0.478 / 0.609. A pure threshold crossing on a term neither requirement's
+#:   prose contains more or less of than before.
+#: - `fr-model-kind-conformance` weak -> multi gained two regions at exactly 0.611 for the
+#:   same reason (more of its terms became discriminating, so more windows scored).
+#: Controlled run: dropping `catalog` from every requirement's term set on **both** trees
+#: removes all three movers and reproduces nothing else. (It also surfaces one mover the live
+#: pin does not have — `fr-custom-frequency` weak -> multi — which is the same artifact with
+#: its sign flipped: the term's admission was *masking* a genuine gain there. That id does not
+#: move in the real run and is not counted among the fourteen.)
+#:
+#: **(b) Two accounts the wave actually wrote** — and both are requirements it is about:
+#: - `nfr-size-limits` weak -> multi. Gains `DECISIONS.md:1345-1356` at 0.657 — **D-160's
+#:   entry**, which gives the ratified soft caps the advisory code they had never had, without
+#:   which PRD §7.1's `SHOULD` had nothing to be reported through — plus the wave preamble at
+#:   0.643. Its own PRD declaration was rewritten by the same decision. This id gained its
+#:   first candidate region ever only one wave ago (thirteenth capture); it now has three.
+#: - `fr-pricing-snapshot` no-account -> multi. Gains `DESIGN.md:505-516` at 0.771,
+#:   `DECISIONS.md:19-30` at 0.747 and `DECISIONS.md:1345-1356` at 0.699 — **D-161's entry**,
+#:   which is the account of what the catalog-side stamp contains and of the segment that has
+#:   no producer. Its two id-anchored regions fell 0.538 -> 0.253 in the same move: the
+#:   documented terse-prose recall effect, running the usual way — the declaration grew from
+#:   one sentence to a paragraph, so its discriminating-term set grew while the unchanged
+#:   anchors match a smaller fraction of it. The promotion is real regardless; the demotion of
+#:   the anchors is the scorer.
+#:
+#: **(c) Nine gained register prose and nothing else** — the `mentions` class the tenth
+#: capture named, all at 0.600-0.646: `fr-addon-rules`, `fr-billing-timing`,
+#: `fr-customer-group-pricing`, `fr-grandfathering-eligibility`, `fr-level-aggregation`,
+#: `fr-migration-safety`, `fr-plan-change-contract`, `fr-plan-retirement`,
+#: `fr-trailing-tier-qualification`. **Every** new region of **all nine** is either
+#: `DESIGN.md` §4 (the D-72 register digest — windows 499-510 and 505-516) or the
+#: `DECISIONS.md` "How to use this document" preamble (windows 19-30 and 25-36). Not one of
+#: the nine gained a region in a design slice, so no slice edit of this wave created an
+#: account for any of them. What grew are precisely the two documents a wave is *obliged* to
+#: grow: D-72 requires the DESIGN digest to stay current, and the preamble records each wave.
+#: A judge should be expected to answer `mentions` for all nine, and the honest reading of the
+#: +12 in `multi-region` is that most of it is the register getting longer, not the design set
+#: getting better covered. Nothing was reworded to move a score in either direction.
+#:
+#: (Previous move, same day, recorded below.) Moved 2026-08-03 (was 6 / 14 / 21 / 36, judged 57, total unchanged at 77) after the
 #: **D-149…D-154 docs wave** — the third implementation-side wave, raised by building
 #: Group **G4**, the *shape of a plan* (Slice 2's four validator sets and its three
 #: revision-scoped child tables), against the documents. Unlike the three edits before it
@@ -547,7 +604,20 @@ PINNED_TRIAGE_LEDGER = {
 #: that wave is judged-to-judged — `multi-region` and `weak-coverage` are both in `JUDGED`,
 #: so the +7/−6 between them is judge-neutral. Per-id record beside
 #: `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 58, "ledger": 17}
+#: (58 → 62 on the 2026-08-03 D-155…D-161 re-pin — the second re-pin of that day and the
+#: largest single jump the judged share has taken. **Four** ids entered the judged set and
+#: none left it, all four promoted out of `anchored:no-account`:
+#: `fr-customer-group-pricing`, `fr-event-contract`, `fr-grandfathering-eligibility` and
+#: `fr-pricing-snapshot`. Only one of the four — `fr-pricing-snapshot`, on D-161's entry —
+#: was promoted by an account about its own subject; `fr-event-contract` is the `catalog`
+#: document-frequency artifact with **no new region at all**, and the other two gained the
+#: D-72 register digest or the wave preamble and nothing else. The +12/−8 between
+#: `multi-region` and `weak-coverage` is judge-neutral, both classes being in `JUDGED`. The
+#: judged share is now 62/77 = 81%, which is worth watching rather than accepting: standing
+#: rule 4 says a class that stops being a minority is a statement about the search, and three
+#: consecutive waves have grown the two documents every requirement's terms can match. Per-id
+#: record beside `PINNED_TRIAGE_PRICING`.)
+PINNED_JUDGE_CALLS = {"pricing": 62, "ledger": 17}
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):
