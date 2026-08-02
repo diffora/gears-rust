@@ -200,6 +200,42 @@ separately-justified commit — never a way to make a failing change look green.
     and the reason the wording was left as written rather than tuned to the
     scorer, are beside `PINNED_TRIAGE_PRICING`.
 
+12. **2026-08-02, twelfth entry — the D-145 amendment. Nothing was re-captured.**
+    This entry exists to say so, and to record the second case of "the oracles did not
+    move but the pin did". The edit amends D-145 in place: its "a new draft opens
+    immediately" is true of every plan except one that has **never published**, whose
+    only revision is `abandoned` — `create_draft` writes revision `0` literally and
+    `open_revision` needs a current revision to succeed from, so that plan holds no
+    current revision, no open draft and no route to either, and the id is spent. The
+    owner kept the state and made the refusal honest, so the amendment mints one
+    Foundation-owned code, **`PLAN_ABANDONED_NO_SUCCESSOR` (422)**, against the two
+    rejected alternatives (minting `max(revision) + 1` on the create path, which turns a
+    retried create into a silent second revision of an existing plan; and exempting
+    revision `0` from the identity rule, which is the unstable name D-145 removes).
+
+    All three oracle files are **byte-identical** to the tenth capture and were left
+    untouched. Two things had to hold for that, and both did. The entry's ~66 added lines
+    sit at `DECISIONS.md:1220` and in `design/01-foundation.md` §3.3/§4.3, `design/02`
+    §4/§5 and `DESIGN.md` §4 — every pinned `P1/propagation-missing` anchor is at
+    `DECISIONS.md:632` or earlier, so no finding's line number moved; and the new code is
+    declared inside `design/01-foundation.md`'s `**Problem responses (RFC 9457):**` block
+    **and** referenced outside a block (§4.3, `design/02` §4/§5, the register, the DESIGN
+    digest), so `P3/code-unreferenced` gains no member and the pinned unreferenced-code
+    list is untouched. `--gear gears/bss/pricing/docs --auto-context` reports 0 live and
+    68 suppressed, unchanged.
+
+    **The triage pin moved, on a cause with nothing to do with the amendment's subject.**
+    `anchored:no-account` 15 → 14 and `suspicious:multi-region` 20 → 21, judged 56 → 57,
+    `weak-coverage` and the total unchanged (36, 77). **Six movers**, and all six are the
+    same corpus-global `DF_CUTOFF = 0.25` swap: `catalog` fell to 0.24999 **without its
+    window count changing at all** (568 both times — the corpus gained 11 windows, none
+    carrying the word) and became discriminating for 29 requirements, while `rule` rose to
+    0.25132 (565 → 571 windows, the amendment's own prose) and stopped being
+    discriminating for 12. Both terms were inside 0.0013 of the cutoff before the edit.
+    Recomputing both trees with those two terms dropped from every requirement's term set
+    reproduces the **old** pin on both, with zero per-id differences — the full per-id
+    arithmetic and the controlled run are beside `PINNED_TRIAGE_PRICING`.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

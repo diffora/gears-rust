@@ -205,12 +205,59 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 6,
-    "anchored:no-account": 15,
-    "suspicious:multi-region": 20,
+    "anchored:no-account": 14,
+    "suspicious:multi-region": 21,
     "suspicious:not-normative": 0,
     "suspicious:weak-coverage": 36,
     "covered:strong": 0,
 }
+#: Moved again 2026-08-02, fifth time that day (was 15 / 20 / 36, judged 56, total
+#: unchanged at 77) after the **D-145 amendment** — the register recording that D-145's
+#: "a new draft opens immediately" is false for a plan that has never published (its only
+#: revision `abandoned` leaves the id spent), the owner's choice to keep the state and
+#: make the refusal honest, and the new Foundation-owned `PLAN_ABANDONED_NO_SUCCESSOR`
+#: (422). The deterministic layer did not move at all: `--gear gears/bss/pricing/docs
+#: --auto-context` still reports 0 live and 68 suppressed, the new code is declared in
+#: `design/01-foundation.md` §3.3 **and** referenced outside a block (so P3 is neutral),
+#: and all three frozen stdout oracles came back **byte-identical** — the entry's added
+#: lines sit at `DECISIONS.md:1220`, past every pinned P1 anchor (the highest is line 632).
+#: **Six movers, and all six are one cause**, diffed per-id against the pre-edit tree
+#: (`0de052f4`) in a detached worktree:
+#: - `fr-billing-cycles` anchored → weak; `fr-event-contract` anchored → weak;
+#:   `fr-catalogversion-increment` weak → multi; `fr-model-kind-conformance` weak → multi;
+#:   `fr-billing-descriptors` multi → weak; `fr-custom-frequency` weak → anchored.
+#: The cause is **`DF_CUTOFF = 0.25`**, not any of those six requirements. Exactly two
+#: terms crossed it, and both were sitting inside 0.0013 of the line:
+#: - **`catalog` became discriminating.** Its window count did **not** change — 568 before
+#:   and after. The corpus grew from 2261 to 2272 windows (the amendment's ~66 added lines
+#:   at `WINDOW_STEP = 6`), none of the 11 new windows carries the word, so its document
+#:   frequency fell 568/2261 = **0.2512** (noise) to 568/2272 = **0.24999** (discriminating)
+#:   and entered the term set of **29** requirements.
+#: - **`rule` stopped being discriminating.** The amendment's prose states a rule and says
+#:   so, six windows' worth: 565 → 571 occurrences, i.e. 565/2261 = **0.24989** to
+#:   571/2272 = **0.25132**, out of the term set of **12** requirements.
+#: Every one of the six then lands on `SCORE_THRESHOLD = 0.6` from one side or the other:
+#: `fr-billing-cycles` gains `DESIGN.md:505-516` at 9/15 = **0.600** exactly (that window
+#: already carried `catalog`; it scored 8/14 = 0.571 before) while its own anchor, which
+#: does not carry the word, falls 0.571 → 0.533; `fr-event-contract`'s `design/01:73-84`
+#: goes 13/22 = 0.591 → 14/23 = **0.609**; `fr-catalogversion-increment`'s two anchors both
+#: go 11/19 = 0.579 → 12/20 = **0.600**; `fr-model-kind-conformance` gains two windows at
+#: 10/17 = 0.588 → 11/18 = **0.611**; `fr-billing-descriptors` **loses**
+#: `design/02:241-252` (`inst-ds-required`, no `catalog`) at 27/45 = **0.600** → 27/46 =
+#: 0.587; and `fr-custom-frequency` loses its only account, `DECISIONS.md:349-360` (D-20,
+#: carries `rule`, not `catalog`), at 18/29 = 0.621 → 17/29 = 0.586 — its term set is the
+#: one that did not grow, `catalog` in and `rule` out.
+#: **Controlled experiment, and it is decisive.** Recomputing both trees with `catalog` and
+#: `rule` removed from every requirement's discriminating set gives **15 / 20 / 36, judged
+#: 56 — the old pin — on both**, with **zero** per-id differences between them. Neutralise
+#: those two terms and the amendment is invisible to this layer.
+#: What the movement is **not**: an account gained or lost in the documents. None of the six
+#: requirements is mentioned by the amendment, and the only moved region inside an edited
+#: *window* is `DESIGN.md:505-516` — the D-72 register digest on line 508, whose matched
+#: count rose by exactly one term, and that term is `catalog`, which the window already
+#: carried before the edit. The wording was deliberately **left as written**, per the note
+#: below: a document that says "rule" where it means rule must not be reworded because a
+#: corpus-wide frequency counter is within a thousandth of a threshold.
 #: Moved again 2026-08-02, fourth time that day (was 15 / 19 / 37, judged 56, total
 #: unchanged at 77) after the **D-143 veto-status edit** — the register recording the
 #: 2026-08-02 veto round (D-143 CONFIRMED as decided against block-and-replay; the
@@ -425,8 +472,12 @@ PINNED_TRIAGE_LEDGER = {
 #: D-141…D-148 re-pin: four ids entered the judged set — `fr-mutation-idempotency`
 #: and `fr-published-rows-append-only` promoted out of `anchored:no-account`, and
 #: `fr-grandfathering-eligibility` demoted into it — a +1 net over seven movers, all
-#: of them documents and all itemised per-id above.)
-PINNED_JUDGE_CALLS = {"pricing": 56, "ledger": 17}
+#: of them documents and all itemised per-id above. 56 → 57 on the 2026-08-02 D-145
+#: amendment re-pin: three ids entered the judged set and two left it, all six movers
+#: driven by the single `catalog`/`rule` document-frequency swap itemised above — not
+#: ladder drift, and not a document defect either, which the controlled run recorded there
+#: settles by reproducing the old pin exactly once those two terms are neutralised.)
+PINNED_JUDGE_CALLS = {"pricing": 57, "ledger": 17}
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):
