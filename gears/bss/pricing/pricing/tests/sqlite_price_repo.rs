@@ -1719,7 +1719,7 @@ async fn a_granule_bound_no_column_can_hold_is_refused_before_anything_is_writte
             ),
         )
         .await
-        .expect_err("a bound past the integer column is not storable");
+        .expect_err("a bound past the signed bigint column is not storable");
 
     // Named to the field, and **not** `CorruptRow`: the number arrived on a
     // request and the author can change it, which is the line between a bad
