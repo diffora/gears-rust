@@ -194,8 +194,11 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # day's c-wave pin sweep (METER_AMBIGUOUS — D-103's rule reference;
     # TAXONOMY_VALUE_IN_USE — D-120's rule reference); 48 until the 2026-08-01
     # d-wave (REGION_SCOPE_DENIED — `inst-rb-preview-scope`'s rule reference);
-    # notes beside the list.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 47
+    # 47 until the 2026-08-03 G4 plan-shape docs wave (D-149…D-154), which
+    # rewrote the four Slice-2 algorithms and Slice 4's tax steps — where eight
+    # of nine paid-down codes are raised — and named each in the rule that
+    # raises it; notes beside the list.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 38
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

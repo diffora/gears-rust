@@ -242,15 +242,55 @@ def _check_error_codes(corpus, codes_declared=None):
 #:   grant's explicit pricing-region set) names the code in the rule body
 #:   ("`REGION_SCOPE_DENIED` (403) otherwise"), so the 403 finally has the rule
 #:   that fires it. Hand-checked at the working tree before removal.
+#:
+#: - **Nine removed 2026-08-03, the G4 plan-shape docs wave (D-149…D-154).** The
+#:   wave rewrote the four Slice-2 algorithms and Slice 4's tax-persist/policy
+#:   steps, which is where eight of these nine codes are raised, so the debt was
+#:   payable in passing rather than as a separate round. Each was hand-checked in
+#:   the working tree **and**, where the wave's own prose had merely *mentioned*
+#:   the code from a neighbouring rule or from the register entry, a one-clause
+#:   fix was applied so the rule that actually raises it names it — the removal
+#:   is a fix in every case, never a corpus-wide side effect:
+#:
+#:     `ADDON_CYCLE` / design/02 — `inst-cmp-addons` now names it while D-149
+#:     explains why the recurring-only add-on refusal did *not* take it ("that
+#:     name means a **dependency cycle** in this catalogue").
+#:     `ADDON_INCOMPATIBLE` / design/02 — D-149 assigns it the recurring-only
+#:     add-on refusal; named in `inst-cs-onetime` (cross-reference),
+#:     `inst-cmp-addons` (the raising rule), `dod-composition`, PRD §17.3 and
+#:     `fr-addon-rules`.
+#:     `DESCRIPTOR_INCOMPLETE` / design/02 — D-152 makes it the enforcement for
+#:     the required-set's config extension; named in `inst-ds-sufficient` and
+#:     `dod-descriptors`.
+#:     `HYBRID_INCOMPLETE` / design/02 — named in `inst-cs-hybrid`, the rule that
+#:     raises it, added here because D-149 had to draw the boundary between it
+#:     and the new `BASE_MARKET_INCOMPLETE` and the boundary is unreadable while
+#:     one of the two codes is unnamed.
+#:     `PHASE_DURATION_INVALID` / design/02 — named in `inst-ph-duration`. The
+#:     wave's own D-151 body mentions it only as the code it declines to stretch,
+#:     which would have moved the pin without paying the debt; the rule body now
+#:     carries it.
+#:     `PLANTIER_DIVERGENT` / design/02 — named in `inst-cmp-plantier` ("a
+#:     divergence with no override fails publish"). Same correction as above:
+#:     D-149's registry-dependency list had mentioned it from `inst-cmp-addons`.
+#:     `PURCHASE_QTY_RANGE_INVALID` / design/02 — named in `inst-cs-onetime`,
+#:     the rule that raises it. D-150 cites it as the sibling its own new code
+#:     is named after, which is a mention and not a fix, so the rule was fixed.
+#:     `TAX_BASIS_INCOMPLETE` / design/04 — D-154 splits its two arms in
+#:     `inst-td-policy` and names the code in both.
+#:     `BILLING_TIMING_MISSING` / design/06 — named in `inst-bt-required`, the
+#:     rule that raises it, and cited by S2 `inst-ds-required` as the code for
+#:     the row-borne descriptor element it defers to Slice 6.
+#:
+#:   `PLANTIER_MISSING` and `SETUP_ROW_INVALID` sit in the same Slice-2 blocks
+#:   and are **deliberately left pinned**: no rule of this wave raises either, so
+#:   naming them would have been tuning the documents to the measurement.
 PINNED_UNREFERENCED_CODES_2026_07_29 = (
-    ("pricing", "ADDON_CYCLE", "design/02-plan-definition.md"),
-    ("pricing", "ADDON_INCOMPATIBLE", "design/02-plan-definition.md"),
     ("pricing", "ADDON_OVERRIDE_UNRESOLVED", "design/02-plan-definition.md"),
     ("pricing", "APPROVAL_ROLE_REQUIRED", "design/05-governance.md"),
     ("pricing", "AVAILABILITY_OUTSIDE_COVERAGE", "design/07-pricewindow-linkage.md"),
     ("pricing", "BACKDATE_GRANT_REQUIRED", "design/05-governance.md"),
     ("pricing", "BASIS_MISSING", "design/08-bundles.md"),
-    ("pricing", "BILLING_TIMING_MISSING", "design/06-consumer-contracts.md"),
     ("pricing", "BRAND_UNKNOWN", "design/04-currency-tax.md"),
     ("pricing", "BULK_ROW_CONFLICT", "design/12-operator-efficiency.md"),
     ("pricing", "CHANGE_TARGET_UNPUBLISHED", "design/06-consumer-contracts.md"),
@@ -260,7 +300,6 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "COMPOSITE_SELF_REFERENCE", "design/10-advanced-primitives.md"),
     ("pricing", "COMPOSITE_TOO_FEW_CONSTITUENTS", "design/10-advanced-primitives.md"),
     ("pricing", "CREDIT_UNIT_UNPUBLISHED", "design/10-advanced-primitives.md"),
-    ("pricing", "DESCRIPTOR_INCOMPLETE", "design/02-plan-definition.md"),
     ("pricing", "EVAL_POLICY_MISPLACED", "design/03-price-structure.md"),
     ("pricing", "FLOOR_FALLBACK_MISSING", "design/10-advanced-primitives.md"),
     ("pricing", "FLOOR_INSIDE_PRICED_BAND", "design/10-advanced-primitives.md"),
@@ -274,19 +313,14 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "GRANT_PRICE_UNSCOPED", "design/10-advanced-primitives.md"),
     ("pricing", "GRANT_REF_UNDEFINED", "design/06-consumer-contracts.md"),
     ("pricing", "GROUP_UNKNOWN", "design/09-price-overlays.md"),
-    ("pricing", "HYBRID_INCOMPLETE", "design/02-plan-definition.md"),
-    ("pricing", "PHASE_DURATION_INVALID", "design/02-plan-definition.md"),
     ("pricing", "PHASE_GRAPH_INVALID", "design/02-plan-definition.md"),
-    ("pricing", "PLANTIER_DIVERGENT", "design/02-plan-definition.md"),
     ("pricing", "PLANTIER_MISSING", "design/02-plan-definition.md"),
     ("pricing", "PRORATION_INPUTS_MISSING", "design/06-consumer-contracts.md"),
-    ("pricing", "PURCHASE_QTY_RANGE_INVALID", "design/02-plan-definition.md"),
     ("pricing", "QUANTITY_SOURCE_MISSING", "design/03-price-structure.md"),
     ("pricing", "REASON_REQUIRED", "design/05-governance.md"),
     ("pricing", "RESERVATION_ON_NON_USAGE", "design/10-advanced-primitives.md"),
     ("pricing", "RUN_SELECTOR_EMPTY", "design/12-operator-efficiency.md"),
     ("pricing", "SETUP_ROW_INVALID", "design/02-plan-definition.md"),
-    ("pricing", "TAX_BASIS_INCOMPLETE", "design/04-currency-tax.md"),
     ("pricing", "TIER_BANDS_GAP", "design/03-price-structure.md"),
     ("pricing", "TIER_BANDS_OVERLAP", "design/03-price-structure.md"),
     ("pricing", "WINDOW_GAP", "design/07-pricewindow-linkage.md"),

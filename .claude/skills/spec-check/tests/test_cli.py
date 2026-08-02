@@ -70,10 +70,20 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # all 8 FR-bearing slices removed the subscriptions
     # P2/traceability-convention-unknown coverage statement (47 FRs checked
     # per-id, single-owner on first pass); debt unchanged.
+    # 2/59 since the 2026-08-03 G4 plan-shape docs wave (D-149…D-154): nine
+    # pinned P3/code-unreferenced members paid down at once, because the wave
+    # rewrote the very rules that raise eight of them (Slice 2's four algorithms
+    # and Slice 4's tax-persist/policy steps) and a code named by its own rule
+    # stops being unreferenced. Where the wave's prose had only *mentioned* a
+    # code from a neighbouring rule or from the register entry, the raising rule
+    # was fixed so the removal is a fix rather than a side effect — the five
+    # such corrections and the two codes deliberately left pinned
+    # (PLANTIER_MISSING, SETUP_ROW_INVALID) are itemised beside the pinned list.
+    # Live findings unchanged at 2 — both rating-side, untouched by this wave.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
     assert len(payload["findings"]) == 2
-    assert payload["known_debt_suppressed"] == 68
+    assert payload["known_debt_suppressed"] == 59
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

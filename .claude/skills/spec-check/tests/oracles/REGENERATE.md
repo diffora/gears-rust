@@ -236,6 +236,57 @@ separately-justified commit — never a way to make a failing change look green.
     reproduces the **old** pin on both, with zero per-id differences — the full per-id
     arithmetic and the controlled run are beside `PINNED_TRIAGE_PRICING`.
 
+13. **2026-08-03, thirteenth capture — after the D-149…D-154 docs wave.** Document
+    movement only, no checker change. This is the **third implementation-side wave**,
+    raised by building Group **G4** — the *shape of a plan*: Slice 2's four validator
+    sets and its three revision-scoped child tables — against the documents. Where G3
+    (the tenth capture) found rules the set did not state, G4 found rules it **states
+    and cannot enforce**: §5 naming no code for a §3 requirement, or a §6 `CHECK`
+    standing where a rule belongs. Six decisions — D-149 the cycle-shape step's four
+    codeless requirements plus the undeclared `billing_cycle` that made the whole step
+    vacuous (`BASE_MARKET_INCOMPLETE`, `CYCLE_METADATA_MISSING`); D-150 the add-on
+    rule's three quantity bounds (`ADDON_QTY_RANGE_INVALID`); D-151 `displayTrialDays`
+    bound to the `trial` kind (`DISPLAY_TRIAL_DAYS_INVALID`); D-152 the per-tenant
+    configurables' carrier, `pricing_policy_object`; D-153 the price row's draft-plane
+    transition guard; D-154 the resolved effective `taxCategory` frozen with the row —
+    plus four mechanical fixes carrying no id.
+
+    **This is the first capture since the seventh whose finding set moved, and it moved
+    in the paying-down direction.** Live findings unchanged at **2** (both rating-side,
+    untouched here). Suppressed **68 → 59**: nine pinned `P3/code-unreferenced` members
+    left at once, which is the largest single pin payment since the pin was taken —
+    `ADDON_CYCLE`, `ADDON_INCOMPATIBLE`, `DESCRIPTOR_INCOMPLETE`, `HYBRID_INCOMPLETE`,
+    `PHASE_DURATION_INVALID`, `PLANTIER_DIVERGENT`, `PURCHASE_QTY_RANGE_INVALID`
+    (design/02), `TAX_BASIS_INCOMPLETE` (design/04) and `BILLING_TIMING_MISSING`
+    (design/06). The reason it is nine at once and not a suspicious sweep: the wave
+    rewrote the four Slice-2 algorithms and Slice 4's tax-persist/policy steps, which
+    is exactly where eight of the nine are raised, so the debt was payable in passing.
+    Each was hand-checked in the working tree, and where the wave's prose had only
+    *mentioned* a code from a neighbouring rule or from a register entry, a one-clause
+    fix was applied so the **rule that raises it** names it — five such corrections,
+    itemised beside `PINNED_UNREFERENCED_CODES_2026_07_29`. `PLANTIER_MISSING` and
+    `SETUP_ROW_INVALID` sit in the same blocks and were **left pinned** deliberately:
+    no rule of this wave raises either, and naming them would be tuning the documents
+    to the measurement.
+
+    Everything else in `live-show-known-debt.txt` is intact: all 21 `P1` members
+    reproduce, every one shifted **uniformly +6**, one per status-board row the six
+    decisions added. `live-text.txt` differs only in the suppressed count.
+
+    The neighbourhood pins moved in the same commit, further than any previous wave
+    and for three separable reasons: `no-region` 6 → 5, `multi-region` 21 → 28,
+    `weak-coverage` 36 → 30, judged 57 → 58, total unchanged at 77. **Fourteen movers**,
+    each diffed per-id against the pre-wave tree (`d5e18846`) in a detached worktree:
+    four are accounts the wave genuinely wrote (`fr-billing-cycles`,
+    `fr-billing-descriptors`, `fr-plan-phases`, `fr-plantier-mandatory`), six gained
+    only the D-72 register digest at 0.600–0.636 (the `mentions` class the tenth
+    capture named — including `nfr-size-limits`, which gained its first candidate
+    region ever and is the whole of the `no-region` move), and **four are the
+    `DF_CUTOFF = 0.25` artifact on one term**, `catalog`, which was sitting at exactly
+    568/2272 = 0.25000 and is now 573/2290 = 0.25022. A controlled run holding that one
+    term constant on both sides — excluded at 0.249 or admitted at 0.2503 — removes all
+    four and reproduces nothing else. Full per-id record beside `PINNED_TRIAGE_PRICING`.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

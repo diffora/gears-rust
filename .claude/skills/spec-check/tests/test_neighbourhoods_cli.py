@@ -204,13 +204,77 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #:   so a class that stops occurring is distinguishable from one that never existed.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
-    "no-region": 6,
+    "no-region": 5,
     "anchored:no-account": 14,
-    "suspicious:multi-region": 21,
+    "suspicious:multi-region": 28,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 36,
+    "suspicious:weak-coverage": 30,
     "covered:strong": 0,
 }
+#: Moved 2026-08-03 (was 6 / 14 / 21 / 36, judged 57, total unchanged at 77) after the
+#: **D-149…D-154 docs wave** — the third implementation-side wave, raised by building
+#: Group **G4**, the *shape of a plan* (Slice 2's four validator sets and its three
+#: revision-scoped child tables), against the documents. Unlike the three edits before it
+#: this wave really did write a lot of prose, so a large move is expected; what needed
+#: checking is which part of it is the documents and which is the scorer. **Fourteen
+#: movers**, every one diffed per-id against the pre-wave tree (`d5e18846`) in a detached
+#: worktree. They split cleanly into three causes, and a controlled experiment separates
+#: them exactly.
+#:
+#: **(a) Four accounts the wave actually wrote** — the requirements it is about:
+#: - `fr-billing-cycles` weak → multi. Its own declaration was rewritten (D-149's two new
+#:   codes), so its discriminating-term set grew 15 → 36, and it gains `DECISIONS.md:1249`
+#:   (**D-149's entry**, 0.722) and `DECISIONS.md:19` (the wave preamble, 0.667) while
+#:   `DESIGN.md:505` rises 0.600 → 0.750. D-149 *is* an account of the billing-cycle matrix.
+#: - `fr-billing-descriptors` weak → multi (terms 46 → 87). Gains `design/02:247` — the
+#:   descriptor algorithm, both of whose steps this wave rewrote (D-152, D-154) — at 0.724,
+#:   plus the preamble and the S1 §3.7 `pricing_price` bullet D-154 extended.
+#: - `fr-plan-phases` weak → multi (terms 113 → 131). Its `design/02` account moved 229 →
+#:   235 with the window grid and stayed ~0.80; the second region is the `DESIGN.md:505`
+#:   digest at 0.603.
+#: - `fr-plantier-mandatory` weak → multi. Its composition account moved 211 → 217 and rose
+#:   0.730 → 0.757 — this wave added `PLANTIER_DIVERGENT` to `inst-cmp-plantier`, paying
+#:   down that pinned unreferenced code — and `design/01:403` clears at 0.649.
+#:
+#: **(b) Five that gained the D-72 register digest and nothing else** —
+#: `fr-historical-import-governance` (0.611), `fr-included-allowance` (0.619),
+#: `fr-mass-repricing` (0.610), `fr-one-time-setup` (0.606), `fr-proration-input-contract`
+#: (0.600 exactly), plus `nfr-size-limits` **no-region → weak** (0.636, and the reason
+#: `no-region` fell 6 → 5). Every one of these regions is `DESIGN.md:499`/`505` or
+#: `DECISIONS.md:25` — the §4 register summary line and the register preamble, both of
+#: which this wave lengthened substantially — and every score is inside 0.04 of the 0.6
+#: threshold. This is the class the tenth capture already named: **register-digest prose
+#: rather than rule statements**, on which a judge should be expected to answer `mentions`.
+#: `nfr-size-limits` is the one with substance behind it as well — D-152 decides where its
+#: "tenant-configurable" caps are declared, and the §4 sentence names them — and it went
+#: from having **no candidate region at all** to having one.
+#:
+#: **(c) Four that are the `DF_CUTOFF = 0.25` artifact and nothing else.** Exactly **one**
+#: term crossed the cutoff, and it is `catalog` again — the same term the D-145-amendment
+#: note below records crossing in the *other* direction, which is how close to the line it
+#: has been sitting for three waves. It was at 568/2272 = **0.25000**, discriminating only
+#: because the test is `<=`; the corpus grew 2272 → 2290 windows and `catalog` gained five
+#: of them, so 573/2290 = **0.25022** and it left the term set of every requirement that
+#: had it. No other term crossed, in either direction. The four:
+#: - `fr-catalogversion-increment` multi → weak. **No region gained or lost**; all three
+#:   scores fall by the one term (11/19 = 0.579 twice, 12/19 = 0.632), so two of them stop
+#:   clearing 0.6 and stop counting as accounts.
+#: - `fr-event-contract` weak → anchored. Same shape, 14/23 = 0.609 → 13/22 = 0.591 on
+#:   `design/01:73`, taking its last account under the threshold.
+#: - `fr-model-kind-conformance` multi → weak. Loses two windows that had been at exactly
+#:   11/18 = 0.611 and are 10/17 = 0.588 after.
+#: - `fr-custom-frequency` anchored → weak, the same artifact **in the gaining direction**:
+#:   a smaller denominator takes `DECISIONS.md:355` from 17/29 = 0.586 to 17/28 = 0.607.
+#:   That window's text is untouched by this wave.
+#:
+#: **Controlled experiment, decisive.** Recomputing both trees with `catalog` held constant
+#: — excluded from both (`DF_CUTOFF = 0.249`) or admitted to both (`0.2503`) — removes all
+#: four of (c) and leaves only (a) and (b): 9 movers at 0.249, 10 at 0.2503 (the extra one
+#: is `fr-billing-descriptors`, whose own text moved and whose direction is DF-sensitive).
+#: Neutralise that single term and the scorer's contribution to this wave's histogram is
+#: gone. As with the two notes below, **no wording was changed to move a score back**:
+#: choosing a document's words to satisfy a corpus-wide frequency counter is standing rule
+#: 6's vice from the other side.
 #: Moved again 2026-08-02, fifth time that day (was 15 / 20 / 36, judged 56, total
 #: unchanged at 77) after the **D-145 amendment** — the register recording that D-145's
 #: "a new draft opens immediately" is false for a plan that has never published (its only
@@ -477,7 +541,13 @@ PINNED_TRIAGE_LEDGER = {
 #: driven by the single `catalog`/`rule` document-frequency swap itemised above — not
 #: ladder drift, and not a document defect either, which the controlled run recorded there
 #: settles by reproducing the old pin exactly once those two terms are neutralised.)
-PINNED_JUDGE_CALLS = {"pricing": 57, "ledger": 17}
+#: (57 → 58 on the 2026-08-03 D-149…D-154 re-pin. The judged share moves by exactly the
+#: one requirement that left an unjudged class: `nfr-size-limits`, `no-region` → judged
+#: `weak-coverage`, having gained its first candidate region ever. Every other mover of
+#: that wave is judged-to-judged — `multi-region` and `weak-coverage` are both in `JUDGED`,
+#: so the +7/−6 between them is judge-neutral. Per-id record beside
+#: `PINNED_TRIAGE_PRICING`.)
+PINNED_JUDGE_CALLS = {"pricing": 58, "ledger": 17}
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):
