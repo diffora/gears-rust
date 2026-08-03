@@ -83,12 +83,15 @@ absence fails publish, so a consumer can rely on presence.
 
 **In scope**: authoring + publish validation + read-model projection of the five contracts;
 the canonical `prorationBasis` enum ownership; the cross-boundary (currency/region/frequency)
-mid-cycle rejection marker; grant-set referential validation against the registry.
+mid-cycle rejection marker — the **marker only** (D-169); grant-set referential validation
+against the registry.
 
 **Out of scope**: proration **math**, plan-change execution, trial runtime, entitlement
 **enforcement** (Subscriptions); deferral execution (Billing); formula evaluation (Tariffs);
 the golden proration fixture content (jointly owned, gated in Slice 3's fixture registry
-pattern); `PlanLink` migration (Slice 11).
+pattern); `PlanLink` migration (Slice 11); **the wording of the cross-boundary warning**
+(D-169 — this slice publishes the machine-readable marker; the surface that renders the
+warning and takes the operator's confirmation owns its copy, PRD AC #66).
 
 ### 1.6 Constraints & Assumptions
 
@@ -179,7 +182,7 @@ Tariffs/Rating compute from.
 1c. [ ] - `p1` - **One contract per market (normative, D-123, 2026-07-31d billing-domain review fix — flagged for veto · joint with Subscriptions + Rating):** every published recurring row of a plan on one `(currency, region)` **whose `priceEligibility ∈ {all_subscriptions, new_subscriptions_only}`** MUST carry the **same** `billingAnchorPolicy` (incl. `anchor_day`), the same `prorationBasis` and the same `creditOnDowngrade` — a divergent market fails publish (`PRORATION_CONTRACT_MIXED_MARKET`, 422, divergent rows and fields named). **`existing_grandfathered` generations are excluded (D-132, 2026-08-01 review fix):** an immutable, never-superseded, never-unpublished generation in the row set made one cutover **permanently** freeze the market's cycle clock and credit policy — every later publish failing on a row nobody can fix. A grandfathered subscriber reads these three fields from its own frozen snapshot, so "a subscription is one cycle clock" still holds per subscription; the same scoping lands on D-110's tax-basis sibling. Phase is a scope-key axis, so under D-15 a phased plan carries one recurring row per charging phase per market — each with its own anchor as authored — while the consuming side reads **one** value per subscription: subscriptions' `billingAnchor` is a single field on the Subscription aggregate ("the PRD's cycle-boundary rule") and its PRD reads `prorationBasis` as one value "applied to all mid-period proration of the recurring component". Nothing related the N authored values to the one consumed value: an intro-pricing plan authoring `subscription_start` on the intro row and `fixed_day(1)` on the terminal row published both anchors into one frozen snapshot with no rule saying which sets the cycle boundary — one implementation keeps the boundary at phase conversion, another shifts it to the 1st and prorates a partial period. The rule is per market, not per plan (anchoring EU on the 1st and US on signup day stays legal — the D-110 shape: "an invoice is one document" → a subscription is one cycle clock); the phase axis is thereby cycle-clock-neutral **by construction** — phase conversion never moves the anchor-derived boundary and never changes proration math (usage rows were already deliberately phase-invariant, S2 `inst-ph-usage-invariant`; this closes the same class on the recurring side). `billingTiming` is **exempt** — deliberately per-row: a hybrid mixes `in_advance` base + `in_arrears` usage (`inst-bt-usage`) and Billing consumes it per line, never as a subscription-level clock. `inst-pi-credit-source` is unchanged: it picks **which snapshot's** value governs across a plan change; this rule guarantees that pick is unambiguous within one market - `inst-pi-uniform`
 2. [ ] - `p1` - `prorationBasis` values per K1 — the canonical enum is **owned here**; Tariffs adopts verbatim; Subscriptions computes the amount from the same frozen value (one source, no drift) - `inst-pi-enum`
 3. [ ] - `p1` - `billingAnchorPolicy` per K2: `fixed_day(d)` beyond month length anchors last-of-month; the same clamp + preserved-anchor-day rule applies to `subscription_start` under `customEveryN Months(n)` (D-20); all anchor math UTC; `customEveryN Days(n)` plans MUST carry `subscription_start` (cross-checked with Slice 2's cycle rule); the anchor math rides the joint proration/anchor fixture - `inst-pi-anchor`
-4. [ ] - `p1` - **Cross-boundary marker (K3):** the contract publishes no cross-currency/region/frequency credit basis; such a mid-cycle change is rejected for in-place proration (cancel + new subscription; operator warned that in-place credit is forfeited — enforcement in Subscriptions). The published artifact is a **contract-level pair of read-model fields**: `crossBoundaryChangePolicy = cancel_plus_new` + `crossBoundaryWarningText`, projected into `pricing_read_model` (§6) - `inst-pi-crossboundary`
+4. [ ] - `p1` - **Cross-boundary marker (K3):** the contract publishes no cross-currency/region/frequency credit basis; such a mid-cycle change is rejected for in-place proration (cancel + new subscription; operator warned that in-place credit is forfeited — enforcement in Subscriptions). The published artifact is a **single contract-level read-model field**, `crossBoundaryChangePolicy = cancel_plus_new`, projected into `pricing_read_model` (§6). **The warning text is not a catalog field** (D-169, 2026-08-03, the product owner's call on the fork D-168 opened): the surface that renders the warning and takes the operator's confirmation owns its wording, and PRD AC #66 is where that obligation lives - `inst-pi-crossboundary`
 
 ### Billing Timing
 
@@ -299,26 +302,29 @@ plan across the non-grandfathered eligibility classes** (D-123 as scoped by D-13
 `inst-pi-uniform`) — a publish-time validation, not a DB constraint (the check
 spans the market's row set).
 
-**`pricing_read_model` (contract-level fields)**: `crossBoundaryChangePolicy`
-(`cancel_plus_new` — the K3 marker) + `crossBoundaryWarningText` (the operator/storefront
-warning that in-place credit is forfeited), projected **on every `plan` subject row** (2026-07-31
+**`pricing_read_model` (contract-level field)**: `crossBoundaryChangePolicy`
+(`cancel_plus_new` — the K3 marker), projected **on every `plan` subject row** (2026-07-31
 review fix: "projected once per contract version" named no subject, and since D-91 the store is
 keyed `(tenant_id, catalog_version, subject_kind, subject_ref)` with no tenant- or
-contract-level subject to hold a free-floating pair. They are launch-constant, tenant-wide
-values, so riding the plan subject costs nothing and keeps the resolution rule uniform — a
-consumer reading a plan already has them; no new `subject_kind` is introduced for two constants).
-**The pair is stamped as a pair or not at all (normative, D-168, 2026-08-03, found while
-building the read side).** The policy value is named verbatim here; the warning **text** is
-named in no document of this set, so a projector has one half of a two-field contract and
-nothing to put in the other. Publishing the named half alone would freeze half a contract into
-an immutable version, and inventing the other half would freeze a value no document declares —
-D-161 clause (1)'s ban on a fabricated segment, one artifact over, and worse here because a
-frozen version can never be corrected. So until the text has a declared source **neither** field
-is projected, and a version answers this contract with nothing rather than with half of it.
-**Where the text comes from is an open fork for the product owner** — a declared launch-constant
-string, a per-tenant configurable on `pricing_policy_object` (D-152's carrier, itself
-provisional), or dropping the field so the marker's consumer renders its own copy — and it is
-recorded with its options and the recommendation in [`../DECISIONS.md`](../DECISIONS.md) §F.1.
+contract-level subject to hold a free-floating value. It is a launch-constant, tenant-wide
+value, so riding the plan subject costs nothing and keeps the resolution rule uniform — a
+consumer reading a plan already has it; no new `subject_kind` is introduced for one constant).
+**The warning text is not a catalog field (normative, D-169, 2026-08-03).** This slice also
+required a `crossBoundaryWarningText` beside the policy, and its value was named in no document
+of the set, so a projector held one half of a two-field contract with nothing to put in the
+other; **D-168** made the pair stamp as a pair or not at all, so a version answered this
+contract with nothing rather than with half of it, and forked where the text comes from. The
+product owner closed that fork by **removing the text from the contract**: what is published is
+the machine-readable marker, and the surface that renders the warning owns its wording — PRD
+**AC #66**, the preview/migration UI that warns in-place credit is forfeited and takes an
+explicit confirmation, which is where this set had already put that sentence. The reason is the
+store rather than the sentence: a delta row is INSERT-only on the ≥ 7-year horizon and a
+completed version never changes, so a customer-visible string frozen here is frozen in one
+language for every version already stamped with it, and this set has no localization story to
+put beside one. D-168 clause (1) is thereby **discharged, not overridden** — with a single field
+there is no half to publish — and its ban on freezing a value no document declares is the
+argument that decided the fork. The full option set and what (a) and (b) cost is in
+[`../DECISIONS.md`](../DECISIONS.md) D-169.
 
 ## 7. Events & Alarms
 
@@ -344,7 +350,8 @@ scoped by D-132, `PRORATION_CONTRACT_MIXED_MARKET` — phase conversion never mo
 clock, and an immutable generation never freezes the market);
 cross-boundary mid-cycle changes
 carry no credit basis and are rejected for in-place proration (cancel + new — the
-`crossBoundaryChangePolicy`/`crossBoundaryWarningText` read-model fields carry the marker).
+`crossBoundaryChangePolicy` read-model field carries the marker; the warning's **wording** is
+the rendering surface's, never a published field, D-169 / PRD AC #66).
 
 **Implements**: `cpt-cf-bss-pricing-algo-proration-inputs`, `cpt-cf-bss-pricing-flow-contract-resolution`
 
@@ -428,7 +435,7 @@ Integration (testcontainers):
 - [ ] A plan without `allowedChangeTargets` reads as no-self-service-change (field absent, not defaulted)
 - [ ] `usageCounterOnPlanChange` round-trips frozen (D-113): unset publishes as `reset`; a `carry` target plan sharing a `(meter, dimensionKey)` line with matching unit fields reads `carry` for that line, while the same pair with a `per_hour` vs `per_day` mismatch resolves `reset` for it (the check runs Rating-side over both frozen snapshots — this AC pins the published inputs)
 - [ ] Grant set resolved from `PlanTier` publishes both the reference and the resolved set
-- [ ] The read model exposes `crossBoundaryChangePolicy = cancel_plus_new` + `crossBoundaryWarningText` on every resolved `plan` subject row (not as a subject-less contract-level record — the D-91 keying has no such subject). **Both, or neither** (D-168, §6): a version carrying the policy without the text is a failure of this AC, not a partial pass — the text has no declared source yet, so the AC is unsatisfiable until §F.1's fork closes and that is the state it records
+- [ ] The read model exposes `crossBoundaryChangePolicy = cancel_plus_new` on every resolved `plan` subject row (not as a subject-less contract-level record — the D-91 keying has no such subject), and exposes **no** warning-text field (D-169, §6 — the copy belongs to the surface that renders it, PRD AC #66). D-168's both-or-neither went out with the second half of the pair: this AC was unsatisfiable while the contract named a field no document declared a value for, and it is satisfiable as one field
 
 Conformance (joint, K5):
 

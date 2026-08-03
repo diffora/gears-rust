@@ -481,6 +481,67 @@ separately-justified commit — never a way to make a failing change look green.
     as a measurement-health signal, not tuned away — nothing was reworded in either direction,
     and `batching` and `delay` are the right words for the sentences they are in.
 
+17. **2026-08-03, seventeenth capture — after the D-169 register edit.** Document movement
+    only, no checker change. D-169 is the product owner's answer to the §F.1 fork D-168 opened
+    the same day, and it is a **removal**: `crossBoundaryWarningText` leaves the Slice-6
+    consumer contract, the catalog publishes the K3 marker
+    (`crossBoundaryChangePolicy = cancel_plus_new`) alone, and the surface that renders the
+    warning owns its wording. The answer turned on a fact the fork statement did not have —
+    `PRD.md` **AC #66** already required the preview/migration UI to warn that in-place credit
+    is forfeited and to take an explicit confirmation, so the field was a *second* home for a
+    sentence this set had already placed on the surface that shows it, and the second home is
+    the one with an INSERT-only ≥ 7-year store behind it. It was recorded as its own decision
+    rather than as a clause on D-168, following the D-161 → D-162 precedent one wave earlier.
+
+    **The finding set did not move.** `live-text.txt` and `live-json.json` are byte-identical
+    and were re-captured to no effect; `live-show-known-debt.txt` differs **only in line
+    numbers** — the same 21 `P1/propagation-missing` members, every one shifted **uniformly
+    +1**, the single status-board row the decision added, and the member set is identical
+    modulo those numbers. Live findings unchanged at 2 (both rating-side), suppressed unchanged
+    at 59; `--gear gears/bss/pricing/docs --auto-context` still reports 0 live and 59
+    suppressed. **No wire code was minted or retired** — a field left a read model, which is a
+    value and not a refusal, so `P3/code-unreferenced` has nothing to gain or lose. The
+    fifteenth entry's near-miss was watched for and did not recur: nothing in this edit names
+    a pinned unreferenced code, because a pin paid down by a register mention rather than by
+    the rule that raises it is a pin paid by nothing.
+
+    **The triage pin moved: `anchored:no-account` 6 → 5, `suspicious:multi-region` 46 → 49,
+    `suspicious:weak-coverage` 21 → 19, judged 67 → 68, `no-region` and the total unchanged
+    (4, 77).** **Four movers**, each diffed per-id against the pre-edit tree (`8fb20548`) in a
+    detached worktree. There is **no `DF_CUTOFF` component for the second edit running**:
+    checked exhaustively over the 4,914 terms both trees share, **zero** crossed the cutoff in
+    either direction (`same`, the term behind the sixteenth capture, went 0.25126 → 0.25105 and
+    stayed out; `catalog` 0.24537 → 0.24685 and stayed in).
+
+    All four are region gains, and this is the cleanest — and most uncomfortable — shape any
+    capture has recorded. **Each mover gained exactly one region; each is the D-72 register
+    digest or the register preamble; each crossed `SCORE_THRESHOLD = 0.6` on exactly one term;
+    and every other region of every mover is byte-identical, same window, same score, same
+    matched-term count.** `fr-per-seat` (no-account → weak) gained `DESIGN.md:499-510` at
+    16/26 = 0.6154 on the word **`wording`**; `fr-one-time-setup` (weak → multi) the same
+    window at 20/32 = 0.6250 on **`preview`**; `fr-reserved-capacity` (weak → multi)
+    `DESIGN.md:505-516` at 35/58 = 0.6034 on **`authorable`**; `fr-plan-clone` (weak → multi)
+    `DECISIONS.md:19-30` at 26/43 = 0.6047 on **`going`**. Two of the four terms come from one
+    clause about one *rejected* option ("re-authorable going forward only"), and not one of the
+    four says anything about per-seat pricing, one-time setup fees, reserved capacity or plan
+    cloning.
+
+    Three controlled runs separate it exactly. (i) Pre-edit tree plus **only** the `DESIGN.md`
+    D-72 digest sentence: the three `DESIGN.md` movers and nothing else. (ii) Pre-edit tree
+    plus **only** the `DECISIONS.md` preamble line: `fr-plan-clone` and nothing else. (iii) The
+    post-edit tree with the digest and the preamble reverted, so the D-169 entry, the board
+    row, the struck §F.1 row, the five Slice-6 edits and the two PRD edits are all present:
+    **zero** movers, histogram identical to the pre-edit pin.
+
+    **The judged share is now 68/77 = 88%, the sixth consecutive wave to grow it without a
+    design slice creating an account for any mover** — and the smallest edit yet to move it.
+    That is the signal worth carrying forward rather than tuning away: a digest D-72 *obliges*
+    every wave to keep current summarises every requirement in the gear, so every requirement's
+    vocabulary can match it, and the fixed 12-line window over that one enormous line now sits
+    within a hundredth of the threshold for a large part of the corpus. Nothing was reworded in
+    either direction; `wording`, `preview`, `authorable` and `going` are the right words for
+    the sentences they are in. Per-id record beside `PINNED_TRIAGE_PRICING`.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

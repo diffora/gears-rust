@@ -205,13 +205,59 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 4,
-    "anchored:no-account": 6,
-    "suspicious:multi-region": 46,
+    "anchored:no-account": 5,
+    "suspicious:multi-region": 49,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 21,
+    "suspicious:weak-coverage": 19,
     "covered:strong": 0,
 }
-#: Moved 2026-08-03, **fourth move of the day** (was 4 / 9 / 44 / 20, judged 64, total
+#: Moved 2026-08-03, **fifth move of the day** (was 4 / 6 / 46 / 21, judged 67, total unchanged
+#: at 77) after the **D-169 register edit** — the product owner's answer to the §F.1 fork D-168
+#: opened the same day: `crossBoundaryWarningText` leaves the Slice-6 consumer contract, the
+#: catalog publishes the K3 marker alone, and the surface that renders the warning owns its
+#: copy. **Four movers**, each diffed per-id against the pre-edit tree (`8fb20548`) in a
+#: detached worktree, with three controlled runs.
+#:
+#: **No `DF_CUTOFF` component, for the second edit running.** Checked exhaustively over the
+#: 4,914 terms both trees share: **zero** crossed `DF_CUTOFF = 0.25` in either direction.
+#: `same` — the term behind the fourth move of the day — went 0.25126 -> 0.25105 and stayed
+#: out; `catalog` went 0.24537 -> 0.24685 and stayed in. So all four movers are region gains.
+#:
+#: **Each gained exactly one region, each region is the D-72 digest or the register preamble,
+#: and each crossed `SCORE_THRESHOLD = 0.6` on exactly one term.** Every *other* region of
+#: every mover is byte-identical across the two trees — same window, same score, same
+#: matched-term count — so nothing that was already an account moved at all:
+#: - `fr-per-seat` no-account -> weak. `DESIGN.md:499-510`, 15/26 -> 16/26 = 0.6154. The term
+#:   is **`wording`**, from "the surface that renders the warning owns its wording".
+#: - `fr-one-time-setup` weak -> multi. `DESIGN.md:499-510`, 19/32 -> 20/32 = 0.6250. The term
+#:   is **`preview`**, from "the preview/migration UI" — the surface PRD AC #66 names.
+#: - `fr-reserved-capacity` weak -> multi. `DESIGN.md:505-516`, 34/58 -> 35/58 = 0.6034. The
+#:   term is **`authorable`**, from "makes the copy re-authorable going forward only".
+#: - `fr-plan-clone` weak -> multi. `DECISIONS.md:19-30`, 25/43 -> 26/43 = 0.6047. The term is
+#:   **`going`**, from that same clause about the rejected option (b), in the preamble.
+#:
+#: Not one of the four terms says anything about per-seat pricing, one-time setup fees,
+#: reserved capacity or plan cloning, and two of the four come from one clause of one rejected
+#: option. This is the `mentions` class at its purest yet: the eleventh entry's
+#: `fr-tax-display-basis` crossed on the word `whole` and the sixteenth capture's
+#: `fr-supersession` on `batching` + `delay`; here **four** requirements cross on one word
+#: each, in a single edit, and three of them on one 12-line window.
+#:
+#: Three controlled runs separate it exactly. (i) Pre-edit tree + **only** the `DESIGN.md`
+#: D-72 digest sentence: the three `DESIGN.md` movers and nothing else. (ii) Pre-edit tree +
+#: **only** the `DECISIONS.md` preamble line: `fr-plan-clone` and nothing else. (iii) The
+#: post-edit tree with the digest and the preamble reverted — so the D-169 entry, the
+#: status-board row, the struck §F.1 row, the five Slice-6 edits and the two PRD edits are all
+#: present: **zero** movers, histogram identical to the pre-edit pin. The decision's whole
+#: substance moves the pin by nothing; the two documents D-72 and the wave convention *oblige*
+#: an edit to grow move it by four.
+#:
+#: **Judged is now 68/77 = 88%, the sixth consecutive wave to grow it with no design slice
+#: creating an account for any mover.** Recorded rather than tuned away: nothing was reworded
+#: in either direction, and `wording`, `preview`, `authorable` and `going` are the right words
+#: for the sentences they are in.
+#:
+#: (Previous move, same day, recorded below.) Moved 2026-08-03, **fourth move of the day** (was 4 / 9 / 44 / 20, judged 64, total
 #: unchanged at 77) after the **D-163…D-168 docs wave** — the fifth implementation-side wave,
 #: raised by building Group **G6**, the read side. **Six movers**, every one diffed per-id
 #: against the pre-wave tree (`99523f15`) in a detached worktree, and four controlled runs
@@ -730,12 +776,24 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 67, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 68, "ledger": 17}
 #: pricing 64 -> 67 on 2026-08-03 with the D-163…D-168 wave: three ids promoted out of
 #: `anchored:no-account` (`fr-publish-fanout-atomicity`, `fr-supersession`,
 #: `nfr-observability`), the `multi`/`weak` traffic between them being judge-neutral.
 #: Per-id record beside `PINNED_TRIAGE_PRICING`, including why only one of the three is
 #: an account this wave wrote.
+#: (67 -> 68 on the 2026-08-03 D-169 re-pin, the fifth of that day and the smallest edit yet
+#: to move this number: **one** id entered the judged set, `fr-per-seat`, out of
+#: `anchored:no-account`, and none left it; the +3/−2 between `multi-region` and
+#: `weak-coverage` is judge-neutral. It was promoted by the D-72 digest gaining the single
+#: term `wording` — not by any account of per-seat pricing, of which the digest contains
+#: none. **68/77 = 88%, the sixth consecutive wave to grow the share without a design slice
+#: moving**, and the controlled run here is the strongest form of that statement so far: the
+#: whole decision — register entry, board row, closed fork row, five Slice-6 edits, two PRD
+#: edits — reproduces **zero** movers, and the two obligatory summary documents reproduce all
+#: four. What is being counted as coverage is a digest that summarises every requirement in
+#: the gear, so every requirement's vocabulary can match it. Per-id record beside
+#: `PINNED_TRIAGE_PRICING`.)
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):
