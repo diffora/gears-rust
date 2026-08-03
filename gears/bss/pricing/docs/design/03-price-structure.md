@@ -265,7 +265,7 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 | `POST` | `/bss-pricing/v1/plans/{planId}/prices` | Create a draft price row on the scope key | client idempotency key |
 | `PATCH` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Update a draft row | ETag |
 | `DELETE` | `/bss-pricing/v1/plans/{planId}/prices/{priceId}` | Delete a **draft** row (published rows: 409) | ETag (D-141) |
-| `GET` | `/bss-pricing/v1/plans/{planId}/prices` | List rows (draft for authors; published via read model) | — |
+| `GET` | `/bss-pricing/v1/plans/{planId}/prices` | List the plan's `draft` **and** `published` rows (**D-170**; paginated per Foundation §3.3 / D-125) | — |
 
 **Problem responses (RFC 9457):** `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
 `TIER_BANDS_GAP` (422 — including a tiered row carrying **no bands at all**, and a first band that does not start at the quantity origin: both are the same fault, a quantity the row prices nowhere; 2026-08-02 clarification), `TIER_BAND_EMPTY` (422 — `toQty ≤ fromQty` on a non-open band),
@@ -320,7 +320,24 @@ editor's uncommitted work, not the row. Scope stated deliberately — this is th
 draft row** rule; `DELETE /bss-pricing/v1/price-windows/{windowId}`
 ([`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) §5) carries an empty cell too and is
 **not** moved by it, window cancellation being an always-material publish unit (D-62, D-99)
-governed by `inst-co-single-pending`.
+governed by `inst-co-single-pending`. **That token stays a bare row version** (**D-170**,
+2026-08-03): the plan plane's tag gained a revision component because a plan route resolves to one
+of two revisions, while a price route addresses **one row by `priceId`** — the tag and the row are
+one to one, and there is nothing to disambiguate. The asymmetry between the two planes follows the
+addressing, not a preference. Both travel in `If-Match`, which is **required** on every verb whose
+Idempotency cell above reads `ETag` (**D-171**, Foundation §3.3, where the column's cells are
+mapped onto their request headers once for every slice).
+
+**What the authoring list returns** (**D-170**, 2026-08-03, found while building it). The `GET`
+row above serves the plan's `draft` **and** `published` price rows, and nothing else. "Draft for
+authors; published via read model" said where published content is *consumed*, never that this
+list hides it — an author authoring a successor must see the row it will supersede without leaving
+the surface, and the read model answers a different question (a frozen per-`CatalogVersion`
+projection reached by a pin). `superseded` is excluded because it is history that is no longer
+current on its key, which the Slice-12 history surface owns; `abandoned` is not a price-row state
+at all (D-145 scopes it to the plan revision row). A caller needing another state set is asking for
+a filter this set has not designed, and asking for it is a design change rather than a query
+parameter.
 
 ## 6. Data Model
 

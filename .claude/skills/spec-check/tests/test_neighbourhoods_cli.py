@@ -204,14 +204,82 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #:   so a class that stops occurring is distinguishable from one that never existed.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
-    "no-region": 4,
+    "no-region": 3,
     "anchored:no-account": 5,
-    "suspicious:multi-region": 49,
+    "suspicious:multi-region": 52,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 19,
+    "suspicious:weak-coverage": 17,
     "covered:strong": 0,
 }
-#: Moved 2026-08-03, **fifth move of the day** (was 4 / 6 / 46 / 21, judged 67, total unchanged
+#: Moved 2026-08-03, **sixth move of the day** (was 4 / 5 / 49 / 19, judged 68, total unchanged
+#: at 77) after the **D-170…D-174 docs wave** — the sixth implementation-side wave, raised by
+#: building Group **G7**, the gear's REST surface, and the one that closes Phase 2. **Four
+#: movers**, each diffed per-id against the pre-wave tree (`f8f3ed51`) in a detached worktree,
+#: with four controlled runs.
+#:
+#: **No `DF_CUTOFF` component, for the third edit running.** Checked exhaustively over the
+#: 4,923 terms both trees share: **zero** crossed `DF_CUTOFF = 0.25` in either direction. The
+#: two terms that have oscillated around it in previous captures both moved further inside —
+#: `catalog` 0.24685 -> 0.24626, `same` 0.25105 -> 0.25707. So all four movers are region gains.
+#:
+#: **Four controlled runs split them exactly, and the split is 3 + 1.**
+#: (i) Pre-wave tree with **only** `DESIGN.md` and `DECISIONS.md` replaced: the first three
+#:     movers below and nothing else.
+#: (ii) Pre-wave tree with everything **except** those two documents replaced — the five
+#:     register entries' propagation edits in three design slices and the PRD: the fourth
+#:     mover and nothing else.
+#: (iii) Post-wave tree with the D-174 sentence removed **in place** from the
+#:     `pricing_idempotency_dedup` bullet (one enormous line, so every line number stays
+#:     identical): the fourth mover reverts. It is content, not the window grid.
+#: (iv) Pre-wave tree with **26 blank lines** inserted at §3.3 — the exact shift this wave puts
+#:     above §3.7, and no content at all: **zero** of the four movers, so the grid contributes
+#:     nothing to any of them. It has one effect of its own, `fr-supersession` weak ->
+#:     no-account, which the wave's real content cancels; that requirement has now been within
+#:     a hundredth of the threshold on the same §3.7 window for two consecutive waves, on terms
+#:     (`batching`/`delay` last wave, this wave's §3.7 additions now) that say nothing about
+#:     supersession.
+#:
+#: - `fr-approval-threshold-policy` weak -> multi. Gains `DESIGN.md:499-510`, 82/138 = 0.594 ->
+#:   86/138 = 0.623. Four terms, all from the D-72 digest's new paragraph: **`direction`** and
+#:   **`routes`** (the overlay stack sort direction; "the nine authoring routes"), **`multi`**
+#:   (D-173's multi-facet update) and **`regardless`**. Nothing about approval thresholds.
+#: - `fr-priceoverlay-authoring` weak -> multi. Gains `DESIGN.md:505-516`, 147/248 = 0.593 ->
+#:   153/248 = 0.617, and `DECISIONS.md:19-30`, 141/248 = 0.569 -> 149/248 = 0.601. Terms
+#:   **`stack`**, **`discards`**, **`layer`**, **`strictly`**, **`tariffs`**. This is the one
+#:   mover of the four whose new region says anything about its own subject: both windows carry
+#:   the wave's standing-list correction, which is *about* the overlay stack (D-138 closed the
+#:   `fixed` arithmetic; the sort direction survives as its own fork, and matters more because a
+#:   `fixed` line discards every layer beneath it). It is a **status fact about a fork**, not a
+#:   statement of the authoring rule, so a judge should still be expected to answer `mentions`.
+#: - `fr-tenant-brand-isolation` weak -> multi. Gains `DECISIONS.md:19-30`, 13/22 = 0.591 ->
+#:   15/22 = 0.682, and `DESIGN.md:499-510`, 13/22 = 0.591 -> 14/22 = 0.636. A **22-term**
+#:   denominator, so one term is worth 0.045 — the smallest declaration in either window's
+#:   reach. The terms are **`authz`** (from "their authz gate", describing what G7 built) and
+#:   **`mutating`** (from "every mutating route"). Neither window says anything about tenant or
+#:   brand isolation.
+#: - `nfr-event-propagation` no-region -> weak. Gains `design/01-foundation.md:487-498` at
+#:   11/17 = 0.647, up from 10/17 = 0.588 on the **same window with the same line numbers**
+#:   (run (iii)). **One term: `within`**, and it comes from D-174's *rejected-alternative*
+#:   clause quoting §3.3 — "additive-only **within** a major version" — against the
+#:   requirement's own "MUST reach downstream consumers **within** 5 seconds at p95". The
+#:   window's other ten matched terms (`carry`, `consumers`, `correlation`, `downstream`,
+#:   `idempotency`, `keys`, `least`, `once`, `other`, `safe`) are `pricing_outbox`'s bullet —
+#:   frozen event names, dedup/correlation keys, `(tenantId, aggregateId)` ordering — which is
+#:   genuinely this requirement's neighbourhood, is **unchanged by this wave**, and was
+#:   sub-threshold before it. D-174 created no account; it tipped an old one over 0.6 on a
+#:   preposition. Nothing was reworded: `within` is the right word for the sentence it is in.
+#:
+#: **Judged 68 -> 69 = 90%, the seventh consecutive wave to grow the share — and the first
+#: whose increment is not the digest or the preamble.** The three weak -> multi moves are
+#: judge-neutral (both classes are in `JUDGED`), so the whole of the +1 is
+#: `nfr-event-propagation` entering out of `no-region`, from a **design slice**. That is a
+#: change in the shape of the signal rather than in its direction, and it is worth stating
+#: plainly: the cause is still not an account — it is one common preposition in a clause
+#: explaining an option that was rejected — but for the first time the vehicle is a normative
+#: slice rather than the two documents a wave is obliged to grow. Recorded as a
+#: measurement-health signal, not tuned away.
+#:
+#: (Previous move, same day, recorded below.) Moved 2026-08-03, **fifth move of the day** (was 4 / 6 / 46 / 21, judged 67, total unchanged
 #: at 77) after the **D-169 register edit** — the product owner's answer to the §F.1 fork D-168
 #: opened the same day: `crossBoundaryWarningText` leaves the Slice-6 consumer contract, the
 #: catalog publishes the K3 marker alone, and the surface that renders the warning owns its
@@ -776,7 +844,17 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 68, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 69, "ledger": 17}
+#: pricing 68 -> 69 on the 2026-08-03 D-170…D-174 wave (G7, the REST surface), the sixth move
+#: of that day. **One** id entered the judged set and none left it: `nfr-event-propagation`,
+#: out of `no-region`; the +3/−2 between `multi-region` and `weak-coverage` is judge-neutral.
+#: **The first increment in seven waves that the D-72 digest and the register preamble did not
+#: produce** — a controlled run with those two documents held at their pre-wave content
+#: reproduces this mover and only this mover, and a run with *only* those two reproduces the
+#: other three and not this one. Its cause is still not an account: one term, `within`, from a
+#: rejected-alternative clause in the `pricing_idempotency_dedup` bullet, tipping a window whose
+#: real relevance (`pricing_outbox`) this wave never touched. 69/77 = 90%. Per-id record beside
+#: `PINNED_TRIAGE_PRICING`.
 #: pricing 64 -> 67 on 2026-08-03 with the D-163…D-168 wave: three ids promoted out of
 #: `anchored:no-account` (`fr-publish-fanout-atomicity`, `fr-supersession`,
 #: `nfr-observability`), the `multi`/`weak` traffic between them being judge-neutral.

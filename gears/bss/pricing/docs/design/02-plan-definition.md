@@ -276,10 +276,10 @@ so its `revision` number stays consumed (`inst-pl-abandon`, D-145); optional `Pl
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
 | `POST` | `/bss-pricing/v1/plans` | Create a draft plan | client idempotency key |
-| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape (cycle, phases, add-ons, descriptors) | ETag |
+| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape — **exactly one** of cycle, phases, add-ons, descriptors per call (**D-173**) | ETag |
 | `POST` | `/bss-pricing/v1/plans/{planId}/publish` | Run fail-closed validation + submit for approval/publish | per plan revision |
 | `POST` | `/bss-pricing/v1/plans/{planId}/abandon` | **Discard the plan's open draft revision** — the author-driven arm of `inst-pl-abandon` (**D-145**): the row flips to the terminal `abandoned` state, its child copies drop, the flip is audited, and the `revision` number stays consumed. It is never deleted, so the verb is not `DELETE` | ETag |
-| `GET` | `/bss-pricing/v1/plans/{planId}` | Read (draft for authors; published via read model) | — |
+| `GET` | `/bss-pricing/v1/plans/{planId}` | Read the plan's **editable revision** — its open draft if it holds one, else its current revision (**D-170**; published content is *consumed* via the read model) | — |
 
 **Problem responses (RFC 9457):** `SKU_NOT_PUBLISHED` (422), `INVALID_CUSTOM_INTERVAL` (422),
 `CYCLE_METADATA_MISSING` (422 — the plan carries no `billing_cycle`, or a `recurring`/`hybrid`
@@ -337,22 +337,74 @@ other on this table, ever frees a `revision` number: a discarded draft revision 
 rather than deleted (`inst-pl-abandon`, **D-145**, 2026-08-02), so the ETag a caller holds
 against `plan/N` can never be tested against a *different* row that reused the name.
 
-**A third Foundation-owned refusal belongs on this table, and nothing on it raises the refusal
-yet** (**D-145 as amended 2026-08-02**). Every surface above names a `planId`, and one plan
-answers none of them: the plan whose **only** revision is `abandoned` — created, discarded before
-its first publish, and thereafter holding no current revision, no open draft and no way to obtain
-either (`inst-pl-abandon`). `POST /bss-pricing/v1/plans` retried with that id collides on the
-`(plan_id, revision)` primary key; `PATCH` and `POST …/publish` find no current revision to open a
-successor from; `POST …/abandon` finds no open draft. All four are refused
-`PLAN_ABANDONED_NO_SUCCESSOR` (422, Foundation §3.3, **referenced here and never redefined** —
-R-11) rather than `PLAN_RETIRED_NO_SUCCESSOR`, which would assert a retirement that never
-happened, or `LIFECYCLE_FORBIDDEN`, which D-146 leaves holding the refusals that describe no
+**A third Foundation-owned refusal belongs on this table, and three surfaces owe it**
+(**D-145 as amended 2026-08-02**; the arm list corrected by **D-172**, 2026-08-03). One plan
+answers none of the authoring surfaces above: the plan whose **only** revision is `abandoned` —
+created, discarded before its first publish, and thereafter holding no current revision, no open
+draft and no way to obtain either (`inst-pl-abandon`). `PATCH` and `POST …/publish` find no
+current revision to open a successor from; `POST …/abandon` finds no open draft. All three are
+refused `PLAN_ABANDONED_NO_SUCCESSOR` (422, Foundation §3.3, **referenced here and never
+redefined** — R-11) rather than `PLAN_RETIRED_NO_SUCCESSOR`, which would assert a retirement that
+never happened, or `LIFECYCLE_FORBIDDEN`, which D-146 leaves holding the refusals that describe no
 alternative action; this one describes one, and the operator can act on it — the id is spent, so
-mint a new plan and stop retrying this one. **The refusal is owed by whoever builds this table**:
-the gear has no authoring REST surface at all yet, the storage layer beneath it answers the first
-arm with an internal fault and the others with a not-found, and turning both into this
-precondition refusal is work for the group that lands these endpoints (**G7, authoring REST**, on
-`bss/pricing-impl`), not a change to the repositories, which are correct as written.
+mint a new plan and stop retrying this one.
+
+**Two surfaces on this table do *not* owe it, and the first draft of the paragraph above said
+otherwise about both** (**D-172**, 2026-08-03, found while building the surface). It opened
+"every surface above names a `planId`" and then listed `POST /bss-pricing/v1/plans` first — the
+one row here that names **no** `planId`. Its stated mechanism, a retry "with that id" colliding on
+the `(plan_id, revision)` primary key, presupposed a **caller-supplied** plan id, and
+[`01-foundation.md`](./01-foundation.md) §4.3 says the opposite in as many words: a plan id is
+minted server-side. A retried create carries an `Idempotency-Key` and no plan id, and is answered
+by the replay path, so the collision is real in storage and reachable by no caller; the arm is
+struck. In the other direction the enumeration was silent about `GET
+/bss-pricing/v1/plans/{planId}`, which **does** name a `planId`: it answers **404**, this gear's
+ordinary absent-or-out-of-scope answer, because the route serves the plan's *editable* revision
+(D-170) and there is none — what is absent is the representation this route offers, not the plan,
+whose abandoned revision the Slice-12 history surface still shows. Extending a precondition
+refusal to a read was rejected: it would make a `GET` answer 422 for a resource that exists, and
+tell a caller about a precondition on a call that has none. **The refusal is raised** (2026-08-03):
+the authoring REST surface this table described and the gear did not have has landed on
+`bss/pricing-impl` as Group **G7**, which discriminates the spent plan on all three arms, in
+process and on the wire, without changing the repositories beneath.
+
+**What a plan route addresses, and the tag that names it** (**D-170**, 2026-08-03, found while
+building the surface). The `GET` row above serves the plan's **editable revision** — its open
+draft revision when it holds one, its current revision otherwise. "Draft for authors; published
+via read model" was a statement about where published content is *consumed*, never that this read
+hides it: an author opening a plan to revise it must see what is current before a draft exists,
+and the read model answers a different question (a frozen per-`CatalogVersion` projection reached
+by a pin, Foundation §4.4). Because the route therefore resolves to one of **two** revisions whose
+version counters are unrelated, its `ETag` names **both** — the revision and that revision's row
+version, rendered `"<revision>-<version>"` — and every mutating verb on this table binds it:
+`PATCH` requires the tag to name the revision it will edit (the open draft, or, on the arm that
+opens a successor, the **current** revision the caller actually read), and `POST …/abandon`
+requires it to name the draft it will tombstone. A mismatch in either component is `STALE_VERSION`
+(409, Foundation §3.3, referenced not redefined) — the same refusal in substance, and **nothing is
+minted**. Without the revision component a tag read from revision *N* satisfied the compare-and-swap
+on *N+1* with no race at all, a freshly opened successor standing at the same initial version as a
+first draft: the lost update D-145 removes from storage, arriving through the revision instead of
+the number. The tag is **opaque** to the caller — copied back verbatim into `If-Match` (D-171),
+never constructed or parsed.
+
+**A `PATCH` carries exactly one facet** (**D-173**, 2026-08-03, found while building the surface).
+The Purpose cell named four — cycle, phases, add-ons, descriptors — and this slice's storage
+cannot apply them as one: the cycle lives on the plan revision row and the other three in the
+revision-scoped child tables of §6 (D-83/D-106), and **all four** are versioned against the
+revision's single row version and each advances it. A request carrying two facets can therefore
+match the caller's `If-Match` on the first and cannot match it on the second, and applying them in
+sequence leaves a **visibly half-applied revision** between two transactions — the state
+[`01-foundation.md`](./01-foundation.md) §4.2's commit refuses on the publish plane for the same
+reason. More than one facet is a malformed request under the Foundation validation envelope (400,
+**no new code**), and the response names the facets presented; an author changing four facets makes
+four calls, each with the tag the previous one returned. **The capability is named, not dropped**:
+a coherent multi-facet update is one operation applying every presented facet inside one
+transaction against one tag and advancing it once, and this set has designed neither its request
+shape nor its partial-failure report. It is owed by whichever wave next changes the draft patch
+shape, and it is owed to a **design decision**, not to a test suite. Rejected: versioning the four
+facets separately, one tag per child table, which contradicts D-83's copy-on-new-revision model
+and hands an author four tags for one revision; and taking the first facet and ignoring the rest,
+which produces a plan whose author believes it holds a change it does not.
 
 **The abandon surface is what gives that transition its author-driven caller** (**D-145**,
 2026-08-02, consolidation pass). `inst-pl-abandon` admits two discard paths — by the revision's

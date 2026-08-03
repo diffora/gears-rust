@@ -542,6 +542,90 @@ separately-justified commit — never a way to make a failing change look green.
     either direction; `wording`, `preview`, `authorable` and `going` are the right words for
     the sentences they are in. Per-id record beside `PINNED_TRIAGE_PRICING`.
 
+18. **2026-08-03, eighteenth capture — after the D-170…D-174 docs wave.** Document movement
+    only, no checker change. This is the **sixth implementation-side wave** and the one that
+    closes Phase 2, raised by building Group **G7** — the gear's **REST surface**: the nine
+    authoring routes, their preconditions, their authz gate and the `OpenAPI` registration a
+    client is generated from. Where G3 (tenth capture) found rules the set does not state, G4
+    (thirteenth) rules it states and cannot enforce, G5 (fourteenth) the set contradicting
+    itself and promising values with no producer, and G6 (sixteenth) rules decidable only
+    under premises nobody had written down, **G7 found the set stating a contract and never
+    stating its transport.** Five decisions — D-170 what a plan route addresses and the
+    revision-qualified tag that names it; D-171 `If-Match` and `Idempotency-Key`, the two
+    header names the set had never written down; D-172 the spent-plan refusal's arm list
+    corrected (the create names no plan id, the read answers 404); D-173 one facet per `PATCH`
+    with the multi-facet operation named as undesigned; D-174 the idempotency digest taken over
+    the parsed request rather than the received bytes — plus three mechanical fixes carrying
+    no id.
+
+    **The finding set did not move.** `live-text.txt` and `live-json.json` are byte-identical
+    and were re-captured to no effect; `live-show-known-debt.txt` differs **only in line
+    numbers** — the same 21 `P1/propagation-missing` members, every one shifted **uniformly
+    +5**, one per status-board row the five decisions added, and the member set is identical
+    modulo those numbers. Live findings unchanged at 2 (both rating-side), suppressed unchanged
+    at 59; `--gear gears/bss/pricing/docs --auto-context` still reports 0 live and 59
+    suppressed, so no pinned-debt member was paid down and none was added. **No wire code was
+    minted** — every refusal this wave decides is one the set already declares (`STALE_VERSION`
+    for a tag naming the wrong revision, `PLAN_ABANDONED_NO_SUCCESSOR` on three arms instead of
+    four, and the validation envelope's codeless 400 for an absent header, a second facet and
+    an undecodable cursor) — so `P3/code-unreferenced` has nothing to gain or lose. The
+    fifteenth entry's near-miss was watched for and did not recur: nothing in this wave names a
+    pinned unreferenced code, because a pin paid down by a register mention rather than by the
+    rule that raises it is a pin paid by nothing.
+
+    **The triage pin moved: `no-region` 4 → 3, `suspicious:multi-region` 49 → 52,
+    `suspicious:weak-coverage` 19 → 17, judged 68 → 69, `anchored:no-account` and the total
+    unchanged (5, 77).** **Four movers**, each diffed per-id against the pre-wave tree
+    (`f8f3ed51`) in a detached worktree. There is **no `DF_CUTOFF` component for the third edit
+    running**: checked exhaustively over the 4,923 terms both trees share, **zero** crossed the
+    cutoff in either direction, and the two terms that have oscillated around it in earlier
+    captures both moved further inside (`catalog` 0.24685 → 0.24626, `same` 0.25105 → 0.25707).
+    All four are region gains, and four controlled runs split them **3 + 1**:
+
+    - **Three gained the D-72 digest or the register preamble and nothing else** — the
+      `mentions` class. `fr-approval-threshold-policy` (weak → multi) gains `DESIGN.md:499-510`
+      at 82/138 = 0.594 → 86/138 = 0.623 on `direction`, `routes`, `multi` and `regardless`;
+      `fr-tenant-brand-isolation` (weak → multi) gains both summary windows on `authz` and
+      `mutating`, against a **22-term** declaration where one term is worth 0.045; and
+      `fr-priceoverlay-authoring` (weak → multi) gains both on `stack`, `discards`, `layer`,
+      `strictly` and `tariffs`. The last is the only mover of the four whose new region says
+      anything about its own subject — both windows carry the wave's standing-list correction,
+      which *is* about the overlay stack — but what it says is a **status fact about a fork**
+      (D-138 closed the `fixed` arithmetic; the sort direction survives as its own row), not a
+      statement of the authoring rule, so `mentions` remains the expected verdict.
+    - **One is a design slice, and it is the whole of the judged-share increment.**
+      `nfr-event-propagation` (no-region → weak) gains `design/01-foundation.md:487-498` at
+      11/17 = 0.647, up from 10/17 = 0.588 on the **same window with the same line numbers**.
+      **One term: `within`**, from D-174's *rejected-alternative* clause quoting §3.3's
+      "additive-only **within** a major version", against the requirement's own "MUST reach
+      downstream consumers **within** 5 seconds at p95". The window's other ten matched terms
+      are `pricing_outbox`'s bullet — frozen event names, dedup/correlation keys,
+      `(tenantId, aggregateId)` ordering — which is genuinely this requirement's neighbourhood,
+      is unchanged by this wave, and was sub-threshold before it. D-174 created no account; it
+      tipped an old one over 0.6 on a preposition.
+
+    Four controlled runs settle it. (i) Pre-wave tree with **only** `DESIGN.md` and
+    `DECISIONS.md` replaced: the three summary movers and nothing else. (ii) Pre-wave tree with
+    everything **except** those two replaced — the propagation edits in three design slices and
+    the PRD: `nfr-event-propagation` and nothing else. (iii) Post-wave tree with the D-174
+    sentence removed **in place** from the `pricing_idempotency_dedup` bullet (one enormous
+    line, so every line number stays identical): `nfr-event-propagation` reverts, which is what
+    proves it is content and not the grid. (iv) Pre-wave tree with **26 blank lines** inserted
+    at §3.3 — the exact shift this wave puts above §3.7, with no content at all: **zero** of the
+    four movers, so the grid contributes nothing to any of them; its one effect of its own is
+    `fr-supersession` weak → no-account, which the wave's real content cancels, that requirement
+    having now sat within a hundredth of the threshold on the same §3.7 window for two
+    consecutive waves on terms that say nothing about supersession.
+
+    **The judged share is now 69/77 = 90%, the seventh consecutive wave to grow it — and the
+    first whose increment is not the digest or the preamble.** The three weak → multi moves are
+    judge-neutral, both classes being in `JUDGED`, so the entire +1 arrives from a normative
+    slice. That is a change in the *shape* of the signal rather than in its direction: the cause
+    is still not an account, but the vehicle is no longer only the two documents a wave is
+    obliged to grow. Recorded as a measurement-health signal, not tuned away — nothing was
+    reworded in either direction, and `within`, `authz`, `direction` and `stack` are the right
+    words for the sentences they are in. Per-id record beside `PINNED_TRIAGE_PRICING`.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:
