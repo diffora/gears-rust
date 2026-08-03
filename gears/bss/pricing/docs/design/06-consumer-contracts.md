@@ -307,6 +307,18 @@ keyed `(tenant_id, catalog_version, subject_kind, subject_ref)` with no tenant- 
 contract-level subject to hold a free-floating pair. They are launch-constant, tenant-wide
 values, so riding the plan subject costs nothing and keeps the resolution rule uniform — a
 consumer reading a plan already has them; no new `subject_kind` is introduced for two constants).
+**The pair is stamped as a pair or not at all (normative, D-168, 2026-08-03, found while
+building the read side).** The policy value is named verbatim here; the warning **text** is
+named in no document of this set, so a projector has one half of a two-field contract and
+nothing to put in the other. Publishing the named half alone would freeze half a contract into
+an immutable version, and inventing the other half would freeze a value no document declares —
+D-161 clause (1)'s ban on a fabricated segment, one artifact over, and worse here because a
+frozen version can never be corrected. So until the text has a declared source **neither** field
+is projected, and a version answers this contract with nothing rather than with half of it.
+**Where the text comes from is an open fork for the product owner** — a declared launch-constant
+string, a per-tenant configurable on `pricing_policy_object` (D-152's carrier, itself
+provisional), or dropping the field so the marker's consumer renders its own copy — and it is
+recorded with its options and the recommendation in [`../DECISIONS.md`](../DECISIONS.md) §F.1.
 
 ## 7. Events & Alarms
 
@@ -416,7 +428,7 @@ Integration (testcontainers):
 - [ ] A plan without `allowedChangeTargets` reads as no-self-service-change (field absent, not defaulted)
 - [ ] `usageCounterOnPlanChange` round-trips frozen (D-113): unset publishes as `reset`; a `carry` target plan sharing a `(meter, dimensionKey)` line with matching unit fields reads `carry` for that line, while the same pair with a `per_hour` vs `per_day` mismatch resolves `reset` for it (the check runs Rating-side over both frozen snapshots — this AC pins the published inputs)
 - [ ] Grant set resolved from `PlanTier` publishes both the reference and the resolved set
-- [ ] The read model exposes `crossBoundaryChangePolicy = cancel_plus_new` + `crossBoundaryWarningText` on every resolved `plan` subject row (not as a subject-less contract-level record — the D-91 keying has no such subject)
+- [ ] The read model exposes `crossBoundaryChangePolicy = cancel_plus_new` + `crossBoundaryWarningText` on every resolved `plan` subject row (not as a subject-less contract-level record — the D-91 keying has no such subject). **Both, or neither** (D-168, §6): a version carrying the policy without the text is a failure of this AC, not a partial pass — the text has no declared source yet, so the AC is unsatisfiable until §F.1's fork closes and that is the state it records
 
 Conformance (joint, K5):
 

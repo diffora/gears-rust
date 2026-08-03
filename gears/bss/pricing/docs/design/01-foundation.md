@@ -75,9 +75,9 @@ stale) on read-model outage.
 | `cpt-cf-bss-pricing-fr-plan-versioning` | A price/tier change versions the `Plan` and writes **new** immutable `pricing_price` rows; prior rows are retained as history; bound subscriptions continue on their frozen snapshot until renewal or migration. |
 | `cpt-cf-bss-pricing-fr-supersession` | Supersession is versioning scoped to **one canonical scope key**: a new immutable row plus opening/closing the corresponding `PriceWindow` (never an in-place mutate, never an overlap), within one `priceEligibility` class and one `chargeKind`. |
 | `cpt-cf-bss-pricing-fr-pricing-snapshot` | Publish stamps the catalog-side identifiers sufficient for the manifest `pricingSnapshotRef` (resolved price ids + evaluation-policy version + the **pending** version ref, finalized to the committed `CatalogVersion` on `CatalogVersionPublished`); posted periods never re-query mutable rows; the catalog-side view MUST NOT diverge from the Tariffs composition SoR. |
-| `cpt-cf-bss-pricing-fr-consumer-readmodel-resolution` | The projected read model is **monotonic per `CatalogVersion`** (a version is **pin-eligible** only once `CatalogVersionPublished` has fired, **every** subject row it projects is warm-complete — D-101 — **and every earlier version is itself pin-eligible** — D-114: pin-eligibility is a prefix-closed frontier); consumers resolve exact published values with no draft read and no default substitution; a rating run pins one pin-eligible version and the pin never lags the newest pin-eligible version by > 5s. |
+| `cpt-cf-bss-pricing-fr-consumer-readmodel-resolution` | The projected read model is **monotonic per `CatalogVersion`** (a version is **pin-eligible** only once `CatalogVersionPublished` has fired, **every** subject row it projects is warm-complete — D-101 — **and every earlier version is itself pin-eligible** — D-114: pin-eligibility is a prefix-closed frontier). **Both quantifiers range over this tenant's refs (D-164, §4.4):** `CatalogVersion` is a cross-tenant sequence, so a tenant's committed versions are a sparse subset of it, and read globally neither "every subject row" nor "every earlier version" is a set this tenant can ever satisfy. Consumers resolve exact published values with no draft read and no default substitution; a rating run pins one pin-eligible version and the pin never lags the newest pin-eligible version by > 5s. |
 | `cpt-cf-bss-pricing-fr-catalogversion-increment` | On every `PlanPublished` the Foundation requests addressability; the registry is the **sole** incrementer and MAY batch approved publishes; `PlanPublished` carries a **pending** ref and the snapshot pins the committed version on `CatalogVersionPublished`. |
-| `cpt-cf-bss-pricing-fr-publish-fanout-atomicity` | Post-commit read-model warming retries to the 5s SLO or marks the publish degraded (`PlanPublishDegraded`); no state exposes a rateable-but-incomplete plan; the pre-commit batching delay is governed by the max batching-delay SLO, not by degraded handling. |
+| `cpt-cf-bss-pricing-fr-publish-fanout-atomicity` | Post-commit read-model warming retries to the 5s SLO or marks the publish degraded (`PlanPublishDegraded`); no state exposes a rateable-but-incomplete plan; the pre-commit batching delay is governed by the max batching-delay SLO, not by degraded handling. **That separation is only measurable because the ref row records when this gear learned the version had committed (`commit_observed_at` — D-166, §3.7/§4.4):** from `requested_at` alone the 5s clock measures the batching delay, and every publish behaving exactly as D-47 budgets is marked degraded. |
 | `cpt-cf-bss-pricing-fr-event-contract` | A **frozen event-name set** (`PlanCreated`, `PlanUpdated`, `PlanPublished`, `PlanRetired`, and conditionally `PlanMigrationScheduled`, `PlanPublishDegraded`, `BundleUpdated`, `PriceCreated`, `PriceUpdated`, plus the manifest `PriceWindowScheduled`/`Activated`/`Expired`/`Cancelled` — produced by this gear since the window consolidation, D-03) emitted from a transactional outbox, ordered per `(tenantId, aggregateId)`, at-least-once, carrying correlation/idempotency keys. |
 | `cpt-cf-bss-pricing-fr-price-amount-validation` | Amount ≥ 0, valid ISO 4217, precision = the currency's ISO 4217 minor unit; a missing `(currency, region)` row fails closed (no implicit FX). |
 | `cpt-cf-bss-pricing-fr-mutation-idempotency` | Plan/Price create/update accept a client idempotency key; a duplicate returns the original outcome without a second mutation. |
@@ -87,7 +87,7 @@ stale) on read-model outage.
 
 | NFR theme | Allocated To | Design Response | Verification / Status |
 |-----------|--------------|-----------------|-----------------------|
-| Publish → read-model propagation (p95 ≤ 5s) | Publish engine + outbox + read-model warmer | Batched `CatalogVersion` commit; retry-to-SLO warm or `PlanPublishDegraded`; pin never lags newest completed by > 5s | Load test on the publish→warm path; batching-delay SLO **ratified (D-47: p95 ≤ 60s, max 5 min; interactive ≤ 5s)** ([`../PRD.md`](../PRD.md) §15) |
+| Publish → read-model propagation (p95 ≤ 5s) | Publish engine + outbox + read-model warmer | Batched `CatalogVersion` commit; retry-to-SLO warm or `PlanPublishDegraded`; pin never lags newest completed by > 5s. **The 5s clock starts at `CatalogVersionPublished`, and until D-166 no store in this gear recorded that instant** — `committed_at` is stamped by the finalize, which never runs on the failing path, so the one measurable duration was `requested_at → now`, i.e. the batching delay | Load test on the publish→warm path; batching-delay SLO **ratified (D-47: p95 ≤ 60s, max 5 min; interactive ≤ 5s)** ([`../PRD.md`](../PRD.md) §15). In-gear measurement is against `commit_observed_at` (D-166), an upper bound lagging the true commit by at most one sweep tick; the registry supplying its own commit instant is the accurate form and is the owed cross-gear half |
 | Read / preview latency (p95 < 100ms per tenant partition) | Read-model projection store | Single indexed, version-pinned read; no evaluation on the read path | APM on read APIs |
 | Determinism / reproducibility | Snapshot + append-only history | Complete frozen `pricingSnapshotRef`, monotonic per version, append-only rows | Design + integration test (later-version publish does not alter a prior snapshot) |
 | Read-model availability / DR RPO-RTO | Read-model store + topology | Fail-closed on outage (never stale); 99.9% / RPO 5m / RTO 30m | Committed — ratified 2026-07-28 ([`../PRD.md`](../PRD.md) §14) |
@@ -422,13 +422,24 @@ later leaves the payload empty. It buys that with a **network round-trip inside 
 transaction**, bounded by a `request_id` derived from `(tenant_id, plan_id, revision)` — a
 retried commit re-requests the same handle instead of orphaning one — and by asking the one
 permanently-unpublishable case (a retired predecessor) *before* the request. The registry batches approved publishes and emits
-`CatalogVersionPublished`; the ReadModelProjector warms the projection and marks completion, or
+`CatalogVersionPublished`. **A batch commits atomically into one version, and that is a
+property of the registry contract rather than an assumption of this gear (normative, D-163,
+2026-08-03, found while building the read side):** one batch, one version, one event, so a
+version's subject set is **closed** the moment any one of its refs commits and the only open
+question about that version is warmth. §4.4's pin-eligibility is not decidable without it —
+"every subject row that version projects" names a set nobody can enumerate while the set is
+still growing. The ReadModelProjector warms the projection and marks completion, or
 the publish is marked degraded (`PlanPublishDegraded`). `pricingSnapshotRef` pins the committed
 version. No intermediate state exposes a rateable-but-incomplete plan. A
-`pricing_catalog_version_ref` still `pending` past the max batching-delay SLO raises a
+`pricing_catalog_version_ref` still `pending` **and not yet observed committed** past the max
+batching-delay SLO raises a
 Critical alarm (`pricing.catalogversion.commit_overdue`) and surfaces on the publish status
 API; a `CatalogVersionPublished` batch that omits an expected pending ref is treated the same
-— remediation is a registry re-request, never a silent re-emit.
+— remediation is a registry re-request, never a silent re-emit. **The qualification is D-166's
+and it is what keeps the three signals disjoint:** a ref whose version this gear *has* observed
+committed is no longer waiting on the registry, and a warm that then fails to land is
+`PlanPublishDegraded`'s condition (§4.4), not this alarm's. Neither state goes unreported —
+`pricing.readmodel.pin_eligibility_overdue` (§4.4) covers a frontier held by either.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-seq-readmodel-resolution-fnd`
 
@@ -453,8 +464,8 @@ only, including slice-owned tables in every other slice design.
 - **`pricing_price`** — `price_id` (PK), `tenant_id`, the **canonical scope-key columns** (`plan_id`, `currency`, `region`, `price_overlay`, `phase`, `price_eligibility`, `charge_kind`, `cohort` — `none` unless `existing_grandfathered`, ADR-0002), `amount_minor`, `model_kind`, `tax_inclusive`, `billing_timing` (recurring), evaluation-policy columns (usage), `rounding_policy_ref` (nullable named rounding-policy id — PRD §17.4: publish resolves the row-level reference, else the tenant default from `pricing_policy_object`, else fails `ROUNDING_POLICY_UNRESOLVED`; the **resolved** policy id freezes into the read model / snapshot, definition + application stay downstream in Tariffs/Billing), `tax_category_ref` (nullable — Slice 4's column and the sole per-row source of truth, D-110; **the resolved *effective* category freezes into the read model / snapshot exactly as the rounding policy does** — **D-154**, 2026-08-03: the descriptor contract owes Billing a category it can post without re-querying, and the fallback half of that value lives in the mutable per-`(tenant, region)` region taxonomy), `grandfather_until`, `supersedes_price_id`, `lifecycle_state`, `created_by` (pseudonymous authoring principal — the history-export actor field, Slice 12), **ETag/row-version** — the row's **own** optimistic-concurrency token (**D-141**, 2026-08-02, found while building the draft-authoring plane). It is never derived from the plan's: a per-row bulk conflict means nothing if every row of a plan shares one version, and three surfaces already required the token to be per price row while this section declared it on `pricing_plan` alone — S3 §5's `PATCH …/prices/{priceId}`, the bulk import's "existing **draft** rows under **their** ETags" whose conflict fails "**only that row**" ([`12-operator-efficiency.md`](./12-operator-efficiency.md) `inst-bk-phase2`, D-118), and `inst-co-single-pending`'s "**ETag protects rows**, this rule protects change units" ([`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md)) — so a reader building the table from here gave `pricing_price` no version column at all and all three rules became unimplementable. **Every** mutating verb on a `draft` price row presents it: `PATCH` (unchanged) and `DELETE` (new — its S3 idempotency cell was empty, so a draft row could be destroyed under an unknown version, reopening on the one verb that leaves nothing behind to reconcile the lost update `fr-concurrent-edit` closes for `PATCH`). A mismatch is `STALE_VERSION` (§3.3); an absent precondition is a malformed request under the existing validation envelope — **no new code**. The scope is deliberately `pricing_price` draft rows: `DELETE …/price-windows/{windowId}` carries an empty cell too and is **not** moved, because window cancellation is an always-material publish unit (D-62, D-99) whose concurrency is governed by `inst-co-single-pending`. **Two partial `UNIQUE` indexes over the scope key, one per plane, with disjoint predicates.** (1) The **published**-plane index (`WHERE lifecycle_state = 'published'` — sufficient on its own under the flip-at-commit rule (§4.3: the predecessor reads `superseded` the instant its successor commits), and the only expressible form anyway — a partial-index predicate sees the row's own columns, and the supersession link lives on the **successor** row; 2026-07-30 review fix) enforces at most one current row per key — **temporal `PriceWindow` non-overlap and coverage are enforced by the publish-time validation pipeline (Slice 7, gear-owned per D-03), not by this index**, so a **superseded** predecessor (its window still active until the changeover) and its published successor with a scheduled window legally coexist. (2) The **draft**-plane index (`WHERE lifecycle_state = 'draft'`) guards the authoring plane (**D-148**, 2026-08-02, found while building it). Nothing covered that plane, while D-21 puts scope-key duplication in the **save-time** row-local set — a check decided by a read — so two concurrent creators on one key both read "absent", both insert, and the duplicate goes undiscovered until one of them publishes, at which point the operator is told, correctly and uselessly, that a row they authored days ago collides with one they cannot see. That is the opposite of what D-21's save-time placement is for. Under the index, D-21's read stays the fast, explanatory path and the index becomes the guarantee — the read-then-index arrangement the published plane already has — and a violation renders as the existing `DUPLICATE_SCOPE_KEY` (§3.3): **no new code**. The two predicates are disjoint by construction, so a draft successor legitimately coexists with the published row it will supersede, and the only-expressible-form argument above is untouched — it was an argument about which rows the *published* index can see, never an argument against a second predicate. **Nor can a staged composition put a *second* draft on the key** (verified 2026-08-02 against the composition paths, recorded in D-148's body): the supersession unit composes only on a key whose predecessor window it can shorten ([`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) `inst-su-compose`, which fails compose on a dormant key), so the key already carries a `published` row — which is exactly what makes a hand-authored draft on it impossible, refused at save as a duplicate active scope key ([`03-price-structure.md`](./03-price-structure.md) `inst-pr-return`, D-21) and refused per-row on the bulk plane (`IMPORT_TARGETS_PUBLISHED`, D-118); a second *unit* on a held key is refused by `inst-co-single-pending`, and both bulk mechanisms fail per-row against a pending one (`inst-bk-phase1`, `inst-mp-pending`, D-35). The cutover stages nothing here at all — it is "not a table" but an approval-unit payload, and its successor is **inserted** on the published plane inside the commit (D-100), its grandfathered copy landing on a **new generation key** (`inst-co-copy`). So this index refuses exactly what D-21's save-time read cannot catch and nothing else: two concurrent creators on a key no published row occupies. Rejected: widening the published index to `IN ('draft', 'published')`, which would make a draft successor collide with the very row it supersedes. Consequence for bulk import (D-118 — draft plane, per-row commits): a batch carrying two rows on one key now fails the second **on the index** rather than admitting both, and `inst-bk-phase1`'s per-row report names that case. Append-only via `REVOKE UPDATE, DELETE` + `BEFORE UPDATE/DELETE` trigger with a **column whitelist**: the trigger rejects any UPDATE of a published row except (a) `lifecycle_state` transitions permitted by the state machine (`published → superseded` on supersession/cutover) and (b) monotonic tightening of `grandfather_until` (setting it when null, or moving it earlier); all price/scope/model columns **and the row-version column** are immutable and DELETE is always rejected — controlled transitions run through the engine's transition path, never ad-hoc SQL. **The draft plane is guarded for transitions too (D-153, 2026-08-03).** A column whitelist is scoped to *published* rows by construction, so it says nothing about where a **draft** row may go, and the price row's state machine ([`03-price-structure.md`](./03-price-structure.md) §4) has exactly one edge out of `draft` — to `published`. A draft row moved straight to `superseded` would satisfy every constraint on this table and land **outside both** partial `UNIQUE` predicates above: its key would read free on the published plane *and* on the draft plane, so the guarantee D-148 had just bought — the second concurrent creator is refused — is undone by one UPDATE, and `inst-ps-nodelete` then makes the ghost undeletable, on a key no supersession chain reaches because the row was never current. The trigger therefore constrains the draft row's `lifecycle_state` as well: `draft → draft | published` and nothing else, exactly as `pricing_plan`'s does for its own state set (`draft → draft | published | abandoned`, D-145). **No new code** — no API offers the transition and no caller can provoke it; this is the physical floor under a state machine the engine already honours, the same posture as the D-148 index. **The row version freezes with the published row's content (D-141, 2026-08-02).** It joins the frozen whitelist beside the price/scope/model columns, and neither sanctioned in-place mutation moves it: not the `lifecycle_state` flips, not the monotonic `grandfather_until` tightening. An entity tag that moved under a representation the engine forbids changing would tell a client its cached copy is stale when it is not, and the tag exists for the **draft** plane, where content really does change and D-141's precondition rule binds; on the published plane there is no caller-driven mutation for a precondition to guard, which is why that rule is scoped to draft rows.
 - **Price history** — history is the set of superseded rows retained **in `pricing_price` itself**, keyed by `supersedes_price_id`; no rows are ever moved or deleted (no separate history table).
 - **`pricing_read_model`** — the projected frozen view keyed by **`(tenant_id, catalog_version, subject_kind, subject_ref)`** with a per-row `warm_completed` marker; monotonic per `catalog_version`. **Storage is a per-subject delta (D-86, 2026-07-30; subject-typed by D-91, 2026-07-31)**: `subject_kind ∈ {plan, price_overlay, overlay_index, group_membership}` (extensible), and a version's rows are exactly the subjects of the publish units that produced it — never a full tenant copy (≤ 5s interactive coalescing would explode one). A plan publish projects its plan-subject row (`subject_ref = plan_id`, exactly the D-86 semantics); a **`PriceOverlay` publish unit projects one overlay-subject row** (the overlay document: lines, amounts, dating, disclosure, lifecycle) and **never re-projects targeted plans** — Tariffs joins overlays to base rows at evaluation per the §9.2 contract, so a `global`-scope overlay commit writes one row, not a tenant's worth; a **membership publish unit projects one membership-subject row** per payer record (D-06's units thereby have a defined read-model representation). An overlay publish unit additionally re-projects an **`overlay_index`** subject — the live overlay id set with each overlay's interval and precedence (**D-112**, 2026-07-31 review fix): per-subject resolution answers "overlay X at pin V" but evaluation needs the *set*, and without an index the only path was a `DISTINCT subject_ref` scan over ≥ 7 years of overlay deltas on the order-time p95 < 100ms path ([`09-price-overlays.md`](./09-price-overlays.md) §7). **The index is sharded and horizon-bounded (D-133, 2026-08-01 review fix):** `subject_ref = (scope_class, scope_value)` (a `global` sentinel value for the classless one), and a shard carries only overlays whose own interval intersects `[projection_time − H, ∞)` on the D-121 horizon. D-112's accounting — "two delta rows per commit, still O(publish units)" — counted **rows and not bytes**: as a single tenant-wide document the index was O(live overlay count) per row, rewritten whole on every commit and retained on the ≥ 7-year truth horizon, i.e. O(commits × overlays) of storage and O(overlays) of write amplification per commit, on the object the order-time read path touches. Sharded, a commit rewrites exactly one shard (two, when a revision moves the overlay's scope value), and an evaluation reads the ≤ 6 shards its payer context can match as point lookups. Resolving `(pin V, subject S)` reads S's row with the greatest `catalog_version ≤ V` whose `warm_completed` is set (one indexed read on `(tenant_id, subject_kind, subject_ref, catalog_version DESC)`, inside the p95 < 100ms budget). **Retention**: delta rows are retained on the same horizon as the append-only truth history (≥ 7y, jurisdiction-configurable, audit-aligned) — growth is O(publish units), the truth tables' own order; compacting superseded deltas beyond the horizon is an ops knob, never a semantics change. **Per-delta size** is bounded by the D-121 projected-set rule (§4.4): a plan delta carries the rows/windows intersecting the `H` horizon, never the plan's whole accumulated history.
-- **`pricing_catalog_version_ref`** — `pending` vs `committed` version linkage per publish, **plus the subject the publish unit projects: `subject_kind` + `subject_ref`** (**D-157**, 2026-08-03, found while building the publish commit). The kinds are `pricing_read_model`'s own universe above — `plan | price_overlay | overlay_index | group_membership`, extensible — deliberately not a second spelling of the same aggregates, so the projector's input and its output are keyed alike. Without them the projected-row-set rule one bullet up is unimplementable: a version's rows must be "exactly the subjects of the publish units that produced it" (D-86/D-91, §4.4), and the ReadModelProjector arrives at `CatalogVersionPublished` holding **committed refs** — with no subject on the ref row there is no path at all from a handle back to what it published. Rejected as the carrier: the **outbox** row, whose `aggregate_id` is the plan and whose payload holds the handle, so the join exists — but that makes a delivery queue the projector's durable index, and the first compaction of delivered history removes the projector's input; and re-deriving the subject set from the truth tables at `CatalogVersionPublished`, which re-reads a world that has moved (the D-155 defect, one section over). **Owed by Slice 9:** one column pair holds **one** subject and an overlay publish unit projects **two** — the overlay document and the D-112/D-133 `overlay_index` shard, three rows when a revision moves the overlay's scope value — so that build widens this to a subject **set**.
-- **`pricing_pin_frontier`** — PK `tenant_id`; `catalog_version` + `advanced_at`. The materialized **pin-eligibility frontier** (D-136, §4.4): advanced only forward, and only by the ReadModelProjector inside the transaction that completes the frontier's next version in order. It is what `GET /bss-pricing/v1/catalog-version/frontier` serves, what the ≤ 5s pin-lag rule is measured against, and what `pricing.readmodel.pin_eligibility_overdue` reads — the D-101/D-114 predicate is otherwise a recursive scan of the delta store on the p95 < 100 ms path, with no owner and no surface.
+- **`pricing_catalog_version_ref`** — `pending` vs `committed` version linkage per publish, **plus the subject the publish unit projects: `subject_kind` + `subject_ref`** (**D-157**, 2026-08-03, found while building the publish commit). The kinds are `pricing_read_model`'s own universe above — `plan | price_overlay | overlay_index | group_membership`, extensible — deliberately not a second spelling of the same aggregates, so the projector's input and its output are keyed alike. Without them the projected-row-set rule one bullet up is unimplementable: a version's rows must be "exactly the subjects of the publish units that produced it" (D-86/D-91, §4.4), and the ReadModelProjector arrives at `CatalogVersionPublished` holding **committed refs** — with no subject on the ref row there is no path at all from a handle back to what it published. Rejected as the carrier: the **outbox** row, whose `aggregate_id` is the plan and whose payload holds the handle, so the join exists — but that makes a delivery queue the projector's durable index, and the first compaction of delivered history removes the projector's input; and re-deriving the subject set from the truth tables at `CatalogVersionPublished`, which re-reads a world that has moved (the D-155 defect, one section over). **Owed by Slice 9:** one column pair holds **one** subject and an overlay publish unit projects **two** — the overlay document and the D-112/D-133 `overlay_index` shard, three rows when a revision moves the overlay's scope value — so that build widens this to a subject **set**. **The instants are named here because the design set's own alarms measure them** (2026-08-03 cleanup, no D-number — §3.6 conditions `commit_overdue` on "a ref still `pending` past the max batching-delay SLO" and named no column to measure the age from): `requested_at`, stamped by the publish commit that asked for the handle, and `committed_at`, stamped by the finalize. **`commit_observed_at` joins them (D-166):** the instant this gear first saw the registry answer for this ref, written when the registry answers and **independently of whether the projection then lands**, which is what makes the post-commit warm SLO — and therefore the degraded condition `fr-publish-fanout-atomicity` states — measurable at all. **The version column is deliberately not unique (D-163):** one version carries the whole batch, so the mapping version → ref is one-to-many and the index over `(tenant_id, catalog_version)` is the projector's every-ref-of-a-version read and the frontier walk's next-version read, never a bijection claim. **The ref also carries the content coordinates its own publish judged (D-165, 2026-08-03):** `subject_revision` and `subject_lifecycle_state`, both nullable because only a revisioned subject kind has them, `subject_lifecycle_state` constrained to the two tokens D-128 sanctions for a projected subject (`published`, `retired`) so `superseded` is not expressible in a ref at all; a `plan` subject arriving without them is **refused**, never defaulted.
+- **`pricing_pin_frontier`** — PK `tenant_id`; `catalog_version` + `advanced_at`. The materialized **pin-eligibility frontier** (D-136, §4.4): advanced only forward, and only by the ReadModelProjector inside the transaction that completes the frontier's next version in order — **and then walked forward through every immediately-following version that is already complete (D-164, 2026-08-03)**, without which a version completed out of order stands complete behind the frontier forever, never seeing another completion to advance on. The PK being `tenant_id` alone is also what settles the reading of D-114's prefix: the walk is over **this tenant's** committed versions, not over the cross-tenant `CatalogVersion` sequence (D-164, §4.4). It is what `GET /bss-pricing/v1/catalog-version/frontier` serves, what the ≤ 5s pin-lag rule is measured against, and what `pricing.readmodel.pin_eligibility_overdue` reads — the D-101/D-114 predicate is otherwise a recursive scan of the delta store on the p95 < 100 ms path, with no owner and no surface. **`advanced_at` is the alarm's referent but not its whole predicate (D-166):** a tenant that has simply not published is stale by construction and is not a fault.
 - **`pricing_policy_object`** — the approval-threshold and tax-display policies (fail-safe defaults), the tenant **default rounding policy** (a named rounding-policy id; optional — a tenant without one simply requires every published row to carry its own `rounding_policy_ref`, per the §17.4 fail-closed rule), the **enforced-migration notice period** (days; default floor 60 — D-49, validated by Slice 11 at scheduling), and **every per-tenant configurable this gear promises** (**D-152**, 2026-08-03, found while building the Slice-2 validators): the descriptor required-set extension (additional required descriptor keys, matched against `pricing_plan_descriptor_set.additional_fields` — S2 `inst-ds-sufficient`, P5) and the §14 soft caps and interval caps (tier bands per row, price rows per plan, `customEveryNDays`/`customEveryNMonths`). Those numbers and that extension were each described as tenant-configurable in a ratified NFR or a pinned assumption while **no document named where they are declared**, so a promise of per-tenant configuration had no carrier and the gear's own configuration section is per **deployment**; this bullet is the carrier, and a tenant with no entry takes the ratified launch default. Nothing here is on a resolution path: these are authoring-time policy reads, like the two that were already here. **The carrier is provisional for those two additions** (the D-152 veto confirmation, 2026-08-03): the product owner confirmed this table as the home of the descriptor required-set extension and the four §14 caps **for now**, and expects them to move to a **settings gear** later. That gear **does not exist in this repository yet** — `gears/simple-user-settings` is *not* it and must not be read as the target: its rows are keyed `(tenant_id, user_id)`, so there is no per-tenant row for a tenant-wide cap at all, it ships two fixed columns (`theme`, `language`), and its own PRD puts settings validation schemas and versioning out of scope. So the destination has to be **built**, and would need a per-**tenant** scope, a typed schema for policy entries (a cap is a bounded integer, the required-set an additive key list), and the authoring authz + audit these reads inherit here from §2.2 / `inst-rb-pep`. Until it exists this bullet is where an implementer finds them, and it is a resting place rather than the argument that a per-tenant cap belongs in a pricing table: build against this carrier, and expect the move.
 - **`pricing_operator_flag`** — operator-plane drift/divergence flags, keyed `(tenant_id, subject_ref, flag)`; set/cleared by the external-signal handlers (audited): `tier_divergent` (Slice 2), `grants_divergent` (Slice 6), the tax-readiness divergence (Slice 4), `meter_binding_divergent` (Slice 2 — a registry metering-unit binding/dimension-set change diverging from a published plan's frozen mapping; 2026-07-31 review fix). **Never part of `pricing_read_model`** (D-85): a drift flag has no publish unit — consumers keep resolving the frozen values; operators read the flags via the authoring surfaces (`plan × read`) and the existing alarms.
 - **`pricing_idempotency_dedup`** — PK `(tenant_id, operation, client_key)`, a request-payload digest, and the two response columns (`response_status`, `response_body`); the at-most-once gate + replay-response source; the idempotency check precedes the ETag check. **The row has exactly two states, and the TTL is evaluated at claim time (normative, D-142, 2026-08-02, found while building the draft-authoring plane).** The shape this bullet described — a hash beside a stored response — could not represent the instant the gate actually needs: the at-most-once gate **is** the primary-key INSERT, so the row must exist *before* the guarded operation has produced any response, and the only way to force the old shape was to seed a fabricated status into a column whose meaning is "this is what the caller was told" when nobody had been told anything. Five clauses. **(1)** The row is `claimed` (both response columns null) or `answered` (both set) and nothing else, with `(response_status IS NULL) = (response_body IS NULL)` enforced **physically** on both backends; the claim INSERT is the gate and precedes the guarded operation, and no synthetic response is ever seeded. **(2)** Expiry is evaluated **at claim time**, against the row as read: there is no reaper, and nothing in this gear deletes a dedup row — the store's **retention** is deliberately not decided here and stands as an open fork in the register; answering it cannot disturb this clause either way, since a row that has vanished is indistinguishable from a key never claimed and the INSERT path simply wins. **(3)** Expiry is evaluated **before** the payload-digest comparison; the reverse order hands the first payload to touch a key ownership of it forever, which makes the ratified 24h TTL (§1.2) unreachable and therefore not a bound at all. **(4)** A takeover of an expired row is a **compare-and-swap on the row as read**, so two racing takeovers cannot both win; the loser claimed nothing and executes nothing. **(5)** `record_response` is **write-once**: a second answer against an `answered` claim is neither an error nor an overwrite but the **replay path**, returning the **stored** response — exactly what `fr-mutation-idempotency` promises a retry, and what keeps an ordinary retry of a request that both exists and succeeded from reaching the caller as a not-found refusal. Rejected: a **reaper** as the expiry mechanism, which turns expiry into a background-timing property that must then race the compare-and-swap; and **seeding a synthetic `202`** at claim, under which the replay path would serve a response the gear invented. **A duplicate therefore has three outcomes, not two (D-143, 2026-08-02, flagged for veto).** A replay with a matching digest returns the stored response; a mismatching digest is rejected with `IDEMPOTENCY_PAYLOAD_MISMATCH` (never replayed, never re-executed); and a duplicate arriving against a `claimed`, unanswered key is refused with `IDEMPOTENCY_KEY_IN_FLIGHT` (409, §3.3). The third outcome is reachable **with no contract violation by anyone** — it is clause (4)'s losing caller, holding a request against a key that is claimed and unanswered, whose payload may differ from the winner's so that neither of the first two promises holds either — which is why stating the one-transaction contract normatively cannot close it, and why the surface layer needed something to say. At-most-once is never violated on that path: the loser executes nothing.
@@ -776,7 +787,26 @@ review fixes; amends D-91's resolution rule, not its storage).** A `CatalogVersi
 **pin-eligible** only once `CatalogVersionPublished` has been emitted, **every subject row that
 version projects carries its `warm_completed` marker**, **and every earlier version is itself
 pin-eligible** (D-114) — pin-eligibility is a **monotonic frontier**, and "the newest completed
-version" — the referent of the ≤ 5s pin-lag rule below — means that frontier's edge. Resolution
+version" — the referent of the ≤ 5s pin-lag rule below — means that frontier's edge.
+
+**Both quantifiers are this tenant's (normative, D-164, 2026-08-03, found while building the
+read side).** `CatalogVersion` is minted by a **cross-tenant** registry, so a tenant's committed
+versions are a sparse subset of the global sequence: read globally, "every earlier version is
+itself pin-eligible" is a condition no tenant can ever satisfy — every frontier in a deployment
+sticks at the first version another tenant's publish consumed — and "every subject row that
+version projects" would make one tenant's unwarm subject hold another tenant's pin. So the
+prefix is over **this tenant's committed refs in version order**, and the subject set is **this
+tenant's subjects of that version**, which is what `pricing_pin_frontier` being keyed
+`tenant_id` alone already assumed and what nothing had said.
+
+**A version's subject set is closed by its first committed ref (normative, D-163).** That
+follows from batch atomicity — one batch, one version, one event (§3.6) — and it is the premise
+the whole predicate rests on: without it "every subject row that version projects" is a set
+still growing while it is being counted. The projector therefore decides completeness only from
+a pass whose knowledge covers that set, and refuses a ref resolving into a version at or below
+the frontier; both are stated with D-163.
+
+Resolution
 stays per subject (greatest completed version ≤ the pin), and under the two rules together the
 per-subject fallback is **never observable at a pinned version**: every subject the pin's
 version touched is warm at it, and every older delta a fallback can reach lies at or below the
@@ -806,6 +836,36 @@ re-derived). It is the **only** definition of "the newest pin-eligible version":
 it from the read-model contract (§3.3) and pin its value, the ≤ 5s lag rule is measured against
 it, and the overdue alarm fires on its age. Nothing recomputes the predicate at read time.
 
+**The advance then walks forward (normative, D-164).** Read literally, the sentence above
+advances the frontier only in the transaction completing the frontier's **next** version, which
+strands a version that completed out of order: this section's own D-114 worked example is `V5`
+degraded and `V6` fully warm, and when `V5` finally completes the frontier moves to `V5` while
+`V6` — already complete — never sees another completion to advance on and stands behind the
+frontier forever. So after an advance the projector walks the watermark through every
+immediately-following version of this tenant that is **already** complete. Every step is still
+"the frontier's next version in order" and still complete, so the walk is strictly forward and
+never past a gap; what it is not is the literal sentence.
+
+**When the projector may call a version complete, and what it does when it cannot (normative,
+D-163).** Batch atomicity closes a version's subject set at its first committed ref, but the
+projector learns each ref's version by asking the registry **per ref**, so its knowledge of that
+set is only as complete as the pass that gathered it. It may therefore decide a version complete
+**only from a pass that could have seen the whole set**, and two conditions say it could not:
+the pass's pending scan reached its bound (a batch straddling the page boundary is split across
+passes, and the first pass would see a partial subject set), or a ref of the same tenant failed
+to resolve (its sibling completes the version while the errored ref is still to arrive). In
+either case the pass resolves and warms exactly as usual and decides **no** completion; the
+frontier lags rather than over-advances, which is the safe direction and is visible as the
+overdue alarm below. The pending scan is bounded **per tenant** for the same reason: on a
+cross-tenant page one tenant's stuck backlog defers every other tenant's completions, and the
+deferral this rule introduces has to be a tenant's own. **A ref that resolves into a version at
+or below the frontier is refused** — an already-pin-eligible version acquiring a new subject is
+precisely one pin resolving two contents over time. Under the rules above it is unreachable on
+a correct path, so it detects a broken batch-atomicity contract rather than predicting one, and
+it costs that publish permanently: its subject is never projected, the alarms fire every pass,
+and the remedy is §3.6's out-of-band registry re-request. **No wire code:** the projector has no
+caller, so a refusal on it has nobody to report to (D-146's own line about this frontier).
+
 A consumer pins **one** pin-eligible `CatalogVersion` for the duration of a resolution/rating
 run and resolves the complete frozen view via `pricingSnapshotRef`; at pin time the pinned
 version MUST NOT lag the frontier by more than 5s. There is **no** draft read
@@ -833,6 +893,21 @@ originally-pinned version** (deltas are retained on the truth horizon, §3.7, so
 resolvable; posted periods never re-query per `fr-pricing-snapshot`). The bound is also the
 size model: a delta is O(live keys × windows within `H`), never O(the plan's accumulated
 history).
+
+**Before Slice 7 the horizon is not evaluable, and the projection proceeds without it under a
+stated premise (normative, D-167, 2026-08-03, found while building the read side).** The rule
+above filters on a **window set**, and the `PriceWindow` store is Slice 7's: with no interval
+columns the predicate cannot be evaluated at all, and taken literally the rule projects
+**nothing** — no row has a window set, so no row intersects `[projection_time − H, ∞)`. What
+the bound buys is the sentence above it, and a plan's accumulated history is its **superseded**
+price rows; `published → superseded` has exactly two sanctioned producers, the **D-88**
+supersession unit and the **D-100** cutover, and this gear has a producer for neither. So until
+one lands the set the horizon filters is empty, the plan-subject delta is the plan's
+`published` rows capped by the §14 per-plan soft cap, and the bound costs nothing because there
+is nothing for it to exclude. **The group that builds either producer deletes this premise and
+owes the horizon** — and with it `H`'s own input, "the longest billing cycle sold on the plan",
+which is W6's term and is likewise unavailable here. This is the D-155 clause (3) shape on the
+read side, and it is written where that group will meet it rather than left to be rediscovered.
 
 `pricingSnapshotRef` is the composite reference (`CatalogVersion` + resolved price ids +
 evaluation-policy version) pinned on charges and `BillableItem`s — stamped at publish with the
@@ -923,15 +998,73 @@ fabrication D-161 clause (1) refuses, one artifact over.
 On read-model outage the read path **fails
 closed** (never serves stale). After a degraded publish the warm **re-drive continues past the
 SLO**; on completion it sets the warm-completion marker (the version becomes resolvable —
-monotonicity unaffected) and clears the degraded mark, raising an operations alarm meanwhile;
-no new event name is introduced — consumers observe completion via the marker.
+monotonicity unaffected) and the degraded state ends, raising an operations alarm meanwhile;
+no new event name is introduced — consumers observe completion through the **pin frontier** the
+marker advances (§3.3/D-136; the marker itself is on no read surface, and this sentence named
+it before the frontier existed — 2026-08-03 cleanup, no D-number).
 
-The projection **source** is the plan's **current revision**'s own truth rows — the `(plan_id,
-revision)` row whose `lifecycle_state` is `published` **or `retired`** (**D-128**, 2026-08-01
-review fix: "the published revision" had no referent once retirement flipped the only one, so a
-re-warm or degraded re-drive of a retired plan would have projected an empty plan subject and
-broken rating resolution for exactly the in-flight subscribers D-51 keeps coverage for), its
-revision-scoped child rows (D-83), and the published price rows — for the
+**What "degraded" is, and what measures it (normative, D-166, 2026-08-03, found while building
+the read side).** `fr-publish-fanout-atomicity` puts `PlanPublishDegraded` **after** the commit
+— the version has committed and the warm has not landed within the 5s SLO — and puts the
+pre-commit batching wait outside it, budgeted by D-47 and alarmed by
+`pricing.catalogversion.commit_overdue` (§3.6). That separation needs an instant this gear did
+not record: `requested_at` starts the *batching* clock, and `committed_at` is stamped by the
+finalize, which never runs on the path where the warm is failing. Measured from `requested_at`
+the 5s rule marks **every** publish degraded, including every one behaving exactly as D-47
+budgets. So the ref row records **`commit_observed_at`** (§3.7) — when this gear first saw the
+registry answer for that ref, written independently of whether the projection then lands — and
+the degraded condition is `pending ∧ commit_observed_at set ∧ older than the 5s SLO`. It is an
+upper bound: the observation lags the registry's own commit by at most one sweep pass, so the
+signal is late rather than false, and the accurate form is the registry supplying its commit
+instant with the version (the owed cross-gear half of D-163's adoption).
+
+**The degraded state has no column, and needs none.** No table in §3.7 carries one:
+`pricing_read_model` has no such field and `pricing_operator_flag` is forbidden from carrying
+version state (D-85). It is the derived predicate above; completion clears it by making the
+predicate false, which is exactly what "consumers observe completion" already means here. The
+projector writes a subject's delta **warm in the same transaction that finalizes its ref**, so
+"committed but unwarm" is unreachable in storage and the degraded state cannot be read off the
+ref's committed-ness at all — which is the whole reason the observation instant has to be
+recorded rather than derived.
+
+**`pricing.readmodel.pin_eligibility_overdue` fires on the frontier's own `advanced_at` and
+only in conjunction (normative, D-166).** A stale frontier alone is a tenant that has not
+published — a tenant with no frontier row has never advanced and is stale by construction — so
+staleness must be conjoined with something of this tenant actually short of pin-eligibility:
+either a ref of its own past the max batching-delay SLO, or a committed version standing above
+its frontier. The second arm is not redundant: a version **every** subject of which fails to
+project is never committed in storage at all, the finalize and the warm sharing a transaction,
+so on the exact path this section calls "a stuck version now holds the frontier" the
+committed-version arm sees nothing. Finding a stale frontier needs a cross-tenant read, because
+a per-tenant read cannot find a tenant whose frontier is stale precisely because nothing of it
+has moved.
+
+**A projection writes no audit row** (2026-08-03 cleanup, no D-number): `pricing_audit_log` is
+the actor/before-after trail of a **mutation** (`inst-au-complete`, D-158), and a projection has
+no actor and changes no truth — it materializes a decision already audited at its commit. The
+silence was in the section a reader checks first.
+
+The projection **source** is the **revision the version's own publish judged, and the lifecycle
+state that judgement produced** — both frozen on the ref row at commit (`subject_revision`,
+`subject_lifecycle_state`, §3.7) and read from there (**normative, D-165**, 2026-08-03, found
+while building the read side; **amends D-128**, whose "the plan's current revision" was the
+projector's source before). Reading the plan's *current* revision at projection time freezes
+whatever is current when the sweep arrives — up to D-47's five-minute batching **maximum**
+later, not the 5s warm SLO — into an INSERT-only delta on the ≥ 7-year horizon, in a store
+whose whole contract is that a completed version never changes: revision 3 publishing into `V5`
+and revision 4 into `V6` before `V5` warms gives `V5` revision 4's content, permanently. The
+lifecycle state is the same fact one column over and moves faster: a pinned revision can stand
+`published` when its own publish judged it and `superseded` by the time the sweep reads it, and
+sellability predicate (4) then reads a version whose plan really was sellable as unsellable. A
+`plan` subject arriving without either value is **refused**, never defaulted — a default is a
+guess about which content a frozen version froze. D-128's substance is untouched and is what
+makes reading a pinned revision safe at all: `(plan_id, revision)` is the same row whether it
+stands `published` or `retired`, and retirement is a **publish unit of its own** that pins its
+own revision with `retired` and re-projects it under its **own** version, so the state arrives
+carrying its own version instead of leaking backwards into an older one. Only the two tokens
+D-128 sanctions are storable, so a `superseded` state is not expressible in a version at all.
+The plan's own truth rows for that revision, its revision-scoped child rows (D-83), and the
+published price rows are the content — for the
 initial warm and every re-drive alike; the projector **never reads the open draft revision**,
 so a degraded-warm re-drive cannot leak draft edits into a frozen version (2026-07-30 review
 fix). The revision's `lifecycle_state` is itself a **projected plan-subject field** — that is
@@ -941,6 +1074,27 @@ versions never mutate, and retention follows the truth-history horizon (§3.7); 
 membership publish units resolve through their own subject rows, never through a plan's. The
 versioned read model carries **no operator-plane state** (D-85): drift/divergence flags live in
 `pricing_operator_flag` and never appear in a frozen version.
+
+**The delta's payload is a declared vocabulary, and it declares what it cannot carry
+(normative, D-167, 2026-08-03, found while building the read side).** No document named the
+plan-subject delta's field list: this section says what it must *carry* (the window facts, the
+lifecycle field, the D-121 row set), §3.7 says how it is *keyed*, and §3.1's `ReadModel` line is
+a sketch — so the first implementation had to invent a schema, which is the D-158 shape one
+store over. The wire keys are **`camelCase`, one spelling, declared once**: this section owns
+the envelope — the subject's identity, the pinned revision and lifecycle state (D-165), and the
+D-121 row set — and each slice declares the facts it owns into it, as the Slice-6 contract pair
+is declared in [`06-consumer-contracts.md`](./06-consumer-contracts.md) §6. **A fact whose
+owning slice has not landed is absent, and the absence is named rather than discovered:** before
+Slices 4, 6, 7 and 10 and the registry `sellable` flag, a version carries neither `PriceWindow`
+intervals, states and the derived coverage end (Slice 7 — D-99/D-121), nor the GA-gate flags
+(Slice 4) and the prepaid-execution gate (Slice 10), nor the registry flag (D-46), nor the grant
+set and the materialized phase→grant map (Slice 6 / D-41). `inst-sg-pinned`'s six predicates are
+therefore a claim about the **finished** gear: a version produced today answers (2), (3) and (4)
+and cannot answer (1), (5) or (6), and the slice that lands each fact is what makes its
+predicate evaluable ([`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md)
+`inst-sg-pinned`). Operator flags are absent **by rule** rather than by omission (D-85, above),
+and the distinction is stated here so a later reader completing the payload does not complete it
+with them.
 
 One reference is deliberately **not** version-pinned: a **`migrated-origin`** snapshot (Slice 11,
 D-87) is **self-contained** — synthesis materializes the complete evaluable row content into the
