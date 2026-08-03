@@ -189,6 +189,34 @@ impl NewOutboxEvent {
             enqueued_at,
         }
     }
+
+    /// The `PlanPublishDegraded` event of one publish whose subject has not
+    /// warmed.
+    ///
+    /// A named constructor for [`NewOutboxEvent::plan_published`]'s reason: the
+    /// event name, the aggregate and the dedup key are not the caller's to
+    /// choose. The aggregate is the **plan**, so the degradation is ordered
+    /// with that plan's other events under the `(tenantId, aggregateId)` rule
+    /// rather than arriving on a stream of its own.
+    #[must_use]
+    pub fn plan_publish_degraded(
+        tenant_id: Uuid,
+        payload: &PlanPublishDegradedPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::PlanPublishDegraded,
+            payload: payload.to_value(),
+            dedup_key: plan_publish_degraded_dedup_key(
+                payload.plan_id,
+                &payload.pending_version_ref,
+            ),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
 }
 
 /// The dedup key of a plan publish: `PlanPublished/<plan_id>/<revision>`.
@@ -203,6 +231,65 @@ pub fn plan_published_dedup_key(plan_id: PlanId, revision: u64) -> String {
         CatalogEvent::PlanPublished.as_str(),
         plan_id,
         revision
+    )
+}
+
+/// The `PlanPublishDegraded` payload — the second event this file defines, and
+/// the second whose field list no document declares.
+///
+/// §1.2 requires the event and names nothing about its shape, exactly as it did
+/// for `PlanPublished`; the keys below are therefore this module's, written
+/// here once so a later document has something concrete to contradict.
+///
+/// It carries the **pending handle** rather than a `CatalogVersion` because a
+/// degraded publish is by definition one whose version has not yet reached its
+/// read model: the handle is the only identifier the publish has at the moment
+/// the degradation is observable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanPublishDegradedPayload {
+    /// The plan whose subject is not warm.
+    pub plan_id: PlanId,
+    /// The registry handle its publish is still waiting on.
+    pub pending_version_ref: String,
+    /// When that handle was requested — what the age is measured from, and the
+    /// only instant this gear records about the wait.
+    pub requested_at: DateTime<Utc>,
+    /// The correlation id of the sweep pass that observed it.
+    pub correlation_id: Uuid,
+}
+
+impl PlanPublishDegradedPayload {
+    /// Render the payload for its `jsonb` column, `camelCase` as its sibling's.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "planId": self.plan_id.get(),
+            "pendingVersionRef": self.pending_version_ref,
+            "requestedAt": self.requested_at,
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// The dedup key of a degraded publish:
+/// `PlanPublishDegraded/<plan_id>/<pending_ref>`.
+///
+/// **The pending ref rather than a `CatalogVersion`**, and the reason is what
+/// makes the degradation observable at all: a subject is unwarm exactly while
+/// its ref is still `pending`, since the projector finalizes the ref and writes
+/// the delta warm in **one** transaction. So at the moment of observation there
+/// is no version to key on, and the handle is what names the publish — derived
+/// from `(tenant, plan, revision)` by the commit, so it is stable across every
+/// pass that re-observes the same degradation.
+///
+/// Under `uq_pricing_outbox_dedup_key (tenant_id, dedup_key)` that makes a
+/// repeat of one degradation **one** event, which is the whole requirement.
+#[must_use]
+pub fn plan_publish_degraded_dedup_key(plan_id: PlanId, pending_ref: &str) -> String {
+    format!(
+        "{}/{}/{pending_ref}",
+        CatalogEvent::PlanPublishDegraded.as_str(),
+        plan_id
     )
 }
 

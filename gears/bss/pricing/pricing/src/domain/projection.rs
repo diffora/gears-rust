@@ -1,0 +1,495 @@
+//! What a `CatalogVersion` freezes for one **plan subject** — the value, and
+//! the payload it renders into `pricing_read_model.payload`.
+//!
+//! A version's rows are per-subject deltas (D-86, subject-typed by D-91), and
+//! this module is the `plan` kind's content: the plan's current revision, its
+//! revision-scoped children (D-83) and the price rows the version publishes.
+//! Pure vocabulary and rendering — no storage, no scope, no I/O. The projector
+//! that reads truth rows and writes this value lives in
+//! [`crate::infra::read_model`], because it holds an `AccessScope` and
+//! repositories and dylint DE0301 forbids those here.
+//!
+//! # No document declares this payload's field list. **Reported.**
+//!
+//! `01-foundation.md` §4.4 states what a plan-subject delta must *carry* — the
+//! window facts (D-121) and the revision's `lifecycle_state`, which is what
+//! sellability predicate (4) reads at the pin (D-128) — and §3.7 states how the
+//! row is *keyed*. Neither names a schema, and §3.1's one-line sketch of the
+//! `ReadModel` aggregate (`{skuId, planId, priceId}`, model kind, ordered tier
+//! bands, evaluation-policy fields, descriptors) is a sketch. The wire keys
+//! below are therefore **this module's**, written down once so a later document
+//! has something concrete to contradict — exactly the posture
+//! [`outbox_repo`](crate::infra::storage::repo::outbox_repo) took for
+//! `PlanPublished`, and for the same reason.
+//!
+//! They are `camelCase`, the spelling the design set uses for consumer-visible
+//! fields (`pricingSnapshotRef`, `planId`, `availableFrom`), and they are built
+//! with `json!` rather than a `Serialize` derive so the wire vocabulary is
+//! visibly not the Rust field names and lives in exactly one place.
+//!
+//! # What this payload does not carry, and whose it is
+//!
+//! A version this gear produces today is **incomplete against §4.4**, and the
+//! incompleteness is declared here rather than left for a reader to discover.
+//! One line per absent fact, with the slice that owns it:
+//!
+//! - **`PriceWindow` intervals and states, and the derived coverage end**
+//!   (Slice 7 — D-99, D-121). There is no window store in this gear: no
+//!   interval columns on `pricing_price`, no window table. So a version
+//!   produced before Slice 7 **cannot answer sellability predicate (1)** —
+//!   "an active window covers `t` with the D-80 coverage horizon"
+//!   (`07-pricewindow-linkage.md` `inst-sg-surface`) — from the pin, which is
+//!   what `inst-sg-pinned` requires of it. The D-121 **horizon** `H` is absent
+//!   for the same reason and its own premise is stated where the projector
+//!   applies it.
+//! - **The GA-gate flags** `not_sellable_ga` and the prepaid-execution gate
+//!   (Slice 4 / Slice 10) — sellability predicate (5). Neither has a store
+//!   here.
+//! - **The registry `sellable` flag** per offered SKU (D-46) — predicate (6).
+//!   It is the registry's fact, frozen per version registry-side, and the
+//!   registry gear has no code in this repository.
+//! - **The grant set and the materialized phase-to-grant map** (Slice 6, D-41).
+//!   `pricing_plan_grant` does not exist here.
+//! - **`crossBoundaryChangePolicy` and `crossBoundaryWarningText`** (Slice 6).
+//!   `06-consumer-contracts.md` §6 requires **both**, on **every** resolved
+//!   plan subject row (`inst-pi-crossboundary`). The policy value is named
+//!   verbatim in that document (`cancel_plus_new`); the warning text is not.
+//!   Stamping the one that is named would publish half a contract, and
+//!   inventing the other is minting a value no document declares — so
+//!   **neither** is stamped and the pair is reported.
+//!
+//! One absence is a **rule** rather than a gap, and it is listed so a later
+//! reader does not close it: the operator-plane drift flags
+//! (`tier_divergent`, `grants_divergent`, the tax-readiness and meter-binding
+//! divergences) are **never** part of a frozen version (D-85). They live in
+//! `pricing_operator_flag` and operators read them through the authoring
+//! surfaces. A version that carried one would be a frozen artifact whose
+//! content changes when an external signal arrives.
+//!
+//! **No payload-generation marker is invented for any of this.** The gear has
+//! exactly one such mechanism — the evaluation-policy generation
+//! ([`EVALUATION_POLICY_GENERATION`], D-162) — with a declared roster, a
+//! declared bump rule and a replayed log, and it qualifies the **price row's
+//! evaluation field set**, not the delta's shape. Stretching it to mean "this
+//! payload is missing Slice 7" is the same act as minting a code the design set
+//! does not name.
+//!
+//! # The D-162 obligation, discharged
+//!
+//! D-162 records one hole against the implementation: `usageCounterOnPlanChange`
+//! (D-113) "is an evaluation input outside the roster only because the plan-content
+//! type it would be classified against does not exist in the crate yet, and the
+//! slice landing it joins the roster under a bump". [`PlanSubjectDelta`] **is**
+//! that plan-content type, so the walk is owed here and is done here.
+//!
+//! The boundary is D-162's own: a field is rostered **iff it tells an evaluator
+//! how to derive the billable quantity or select the rate**. Field by field —
+//! `plan_id`, `revision` and `sku_id` are identity; `lifecycle_state`,
+//! `available_from` and `available_to` are sellability inputs (predicates (3)
+//! and (4)), which decide *whether* a thing may be sold and never *at what
+//! rate*; `billing_cycle` and `frequency` name the period a subscription's
+//! cycle clock runs on, which `01-foundation.md` §4.4 puts in the
+//! consumer-contract family D-162 excludes by name (proration, anchoring,
+//! billing timing) and which no evaluator reads to derive a quantity — the
+//! quantity-derivation fields are the row's own `billing_granularity` and
+//! `aggregation_*`, already rostered; `plan_tier` and `plan_tier_override` are
+//! the registry taxonomy and its audited divergence; the purchase bounds gate a
+//! purchase, not a rate; `invoice_grouping_key` is a Billing layout hint (D-96);
+//! the phase set, the add-on rules and the descriptor set are composition and
+//! presentation. **None of them is rostered, so the roster does not move and
+//! `ep-1` stands.**
+//!
+//! D-162's named example is not landed here either: `usage_counter_on_plan_change`
+//! **does not exist in this crate** — there is no column, no field and no
+//! writer for it anywhere — so it cannot join a roster from this module. The
+//! slice that lands the field lands the bump with it.
+//!
+//! The D-162 guard's **reach** is decided here too, and it stays where it is.
+//! [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)
+//! keeps `PriceRow` alone, because §4.4's roster block is a set of
+//! **`pricing_price`** fields by its own words and its `outside:` half
+//! enumerates `pricing_price` columns; a second partition over this type would
+//! have to be asserted against a document block that does not exist, and an
+//! expectation invented to satisfy a guard is the guard switched off. What this
+//! type gets instead is a guard with a real obligation: [`PlanSubjectDelta::to_value`]
+//! destructures with **no rest pattern**, so a field added to the delta is a
+//! compile error until it is either rendered into the payload or deliberately
+//! withheld — and that is where the next author meets the D-162 question, with
+//! this paragraph beside it.
+
+use chrono::{DateTime, Utc};
+use serde_json::{Value as JsonValue, json};
+use toolkit_macros::domain_model;
+use uuid::Uuid;
+
+use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
+use crate::domain::lifecycle::LifecycleState;
+use crate::domain::plan_shape::{
+    AddonRule, BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+};
+use crate::domain::price_record::PriceRecord;
+use crate::domain::price_row::{
+    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
+    QuantitySource, TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
+};
+use crate::domain::scope_key::{PlanId, ScopeKey};
+
+/// The lifecycle states a plan-subject delta draws its price rows from.
+///
+/// D-121: "every price row of the plan — **any lifecycle state except
+/// never-published drafts**". Two states satisfy that on a price row today, and
+/// `superseded` is the load-bearing one: rating pins *current* versions and
+/// rates *past* instants, so after a changeover the superseded predecessor —
+/// its window `expired` — must survive the next re-projection or resolution at
+/// yesterday's `t` fails closed on a legitimately covered period.
+///
+/// It is listed **now**, though nothing in this gear can produce a `superseded`
+/// price row: `published -> superseded` has exactly two sanctioned producers,
+/// the D-88 supersession unit and the D-100 cutover, and neither is built. The
+/// day either lands, only the D-121 **horizon** is owed here — not the state
+/// set, which is already right.
+///
+/// `draft` is out because it is the never-published state D-121 excludes;
+/// `abandoned` never occurs on a price row at all (it is a plan-revision state,
+/// §4.3); `retired` is a plan-revision state too — the revision's, which the
+/// delta carries as [`PlanSubjectDelta::lifecycle_state`].
+pub const PROJECTED_ROW_STATES: &[LifecycleState] =
+    &[LifecycleState::Published, LifecycleState::Superseded];
+
+/// The plan-subject content of one `CatalogVersion`.
+///
+/// Composed from the types that already model each part rather than restating
+/// them: a second spelling of a phase or a price row is a second thing that can
+/// disagree with the truth table it was projected from.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanSubjectDelta {
+    /// The plan this delta is the subject of. `subject_ref` on the row.
+    pub plan_id: PlanId,
+    /// The revision the content was projected from — the plan's **current**
+    /// one, `published` or `retired` (D-128).
+    pub revision: u64,
+    /// The current revision's own lifecycle state.
+    ///
+    /// A **projected plan-subject field**, and the whole of D-128 in one line:
+    /// it is what sellability predicate (4) reads at the pin. A retired plan
+    /// can never publish again, so if this were not frozen into the version
+    /// nothing would ever re-project it and the read model would advertise a
+    /// retired plan as sellable permanently.
+    pub lifecycle_state: LifecycleState,
+    /// The catalog SKU this plan realizes, when one is bound.
+    pub sku_id: Option<Uuid>,
+    /// The plan's tier, from the registry taxonomy.
+    pub plan_tier: Option<String>,
+    /// Whether the tier deliberately diverges from the parent SKU's under an
+    /// audited override.
+    pub plan_tier_override: bool,
+    /// The plan's billing cycle.
+    pub billing_cycle: Option<BillingCycle>,
+    /// The recurring frequency, custom interval riding the variant.
+    pub frequency: Option<Frequency>,
+    /// Start of the plan's availability window, UTC — sellability predicate (3).
+    pub available_from: Option<DateTime<Utc>>,
+    /// End of the plan's availability window, UTC — sellability predicate (3).
+    pub available_to: Option<DateTime<Utc>>,
+    /// Minimum purchasable quantity (one-time plans).
+    pub purchase_min_qty: Option<u64>,
+    /// Maximum purchasable quantity (one-time plans).
+    pub purchase_max_qty: Option<u64>,
+    /// The Billing invoice-layout hint (D-96).
+    pub invoice_grouping_key: Option<String>,
+    /// The revision's phase chain (D-83 — child rows version with the revision
+    /// and are the projection source).
+    pub phases: Vec<PlanPhase>,
+    /// The revision's add-on composition rules (D-83).
+    pub addon_rules: Vec<AddonRule>,
+    /// The revision's billing descriptor set (D-83).
+    pub descriptor_set: Option<DescriptorSet>,
+    /// The price rows the version freezes, drawn from [`PROJECTED_ROW_STATES`].
+    pub prices: Vec<PriceRecord>,
+}
+
+impl PlanSubjectDelta {
+    /// Render the delta as `pricing_read_model.payload` holds it.
+    ///
+    /// `evaluationPolicyVersion` is read from [`EVALUATION_POLICY_GENERATION`]
+    /// rather than carried on the struct, exactly as the `PlanPublished`
+    /// payload reads it: the generation is a property of the gear that
+    /// projected, not of the projection, so a caller able to supply one could
+    /// freeze a version under a semantics its rows were never authored to.
+    ///
+    /// # The pattern is a guard
+    ///
+    /// The `let Self { .. }` below has **no rest pattern**. A field added to
+    /// [`PlanSubjectDelta`] does not compile here (E0027) until it is named,
+    /// which is what stops a field being added to the delta and silently not
+    /// reaching the payload — the payload being the only thing a consumer ever
+    /// sees. The module doc carries the D-162 question the same author owes.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        let Self {
+            plan_id,
+            revision,
+            lifecycle_state,
+            sku_id,
+            plan_tier,
+            plan_tier_override,
+            billing_cycle,
+            frequency,
+            available_from,
+            available_to,
+            purchase_min_qty,
+            purchase_max_qty,
+            invoice_grouping_key,
+            phases,
+            addon_rules,
+            descriptor_set,
+            prices,
+        } = self;
+
+        json!({
+            "planId": plan_id.get(),
+            "revision": revision,
+            "lifecycleState": lifecycle_state.as_str(),
+            "skuId": sku_id,
+            "planTier": plan_tier,
+            "planTierOverride": plan_tier_override,
+            "billingCycle": billing_cycle.map(BillingCycle::as_str),
+            "frequency": frequency.map(frequency_value),
+            "availableFrom": available_from,
+            "availableTo": available_to,
+            "purchaseMinQty": purchase_min_qty,
+            "purchaseMaxQty": purchase_max_qty,
+            "invoiceGroupingKey": invoice_grouping_key,
+            "phases": phases.iter().map(phase_value).collect::<Vec<_>>(),
+            "addonRules": addon_rules.iter().map(addon_rule_value).collect::<Vec<_>>(),
+            "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
+            "prices": prices.iter().map(price_value).collect::<Vec<_>>(),
+            "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
+        })
+    }
+}
+
+/// The recurring frequency, token and interval together.
+///
+/// [`Frequency::as_str`] renders the token alone, and a custom interval carries
+/// its `n` and unit **inside the variant** — the pairing
+/// `chk_pricing_plan_custom_interval_pairing` exists to keep — so a payload
+/// carrying only the token would freeze a `custom_every_n` with no interval,
+/// which is a period nobody can compute.
+fn frequency_value(frequency: Frequency) -> JsonValue {
+    match frequency {
+        Frequency::CustomEveryN { n, unit } => json!({
+            "token": frequency.as_str(),
+            "n": n,
+            "unit": unit.as_str(),
+        }),
+        _ => json!({ "token": frequency.as_str() }),
+    }
+}
+
+/// One phase of the revision's chain.
+fn phase_value(phase: &PlanPhase) -> JsonValue {
+    let PlanPhase {
+        phase_id,
+        kind,
+        ordinal,
+        converts_to_phase_id,
+        phase_duration_days,
+        display_trial_days,
+    } = phase;
+    json!({
+        "phaseId": phase_id.get(),
+        "kind": PhaseKind::as_str(*kind),
+        "ordinal": ordinal,
+        "convertsToPhaseId": converts_to_phase_id.map(super::scope_key::PhaseId::get),
+        "phaseDurationDays": phase_duration_days,
+        "displayTrialDays": display_trial_days,
+    })
+}
+
+/// One add-on composition rule of the revision.
+fn addon_rule_value(rule: &AddonRule) -> JsonValue {
+    let AddonRule {
+        addon_sku_id,
+        required,
+        min_qty,
+        max_qty,
+        step_qty,
+        price_override_ref,
+        depends_on,
+        conflicts_with,
+    } = rule;
+    json!({
+        "addonSkuId": addon_sku_id,
+        "required": required,
+        "minQty": min_qty,
+        "maxQty": max_qty,
+        "stepQty": step_qty,
+        "priceOverrideRef": price_override_ref,
+        "dependsOn": depends_on,
+        "conflictsWith": conflicts_with,
+    })
+}
+
+/// The revision's billing descriptor set.
+fn descriptor_set_value(set: &DescriptorSet) -> JsonValue {
+    let DescriptorSet {
+        invoice_line_template,
+        gl_code,
+        itemization_rule,
+        additional,
+    } = set;
+    json!({
+        "invoiceLineTemplate": invoice_line_template,
+        "glCode": gl_code,
+        "itemizationRule": itemization_rule,
+        "additional": additional,
+    })
+}
+
+/// One frozen price row: its identity, its canonical scope key, its authored
+/// shape and the row-level metadata a consumer resolves.
+///
+/// Destructured without a rest pattern for [`PlanSubjectDelta::to_value`]'s
+/// reason, and here it carries a second obligation: a field added to
+/// [`PriceRecord`] meets this renderer **and**
+/// [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)'s
+/// D-162 classification, which is the pair of questions a new row field owes.
+fn price_value(record: &PriceRecord) -> JsonValue {
+    let PriceRecord {
+        price_id,
+        scope_key,
+        row,
+        tax_inclusive,
+        billing_timing,
+        rounding_policy_ref,
+        grandfather_until,
+        supersedes_price_id,
+        lifecycle_state,
+        created_by: _,
+        created_at_utc: _,
+        row_version: _,
+    } = record;
+
+    let mut value = json!({
+        "priceId": price_id,
+        "scopeKey": scope_key_value(scope_key),
+        "lifecycleState": lifecycle_state.as_str(),
+        "taxInclusive": tax_inclusive,
+        "billingTiming": billing_timing,
+        "roundingPolicyRef": rounding_policy_ref,
+        "grandfatherUntil": grandfather_until,
+        "supersedesPriceId": supersedes_price_id,
+    });
+    merge(&mut value, row_value(row));
+    value
+}
+
+/// The authored Slice-3 shape, flat beside the row's own keys.
+///
+/// Flat rather than nested because it is what a consumer evaluates a charge
+/// from and a nesting level nothing in the design set declares would be a wire
+/// structure invented here. Split out of [`price_value`] so neither exceeds the
+/// line budget, and destructured exhaustively for the reason that one is.
+fn row_value(row: &PriceRow) -> JsonValue {
+    let PriceRow {
+        charge_kind,
+        model_kind,
+        amount_minor,
+        bands,
+        package_size,
+        package_price_minor,
+        quantity_source,
+        manual_quantity,
+        meter,
+        dimension_key,
+        billing_granularity,
+        tier_aggregation_window,
+        tier_qualification_window,
+        aggregation_function,
+        aggregation_granularity,
+        max_hold_granules,
+        included_allowance,
+    } = row;
+    json!({
+        "chargeKind": charge_kind.as_str(),
+        "modelKind": model_kind.map(model_kind_wire),
+        "amountMinor": amount_minor.map(crate::domain::money::MinorAmount::get),
+        "bands": bands.iter().map(band_value).collect::<Vec<_>>(),
+        "packageSize": package_size,
+        "packagePriceMinor": package_price_minor.map(crate::domain::money::MinorAmount::get),
+        "quantitySource": quantity_source.map(QuantitySource::as_str),
+        "manualQuantity": manual_quantity,
+        "meter": meter,
+        "dimensionKey": dimension_key,
+        "billingGranularity": billing_granularity.map(BillingGranularity::as_str),
+        "tierAggregationWindow": tier_aggregation_window.map(TierAggregationWindow::as_str),
+        "tierQualificationWindow": tier_qualification_window.map(TierQualificationWindow::as_str),
+        "aggregationFunction": aggregation_function.map(AggregationFunction::as_str),
+        "aggregationGranularity": aggregation_granularity.map(AggregationGranularity::as_str),
+        "maxHoldGranules": max_hold_granules,
+        "includedAllowance": included_allowance.map(|allowance| {
+            let IncludedAllowance {
+                quantity,
+                rollover_policy,
+            } = allowance;
+            json!({ "quantity": quantity, "rolloverPolicy": rollover_policy.as_str() })
+        }),
+    })
+}
+
+/// One tier band. The open top is rendered as `null` rather than as a sentinel
+/// number: [`BandTop::Open`](crate::domain::price_row::BandTop::Open) is a
+/// *state* of the band (D-17), and a number standing in for it would be a
+/// quantity a reader could compare against.
+fn band_value(band: &TierBand) -> JsonValue {
+    let TierBand {
+        from_qty,
+        to_qty,
+        unit_price_minor,
+    } = band;
+    json!({
+        "fromQty": from_qty,
+        "toQty": to_qty.closed_at(),
+        "unitPriceMinor": unit_price_minor.get(),
+    })
+}
+
+/// The eight canonical axes, in the normative order §4.1 fixes.
+///
+/// Rendered axis by axis rather than through [`ScopeKey`]'s `Display`: the
+/// display form is one string for a log line, and a consumer resolving a row
+/// matches on axes.
+fn scope_key_value(key: &ScopeKey) -> JsonValue {
+    json!({
+        "planId": key.plan_id().get(),
+        "currency": key.currency().as_str(),
+        "region": key.region().as_str(),
+        "priceOverlay": key.price_overlay().as_str(),
+        "phase": key.phase().get(),
+        "priceEligibility": key.price_eligibility().as_str(),
+        "chargeKind": key.charge_kind().as_str(),
+        "cohort": key.cohort().generation(),
+    })
+}
+
+/// Fold `from`'s members into `into`, which both callers built with `json!` and
+/// which are therefore both objects.
+///
+/// A silent no-op on anything else is right here rather than a panic: the two
+/// call sites are literals in this file, so a non-object is unreachable, and a
+/// panic reachable from no input is a panic in a projection path that must not
+/// have one.
+fn merge(into: &mut JsonValue, from: JsonValue) {
+    let (Some(target), JsonValue::Object(source)) = (into.as_object_mut(), from) else {
+        return;
+    };
+    for (key, value) in source {
+        target.insert(key, value);
+    }
+}
+
+#[cfg(test)]
+#[path = "projection_tests.rs"]
+mod projection_tests;

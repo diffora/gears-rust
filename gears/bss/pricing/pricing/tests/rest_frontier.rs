@@ -13,8 +13,11 @@
 //!
 //! The happy path runs against an in-memory `SQLite` migrated by the gear's own
 //! `Migrator`, which is what makes it a test of the route and not of a mock: the
-//! frontier row is written through `PinFrontierRepo::advance` and read back
-//! across the `SecureORM` tenant filter the compiled `AccessScope` binds.
+//! frontier row is written through `pin_frontier_repo::advance` and read back
+//! across the `SecureORM` tenant filter the compiled `AccessScope` binds. The
+//! advance is a runner-taking free function rather than a method on the
+//! repository because D-136 puts it inside the projector's transaction; the
+//! **read** this suite exercises is the method, and it is the route's.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -32,7 +35,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use bss_pricing::api::rest::frontier::{ApiState, router};
 use bss_pricing::infra::storage::migrations::Migrator;
-use bss_pricing::infra::storage::repo::PinFrontierRepo;
+use bss_pricing::infra::storage::repo::{PinFrontierRepo, pin_frontier_repo};
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
@@ -119,6 +122,23 @@ async fn provider() -> DBProvider<DbError> {
     DBProvider::<DbError>::new(db)
 }
 
+/// Put a tenant's frontier where a completed projection would have left it.
+///
+/// Through a plain connection, which is what a test has and the projector does
+/// not: the advance takes a runner precisely so it can join the transaction
+/// that completed the version (D-136).
+async fn seed_frontier(
+    db: &DBProvider<DbError>,
+    tenant: Uuid,
+    to: CatalogVersion,
+    at: chrono::DateTime<Utc>,
+) {
+    let conn = db.conn().expect("conn");
+    pin_frontier_repo::advance(&conn, &AccessScope::for_tenant(tenant), tenant, to, at)
+        .await
+        .expect("seed the frontier");
+}
+
 /// The real router over a real repository, plus the two layers `register_rest`
 /// applies (here without the canonical-error middleware: these assertions are
 /// about status codes, which `CanonicalError` already carries as an
@@ -202,15 +222,7 @@ async fn an_authorized_read_of_an_advanced_frontier_is_200_with_the_version() {
     let tenant = Uuid::now_v7();
     let db = provider().await;
     let advanced_at = Utc.with_ymd_and_hms(2026, 8, 1, 9, 30, 0).unwrap();
-    PinFrontierRepo::new(db.clone())
-        .advance(
-            &AccessScope::for_tenant(tenant),
-            tenant,
-            CatalogVersion::new(7),
-            advanced_at,
-        )
-        .await
-        .expect("seed the frontier");
+    seed_frontier(&db, tenant, CatalogVersion::new(7), advanced_at).await;
 
     let router = frontier_router(
         db,
@@ -264,15 +276,13 @@ async fn a_foreign_tenants_frontier_is_not_readable() {
     let mine = Uuid::now_v7();
     let theirs = Uuid::now_v7();
     let db = provider().await;
-    PinFrontierRepo::new(db.clone())
-        .advance(
-            &AccessScope::for_tenant(theirs),
-            theirs,
-            CatalogVersion::new(9),
-            Utc.with_ymd_and_hms(2026, 8, 1, 9, 30, 0).unwrap(),
-        )
-        .await
-        .expect("seed the other tenant's frontier");
+    seed_frontier(
+        &db,
+        theirs,
+        CatalogVersion::new(9),
+        Utc.with_ymd_and_hms(2026, 8, 1, 9, 30, 0).unwrap(),
+    )
+    .await;
 
     let router = frontier_router(
         db,

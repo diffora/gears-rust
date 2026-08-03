@@ -973,7 +973,19 @@ pub async fn load_open_draft(
 }
 
 /// Read one revision by its composite identity, scoped.
-pub(super) async fn load_revision(
+/// Read one revision by its composite identity, through whichever runner the
+/// caller holds.
+///
+/// Public and runner-taking for [`load_current`]'s reason, and with one caller
+/// of its own outside this module: the projector reads the **revision the
+/// publish judged**, pinned on the ref row at commit time, rather than whatever
+/// revision is current when the sweep arrives.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when the stored row cannot be read as the domain
+/// value its columns are `CHECK`-constrained to hold.
+pub async fn load_revision(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,

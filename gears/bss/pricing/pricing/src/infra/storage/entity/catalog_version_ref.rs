@@ -35,6 +35,13 @@ pub struct Model {
     pub subject_kind: String,
     /// Which one.
     pub subject_ref: String,
+    /// The revision of the subject the publish unit judged; `NULL` for a
+    /// subject kind that has no revision concept.
+    pub subject_revision: Option<i64>,
+    /// The lifecycle state the publish unit judged — `published` or `retired`,
+    /// the two D-128 sanctions for a projected subject. `NULL` for a subject
+    /// kind with no lifecycle.
+    pub subject_lifecycle_state: Option<String>,
     /// `None` until `CatalogVersionPublished` resolves the handle.
     pub catalog_version: Option<i64>,
     pub requested_at: DateTime<Utc>,

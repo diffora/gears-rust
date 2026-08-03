@@ -90,6 +90,41 @@ async fn table_exists(conn: &sea_orm::DatabaseConnection, table: &str) -> bool {
     row.try_get::<i32>("", "c").expect("read count") == 1
 }
 
+/// The `CREATE INDEX ...` statement `SQLite` recorded for `index`, or `None`
+/// when the chain created no index by that name.
+async fn index_sql(conn: &sea_orm::DatabaseConnection, index: &str) -> Option<String> {
+    let sql = format!(
+        "SELECT count(*) AS c FROM sqlite_master WHERE type = 'index' AND name = '{index}'"
+    );
+    let present = conn
+        .query_one(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql,
+        ))
+        .await
+        .expect("query sqlite_master")
+        .expect("count query returns a row")
+        .try_get::<i32>("", "c")
+        .expect("read count")
+        == 1;
+    if !present {
+        return None;
+    }
+    let sql =
+        format!("SELECT sql AS v FROM sqlite_master WHERE type = 'index' AND name = '{index}'");
+    let statement = conn
+        .query_one(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql,
+        ))
+        .await
+        .expect("query sqlite_master")
+        .expect("the index row is there")
+        .try_get::<String>("", "v")
+        .expect("an index this chain created carries its DDL");
+    Some(statement)
+}
+
 /// The chain, in the order the platform runner applies it (by migration NAME).
 fn name_ordered_chain() -> Vec<Box<dyn MigrationTrait>> {
     let mut chain = Migrator::migrations();
@@ -198,4 +233,39 @@ async fn down_then_up_round_trips() {
             "`{table}` must be back after the re-up"
         );
     }
+}
+
+#[tokio::test]
+async fn the_version_index_on_the_ref_table_is_not_unique() {
+    // The amendment of 2026-08-03, pinned so it cannot regress into the shape
+    // it replaced. `uq_pricing_catalog_version_ref_version` asserted a
+    // bijection from committed version to publish — and under the registry's
+    // batching (D-47, §4.2 step 5) several of one tenant's pending refs commit
+    // into ONE version, which is the case the whole model exists to serve and
+    // which that index made physically impossible: the second finalize failed.
+    // D-157's subject columns already answer "which publish produced this
+    // version", and the honest answer is a set.
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    assert_eq!(
+        index_sql(&conn, "uq_pricing_catalog_version_ref_version").await,
+        None,
+        "the unique version index is gone: it refused D-47's normal case"
+    );
+    let created = index_sql(&conn, "idx_pricing_catalog_version_ref_version")
+        .await
+        .expect("the version index the projector and the frontier walk read");
+    assert!(
+        !created.to_ascii_uppercase().contains("UNIQUE"),
+        "the replacement must be non-unique, got: {created}"
+    );
 }

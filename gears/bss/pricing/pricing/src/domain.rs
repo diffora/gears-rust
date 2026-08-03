@@ -18,6 +18,7 @@ pub mod plan_shape;
 pub mod ports;
 pub mod price_record;
 pub mod price_row;
+pub mod projection;
 pub mod publish;
 pub mod read_model;
 pub mod rules;

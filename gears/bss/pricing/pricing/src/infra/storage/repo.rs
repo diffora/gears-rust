@@ -29,6 +29,14 @@
 //! happened"; a dangling pending ref that trips the commit-overdue alarm for a
 //! publish that never occurred). [`idempotency_repo`] set that precedent for the
 //! same reason.
+//!
+//! [`read_model_repo`] is the fourth runner-taking one, and its reason is
+//! sharper still: D-136 requires the pin frontier to advance **in the
+//! transaction that sets the last outstanding `warm_completed` marker** of the
+//! frontier's next version in order, so the delta write and the advance are one
+//! transaction by rule rather than by preference — and a repository holding a
+//! provider could not join it, `Db::conn()` being refused outright inside an
+//! open transaction.
 
 pub mod audit_repo;
 pub mod catalog_version_ref_repo;
@@ -39,6 +47,7 @@ pub mod plan_repo;
 pub mod plan_shape_repo;
 pub mod policy_repo;
 pub mod price_repo;
+pub mod read_model_repo;
 
 use chrono::{DateTime, Utc};
 
@@ -48,12 +57,13 @@ use crate::infra::storage::RepoError;
 pub use audit_repo::NewAuditEntry;
 pub use catalog_version_ref_repo::PendingVersionRow;
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
-pub use outbox_repo::{NewOutboxEvent, PlanPublishedPayload};
+pub use outbox_repo::{NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload};
 pub use pin_frontier_repo::PinFrontierRepo;
 pub use plan_repo::{NewPlanDraft, PlanRepo};
 pub use plan_shape_repo::PlanShapeRepo;
 pub use policy_repo::{AuthoringPolicy, PolicyObjectRepo};
 pub use price_repo::{NewPriceDraft, PriceRepo};
+pub use read_model_repo::NewDelta;
 
 /// Refuse an authored instant finer than the millisecond quantum (D-144).
 ///

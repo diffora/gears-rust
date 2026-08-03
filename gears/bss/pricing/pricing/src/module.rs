@@ -12,6 +12,11 @@
 //! owns). Declared dependencies are the PEP and the type registry: every
 //! ctx-bearing path gates through `access_scope` before touching a repository,
 //! and the AuthZ label type-schemas are registered at init.
+//!
+//! The `stateful` entry now drives the read-model warm sweep, which is the only
+//! thing in this gear that turns a publish's pending handle into a version a
+//! consumer can pin: without the ticker `pricing_read_model` stays empty
+//! whatever else is built.
 
 use std::sync::Arc;
 
@@ -19,6 +24,7 @@ use anyhow::{Context, Result};
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use axum::Router;
+use chrono::Utc;
 use sea_orm_migration::{MigrationTrait, MigratorTrait};
 use tokio_util::sync::CancellationToken;
 use toolkit::api::OpenApiRegistry;
@@ -32,22 +38,31 @@ use crate::api::rest::frontier::ApiState as CatalogVersionApiState;
 use crate::config::BssPricingConfig;
 use crate::domain::ports::{CatalogVersionRegistryV1, UnconfiguredCatalogVersionRegistryV1};
 use crate::infra::fixture_gate::FixtureGate;
+use crate::infra::jobs::readmodel_warm::ReadModelWarmJob;
 use crate::infra::publish::PublishService;
 use crate::infra::storage::repo::PinFrontierRepo;
+
+/// The coordination-lease key of the read-model warm sweep.
+///
+/// Per gear and per pass, never per tenant: one sweep is one pass over every
+/// tenant, so there is nothing per-tenant to hold.
+const WARM_LEASE_KEY: &str = "bss-pricing:readmodel-warm";
 
 /// Per-process state built by [`Gear::init`] and read by
 /// [`RestApiCapability::register_rest`] and [`BssPricingGear::serve`].
 pub(crate) struct PricingRuntime {
-    /// Database provider for the background work (the read-model warm re-drive
-    /// runs under a system context, not a per-request `SecureORM` scope).
+    /// Database provider for the background work: the read-model warm sweep
+    /// runs under a system context (`AccessScope::allow_all`, narrowed per
+    /// tenant before every write), not a per-request `SecureORM` scope, and the
+    /// coordination lease that makes it a singleton is built over the same
+    /// handle.
     ///
     /// Acquired here rather than later on purpose: `db_required()` is what
     /// proves the declared `db` capability actually resolved, and a boot that
     /// cannot reach the database must fail at init, not at the first publish.
-    #[allow(
-        dead_code,
-        reason = "read by the read-model warm re-drive and the repositories, which land with the Foundation tables"
-    )]
+    /// Its `dead_code` allow is **discharged** — the reason it named has come
+    /// true, and an allow whose reason has come true is an allow that hides the
+    /// next thing.
     pub db: DBProvider<DbError>,
     /// The validated configuration, carried so the lifecycle reads the same
     /// values `init()` validated rather than re-parsing.
@@ -89,6 +104,16 @@ pub(crate) struct PricingRuntime {
         reason = "called by the authoring REST surface (G7), which is the only thing that can reach a publish"
     )]
     pub publish: PublishService,
+    /// The `CatalogVersion` registry, resolved at init with the fail-closed
+    /// default.
+    ///
+    /// It has **two** holders now, deliberately, and
+    /// [`PublishService`]'s own doc is narrowed rather than deleted to say why:
+    /// the invariant it protects is that there is one place a version can be
+    /// **requested** from, and the sweep never calls `request_version` — only
+    /// `committed_version`, which asks what a handle the commit already
+    /// obtained resolved to. One requester, two readers.
+    pub catalog_version_registry: Arc<dyn CatalogVersionRegistryV1>,
     /// Per-request state for the catalog-version REST surface, built here so
     /// `register_rest` composes routers and does no wiring of its own.
     pub catalog_version_api: Arc<CatalogVersionApiState>,
@@ -112,11 +137,15 @@ impl Default for BssPricingGear {
 impl BssPricingGear {
     /// Lifecycle entry (`stateful` capability).
     ///
-    /// The Foundation's background work is the read-model warm re-drive: a
-    /// degraded publish's projection continues past the 5s SLO until it
-    /// completes. Its ticker lands with the projector; until then `serve`
-    /// parks on the cancellation token so the lifecycle contract is honest —
-    /// the gear starts, stops on cancel, and claims no work it does not do.
+    /// The Foundation's background work is the read-model warm re-drive, and it
+    /// is not optional: the publish commit leaves a **pending**
+    /// `CatalogVersion` handle and no version, so without this ticker nothing
+    /// ever resolves it, `pricing_read_model` stays empty and no version ever
+    /// becomes pin-eligible. §4.4's "the re-drive continues past the SLO with
+    /// no bound" is this loop coming round again.
+    ///
+    /// An unconfigured gear still parks on the token: a gear compiled in but
+    /// absent from `gears:` has no runtime and therefore no work.
     ///
     /// # Errors
     /// Never returns `Err` today; the signature is the lifecycle contract's,
@@ -131,9 +160,130 @@ impl BssPricingGear {
             warm_tick_secs = rt.config.jobs.readmodel_warm_tick_secs,
             "bss-pricing: lifecycle started"
         );
+        let tasks = cancel.child_token();
+        let warm = Self::spawn_warm_ticker(Arc::clone(&rt), tasks.clone());
+
         cancel.cancelled().await;
-        info!("bss-pricing: lifecycle cancelled");
+        tasks.cancel();
+        Self::stop(warm).await;
         Ok(())
+    }
+
+    /// Wind the ticker down and say so.
+    ///
+    /// A join error is a **panic** in the sweep, and it is reported rather than
+    /// swallowed: the loop catches every tick failure itself, so reaching this
+    /// arm means something the job's own error handling did not model.
+    async fn stop(warm: tokio::task::JoinHandle<()>) {
+        if let Err(e) = warm.await {
+            tracing::warn!(error = %e, "bss-pricing: warm ticker did not join cleanly");
+        }
+        info!("bss-pricing: lifecycle cancelled");
+    }
+
+    /// Spawn the read-model warm ticker: a cancellable loop driving one
+    /// [`ReadModelWarmJob`] pass every `jobs.readmodel_warm_tick_secs`.
+    ///
+    /// The sibling ledger's `spawn_*_ticker` shape, and its three properties
+    /// are all load-bearing here. `MissedTickBehavior::Delay` keeps a slow pass
+    /// from queueing a burst of catch-up ticks behind it. The `biased` select
+    /// takes cancellation first, so a shutdown does not wait out a tick. And a
+    /// tick failure is **logged and the loop continues**: a transient storage
+    /// or registry fault must not kill the gear, and the next pass re-drives
+    /// exactly what this one did not finish.
+    ///
+    /// # The lease, and what it is actually for
+    ///
+    /// §3.8 makes this work "a singleton via the coordination lease library",
+    /// and [`coord::LeaseManager`] is what enforces it —
+    /// [`CoordError::LeaseHeld`] meaning a peer replica is already sweeping, at
+    /// **debug**, because that is the normal state of a multi-replica
+    /// deployment and not a fault.
+    ///
+    /// Worth being precise about what the lease buys, because it is less than
+    /// it looks: two concurrent sweeps would not corrupt anything. Every write
+    /// on the path is guarded by a key or a predicate — the delta INSERT by
+    /// `pricing_read_model`'s primary key, the finalize by its
+    /// `catalog_version IS NULL` compare-and-swap, the frontier by its
+    /// forward-only predicate, the degraded event by
+    /// `uq_pricing_outbox_dedup_key` — so a loser's transaction rolls back
+    /// whole and its refs stay pending for the next tick. What the lease
+    /// removes is **wasted work**, not a correctness hole.
+    ///
+    /// That is also why the TTL is the tick interval rather than some larger
+    /// invented number: the TTL only bounds how long a **crashed** holder
+    /// blocks its peers, and holding a slot for longer than the cadence would
+    /// stall the sweep for a whole deployment to protect against a race that is
+    /// already safe.
+    ///
+    /// The key is **per gear and per pass** (`bss-pricing:readmodel-warm`), not
+    /// per tenant: one sweep is one pass over every tenant, so a per-tenant key
+    /// would be a lock on a thing nobody takes.
+    fn spawn_warm_ticker(
+        rt: Arc<PricingRuntime>,
+        token: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(rt.config.jobs.readmodel_warm_interval());
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let lease = coord::LeaseManager::new(rt.db.db());
+            let job = ReadModelWarmJob::new(
+                rt.db.clone(),
+                Arc::clone(&rt.catalog_version_registry),
+                rt.config.jobs.clone(),
+            );
+            loop {
+                tokio::select! {
+                    biased;
+                    () = token.cancelled() => break,
+                    _ = iv.tick() => {
+                        Self::warm_pass(&lease, &job, rt.config.jobs.readmodel_warm_interval())
+                            .await;
+                    }
+                }
+            }
+        })
+    }
+
+    /// One leased pass. Extracted so the ticker stays a ticker.
+    async fn warm_pass(
+        lease: &coord::LeaseManager,
+        job: &ReadModelWarmJob,
+        ttl: std::time::Duration,
+    ) {
+        let Some(guard) = Self::take_warm_lease(lease, ttl).await else {
+            return;
+        };
+        if let Err(e) = job.run(Utc::now()).await {
+            tracing::error!(error = %e, "bss-pricing: read-model warm sweep tick failed");
+        }
+        if let Err(e) = guard.release().await {
+            // The slot frees itself at the TTL, so a failed release costs one
+            // skipped tick rather than a stuck sweep.
+            tracing::warn!(error = %e, "bss-pricing: could not release the warm sweep lease");
+        }
+    }
+
+    /// Take the singleton slot, or say why not.
+    ///
+    /// `LeaseHeld` is **debug**: in a multi-replica deployment every replica
+    /// but one loses this every tick, which is the mechanism working rather
+    /// than a fault.
+    async fn take_warm_lease(
+        lease: &coord::LeaseManager,
+        ttl: std::time::Duration,
+    ) -> Option<coord::LeaseGuard> {
+        match lease.acquire(WARM_LEASE_KEY, ttl).await {
+            Ok(guard) => Some(guard),
+            Err(coord::CoordError::LeaseHeld) => {
+                tracing::debug!("bss-pricing: read-model warm sweep skipped (a peer holds it)");
+                None
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "bss-pricing: could not acquire the warm sweep lease");
+                None
+            }
+        }
     }
 }
 
@@ -258,15 +408,18 @@ impl Gear for BssPricingGear {
             pin_frontier: PinFrontierRepo::new(db.clone()),
         });
 
-        // The publish engine takes the gate and the registry by value: it is
-        // the only thing that consults either, and a second holder would be a
-        // second answer to "is this deployment's corpus green for that shape"
-        // and a second place a `CatalogVersion` could be requested from.
+        // The publish engine takes the gate by value - it is the only thing
+        // that consults it, and a second holder would be a second answer to
+        // "is this deployment's corpus green for that shape". The registry is
+        // **cloned**, which narrows that sentence rather than deleting it: the
+        // engine stays the only **requester** of a `CatalogVersion`, and the
+        // warm sweep is a second **reader**, asking only what a handle the
+        // commit already obtained resolved to.
         let publish = PublishService::new(
             db.clone(),
             &config.limits,
             fixture_gate,
-            catalog_version_registry,
+            Arc::clone(&catalog_version_registry),
         );
 
         self.runtime.store(Some(Arc::new(PricingRuntime {
@@ -274,6 +427,7 @@ impl Gear for BssPricingGear {
             config,
             enforcer,
             publish,
+            catalog_version_registry,
             catalog_version_api,
         })));
         info!("bss-pricing: runtime published");

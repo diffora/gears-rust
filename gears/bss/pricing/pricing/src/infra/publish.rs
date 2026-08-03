@@ -118,9 +118,15 @@ pub struct PublishService {
     policies: PolicyObjectRepo,
     fixture_gate: FixtureGate,
     /// The sole incrementer of `CatalogVersion`, resolved at init with the
-    /// fail-closed default. It lives here rather than on the runtime because
-    /// the commit is the only thing that asks it anything, and a second holder
-    /// would be a second place a version could be requested from.
+    /// fail-closed default.
+    ///
+    /// The engine is the only place a version is **requested** from, and that
+    /// is the invariant this field carries: two requesters would mean two
+    /// publishes believing they own one assignment. It is deliberately narrower
+    /// than "one holder", which is what this doc used to say — the read-model
+    /// warm sweep holds the same `Arc` and calls only `committed_version`,
+    /// asking what a handle **this** engine already obtained resolved to. One
+    /// requester, two readers.
     registry: Arc<dyn CatalogVersionRegistryV1>,
 }
 
@@ -214,7 +220,9 @@ impl PublishService {
     ///    a rolled-back-then-retried commit re-requests the **same** handle
     ///    instead of orphaning one.
     /// 3. **Flip the row set** — the revision, then its price rows.
-    /// 4. **Record the pending ref**, with the subject the projector will need.
+    /// 4. **Record the pending ref**, with the subject, the revision **and the
+    ///    lifecycle state** this commit judged — the three facts the projector
+    ///    needs and cannot re-derive later without reading a world that moved.
     /// 5. **Enqueue `PlanPublished`**, carrying the pending handle.
     /// 6. **Extend the audit chain.** Last among the writes, because the record
     ///    describes what the transaction did and every fact it hashes is
@@ -448,6 +456,21 @@ impl PublishService {
                             tenant_id,
                             pending.pending_ref.clone(),
                             &SubjectRef::Plan(unit.plan_id.get()),
+                            // The revision this commit's rule set judged. The
+                            // projector reads it rather than whatever revision
+                            // is current when the sweep arrives, which may be a
+                            // later one: the registry batches at up to five
+                            // minutes and a second publish inside that window
+                            // would otherwise freeze content this publish never
+                            // judged into this publish's version.
+                            Some(unit.revision),
+                            // And the state that flip produced. Read back into
+                            // the delta rather than the row's state as it then
+                            // stands: that keeps moving (`published ->
+                            // superseded` at the next revision's commit), and
+                            // `superseded` is a value D-128 does not
+                            // contemplate for a projected subject.
+                            Some(published_revision.lifecycle_state),
                             now,
                         ),
                     )

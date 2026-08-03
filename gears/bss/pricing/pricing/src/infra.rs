@@ -3,5 +3,7 @@
 
 pub mod error_mapping;
 pub mod fixture_gate;
+pub mod jobs;
 pub mod publish;
+pub mod read_model;
 pub mod storage;

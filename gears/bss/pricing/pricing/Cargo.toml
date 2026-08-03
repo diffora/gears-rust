@@ -53,6 +53,11 @@ sea-orm = { workspace = true, features = ["sqlx-postgres", "sqlx-sqlite"] }
 # `MigrationTrait` / `MigratorTrait` in the `DatabaseCapability` impl and the
 # Foundation migration chain.
 sea-orm-migration = { workspace = true }
+# The `stateful` lifecycle's ticker: `tokio::time::interval` +
+# `MissedTickBehavior::Delay` + the `biased` select the read-model warm sweep
+# runs under, and `tokio::spawn` for the task itself. A dev-dependency until the
+# sweep landed, because until then `serve` only parked on the token.
+tokio = { workspace = true, features = ["time", "macros", "rt"] }
 # `CancellationToken` for the `stateful` `serve` lifecycle.
 tokio-util = { workspace = true }
 
@@ -101,7 +106,6 @@ bss-fixtures-conformance = { workspace = true }
 # are denied — which is format-independent, so JSON stands in for the YAML the
 # platform parses at boot.
 serde_json = { workspace = true }
-tokio = { workspace = true }
 toolkit = { workspace = true, features = ["db"] }
 # `tower::ServiceExt::oneshot` drives the REST router in `tests/rest_*.rs`
 # without binding a socket.

@@ -1,0 +1,276 @@
+//! What the payload promises, asserted against literals rather than against
+//! the struct.
+//!
+//! The wire keys are the whole contract here: a delta is written once, frozen,
+//! and read by a consumer that has only the JSON. So a Rust field rename that
+//! silently renamed a persisted key would be invisible to every test that
+//! reached the payload through the field it renamed — which is the reason
+//! `CatalogEvent::as_str` is pinned against literals one module over, and the
+//! reason every key below is spelled out.
+
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use chrono::{TimeZone, Utc};
+use serde_json::json;
+
+use super::{PROJECTED_ROW_STATES, PlanSubjectDelta};
+use crate::domain::concurrency::RowVersion;
+use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
+use crate::domain::lifecycle::LifecycleState;
+use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::plan_shape::{
+    BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+};
+use crate::domain::price_record::PriceRecord;
+use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
+use crate::domain::scope_key::{
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+};
+
+fn plan_id() -> PlanId {
+    PlanId::new(uuid::Uuid::from_u128(0x9_1a4))
+}
+
+fn terminal_phase() -> PhaseId {
+    PhaseId::new(uuid::Uuid::from_u128(0xfa_5e))
+}
+
+/// A shape-only delta: a plan revision with children and **no price rows**.
+fn shape_only() -> PlanSubjectDelta {
+    PlanSubjectDelta {
+        plan_id: plan_id(),
+        revision: 3,
+        lifecycle_state: LifecycleState::Published,
+        sku_id: Some(uuid::Uuid::from_u128(0x5_c1)),
+        plan_tier: Some("gold".to_owned()),
+        plan_tier_override: false,
+        billing_cycle: Some(BillingCycle::Recurring),
+        frequency: Some(Frequency::Monthly),
+        available_from: Some(Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()),
+        available_to: None,
+        purchase_min_qty: None,
+        purchase_max_qty: None,
+        invoice_grouping_key: Some("bundle-a".to_owned()),
+        phases: vec![PlanPhase {
+            phase_id: terminal_phase(),
+            kind: PhaseKind::Evergreen,
+            ordinal: 0,
+            converts_to_phase_id: None,
+            phase_duration_days: None,
+            display_trial_days: None,
+        }],
+        addon_rules: Vec::new(),
+        descriptor_set: Some(DescriptorSet {
+            invoice_line_template: Some("{plan}".to_owned()),
+            gl_code: Some("4000".to_owned()),
+            itemization_rule: Some("per_charge".to_owned()),
+            additional: std::collections::BTreeMap::new(),
+        }),
+        prices: Vec::new(),
+    }
+}
+
+fn graduated_row() -> PriceRecord {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    row.meter = Some("api_calls".to_owned());
+    row.bands = vec![
+        TierBand::closed(0, 100, MinorAmount::new(0).expect("a non-negative amount")),
+        TierBand::open(100, MinorAmount::new(5).expect("a non-negative amount")),
+    ];
+    PriceRecord {
+        price_id: uuid::Uuid::from_u128(0xb_0001),
+        scope_key: ScopeKey::new(
+            plan_id(),
+            CurrencyCode::new("EUR").expect("three letters"),
+            Region::new("eu").expect("a non-blank region"),
+            terminal_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+        )
+        .expect("the class pairs with cohort none"),
+        row,
+        tax_inclusive: false,
+        billing_timing: None,
+        rounding_policy_ref: Some("half_up".to_owned()),
+        grandfather_until: None,
+        supersedes_price_id: None,
+        lifecycle_state: LifecycleState::Published,
+        created_by: uuid::Uuid::from_u128(0xac_10),
+        created_at_utc: Utc.with_ymd_and_hms(2026, 8, 1, 10, 0, 0).unwrap(),
+        row_version: RowVersion::new(0),
+    }
+}
+
+#[test]
+fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
+    let value = shape_only().to_value();
+
+    assert_eq!(value.get("planId"), Some(&json!(plan_id().get())));
+    assert_eq!(value.get("revision"), Some(&json!(3)));
+    assert_eq!(value.get("lifecycleState"), Some(&json!("published")));
+    assert_eq!(
+        value.get("skuId"),
+        Some(&json!(uuid::Uuid::from_u128(0x5_c1)))
+    );
+    assert_eq!(value.get("planTier"), Some(&json!("gold")));
+    assert_eq!(value.get("planTierOverride"), Some(&json!(false)));
+    assert_eq!(value.get("billingCycle"), Some(&json!("recurring")));
+    assert_eq!(
+        value.get("frequency"),
+        Some(&json!({ "token": "monthly" })),
+        "a fixed frequency carries its token and no interval"
+    );
+    assert_eq!(value.get("availableTo"), Some(&json!(null)));
+    assert_eq!(value.get("invoiceGroupingKey"), Some(&json!("bundle-a")));
+    assert_eq!(
+        value.get("phases"),
+        Some(&json!([{
+            "phaseId": terminal_phase().get(),
+            "kind": "evergreen",
+            "ordinal": 0,
+            "convertsToPhaseId": null,
+            "phaseDurationDays": null,
+            "displayTrialDays": null,
+        }]))
+    );
+    assert_eq!(
+        value.get("descriptorSet"),
+        Some(&json!({
+            "invoiceLineTemplate": "{plan}",
+            "glCode": "4000",
+            "itemizationRule": "per_charge",
+            "additional": {},
+        }))
+    );
+}
+
+#[test]
+fn a_custom_frequency_carries_its_interval_and_not_only_its_token() {
+    // The pairing `chk_pricing_plan_custom_interval_pairing` exists to keep: a
+    // frozen `custom_every_n` with no `n` is a billing period nobody can
+    // compute, and the token alone cannot reconstruct one.
+    let delta = PlanSubjectDelta {
+        frequency: Some(Frequency::CustomEveryN {
+            n: 45,
+            unit: CustomIntervalUnit::Days,
+        }),
+        ..shape_only()
+    };
+
+    assert_eq!(
+        delta.to_value().get("frequency"),
+        Some(&json!({ "token": "custom_every_n", "n": 45, "unit": "days" }))
+    );
+}
+
+#[test]
+fn the_lifecycle_field_renders_retired_as_well_as_published() {
+    // The whole of D-128 in one assertion. The revision's state is a projected
+    // plan-subject field because it is what sellability predicate (4) reads at
+    // the pin, and a retired plan can never publish again — so if `retired` did
+    // not reach the payload, nothing would ever correct the delta and the read
+    // model would advertise a retired plan as sellable permanently.
+    for state in [LifecycleState::Published, LifecycleState::Retired] {
+        let delta = PlanSubjectDelta {
+            lifecycle_state: state,
+            ..shape_only()
+        };
+        assert_eq!(
+            delta.to_value().get("lifecycleState"),
+            Some(&json!(state.as_str())),
+            "the projected lifecycle state must reach the payload"
+        );
+    }
+}
+
+#[test]
+fn the_payload_carries_the_declared_generation_and_this_file_does_not_spell_it() {
+    // Read from the constant, never from a literal here: a second spelling of
+    // the generation is a test that stays green through the one edit it exists
+    // to catch (D-162 — the document declares it, `evaluation_policy_tests`
+    // pins the constant to the document, and this pins the payload to the
+    // constant).
+    assert_eq!(
+        shape_only().to_value().get("evaluationPolicyVersion"),
+        Some(&json!(EVALUATION_POLICY_GENERATION))
+    );
+}
+
+#[test]
+fn a_revision_with_no_price_rows_still_renders_a_well_formed_payload() {
+    // A shape-only revision — one that changes a descriptor or a phase duration
+    // and authors no price rows — is an ordinary publish, so its delta is an
+    // ordinary payload with an empty row set rather than an absent one. A
+    // missing key and an empty array are not the same claim about a plan.
+    let value = shape_only().to_value();
+
+    assert!(value.is_object());
+    assert_eq!(value.get("prices"), Some(&json!([])));
+    assert_eq!(value.get("addonRules"), Some(&json!([])));
+}
+
+#[test]
+fn a_price_row_freezes_its_key_its_shape_and_its_bands() {
+    let delta = PlanSubjectDelta {
+        prices: vec![graduated_row()],
+        ..shape_only()
+    };
+    let value = delta.to_value();
+    let rows = value
+        .get("prices")
+        .expect("prices")
+        .as_array()
+        .expect("array");
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+
+    assert_eq!(
+        row.get("priceId"),
+        Some(&json!(uuid::Uuid::from_u128(0xb_0001)))
+    );
+    assert_eq!(row.get("lifecycleState"), Some(&json!("published")));
+    assert_eq!(row.get("modelKind"), Some(&json!("graduated")));
+    assert_eq!(row.get("chargeKind"), Some(&json!("usage")));
+    assert_eq!(row.get("meter"), Some(&json!("api_calls")));
+    assert_eq!(row.get("roundingPolicyRef"), Some(&json!("half_up")));
+    assert_eq!(
+        row.get("scopeKey"),
+        Some(&json!({
+            "planId": plan_id().get(),
+            "currency": "EUR",
+            "region": "eu",
+            "priceOverlay": "base",
+            "phase": terminal_phase().get(),
+            "priceEligibility": "all_subscriptions",
+            "chargeKind": "usage",
+            "cohort": null,
+        })),
+        "all eight canonical axes, in the normative order"
+    );
+    assert_eq!(
+        row.get("bands"),
+        Some(&json!([
+            { "fromQty": 0, "toQty": 100, "unitPriceMinor": 0 },
+            { "fromQty": 100, "toQty": null, "unitPriceMinor": 5 },
+        ])),
+        "an open top is null, never a sentinel a reader could compare against"
+    );
+}
+
+#[test]
+fn the_projected_row_states_are_the_two_that_are_not_never_published_drafts() {
+    // D-121's set, and `superseded` is in it although nothing in this gear can
+    // produce one: rating rates past instants, so a changeover's predecessor
+    // must survive re-projection or yesterday's `t` fails closed on a covered
+    // period. Listing it now means the day D-88 or D-100 lands, only the
+    // horizon is owed.
+    assert_eq!(
+        PROJECTED_ROW_STATES,
+        &[LifecycleState::Published, LifecycleState::Superseded]
+    );
+    assert!(
+        !PROJECTED_ROW_STATES.contains(&LifecycleState::Draft),
+        "a never-published draft is exactly what D-121 excludes"
+    );
+}

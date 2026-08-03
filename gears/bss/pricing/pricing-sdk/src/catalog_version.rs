@@ -8,6 +8,17 @@
 //! itself pin-eligible. No consumer can evaluate that for itself, so the gear
 //! materializes the frontier and publishes it (D-136) — this type is what it
 //! serves.
+//!
+//! **What a pin buys today, stated because the predicate above does not say
+//! it.** The frontier is real: a version reaches it only once every subject the
+//! gear knows it published is warm. What a consumer cannot yet do is *resolve*
+//! anything at that pin — there is no read-model resolution surface in this
+//! gear at all, and the delta a version freezes deliberately omits the facts
+//! whose slices are unbuilt (the `PriceWindow` intervals and the derived
+//! coverage end, the GA-gate flags, the registry `sellable` flag, the grant set
+//! and the Slice-6 cross-boundary pair). So a version is pinnable and its
+//! payload is incomplete, and a reader is entitled to know which of the six
+//! sellability predicates it can evaluate from one: not (1), not (5), not (6).
 
 use chrono::{DateTime, Utc};
 
