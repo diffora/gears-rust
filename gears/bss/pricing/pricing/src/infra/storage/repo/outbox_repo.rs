@@ -75,6 +75,7 @@
 //! (`pricingSnapshotRef`, `planId`); they are written here once so a later
 //! document has something concrete to contradict.
 
+use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
@@ -85,8 +86,8 @@ use uuid::Uuid;
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::events::CatalogEvent;
 use crate::domain::scope_key::PlanId;
-use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::outbox;
+use crate::infra::storage::{RepoError, contention_or_db};
 
 /// The `PlanPublished` payload, as one type rather than a map built at a call
 /// site.
@@ -209,10 +210,7 @@ impl NewOutboxEvent {
             aggregate_id: payload.plan_id.get(),
             event: CatalogEvent::PlanPublishDegraded,
             payload: payload.to_value(),
-            dedup_key: plan_publish_degraded_dedup_key(
-                payload.plan_id,
-                &payload.pending_version_ref,
-            ),
+            dedup_key: plan_publish_degraded_dedup_key(payload.plan_id, payload.catalog_version),
             correlation_id: payload.correlation_id,
             enqueued_at,
         }
@@ -241,19 +239,30 @@ pub fn plan_published_dedup_key(plan_id: PlanId, revision: u64) -> String {
 /// for `PlanPublished`; the keys below are therefore this module's, written
 /// here once so a later document has something concrete to contradict.
 ///
-/// It carries the **pending handle** rather than a `CatalogVersion` because a
-/// degraded publish is by definition one whose version has not yet reached its
-/// read model: the handle is the only identifier the publish has at the moment
-/// the degradation is observable.
+/// It names the publish by its **plan and committed version** and carries the
+/// handle as lineage. Under D-166 the degraded condition is *the commit was
+/// observed and the warm has not landed*, so the version is known at every
+/// instant the condition is observable — which is what the earlier
+/// handle-keyed form could not assume, having been written when the degraded
+/// predicate fired on a ref nobody had resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanPublishDegradedPayload {
     /// The plan whose subject is not warm.
     pub plan_id: PlanId,
-    /// The registry handle its publish is still waiting on.
+    /// The version the registry committed the publish into.
+    pub catalog_version: CatalogVersion,
+    /// The registry handle its publish is still waiting on — lineage, so an
+    /// operator can find the ref row this was observed from.
     pub pending_version_ref: String,
-    /// When that handle was requested — what the age is measured from, and the
-    /// only instant this gear records about the wait.
-    pub requested_at: DateTime<Utc>,
+    /// When this gear first saw the registry's answer: **what the degraded age
+    /// is measured from** (D-166 clause 2).
+    ///
+    /// `requested_at` was here before and was the wrong instant, not merely a
+    /// coarser one: `fr-publish-fanout-atomicity` puts the pre-commit batching
+    /// wait **outside** degraded handling, and an age measured from the request
+    /// includes nothing but that wait for the first five minutes of every
+    /// publish.
+    pub commit_observed_at: DateTime<Utc>,
     /// The correlation id of the sweep pass that observed it.
     pub correlation_id: Uuid,
 }
@@ -264,32 +273,36 @@ impl PlanPublishDegradedPayload {
     pub fn to_value(&self) -> JsonValue {
         json!({
             "planId": self.plan_id.get(),
+            "catalogVersion": self.catalog_version.get(),
             "pendingVersionRef": self.pending_version_ref,
-            "requestedAt": self.requested_at,
+            "commitObservedAt": self.commit_observed_at,
             "correlationId": self.correlation_id,
         })
     }
 }
 
 /// The dedup key of a degraded publish:
-/// `PlanPublishDegraded/<plan_id>/<pending_ref>`.
+/// `PlanPublishDegraded/<plan_id>/<catalog_version>`.
 ///
-/// **The pending ref rather than a `CatalogVersion`**, and the reason is what
-/// makes the degradation observable at all: a subject is unwarm exactly while
-/// its ref is still `pending`, since the projector finalizes the ref and writes
-/// the delta warm in **one** transaction. So at the moment of observation there
-/// is no version to key on, and the handle is what names the publish — derived
-/// from `(tenant, plan, revision)` by the commit, so it is stable across every
-/// pass that re-observes the same degradation.
+/// **The plan and its version**, which is what D-166 clause (2) makes available:
+/// the degraded condition is now *observed committed and still unwarm*, so the
+/// pass holding the condition is the pass holding the registry's answer. The
+/// earlier form keyed on the pending handle because the predicate it served
+/// fired on refs nothing had resolved — there was no version to name.
+///
+/// Naming the version rather than the handle is also what makes the key mean the
+/// **publish**: two revisions of one plan landing in one D-47 batch degrade as
+/// one version's failure to warm, and an operator paging on it acts once.
 ///
 /// Under `uq_pricing_outbox_dedup_key (tenant_id, dedup_key)` that makes a
 /// repeat of one degradation **one** event, which is the whole requirement.
 #[must_use]
-pub fn plan_publish_degraded_dedup_key(plan_id: PlanId, pending_ref: &str) -> String {
+pub fn plan_publish_degraded_dedup_key(plan_id: PlanId, catalog_version: CatalogVersion) -> String {
     format!(
-        "{}/{}/{pending_ref}",
+        "{}/{}/{}",
         CatalogEvent::PlanPublishDegraded.as_str(),
-        plan_id
+        plan_id,
+        catalog_version.get()
     )
 }
 
@@ -344,7 +357,19 @@ pub async fn enqueue(
         .map_err(|e| RepoError::Db(format!("pricing_outbox scope: {e}")))?
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("enqueue pricing_outbox: {e}")))?;
+        .map_err(|e| {
+            // D-159's second serialization point: `uq_pricing_outbox_sequence`
+            // over `(tenant_id, aggregate_id)`. The dedup index is the other
+            // unique constraint on this table and the driver's class does not
+            // tell them apart - both mean another write of this aggregate got
+            // here first, and both remedy the same way. See
+            // `contention_or_db` for what that leaves owed.
+            contention_or_db(
+                &e,
+                &format!("plan {}", event.aggregate_id),
+                "enqueue pricing_outbox",
+            )
+        })?;
     Ok(seq)
 }
 

@@ -73,8 +73,9 @@ use toolkit_macros::domain_model;
 
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{
-    AVAILABLE_FROM_IN_PAST, HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL, PURCHASE_QTY_RANGE_INVALID,
-    SETUP_ROW_INVALID, USAGE_MARKET_INCOMPLETE,
+    AVAILABLE_FROM_IN_PAST, BASE_MARKET_INCOMPLETE, CYCLE_METADATA_MISSING, HYBRID_INCOMPLETE,
+    INVALID_CUSTOM_INTERVAL, PURCHASE_QTY_RANGE_INVALID, SETUP_ROW_INVALID,
+    USAGE_MARKET_INCOMPLETE,
 };
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency, PlanShape};
 use crate::domain::price_record::PriceRecord;
@@ -243,6 +244,163 @@ impl ValidationRule<PlanShape> for HybridCompleteness {
 // ---------------------------------------------------------------------------
 // inst-cs-usage / inst-cs-hybrid (D-84)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// inst-cs-declared (D-149 clause 2)
+// ---------------------------------------------------------------------------
+
+/// The plan has said how it charges — and it is the **first** rule of the step.
+///
+/// **The defect, which is a defect of the step and not of any one rule.**
+/// `billing_cycle` is `Option`, legitimately: a plan is authored incrementally in
+/// `draft` (§4.2 step 1) and nothing in the §17.1 matrix is implied. Every other
+/// rule of the cycle-shape step then reads the cycle first and returns when it is
+/// absent — correctly, because a rule that read no cycle and reported a fault
+/// would be reporting one the author did not make. The consequence nobody had
+/// looked at is that the *step* passed a `NULL` cycle **vacuously**: five rules,
+/// each right on its own, adding up to no judgement at all.
+///
+/// So this rule is the one that does not decline. A plan that has said nothing
+/// about how it charges is exactly the plan a fail-closed validator cannot
+/// protect, and it reached publish unjudged.
+///
+/// **Two fields, one code** (D-146's line): an absent `billing_cycle`, and an
+/// absent `frequency` on a cycle that carries a recurring part. The operator's
+/// next action is identical — author the field the plan is missing — and the
+/// report names which one it is.
+///
+/// The frequency half is scoped by [`BillingCycle::has_recurring_part`] rather
+/// than by a cycle list spelled here: `inst-cs-recurring` states it of
+/// `recurring` and `hybrid` plans, which is what that predicate means, and a
+/// `one_time` or `usage` plan has no recurrence to describe.
+///
+/// **A first publish with a `None` baseline still declines to judge.** Nothing
+/// here reads the baseline, so this rule is unaffected by it — which is the
+/// `inst-cs-declared` posture: the rule asks what the plan says about itself, not
+/// what it used to say.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CycleDeclared;
+
+impl ValidationRule<PlanShape> for CycleDeclared {
+    fn name(&self) -> &'static str {
+        "inst-cs-declared"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        let Some(cycle) = subject.billing_cycle else {
+            report.violate(
+                CYCLE_METADATA_MISSING,
+                subject.subject(),
+                "billingCycle is unset: a plan MUST carry a cycle from the 17.1 matrix at \
+                 publish. Every other rule of the cycle-shape step is conditioned on it, so an \
+                 unset cycle is not a plan judged and passed - it is a plan nothing judged",
+            );
+            return;
+        };
+        if cycle.has_recurring_part() && subject.frequency.is_none() {
+            report.violate(
+                CYCLE_METADATA_MISSING,
+                subject.subject(),
+                format!(
+                    "frequency is unset on a {cycle} plan: a plan that recurs and does not say \
+                     when it charges has told a subscriber nothing about the interval it is \
+                     billed over"
+                ),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// inst-cs-onetime / inst-cs-recurring (D-149 clause 1)
+// ---------------------------------------------------------------------------
+
+/// Every sold market carries the base row its cycle mandates.
+///
+/// **The defect.** A `one_time` plan selling in EUR and USD with a `one_time` row
+/// only in EUR is **sellable in USD** and there is nothing to charge for there —
+/// the plan is bought for nothing. The recurring arm is the same sentence over
+/// `chargeKind = recurring`. `inst-cs-onetime` and `inst-cs-recurring` both stated
+/// it from the start and §5 named no code for either until D-149.
+///
+/// One rule over two `chargeKind` values, because the *at most one* half of the
+/// one-time rule is already the published-plane scope-key partial `UNIQUE`
+/// (`chargeKind` is a key axis) — what is missing is only the *at least one*
+/// half, and it is the same question on both cycles.
+///
+/// ## The mandated kind, and the cycle that mandates none
+///
+/// `one_time` mandates a `one_time` row; `recurring` and `hybrid` mandate a
+/// `recurring` one. `usage` mandates **no** base row at all, so this rule says
+/// nothing there — a usage-only plan's market completeness is
+/// [`UsageMarketCompleteness`]'s, over the metered lines.
+///
+/// ## It never contests [`HYBRID_INCOMPLETE`], and that is enforced here
+///
+/// The two codes answer two questions and must not both fire on one plan.
+/// `HYBRID_INCOMPLETE` means *a part is missing **anywhere*** and never names a
+/// market; this one means *a part exists and does not reach every sold market*.
+/// So on a `hybrid` plan carrying no row of the mandated kind at all, this rule
+/// stays silent and lets the hybrid rule speak: the author's remediation is "add
+/// the recurring part", not "add it in four markets".
+///
+/// On a non-`hybrid` cycle there is no hybrid rule to defer to, so a plan with no
+/// base row anywhere is reported here, once per sold market.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BaseMarketCompleteness;
+
+impl ValidationRule<PlanShape> for BaseMarketCompleteness {
+    fn name(&self) -> &'static str {
+        // `inst-cs-recurring`, which before this rule registered nothing at all:
+        // its other two clauses are Slice 6's `billingTiming` (cross-referenced,
+        // never re-registered) and the frequency half of `CYCLE_METADATA_MISSING`.
+        "inst-cs-recurring"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        let Some(cycle) = subject.billing_cycle else {
+            return;
+        };
+        let Some(base) = mandated_base_kind(cycle) else {
+            return;
+        };
+        let carried = subject.markets_with(base);
+        // The hybrid deferral: a part missing everywhere is `HYBRID_INCOMPLETE`'s
+        // sentence, and two codes for one remediation is one code too many.
+        if carried.is_empty() && matches!(cycle, BillingCycle::Hybrid) {
+            return;
+        }
+        for (currency, region) in subject.markets().difference(&carried) {
+            report.violate(
+                BASE_MARKET_INCOMPLETE,
+                format!("{}|{currency}|{region}", subject.subject()),
+                format!(
+                    "a {cycle} plan sells in {currency}/{region} and carries no {base} base row \
+                     there: a subscriber in that market is sold a plan with nothing to charge \
+                     them for. A market the plan does not sell in is one with no rows at all, \
+                     never one with a row of another kind"
+                ),
+            );
+        }
+    }
+}
+
+/// The base `chargeKind` a cycle mandates in every market it sells in, or `None`
+/// for a cycle that mandates no base row.
+///
+/// Written as a `match` over [`BillingCycle`] rather than as two predicates, so a
+/// cycle added to the matrix is a compile error here — the same reason
+/// `partition_row_fields` has no rest pattern.
+const fn mandated_base_kind(cycle: BillingCycle) -> Option<ChargeKind> {
+    match cycle {
+        BillingCycle::OneTime => Some(ChargeKind::OneTime),
+        BillingCycle::Recurring | BillingCycle::Hybrid => Some(ChargeKind::Recurring),
+        // A usage-only plan has no base row to be complete about.
+        BillingCycle::Usage => None,
+    }
+}
 
 /// D-84 — every priced line reaches every market the plan sells in.
 ///

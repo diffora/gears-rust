@@ -82,6 +82,9 @@ struct RegistryDouble {
     /// An outage: every `committed_version` call fails with this, which is
     /// **not** the same as `Unconfigured` and must not make the pass inert.
     outage: Mutex<Option<String>>,
+    /// A **per-ref** outage — the condition D-163 clause (2) names, where one
+    /// ref of a version cannot be resolved while its siblings can.
+    unresolvable: Mutex<Vec<String>>,
 }
 
 impl RegistryDouble {
@@ -99,6 +102,22 @@ impl RegistryDouble {
     /// Fail every lookup — a configured registry that cannot be reached.
     fn fail_with(&self, error: &CatalogVersionRegistryError) {
         *self.outage.lock().expect("no panics in the double") = Some(error.to_string());
+    }
+
+    /// Fail lookups of **one** handle, leaving its siblings answerable.
+    fn fail_handle(&self, pending_ref: &str) {
+        self.unresolvable
+            .lock()
+            .expect("no panics in the double")
+            .push(pending_ref.to_owned());
+    }
+
+    /// Let a previously unresolvable handle be answered again.
+    fn clear_handle_failures(&self) {
+        self.unresolvable
+            .lock()
+            .expect("no panics in the double")
+            .clear();
     }
 
     /// Answer `pending_ref` with a scripted sequence, the last entry repeating.
@@ -137,6 +156,17 @@ impl CatalogVersionRegistryV1 for RegistryDouble {
         if let Some(reason) = self.outage.lock().expect("no panics in the double").clone() {
             return Err(CatalogVersionRegistryError::Unreachable(reason));
         }
+        if self
+            .unresolvable
+            .lock()
+            .expect("no panics in the double")
+            .iter()
+            .any(|handle| handle == pending_ref)
+        {
+            return Err(CatalogVersionRegistryError::Unreachable(format!(
+                "{pending_ref} is unresolvable"
+            )));
+        }
         let mut calls = self.calls.lock().expect("no panics in the double");
         let seen = calls.entry(pending_ref.to_owned()).or_insert(0);
         let index = *seen;
@@ -157,6 +187,14 @@ impl CatalogVersionRegistryV1 for RegistryDouble {
 // ---------------------------------------------------------------------------
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
+/// A second tenant, for the one property a per-tenant bound has and a
+/// cross-tenant one cannot: that one tenant's saturated scan does not defer
+/// another tenant's completions (D-163 clause 2).
+///
+/// **Above** [`TENANT`], because the tenant sweep order is ascending tenant id —
+/// so this tenant is swept *after* the saturated one, which is the direction that
+/// would fail under a cross-tenant page.
+const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_22);
 const ACTOR: Uuid = Uuid::from_u128(0xac_10);
 const CORRELATION: Uuid = Uuid::from_u128(0xc0_11);
 
@@ -169,10 +207,10 @@ fn at_min(hour: u32, minute: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 3, hour, minute, 0).unwrap()
 }
 
-fn ctx() -> SecurityContext {
+fn ctx_of(tenant: Uuid) -> SecurityContext {
     SecurityContext::builder()
         .subject_id(ACTOR)
-        .subject_tenant_id(TENANT)
+        .subject_tenant_id(tenant)
         .build()
         .expect("a subject and a tenant are all a context needs")
 }
@@ -194,6 +232,10 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
+    harness_with(JobsConfig::default()).await
+}
+
+async fn harness_with(jobs: JobsConfig) -> Harness {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
         .expect("connect in-memory sqlite");
@@ -217,7 +259,7 @@ async fn harness() -> Harness {
         job: ReadModelWarmJob::new(
             provider.clone(),
             Arc::clone(&registry) as Arc<dyn CatalogVersionRegistryV1>,
-            JobsConfig::default(),
+            jobs,
         ),
         registry,
         scope: AccessScope::for_tenant(TENANT),
@@ -225,10 +267,10 @@ async fn harness() -> Harness {
     }
 }
 
-fn plan_draft(plan_id: PlanId, tier: &str) -> NewPlanDraft {
+fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
     NewPlanDraft {
         plan_id,
-        tenant_id: TENANT,
+        tenant_id: tenant,
         created_by: ACTOR,
         created_at_utc: at(10),
         sku_id: Some(Uuid::from_u128(0x5_c1)),
@@ -272,17 +314,27 @@ fn scope_key(plan_id: PlanId, phase: PhaseId) -> ScopeKey {
 
 /// A plan the whole rule set passes, plus one flat recurring row.
 async fn seed_publishable(h: &Harness, plan_id: PlanId, tier: &str) -> (u64, RowVersion) {
+    seed_publishable_of(h, TENANT, plan_id, tier).await
+}
+
+async fn seed_publishable_of(
+    h: &Harness,
+    tenant: Uuid,
+    plan_id: PlanId,
+    tier: &str,
+) -> (u64, RowVersion) {
+    let scope = AccessScope::for_tenant(tenant);
     let phase = PhaseId::new(Uuid::new_v4());
     let created = h
         .plans
-        .create_draft(&h.scope, plan_draft(plan_id, tier))
+        .create_draft(&scope, plan_draft_of(tenant, plan_id, tier))
         .await
         .expect("create the draft");
     let after_phases = h
         .shapes
         .replace_phases(
-            &h.scope,
-            TENANT,
+            &scope,
+            tenant,
             plan_id,
             created.revision,
             created.row_version,
@@ -294,14 +346,15 @@ async fn seed_publishable(h: &Harness, plan_id: PlanId, tier: &str) -> (u64, Row
                 phase_duration_days: None,
                 display_trial_days: None,
             }],
+            stamp(),
         )
         .await
         .expect("attach the phase chain");
     let after_descriptors = h
         .shapes
         .set_descriptor_set(
-            &h.scope,
-            TENANT,
+            &scope,
+            tenant,
             plan_id,
             created.revision,
             after_phases.row_version,
@@ -311,14 +364,15 @@ async fn seed_publishable(h: &Harness, plan_id: PlanId, tier: &str) -> (u64, Row
                 itemization_rule: Some("per_charge".to_owned()),
                 additional: std::collections::BTreeMap::new(),
             },
+            stamp(),
         )
         .await
         .expect("attach the descriptor set");
 
     h.prices
         .create_draft(
-            &h.scope,
-            TENANT,
+            &scope,
+            tenant,
             NewPriceDraft {
                 price_id: Uuid::new_v4(),
                 scope_key: scope_key(plan_id, phase),
@@ -350,12 +404,23 @@ async fn publish(
     version: RowVersion,
     now: DateTime<Utc>,
 ) -> String {
+    publish_of(h, TENANT, plan_id, revision, version, now).await
+}
+
+async fn publish_of(
+    h: &Harness,
+    tenant: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    version: RowVersion,
+    now: DateTime<Utc>,
+) -> String {
     let receipt = h
         .publish
         .commit(
-            &ctx(),
-            &h.scope,
-            TENANT,
+            &ctx_of(tenant),
+            &AccessScope::for_tenant(tenant),
+            tenant,
             PlanPublishUnit::new(plan_id, revision),
             version,
             PublishAuthorization::auto_publishable(),
@@ -374,9 +439,18 @@ async fn publish(
 
 /// Seed a plan, publish it at `now`, and return `(plan_id, pending_ref)`.
 async fn seed_and_publish_at(h: &Harness, tier: &str, now: DateTime<Utc>) -> (PlanId, String) {
+    seed_and_publish_for(h, TENANT, tier, now).await
+}
+
+async fn seed_and_publish_for(
+    h: &Harness,
+    tenant: Uuid,
+    tier: &str,
+    now: DateTime<Utc>,
+) -> (PlanId, String) {
     let plan_id = PlanId::new(Uuid::new_v4());
-    let (revision, version) = seed_publishable(h, plan_id, tier).await;
-    let pending = publish(h, plan_id, revision, version, now).await;
+    let (revision, version) = seed_publishable_of(h, tenant, plan_id, tier).await;
+    let pending = publish_of(h, tenant, plan_id, revision, version, now).await;
     (plan_id, pending)
 }
 
@@ -450,8 +524,12 @@ async fn degraded_events(h: &Harness) -> Vec<outbox::Model> {
 }
 
 async fn frontier_version(h: &Harness) -> Option<u64> {
+    frontier_version_of(h, TENANT).await
+}
+
+async fn frontier_version_of(h: &Harness, tenant: Uuid) -> Option<u64> {
     h.frontier
-        .read(&h.scope, TENANT)
+        .read(&AccessScope::for_tenant(tenant), tenant)
         .await
         .expect("read the frontier")
         .map(|frontier| frontier.catalog_version.get())
@@ -506,6 +584,78 @@ async fn a_committed_publish_becomes_pinnable_after_one_sweep() {
         frontier_version(&h).await,
         Some(1),
         "PinFrontierRepo::read now answers, which is what G7's e2e asserts"
+    );
+}
+
+#[tokio::test]
+async fn a_resolved_plan_subjects_delta_stamps_the_cross_boundary_marker() {
+    // D-169 clause (1), against the store rather than against the renderer. The
+    // marker is a launch-constant tenant-wide value on every resolved `plan`
+    // subject row, and the field that used to sit beside it left the contract -
+    // so what a version freezes here is machine-readable and derivable by nobody
+    // but this gear, and the sentence a human is shown is PRD AC #66's.
+    let h = harness().await;
+    let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    h.registry.commit(&pending, 1);
+
+    sweep(&h, at(13)).await;
+
+    let rows = deltas(&h).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].payload.get("crossBoundaryChangePolicy"),
+        Some(&serde_json::json!("cancel_plus_new")),
+        "{:?}",
+        rows[0].payload
+    );
+    assert!(
+        !rows[0]
+            .payload
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("warningtext"),
+        "and no warning text, under any spelling: {:?}",
+        rows[0].payload
+    );
+}
+
+#[tokio::test]
+async fn a_non_plan_subject_carries_neither_half_because_it_has_no_delta_at_all() {
+    // The contract is per D-91's keying: `crossBoundaryChangePolicy` lives on a
+    // `plan` subject row, and the other three kinds have no store in this gear -
+    // so the projector refuses them by name rather than writing a delta with a
+    // marker and nothing else in it.
+    //
+    // That refusal is what makes "no non-plan subject carries the marker" true by
+    // construction rather than by a renderer remembering: `PlanSubjectDelta` is
+    // the crate's only delta renderer.
+    let h = harness().await;
+    let conn = h.provider.conn().expect("conn");
+    catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope,
+        PendingVersionRow::for_subject(
+            TENANT,
+            "pend-overlay".to_owned(),
+            &SubjectRef::PriceOverlay(Uuid::new_v4()),
+            Some(0),
+            Some(LifecycleState::Published),
+            at_min(12, 0),
+        ),
+    )
+    .await
+    .expect("record an overlay subject's ref");
+    h.registry.commit("pend-overlay", 4);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(
+        report.subjects_failed, 1,
+        "the overlay subject is refused by name"
+    );
+    assert!(
+        deltas(&h).await.is_empty(),
+        "so there is no row for a marker to be on"
     );
 }
 
@@ -669,13 +819,19 @@ async fn a_straggler_into_a_version_the_frontier_has_passed_is_refused_loudly() 
     // that fails, a ref of V5 arrives after V5 is already pinnable, and adding
     // a subject to a pinnable version is one pin resolving two contents over
     // time. It is refused at the moment it would corrupt rather than predicted.
+    //
+    // It also pins the reading of D-163 clause (2) that decides which faults get
+    // charged clause (3)'s price. `Ok(None)` is a SUCCESSFUL answer - "not
+    // committed yet" - and under clause (1) a ref the registry has not committed
+    // cannot belong to a version that already has one, so it does NOT stop the
+    // pass judging V5 complete. What the registry then does below is contradict
+    // itself, and that is the contract violation this refusal is for. A per-ref
+    // registry ERROR is the other thing and defers instead:
+    // `a_pass_with_an_unresolvable_sibling_ref_decides_no_completion`.
     let h = harness().await;
     let (_, pending_a) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
     let (plan_b, pending_b) = seed_and_publish_at(&h, "silver", at_min(12, 1)).await;
     h.registry.commit(&pending_a, 5);
-    // The registry cannot answer for B this pass - an outage, not a contract
-    // violation - so V5's subject set in storage is A alone and V5 reads
-    // complete.
     h.registry.script(&pending_b, vec![None]);
 
     let first = sweep(&h, at(13)).await;
@@ -707,6 +863,208 @@ async fn a_straggler_into_a_version_the_frontier_has_passed_is_refused_loudly() 
             .count(),
         1,
         "B's ref stays pending, so its age alarms rather than its content landing"
+    );
+    assert_eq!(frontier_version(&h).await, Some(5), "and nothing moved");
+}
+
+// ---------------------------------------------------------------------------
+// 4b. The completeness bound: a pass that could not have seen the whole subject
+//     set decides no completion (D-163 clause 2).
+// ---------------------------------------------------------------------------
+
+/// A version with two subjects of one tenant, both projectable.
+///
+/// Returns `(the two handles, the version they commit into)`.
+async fn seed_two_subject_version(h: &Harness, version: u64) -> (String, String) {
+    let (_, first) = seed_and_publish_at(h, "gold", at_min(12, 0)).await;
+    let (_, second) = seed_and_publish_at(h, "silver", at_min(12, 1)).await;
+    h.registry.commit(&first, version);
+    h.registry.commit(&second, version);
+    (first, second)
+}
+
+#[tokio::test]
+async fn a_version_whose_subjects_all_warm_in_one_pass_is_complete_and_advances() {
+    // The unchanged base case, asserted on the new report field so the bound is
+    // visibly not blocking the ordinary path. A pass that saw both refs and got
+    // an answer for both is entitled to count them.
+    let h = harness().await;
+    let _ = seed_two_subject_version(&h, 5).await;
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.tenants_seen, 1);
+    assert_eq!(report.pending_seen, 2);
+    assert_eq!(report.subjects_projected, 2);
+    assert_eq!(report.versions_complete, 1, "the pass saw the whole set");
+    assert_eq!(report.frontiers_advanced, 1);
+    assert_eq!(frontier_version(&h).await, Some(5));
+}
+
+#[tokio::test]
+async fn a_pass_with_an_unresolvable_sibling_ref_decides_no_completion() {
+    // D-163 clause (2), the per-ref-outage arm. Before the bound the version read
+    // complete from the warm set alone - the unresolvable ref is not in the
+    // version's subject set at all, because a pending ref carries no version - the
+    // frontier advanced, and the sibling then arrived BELOW it and was refused
+    // loudly, at clause (3)'s price: unresolvable at any version, nothing
+    // self-healing.
+    //
+    // Delete `coverage.may_decide_completion()` from either place in
+    // `read_model.rs` and this test fails.
+    let h = harness().await;
+    let (first, second) = seed_two_subject_version(&h, 5).await;
+    h.registry.fail_handle(&second);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.subjects_projected, 1, "the answerable one warmed");
+    assert_eq!(
+        report.versions_complete, 0,
+        "and the pass declined to judge a set it could not have seen whole"
+    );
+    assert_eq!(report.frontiers_advanced, 0);
+    assert_eq!(
+        frontier_version(&h).await,
+        None,
+        "the frontier lags, which is the safe direction"
+    );
+    // The warmed subject really is warm: the bound gates the COMPLETENESS
+    // decision and nothing else about the pass.
+    assert_eq!(deltas(&h).await.len(), 1);
+    assert!(
+        refs(&h)
+            .await
+            .iter()
+            .any(|row| row.pending_ref == first && row.catalog_version == Some(5)),
+        "the resolvable ref finalized as usual"
+    );
+}
+
+#[tokio::test]
+async fn the_next_pass_with_the_outage_cleared_completes_the_version_and_advances() {
+    // The lag recovers on its own, which is what makes deferring safe rather than
+    // merely cautious. Nothing out of band is needed - the sweep arriving again
+    // IS the recovery, exactly as it is for the warm re-drive.
+    let h = harness().await;
+    let (_, second) = seed_two_subject_version(&h, 5).await;
+    h.registry.fail_handle(&second);
+    sweep(&h, at(13)).await;
+    assert_eq!(frontier_version(&h).await, None);
+
+    h.registry.clear_handle_failures();
+    let report = sweep(&h, at(14)).await;
+
+    assert_eq!(
+        report.subjects_projected, 1,
+        "only the deferred one was left"
+    );
+    assert_eq!(report.versions_complete, 1);
+    assert_eq!(report.frontiers_advanced, 1);
+    assert_eq!(frontier_version(&h).await, Some(5));
+    assert_eq!(deltas(&h).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_deferred_completion_is_not_silent() {
+    // D-166 clause (5) is what makes clause (2)'s lag reportable rather than
+    // invisible: a tenant with no frontier and a ref of its own past the batching
+    // SLO is short of pin-eligibility, and that is precisely the deferred state.
+    let h = harness().await;
+    let (_, second) = seed_two_subject_version(&h, 5).await;
+    h.registry.fail_handle(&second);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.versions_complete, 0);
+    assert_eq!(
+        report.pin_eligibility_overdue, 1,
+        "the deferral is reported, not merely survived"
+    );
+}
+
+#[tokio::test]
+async fn a_saturated_scan_defers_its_own_tenant_and_no_one_elses() {
+    // The fairness half, and the one a cross-tenant bound cannot pass. Under the
+    // old cross-tenant page ordered by request instant, the tenant holding the
+    // oldest refs filled the budget and every OTHER tenant's completions were
+    // deferred with it - their frontiers standing still because someone else's
+    // backlog was stuck.
+    //
+    // `pending_refs_per_tenant = 2` and the first tenant holds exactly two, so
+    // its page fills; the second holds one and does not. The second tenant's id
+    // sorts ABOVE the first's, so it is swept second - the direction that would
+    // fail under a shared budget.
+    let h = harness_with(JobsConfig {
+        pending_refs_per_tenant: 2,
+        ..JobsConfig::default()
+    })
+    .await;
+    let _ = seed_two_subject_version(&h, 5).await;
+    let (_, other) = seed_and_publish_for(&h, OTHER_TENANT, "gold", at_min(12, 2)).await;
+    h.registry.commit(&other, 6);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.tenants_seen, 2, "both tenants were swept");
+    assert_eq!(
+        report.subjects_projected, 3,
+        "and all three subjects warmed"
+    );
+    assert_eq!(
+        report.versions_complete, 1,
+        "one completion: the saturated tenant's version was not judged"
+    );
+    assert_eq!(
+        frontier_version(&h).await,
+        None,
+        "the saturated tenant's frontier waits for a pass that could see its whole set"
+    );
+    assert_eq!(
+        frontier_version_of(&h, OTHER_TENANT).await,
+        Some(6),
+        "and the other tenant's advanced in the same pass"
+    );
+}
+
+#[tokio::test]
+async fn a_straggler_below_the_frontier_is_still_refused_once_the_bound_is_in_place() {
+    // The bound narrowed `refuse_projection_below_frontier`'s reachability
+    // without disarming it. What can no longer reach it is an ordinary per-ref
+    // outage; what still does is the registry contradicting D-163 clause (1) -
+    // a batch that did not commit atomically into one version.
+    //
+    // Constructed directly: the frontier is advanced by a complete V5, and then a
+    // ref of the SAME tenant is offered at V5 afterwards. No outage is involved,
+    // which is the point.
+    let h = harness().await;
+    let (_, first) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    h.registry.commit(&first, 5);
+    sweep(&h, at(13)).await;
+    assert_eq!(frontier_version(&h).await, Some(5));
+
+    // A second publish of the tenant that the registry now says belongs to V5 -
+    // a version whose subject set clause (1) says closed at the first commit.
+    let (plan_b, second) = seed_and_publish_at(&h, "silver", at_min(13, 30)).await;
+    h.registry.commit(&second, 5);
+
+    let report = sweep(&h, at(14)).await;
+
+    assert_eq!(
+        report.subjects_failed, 1,
+        "the straggler is refused, not quietly projected"
+    );
+    assert_eq!(report.subjects_projected, 0);
+    assert_eq!(
+        deltas(&h).await.len(),
+        1,
+        "no subject joined a pinnable version"
+    );
+    assert!(
+        !deltas(&h)
+            .await
+            .iter()
+            .any(|row| row.subject_ref == plan_b.to_string())
     );
     assert_eq!(frontier_version(&h).await, Some(5), "and nothing moved");
 }
@@ -999,6 +1357,7 @@ async fn the_open_draft_revision_is_never_the_projection_source() {
                 plan_tier: Some("platinum".to_owned()),
                 ..PlanShapePatch::default()
             },
+            stamp(),
         )
         .await
         .expect("edit the draft");
@@ -1053,6 +1412,7 @@ async fn a_version_freezes_the_revision_its_own_publish_judged() {
                 plan_tier: Some("platinum".to_owned()),
                 ..PlanShapePatch::default()
             },
+            stamp(),
         )
         .await
         .expect("edit the successor");
@@ -1102,79 +1462,20 @@ async fn a_version_freezes_the_revision_its_own_publish_judged() {
 }
 
 // ---------------------------------------------------------------------------
-// 10. The degraded observation.
+// 10. The degraded observation, and the instant that separates it from the
+//     overdue one (D-166).
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn a_publish_left_waiting_is_reported_degraded_exactly_once() {
-    // The degraded mark has no column anywhere in sec 3.7, so it is derived: a
-    // publish whose ref is still pending IS the degraded state. What must not
-    // be derived twice is the EVENT, and `uq_pricing_outbox_dedup_key` is what
-    // makes a repeat of one degradation one event.
-    let h = harness().await;
-    let (plan_id, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
-    h.registry.script(&pending, vec![None]);
-
-    // The ref was requested at 12:00; the ratified max batching delay is five
-    // minutes, so by 13:00 it is overdue.
-    let first = sweep(&h, at(13)).await;
-    assert_eq!(first.commit_overdue, 1);
-    assert_eq!(first.degraded_emitted, 1);
-
-    let second = sweep(&h, at(14)).await;
-    assert_eq!(second.commit_overdue, 1, "still overdue, still alarming");
-    assert_eq!(
-        second.degraded_emitted, 0,
-        "the dedup index refused the repeat"
-    );
-
-    let events = degraded_events(&h).await;
-    assert_eq!(events.len(), 1, "one degradation, one event");
-    assert_eq!(events[0].aggregate_id, plan_id.get());
-    assert_eq!(
-        events[0].payload.get("pendingVersionRef"),
-        Some(&serde_json::json!(pending))
-    );
-    assert_eq!(
-        events[0].published_at, None,
-        "the relay drains, not the sweep"
-    );
-}
-
-#[tokio::test]
-async fn a_registry_that_errors_still_trips_the_commit_overdue_alarm() {
-    // sec 3.6 conditions `commit_overdue` on the ref's age and on nothing else.
-    // An earlier version raised it only when the registry answered "not yet",
-    // so a registry that ERRORED left the ref ageing in silence however long it
-    // stood - which is the outage the alarm most needs to name.
-    let h = harness().await;
-    let (_, _) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
-    // No answer is scripted, and the double answers `Ok(None)` for an unknown
-    // handle; script an outage instead.
-    h.registry
-        .fail_with(&CatalogVersionRegistryError::Unreachable("down".to_owned()));
-
-    let report = sweep(&h, at(13)).await;
-
-    assert_eq!(report.versions_projected, 0);
-    assert_eq!(
-        report.commit_overdue, 1,
-        "the ref aged past the SLO, whatever the registry said"
-    );
-    assert_eq!(report.degraded_emitted, 1);
-}
-
-#[tokio::test]
-async fn a_committed_version_whose_projection_keeps_failing_trips_both_alarms() {
-    // sec 4.4's own words: "a stuck version now holds the frontier, which is
-    // exactly what that alarm signals". An earlier version reached neither
-    // alarm on this path - the ref had been answered, so it never took the
-    // not-yet-committed branch, and the second alarm was measured off a pending
-    // ref's age rather than off the frontier's.
-    let h = harness().await;
-    let (_, pending_a) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
-    // A second subject of V5 whose plan is not there, so its projection refuses
-    // every pass.
+/// A ref whose commit the registry answers and whose subject can never project,
+/// so the pass observes the commit and the warm keeps failing — the one state
+/// `fr-publish-fanout-atomicity` names and the merged predicate could not.
+///
+/// Returns the handle.
+async fn seed_observed_but_unwarm(
+    h: &Harness,
+    version: u64,
+    requested_at: DateTime<Utc>,
+) -> String {
     let conn = h.provider.conn().expect("conn");
     catalog_version_ref_repo::record_pending(
         &conn,
@@ -1185,15 +1486,305 @@ async fn a_committed_version_whose_projection_keeps_failing_trips_both_alarms() 
             &SubjectRef::Plan(Uuid::new_v4()),
             Some(0),
             Some(LifecycleState::Published),
-            at_min(12, 1),
+            requested_at,
         ),
     )
     .await
     .expect("record the stuck subject");
-    h.registry.commit(&pending_a, 5);
-    h.registry.commit("pend-stuck", 5);
+    h.registry.commit("pend-stuck", version);
+    "pend-stuck".to_owned()
+}
+
+/// A ref's recorded commit observation.
+async fn observed_at(h: &Harness, pending_ref: &str) -> Option<DateTime<Utc>> {
+    refs(h)
+        .await
+        .into_iter()
+        .find(|row| row.pending_ref == pending_ref)
+        .expect("the ref is there")
+        .commit_observed_at
+}
+
+#[tokio::test]
+async fn a_pending_ref_the_registry_has_not_answered_is_overdue_and_not_degraded() {
+    // D-166 clause (4). Before the observation instant existed BOTH signals
+    // fired here, off one clock, so an operator could not tell "the registry has
+    // not answered" from "the registry answered and the warm is failing" - the
+    // one distinction `fr-publish-fanout-atomicity` exists to draw.
+    let h = harness().await;
+    let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    h.registry.script(&pending, vec![None]);
+
+    // Requested at 12:00; the ratified max batching delay is five minutes, so by
+    // 13:00 the registry is overdue - and by 14:00 it still is.
+    let first = sweep(&h, at(13)).await;
+    assert_eq!(first.commit_overdue, 1);
+    assert_eq!(
+        first.degraded_emitted, 0,
+        "there is nothing degraded about a publish whose version does not exist yet"
+    );
+    let second = sweep(&h, at(14)).await;
+    assert_eq!(second.commit_overdue, 1, "still unanswered, still alarming");
+    assert_eq!(second.degraded_emitted, 0);
+
+    assert!(
+        degraded_events(&h).await.is_empty(),
+        "and no event was enqueued for it"
+    );
+    assert_eq!(
+        observed_at(&h, &pending).await,
+        None,
+        "nothing was observed, so nothing is stamped"
+    );
+}
+
+#[tokio::test]
+async fn a_registry_that_errors_still_trips_the_commit_overdue_alarm() {
+    // sec 3.6 conditions `commit_overdue` on the ref's age and on whether the
+    // commit has been observed - never on what the registry said THIS pass. An
+    // earlier version raised it only when the registry answered "not yet", so a
+    // registry that ERRORED left the ref ageing in silence however long it stood,
+    // which is the outage the alarm most needs to name.
+    let h = harness().await;
+    let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    // No answer is scripted, and the double answers `Ok(None)` for an unknown
+    // handle; script an outage instead.
+    h.registry
+        .fail_with(&CatalogVersionRegistryError::Unreachable("down".to_owned()));
 
     let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.versions_projected, 0);
+    assert_eq!(
+        report.commit_overdue, 1,
+        "the ref aged past the SLO with no observation, whatever the registry said"
+    );
+    assert_eq!(
+        report.degraded_emitted, 0,
+        "an unreachable registry is not a warm that is failing"
+    );
+    assert_eq!(observed_at(&h, &pending).await, None);
+}
+
+#[tokio::test]
+async fn an_observed_commit_is_stamped_even_though_its_projection_fails() {
+    // The placement is the mechanism. The projector finalizes a ref and writes
+    // its delta warm in ONE transaction, so an observation stamped inside it
+    // would roll back on exactly the path the degraded signal exists for.
+    //
+    // Delete `observe_commit`'s call in `resolve` and this test fails, along
+    // with every degraded assertion below.
+    let h = harness().await;
+    let pending = seed_observed_but_unwarm(&h, 5, at_min(12, 1)).await;
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.subjects_failed, 1, "the subject cannot project");
+    assert_eq!(
+        observed_at(&h, &pending).await,
+        Some(at(13)),
+        "and the observation is recorded anyway"
+    );
+    assert_eq!(
+        refs(&h)
+            .await
+            .into_iter()
+            .find(|row| row.pending_ref == pending)
+            .expect("the ref is there")
+            .catalog_version,
+        None,
+        "while the ref itself is still unresolved - the state that is unreachable \
+         without the column"
+    );
+}
+
+#[tokio::test]
+async fn the_observation_instant_is_the_first_sighting_and_does_not_move() {
+    // Write-once, and it is the whole of whether the signal ever raises: a stamp
+    // that advanced every pass would hold the degraded age at zero forever.
+    let h = harness().await;
+    let pending = seed_observed_but_unwarm(&h, 5, at_min(12, 1)).await;
+
+    sweep(&h, at_min(13, 0)).await;
+    sweep(&h, at_min(13, 30)).await;
+
+    assert_eq!(
+        observed_at(&h, &pending).await,
+        Some(at_min(13, 0)),
+        "the second pass re-observed the same commit and left the instant alone"
+    );
+}
+
+#[tokio::test]
+async fn an_observed_commit_is_degraded_only_once_the_propagation_slo_has_passed() {
+    // D-166 clause (2), both directions. sec 1.2's SLO is 5s, and the pass that
+    // first observes the commit observes it at its own `now` - so the pass that
+    // stamps can never be the pass that alarms, which is the correct shape: the
+    // warm was attempted in that same pass.
+    let h = harness().await;
+    let pending = seed_observed_but_unwarm(&h, 5, at_min(12, 1)).await;
+
+    let stamping = sweep(&h, at(13)).await;
+    assert_eq!(
+        stamping.degraded_emitted, 0,
+        "an observation zero seconds old is inside the SLO"
+    );
+
+    let inside = sweep(&h, at(13) + chrono::Duration::seconds(4)).await;
+    assert_eq!(
+        inside.degraded_emitted, 0,
+        "four seconds after the observation is still inside it"
+    );
+
+    let outside = sweep(&h, at(13) + chrono::Duration::seconds(5)).await;
+    assert_eq!(
+        outside.degraded_emitted, 1,
+        "five seconds is the SLO, and the warm has not landed"
+    );
+    assert_eq!(
+        outside.commit_overdue, 0,
+        "and it is NOT overdue - the registry answered"
+    );
+
+    let events = degraded_events(&h).await;
+    assert_eq!(events.len(), 1, "one degradation, one event");
+    assert_eq!(
+        events[0].payload.get("catalogVersion"),
+        Some(&serde_json::json!(5)),
+        "the event names the publish by its version, which D-166 makes knowable"
+    );
+    assert_eq!(
+        events[0].payload.get("commitObservedAt"),
+        Some(&serde_json::json!(at(13))),
+        "and measures the wait from the observation, not from the request"
+    );
+    assert_eq!(
+        events[0].payload.get("pendingVersionRef"),
+        Some(&serde_json::json!(pending)),
+        "the handle rides as lineage"
+    );
+    assert_eq!(
+        events[0].published_at, None,
+        "the relay drains, not the sweep"
+    );
+
+    // The dedup index makes a repeat of one degradation one event.
+    let again = sweep(&h, at(14)).await;
+    assert_eq!(
+        again.degraded_emitted, 0,
+        "the dedup index refused the repeat"
+    );
+    assert_eq!(degraded_events(&h).await.len(), 1);
+}
+
+#[tokio::test]
+async fn an_observed_commit_is_never_overdue_however_long_it_stays_unresolved() {
+    // D-166 clause (4)'s other side, and the reason the two signals are now
+    // disjoint over one clock rather than merely differently thresholded: the
+    // ref below is HOURS past the max batching delay and the registry answered
+    // it, so `commit_overdue` must stay silent whatever its age.
+    let h = harness().await;
+    let _ = seed_observed_but_unwarm(&h, 5, at_min(12, 1)).await;
+
+    sweep(&h, at(13)).await;
+    let much_later = sweep(&h, at(23)).await;
+    let later_still = sweep(&h, at(23) + chrono::Duration::hours(5)).await;
+
+    assert_eq!(
+        much_later.commit_overdue, 0,
+        "the registry answered; ageing past its budget says nothing about it now"
+    );
+    assert_eq!(
+        later_still.commit_overdue, 0,
+        "and it stays silent however long the warm keeps failing"
+    );
+    assert_eq!(
+        degraded_events(&h).await.len(),
+        1,
+        "the degradation is reported once and by the other signal"
+    );
+}
+
+#[tokio::test]
+async fn every_pending_state_lands_on_exactly_one_signal_or_none() {
+    // The table D-166 clause (4) closes with: "nothing goes silent". Four
+    // combinations of (observed?, age past its own threshold?), each asserted to
+    // produce exactly one of the two signals or neither - which is what a merged
+    // predicate could not express, both of its arms being true at once.
+    //
+    // The tenant has no frontier, so `pin_eligibility_overdue` is a THIRD signal
+    // riding along on the observed cases; it is asserted where it belongs
+    // (`a_stale_frontier_...`) and read here only to show it is not what carries
+    // these two.
+    for (unanswered, earlier_pass, now, overdue, degraded, label) in [
+        (
+            true,
+            None,
+            at_min(12, 1),
+            0,
+            0,
+            "unanswered and inside the batching SLO: neither",
+        ),
+        (
+            true,
+            None,
+            at(13),
+            1,
+            0,
+            "unanswered and past the batching SLO: overdue only",
+        ),
+        (
+            false,
+            None,
+            at_min(12, 1),
+            0,
+            0,
+            "answered, warm attempted this pass, observation zero seconds old: neither",
+        ),
+        (
+            false,
+            Some(at_min(12, 1)),
+            at(13),
+            0,
+            1,
+            "answered and unwarm past the propagation SLO: degraded only",
+        ),
+    ] {
+        let h = harness().await;
+        let pending = seed_observed_but_unwarm(&h, 5, at_min(12, 0)).await;
+        if unanswered {
+            h.registry.script(&pending, vec![None]);
+        }
+        if let Some(stamping) = earlier_pass {
+            // Stamp the observation on an earlier pass, so the age measured at
+            // `now` is the observation's and not zero.
+            sweep(&h, stamping).await;
+        }
+
+        let report = sweep(&h, now).await;
+
+        assert_eq!(report.commit_overdue, overdue, "{label}");
+        assert_eq!(report.degraded_emitted, degraded, "{label}");
+        assert!(
+            report.commit_overdue == 0 || report.degraded_emitted == 0,
+            "the two signals may never both fire on one ref: {label}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_committed_version_whose_projection_keeps_failing_holds_the_frontier_and_says_so() {
+    // sec 4.4's own words: "a stuck version now holds the frontier, which is
+    // exactly what that alarm signals". Under D-166 this path is DEGRADED rather
+    // than overdue - the registry answered - and `pin_eligibility_overdue` is
+    // what says the frontier is held.
+    let h = harness().await;
+    let (_, pending_a) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    let _ = seed_observed_but_unwarm(&h, 5, at_min(12, 1)).await;
+    h.registry.commit(&pending_a, 5);
+
+    sweep(&h, at(13)).await;
+    let report = sweep(&h, at(14)).await;
 
     assert_eq!(report.subjects_failed, 1, "the stuck subject refuses");
     assert_eq!(
@@ -1202,8 +1793,12 @@ async fn a_committed_version_whose_projection_keeps_failing_trips_both_alarms() 
         "so V5 never becomes pinnable"
     );
     assert_eq!(
-        report.commit_overdue, 1,
-        "its ref is still pending and past the SLO"
+        report.commit_overdue, 0,
+        "the registry answered, so this is not its fault"
+    );
+    assert_eq!(
+        report.degraded_emitted, 1,
+        "the version committed and the warm has not landed"
     );
     assert_eq!(
         report.pin_eligibility_overdue, 1,
@@ -1327,4 +1922,14 @@ async fn a_sweep_with_no_registry_configured_is_inert() {
     );
     assert!(deltas(&h).await.is_empty());
     assert_eq!(frontier_version(&h).await, None);
+}
+
+/// The actor and instant every mutating repository call now records (D-135 - the
+/// audit row commits inside the mutation's own transaction).
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: uuid::Uuid::from_u128(0xac_10),
+        recorded_at: chrono::Utc::now(),
+        correlation_id: None,
+    }
 }

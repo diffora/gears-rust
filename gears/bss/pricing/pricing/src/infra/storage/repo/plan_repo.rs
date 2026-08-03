@@ -76,18 +76,20 @@ use toolkit_db::secure::{
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
 use crate::domain::scope_key::PlanId;
-use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::plan;
 use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::repo::plan_shape_repo::{
     copy_addon_rules, copy_descriptor_set, copy_phases, delete_addon_rules, delete_descriptor_set,
     delete_phases,
 };
+use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
+use crate::infra::storage::{RepoError, contention_or_db};
 
 /// The noun every **compare-and-swap** refusal names, so a caller that failed
 /// to edit revision 3 and a caller that failed to delete it are told about the
@@ -186,12 +188,32 @@ impl PlanRepo {
     /// table's `PRIMARY KEY` answer, and a second open draft is
     /// `uq_pricing_plan_open_draft`'s. Neither is pre-checked, because a
     /// pre-check would be a read the insert races with anyway.
+    /// [`RepoError::CorruptRow`] from the audit append this transaction also
+    /// makes — a segment head whose `row_hash` is not 32 bytes, or a record whose
+    /// state cannot be canonicalized. It rolls the revision back with it, which
+    /// is the point: a mutation whose record cannot be written must not commit.
     pub async fn create_draft(
         &self,
         scope: &AccessScope,
         draft: NewPlanDraft,
     ) -> Result<PlanRevision, RepoError> {
-        create_draft_on(&self.conn()?, scope, draft).await
+        // **A transaction, not `conn()`.** `create_draft_on` writes two rows now
+        // - the revision and its audit record (D-135) - and `conn()` is the
+        // non-transactional runner, so on a bare connection those were two
+        // autocommit statements: an append failure left a committed revision with
+        // no record of who created it, which is the silently-incomplete trail
+        // this writer exists to prevent. `PriceRepo::create_draft` has always
+        // supplied its own transaction for the row-and-bands pair; this is the
+        // same shape, arrived at for the same reason one file over.
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
+                Box::pin(async move { create_draft_on(txn, &scope, draft).await })
+            })
+            .await;
+        outcome.map_err(tx_failure)
     }
 
     /// Read one revision by its composite identity.
@@ -274,6 +296,15 @@ impl PlanRepo {
     /// or custom interval is past what its column can hold;
     /// [`RepoError::Db`] on a scope or storage failure;
     /// [`RepoError::CorruptRow`] when the updated row reads back unusable.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, \
+                  revision, expected-version) the compare-and-swap addresses, the payload, and \
+                  the D-135 audit stamp. `swap_guard` already takes those four together, so a \
+                  `RevisionTarget` bundling them is the right shape and is owed - it is a \
+                  signature change across every storage suite that pins these paths, and it \
+                  changes no behaviour"
+    )]
     pub async fn update_draft(
         &self,
         scope: &AccessScope,
@@ -282,39 +313,66 @@ impl PlanRepo {
         revision: u64,
         expected: RowVersion,
         patch: PlanShapePatch,
+        stamp: AuditStamp,
     ) -> Result<PlanRevision, RepoError> {
-        // Ahead of the compare-and-swap: a value the store cannot hold is
-        // refused whether or not the caller also holds a current row version,
-        // and refusing it here leaves the row's tag where it was.
+        // Ahead of the compare-and-swap and ahead of the transaction: a value the
+        // store cannot hold is refused whether or not the caller also holds a
+        // current row version, and refusing it here leaves the row's tag where it
+        // was.
         check_authored_instant("availableFrom", patch.available_from)?;
         check_authored_instant("availableTo", patch.available_to)?;
         let columns = patched_columns(patch)?;
-        let conn = self.conn()?;
         let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+            let conn = self.conn()?;
             return Err(refuse(&conn, scope, tenant_id, plan_id, revision, expected).await);
         };
 
-        let mut update = plan::Entity::update_many().secure().scope_with(scope);
-        for (column, value) in columns {
-            update = update.col_expr(column, value);
-        }
-
-        let result = update
-            .col_expr(
-                plan::Column::RowVersion,
-                Expr::col(plan::Column::RowVersion).add(1_i64),
-            )
-            .filter(guard)
-            .exec(&conn)
-            .await
-            .map_err(|e| RepoError::Db(format!("update plan draft: {e}")))?;
-
-        if result.rows_affected == 0 {
-            return Err(refuse(&conn, scope, tenant_id, plan_id, revision, expected).await);
-        }
-        load_revision(&conn, scope, tenant_id, plan_id, revision)
-            .await?
-            .ok_or_else(|| not_found(plan_id, revision))
+        // **A transaction, where this used to be a bare statement.** D-135 puts
+        // the audit record inside the mutation's own transaction, so a rolled-back
+        // edit leaves no record of having happened - which is the property a
+        // post-hoc writer passes by accident and fails under contention.
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    let mut update = plan::Entity::update_many().secure().scope_with(&scope);
+                    for (column, value) in columns {
+                        update = update.col_expr(column, value);
+                    }
+                    let result = update
+                        .col_expr(
+                            plan::Column::RowVersion,
+                            Expr::col(plan::Column::RowVersion).add(1_i64),
+                        )
+                        .filter(guard)
+                        .exec(txn)
+                        .await
+                        .map_err(|e| RepoError::Db(format!("update plan draft: {e}")))?;
+                    if result.rows_affected == 0 {
+                        return Err(
+                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
+                        );
+                    }
+                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
+                        .await?
+                        .ok_or_else(|| not_found(plan_id, revision))?;
+                    record_revision_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &updated,
+                        AuditAction::Update,
+                        expected,
+                        stamp,
+                    )
+                    .await?;
+                    Ok(updated)
+                })
+            })
+            .await;
+        outcome.map_err(tx_failure)
     }
 
     /// Discard an open draft revision, under the caller's row version: the row
@@ -360,32 +418,25 @@ impl PlanRepo {
     /// behavioural test per table in `tests/sqlite_plan_repo.rs` rather than the
     /// schema anchor that used to fail the moment a table appeared.
     ///
-    /// # Two things this does not do yet, and who owes them
+    /// # The audit record, paid
     ///
-    /// **The audit record, and why the authoring surface did not pay it.**
     /// D-145 is explicit that the flip "is audited exactly as the deletion was",
-    /// and the deletion it replaces was audited too. There is a writer —
-    /// [`audit_repo::append`](super::audit_repo::append), which lands with the
-    /// publish commit and takes a runner precisely so a record can join a
-    /// mutation's own transaction — and nothing is still written here.
+    /// and it now is: a record with `action = abandon`, in **this** transaction,
+    /// so a compare-and-swap that matches nothing rolls the record back with the
+    /// flip and the child deletes.
     ///
-    /// The authoring REST surface arrived and **deliberately did not pay this**,
-    /// which narrows the debt to a shape somebody can finish. D-14 requires the
-    /// audit row to commit inside the mutation's **own** transaction, and only
-    /// the two guarded creates get one (`infra::idempotent`); `update_draft`,
-    /// `delete_draft`, this method and `open_revision` each open their own or
-    /// run on a bare connection, so a surface that audited what it could would
-    /// make `pricing_audit_log` a trail that is **silently incomplete** —
-    /// strictly worse than one that is visibly absent, against
-    /// `inst-au-complete`'s "every plan/price mutation". Paying it properly
-    /// needs runner-taking forms for all four of those, an actor and a
-    /// correlation id threaded through each, and one wave that lands all six
-    /// paths at once. That wave is what owes this, not a surface group. **The
-    /// debt lives in this sentence** — it never had an anchor of its own the way
-    /// the child tables did, so deleting the sentence is how it would be lost.
+    /// An earlier version of this doc carried the debt in prose and named what
+    /// paying it needed — "runner-taking forms for all four of those, an actor and
+    /// a correlation id threaded through each, and one wave that lands all six
+    /// paths at once". That is what happened: [`AuditStamp`] is the actor and the
+    /// instant, [`PlanRepo::update_draft`] became transactional to hold its own
+    /// record, and the six mutating authoring paths write together. What is
+    /// **still** absent is the read surface (`inst-au-read`'s Auditor-only trail,
+    /// Slice 12) — the records exist and nothing in this gear serves them.
     ///
-    /// **The plan-level refusal, now paid by the authoring surface.** This
-    /// method names the revision it discards, so a caller that names one the
+    /// # The plan-level refusal, paid by the authoring surface
+    ///
+    /// This method names the revision it discards, so a caller that names one the
     /// plan does not have is told [`RepoError::NotFound`] — a 404. S2 §5 says
     /// abandoning a plan **that holds no open draft revision** answers
     /// `LIFECYCLE_FORBIDDEN`, which is a different question about a different
@@ -413,6 +464,7 @@ impl PlanRepo {
         plan_id: PlanId,
         revision: u64,
         expected: RowVersion,
+        stamp: AuditStamp,
     ) -> Result<PlanRevision, RepoError> {
         let scope = scope.clone();
         let (_, outcome) = self
@@ -464,9 +516,20 @@ impl PlanRepo {
                             refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
                         );
                     }
-                    load_revision(txn, &scope, tenant_id, plan_id, revision)
+                    let flipped = load_revision(txn, &scope, tenant_id, plan_id, revision)
                         .await?
-                        .ok_or_else(|| not_found(plan_id, revision))
+                        .ok_or_else(|| not_found(plan_id, revision))?;
+                    record_revision_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &flipped,
+                        AuditAction::Abandon,
+                        expected,
+                        stamp,
+                    )
+                    .await?;
+                    Ok(flipped)
                 })
             })
             .await;
@@ -522,7 +585,11 @@ impl PlanRepo {
     /// had attached something.
     ///
     /// **That completes D-83 for Slice 2** — three child tables, all copied
-    /// inside this transaction. The three calls are written out rather than
+    /// inside this transaction, beside the revision insert and the **audit
+    /// record** of the identity this transaction mints (D-135). Five writes, and
+    /// the record is one of them for the reason D-145 gives: a revision number is
+    /// permanent, so a number minted with no record of the minting is a name
+    /// nobody can account for. The three copy calls are written out rather than
     /// dispatched through a copier trait or a registry: an abstraction over
     /// three known statements hides which tables are covered, and what a reader
     /// needs from this method is exactly that list. When a later slice adds a
@@ -543,8 +610,11 @@ impl PlanRepo {
     /// losing the race** for that slot to a concurrent `open_revision`, since
     /// the three checks above are reads and `uq_pricing_plan_open_draft` is
     /// what actually decides the winner; [`RepoError::CorruptRow`] when the
-    /// current revision reads back unusable, or when the plan's greatest
-    /// revision has no representable successor.
+    /// current revision reads back unusable, when the plan's greatest revision
+    /// has no representable successor, or from the audit append — a segment head
+    /// whose `row_hash` is not 32 bytes, which rolls the whole open back and is
+    /// what `opening_a_successor_whose_record_cannot_be_written_mints_no_revision_number`
+    /// asserts.
     pub async fn open_revision(
         &self,
         scope: &AccessScope,
@@ -625,6 +695,36 @@ impl PlanRepo {
                     copy_phases(txn, &scope, tenant_id, plan_id, source, next).await?;
                     copy_addon_rules(txn, &scope, tenant_id, plan_id, source, next).await?;
                     copy_descriptor_set(txn, &scope, tenant_id, plan_id, source, next).await?;
+                    // The record of the identity this transaction minted, in the
+                    // transaction that minted it. The stamp is the call's own -
+                    // `created_by` is the actor and `now` the instant - so this
+                    // path needs nothing threaded that it did not already have.
+                    //
+                    // `before_state` is None because the revision did not exist:
+                    // the same absence `create_draft_on` writes for revision 0,
+                    // and the difference between minting a name and editing one.
+                    audit_repo::append(
+                        txn,
+                        &scope,
+                        NewAuditEntry {
+                            tenant_id,
+                            chain_id: audit_repo::plan_chain(plan_id),
+                            recorded_at: now,
+                            actor_principal_id: created_by,
+                            action: AuditAction::Create,
+                            subject_kind: AuditSubjectKind::PlanRevision,
+                            subject_ref: audit_repo::plan_revision_ref(plan_id, next),
+                            before_state: None,
+                            after_state: Some(subject_state(
+                                opened.lifecycle_state,
+                                opened.row_version.get(),
+                                None,
+                            )),
+                            approval_ref: None,
+                            correlation_id: None,
+                        },
+                    )
+                    .await?;
                     Ok(opened)
                 })
             })
@@ -697,6 +797,53 @@ impl PlanRepo {
 // Transaction plumbing.
 // ---------------------------------------------------------------------------
 
+/// Append the audit record of one plan-revision mutation, inside the mutation's
+/// own transaction.
+///
+/// `expected` is the version the caller presented, which is the revision's
+/// **before** version by construction — the compare-and-swap matched on it — so
+/// the before/after pair needs no second read of a row the transaction has
+/// already moved.
+///
+/// # Errors
+/// [`RepoError::Db`] or [`RepoError::CorruptRow`] from the chain append, both of
+/// which roll the mutation back with them. That is the point: a mutation whose
+/// record cannot be written must not commit, or the trail becomes silently
+/// incomplete.
+pub(super) async fn record_revision_mutation(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    after: &PlanRevision,
+    action: AuditAction,
+    expected: RowVersion,
+    stamp: AuditStamp,
+) -> Result<(), RepoError> {
+    audit_repo::append(
+        runner,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            chain_id: audit_repo::plan_chain(after.plan_id),
+            recorded_at: stamp.recorded_at,
+            actor_principal_id: stamp.actor_principal_id,
+            action,
+            subject_kind: AuditSubjectKind::PlanRevision,
+            subject_ref: audit_repo::plan_revision_ref(after.plan_id, after.revision),
+            before_state: Some(subject_state(LifecycleState::Draft, expected.get(), None)),
+            after_state: Some(subject_state(
+                after.lifecycle_state,
+                after.row_version.get(),
+                None,
+            )),
+            approval_ref: None,
+            correlation_id: stamp.correlation_id,
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Flatten the transaction wrapper back into this repository's vocabulary.
 ///
 /// The body's error type is [`RepoError`] rather than the driver's precisely so
@@ -719,12 +866,17 @@ fn tx_failure(err: TxError<RepoError>) -> RepoError {
 
 /// Create a plan's revision `0` through whichever runner the caller holds.
 ///
-/// [`PlanRepo::create_draft`] is a two-line delegation to this, on a plain
-/// connection; the other caller is `infra::idempotent`, which has to run the
-/// insert inside the **same** transaction as the idempotency claim that guards
-/// it — split across two transactions the claim commits while the mutation does
-/// not, and every retry of a request that never happened is answered "already
-/// done", forever (`idempotency_repo`'s module doc). One implementation with two
+/// **Both callers supply a transaction, and neither may not.** This function
+/// writes **two** rows — the revision and its audit record (D-135) — so a bare
+/// connection would make them two autocommit statements and an append failure
+/// would leave a committed revision nobody recorded creating.
+/// [`PlanRepo::create_draft`] therefore opens one of its own (it used to delegate
+/// here on a plain connection, which is what the audit record made unsafe), and
+/// the other caller is `infra::idempotent`, which has to run the insert inside
+/// the **same** transaction as the idempotency claim that guards it — split
+/// across two transactions the claim commits while the mutation does not, and
+/// every retry of a request that never happened is answered "already done",
+/// forever (`idempotency_repo`'s module doc). One implementation with two
 /// entry points rather than two spellings of one insert, which is
 /// [`load_current`]'s reason applied to a write: the seam and the direct caller
 /// must issue the same statements, and the proof is that the pre-existing
@@ -765,6 +917,33 @@ pub async fn create_draft_on(
     };
     let row = revision_model(tenant_id, &opened)?;
     insert_revision(runner, scope, row).await?;
+    // The record, in the same transaction as the insert (D-135). The stamp is
+    // the draft's own: `created_by` is the actor and `created_at_utc` is the
+    // instant, so this path needs nothing threaded that it did not already have.
+    // `before_state` is None because nothing existed - which is the difference
+    // between a create and an edit, and it is expressible only as an absence.
+    audit_repo::append(
+        runner,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            chain_id: audit_repo::plan_chain(opened.plan_id),
+            recorded_at: opened.created_at_utc,
+            actor_principal_id: opened.created_by,
+            action: AuditAction::Create,
+            subject_kind: AuditSubjectKind::PlanRevision,
+            subject_ref: audit_repo::plan_revision_ref(opened.plan_id, opened.revision),
+            before_state: None,
+            after_state: Some(subject_state(
+                opened.lifecycle_state,
+                opened.row_version.get(),
+                None,
+            )),
+            approval_ref: None,
+            correlation_id: None,
+        },
+    )
+    .await?;
     Ok(opened)
 }
 
@@ -837,11 +1016,11 @@ async fn load_revision_row(
 /// a second publish of one revision gets, and is why the revision publishes at
 /// most once; [`RepoError::StaleRowVersion`] carrying both versions when the
 /// submitted one is not current; [`RepoError::Db`] on a scope or storage
-/// failure, **including losing the current-revision slot to a concurrent
-/// publish** between the read and the demotion — no wire code names that
-/// contention, so it is not distinguishable here and the caller's transaction
-/// retry is what decides it; [`RepoError::CorruptRow`] when the published row
-/// reads back unusable.
+/// failure; [`RepoError::ConcurrentMutation`] on **losing the current-revision slot
+/// to a concurrent publish** between the read and the demotion — recognised from
+/// `uq_pricing_plan_current`'s own violation as of D-159, so the loser is told to
+/// retry rather than told the store failed; [`RepoError::CorruptRow`] when the
+/// published row reads back unusable.
 pub async fn publish_revision(
     txn: &DbTx<'_>,
     scope: &AccessScope,
@@ -901,7 +1080,13 @@ pub async fn publish_revision(
         .filter(guard)
         .exec(txn)
         .await
-        .map_err(|e| RepoError::Db(format!("publish plan revision: {e}")))?;
+        .map_err(|e| {
+            // D-159's third serialization point: `uq_pricing_plan_current`. Two
+            // publishes racing to make their revision the plan's current one -
+            // the index is what decides it, and the loser's remedy is to
+            // re-validate against the revision that won.
+            contention_or_db(&e, &format!("plan {plan_id}"), "publish plan revision")
+        })?;
     if result.rows_affected == 0 {
         return Err(refuse(txn, scope, tenant_id, plan_id, revision, expected).await);
     }

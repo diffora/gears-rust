@@ -45,7 +45,7 @@ use bss_pricing::domain::price_row::PriceRow;
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::storage::entity::plan;
+use bss_pricing::infra::storage::entity::{audit_log, plan};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     IdempotencyGate, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo,
@@ -53,7 +53,7 @@ use bss_pricing::infra::storage::repo::{
 };
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use sea_orm_migration::MigratorTrait;
 use toolkit::api::OpenApiRegistryImpl;
 use toolkit_db::migration_runner::run_migrations_for_testing;
@@ -458,6 +458,7 @@ impl Harness {
                 plan_id,
                 revision,
                 current.row_version,
+                stamp(),
             )
             .await
             .expect("abandon the seeded draft");
@@ -494,6 +495,7 @@ impl Harness {
                     phase_duration_days: None,
                     display_trial_days: None,
                 }],
+                stamp(),
             )
             .await
             .expect("replace phases")
@@ -518,6 +520,7 @@ impl Harness {
                     depends_on: Vec::new(),
                     conflicts_with: Vec::new(),
                 }],
+                stamp(),
             )
             .await
             .expect("replace add-on rules")
@@ -537,6 +540,7 @@ impl Harness {
                     itemization_rule: Some("per_line".to_owned()),
                     additional: std::collections::BTreeMap::new(),
                 },
+                stamp(),
             )
             .await
             .expect("attach the descriptor set");
@@ -780,6 +784,24 @@ pub async fn price_rows(harness: &Harness, plan_id: Uuid) -> Vec<PriceRecord> {
         .expect("list the plan's price rows")
 }
 
+/// Every audit record the caller's tenant holds, in `(chain_id, seq)` order.
+///
+/// Read with `AccessScope::allow_all()` for `price_rows`' reason: a test asserting
+/// what a mutation recorded must see what landed rather than what the caller was
+/// allowed to see.
+pub async fn audit_rows(harness: &Harness) -> Vec<audit_log::Model> {
+    let conn = harness.db.conn().expect("conn");
+    audit_log::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(Condition::all().add(audit_log::Column::TenantId.eq(harness.tenant)))
+        .order_by(audit_log::Column::ChainId, Order::Asc)
+        .order_by(audit_log::Column::Seq, Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the audit chain")
+}
+
 /// Seed one draft price row on a distinct region, so several can coexist.
 pub async fn seed_price(harness: &Harness, plan_id: Uuid, region: &str) -> PriceRecord {
     let key = ScopeKey::new(
@@ -830,4 +852,14 @@ fn ctx_for(tenant: Uuid) -> SecurityContext {
         .token_scopes(vec!["*".to_owned()])
         .build()
         .expect("authed SecurityContext must build")
+}
+
+/// The actor and instant every mutating repository call now records (D-135 - the
+/// audit row commits inside the mutation's own transaction).
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: uuid::Uuid::from_u128(0xac_10),
+        recorded_at: chrono::Utc::now(),
+        correlation_id: None,
+    }
 }

@@ -99,8 +99,14 @@ fn pipeline() -> ValidationPipeline<PlanShape> {
 /// to reject publishes.
 const REGISTERED: &[&str] = &[
     // cpt-cf-bss-pricing-algo-cycle-shape
+    //
+    // `inst-cs-declared` is FIRST, and the order is the rule's reason for
+    // existing (D-149 clause 2): every rule after it is cycle-conditioned, so a
+    // NULL cycle passed the whole step vacuously.
+    "inst-cs-declared",
     "inst-cs-customfreq",
     "inst-cs-hybrid",
+    "inst-cs-recurring",
     "inst-cs-usage",
     "inst-cs-setup",
     "inst-cs-onetime",
@@ -111,11 +117,13 @@ const REGISTERED: &[&str] = &[
     "inst-cmp-addons",
     "inst-cmp-addons",
     "inst-cmp-addons",
+    "inst-cmp-addons",
     // cpt-cf-bss-pricing-algo-phases
     "inst-ph-graph",
     "inst-ph-graph/linear",
     "inst-ph-graph/terminal-kind",
     "inst-ph-duration",
+    "inst-ph-trial",
     "inst-ph-coverage",
     "inst-ph-usage-invariant",
     "inst-ph-override-units",
@@ -137,17 +145,17 @@ fn the_pipeline_registers_every_slice_2_rule_in_report_order() {
 fn no_rule_of_another_slice_is_registered_here() {
     let names: BTreeSet<&str> = pipeline().rule_names().into_iter().collect();
 
-    // `billingTiming` on every recurring row is Slice 6's (`inst-cs-recurring`
-    // says so in as many words); `billingGranularity` and
-    // `tierAggregationWindow` are Slice 3's, already registered as
-    // `EVAL_POLICY_MISSING` in `rules::price_row_rules`; `taxCategory` is each
-    // row's Slice-4 `tax_category_ref` (D-110).
-    for foreign in [
-        "inst-cs-recurring",
-        "inst-tb-window",
-        "inst-pk-window",
-        "inst-td-persist",
-    ] {
+    // `billingGranularity` and `tierAggregationWindow` are Slice 3's, already
+    // registered as `EVAL_POLICY_MISSING` in `rules::price_row_rules`;
+    // `taxCategory` is each row's Slice-4 `tax_category_ref` (D-110).
+    //
+    // **`inst-cs-recurring` used to be on this list and is not any more.** Its
+    // `billingTiming` clause is still Slice 6's and still cross-referenced, but
+    // D-149 clause 1 gave the instruction a rule of its own -
+    // `BASE_MARKET_INCOMPLETE` - which is Slice 2's outright. Excluding the whole
+    // instruction because one of its three clauses is foreign is what left it
+    // registering nothing at all.
+    for foreign in ["inst-tb-window", "inst-pk-window", "inst-td-persist"] {
         assert!(
             !names.contains(foreign),
             "{foreign} belongs to another slice and must not be registered here"

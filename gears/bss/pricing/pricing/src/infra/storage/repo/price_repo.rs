@@ -98,6 +98,7 @@ use toolkit_db::secure::{
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -113,6 +114,7 @@ use crate::domain::scope_key::{
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{price, price_tier_band};
 use crate::infra::storage::repo::check_authored_instant;
+use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
 
 /// The noun the authoring refusals name, so one subject word reaches the wire
 /// from every method here.
@@ -448,6 +450,7 @@ impl PriceRepo {
         price_id: Uuid,
         expected: RowVersion,
         content: PriceContent,
+        stamp: AuditStamp,
     ) -> Result<PriceRecord, RepoError> {
         let horizon = content.grandfather_until;
         // Before the row is even read: an instant the catalog cannot compare is
@@ -497,9 +500,20 @@ impl PriceRepo {
                         return Err(refuse(txn, &scope, tenant_id, price_id, expected).await);
                     }
                     insert_bands(txn, &scope, bands).await?;
-                    load_record(txn, &scope, tenant_id, price_id)
+                    let updated = load_record(txn, &scope, tenant_id, price_id)
                         .await?
-                        .ok_or_else(|| not_found(price_id))
+                        .ok_or_else(|| not_found(price_id))?;
+                    record_price_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &updated,
+                        AuditAction::Update,
+                        Some(expected),
+                        stamp,
+                    )
+                    .await?;
+                    Ok(updated)
                 })
             })
             .await;
@@ -530,6 +544,7 @@ impl PriceRepo {
         tenant_id: Uuid,
         price_id: Uuid,
         expected: RowVersion,
+        stamp: AuditStamp,
     ) -> Result<(), RepoError> {
         let Some(guard) = swap_guard(tenant_id, price_id, expected) else {
             let conn = self.conn()?;
@@ -542,12 +557,16 @@ impl PriceRepo {
             .db()
             .in_transaction::<(), RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    if mutable_draft(txn, &scope, tenant_id, price_id, expected)
-                        .await?
-                        .is_none()
-                    {
+                    let Some(_) = mutable_draft(txn, &scope, tenant_id, price_id, expected).await?
+                    else {
                         return Err(refuse(txn, &scope, tenant_id, price_id, expected).await);
-                    }
+                    };
+                    // Read whole before the row goes, because the record names
+                    // the plan whose chain it extends and that fact lives on the
+                    // row being deleted.
+                    let doomed = load_record(txn, &scope, tenant_id, price_id)
+                        .await?
+                        .ok_or_else(|| not_found(price_id))?;
                     delete_bands(txn, &scope, tenant_id, price_id).await?;
                     let result = price::Entity::delete_many()
                         .secure()
@@ -559,7 +578,16 @@ impl PriceRepo {
                     if result.rows_affected == 0 {
                         return Err(refuse(txn, &scope, tenant_id, price_id, expected).await);
                     }
-                    Ok(())
+                    record_price_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &doomed,
+                        AuditAction::Delete,
+                        Some(expected),
+                        stamp,
+                    )
+                    .await
                 })
             })
             .await;
@@ -1332,7 +1360,79 @@ async fn insert_prepared(
     }
     insert_price(runner, scope, row).await?;
     insert_bands(runner, scope, bands).await?;
+    // The record, in the same transaction as the insert (D-135). The stamp is the
+    // draft's own - `created_by` is the actor, `created_at_utc` the instant - so
+    // this path needs nothing threaded that it did not already have.
+    record_price_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &record,
+        AuditAction::Create,
+        None,
+        AuditStamp {
+            actor_principal_id: record.created_by,
+            recorded_at: record.created_at_utc,
+            correlation_id: None,
+        },
+    )
+    .await?;
     Ok(record)
+}
+
+/// Append the audit record of one price-row mutation, inside the mutation's own
+/// transaction.
+///
+/// The chain segment is the **plan's** (D-135 keys it on the audited subject's
+/// aggregate, and a price row's aggregate is the plan it prices), so a plan's
+/// authoring history and its rows' edits are one walk.
+///
+/// `before` is the version the caller presented — `None` on a create, where
+/// nothing existed, which is the difference between a create and an edit and is
+/// expressible only as an absence.
+///
+/// # Errors
+/// [`RepoError::Db`] or [`RepoError::CorruptRow`] from the chain append, both of
+/// which roll the mutation back with them. That is the point: a mutation whose
+/// record cannot be written must not commit.
+async fn record_price_mutation(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    record: &PriceRecord,
+    action: AuditAction,
+    before: Option<RowVersion>,
+    stamp: AuditStamp,
+) -> Result<(), RepoError> {
+    audit_repo::append(
+        runner,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            chain_id: audit_repo::plan_chain(record.scope_key.plan_id()),
+            recorded_at: stamp.recorded_at,
+            actor_principal_id: stamp.actor_principal_id,
+            action,
+            subject_kind: AuditSubjectKind::PriceUnit,
+            subject_ref: audit_repo::price_unit_ref(record.price_id),
+            before_state: before
+                .map(|version| subject_state(LifecycleState::Draft, version.get(), None)),
+            after_state: match action {
+                // A delete has no after-state, and an empty object would be a
+                // claim that the row still stands in some shape.
+                AuditAction::Delete => None,
+                _ => Some(subject_state(
+                    record.lifecycle_state,
+                    record.row_version.get(),
+                    None,
+                )),
+            },
+            approval_ref: None,
+            correlation_id: stamp.correlation_id,
+        },
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Create a draft price row and its bands through whichever runner the caller

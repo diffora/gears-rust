@@ -42,7 +42,7 @@ use toolkit_db::secure::{AccessScope, DbTx};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::api::rest::auth_context::require_authenticated;
+use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions::{self, RevisionTag};
 use crate::api::rest::state::AuthoringState;
@@ -783,6 +783,7 @@ async fn patch_plan(
     let body: PatchPlanRequest = preconditions::parse_body(&body)?;
     let asserted = preconditions::if_match_revision(&headers)?;
     let facet = Facet::of(body)?;
+    let stamp = audit_stamp(&ctx, Utc::now());
 
     // The revision the patch lands on, and the version the store will match.
     let target =
@@ -794,25 +795,25 @@ async fn patch_plan(
         Facet::Shape(shape) => {
             state
                 .plans
-                .update_draft(&scope, tenant, plan_id, revision, expected, shape)
+                .update_draft(&scope, tenant, plan_id, revision, expected, shape, stamp)
                 .await
         }
         Facet::Phases(phases) => {
             state
                 .shapes
-                .replace_phases(&scope, tenant, plan_id, revision, expected, phases)
+                .replace_phases(&scope, tenant, plan_id, revision, expected, phases, stamp)
                 .await
         }
         Facet::AddonRules(rules) => {
             state
                 .shapes
-                .replace_addon_rules(&scope, tenant, plan_id, revision, expected, rules)
+                .replace_addon_rules(&scope, tenant, plan_id, revision, expected, rules, stamp)
                 .await
         }
         Facet::DescriptorSet(set) => {
             state
                 .shapes
-                .set_descriptor_set(&scope, tenant, plan_id, revision, expected, set)
+                .set_descriptor_set(&scope, tenant, plan_id, revision, expected, set, stamp)
                 .await
         }
     }
@@ -862,7 +863,14 @@ async fn abandon_plan_draft(
     let expected = asserted.version;
     state
         .plans
-        .abandon_draft(&scope, tenant, plan_id, revision, expected)
+        .abandon_draft(
+            &scope,
+            tenant,
+            plan_id,
+            revision,
+            expected,
+            audit_stamp(&ctx, Utc::now()),
+        )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
 

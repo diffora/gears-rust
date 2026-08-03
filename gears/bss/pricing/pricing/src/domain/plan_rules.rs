@@ -101,6 +101,37 @@ pub use descriptor_set::DescriptorSetComplete;
 // Cycle shape (design/02-plan-definition.md 5, cpt-cf-bss-pricing-algo-cycle-shape)
 // ---------------------------------------------------------------------------
 
+/// A plan that has not said how it charges (`inst-cs-declared`, D-149 clause 2).
+///
+/// **One code, two fields, and the field is named in the report.** An unset
+/// `billing_cycle`, and an unset `frequency` on a cycle that carries a recurring
+/// part, are one code by D-146's line: the operator's next action is identical —
+/// author the field the plan is missing — and a second code would be a second
+/// thing to look up for the same remedy.
+///
+/// It is evaluated **before every other rule of the cycle-shape step**, and that
+/// order is the whole reason the code exists. `billing_cycle` is nullable while a
+/// plan is authored incrementally (§4.2 step 1), and every other rule of the step
+/// is cycle-conditioned: each correctly declines to judge a plan whose cycle it
+/// cannot read. So a `NULL` cycle passed the entire step **vacuously** and
+/// reached publish unjudged — a plan that has said nothing about how it charges
+/// is exactly the plan a fail-closed validator cannot protect.
+pub const CYCLE_METADATA_MISSING: &str = "CYCLE_METADATA_MISSING";
+
+/// A sold `(currency, region)` with no base row of the kind its cycle mandates
+/// (`inst-cs-onetime` / `inst-cs-recurring`, D-149 clause 1).
+///
+/// One rule over two `chargeKind` values, because the two instructions state one
+/// sentence twice: the *at least one* half of the one-time rule and the `>= 1`
+/// half of the recurring rule. A one-time plan selling in a market with no
+/// `one_time` row is a plan that can be bought there for nothing.
+///
+/// It is [`USAGE_MARKET_INCOMPLETE`]'s base-side sibling and takes its shape
+/// deliberately: same subject key, same "an absence is not a free market"
+/// posture. [`HYBRID_INCOMPLETE`] keeps its own meaning — a part missing
+/// **anywhere**, never naming a market — so the two never contest a case.
+pub const BASE_MARKET_INCOMPLETE: &str = "BASE_MARKET_INCOMPLETE";
+
 /// A custom interval `n` that is non-positive or over the configured cap
 /// (`inst-cs-customfreq`, P1; the caps are the tenant's, from their
 /// `pricing_policy_object` entry, else the ratified deployment default —
@@ -166,6 +197,22 @@ pub const ADDON_CYCLE: &str = "ADDON_CYCLE";
 /// the base SKU — is absent; see the module doc.
 pub const ADDON_INCOMPATIBLE: &str = "ADDON_INCOMPATIBLE";
 
+/// An add-on quantity bound that makes the add-on unselectable
+/// (`inst-cmp-addons`, D-150).
+///
+/// Three bounds, one code, the offending bound named: `required => maxQty >= 1`,
+/// `minQty <= maxQty` when both are set, and `stepQty > 0` when set. Each is an
+/// unsatisfiable-selection defect on one row, and the sibling of
+/// [`PURCHASE_QTY_RANGE_INVALID`] one object over.
+///
+/// **The three `CHECK`s on `pricing_plan_addon_rule` stay.** The rule is the
+/// explanatory path and the constraint the guarantee — the read-then-index
+/// arrangement D-148 states — so what changes is that an author gets a report
+/// line naming the bound instead of a driver error naming a constraint, and gets
+/// **all** the offending bounds at once rather than whichever one the database
+/// hit first.
+pub const ADDON_QTY_RANGE_INVALID: &str = "ADDON_QTY_RANGE_INVALID";
+
 // ---------------------------------------------------------------------------
 // Phase schedule (cpt-cf-bss-pricing-algo-phases)
 // ---------------------------------------------------------------------------
@@ -194,6 +241,30 @@ pub const TERMINAL_PHASE_KIND_INVALID: &str = "TERMINAL_PHASE_KIND_INVALID";
 /// A non-terminal phase without `phaseDurationDays`, or a terminal phase with
 /// one (`inst-ph-duration`).
 pub const PHASE_DURATION_INVALID: &str = "PHASE_DURATION_INVALID";
+
+/// `displayTrialDays` on a phase that is not a `trial`, or on one carrying no
+/// `phaseDurationDays` to project (`inst-ph-trial`, D-151).
+///
+/// **§6's `CHECK` cannot carry either half, and is deliberately not tightened.**
+/// `CHECK (display_trial_days IS NULL OR display_trial_days = phase_duration_days)`
+/// is silent on `kind` altogether, and SQL's NULL propagation makes it
+/// *satisfied* whenever `phase_duration_days` is NULL while `display_trial_days`
+/// is set — both engines count a NULL comparison as passing. So the shape it
+/// exists to forbid, a phase publishing a trial length it does not have, passed
+/// it.
+///
+/// The `evergreen` **terminal** phase is where nothing else caught it either:
+/// `inst-ph-duration` is correct to find no duration on a terminal phase and
+/// `inst-ph-graph`'s terminal-`kind` rule is correct to find `evergreen`. Both
+/// pass, and `displayTrialDays` is the single source Subscriptions enforces trial
+/// runtime from and preview quotes — so a plan with **no trial phase at all**
+/// could publish a trial length.
+///
+/// D-151 keeps the `CHECK` as written, NULL propagation and all: a phase graph is
+/// authored across successive `PATCH`es, and a `phase_duration_days IS NOT NULL`
+/// conjunct would make the half-authored draft unsavable. The schema stands
+/// **behind** this rule rather than in front of it.
+pub const DISPLAY_TRIAL_DAYS_INVALID: &str = "DISPLAY_TRIAL_DAYS_INVALID";
 
 /// A phase with no covering recurring row for a sold `(currency, region)`, on a
 /// plan whose cycle carries a recurring part (`inst-ph-coverage`, D-15).
@@ -319,8 +390,15 @@ pub fn plan_shape_rules(
 ) -> ValidationPipeline<PlanShape> {
     ValidationPipeline::new()
         // Cycle shape: what commercial shape the plan is.
+        //
+        // `CycleDeclared` is **first**, and the order is load-bearing rather
+        // than cosmetic (D-149 clause 2): every other rule of this step is
+        // cycle-conditioned and correctly declines to judge a plan whose cycle
+        // it cannot read, so a NULL cycle passed the whole step vacuously.
+        .with_rule(Box::new(cycle_shape::CycleDeclared))
         .with_rule(Box::new(interval_bounds))
         .with_rule(Box::new(cycle_shape::HybridCompleteness))
+        .with_rule(Box::new(cycle_shape::BaseMarketCompleteness))
         .with_rule(Box::new(cycle_shape::UsageMarketCompleteness))
         .with_rule(Box::new(cycle_shape::SetupRowShape))
         .with_rule(Box::new(cycle_shape::PurchaseQtyRange))
@@ -331,11 +409,13 @@ pub fn plan_shape_rules(
         .with_rule(Box::new(composition::AddonEdgeMembership))
         .with_rule(Box::new(composition::AddonDependencyAcyclic))
         .with_rule(Box::new(composition::AddonConflictBothRequired))
+        .with_rule(Box::new(composition::AddonQtyRange))
         // Phase schedule: how the plan runs over time.
         .with_rule(Box::new(phase_graph::PhaseGraphIntegrity))
         .with_rule(Box::new(phase_graph::PhaseChainLinear))
         .with_rule(Box::new(phase_graph::TerminalPhaseKind))
         .with_rule(Box::new(phase_graph::PhaseDuration))
+        .with_rule(Box::new(phase_graph::DisplayTrialDaysOnTrialPhase))
         .with_rule(Box::new(phase_graph::PhaseCoverage))
         .with_rule(Box::new(phase_graph::PhaseOverrideBase))
         .with_rule(Box::new(phase_graph::PhaseOverrideUnits))

@@ -155,6 +155,60 @@ use crate::infra::storage::repo::{
 };
 use crate::infra::storage::repo_failure;
 
+/// Whether the pass calling the projector **could have seen** the whole of one
+/// tenant's pending set (D-163 clause 2).
+///
+/// §4.4's pin-eligibility counts "**every** subject row that version projects",
+/// which is decidable only if the version's subject set is closed. Clause (1)
+/// closes it — a batch commits atomically into one version, so any one committed
+/// ref of `V` closes `V`'s set — but *this gear* learns each ref's version by
+/// asking the registry **per ref**, so its knowledge of the set is only as good
+/// as the pass that gathered it. Two ordinary conditions leave a pass holding
+/// part of a set, and in both the version reads complete, the frontier advances,
+/// and the straggler then arrives at an already-pinnable version.
+///
+/// A pass that could not have seen the whole set resolves and warms exactly as
+/// usual and decides **no completion**. The frontier lags, which is the safe
+/// direction, and it is not silent: `pricing.readmodel.pin_eligibility_overdue`
+/// (D-166 clause 5) fires on exactly that state.
+///
+/// **`Ok(None)` from the registry is not one of the two conditions**, and the
+/// distinction is load-bearing rather than pedantic. "Not committed yet" is a
+/// successful answer: under clause (1) a ref the registry has not committed
+/// cannot belong to a version that already has a committed ref, so it says
+/// nothing about that version's set. A registry **error** says the pass does not
+/// know.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassCoverage {
+    /// Every pending ref of the tenant was read, and the registry answered for
+    /// each of them.
+    Whole,
+    /// The per-tenant scan filled its bound, so refs beyond it were not read and
+    /// a version's refs may straddle the page.
+    ScanSaturated,
+    /// The registry **failed** to answer for at least one ref of this tenant, so
+    /// a sibling of some version is of unknown version.
+    RefUnresolved,
+}
+
+impl PassCoverage {
+    /// May a pass with this coverage decide a version complete?
+    #[must_use]
+    pub const fn may_decide_completion(self) -> bool {
+        matches!(self, Self::Whole)
+    }
+
+    /// Why not, for a log line. `None` when it may.
+    #[must_use]
+    pub const fn deferral_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Whole => None,
+            Self::ScanSaturated => Some("the per-tenant pending scan filled its bound"),
+            Self::RefUnresolved => Some("a ref of this tenant could not be resolved"),
+        }
+    }
+}
+
 /// What one pass over one version did — the sweep's input for the degraded
 /// observation, and what the suite asserts against.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,6 +274,12 @@ impl ReadModelProjector {
     /// not roll back the subjects that projected cleanly, or a version with one
     /// bad plan could never complete any of its others.
     ///
+    /// `coverage` gates **only** the completeness decision, in both the places
+    /// one is made — the report below and the advance inside `project_one`. A
+    /// pass that could not have seen the whole subject set still resolves and
+    /// warms everything it holds; what it does not do is claim a count over a
+    /// set it knows is partial. See [`PassCoverage`].
+    ///
     /// # Errors
     /// [`DomainError::Internal`] when a ref names a subject kind this gear
     /// cannot have written, when its reference is not the identifier that kind
@@ -233,6 +293,7 @@ impl ReadModelProjector {
         tenant_id: Uuid,
         catalog_version: CatalogVersion,
         newly_committed: &[PendingVersionRow],
+        coverage: PassCoverage,
         now: DateTime<Utc>,
     ) -> Result<VersionReport, DomainError> {
         let conn = self
@@ -257,7 +318,17 @@ impl ReadModelProjector {
             // subject's transaction has already committed, which the report
             // would then deny having made.
             match self
-                .project_one(scope, tenant_id, catalog_version, &subject, &subjects, now)
+                .project_one(
+                    scope,
+                    tenant_id,
+                    &VersionPass {
+                        catalog_version,
+                        subjects: &subjects,
+                        coverage,
+                        now,
+                    },
+                    &subject,
+                )
                 .await
             {
                 Ok(moved) => {
@@ -282,11 +353,18 @@ impl ReadModelProjector {
         let warm = read_model_repo::warm_subjects_at(&conn, scope, tenant_id, catalog_version)
             .await
             .map_err(|e| repo_failure(&e))?;
+        // The completeness bound. A warm set with nothing outstanding is
+        // evidence of completeness only over a subject set the pass could have
+        // seen whole; over a partial one it is a count taken while the set was
+        // still being added to (D-163 clause 2).
+        let warm_and_whole =
+            !subjects.is_empty() && outstanding_subjects(&subjects, &warm).is_empty();
+        log_deferred_completion(tenant_id, catalog_version, coverage, warm_and_whole);
         Ok(VersionReport {
             subjects: subjects.len(),
             projected,
             failed,
-            complete: !subjects.is_empty() && outstanding_subjects(&subjects, &warm).is_empty(),
+            complete: warm_and_whole && coverage.may_decide_completion(),
             frontier_advanced_to: advanced_to,
         })
     }
@@ -297,14 +375,18 @@ impl ReadModelProjector {
         &self,
         scope: &AccessScope,
         tenant_id: Uuid,
-        catalog_version: CatalogVersion,
+        pass: &VersionPass<'_>,
         subject: &PendingVersionRow,
-        siblings: &[PendingVersionRow],
-        now: DateTime<Utc>,
     ) -> Result<Option<CatalogVersion>, DomainError> {
+        let VersionPass {
+            catalog_version,
+            subjects,
+            coverage,
+            now,
+        } = *pass;
         let scope = scope.clone();
         let subject = subject.clone();
-        let siblings = siblings.to_vec();
+        let siblings = subjects.to_vec();
         let (_, outcome) = self
             .db
             .db()
@@ -353,8 +435,13 @@ impl ReadModelProjector {
                     .await
                     .map_err(|e| repo_failure(&e))?;
 
-                    if !version_is_complete(txn, &scope, tenant_id, catalog_version, &siblings)
-                        .await?
+                    // The same bound as the report's, at the place where the
+                    // decision has a consequence rather than a value: an
+                    // advance is what makes a version pinnable, so a pass
+                    // holding a partial subject set must not reach it.
+                    if !coverage.may_decide_completion()
+                        || !version_is_complete(txn, &scope, tenant_id, catalog_version, &siblings)
+                            .await?
                     {
                         return Ok(None);
                     }
@@ -367,6 +454,50 @@ impl ReadModelProjector {
                 DomainError::Internal(format!("bss-pricing: projection transaction: {infra}"))
             })
         })
+    }
+}
+
+/// What the pass holds about the version it is projecting.
+///
+/// One value rather than four parameters because the four are one fact — this
+/// pass's whole knowledge of this version — and a per-subject transaction that
+/// took the version without the coverage could advance a frontier over a subject
+/// set the pass was still guessing at, which is exactly D-163 clause (2)'s defect.
+#[derive(Clone, Copy)]
+struct VersionPass<'a> {
+    /// The version every subject here belongs to.
+    catalog_version: CatalogVersion,
+    /// Every subject the pass believes the version publishes — the already
+    /// finalized refs plus the ones it is finalizing.
+    subjects: &'a [PendingVersionRow],
+    /// Whether the pass could have seen that set whole.
+    coverage: PassCoverage,
+    /// The pass's instant, for the finalize and the warm marker.
+    now: DateTime<Utc>,
+}
+
+/// Say out loud that a version reads warm and was not judged complete.
+///
+/// Silent deferral is how a lagging frontier becomes indistinguishable from a
+/// stuck one, and the two have different remedies: this one needs the next pass,
+/// that one needs an operator.
+fn log_deferred_completion(
+    tenant_id: Uuid,
+    catalog_version: CatalogVersion,
+    coverage: PassCoverage,
+    warm_and_whole: bool,
+) {
+    if !warm_and_whole {
+        return;
+    }
+    if let Some(reason) = coverage.deferral_reason() {
+        tracing::info!(
+            tenant_id = %tenant_id,
+            catalog_version = catalog_version.get(),
+            reason,
+            "bss-pricing: a version reads warm and this pass may not judge it complete; the \
+             frontier lags until a pass that could have seen the whole subject set arrives"
+        );
     }
 }
 
@@ -612,6 +743,26 @@ async fn version_is_complete(
 /// It cannot fire on any correct path: the frontier standing at `V` asserts
 /// every version at or below `V` is complete, so no subject of such a version
 /// can still be outstanding. If one is, the frontier already lied.
+///
+/// # What it costs when it fires, and what keeps that cost attached to a
+/// contract violation
+///
+/// The price is total for that publish and D-163 clause (3) states it beside the
+/// guarantee: the publish becomes **unresolvable at any version**, its subject is
+/// never projected, its ref never finalizes, both Critical alarms fire every
+/// pass, and **nothing self-heals it** — the remedy is out of band, §3.6's own
+/// "a registry re-request, never a silent re-emit".
+///
+/// A price like that may only be charged for a **broken contract**, and as first
+/// built this guard could reach it through an ordinary **per-ref registry
+/// outage**: a version whose sibling ref the registry could not answer read
+/// complete from the warm set alone, the frontier advanced, and the sibling
+/// arrived below it a tick later. [`PassCoverage`] is what removed that path —
+/// a pass that could not have seen the whole subject set decides no completion,
+/// so the frontier never passes a version whose set the pass was still guessing
+/// at. What is left reaching this refusal is the registry contradicting clause
+/// (1): a batch that did not commit atomically into one version. That is the
+/// case it was written for, and it is the case it should be loud about.
 ///
 /// # Errors
 /// [`DomainError::Internal`] naming the version, the frontier and the handle.

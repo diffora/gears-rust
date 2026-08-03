@@ -140,6 +140,24 @@ pub enum DomainError {
     /// the one thing the dedup row exists to make impossible.
     #[error("idempotency key claimed and not yet answered: {0}")]
     IdempotencyKeyInFlight(String),
+    /// Another mutation of this aggregate committed while yours was in flight,
+    /// and the store's per-aggregate serialization point refused the loser
+    /// (D-159).
+    ///
+    /// **Retriable, and it is nobody's mistake.** Three constructs serialize
+    /// writes per aggregate: the audit chain head `(tenant_id, chain_id, seq)`,
+    /// the outbox's per-`(tenant_id, aggregate_id)` sequence, and the
+    /// current-revision partial `UNIQUE`. A loser at any of them used to reach
+    /// the caller as `Internal` -> **500**, indistinguishable from a dead
+    /// connection, for a request whose entire remedy is to try again.
+    ///
+    /// Deliberately **not** [`DomainError::StaleVersion`]: nothing the caller
+    /// presented was stale, and a caller told their `If-Match` failed would
+    /// refresh a version that was never wrong. Deliberately **not**
+    /// [`DomainError::IdempotencyKeyInFlight`] either, whose subject is the
+    /// caller's own duplicate request rather than somebody else's write.
+    #[error("concurrent mutation: {0}")]
+    ConcurrentMutation(String),
     /// The plan already holds an open draft revision, named by the refusal.
     ///
     /// A uniqueness conflict on the plan's one editable slot, not a state

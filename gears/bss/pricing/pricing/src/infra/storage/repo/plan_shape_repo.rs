@@ -87,6 +87,7 @@ use toolkit_db::secure::{
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
+use crate::domain::audit::{AuditAction, AuditStamp};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::plan::PlanRevision;
 use crate::domain::plan_shape::{AddonRule, DescriptorSet, PhaseKind, PlanPhase};
@@ -94,7 +95,8 @@ use crate::domain::scope_key::{PhaseId, PlanId};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{plan, plan_addon_rule, plan_descriptor_set, plan_phase};
 use crate::infra::storage::repo::plan_repo::{
-    load_revision, mutable_draft, not_found, read_token, refuse, swap_guard,
+    load_revision, mutable_draft, not_found, read_token, record_revision_mutation, refuse,
+    swap_guard,
 };
 
 /// `SeaORM`-backed repository over a plan revision's phase chain.
@@ -138,6 +140,15 @@ impl PlanShapeRepo {
     /// and the pipeline is what reports it as `PHASE_GRAPH_INVALID` before a set
     /// ever gets here; [`RepoError::CorruptRow`] when the revision reads back
     /// unusable.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, \
+                  revision, expected-version) the compare-and-swap addresses, the payload, and \
+                  the D-135 audit stamp. `swap_guard` already takes those four together, so a \
+                  `RevisionTarget` bundling them is the right shape and is owed - it is a \
+                  signature change across every storage suite that pins these paths, and it \
+                  changes no behaviour"
+    )]
     pub async fn replace_phases(
         &self,
         scope: &AccessScope,
@@ -146,6 +157,7 @@ impl PlanShapeRepo {
         revision: u64,
         expected: RowVersion,
         phases: Vec<PlanPhase>,
+        stamp: AuditStamp,
     ) -> Result<PlanRevision, RepoError> {
         let scope = scope.clone();
         let (_, outcome) = self
@@ -180,9 +192,20 @@ impl PlanShapeRepo {
                             refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
                         );
                     }
-                    load_revision(txn, &scope, tenant_id, plan_id, revision)
+                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
                         .await?
-                        .ok_or_else(|| not_found(plan_id, revision))
+                        .ok_or_else(|| not_found(plan_id, revision))?;
+                    record_revision_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &updated,
+                        AuditAction::Update,
+                        expected,
+                        stamp,
+                    )
+                    .await?;
+                    Ok(updated)
                 })
             })
             .await;
@@ -252,6 +275,15 @@ impl PlanShapeRepo {
     /// and a non-positive `step_qty` — §5 names no code for any of the four, so
     /// they are the table's answer rather than a report line;
     /// [`RepoError::CorruptRow`] when the revision reads back unusable.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, \
+                  revision, expected-version) the compare-and-swap addresses, the payload, and \
+                  the D-135 audit stamp. `swap_guard` already takes those four together, so a \
+                  `RevisionTarget` bundling them is the right shape and is owed - it is a \
+                  signature change across every storage suite that pins these paths, and it \
+                  changes no behaviour"
+    )]
     pub async fn replace_addon_rules(
         &self,
         scope: &AccessScope,
@@ -260,6 +292,7 @@ impl PlanShapeRepo {
         revision: u64,
         expected: RowVersion,
         rules: Vec<AddonRule>,
+        stamp: AuditStamp,
     ) -> Result<PlanRevision, RepoError> {
         let scope = scope.clone();
         let (_, outcome) = self
@@ -294,9 +327,20 @@ impl PlanShapeRepo {
                             refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
                         );
                     }
-                    load_revision(txn, &scope, tenant_id, plan_id, revision)
+                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
                         .await?
-                        .ok_or_else(|| not_found(plan_id, revision))
+                        .ok_or_else(|| not_found(plan_id, revision))?;
+                    record_revision_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &updated,
+                        AuditAction::Update,
+                        expected,
+                        stamp,
+                    )
+                    .await?;
+                    Ok(updated)
                 })
             })
             .await;
@@ -357,6 +401,15 @@ impl PlanShapeRepo {
     /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
     /// one is not current; [`RepoError::Db`] on a scope or storage failure;
     /// [`RepoError::CorruptRow`] when the revision reads back unusable.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, \
+                  revision, expected-version) the compare-and-swap addresses, the payload, and \
+                  the D-135 audit stamp. `swap_guard` already takes those four together, so a \
+                  `RevisionTarget` bundling them is the right shape and is owed - it is a \
+                  signature change across every storage suite that pins these paths, and it \
+                  changes no behaviour"
+    )]
     pub async fn set_descriptor_set(
         &self,
         scope: &AccessScope,
@@ -365,6 +418,7 @@ impl PlanShapeRepo {
         revision: u64,
         expected: RowVersion,
         descriptors: DescriptorSet,
+        stamp: AuditStamp,
     ) -> Result<PlanRevision, RepoError> {
         let scope = scope.clone();
         let (_, outcome) = self
@@ -399,9 +453,20 @@ impl PlanShapeRepo {
                             refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
                         );
                     }
-                    load_revision(txn, &scope, tenant_id, plan_id, revision)
+                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
                         .await?
-                        .ok_or_else(|| not_found(plan_id, revision))
+                        .ok_or_else(|| not_found(plan_id, revision))?;
+                    record_revision_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &updated,
+                        AuditAction::Update,
+                        expected,
+                        stamp,
+                    )
+                    .await?;
+                    Ok(updated)
                 })
             })
             .await;

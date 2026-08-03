@@ -57,17 +57,29 @@
 //!   read any of them**, so a row that resolved neither would have published.
 //!   [`RoundingPolicyResolved`] is that rule.
 //!
-//! # What is deliberately absent
+//! # The §14 soft caps are an advisory, and the code is now the set's
 //!
-//! **The §14 soft caps.** §1.2's NFR allocation names "publish-time size
-//! validation (100 bands/row, 500 rows/plan soft)", `AuthoringPolicy` already
-//! exposes both numbers per tenant, and nothing reads them. PRD §14 says the
-//! system **SHOULD** enforce them "emitting a publish **warning** above the cap"
-//! — an advisory, not a violation — and **no document names an advisory code for
-//! it**. `TIER_BAND_PRICE_INCREASE` shows what such a code looks like when the
-//! set provides one. This group mints none: a `warn` under an invented code puts
-//! a discriminator on the wire that no consumer can act on and no document
-//! defines. Implemented as nothing, and **reported as a gap**.
+//! §1.2's NFR allocation names "publish-time size validation (100 bands/row, 500
+//! rows/plan soft)" and PRD §14 says the system **SHOULD** enforce them "emitting
+//! a publish **warning** above the cap". An earlier version of this doc reported
+//! the whole thing as a gap for one reason and one only: no document named an
+//! advisory code. D-160 named it — `PLAN_SIZE_SOFT_CAP_EXCEEDED`, in
+//! `01-foundation.md` §3.3 — so [`PlanSizeWithinSoftCaps`] is the rule.
+//!
+//! **It never blocks.** The finding rides `warnings[]`, the channel
+//! `TIER_BAND_PRICE_INCREASE` already uses, and `is_publishable()` does not read
+//! it. Making the caps blocking so they could reuse a violation code is D-160's
+//! rejected option (b): a ratified `SHOULD` enforced as a `MUST` is a plan an
+//! operator could author yesterday and cannot publish today.
+//!
+//! **The two *interval* caps are a different thing and stay hard.** §1.2's
+//! allocation row had blurred all four under one heading; D-160 unblurs them.
+//! `customEveryN` bounds fail publish under
+//! [`INVALID_CUSTOM_INTERVAL`](crate::domain::plan_rules::INVALID_CUSTOM_INTERVAL)
+//! and this rule must never reach them — a soft advisory over a hard cap would
+//! tell an author their over-cap interval published.
+//!
+//! # What is deliberately absent
 //!
 //! **The fixture gate is not a rule and is not run here.** `FixtureGate::check`
 //! returns `DomainError::FixtureMissing` and stays a separate fail-closed step
@@ -83,6 +95,7 @@ use toolkit_macros::domain_model;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::rules::price_row_rules;
+use crate::domain::scope_key::PriceEligibility;
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
 
 /// A published row resolves neither its own `rounding_policy_ref` nor a tenant
@@ -96,6 +109,39 @@ use crate::domain::validation::{ValidationPipeline, ValidationReport, Validation
 /// pass, which a single-refusal error cannot do — but the variant is mapped and
 /// may have a non-pipeline caller, so it is not deleted.
 pub const ROUNDING_POLICY_UNRESOLVED: &str = "ROUNDING_POLICY_UNRESOLVED";
+
+/// A plan or a row above one of the two **soft** size caps (`nfr-size-limits`,
+/// D-160; declared in `01-foundation.md` §3.3).
+///
+/// **Advisory, never blocking**, and that is ratified rather than chosen: PRD §14
+/// makes the caps a `SHOULD` that emits a publish warning. It rides `warnings[]`
+/// and `is_publishable()` never reads it.
+///
+/// One code for both caps, by D-146's line: the operator's next action is the
+/// same shape — shorten the ladder, or split the plan — and the report says which
+/// cap and by how much. The two **interval** caps are hard and keep
+/// [`INVALID_CUSTOM_INTERVAL`](crate::domain::plan_rules::INVALID_CUSTOM_INTERVAL);
+/// §1.2's allocation row had blurred all four under one heading and D-160 unblurs
+/// them.
+pub const PLAN_SIZE_SOFT_CAP_EXCEEDED: &str = "PLAN_SIZE_SOFT_CAP_EXCEEDED";
+
+/// A grandfathering horizon on a row whose eligibility class may not carry one
+/// (S7 §5, D-147).
+///
+/// **The wire code already existed and the publish-side rule did not.** The
+/// refusal is enforced on both authoring paths by
+/// [`price_repo`](crate::infra::storage::repo::price_repo), which pre-empts the
+/// column `CHECK`'s 500 and reaches the caller as this code through
+/// `DomainError::GrandfatherUntilForbidden`. What was missing is the **registered
+/// rule**: without it, a publish carrying such a row is refused only because
+/// whichever authoring write happened to reach the store first refused, and the
+/// 422 report never enumerates it beside the plan's other violations.
+///
+/// The two are **not** redundant. The repository guard is the guarantee — a
+/// predicate on a statement, which is the only thing that holds against a caller
+/// reaching the store by another path — and this rule is the report line an author
+/// acts on. Deleting either leaves a hole the other does not cover.
+pub const GRANDFATHER_UNTIL_FORBIDDEN: &str = "GRANDFATHER_UNTIL_FORBIDDEN";
 
 /// The per-tenant configuration the publish rule set is run under.
 ///
@@ -114,6 +160,7 @@ pub struct PublishRuleParams {
     interval_bounds: CustomIntervalBounds,
     descriptors: DescriptorSetComplete,
     default_rounding_policy: Option<String>,
+    size_caps: SoftSizeCaps,
 }
 
 impl PublishRuleParams {
@@ -123,11 +170,13 @@ impl PublishRuleParams {
         interval_bounds: CustomIntervalBounds,
         descriptors: DescriptorSetComplete,
         default_rounding_policy: Option<String>,
+        size_caps: SoftSizeCaps,
     ) -> Self {
         Self {
             interval_bounds,
             descriptors,
             default_rounding_policy,
+            size_caps,
         }
     }
 
@@ -135,6 +184,46 @@ impl PublishRuleParams {
     #[must_use]
     pub fn default_rounding_policy(&self) -> Option<&str> {
         self.default_rounding_policy.as_deref()
+    }
+}
+
+/// The two **soft** size caps in force for the authoring tenant (D-152, D-160).
+///
+/// A type rather than two loose numbers because they are read together, reported
+/// under one code, and must not be confused with the two **interval** caps
+/// [`CustomIntervalBounds`] carries — those are hard, and §1.2's allocation row
+/// had blurred all four under one heading until D-160.
+///
+/// Deliberately no `Default`, for [`CustomIntervalBounds`]' reason: zero caps
+/// would warn on every plan ever authored while looking exactly like a rule that
+/// is switched on.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoftSizeCaps {
+    max_tier_bands_per_row: u32,
+    max_price_rows_per_plan: u32,
+}
+
+impl SoftSizeCaps {
+    /// Bind the caps to the values in force.
+    #[must_use]
+    pub const fn new(max_tier_bands_per_row: u32, max_price_rows_per_plan: u32) -> Self {
+        Self {
+            max_tier_bands_per_row,
+            max_price_rows_per_plan,
+        }
+    }
+
+    /// The tier-band cap per price row.
+    #[must_use]
+    pub const fn max_tier_bands_per_row(self) -> u32 {
+        self.max_tier_bands_per_row
+    }
+
+    /// The price-row cap per plan.
+    #[must_use]
+    pub const fn max_price_rows_per_plan(self) -> u32 {
+        self.max_price_rows_per_plan
     }
 }
 
@@ -169,9 +258,14 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
 /// outcome §4.2 keeps the base set out of.
 #[must_use]
 fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanShape> {
-    ValidationPipeline::new().with_rule(Box::new(RoundingPolicyResolved {
-        tenant_default: params.default_rounding_policy.clone(),
-    }))
+    ValidationPipeline::new()
+        .with_rule(Box::new(RoundingPolicyResolved {
+            tenant_default: params.default_rounding_policy.clone(),
+        }))
+        .with_rule(Box::new(PlanSizeWithinSoftCaps {
+            caps: params.size_caps,
+        }))
+        .with_rule(Box::new(GrandfatherHorizonOnItsClass))
 }
 
 /// Every published row must resolve a rounding policy — its own, or the
@@ -226,3 +320,129 @@ impl ValidationRule<PlanShape> for RoundingPolicyResolved {
 #[cfg(test)]
 #[path = "rules_tests.rs"]
 mod rules_tests;
+
+/// The §14 soft size caps, reported and never enforced (`nfr-size-limits`,
+/// D-160).
+///
+/// Two caps, one code, `warnings[]` only:
+///
+/// - **price rows per plan** — a plan above the cap is one whose publish, read
+///   model delta and snapshot are all proportional to a number nobody bounded;
+/// - **tier bands per row** — a ladder above the cap is one every rating call
+///   walks.
+///
+/// **Why this is an advisory and not a violation.** PRD §14 ratifies both as a
+/// `SHOULD`. Making them blocking would let a raised-then-lowered cap turn a
+/// published plan into one its own tenant cannot re-publish, and it would reject
+/// a legitimately large catalogue with no remedy but to split it — D-160's
+/// rejected option (b), taken there rather than here.
+///
+/// **The caps are the authoring tenant's** (D-152), resolved by the caller from
+/// `pricing_policy_object` and held as a **field**: a rule that read
+/// configuration inside `evaluate` could answer differently in §4.2's two runs
+/// for no authored reason. A tenant with no policy row takes the ratified
+/// deployment default, which is what makes the number in force readable at all.
+///
+/// The report names **which** cap, **its limit** and **the count**, because those
+/// three are the whole of the operator's next action: shorten this ladder by six
+/// bands, or split this plan.
+#[domain_model]
+#[derive(Clone, Copy, Debug)]
+pub struct PlanSizeWithinSoftCaps {
+    /// The caps in force for the authoring tenant.
+    pub caps: SoftSizeCaps,
+}
+
+impl ValidationRule<PlanShape> for PlanSizeWithinSoftCaps {
+    fn name(&self) -> &'static str {
+        "nfr-size-limits"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        let rows = u32::try_from(subject.rows.len()).unwrap_or(u32::MAX);
+        let row_cap = self.caps.max_price_rows_per_plan();
+        if rows > row_cap {
+            report.warn(
+                PLAN_SIZE_SOFT_CAP_EXCEEDED,
+                subject.subject(),
+                format!(
+                    "the plan carries {rows} price rows, above the soft cap of {row_cap} rows per \
+                     plan: the publish, the read-model delta and the snapshot are all \
+                     proportional to this number. Advisory - the publish proceeds"
+                ),
+            );
+        }
+
+        let band_cap = self.caps.max_tier_bands_per_row();
+        for record in &subject.rows {
+            let bands = u32::try_from(record.row.bands.len()).unwrap_or(u32::MAX);
+            if bands <= band_cap {
+                continue;
+            }
+            report.warn(
+                PLAN_SIZE_SOFT_CAP_EXCEEDED,
+                format!("{}|{}", subject.subject(), record.price_id),
+                format!(
+                    "row {} carries {bands} tier bands, above the soft cap of {band_cap} bands \
+                     per row: every rating call walks the ladder. Advisory - the publish proceeds",
+                    record.price_id
+                ),
+            );
+        }
+    }
+}
+
+/// A grandfathering horizon belongs only to an `existing_grandfathered` row
+/// (S7 §5, D-147).
+///
+/// **Why the subject is the plan and not the row.** `grandfather_until` lives on
+/// [`PriceRecord`](crate::domain::price_record::PriceRecord), not on
+/// [`PriceRow`](crate::domain::price_row::PriceRow), so
+/// [`price_row_rules`](crate::domain::rules::price_row_rules) cannot see it —
+/// and widening `PriceRow` to reach it would move a field across the D-162
+/// roster boundary and imply a generation bump for something that is not
+/// evaluation policy at all. The eligibility class it pairs with is on the
+/// **scope key**, one level up again. So the rule's subject is the plan shape,
+/// which already carries both.
+///
+/// **It is registered in the aggregate's own pipeline rather than in Slice 2's.**
+/// The rule is S7's, and `plan_rules::plan_shape_rules` is the Slice-2 set by its
+/// own doc — a rule filed there would make Slice 2 the owner of a Slice-7
+/// sentence. This is the same reason [`RoundingPolicyResolved`] sits here.
+///
+/// **What it does not duplicate.** The repository refuses the same pairing on
+/// both authoring paths and pre-empts the column `CHECK`'s 500 there. That guard
+/// is the guarantee and this is the report: an author who submits a plan with
+/// three faults gets three lines, one of them this one, instead of discovering it
+/// one write at a time.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GrandfatherHorizonOnItsClass;
+
+impl ValidationRule<PlanShape> for GrandfatherHorizonOnItsClass {
+    fn name(&self) -> &'static str {
+        "inst-el-fields"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        for record in &subject.rows {
+            let Some(horizon) = record.grandfather_until else {
+                continue;
+            };
+            let class = record.scope_key.price_eligibility();
+            if class == PriceEligibility::ExistingGrandfathered {
+                continue;
+            }
+            report.violate(
+                GRANDFATHER_UNTIL_FORBIDDEN,
+                format!("{}|{}", subject.subject(), record.price_id),
+                format!(
+                    "row {} is filed under priceEligibility {class} and carries a grandfathering \
+                     horizon of {horizon}: the horizon says when a retained cohort stops being \
+                     retained, and a row that retains nobody has no cohort for it to end",
+                    record.price_id
+                ),
+            );
+        }
+    }
+}

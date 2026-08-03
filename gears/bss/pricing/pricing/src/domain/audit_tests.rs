@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::{
     AUDIT_DOMAIN_SEP, AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash,
-    genesis_prev_hash, hex32,
+    genesis_prev_hash, hex32, subject_state,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0001);
@@ -51,10 +51,65 @@ fn the_persisted_tokens_are_asserted_against_literals() {
     // Not derived from the variant identifiers, exactly as `CatalogEvent`'s
     // are not: an Auditor surface with a seven-year horizon reads these
     // strings, so a variant rename must not silently rename a stored token.
+    assert_eq!(AuditAction::Create.as_str(), "create");
+    assert_eq!(AuditAction::Update.as_str(), "update");
+    assert_eq!(AuditAction::Delete.as_str(), "delete");
+    assert_eq!(AuditAction::Abandon.as_str(), "abandon");
     assert_eq!(AuditAction::Publish.as_str(), "publish");
     assert_eq!(AuditSubjectKind::PlanRevision.as_str(), "plan_revision");
-    assert_eq!(AuditAction::ALL, &[AuditAction::Publish]);
-    assert_eq!(AuditSubjectKind::ALL, &[AuditSubjectKind::PlanRevision]);
+    assert_eq!(AuditSubjectKind::PriceUnit.as_str(), "price_unit");
+    assert_eq!(
+        AuditAction::ALL,
+        &[
+            AuditAction::Create,
+            AuditAction::Update,
+            AuditAction::Delete,
+            AuditAction::Abandon,
+            AuditAction::Publish,
+        ]
+    );
+    assert_eq!(
+        AuditSubjectKind::ALL,
+        &[AuditSubjectKind::PlanRevision, AuditSubjectKind::PriceUnit]
+    );
+}
+
+#[test]
+fn a_delete_is_not_an_abandon_and_the_tokens_say_so() {
+    // D-145's whole point in one assertion. A discarded draft revision is
+    // **flipped**, so its `(plan_id, revision)` name stays consumed and the row
+    // survives as a tombstone; a discarded draft price row is **deleted**, and
+    // `inst-ps-nodelete` keeps that off a published one. Two acts with two
+    // different consequences for the durable name, so two tokens - and an
+    // auditor reading one for the other would read a permanent name as reusable.
+    assert_ne!(AuditAction::Abandon, AuditAction::Delete);
+    assert_ne!(
+        AuditAction::Abandon.as_str(),
+        AuditAction::Delete.as_str(),
+        "and the stored tokens differ too, which is what the reader sees"
+    );
+}
+
+#[test]
+fn a_subject_state_says_what_a_row_looked_like_and_nothing_more() {
+    // One rendering for every audited subject in the crate. The pending ref rides
+    // only where there is one - the publish commit's after-state - because it is
+    // what connects that mutation to the addressability it produced.
+    let plain = subject_state(crate::domain::lifecycle::LifecycleState::Draft, 3, None);
+    assert_eq!(
+        plain,
+        serde_json::json!({ "lifecycleState": "draft", "rowVersion": 3 })
+    );
+
+    let published = subject_state(
+        crate::domain::lifecycle::LifecycleState::Published,
+        4,
+        Some("pend-9"),
+    );
+    assert_eq!(
+        published.get("pendingVersionRef"),
+        Some(&serde_json::json!("pend-9"))
+    );
 }
 
 #[test]

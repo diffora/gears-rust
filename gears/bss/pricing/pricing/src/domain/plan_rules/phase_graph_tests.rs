@@ -17,16 +17,17 @@ use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
-    PhaseChainLinear, PhaseCoverage, PhaseDuration, PhaseGraphIntegrity, PhaseOverrideBase,
-    PhaseOverrideUnits, TerminalPhaseKind, TerminalPhaseStable,
+    DisplayTrialDaysOnTrialPhase, PhaseChainLinear, PhaseCoverage, PhaseDuration,
+    PhaseGraphIntegrity, PhaseOverrideBase, PhaseOverrideUnits, TerminalPhaseKind,
+    TerminalPhaseStable,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_rules::{
-    PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID, PHASE_IN_USE,
-    PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_UNCOVERED, TERMINAL_PHASE_CHANGED,
-    TERMINAL_PHASE_KIND_INVALID,
+    DISPLAY_TRIAL_DAYS_INVALID, PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID,
+    PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_UNCOVERED,
+    TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
 use crate::domain::plan_shape::{
     BillingCycle, PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline,
@@ -960,4 +961,111 @@ fn an_ambiguous_terminal_quiets_the_immutability_arm_and_not_the_in_use_arm() {
     let violation = only(&report);
 
     assert_eq!(violation.code, PHASE_IN_USE);
+}
+
+// ---------------------------------------------------------------------------
+// inst-ph-trial (D-151)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_evergreen_terminal_phase_publishing_a_trial_length_is_refused() {
+    // The case nothing caught, and the reason it is worth a rule of its own.
+    // A plan whose ONLY phase is the evergreen terminal one, carrying
+    // `displayTrialDays`: `PhaseDuration` is correct to find no duration on a
+    // terminal phase, `TerminalPhaseKind` is correct to find `evergreen`, and
+    // section 6's CHECK is SATISFIED because comparing to NULL is NULL. Three
+    // guards, each right, and the shape they exist to forbid passed all of them.
+    let mut terminal = phase(0x7e_11, PhaseKind::Evergreen, 1, None);
+    terminal.display_trial_days = Some(14);
+    let subject = shape_of(vec![terminal]);
+
+    // The three that legitimately pass.
+    assert!(judge(&PhaseDuration, &subject).violations.is_empty());
+    assert!(judge(&TerminalPhaseKind, &subject).violations.is_empty());
+    assert!(judge(&PhaseGraphIntegrity, &subject).violations.is_empty());
+
+    // The one that does not.
+    let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);
+    let violation = only(&report);
+    assert_eq!(violation.code, DISPLAY_TRIAL_DAYS_INVALID);
+    assert!(
+        violation.subject.contains(&phase_id(0x7e_11).to_string()),
+        "the phase is named: {}",
+        violation.subject
+    );
+    assert!(
+        violation.detail.contains("evergreen"),
+        "{}",
+        violation.detail
+    );
+}
+
+#[test]
+fn an_intro_phase_carrying_a_trial_length_is_refused_too() {
+    // The projection binds to the phase `kind`, and `intro` is the other kind a
+    // non-terminal phase can be.
+    let mut intro = phase(0x11_10, PhaseKind::Intro, 0, Some(phase_id(0x7e_11)));
+    intro.display_trial_days = Some(30);
+    let subject = shape_of(vec![intro, phase(0x7e_11, PhaseKind::Evergreen, 1, None)]);
+
+    let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);
+    let violation = only(&report);
+    assert_eq!(violation.code, DISPLAY_TRIAL_DAYS_INVALID);
+    assert!(violation.detail.contains("intro"), "{}", violation.detail);
+}
+
+#[test]
+fn a_trial_phase_with_no_duration_to_project_is_refused_naming_the_null_check() {
+    // The half section 6's CHECK cannot carry at all: NULL propagation makes it
+    // satisfied whenever `phase_duration_days` is NULL while
+    // `display_trial_days` is set, on both engines.
+    let mut trial = phase(0x77_1a, PhaseKind::Trial, 0, Some(phase_id(0x7e_11)));
+    trial.phase_duration_days = None;
+    trial.display_trial_days = Some(14);
+    let subject = shape_of(vec![trial, phase(0x7e_11, PhaseKind::Evergreen, 1, None)]);
+
+    let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);
+    let violation = only(&report);
+    assert_eq!(violation.code, DISPLAY_TRIAL_DAYS_INVALID);
+    assert!(
+        violation.detail.contains("phaseDurationDays"),
+        "{}",
+        violation.detail
+    );
+}
+
+#[test]
+fn a_trial_phase_projecting_the_duration_it_has_is_silent() {
+    // One value, two projections - the shape `inst-ph-trial` exists to permit.
+    let mut trial = phase(0x77_1a, PhaseKind::Trial, 0, Some(phase_id(0x7e_11)));
+    trial.phase_duration_days = Some(14);
+    trial.display_trial_days = Some(14);
+    let subject = shape_of(vec![trial, phase(0x7e_11, PhaseKind::Evergreen, 1, None)]);
+
+    assert!(
+        judge(&DisplayTrialDaysOnTrialPhase, &subject)
+            .violations
+            .is_empty()
+    );
+}
+
+#[test]
+fn every_offending_phase_is_reported_and_not_only_the_first() {
+    let mut intro = phase(0x11_10, PhaseKind::Intro, 0, Some(phase_id(0x7e_11)));
+    intro.display_trial_days = Some(30);
+    let mut terminal = phase(0x7e_11, PhaseKind::Evergreen, 1, None);
+    terminal.display_trial_days = Some(14);
+
+    let report = judge(
+        &DisplayTrialDaysOnTrialPhase,
+        &shape_of(vec![intro, terminal]),
+    );
+
+    assert_eq!(report.violations.len(), 2, "{:?}", report.violations);
+    assert!(
+        report
+            .violations
+            .iter()
+            .all(|v| v.code == DISPLAY_TRIAL_DAYS_INVALID)
+    );
 }

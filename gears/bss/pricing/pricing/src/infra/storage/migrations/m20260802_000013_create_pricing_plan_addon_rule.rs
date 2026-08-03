@@ -58,20 +58,24 @@
 //! CHECK can see it — the same split `pricing_price_tier_band` draws, where
 //! per-row properties are constraints and set properties are pipeline rules.
 //!
-//! **Consequence, recorded rather than designed around:** §5 names no code for
-//! this rejection, so an author who submits `required` with `max_qty = 0`
-//! reaches a driver error rather than a report line. Minting a code for it is
-//! forbidden (Global Constraint 3) and stretching a neighbouring one would put
-//! a discriminator on the wire that no document defines. The constraint is kept
-//! because the alternative is worse: without it a required add-on that can
-//! never be taken publishes silently, and the plan is sellable and unbuyable.
+//! **The report line arrived, and the `CHECK` stays.** An earlier version of this
+//! note recorded that §5 named no code for the rejection, so an author met it as a
+//! driver error rather than a report line, and that minting one was forbidden.
+//! D-150 named it: `ADDON_QTY_RANGE_INVALID`, reported by
+//! `domain::plan_rules::composition::AddonQtyRange`
+//! over all three bounds at once. The constraint is kept beside it — the rule is
+//! the explanatory path and the constraint the guarantee, D-148's read-then-index
+//! arrangement — because a rule reaches only what runs the pipeline, and without
+//! the `CHECK` a required add-on that can never be taken would publish through
+//! any other writer.
 //!
 //! # Two constraints §6 does not name, and the defect each prevents
 //!
-//! Both are additions, both are reported as such, and both rest on the same
-//! ground as the CHECK above — §5 names no code for either, so the pipeline
-//! **cannot** report them at all, and a shape nothing rejects is a shape that
-//! publishes.
+//! Both are additions and both are reported as such. They rested on the same
+//! ground as the `CHECK` above — no code, so the pipeline could not report them —
+//! and they no longer do: D-150 gave all three bounds one code, and the pipeline
+//! reports each of them. What the constraints still buy is the guarantee for a
+//! writer that never runs the pipeline.
 //!
 //! 1. `chk_pricing_plan_addon_rule_qty_range`:
 //!    `min_qty IS NULL OR max_qty IS NULL OR min_qty <= max_qty`. An inverted

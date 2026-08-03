@@ -133,6 +133,41 @@
 //! is greenfield that widening is another in-place amendment, which is exactly
 //! the situation this file is already an instance of.
 //!
+//! # `commit_observed_at` is the instant every post-commit clause was missing
+//! (added 2026-08-03, D-166)
+//!
+//! The set names three signals for a publish that has not become visible, and
+//! two of them had no measurable start. `fr-publish-fanout-atomicity` puts
+//! `PlanPublishDegraded` **after** the commit and explicitly puts the pre-commit
+//! batching wait outside it — and the only instants this table held were
+//! `requested_at`, stamped when the handle was asked for, and `committed_at`,
+//! stamped by the **finalize**, which is the very step that never runs on the
+//! path where the warm is failing. Measured from `requested_at` the 5s rule
+//! marks **every** publish degraded, including every one behaving exactly as
+//! D-47 budgets, so the clause distinguishing a fault from a budgeted wait was
+//! unbuildable and `PlanPublishDegraded` and `commit_overdue` collapsed into one
+//! predicate.
+//!
+//! `commit_observed_at` is when this gear **first saw** the registry's answer for
+//! the ref, written by the sweep independently of whether the projection then
+//! lands. It has to be recorded rather than derived, and the reason is precise:
+//! the projector writes a subject's delta warm in the **same transaction that
+//! finalizes its ref**, so "committed but unwarm" is not a state this store can
+//! hold. Without the column there is nothing on the row that distinguishes "the
+//! registry has not answered" from "the registry answered and the warm keeps
+//! failing".
+//!
+//! It is an **upper bound**: the observation lags the registry's real commit by
+//! at most one sweep pass, so a signal derived from it is late rather than
+//! false. The accurate form is the registry supplying its own commit instant
+//! with the version, which is the registry gear's owed half of D-163's adoption.
+//!
+//! **No `CHECK` pairs it with anything, deliberately.**
+//! `chk_pricing_catalog_version_ref_commit` exists because a version and its
+//! commit instant are one fact; this column is the opposite kind of thing — its
+//! whole purpose is to be settable while `catalog_version` is still NULL, which
+//! is the state it was added to describe.
+//!
 //! **Amended in place rather than fixed up.** The chain has never been deployed
 //! and every environment and every test creates it from scratch, so a trailing
 //! `ALTER TABLE` migration would add a step that only exists to describe a
@@ -156,6 +191,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
         subject_lifecycle_state text,
         catalog_version bigint,
         requested_at    timestamptz NOT NULL DEFAULT now(),
+        commit_observed_at timestamptz,
         committed_at    timestamptz,
         PRIMARY KEY (tenant_id, pending_ref),
         CONSTRAINT chk_pricing_catalog_version_ref_subject_kind CHECK (
@@ -186,6 +222,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         subject_lifecycle_state text,
         catalog_version bigint,
         requested_at    text   NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        commit_observed_at text,
         committed_at    text,
         PRIMARY KEY (tenant_id, pending_ref),
         CONSTRAINT chk_pricing_catalog_version_ref_subject_kind CHECK (

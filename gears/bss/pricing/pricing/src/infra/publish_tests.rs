@@ -101,7 +101,7 @@ fn the_audit_before_state_names_the_flip_and_carries_no_version_ref() {
     // Before the commit there is no pending handle, and inventing one would put
     // an addressability claim in the record of the state that preceded it.
     assert_eq!(
-        super::revision_state(LifecycleState::Draft, 3, None),
+        crate::domain::audit::subject_state(LifecycleState::Draft, 3, None),
         serde_json::json!({"lifecycleState": "draft", "rowVersion": 3})
     );
 }
@@ -109,7 +109,7 @@ fn the_audit_before_state_names_the_flip_and_carries_no_version_ref() {
 #[test]
 fn the_audit_after_state_connects_the_flip_to_the_addressability_it_produced() {
     assert_eq!(
-        super::revision_state(LifecycleState::Published, 4, Some("pend-9")),
+        crate::domain::audit::subject_state(LifecycleState::Published, 4, Some("pend-9")),
         serde_json::json!({
             "lifecycleState": "published",
             "rowVersion": 4,

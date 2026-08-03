@@ -36,6 +36,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bss_pricing::config::LimitsConfig;
+use bss_pricing::domain::audit::{
+    AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash, genesis_prev_hash,
+};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
@@ -57,7 +60,8 @@ use bss_pricing::infra::storage::entity::{
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
-    NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo,
+    NewOutboxEvent, NewPlanDraft, NewPriceDraft, PlanPublishedPayload, PlanRepo, PlanShapeRepo,
+    PriceRepo, outbox_repo,
 };
 use bss_pricing_sdk::catalog_version::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{
@@ -268,6 +272,7 @@ async fn seed_publishable(h: &Harness) -> (u64, RowVersion, Uuid) {
                 phase_duration_days: None,
                 display_trial_days: None,
             }],
+            stamp(),
         )
         .await
         .expect("attach the phase chain");
@@ -285,6 +290,7 @@ async fn seed_publishable(h: &Harness) -> (u64, RowVersion, Uuid) {
                 itemization_rule: Some("per_charge".to_owned()),
                 additional: std::collections::BTreeMap::new(),
             },
+            stamp(),
         )
         .await
         .expect("attach the descriptor set");
@@ -343,6 +349,27 @@ async fn audit_rows(h: &Harness) -> Vec<audit_log::Model> {
         .await
         .expect("read the audit chain")
 }
+
+/// The chain's **publish** records, in seq order.
+///
+/// The authoring seeds this suite builds a publishable plan with are themselves
+/// audited now (D-135, G8) - a create and three facet edits - so a count over the
+/// whole segment stopped being a count of what a publish wrote. Filtering by
+/// action is the honest narrowing: this suite's subject is the publish commit,
+/// and the seeds' records are `sqlite_audit_chain.rs`'s.
+async fn publish_records(h: &Harness) -> Vec<audit_log::Model> {
+    let mut rows: Vec<audit_log::Model> = audit_rows(h)
+        .await
+        .into_iter()
+        .filter(|row| row.action == "publish")
+        .collect();
+    rows.sort_by_key(|row| row.seq);
+    rows
+}
+
+/// How many records the authoring seeds leave on the plan's segment: the plan
+/// create, plus one per facet the seed sets (phases, add-on rules, descriptors).
+const SEEDED_AUTHORING_RECORDS: i64 = 4;
 
 async fn read_model_rows(h: &Harness) -> Vec<read_model::Model> {
     let conn = h.provider.conn().expect("conn");
@@ -406,7 +433,12 @@ async fn a_first_publish_leaves_exactly_the_five_artifacts_and_nothing_else() {
     // The receipt holds a handle, never a version.
     assert_eq!(receipt.version_ref(), &VersionRef::Pending("pend-0".into()));
     assert_eq!(receipt.published_price_ids(), [price_id]);
-    assert_eq!(receipt.audit_seq(), 0);
+    // The publish record extends the segment the authoring seeds already built,
+    // so its position is after theirs rather than at genesis.
+    assert_eq!(
+        i64::try_from(receipt.audit_seq()).expect("a small seq"),
+        SEEDED_AUTHORING_RECORDS
+    );
 
     // 1. The revision is published and is the plan's current one.
     let current = h
@@ -454,10 +486,10 @@ async fn a_first_publish_leaves_exactly_the_five_artifacts_and_nothing_else() {
         Some(&serde_json::json!(EVALUATION_POLICY_GENERATION))
     );
 
-    // 5. One audit row at seq 0.
-    let records = audit_rows(&h).await;
+    // 5. One audit row, on the plan's own segment, after the seeds'.
+    let records = publish_records(&h).await;
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].seq, 0);
+    assert_eq!(records[0].seq, SEEDED_AUTHORING_RECORDS);
     assert_eq!(records[0].entry_kind, "mutation");
     assert_eq!(records[0].segment_heads, None);
     assert_eq!(records[0].chain_id, plan_id().get());
@@ -491,7 +523,7 @@ async fn an_approved_publish_puts_its_record_on_the_audit_trail() {
         .await
         .expect("the publish commits");
 
-    let records = audit_rows(&h).await;
+    let records = publish_records(&h).await;
     assert_eq!(records[0].approval_ref, Some(approval));
 }
 
@@ -557,14 +589,24 @@ async fn a_second_publish_extends_every_counter_by_one() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[1].seq, 1, "the aggregate's counter advanced by one");
 
-    let mut records = audit_rows(&h).await;
-    records.sort_by_key(|row| row.seq);
+    let records = publish_records(&h).await;
     assert_eq!(records.len(), 2);
-    assert_eq!(records[1].seq, 1);
-    assert_eq!(
-        records[1].prev_hash.as_deref(),
-        Some(records[0].row_hash.as_slice()),
-        "the second link points at the first row's hash"
+    // The two publish records are **not** adjacent, and that is right: opening
+    // the successor is itself an audited mutation, so its `create` record sits
+    // between them on the plan's segment. What the chain guarantees is that every
+    // row links to whatever preceded IT, which
+    // `the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_records`
+    // walks in full. Here the claim is only that the second publish extended the
+    // segment rather than restarting it.
+    assert!(
+        records[1].seq > records[0].seq,
+        "the second publish extended the segment: {} then {}",
+        records[0].seq,
+        records[1].seq
+    );
+    assert!(
+        records[1].prev_hash.is_some(),
+        "and linked to whatever preceded it"
     );
 
     assert_eq!(version_refs(&h).await.len(), 2);
@@ -659,7 +701,10 @@ async fn a_commit_time_validation_failure_writes_nothing_at_all() {
     // And nothing was written anywhere.
     assert!(version_refs(&h).await.is_empty());
     assert!(outbox_rows(&h).await.is_empty());
-    assert!(audit_rows(&h).await.is_empty());
+    assert!(
+        publish_records(&h).await.is_empty(),
+        "the refusal wrote no publish record; the authoring seeds' records are theirs"
+    );
     assert_seam_holds(&h).await;
 }
 
@@ -721,7 +766,10 @@ async fn registry_absence_stops_the_publish_and_writes_nothing() {
     );
     assert!(version_refs(&h).await.is_empty());
     assert!(outbox_rows(&h).await.is_empty());
-    assert!(audit_rows(&h).await.is_empty());
+    assert!(
+        publish_records(&h).await.is_empty(),
+        "the refusal wrote no publish record; the authoring seeds' records are theirs"
+    );
     assert_seam_holds(&h).await;
 }
 
@@ -761,7 +809,10 @@ async fn a_stale_row_version_is_refused_and_writes_nothing() {
     );
     assert!(version_refs(&h).await.is_empty());
     assert!(outbox_rows(&h).await.is_empty());
-    assert!(audit_rows(&h).await.is_empty());
+    assert!(
+        publish_records(&h).await.is_empty(),
+        "the refusal wrote no publish record; the authoring seeds' records are theirs"
+    );
 }
 
 #[tokio::test]
@@ -891,7 +942,9 @@ async fn a_failure_at_the_last_write_takes_the_four_before_it_back() {
     let corrupt = audit_log::ActiveModel {
         tenant_id: sea_orm::ActiveValue::Set(TENANT),
         chain_id: sea_orm::ActiveValue::Set(plan_id().get()),
-        seq: sea_orm::ActiveValue::Set(0),
+        // Above the authoring seeds' records, so this row IS the head the
+        // append will try to link to.
+        seq: sea_orm::ActiveValue::Set(SEEDED_AUTHORING_RECORDS),
         entry_kind: sea_orm::ActiveValue::Set("mutation".to_owned()),
         recorded_at: sea_orm::ActiveValue::Set(at(9)),
         actor_principal_id: sea_orm::ActiveValue::Set(ACTOR),
@@ -964,8 +1017,8 @@ async fn a_failure_at_the_last_write_takes_the_four_before_it_back() {
     assert!(outbox_rows(&h).await.is_empty(), "the event rolled back");
     assert_eq!(
         audit_rows(&h).await.len(),
-        1,
-        "only the seeded head remains; the append never landed"
+        usize::try_from(SEEDED_AUTHORING_RECORDS).expect("a small count") + 1,
+        "only the authoring seeds and the seeded head remain; the append never landed"
     );
     assert_seam_holds(&h).await;
 }
@@ -1052,4 +1105,331 @@ async fn a_row_authored_after_the_precheck_is_judged_by_the_second_run() {
             "publishing changes no content, so the tag it was validated at is the tag it keeps"
         );
     }
+}
+
+/// The actor and instant every mutating repository call now records (D-135 - the
+/// audit row commits inside the mutation's own transaction).
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: uuid::Uuid::from_u128(0xac_10),
+        recorded_at: chrono::Utc::now(),
+        correlation_id: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The vocabulary and the chain, over every writer the crate has (D-135, D-158).
+// ---------------------------------------------------------------------------
+
+/// Drive **every** audited path this crate has, on one plan, and return the
+/// segment's rows in seq order.
+///
+/// One plan on purpose: D-135 keys the segment on the audited subject's
+/// aggregate, so the whole sequence extends one chain and the walk below is the
+/// walk a verification job makes.
+async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
+    // create (plan), update x2 (facets), create (price)
+    let (revision, version, _) = seed_publishable(h).await;
+    // publish
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::new(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("the publish commits");
+
+    // A second draft price row, authored and then discarded: `delete`.
+    let doomed = Uuid::from_u128(0xb_0002);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: doomed,
+                scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(13),
+            },
+        )
+        .await
+        .expect("author a second row");
+    h.prices
+        .delete_draft(&h.scope, TENANT, doomed, RowVersion::new(0), stamp())
+        .await
+        .expect("discard it");
+
+    // A successor revision, opened and then discarded: `abandon`.
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, plan_id(), ACTOR, at(14))
+        .await
+        .expect("open a successor");
+    h.plans
+        .abandon_draft(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            opened.revision,
+            opened.row_version,
+            stamp(),
+        )
+        .await
+        .expect("discard it");
+
+    let mut rows = audit_rows(h).await;
+    rows.sort_by_key(|row| row.seq);
+    rows
+}
+
+#[tokio::test]
+async fn every_declared_action_has_a_production_writer() {
+    // D-158's constraint, as a guard rather than a promise: **a token with no
+    // writer is not declared**, because a vocabulary entry nobody writes reads as
+    // coverage to everyone who greps for it. This walks `AuditAction::ALL` and
+    // insists each one is produced by driving the crate's own paths.
+    //
+    // Delete a writer and this fails; add a token without one and this fails.
+    // Those are the two directions the vocabulary can drift in.
+    let h = harness().await;
+    let rows = drive_every_audited_path(&h).await;
+
+    let written: std::collections::BTreeSet<String> =
+        rows.iter().map(|row| row.action.clone()).collect();
+    let declared: std::collections::BTreeSet<String> = AuditAction::ALL
+        .iter()
+        .map(|action| action.as_str().to_owned())
+        .collect();
+
+    assert_eq!(
+        written, declared,
+        "every declared action has a writer, and every writer's action is declared"
+    );
+
+    // The same, one column over.
+    let kinds: std::collections::BTreeSet<String> =
+        rows.iter().map(|row| row.subject_kind.clone()).collect();
+    let declared_kinds: std::collections::BTreeSet<String> = AuditSubjectKind::ALL
+        .iter()
+        .map(|kind| kind.as_str().to_owned())
+        .collect();
+    assert_eq!(kinds, declared_kinds);
+}
+
+#[tokio::test]
+async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_records() {
+    // The property a chain exists for, over the writers this group added. Every
+    // row's digest is recomputed from the columns that stored it and compared to
+    // the `row_hash` the writer put there - a test that only asserted "a hash was
+    // written" would keep passing after the encoding and the store had stopped
+    // agreeing, and a new writer is exactly the occasion for that.
+    let h = harness().await;
+    let rows = drive_every_audited_path(&h).await;
+    assert!(rows.len() >= 7, "the sequence is mixed: {}", rows.len());
+
+    let mut prev = genesis_prev_hash(TENANT, plan_id().get());
+    for (position, row) in rows.iter().enumerate() {
+        assert_eq!(
+            u64::try_from(position).expect("a small position"),
+            u64::try_from(row.seq).expect("a non-negative seq"),
+            "the segment has no gaps"
+        );
+        assert_eq!(
+            row.prev_hash.as_deref(),
+            Some(prev.as_slice()),
+            "row {} links to its predecessor",
+            row.seq
+        );
+        let action = AuditAction::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == row.action)
+            .expect("a declared action");
+        let kind = AuditSubjectKind::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == row.subject_kind)
+            .expect("a declared subject kind");
+        let record = AuditRecord {
+            tenant_id: row.tenant_id,
+            chain_id: row.chain_id,
+            seq: u64::try_from(row.seq).expect("a non-negative seq"),
+            recorded_at: row.recorded_at,
+            actor_principal_id: row.actor_principal_id,
+            action,
+            subject_kind: kind,
+            subject_ref: &row.subject_ref,
+            before_state: row.before_state.as_ref(),
+            after_state: row.after_state.as_ref(),
+            approval_ref: row.approval_ref,
+            correlation_id: row.correlation_id,
+        };
+        let recomputed = audit_row_hash(&record, &prev).expect("recompute the digest");
+        assert_eq!(
+            recomputed.as_slice(),
+            row.row_hash.as_slice(),
+            "row {} reproduces its own digest",
+            row.seq
+        );
+        prev = recomputed;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A same-aggregate contention is tellable from a dead connection (D-159)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_loser_at_the_outbox_sequence_is_a_concurrent_mutation_and_not_a_storage_fault() {
+    // D-159's second serialization point, and the one whose unique violation a
+    // single-writer suite can actually provoke. Before it, the loser reached the
+    // caller as `RepoError::Db` -> `DomainError::Internal` -> **500**,
+    // indistinguishable from a dead connection, for a request whose entire remedy
+    // is to retry.
+    //
+    // The violation here is `uq_pricing_outbox_dedup_key`'s rather than
+    // `uq_pricing_outbox_sequence`'s, and the driver's class does not tell them
+    // apart. Both mean the same thing - another write of this aggregate got here
+    // first - and both remedy the same way; the constraint **names** are what a
+    // Postgres suite would assert.
+    let h = harness().await;
+    let payload = PlanPublishedPayload {
+        plan_id: plan_id(),
+        revision: 0,
+        pending_version_ref: "pend-0".to_owned(),
+        price_ids: Vec::new(),
+        correlation_id: CORRELATION,
+    };
+
+    let (_, first) = h
+        .provider
+        .db()
+        .in_transaction::<u64, bss_pricing::infra::storage::RepoError, _>(|txn| {
+            let scope = AccessScope::for_tenant(TENANT);
+            let event = NewOutboxEvent::plan_published(TENANT, &payload, at(12));
+            Box::pin(async move { outbox_repo::enqueue(txn, &scope, event).await })
+        })
+        .await;
+    first.expect("the first enqueue lands");
+
+    let (_, second) = h
+        .provider
+        .db()
+        .in_transaction::<u64, bss_pricing::infra::storage::RepoError, _>(|txn| {
+            let scope = AccessScope::for_tenant(TENANT);
+            let event = NewOutboxEvent::plan_published(TENANT, &payload, at(13));
+            Box::pin(async move { outbox_repo::enqueue(txn, &scope, event).await })
+        })
+        .await;
+    let refusal = second.expect_err("the second is refused by a unique index");
+    let refusal = refusal.into_domain(|infra| {
+        bss_pricing::infra::storage::RepoError::Db(format!("outbox transaction: {infra}"))
+    });
+
+    assert!(
+        matches!(
+            refusal,
+            bss_pricing::infra::storage::RepoError::ConcurrentMutation { .. }
+        ),
+        "the loser is a contention, not a storage fault: {refusal:?}"
+    );
+    assert!(
+        refusal.to_string().contains(&plan_id().to_string()),
+        "and it names the aggregate to retry against: {refusal}"
+    );
+
+    // The wire answer: 409 with its own code, never a 500.
+    let canonical = toolkit::api::canonical_prelude::CanonicalError::from(
+        bss_pricing::infra::storage::repo_failure(&refusal),
+    );
+    assert_eq!(canonical.status_code(), 409, "{canonical:?}");
+    assert!(
+        format!("{canonical:?}").contains("CONCURRENT_MUTATION"),
+        "{canonical:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_publish_record_carries_the_before_and_after_state_its_transition_implies() {
+    // The third before/after writer, and the one the existing suite could not
+    // see. Blanking `before_state`/`after_state` to `None` in `infra/publish.rs`
+    // left 846/846 green - because the only readers of this pair are the two
+    // digest-recompute walks, which rebuild each record's preimage **from the
+    // stored columns** and are therefore self-consistent under any substitution.
+    // A walk that derives its expectation from the data it is checking cannot
+    // catch the data being replaced.
+    //
+    // So this asserts the CONTENT against values held independently of the row:
+    // the version the publish was submitted against, the state the flip produced,
+    // and the pending handle. Blank the pair and exactly this test fails.
+    let h = harness().await;
+    let (revision, version, _) = seed_publishable(&h).await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::new(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("the publish commits");
+
+    let records = publish_records(&h).await;
+    assert_eq!(records.len(), 1);
+    let before = records[0]
+        .before_state
+        .as_ref()
+        .expect("a publish records what it moved from");
+    let after = records[0]
+        .after_state
+        .as_ref()
+        .expect("and what it moved to");
+
+    // The draft the commit judged, at the version the caller's precondition
+    // matched - `version` comes from the seed, not from this row.
+    assert_eq!(
+        before.get("lifecycleState"),
+        Some(&serde_json::json!("draft"))
+    );
+    assert_eq!(
+        before.get("rowVersion"),
+        Some(&serde_json::json!(version.get()))
+    );
+
+    // The state the flip produced, one version on.
+    assert_eq!(
+        after.get("lifecycleState"),
+        Some(&serde_json::json!("published"))
+    );
+    assert_eq!(
+        after.get("rowVersion"),
+        Some(&serde_json::json!(version.get() + 1))
+    );
+
+    // The one thing this record carries that no other audit record does: the
+    // pending handle. Without it an auditor has the flip and no way to reach the
+    // version it landed in, which is the whole reason `subject_state` takes a
+    // `pending_ref` at all.
+    assert_eq!(
+        after.get("pendingVersionRef"),
+        Some(&serde_json::json!("pend-0"))
+    );
+    assert!(
+        before.get("pendingVersionRef").is_none(),
+        "and the before-state has none: there was no handle before the commit \
+         requested one: {before}"
+    );
 }

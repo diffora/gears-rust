@@ -95,16 +95,55 @@ impl FixturesConfig {
 /// Cadences for the gear's background work.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the shared `_secs` postfix is the UNIT, and these are deserialized config keys: an \
+              operator reading `readmodel_degraded_after` cannot tell seconds from milliseconds, \
+              and a misread of this particular knob is a Critical alarm at the wrong threshold"
+)]
 pub struct JobsConfig {
     /// How often the read-model warm re-drive sweeps for publishes whose
     /// projection has not completed. The publish→read-model propagation target
     /// is p95 ≤ 5s, and a degraded publish's re-drive continues past it, so the
     /// sweep runs at that order.
     pub readmodel_warm_tick_secs: u64,
-    /// How long a `pricing_catalog_version_ref` may stay `pending` before
-    /// `pricing.catalogversion.commit_overdue` raises Critical. Default 300s =
-    /// the ratified max batching delay (D-47: p95 ≤ 60s, max 5 min).
+    /// How long a `pricing_catalog_version_ref` may stay `pending` **and
+    /// unobserved** before `pricing.catalogversion.commit_overdue` raises
+    /// Critical. Default 300s = the ratified max batching delay (D-47: p95 ≤ 60s,
+    /// max 5 min).
     pub catalog_version_overdue_secs: u64,
+    /// How long a publish whose commit **has** been observed may stay unwarm
+    /// before it is `PlanPublishDegraded`. Default 5s = §1.2's ratified
+    /// publish→read-model propagation SLO.
+    ///
+    /// A second knob rather than a reuse of the one above, because D-166 clause
+    /// (2) is the whole point: measured against the batching delay the degraded
+    /// signal says nothing the overdue signal did not, and an operator cannot
+    /// tell "the registry has not answered" from "the registry answered and the
+    /// warm is failing". The two thresholds differ by two orders of magnitude
+    /// precisely because they measure different waits.
+    pub readmodel_degraded_after_secs: u64,
+    /// How many of **one tenant's** pending refs a warm pass reads. Default 500.
+    ///
+    /// Bounded so a transient registry outage cannot turn an unbounded backlog
+    /// into a memory problem, and bounded **per tenant** because on a
+    /// cross-tenant page one tenant's stuck backlog defers every other tenant's
+    /// completions (D-163 clause 2). A tenant whose page fills gets no
+    /// completion decision that pass: the pass cannot know a version's whole
+    /// subject set, and the frontier lagging is the safe direction.
+    pub pending_refs_per_tenant: u64,
+    /// How many tenants holding pending refs one warm pass sweeps. Default 250.
+    ///
+    /// **This number and the tenant order are the owner's**, carried in §F.2 —
+    /// D-163 says so rather than choosing them. The default is stated with its
+    /// reasoning and nothing more: the discovery read costs one index seek per
+    /// tenant that actually has an **outstanding publish**, and a healthy
+    /// deployment holds a ref pending for at most a batching delay, so 250
+    /// covers a deployment where a quarter of a thousand tenants are mid-publish
+    /// at one 5s tick. Past the bound the **tail of the tenant order is not
+    /// swept at all**, and the order is ascending tenant id rather than
+    /// rotating, which needs a cursor no table in §3.7 carries.
+    pub pending_tenants_per_pass: u64,
 }
 
 impl Default for JobsConfig {
@@ -112,6 +151,9 @@ impl Default for JobsConfig {
         Self {
             readmodel_warm_tick_secs: 5,
             catalog_version_overdue_secs: 300,
+            readmodel_degraded_after_secs: 5,
+            pending_refs_per_tenant: 500,
+            pending_tenants_per_pass: 250,
         }
     }
 }
@@ -123,10 +165,16 @@ impl JobsConfig {
         Duration::from_secs(self.readmodel_warm_tick_secs)
     }
 
-    /// The pending-`CatalogVersion` alarm threshold.
+    /// The pending-and-unobserved `CatalogVersion` alarm threshold.
     #[must_use]
     pub const fn catalog_version_overdue_after(&self) -> Duration {
         Duration::from_secs(self.catalog_version_overdue_secs)
+    }
+
+    /// The observed-but-unwarm degraded threshold — §1.2's 5s propagation SLO.
+    #[must_use]
+    pub const fn readmodel_degraded_after(&self) -> Duration {
+        Duration::from_secs(self.readmodel_degraded_after_secs)
     }
 
     /// # Errors
@@ -142,6 +190,24 @@ impl JobsConfig {
         if self.catalog_version_overdue_secs == 0 {
             return Err(ConfigError::ZeroInterval {
                 field: "jobs.catalog_version_overdue_secs",
+            });
+        }
+        if self.readmodel_degraded_after_secs == 0 {
+            return Err(ConfigError::ZeroInterval {
+                field: "jobs.readmodel_degraded_after_secs",
+            });
+        }
+        // A zero scan bound is not a "read nothing" instruction, it is a pass
+        // that reads nothing and therefore never completes a version - a
+        // frontier frozen at whatever it stood at, silently, forever.
+        if self.pending_refs_per_tenant == 0 {
+            return Err(ConfigError::ZeroInterval {
+                field: "jobs.pending_refs_per_tenant",
+            });
+        }
+        if self.pending_tenants_per_pass == 0 {
+            return Err(ConfigError::ZeroInterval {
+                field: "jobs.pending_tenants_per_pass",
             });
         }
         Ok(())

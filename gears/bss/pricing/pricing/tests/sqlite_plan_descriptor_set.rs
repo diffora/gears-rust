@@ -474,6 +474,7 @@ async fn an_attached_set_reads_back_whole_and_an_unattached_one_is_absent() {
             0,
             RowVersion::new(0),
             descriptors(),
+            stamp(),
         )
         .await
         .expect("attach the descriptor set");
@@ -514,6 +515,7 @@ async fn a_second_attach_replaces_the_set_rather_than_merging_into_it() {
             0,
             RowVersion::new(0),
             descriptors(),
+            stamp(),
         )
         .await
         .expect("attach");
@@ -530,6 +532,7 @@ async fn a_second_attach_replaces_the_set_rather_than_merging_into_it() {
             0,
             attached.row_version,
             corrected.clone(),
+            stamp(),
         )
         .await
         .expect("replace");
@@ -565,6 +568,7 @@ async fn an_empty_set_is_attachable_and_reads_back_as_attached() {
             0,
             RowVersion::new(0),
             DescriptorSet::default(),
+            stamp(),
         )
         .await
         .expect("an empty set is a valid request");
@@ -596,6 +600,7 @@ async fn a_published_revisions_descriptor_set_is_refused_by_name_not_by_trigger(
             0,
             RowVersion::new(0),
             descriptors(),
+            stamp(),
         )
         .await
         .expect("attach");
@@ -613,6 +618,7 @@ async fn a_published_revisions_descriptor_set_is_refused_by_name_not_by_trigger(
             0,
             attached.row_version,
             DescriptorSet::default(),
+            stamp(),
         )
         .await
         .expect_err("a frozen revision's descriptors are not editable");
@@ -648,6 +654,7 @@ async fn a_stale_version_attaches_nothing() {
             0,
             RowVersion::new(0),
             descriptors(),
+            stamp(),
         )
         .await
         .expect("attach");
@@ -660,6 +667,7 @@ async fn a_stale_version_attaches_nothing() {
             0,
             RowVersion::new(0),
             DescriptorSet::default(),
+            stamp(),
         )
         .await
         .expect_err("a shape edit under a superseded tag must be refused");
@@ -705,6 +713,7 @@ async fn another_tenants_descriptor_set_is_invisible() {
             0,
             RowVersion::new(0),
             descriptors(),
+            stamp(),
         )
         .await
         .expect("attach");
@@ -737,4 +746,14 @@ async fn another_tenants_descriptor_set_is_invisible() {
             .expect("read"),
         Some(descriptors())
     );
+}
+
+/// The actor and instant every mutating repository call now records (D-135 - the
+/// audit row commits inside the mutation's own transaction).
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: uuid::Uuid::from_u128(0xac_10),
+        recorded_at: chrono::Utc::now(),
+        correlation_id: None,
+    }
 }

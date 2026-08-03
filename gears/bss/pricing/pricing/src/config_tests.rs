@@ -11,6 +11,15 @@ fn defaults_are_the_ratified_launch_values() {
     assert!(!cfg.events_enabled, "no broker is wired in this repository");
     assert_eq!(cfg.jobs.readmodel_warm_tick_secs, 5);
     assert_eq!(cfg.jobs.catalog_version_overdue_secs, 300);
+    // The two thresholds D-166 separated. They differ by two orders of magnitude
+    // because they measure different waits: 300s is D-47's max batching delay,
+    // and 5s is sec 1.2's publish->read-model propagation SLO. Equal values here
+    // would be the merged predicate back, and neither signal would discriminate.
+    assert_eq!(cfg.jobs.readmodel_degraded_after_secs, 5);
+    assert!(
+        cfg.jobs.readmodel_degraded_after_secs < cfg.jobs.catalog_version_overdue_secs,
+        "the post-commit SLO must be the tighter of the two"
+    );
     assert_eq!(cfg.limits.max_tier_bands_per_row, 100);
     assert_eq!(cfg.limits.max_price_rows_per_plan, 500);
     // PRD 14: `customEveryNDays <= 366`, `customEveryNMonths <= 24`, ratified
@@ -123,6 +132,24 @@ fn a_zero_overdue_threshold_is_rejected() {
         jobs.validate(),
         Err(ConfigError::ZeroInterval {
             field: "jobs.catalog_version_overdue_secs"
+        })
+    );
+}
+
+#[test]
+fn a_zero_degraded_threshold_is_rejected() {
+    // Zero would mark every publish degraded in the pass that first observes its
+    // commit - the same shape of noise measuring the 5s rule from `requested_at`
+    // produced, and the reason D-166 exists.
+    let jobs = JobsConfig {
+        readmodel_degraded_after_secs: 0,
+        ..JobsConfig::default()
+    };
+
+    assert_eq!(
+        jobs.validate(),
+        Err(ConfigError::ZeroInterval {
+            field: "jobs.readmodel_degraded_after_secs"
         })
     );
 }

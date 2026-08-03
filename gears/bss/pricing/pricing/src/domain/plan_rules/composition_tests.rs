@@ -16,14 +16,14 @@ use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
-    AddonConflictBothRequired, AddonDependencyAcyclic, AddonEdgeMembership, MeterInjectivity,
-    PlanTierDeclared,
+    AddonConflictBothRequired, AddonDependencyAcyclic, AddonEdgeMembership, AddonQtyRange,
+    MeterInjectivity, PlanTierDeclared,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{
-    ADDON_CYCLE, ADDON_INCOMPATIBLE, METER_AMBIGUOUS, PLANTIER_MISSING,
+    ADDON_CYCLE, ADDON_INCOMPATIBLE, ADDON_QTY_RANGE_INVALID, METER_AMBIGUOUS, PLANTIER_MISSING,
 };
 use crate::domain::plan_shape::{AddonRule, PlanShape};
 use crate::domain::price_record::PriceRecord;
@@ -588,4 +588,112 @@ fn rule_names_are_the_instructions_that_own_them() {
     assert_eq!(AddonEdgeMembership.name(), "inst-cmp-addons");
     assert_eq!(AddonDependencyAcyclic.name(), "inst-cmp-addons");
     assert_eq!(AddonConflictBothRequired.name(), "inst-cmp-addons");
+}
+
+// ---------------------------------------------------------------------------
+// inst-cmp-addons, the quantity bounds (D-150)
+// ---------------------------------------------------------------------------
+
+/// One add-on rule with the three bounds set explicitly.
+fn bounded(
+    sku: Uuid,
+    required: bool,
+    min_qty: Option<u32>,
+    max_qty: Option<u32>,
+    step_qty: Option<u32>,
+) -> AddonRule {
+    AddonRule {
+        min_qty,
+        max_qty,
+        step_qty,
+        ..rule(required, sku)
+    }
+}
+
+fn with_addons(rules: Vec<AddonRule>) -> PlanShape {
+    let mut subject = PlanShape::new(plan(), 3, now());
+    subject.addon_rules = rules;
+    subject
+}
+
+#[test]
+fn a_required_addon_nobody_may_take_any_of_is_refused_naming_the_bound() {
+    let subject = with_addons(vec![bounded(addon(0xa1), true, None, Some(0), None)]);
+
+    let report = findings(&AddonQtyRange, &subject);
+
+    assert_eq!(codes(&report), vec![ADDON_QTY_RANGE_INVALID]);
+    assert!(
+        report.violations[0].detail.contains("maxQty"),
+        "the offending bound is named: {}",
+        report.violations[0].detail
+    );
+}
+
+#[test]
+fn an_empty_selection_window_is_refused_naming_both_bounds() {
+    let subject = with_addons(vec![bounded(addon(0xa1), false, Some(5), Some(2), None)]);
+
+    let report = findings(&AddonQtyRange, &subject);
+
+    assert_eq!(codes(&report), vec![ADDON_QTY_RANGE_INVALID]);
+    let detail = &report.violations[0].detail;
+    assert!(detail.contains("minQty 5"), "{detail}");
+    assert!(detail.contains("maxQty 2"), "{detail}");
+}
+
+#[test]
+fn a_step_of_zero_is_refused() {
+    let subject = with_addons(vec![bounded(addon(0xa1), false, None, Some(9), Some(0))]);
+
+    let report = findings(&AddonQtyRange, &subject);
+
+    assert_eq!(codes(&report), vec![ADDON_QTY_RANGE_INVALID]);
+    assert!(report.violations[0].detail.contains("stepQty"));
+}
+
+#[test]
+fn all_three_broken_bounds_on_one_addon_are_reported_and_not_only_the_first() {
+    // Section 9's enumerate-all contract, and the whole reason D-150 exists: only
+    // the first bound was ever written, and only as a section 6 CHECK with no
+    // code - so an author met it as a driver error naming a constraint, one bound
+    // at a time, and the other two were expressible at all.
+    let subject = with_addons(vec![bounded(addon(0xa1), true, Some(4), Some(0), Some(0))]);
+
+    let report = findings(&AddonQtyRange, &subject);
+
+    assert_eq!(
+        report.violations.len(),
+        3,
+        "three bounds, three lines: {:?}",
+        report.violations
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .all(|v| v.code == ADDON_QTY_RANGE_INVALID)
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .all(|v| v.subject.contains(&addon(0xa1).to_string())),
+        "each names the add-on it is about"
+    );
+}
+
+#[test]
+fn a_plan_whose_addon_bounds_admit_a_selection_is_silent() {
+    // Every arm's negative side. An optional add-on with a zero `maxQty` is
+    // legal - nothing is mandated - and an unset bound is not a bound of zero.
+    for rules in [
+        vec![bounded(addon(0xa1), true, Some(1), Some(3), Some(1))],
+        vec![bounded(addon(0xa1), false, None, Some(0), None)],
+        vec![bounded(addon(0xa1), true, None, None, None)],
+        vec![bounded(addon(0xa1), false, Some(2), Some(2), None)],
+    ] {
+        let report = findings(&AddonQtyRange, &with_addons(rules));
+        assert!(report.violations.is_empty(), "{}", reported(&report));
+    }
 }

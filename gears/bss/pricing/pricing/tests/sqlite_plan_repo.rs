@@ -221,6 +221,7 @@ async fn an_edit_advances_the_tag_and_the_previous_tag_stops_working() {
                 plan_tier: Some("platinum".to_owned()),
                 ..PlanShapePatch::default()
             },
+            stamp(),
         )
         .await
         .expect("the first edit holds the current version");
@@ -241,6 +242,7 @@ async fn an_edit_advances_the_tag_and_the_previous_tag_stops_working() {
                 plan_tier: Some("silver".to_owned()),
                 ..PlanShapePatch::default()
             },
+            stamp(),
         )
         .await
         .expect_err("a submit against a superseded tag must be refused");
@@ -287,6 +289,7 @@ async fn an_empty_patch_is_a_request_and_still_moves_the_tag() {
             0,
             RowVersion::new(0),
             PlanShapePatch::default(),
+            stamp(),
         )
         .await
         .expect("an empty patch is a valid request");
@@ -324,6 +327,7 @@ async fn a_published_revision_refuses_the_edit_by_name_not_by_trigger() {
                 plan_tier: Some("silver".to_owned()),
                 ..PlanShapePatch::default()
             },
+            stamp(),
         )
         .await
         .expect_err("a published revision is frozen in content");
@@ -338,7 +342,7 @@ async fn a_published_revision_refuses_the_edit_by_name_not_by_trigger() {
 
     // Abandoning it is refused the same way, and again before the trigger.
     let err = repo
-        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(0))
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(0), stamp())
         .await
         .expect_err("only an open draft revision is abandonable");
     assert!(matches!(err, RepoError::NotDraft { .. }));
@@ -377,6 +381,7 @@ async fn frozen_beats_stale_when_a_write_is_both() {
                 plan_tier: Some("silver".to_owned()),
                 ..PlanShapePatch::default()
             },
+            stamp(),
         )
         .await
         .expect_err("a published revision is frozen whatever tag is submitted");
@@ -393,7 +398,7 @@ async fn frozen_beats_stale_when_a_write_is_both() {
     // `abandon_draft` shares the arms, so it inherits the precedence and has to
     // be held to it too.
     let err = repo
-        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(9))
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(9), stamp())
         .await
         .expect_err("a published revision is unabandonable whatever tag is submitted");
     assert_eq!(
@@ -444,6 +449,7 @@ async fn every_patched_column_reaches_the_row_it_names() {
                 available_from: Some(at(14)),
                 available_to: Some(at(20)),
             },
+            stamp(),
         )
         .await
         .expect("a ten-column patch is one edit");
@@ -505,6 +511,7 @@ async fn an_absent_revision_is_not_found_rather_than_stale() {
             7,
             RowVersion::new(0),
             PlanShapePatch::default(),
+            stamp(),
         )
         .await
         .expect_err("revision 7 was never opened");
@@ -531,7 +538,7 @@ async fn a_draft_is_abandoned_only_under_its_own_version_and_the_row_stays() {
     // Abandoning a draft is a write like any other: a caller working from a
     // read it did not refresh would otherwise discard an edit it never saw.
     let err = repo
-        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(4))
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(4), stamp())
         .await
         .expect_err("a stale tag must not discard a draft");
     assert_eq!(
@@ -545,7 +552,7 @@ async fn a_draft_is_abandoned_only_under_its_own_version_and_the_row_stays() {
     );
 
     let tombstone = repo
-        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(0))
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(0), stamp())
         .await
         .expect("the current tag discards");
     assert_eq!(tombstone.lifecycle_state, LifecycleState::Abandoned);
@@ -590,7 +597,7 @@ async fn a_draft_is_abandoned_only_under_its_own_version_and_the_row_stays() {
     // naming the state. Under a delete this was a not-found, which reads as "no
     // such revision" rather than "that revision is already discarded".
     let err = repo
-        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(1))
+        .abandon_draft(&scope, tenant, plan_id, 0, RowVersion::new(1), stamp())
         .await
         .expect_err("a tombstone is not an open draft");
     assert_eq!(
@@ -626,7 +633,7 @@ async fn an_abandoned_revisions_number_is_never_minted_again() {
         .await
         .expect("the first successor opens");
     assert_eq!(first.revision, 1);
-    repo.abandon_draft(&scope, tenant, plan_id, 1, first.row_version)
+    repo.abandon_draft(&scope, tenant, plan_id, 1, first.row_version, stamp())
         .await
         .expect("discard it");
 
@@ -643,7 +650,7 @@ async fn an_abandoned_revisions_number_is_never_minted_again() {
     // Twice, because one tombstone is also what "one past the current revision
     // plus one" would produce by accident. Two prove the maximum is taken over
     // the whole chain and not over some fixed offset from the current row.
-    repo.abandon_draft(&scope, tenant, plan_id, 2, second.row_version)
+    repo.abandon_draft(&scope, tenant, plan_id, 2, second.row_version, stamp())
         .await
         .expect("discard the replacement too");
     let third = repo
@@ -969,6 +976,7 @@ async fn an_availability_bound_below_the_quantum_is_refused_on_both_write_paths(
                 available_to: Some(at(23) + chrono::TimeDelta::nanoseconds(1)),
                 ..PlanShapePatch::default()
             },
+            stamp(),
         )
         .await
         .expect_err("a sub-millisecond patch must be refused");
@@ -1067,13 +1075,14 @@ async fn another_tenants_plan_is_invisible_and_unwritable() {
                 plan_tier: Some("free".to_owned()),
                 ..PlanShapePatch::default()
             },
+            stamp(),
         )
         .await
         .expect_err("a foreign draft is not writable");
     assert!(matches!(err, RepoError::NotFound { .. }));
 
     let err = repo
-        .abandon_draft(&scope, theirs, plan_id, 0, RowVersion::new(0))
+        .abandon_draft(&scope, theirs, plan_id, 0, RowVersion::new(0), stamp())
         .await
         .expect_err("a foreign draft is not discardable");
     assert!(matches!(err, RepoError::NotFound { .. }));
@@ -1325,6 +1334,7 @@ async fn published_plan_with_shape(
             0,
             RowVersion::new(0),
             three_phases(),
+            stamp(),
         )
         .await
         .expect("author the phase chain on the open draft");
@@ -1339,11 +1349,20 @@ async fn published_plan_with_shape(
             0,
             RowVersion::new(1),
             three_addon_rules(),
+            stamp(),
         )
         .await
         .expect("author the add-on set on the open draft");
     shapes
-        .set_descriptor_set(scope, tenant, plan_id, 0, RowVersion::new(2), descriptors())
+        .set_descriptor_set(
+            scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(2),
+            descriptors(),
+            stamp(),
+        )
         .await
         .expect("attach the descriptor set on the open draft");
     flip_state(provider, scope, plan_id, 0, LifecycleState::Published).await;
@@ -1425,7 +1444,7 @@ async fn an_abandoned_revision_keeps_none_of_its_phase_copies_d145() {
     );
 
     let tombstone = repo
-        .abandon_draft(&scope, tenant, plan_id, 1, opened.row_version)
+        .abandon_draft(&scope, tenant, plan_id, 1, opened.row_version, stamp())
         .await
         .expect("abandon the draft revision");
     assert_eq!(tombstone.lifecycle_state, LifecycleState::Abandoned);
@@ -1533,7 +1552,7 @@ async fn an_abandoned_revision_keeps_none_of_its_add_on_rules_d145() {
         "the draft must start from its predecessor's composition"
     );
 
-    repo.abandon_draft(&scope, tenant, plan_id, 1, opened.row_version)
+    repo.abandon_draft(&scope, tenant, plan_id, 1, opened.row_version, stamp())
         .await
         .expect("abandon the draft revision");
 
@@ -1694,7 +1713,7 @@ async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
         .await
         .expect("open the successor revision");
     let tombstone = repo
-        .abandon_draft(&scope, tenant, plan_id, 1, opened.row_version)
+        .abandon_draft(&scope, tenant, plan_id, 1, opened.row_version, stamp())
         .await
         .expect("abandon the draft revision");
     assert_eq!(tombstone.lifecycle_state, LifecycleState::Abandoned);
@@ -2178,6 +2197,7 @@ async fn the_child_shape_rows_are_untouched_by_the_flip_and_freeze_with_the_revi
                 phase_duration_days: None,
                 display_trial_days: None,
             }],
+            stamp(),
         )
         .await
         .expect("attach the phase chain");
@@ -2213,6 +2233,7 @@ async fn the_child_shape_rows_are_untouched_by_the_flip_and_freeze_with_the_revi
             created.revision,
             RowVersion::new(after_phases.row_version.get() + 1),
             Vec::new(),
+            stamp(),
         )
         .await
         .expect_err("a published revision's shape is immutable");
@@ -2348,5 +2369,268 @@ async fn a_refused_repeat_publish_leaves_the_plan_its_current_revision() {
         count_in_state(&provider, &scope, plan_id, LifecycleState::Superseded).await,
         0,
         "the refused publish must not have demoted the revision it was refusing to publish"
+    );
+}
+
+/// The actor and instant every mutating repository call now records (D-135 - the
+/// audit row commits inside the mutation's own transaction).
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: uuid::Uuid::from_u128(0xac_10),
+        recorded_at: chrono::Utc::now(),
+        correlation_id: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The audit record is inside the mutation's own transaction (D-135).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_edit_whose_record_cannot_be_written_does_not_land_either() {
+    // D-135's clause, from the direction a post-hoc writer fails: the record
+    // commits **inside** the mutation's transaction, so an append that refuses
+    // takes the edit back with it. A writer that appended after the mutation had
+    // committed would leave the edit in place and the trail short - which is the
+    // silently-incomplete state that is worse than a visibly absent one, because
+    // a reader cannot tell "nobody changed this" from "this path does not write".
+    //
+    // The append is made to refuse the way `sqlite_publish_commit.rs` does it: a
+    // segment head whose `row_hash` is not 32 bytes is an invariant breach the
+    // writer refuses rather than pads.
+    let (plans, provider) = harness().await;
+    let tenant = Uuid::now_v7();
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::now_v7());
+    let created = plans
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+
+    // The create's own record sits at seq 0, so the corrupt head goes above it.
+    let conn = provider.conn().expect("conn");
+    let corrupt = bss_pricing::infra::storage::entity::audit_log::ActiveModel {
+        tenant_id: sea_orm::ActiveValue::Set(tenant),
+        chain_id: sea_orm::ActiveValue::Set(plan_id.get()),
+        seq: sea_orm::ActiveValue::Set(1),
+        entry_kind: sea_orm::ActiveValue::Set("mutation".to_owned()),
+        recorded_at: sea_orm::ActiveValue::Set(at(9)),
+        actor_principal_id: sea_orm::ActiveValue::Set(Uuid::from_u128(0xac_10)),
+        action: sea_orm::ActiveValue::Set("update".to_owned()),
+        subject_kind: sea_orm::ActiveValue::Set("plan_revision".to_owned()),
+        subject_ref: sea_orm::ActiveValue::Set(format!("{plan_id}/0")),
+        before_state: sea_orm::ActiveValue::Set(None),
+        after_state: sea_orm::ActiveValue::Set(None),
+        approval_ref: sea_orm::ActiveValue::Set(None),
+        correlation_id: sea_orm::ActiveValue::Set(None),
+        segment_heads: sea_orm::ActiveValue::Set(None),
+        prev_hash: sea_orm::ActiveValue::Set(None),
+        row_hash: sea_orm::ActiveValue::Set(vec![0_u8]),
+    };
+    bss_pricing::infra::storage::entity::audit_log::Entity::insert(corrupt.clone())
+        .secure()
+        .scope_with_model(&scope, &corrupt)
+        .expect("scope the seeded head")
+        .exec(&conn)
+        .await
+        .expect("seed a head the writer cannot link to");
+
+    let refusal = plans
+        .update_draft(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            created.row_version,
+            PlanShapePatch {
+                plan_tier: Some("silver".to_owned()),
+                ..PlanShapePatch::default()
+            },
+            stamp(),
+        )
+        .await
+        .expect_err("the audit append must refuse");
+    assert!(
+        matches!(refusal, RepoError::CorruptRow(_)),
+        "got {refusal:?}"
+    );
+
+    let still = plans
+        .find_revision(&scope, tenant, plan_id, 0)
+        .await
+        .expect("read the revision")
+        .expect("it is there");
+    assert_eq!(
+        still.plan_tier.as_deref(),
+        Some("gold"),
+        "the edit rolled back with the record that could not be written"
+    );
+    assert_eq!(
+        still.row_version, created.row_version,
+        "and so did its tag, so a caller's ETag is still the one the store holds"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A same-aggregate contention is tellable from a dead connection (D-159)
+// ---------------------------------------------------------------------------
+//
+// `uq_pricing_plan_current` is D-159's third serialization point, and its
+// violation is **unprovable in this suite, provably so**: `publish_revision`
+// demotes the predecessor and promotes the successor in the *same* transaction
+// (that is what its `DbTx` parameter is for), so a single writer never leaves two
+// `published` revisions for the index to refuse. Only two concurrent publishes
+// can, and `sqlite::memory:` serializes writers.
+//
+// What is proved is the recognition, which is one function at all three points:
+// `tests/sqlite_publish_commit.rs` provokes a real unique violation at the outbox
+// and asserts it arrives as `RepoError::ConcurrentMutation` -> 409
+// `CONCURRENT_MUTATION`, and `tests/sqlite_audit_chain.rs` asserts the narrowing
+// holds - a corrupt row is still a fault. A Postgres suite would add the
+// concurrent demonstration at all three and the **constraint names** the driver's
+// class does not carry.
+
+#[tokio::test]
+async fn a_create_whose_record_cannot_be_written_does_not_land_either() {
+    // `PlanRepo::create_draft` used to delegate to `create_draft_on(&self.conn()?,
+    // …)`, and `conn()` is documented as the **non-transactional** runner - so the
+    // revision insert and its audit append were two autocommit statements. An
+    // append failure left a committed revision with no record of who created it,
+    // which is exactly the silently-incomplete trail this writer exists to
+    // prevent.
+    //
+    // Delete the `in_transaction` wrapper and this test fails: the revision
+    // survives with no record.
+    let (plans, provider) = harness().await;
+    let tenant = Uuid::now_v7();
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::now_v7());
+
+    // A head the writer cannot link to, seated at the position revision 0's own
+    // record will target.
+    let conn = provider.conn().expect("conn");
+    let corrupt = bss_pricing::infra::storage::entity::audit_log::ActiveModel {
+        tenant_id: sea_orm::ActiveValue::Set(tenant),
+        chain_id: sea_orm::ActiveValue::Set(plan_id.get()),
+        seq: sea_orm::ActiveValue::Set(0),
+        entry_kind: sea_orm::ActiveValue::Set("mutation".to_owned()),
+        recorded_at: sea_orm::ActiveValue::Set(at(9)),
+        actor_principal_id: sea_orm::ActiveValue::Set(Uuid::from_u128(0xac_10)),
+        action: sea_orm::ActiveValue::Set("create".to_owned()),
+        subject_kind: sea_orm::ActiveValue::Set("plan_revision".to_owned()),
+        subject_ref: sea_orm::ActiveValue::Set(format!("{plan_id}/0")),
+        before_state: sea_orm::ActiveValue::Set(None),
+        after_state: sea_orm::ActiveValue::Set(None),
+        approval_ref: sea_orm::ActiveValue::Set(None),
+        correlation_id: sea_orm::ActiveValue::Set(None),
+        segment_heads: sea_orm::ActiveValue::Set(None),
+        prev_hash: sea_orm::ActiveValue::Set(None),
+        row_hash: sea_orm::ActiveValue::Set(vec![0_u8]),
+    };
+    bss_pricing::infra::storage::entity::audit_log::Entity::insert(corrupt.clone())
+        .secure()
+        .scope_with_model(&scope, &corrupt)
+        .expect("scope the seeded head")
+        .exec(&conn)
+        .await
+        .expect("seed a head the writer cannot link to");
+
+    let refusal = plans
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect_err("the audit append must refuse");
+    assert!(
+        matches!(refusal, RepoError::CorruptRow(_)),
+        "got {refusal:?}"
+    );
+
+    assert!(
+        plans
+            .find_revision(&scope, tenant, plan_id, 0)
+            .await
+            .expect("read the revision")
+            .is_none(),
+        "the revision rolled back with the record that could not be written"
+    );
+}
+
+#[tokio::test]
+async fn opening_a_successor_whose_record_cannot_be_written_mints_no_revision_number() {
+    // The other half of the same property, on the path an operator reaches through
+    // `PATCH /plans/{planId}`. A revision number is permanent (D-145) - every
+    // revision-scoped child table copies against it and the audit trail records
+    // it - so a number minted with no record of the minting is a name nobody can
+    // account for, forever.
+    let (plans, provider) = harness().await;
+    let tenant = Uuid::now_v7();
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::now_v7());
+    let created = plans
+        .create_draft(&scope, new_draft(plan_id, tenant))
+        .await
+        .expect("create the draft");
+    publish_revision(
+        &provider,
+        &scope,
+        tenant,
+        plan_id,
+        created.revision,
+        created.row_version,
+    )
+    .await
+    .expect("the first revision publishes");
+
+    // The create's record sits at seq 0, so the corrupt head goes above it.
+    let conn = provider.conn().expect("conn");
+    let corrupt = bss_pricing::infra::storage::entity::audit_log::ActiveModel {
+        tenant_id: sea_orm::ActiveValue::Set(tenant),
+        chain_id: sea_orm::ActiveValue::Set(plan_id.get()),
+        seq: sea_orm::ActiveValue::Set(1),
+        entry_kind: sea_orm::ActiveValue::Set("mutation".to_owned()),
+        recorded_at: sea_orm::ActiveValue::Set(at(9)),
+        actor_principal_id: sea_orm::ActiveValue::Set(Uuid::from_u128(0xac_10)),
+        action: sea_orm::ActiveValue::Set("create".to_owned()),
+        subject_kind: sea_orm::ActiveValue::Set("plan_revision".to_owned()),
+        subject_ref: sea_orm::ActiveValue::Set(format!("{plan_id}/1")),
+        before_state: sea_orm::ActiveValue::Set(None),
+        after_state: sea_orm::ActiveValue::Set(None),
+        approval_ref: sea_orm::ActiveValue::Set(None),
+        correlation_id: sea_orm::ActiveValue::Set(None),
+        segment_heads: sea_orm::ActiveValue::Set(None),
+        prev_hash: sea_orm::ActiveValue::Set(None),
+        row_hash: sea_orm::ActiveValue::Set(vec![0_u8]),
+    };
+    bss_pricing::infra::storage::entity::audit_log::Entity::insert(corrupt.clone())
+        .secure()
+        .scope_with_model(&scope, &corrupt)
+        .expect("scope the seeded head")
+        .exec(&conn)
+        .await
+        .expect("seed a head the writer cannot link to");
+
+    let refusal = plans
+        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(12))
+        .await
+        .expect_err("the audit append must refuse");
+    assert!(
+        matches!(refusal, RepoError::CorruptRow(_)),
+        "got {refusal:?}"
+    );
+
+    assert!(
+        plans
+            .find_revision(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read the revision")
+            .is_none(),
+        "no revision number was consumed by a transaction that could not record it"
+    );
+    assert!(
+        plans
+            .find_open_draft(&scope, tenant, plan_id)
+            .await
+            .expect("read the open draft")
+            .is_none(),
+        "and the plan holds no half-opened successor"
     );
 }

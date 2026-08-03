@@ -104,7 +104,7 @@ use uuid::Uuid;
 
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{
-    ADDON_CYCLE, ADDON_INCOMPATIBLE, METER_AMBIGUOUS, PLANTIER_MISSING,
+    ADDON_CYCLE, ADDON_INCOMPATIBLE, ADDON_QTY_RANGE_INVALID, METER_AMBIGUOUS, PLANTIER_MISSING,
 };
 use crate::domain::plan_shape::{AddonRule, PlanShape};
 use crate::domain::price_record::PriceRecord;
@@ -523,3 +523,78 @@ fn render_ids(ids: &BTreeSet<Uuid>) -> String {
 #[cfg(test)]
 #[path = "composition_tests.rs"]
 mod composition_tests;
+
+// ---------------------------------------------------------------------------
+// inst-cmp-addons, the quantity bounds (D-150)
+// ---------------------------------------------------------------------------
+
+/// An add-on's quantity bounds admit at least one selection.
+///
+/// Three bounds, each an unsatisfiable-selection defect on one row:
+///
+/// - `required => maxQty >= 1` — a mandatory add-on nobody may take any of;
+/// - `minQty <= maxQty` when both are set — a window with nothing in it;
+/// - `stepQty > 0` when set — a step that never advances.
+///
+/// **All three are reported, not the first.** §9's contract is that the 422
+/// enumerates every violation, and a plan with three broken bounds gets three
+/// lines: an author remediates in one pass, and a report truncated at the first
+/// fault sends them round the pipeline once per bound.
+///
+/// **The three `CHECK`s on `pricing_plan_addon_rule` stay.** The rule is the
+/// explanatory path and the constraint the guarantee (D-148's read-then-index
+/// arrangement), and only one of the three was ever written as a `CHECK` anyway.
+/// What changes is that an author meets a report line naming the bound rather
+/// than a driver error naming a constraint — and that the other two were
+/// expressible at all, so an add-on nobody can select published on a plan that
+/// looked complete.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AddonQtyRange;
+
+impl ValidationRule<PlanShape> for AddonQtyRange {
+    fn name(&self) -> &'static str {
+        "inst-cmp-addons"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        for rule in &subject.addon_rules {
+            let subject_ref = format!("{}|{}", subject.subject(), rule.addon_sku_id);
+            if rule.required && rule.max_qty.is_some_and(|max| max < 1) {
+                report.violate(
+                    ADDON_QTY_RANGE_INVALID,
+                    subject_ref.clone(),
+                    format!(
+                        "maxQty is 0 on a required add-on ({}): the plan mandates an add-on and \
+                         permits nobody to take any of it, so no selection satisfies the plan",
+                        rule.addon_sku_id
+                    ),
+                );
+            }
+            if let (Some(min), Some(max)) = (rule.min_qty, rule.max_qty)
+                && min > max
+            {
+                report.violate(
+                    ADDON_QTY_RANGE_INVALID,
+                    subject_ref.clone(),
+                    format!(
+                        "minQty {min} is above maxQty {max} on add-on {}: the selection window \
+                         is empty",
+                        rule.addon_sku_id
+                    ),
+                );
+            }
+            if rule.step_qty.is_some_and(|step| step == 0) {
+                report.violate(
+                    ADDON_QTY_RANGE_INVALID,
+                    subject_ref,
+                    format!(
+                        "stepQty is 0 on add-on {}: a step of zero never advances, so the only \
+                         selectable quantity is minQty and the bound says otherwise",
+                        rule.addon_sku_id
+                    ),
+                );
+            }
+        }
+    }
+}

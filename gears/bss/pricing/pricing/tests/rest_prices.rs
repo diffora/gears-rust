@@ -161,6 +161,193 @@ async fn a_second_draft_on_one_canonical_key_is_refused_by_its_code() {
 }
 
 // ---------------------------------------------------------------------------
+// The two Slice-10 primitives, refused rather than stored.
+// ---------------------------------------------------------------------------
+
+/// A create body whose content carries one extra member.
+fn create_body_with(region: &str, key: &str, value: serde_json::Value) -> serde_json::Value {
+    let mut body = create_body(region);
+    body["content"][key] = value;
+    body
+}
+
+/// Assert a refusal is the 400 the Foundation validation envelope renders, that
+/// it names the field, and that no row was stored.
+///
+/// The status matters twice over: a 422 would contradict §3.3 (no path in this
+/// gear produces one) and a 500 would say the gear tried and broke rather than
+/// that it does not support the field.
+async fn assert_refused_naming(response: axum::response::Response<axum::body::Body>, field: &str) {
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an unsupported primitive is a malformed request, not a 422 and not a fault"
+    );
+    let body = body_json(response).await;
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains(field),
+        "the refusal must name the field the caller has to remove: {rendered}"
+    );
+    assert!(
+        !rendered.contains("422"),
+        "no path in this gear produces a 422: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn a_create_carrying_a_tier_qualification_window_is_refused_at_any_value() {
+    // `inst-tt-forbidden` refuses an EXPLICIT window of any value - `current`
+    // included - because an accepted-but-ignored value masks authoring errors.
+    // A check that only caught `trailing_period` would store the default spelled
+    // out, and nothing in the crate judges either.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    for (index, window) in ["trailing_period", "current"].into_iter().enumerate() {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &prices_path(plan_id),
+                Some(create_body_with(
+                    "EU",
+                    "tier_qualification_window",
+                    serde_json::json!(window),
+                )),
+                &keyed(&format!("tqw-{index}")),
+            ))
+            .await;
+
+        assert_refused_naming(response, "tier_qualification_window").await;
+    }
+    assert!(
+        price_rows(&harness, plan_id).await.is_empty(),
+        "neither refusal may have stored a row"
+    );
+}
+
+#[tokio::test]
+async fn a_create_carrying_an_included_allowance_is_refused_under_either_rollover_policy() {
+    // `none` needs the band compile (the $0 band, the offset set, the marker);
+    // `carry` needs a `pricing_plan_grant` row. Neither exists, so a stored
+    // declaration is an allowance billed from the first unit.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    for (index, policy) in ["none", "carry"].into_iter().enumerate() {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &prices_path(plan_id),
+                Some(create_body_with(
+                    "EU",
+                    "included_allowance",
+                    serde_json::json!({ "quantity": 100, "rollover_policy": policy }),
+                )),
+                &keyed(&format!("allow-{index}")),
+            ))
+            .await;
+
+        assert_refused_naming(response, "included_allowance").await;
+    }
+    assert!(
+        price_rows(&harness, plan_id).await.is_empty(),
+        "neither refusal may have stored a row"
+    );
+}
+
+#[tokio::test]
+async fn a_patch_cannot_slip_either_primitive_past_the_create_check() {
+    // The `PATCH` is a WHOLE-content submission, so a caller who creates a clean
+    // row and then patches it would otherwise reach exactly the state the create
+    // refuses. Both refusals run in `content_of`, which both verbs call.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let seeded = seed_price(&harness, plan_id, "EU").await;
+
+    for (field, value) in [
+        (
+            "tier_qualification_window",
+            serde_json::json!("trailing_period"),
+        ),
+        (
+            "included_allowance",
+            serde_json::json!({ "quantity": 100, "rollover_policy": "none" }),
+        ),
+    ] {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                "PATCH",
+                &price_path(plan_id, seeded.price_id),
+                Some(serde_json::json!({
+                    "content": {
+                        "model_kind": "flat",
+                        "amount_minor": 99,
+                        field: value
+                    }
+                })),
+                &[("if-match", "\"0\"")],
+            ))
+            .await;
+
+        assert_refused_naming(response, field).await;
+    }
+    let after = price_rows(&harness, plan_id).await;
+    assert_eq!(after[0].row_version.get(), 0, "no refusal moved the row");
+}
+
+#[tokio::test]
+async fn a_row_carrying_neither_primitive_creates_and_patches_exactly_as_before() {
+    // The refusal is conditioned on a NON-NULL value, so an explicit `null` is
+    // the same request as an absent member. A refusal that fired on presence
+    // rather than on a value would break every client that serializes its whole
+    // content type.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let created = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(create_body_with(
+                "EU",
+                "tier_qualification_window",
+                serde_json::Value::Null,
+            )),
+            &keyed("null-window"),
+        ))
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let price_id = body_json(created).await["price_id"]
+        .as_str()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .expect("the id is answered");
+
+    let patched = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id),
+            Some(serde_json::json!({
+                "content": {
+                    "model_kind": "flat",
+                    "amount_minor": 42,
+                    "included_allowance": serde_json::Value::Null
+                }
+            })),
+            &[("if-match", "\"0\"")],
+        ))
+        .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+    let after = price_rows(&harness, plan_id).await;
+    assert_eq!(after[0].row_version.get(), 1, "the edit landed");
+}
+
+// ---------------------------------------------------------------------------
 // Patch.
 // ---------------------------------------------------------------------------
 
@@ -609,4 +796,268 @@ async fn an_unauthenticated_price_request_is_refused_before_the_gate() {
         .await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// The audit trail the three price routes write (D-135, D-158).
+// ---------------------------------------------------------------------------
+
+/// The records on one plan's segment, in seq order.
+///
+/// A price row's chain is the **plan's** (D-135 keys the segment on the audited
+/// subject's aggregate, and a price row's aggregate is the plan it prices), so a
+/// plan's authoring history and its rows' edits are one walk rather than a join.
+async fn plan_records(harness: &Harness, plan_id: Uuid) -> Vec<(String, String, String)> {
+    rest_support::audit_rows(harness)
+        .await
+        .into_iter()
+        .filter(|row| row.chain_id == plan_id)
+        .map(|row| (row.action, row.subject_kind, row.subject_ref))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_price_create_writes_exactly_one_record_naming_the_row() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let before = plan_records(&harness, plan_id).await.len();
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(create_body("EU")),
+            &keyed("audit-create"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let price_id = body_json(response).await["price_id"]
+        .as_str()
+        .expect("the id is answered")
+        .to_owned();
+
+    let records = plan_records(&harness, plan_id).await;
+    assert_eq!(records.len(), before + 1, "{records:?}");
+    assert_eq!(
+        records.last(),
+        Some(&("create".to_owned(), "price_unit".to_owned(), price_id)),
+        "{records:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_price_patch_writes_exactly_one_record_naming_the_row() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let seeded = seed_price(&harness, plan_id, "EU").await;
+    let before = plan_records(&harness, plan_id).await.len();
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, seeded.price_id),
+            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
+            &[("if-match", "\"0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let records = plan_records(&harness, plan_id).await;
+    assert_eq!(records.len(), before + 1, "{records:?}");
+    assert_eq!(
+        records.last(),
+        Some(&(
+            "update".to_owned(),
+            "price_unit".to_owned(),
+            seeded.price_id.to_string()
+        )),
+        "{records:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_price_delete_writes_a_record_that_outlives_the_row_it_names() {
+    // The row is gone and the record is not, which is the whole point of an
+    // append-only trail on a >= 7-year horizon: "who deleted this" is answerable
+    // precisely because the answer does not live on the deleted row.
+    //
+    // The action is `delete` and not `abandon`: a never-published price row is
+    // really removed (S3 sec 4.3), where a discarded plan revision is flipped and
+    // keeps its number (D-145).
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let seeded = seed_price(&harness, plan_id, "EU").await;
+    let before = plan_records(&harness, plan_id).await.len();
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "DELETE",
+            &price_path(plan_id, seeded.price_id),
+            None,
+            &[("if-match", "\"0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(price_rows(&harness, plan_id).await.is_empty());
+
+    let records = plan_records(&harness, plan_id).await;
+    assert_eq!(records.len(), before + 1, "{records:?}");
+    assert_eq!(
+        records.last(),
+        Some(&(
+            "delete".to_owned(),
+            "price_unit".to_owned(),
+            seeded.price_id.to_string()
+        )),
+        "{records:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_price_write_leaves_no_record_of_having_happened() {
+    // The record is inside the mutation's own transaction (D-135). Two refusals,
+    // one per verb, because each opens its own transaction.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let seeded = seed_price(&harness, plan_id, "EU").await;
+    let before = plan_records(&harness, plan_id).await.len();
+
+    for (method, body) in [
+        (
+            "PATCH",
+            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
+        ),
+        ("DELETE", None),
+    ] {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                method,
+                &price_path(plan_id, seeded.price_id),
+                body,
+                &[("if-match", "\"7\"")],
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{method}");
+    }
+
+    assert_eq!(
+        plan_records(&harness, plan_id).await.len(),
+        before,
+        "neither refusal recorded anything"
+    );
+}
+
+#[tokio::test]
+async fn every_price_record_extends_the_plans_own_segment() {
+    // D-135's keying, asserted rather than assumed: a price row's records must
+    // not open a segment of their own, or "who changed this plan" becomes a join
+    // across chains and the roll-up has one more head to carry.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let seeded = seed_price(&harness, plan_id, "EU").await;
+
+    harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, seeded.price_id),
+            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
+            &[("if-match", "\"0\"")],
+        ))
+        .await;
+
+    let chains: std::collections::BTreeSet<Uuid> = rest_support::audit_rows(&harness)
+        .await
+        .into_iter()
+        .map(|row| row.chain_id)
+        .collect();
+    assert_eq!(
+        chains,
+        std::collections::BTreeSet::from([plan_id]),
+        "one segment for the plan and everything under it"
+    );
+}
+
+/// One record's action and the pair `inst-au-complete` names first.
+type StatePair = (String, Option<serde_json::Value>, Option<serde_json::Value>);
+
+#[tokio::test]
+async fn every_price_record_carries_the_before_and_after_state_its_action_implies() {
+    // `inst-au-complete`'s first field, on every price route. Blanking both to
+    // `None` in `record_price_mutation` used to leave the whole suite green.
+    //
+    // A delete has no after-state, and that is the assertion rather than an
+    // omission: an empty object would be a claim that the row still stands in
+    // some shape, and the row is gone.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let seeded = seed_price(&harness, plan_id, "EU").await;
+    for (method, body, tag) in [
+        (
+            "PATCH",
+            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
+            "\"0\"",
+        ),
+        ("DELETE", None, "\"1\""),
+    ] {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                method,
+                &price_path(plan_id, seeded.price_id),
+                body,
+                &[("if-match", tag)],
+            ))
+            .await;
+        assert!(
+            response.status().is_success(),
+            "{method}: {:?}",
+            response.status()
+        );
+    }
+
+    let pairs: Vec<StatePair> = rest_support::audit_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "price_unit")
+        .map(|row| (row.action, row.before_state, row.after_state))
+        .collect();
+    assert_eq!(pairs.len(), 3, "create, update, delete: {pairs:?}");
+
+    let (action, before, after) = &pairs[0];
+    assert_eq!(action, "create");
+    assert!(before.is_none(), "a create has no before-state: {before:?}");
+    assert_eq!(
+        after.as_ref().and_then(|state| state.get("rowVersion")),
+        Some(&serde_json::json!(0))
+    );
+
+    let (action, before, after) = &pairs[1];
+    assert_eq!(action, "update");
+    assert_eq!(
+        before.as_ref().and_then(|state| state.get("rowVersion")),
+        Some(&serde_json::json!(0)),
+        "the version the caller's precondition matched"
+    );
+    assert_eq!(
+        after.as_ref().and_then(|state| state.get("rowVersion")),
+        Some(&serde_json::json!(1))
+    );
+
+    let (action, before, after) = &pairs[2];
+    assert_eq!(action, "delete");
+    assert_eq!(
+        before.as_ref().and_then(|state| state.get("rowVersion")),
+        Some(&serde_json::json!(1)),
+        "the row as it stood when it was taken"
+    );
+    assert!(
+        after.is_none(),
+        "and no after-state: an empty object would claim the row still stands: {after:?}"
+    );
 }

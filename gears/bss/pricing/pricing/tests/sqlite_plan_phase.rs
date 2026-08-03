@@ -641,6 +641,7 @@ async fn a_shared_ordinal_still_reads_back_in_one_fixed_order() {
             0,
             RowVersion::new(0),
             vec![last, later, earlier],
+            stamp(),
         )
         .await
         .expect("author the chain");
@@ -666,7 +667,15 @@ async fn another_tenants_phase_chain_is_invisible() {
         .await
         .expect("create");
     shapes
-        .replace_phases(&owner_scope, owner, plan_id, 0, RowVersion::new(0), chain())
+        .replace_phases(
+            &owner_scope,
+            owner,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            chain(),
+            stamp(),
+        )
         .await
         .expect("author the chain");
 
@@ -713,7 +722,15 @@ async fn a_stale_version_replaces_nothing_and_leaves_the_chain_standing() {
         .await
         .expect("create");
     let authored = shapes
-        .replace_phases(&scope, tenant, plan_id, 0, RowVersion::new(0), chain())
+        .replace_phases(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            chain(),
+            stamp(),
+        )
         .await
         .expect("author the chain");
 
@@ -732,7 +749,15 @@ async fn a_stale_version_replaces_nothing_and_leaves_the_chain_standing() {
         display_trial_days: None,
     }];
     let err = shapes
-        .replace_phases(&scope, tenant, plan_id, 0, RowVersion::new(0), replacement)
+        .replace_phases(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            replacement,
+            stamp(),
+        )
         .await
         .expect_err("a shape edit under a superseded tag must be refused");
     assert!(
@@ -770,7 +795,15 @@ async fn a_published_revisions_chain_is_refused_by_name_not_by_trigger() {
         .await
         .expect("create");
     let authored = shapes
-        .replace_phases(&scope, tenant, plan_id, 0, RowVersion::new(0), chain())
+        .replace_phases(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            chain(),
+            stamp(),
+        )
         .await
         .expect("author the chain");
     publish(&provider, &scope, plan_id).await;
@@ -781,7 +814,15 @@ async fn a_published_revisions_chain_is_refused_by_name_not_by_trigger() {
     // a surface can render — and the remedy it implies, open a new revision, is
     // a real one.
     let err = shapes
-        .replace_phases(&scope, tenant, plan_id, 0, authored.row_version, Vec::new())
+        .replace_phases(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            authored.row_version,
+            Vec::new(),
+            stamp(),
+        )
         .await
         .expect_err("a frozen revision's shape is not editable");
     assert!(
@@ -796,4 +837,14 @@ async fn a_published_revisions_chain_is_refused_by_name_not_by_trigger() {
         chain(),
         "the frozen chain must be untouched"
     );
+}
+
+/// The actor and instant every mutating repository call now records (D-135 - the
+/// audit row commits inside the mutation's own transaction).
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: uuid::Uuid::from_u128(0xac_10),
+        recorded_at: chrono::Utc::now(),
+        correlation_id: None,
+    }
 }

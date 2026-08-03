@@ -14,6 +14,7 @@ use bss_pricing::infra::storage::repo::{
 use bss_pricing::module::BssPricingGear;
 use toolkit::GearCtx;
 use toolkit::api::OpenApiRegistryImpl;
+use toolkit::api::operation_builder::ParamLocation;
 use toolkit::contracts::{DatabaseCapability, RestApiCapability};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 
@@ -214,4 +215,108 @@ async fn an_unconfigured_gear_reserves_its_prefix_and_answers_404_under_it() {
     .expect("the router answers");
 
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+/// The six mutating routes, each of which D-171 requires to declare `If-Match`.
+///
+/// Transcribed rather than derived from the router, for `declared_paths`' reason:
+/// a declaration dropped from a registration is invisible if the expectation is
+/// read off the same registration.
+fn if_match_routes() -> Vec<(&'static str, &'static str)> {
+    use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
+    use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
+    vec![
+        ("PATCH", PLAN),
+        ("POST", PLAN_ABANDON),
+        ("PATCH", PLAN_PRICE),
+        ("DELETE", PLAN_PRICE),
+        // The two creates assert their precondition through the idempotency gate
+        // rather than through a version, and are listed under
+        // `idempotency_key_routes` instead.
+        ("POST", PLANS),
+        ("POST", PLAN_PRICES),
+    ]
+}
+
+/// The two creates, each of which requires an `Idempotency-Key` (D-141/D-142).
+fn idempotency_key_routes() -> Vec<(&'static str, &'static str)> {
+    use bss_pricing::api::rest::plans::PLANS;
+    use bss_pricing::api::rest::prices::PLAN_PRICES;
+    vec![("POST", PLANS), ("POST", PLAN_PRICES)]
+}
+
+/// The header parameters one registered operation declares.
+fn declared_headers(openapi: &OpenApiRegistryImpl, method: &str, path: &str) -> Vec<String> {
+    let key = format!("{method}:{path}");
+    let entry = openapi
+        .operation_specs
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is not a registered operation"));
+    entry
+        .value()
+        .params
+        .iter()
+        .filter(|param| matches!(param.location, ParamLocation::Header))
+        .map(|param| param.name.to_ascii_lowercase())
+        .collect()
+}
+
+#[tokio::test]
+async fn every_mutating_route_declares_its_precondition_header() {
+    // D-171's owed clause: the declarations exist on all six routes and **no test
+    // reads the registration's params**, so deleting one failed nothing. A
+    // declaration is what a generated client sends; a route whose `If-Match` is
+    // undeclared is one whose clients omit the header and are then refused 400 by
+    // a server that never told them to send it.
+    //
+    // Delete one `.param(if_match_param(...))` and exactly this assertion fails.
+    let openapi = registered_operations().await;
+
+    for (method, path) in if_match_routes() {
+        let headers = declared_headers(&openapi, method, path);
+        let expected = if idempotency_key_routes().contains(&(method, path)) {
+            "idempotency-key"
+        } else {
+            "if-match"
+        };
+        assert!(
+            headers.iter().any(|name| name == expected),
+            "{method} {path} declares no {expected}: {headers:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_create_declares_its_idempotency_key() {
+    // The other half, and it is a different header on a different pair of routes:
+    // a create has no version to assert, so its precondition is the gate's key.
+    let openapi = registered_operations().await;
+
+    for (method, path) in idempotency_key_routes() {
+        let headers = declared_headers(&openapi, method, path);
+        assert!(
+            headers.iter().any(|name| name == "idempotency-key"),
+            "{method} {path} declares no Idempotency-Key: {headers:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_read_route_declares_no_precondition_header() {
+    // The negative side, which is what stops the two assertions above from being
+    // satisfiable by declaring both headers everywhere. A GET has no precondition
+    // to assert, and a declared one would tell a client to send a header the
+    // server ignores.
+    let openapi = registered_operations().await;
+
+    for (method, path) in [
+        ("GET", bss_pricing::api::rest::plans::PLAN),
+        ("GET", bss_pricing::api::rest::prices::PLAN_PRICES),
+    ] {
+        let headers = declared_headers(&openapi, method, path);
+        assert!(
+            !headers.iter().any(|name| name == "if-match"),
+            "{method} {path} declares an If-Match it cannot honour: {headers:?}"
+        );
+    }
 }

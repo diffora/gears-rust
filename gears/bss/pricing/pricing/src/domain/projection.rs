@@ -50,13 +50,46 @@
 //!   registry gear has no code in this repository.
 //! - **The grant set and the materialized phase-to-grant map** (Slice 6, D-41).
 //!   `pricing_plan_grant` does not exist here.
-//! - **`crossBoundaryChangePolicy` and `crossBoundaryWarningText`** (Slice 6).
-//!   `06-consumer-contracts.md` §6 requires **both**, on **every** resolved
-//!   plan subject row (`inst-pi-crossboundary`). The policy value is named
-//!   verbatim in that document (`cancel_plus_new`); the warning text is not.
-//!   Stamping the one that is named would publish half a contract, and
-//!   inventing the other is minting a value no document declares — so
-//!   **neither** is stamped and the pair is reported.
+//!
+//! The Slice-6 **cross-boundary contract** was on that list as an unstampable
+//! pair and is not on it any more: [`CROSS_BOUNDARY_CHANGE_POLICY`] is stamped on
+//! every resolved plan subject, and its former other half is not a field at all
+//! — see that constant's own doc for why.
+//!
+//! # What it carries and **should not**: two Slice-10 primitives nothing judges
+//!
+//! [`row_value`] renders `tierQualificationWindow` and `includedAllowance` into
+//! the delta, and **Slice 10 has landed nothing else**: not one of the ten
+//! refusals `inst-ac-gate` / `inst-tt-forbidden` / `inst-tt-window-pair` /
+//! `inst-tt-zero-band` / `inst-tt-fixture` state, and not the allowance compile
+//! that gives the declaration its meaning. A version this module projects
+//! therefore freezes, into an INSERT-only store on the ≥ 7-year truth horizon, two
+//! fields no rule in this gear has judged and no compiler has honoured — and
+//! rating would bill an accepted allowance from the first unit.
+//!
+//! **It is not reachable today and it is one route away.** What holds the line is
+//! a single refusal at a single surface —
+//! `api::rest::prices::refuse_unlanded_primitives`, on the only two mounted routes
+//! that can carry either field — plus the fact that
+//! `POST …/plans/{planId}/publish` is **not mounted**, so nothing calls
+//! `PublishService::commit` and nothing calls this module on a production path.
+//! Mount that route and the freeze is live **with no further code change and no
+//! gate that would notice**.
+//!
+//! Both fields also sit in the `ep-1` roster
+//! ([`crate::domain::evaluation_policy`]), which says the opposite of a warning:
+//! it tells a consumer both are part of the field set an evaluator reads.
+//!
+//! **Whoever mounts the publish route, or adds a second writer of a `PriceRow`,
+//! owes either the ten Slice-10 refusals or a refusal at their own boundary.**
+//! Deleting the two fields from this renderer is *not* the fix — D-129's
+//! supersession guard compares them between a predecessor and a successor, and a
+//! delta that dropped them would lose a field that guard reads.
+//!
+//! No DTO in this gear sets `deny_unknown_fields`, so the surface refusal is also
+//! contingent on both members remaining **modelled** fields rather than silently
+//! ignored ones (D-174 clause 1) — a second reason the warning belongs here, next
+//! to the renderer, rather than only at the boundary that refuses them.
 //!
 //! One absence is a **rule** rather than a gap, and it is listed so a later
 //! reader does not close it: the operator-plane drift flags
@@ -155,6 +188,38 @@ use crate::domain::scope_key::{PlanId, ScopeKey};
 /// delta carries as [`PlanSubjectDelta::lifecycle_state`].
 pub const PROJECTED_ROW_STATES: &[LifecycleState] =
     &[LifecycleState::Published, LifecycleState::Superseded];
+
+/// The K3 cross-boundary marker, on every resolved `plan` subject row (D-169
+/// clause 1, `06-consumer-contracts.md` §3 `inst-pi-crossboundary` and §6).
+///
+/// A **launch constant, tenant-wide**: a cross-currency, cross-region or
+/// cross-frequency change publishes no credit basis, so the change is cancel plus
+/// new. The value is named verbatim in §6 and is not derived from anything, which
+/// is why it is a `const` here rather than a column — a per-tenant carrier is
+/// D-169's rejected option (b).
+///
+/// **Written once, and a second literal spelling of it in this crate is the
+/// defect.** The delta is the only artifact that carries the marker and this is
+/// the only place its value exists; a second spelling is a second answer to a
+/// question with one.
+///
+/// # Its former other half is not a field, and that is a decision rather than a
+/// gap
+///
+/// §6 required a **pair** — this marker beside a `crossBoundaryWarningText` whose
+/// value no document of the set ever named — so D-168 clause (1) held the line at
+/// both-or-neither and G6 stamped neither. D-169 struck the text: what is
+/// published is machine-readable and derivable by nobody but this gear, and what
+/// a human is shown is not a catalog fact. The warning's normative home is **PRD
+/// AC #66**, on the plan-change preview that renders it and takes the operator's
+/// confirmation.
+///
+/// The reason it could not stay is this store: a delta row is INSERT-only over the
+/// ≥ 7-year truth horizon in a store whose contract is that a completed version
+/// never changes, and this design set has no localization story anywhere. A
+/// customer-visible sentence frozen in one language, for every version already
+/// stamped, is irreversible — bought for a convenience obtainable at render time.
+pub const CROSS_BOUNDARY_CHANGE_POLICY: &str = "cancel_plus_new";
 
 /// The plan-subject content of one `CatalogVersion`.
 ///
@@ -266,6 +331,11 @@ impl PlanSubjectDelta {
             "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
             "prices": prices.iter().map(price_value).collect::<Vec<_>>(),
             "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
+            // Read from the constant for `evaluationPolicyVersion`'s reason: it
+            // is a property of the gear that projected, not of the projection,
+            // and a delta able to carry its own would be a version answering
+            // the contract differently from its siblings.
+            "crossBoundaryChangePolicy": CROSS_BOUNDARY_CHANGE_POLICY,
         })
     }
 }

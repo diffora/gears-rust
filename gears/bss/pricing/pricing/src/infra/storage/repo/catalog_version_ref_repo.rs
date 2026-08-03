@@ -64,8 +64,8 @@
 //! # What is deliberately absent, and whose it is
 //!
 //! - **The overdue query.** `pricing.catalogversion.commit_overdue` measures the
-//!   age of a pending ref, and [`list_pending`] carries `requested_at` so the
-//!   sweep can evaluate that itself. A second query returning "the overdue
+//!   age of a pending ref, and [`list_pending_for_tenant`] carries `requested_at`
+//!   so the sweep can evaluate that itself. A second query returning "the overdue
 //!   ones" would put the threshold — a config value — inside a SQL predicate,
 //!   where the job that owns the threshold cannot see it.
 //! - **A per-plan read for the publish status API.** §3.6 says a pending ref
@@ -146,6 +146,22 @@ pub struct PendingVersionRow {
     pub subject_lifecycle_state: Option<LifecycleState>,
     /// When addressability was requested, UTC.
     pub requested_at: DateTime<Utc>,
+    /// When this gear **first saw** the registry's answer for the handle
+    /// (D-166), UTC — and the start instant every post-commit clause in the set
+    /// was written against and none of them had.
+    ///
+    /// `None` means the registry has not answered yet, which is the whole of
+    /// `commit_overdue`'s narrowed condition. `Some` on a row that is *still*
+    /// pending is `PlanPublishDegraded`'s: the version committed and the warm
+    /// has not landed. The two are disjoint over one clock by construction,
+    /// which they were not while both measured `requested_at`.
+    ///
+    /// An **upper bound** on the registry's commit: the observation lags it by
+    /// at most one sweep pass, so a signal derived from it is late rather than
+    /// false. [`observe_commit`] writes it once and never moves it forward, so
+    /// the degraded clock starts at the first sighting rather than resetting
+    /// every pass.
+    pub commit_observed_at: Option<DateTime<Utc>>,
     /// The committed version, once the registry has assigned one.
     ///
     /// `None` is the pending state — the only one the publish commit can write
@@ -189,6 +205,7 @@ impl PendingVersionRow {
             subject_revision,
             subject_lifecycle_state,
             requested_at,
+            commit_observed_at: None,
             catalog_version: None,
             committed_at: None,
         }
@@ -225,6 +242,9 @@ pub async fn record_pending(
         // Both NULL until `CatalogVersionPublished`; the CHECK ties them.
         catalog_version: Set(None),
         requested_at: Set(entry.requested_at),
+        // Nothing has been observed at the commit: the sweep is the only
+        // observer and it has not run yet.
+        commit_observed_at: Set(None),
         committed_at: Set(None),
     };
     catalog_version_ref::Entity::insert(am.clone())
@@ -264,6 +284,55 @@ pub async fn find(
         .await
         .map_err(|e| RepoError::Db(format!("read pending catalog version ref: {e}")))?;
     row.map(to_domain).transpose()
+}
+
+/// Record that this gear has seen the registry's answer for `pending_ref`
+/// (D-166 clause 1).
+///
+/// **Write-once.** The predicate is `commit_observed_at IS NULL`, so the instant
+/// is the **first** sighting and no later pass moves it forward. That is not a
+/// nicety: a stamp that advanced every pass would keep the degraded clock at
+/// zero forever, and the one signal `fr-publish-fanout-atomicity` exists to
+/// raise would never raise.
+///
+/// **Independent of the projection, by placement.** The caller stamps this
+/// before it attempts to project, in a statement of its own, because the whole
+/// point of the column is to survive a projection that fails — the finalize and
+/// the warm share a transaction, so a stamp inside it would be rolled back
+/// exactly on the path the signal is for.
+///
+/// A row that is already committed is matched too when it has no observation,
+/// which is the shape a ref finalized by something other than the sweep would
+/// leave; there is no such writer today and the predicate costs nothing.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure. An absent row is **not** an
+/// error: the sweep read the ref moments ago and a row that has since gone is
+/// nothing this observation can or should assert about.
+pub async fn observe_commit(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    pending_ref: &str,
+    observed_at: DateTime<Utc>,
+) -> Result<(), RepoError> {
+    catalog_version_ref::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            catalog_version_ref::Column::CommitObservedAt,
+            Expr::value(observed_at),
+        )
+        .filter(
+            Condition::all()
+                .add(catalog_version_ref::Column::TenantId.eq(tenant_id))
+                .add(catalog_version_ref::Column::PendingRef.eq(pending_ref))
+                .add(catalog_version_ref::Column::CommitObservedAt.is_null()),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("observe catalog version commit: {e}")))?;
+    Ok(())
 }
 
 /// Resolve a pending handle to its committed version, inside `runner`'s
@@ -340,32 +409,101 @@ pub async fn finalize(
     }
 }
 
-/// The oldest `limit` refs still awaiting a version, **across tenants**.
+/// The tenants that hold at least one pending ref, at most `limit` of them,
+/// ascending by tenant id.
 ///
-/// Cross-tenant by design: the sweep runs under the sanctioned
-/// [`AccessScope::allow_all`] system scope and narrows to
-/// `AccessScope::for_tenant` before any per-tenant write, the pattern the
-/// sibling ledger's jobs document. Oldest first so a backlog drains in the
-/// order it accumulated, and bounded so one pass cannot read an unbounded
-/// backlog into memory.
+/// **Why a discovery read rather than a cross-tenant page of refs** (D-163
+/// clause 2). The bound on refs has to be **per tenant**: on a cross-tenant page
+/// ordered by request instant, one tenant's stuck backlog fills the whole budget
+/// and defers every other tenant's completions — and a completion deferred is a
+/// frontier that does not advance, so the unfairness is not a latency detail but
+/// a tenant's publishes going unpinnable because another tenant's are.
 ///
-/// `requested_at` rides on the row because it is what the
-/// `pricing.catalogversion.commit_overdue` alarm measures, and the threshold
-/// belongs to the job rather than to a SQL predicate here.
+/// It is a **loose index scan**: one single-row seek per tenant found, each
+/// asking for the smallest tenant id above the last, over the same
+/// `(tenant_id, catalog_version)` index the projector and the frontier walk
+/// read. So the cost is proportional to the tenants that actually have
+/// **outstanding publishes**, not to the tenants of the deployment — in a
+/// healthy one a ref is pending for at most a batching delay and the walk stops
+/// after a handful.
+///
+/// **`limit` and the ordering are values, and they are the owner's** — D-163
+/// says so in as many words: *how many tenants a pass takes and in what order
+/// needs a value and is carried in §F.2*. Ascending tenant id is deterministic
+/// and it is **not** rotating: past `limit`, the tail of the tenant order is not
+/// swept at all. Rotating it needs a cursor no table in §3.7 carries.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn pending_tenants(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    limit: u64,
+) -> Result<Vec<Uuid>, RepoError> {
+    let mut found: Vec<Uuid> = Vec::new();
+    let mut after: Option<Uuid> = None;
+    while u64::try_from(found.len()).unwrap_or(u64::MAX) < limit {
+        let mut filter =
+            Condition::all().add(catalog_version_ref::Column::CatalogVersion.is_null());
+        if let Some(above) = after {
+            filter = filter.add(catalog_version_ref::Column::TenantId.gt(above));
+        }
+        let row = catalog_version_ref::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(filter)
+            .order_by(catalog_version_ref::Column::TenantId, Order::Asc)
+            .limit(1)
+            .one(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("list tenants with pending refs: {e}")))?;
+        let Some(row) = row else {
+            break;
+        };
+        after = Some(row.tenant_id);
+        found.push(row.tenant_id);
+    }
+    Ok(found)
+}
+
+/// The oldest `limit` refs of **one tenant** still awaiting a version.
+///
+/// Read under the sanctioned [`AccessScope::allow_all`] system scope by the
+/// sweep, which narrows to `AccessScope::for_tenant` before any per-tenant
+/// write — the pattern the sibling ledger's jobs document. Oldest first so a
+/// backlog drains in the order it accumulated, and bounded so one pass cannot
+/// read an unbounded backlog into memory.
+///
+/// **The bound is a fact the caller must act on, not just a safety valve.** A
+/// full page means the tenant has refs this pass did not see, so the pass cannot
+/// know a version's whole subject set and must decide **no** completion (D-163
+/// clause 2). The caller compares the row count to the limit it passed; there is
+/// no second query telling it, because the count it already holds says it.
+///
+/// `requested_at` and `commit_observed_at` both ride on the row because they are
+/// what the two narrowed signals measure — the ref's age for
+/// `pricing.catalogversion.commit_overdue`, the observation's age for
+/// `PlanPublishDegraded` (D-166) — and the thresholds belong to the job rather
+/// than to a SQL predicate here.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure;
 /// [`RepoError::CorruptRow`] when a stored row cannot be read as the value its
 /// columns are `CHECK`-constrained to hold.
-pub async fn list_pending(
+pub async fn list_pending_for_tenant(
     runner: &impl DBRunner,
     scope: &AccessScope,
+    tenant_id: Uuid,
     limit: u64,
 ) -> Result<Vec<PendingVersionRow>, RepoError> {
     let rows = catalog_version_ref::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(Condition::all().add(catalog_version_ref::Column::CatalogVersion.is_null()))
+        .filter(
+            Condition::all()
+                .add(catalog_version_ref::Column::TenantId.eq(tenant_id))
+                .add(catalog_version_ref::Column::CatalogVersion.is_null()),
+        )
         .order_by(catalog_version_ref::Column::RequestedAt, Order::Asc)
         .order_by(catalog_version_ref::Column::PendingRef, Order::Asc)
         .limit(limit)
@@ -479,6 +617,7 @@ fn to_domain(row: catalog_version_ref::Model) -> Result<PendingVersionRow, RepoE
         subject_revision,
         subject_lifecycle_state,
         requested_at: row.requested_at,
+        commit_observed_at: row.commit_observed_at,
         catalog_version,
         committed_at: row.committed_at,
     })

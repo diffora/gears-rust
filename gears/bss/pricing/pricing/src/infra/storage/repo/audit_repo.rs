@@ -39,16 +39,16 @@
 //! without its premise would be asserting a requirement that nothing in this
 //! design has.
 //!
-//! **The contention refusal is not distinguishable, and that is a gap rather
-//! than a decision.** A unique violation on this insert is a contention signal,
-//! not a corrupt row and not a caller mistake — but the design set names no wire
-//! code for "audit chain contention", and this crate does not mint codes it has
-//! not been given (`domain/rules.rs`'s absence discipline, applied to the error
-//! ladder). So the violation arrives as [`RepoError::Db`] and lands on
-//! `DomainError::Internal`, which is indistinguishable from a dead connection.
-//! The consequence, stated so it is not mistaken for a design: **the retry
-//! decision sits entirely with the caller's transaction retry**, and a
-//! distinguishable variant is owed to whichever group is given a code for it.
+//! **The contention refusal is distinguishable as of D-159.** A unique violation
+//! on this insert is a contention signal, not a corrupt row and not a caller
+//! mistake, and it now arrives as [`RepoError::ConcurrentMutation`] naming the
+//! chain — `CONCURRENT_MUTATION`, **409**, on the wire. An earlier version of this
+//! paragraph recorded the absence and its reason correctly: the design set named
+//! no code, and this crate does not mint codes it has not been given. §3.3 names
+//! one now, so the loser of a same-segment race is told to retry rather than told
+//! the store failed. What is recognised is the driver's **own**
+//! unique-violation class (`crate::infra::storage::contention_or_db`), so the
+//! predicate is one sentence over both backends.
 //!
 //! # What is owed here, and of what kind
 //!
@@ -69,9 +69,12 @@
 //!    serialize rather than fork. The key half is proved by
 //!    `tests/sqlite_audit_chain.rs` and the rollback half is `in_transaction`'s
 //!    contract; what Postgres adds is the concurrent demonstration.
-//! 3. **Unimplemented, owed to a decision.** The loser of a same-segment race
-//!    surfacing as a retriable contention. It cannot today, for want of a code —
-//!    see the paragraph above. A suite would not change that; a code would.
+//! 3. **Implemented, and half of it unproven here.** The loser of a same-segment
+//!    race surfaces as a retriable contention (D-159). The recognition is written
+//!    for both backends off one driver class; what `sqlite::memory:` cannot do is
+//!    schedule the concurrent losers, so the `SQLite` suite provokes the violation
+//!    by writing the position directly. A Postgres suite would add the concurrent
+//!    demonstration and the constraint **names** the class does not carry.
 //!
 //! A property that genuinely cannot be checked here is recorded as such; one
 //! that *can* be checked and has not been is recorded as undemonstrated, and one
@@ -100,8 +103,9 @@ use uuid::Uuid;
 use crate::domain::audit::{
     AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash, genesis_prev_hash,
 };
-use crate::infra::storage::RepoError;
+use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::audit_log;
+use crate::infra::storage::{RepoError, contention_or_db};
 
 /// The `entry_kind` of everything this module writes.
 ///
@@ -145,6 +149,42 @@ pub struct NewAuditEntry {
     pub approval_ref: Option<Uuid>,
     /// The correlation id of the causing request.
     pub correlation_id: Option<Uuid>,
+}
+
+/// The segment every audited mutation **of one plan** extends.
+///
+/// D-135 keys the chain on the audited subject's *aggregate*, and a price row's
+/// aggregate is the plan it prices — `pricing_price` is attached to `plan_id`.
+/// So a plan's authoring history, its price rows' edits and its publish commits
+/// are one segment, which is what makes "who changed this plan" a walk rather
+/// than a join, and what keeps concurrent mutations of *different* plans off one
+/// chain head.
+///
+/// Written down here rather than at the six call sites: a second derivation is a
+/// second answer to which segment a record belongs in, and a record on the wrong
+/// segment verifies perfectly while telling an auditor nothing.
+#[must_use]
+pub const fn plan_chain(plan_id: PlanId) -> Uuid {
+    plan_id.get()
+}
+
+/// A plan revision's durable audit name — `<plan_id>/<revision>`.
+///
+/// `(plan_id, revision)` is the name D-145 keeps consumed forever precisely so a
+/// record written against it never denotes two rows.
+#[must_use]
+pub fn plan_revision_ref(plan_id: PlanId, revision: u64) -> String {
+    format!("{plan_id}/{revision}")
+}
+
+/// A price row's audit name — its `price_id`.
+///
+/// The plan is not repeated in it: [`plan_chain`] already carries the aggregate,
+/// and a reference that restated it would be a second place the two could
+/// disagree.
+#[must_use]
+pub fn price_unit_ref(price_id: Uuid) -> String {
+    price_id.to_string()
 }
 
 /// Append one record to its segment, inside `runner`'s transaction.
@@ -239,7 +279,17 @@ pub async fn append(
         .map_err(|e| RepoError::Db(format!("pricing_audit_log scope: {e}")))?
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("append pricing_audit_log: {e}")))?;
+        .map_err(|e| {
+            // The first of D-159's three serialization points: the head
+            // `(tenant_id, chain_id, seq)`. A chain is a strict sequence, so two
+            // mutations of one aggregate really do contend here - which is the
+            // benefit D-135's segmentation bought, and the cost it kept.
+            contention_or_db(
+                &e,
+                &format!("audit chain {}", entry.chain_id),
+                "append pricing_audit_log",
+            )
+        })?;
     Ok(seq)
 }
 

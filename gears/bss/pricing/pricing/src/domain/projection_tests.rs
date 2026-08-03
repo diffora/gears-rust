@@ -13,7 +13,7 @@
 use chrono::{TimeZone, Utc};
 use serde_json::json;
 
-use super::{PROJECTED_ROW_STATES, PlanSubjectDelta};
+use super::{CROSS_BOUNDARY_CHANGE_POLICY, PROJECTED_ROW_STATES, PlanSubjectDelta};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
@@ -195,6 +195,47 @@ fn the_payload_carries_the_declared_generation_and_this_file_does_not_spell_it()
         shape_only().to_value().get("evaluationPolicyVersion"),
         Some(&json!(EVALUATION_POLICY_GENERATION))
     );
+}
+
+#[test]
+fn every_plan_subject_carries_the_cross_boundary_marker_and_no_warning_text() {
+    // D-169 clause (1). The marker is a launch-constant, tenant-wide value on
+    // every resolved plan subject; the text that used to sit beside it is not a
+    // catalog field at all - its normative home is PRD AC #66, on the surface
+    // that renders the warning and takes the operator's confirmation.
+    //
+    // Read from the constant rather than from a literal, for
+    // `evaluationPolicyVersion`'s reason one test up: a second spelling of the
+    // value is a test that stays green through the one edit it exists to catch.
+    let with_row = PlanSubjectDelta {
+        prices: vec![graduated_row()],
+        ..shape_only()
+    };
+    for delta in [shape_only(), with_row] {
+        let value = delta.to_value();
+        assert_eq!(
+            value.get("crossBoundaryChangePolicy"),
+            Some(&json!(CROSS_BOUNDARY_CHANGE_POLICY)),
+            "{value}"
+        );
+        // Under any spelling: the field left the contract, so a payload
+        // carrying it would be publishing a sentence nobody authored into an
+        // INSERT-only store on the seven-year horizon.
+        let rendered = value.to_string();
+        assert!(
+            !rendered.to_ascii_lowercase().contains("warningtext"),
+            "no delta may carry a warning text: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn the_marker_is_the_value_the_design_set_names_verbatim() {
+    // Asserted against the literal here and nowhere else in the crate, for
+    // `CatalogEvent::as_str`'s reason: `06-consumer-contracts.md` sec 6 names
+    // this string, a consumer matches on it exactly, and nothing else in the
+    // crate would notice a typo.
+    assert_eq!(CROSS_BOUNDARY_CHANGE_POLICY, "cancel_plus_new");
 }
 
 #[test]

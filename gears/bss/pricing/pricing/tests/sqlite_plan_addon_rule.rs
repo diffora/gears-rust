@@ -642,6 +642,7 @@ async fn a_conflict_authored_on_one_side_is_stored_on_both() {
             0,
             RowVersion::new(0),
             three_rules(),
+            stamp(),
         )
         .await
         .expect("author the add-on set");
@@ -712,6 +713,7 @@ async fn an_edge_pointing_out_of_the_set_is_left_for_the_pipeline_to_report() {
                 conflicts_with: vec![FOREIGN_ADDON],
                 ..rule(ANALYTICS)
             }],
+            stamp(),
         )
         .await
         .expect("a set with a dangling edge is storable");
@@ -758,6 +760,7 @@ async fn an_edge_set_is_stored_deduplicated_and_in_one_fixed_order() {
                     ..rule(ANALYTICS)
                 },
             ],
+            stamp(),
         )
         .await
         .expect("author the set");
@@ -804,6 +807,7 @@ async fn a_new_revision_carries_every_add_on_rule_and_its_symmetry_d83() {
             0,
             RowVersion::new(0),
             three_rules(),
+            stamp(),
         )
         .await
         .expect("author the add-on set");
@@ -858,6 +862,7 @@ async fn a_published_revisions_add_on_set_is_refused_by_name_not_by_trigger() {
             0,
             RowVersion::new(0),
             three_rules(),
+            stamp(),
         )
         .await
         .expect("author the add-on set");
@@ -870,7 +875,15 @@ async fn a_published_revisions_add_on_set_is_refused_by_name_not_by_trigger() {
     // read that precedes the delete is what turns it into a refusal a surface
     // can render.
     let err = shapes
-        .replace_addon_rules(&scope, tenant, plan_id, 0, authored.row_version, Vec::new())
+        .replace_addon_rules(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            authored.row_version,
+            Vec::new(),
+            stamp(),
+        )
         .await
         .expect_err("a frozen revision's composition is not editable");
     assert!(
@@ -906,6 +919,7 @@ async fn a_stale_version_replaces_no_add_on_rule() {
             0,
             RowVersion::new(0),
             three_rules(),
+            stamp(),
         )
         .await
         .expect("author the add-on set");
@@ -918,6 +932,7 @@ async fn a_stale_version_replaces_no_add_on_rule() {
             0,
             RowVersion::new(0),
             vec![rule(SEATS)],
+            stamp(),
         )
         .await
         .expect_err("a shape edit under a superseded tag must be refused");
@@ -964,6 +979,7 @@ async fn another_tenants_add_on_set_is_invisible() {
             0,
             RowVersion::new(0),
             three_rules(),
+            stamp(),
         )
         .await
         .expect("author the add-on set");
@@ -999,4 +1015,14 @@ async fn another_tenants_add_on_set_is_invisible() {
         3,
         "the owner still sees the whole set"
     );
+}
+
+/// The actor and instant every mutating repository call now records (D-135 - the
+/// audit row commits inside the mutation's own transaction).
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: uuid::Uuid::from_u128(0xac_10),
+        recorded_at: chrono::Utc::now(),
+        correlation_id: None,
+    }
 }

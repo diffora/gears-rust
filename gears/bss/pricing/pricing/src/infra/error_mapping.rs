@@ -12,8 +12,8 @@
 //! `ROUNDING_POLICY_UNRESOLVED`, `PRECISION_EXCEEDED`,
 //! `TIMESTAMP_PRECISION_EXCEEDED`, `AMOUNT_NEGATIVE`, `CURRENCY_INVALID`,
 //! `FIXTURE_MISSING`, `PLAN_RETIRED_NO_SUCCESSOR`,
-//! `GRANDFATHER_UNTIL_FORBIDDEN`); a consumer matches the category coarsely and
-//! the code exactly.
+//! `GRANDFATHER_UNTIL_FORBIDDEN`, `CONCURRENT_MUTATION`); a consumer matches the
+//! category coarsely and the code exactly.
 //!
 //! **The design set's 422s are architectural, not wire** (normative:
 //! `design/01-foundation.md` §3.3). They say *unprocessable content*; the
@@ -117,6 +117,14 @@ impl From<DomainError> for CanonicalError {
             // the mismatch refusal.
             D::IdempotencyKeyInFlight(detail) => PlanResource::aborted(detail)
                 .with_reason("IDEMPOTENCY_KEY_IN_FLIGHT")
+                .create(),
+            // The same class one construct over (D-159): somebody else's write
+            // reached the aggregate's serialization point first. It belongs with
+            // the four above and not with `Internal`, because "retry" is the
+            // whole remedy - and a 500 tells a client to page an operator about
+            // a race.
+            D::ConcurrentMutation(detail) => PlanResource::aborted(detail)
+                .with_reason("CONCURRENT_MUTATION")
                 .create(),
             // A uniqueness conflict on the plan's one draft slot (D-146), the
             // `DUPLICATE_SCOPE_KEY` class rather than a state-machine edge —

@@ -18,7 +18,9 @@
 //! quantum (`TIMESTAMP_PRECISION_EXCEEDED`), a value past its column
 //! (`InvalidArgument`), and an edit of a frozen row (`LIFECYCLE_FORBIDDEN`) —
 //! plus the two idempotency refusals the create's gate can raise. Every one of
-//! those already exists; this group mints none.
+//! those already exists; nothing here is minted. The two Slice-10 primitives
+//! this surface refuses (below) mint nothing either — an unsupported field is a
+//! malformed request under the Foundation validation envelope.
 //!
 //! # The `{planId}` segment is checked, not decorative
 //!
@@ -28,6 +30,38 @@
 //! check is a path that lets a caller mutate a row through the wrong plan's URL
 //! — and it makes the authz `resource_id` argument a fiction, since the gate is
 //! asked about a resource the handler then does not confirm.
+//!
+//! # Two Slice-10 primitives are refused here, not validated
+//!
+//! `tierQualificationWindow` (D-40, D-60) and `includedAllowance` (D-45, D-130)
+//! are members of [`PriceContentView`] and are refused with
+//! [`DomainError::InvalidRequest`] the moment a request carries a non-null one.
+//! The reason is that Slice 10 has landed *nothing else*: neither the ten
+//! refusals `inst-ac-gate` / `inst-tt-forbidden` / `inst-tt-window-pair` /
+//! `inst-tt-zero-band` / `inst-tt-fixture` state, nor the allowance compile
+//! (`inst-ac-band`, `inst-ac-marker`, `inst-ac-carry`) that gives the declaration
+//! its meaning. Storing a value this gear can neither judge nor honour is
+//! precisely the state `inst-tt-forbidden` names when it says *an
+//! accepted-but-ignored value would mask authoring errors* — and the projector
+//! and the `ep-1` roster already carry both fields, so the day Slice 5 mounts
+//! the publish route an unjudged allowance freezes into an immutable version.
+//!
+//! Building the ten refusals **without** the compile would be worse, not
+//! better: a `graduated` row carrying `{100, none}` would pass all six
+//! `inst-ac-gate` rules, publish, and then be billed from unit one — an
+//! allowance accepted, *validated*, and silently ignored. That is the shape
+//! D-149 clause (3), D-161 clause (1), D-167 clause (3) and D-168 clause (1)
+//! each refuse one artifact over.
+//!
+//! The members **stay** on the view. D-174 clause (1) puts a member the gear
+//! does not model outside the idempotency digest and therefore inside the replay
+//! set, so deleting them would convert an accepted field into a *silently
+//! ignored* one. The response half stays too: the domain model, the storage
+//! round trip and the D-129 supersession guard all read both fields, and a read
+//! that dropped them would lose a field that guard compares. No code is minted
+//! — a field whose slice has not landed is a malformed request under the
+//! Foundation validation envelope, the class D-141 and D-171 give an absent
+//! `If-Match`.
 
 use std::sync::Arc;
 
@@ -45,7 +79,7 @@ use toolkit_odata::Page;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::api::rest::auth_context::require_authenticated;
+use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
@@ -615,7 +649,14 @@ async fn patch_price(
 
     let updated = state
         .prices
-        .update_draft(&scope, tenant, price_id, expected, content)
+        .update_draft(
+            &scope,
+            tenant,
+            price_id,
+            expected,
+            content,
+            audit_stamp(&ctx, Utc::now()),
+        )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
 
@@ -640,7 +681,13 @@ async fn delete_price(
 
     state
         .prices
-        .delete_draft(&scope, tenant, price_id, expected)
+        .delete_draft(
+            &scope,
+            tenant,
+            price_id,
+            expected,
+            audit_stamp(&ctx, Utc::now()),
+        )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
     Ok(StatusCode::NO_CONTENT)
@@ -839,6 +886,7 @@ fn scope_key_of(plan_id: PlanId, key: &ScopeKeyRequest) -> Result<ScopeKey, Doma
 /// rules read. A placeholder is passed and overwritten, which is why the
 /// response echoes what was stored rather than what was sent.
 fn content_of(view: &PriceContentView) -> Result<PriceContent, DomainError> {
+    refuse_unlanded_primitives(view)?;
     let bands = view
         .bands
         .as_deref()
@@ -928,6 +976,41 @@ fn content_of(view: &PriceContentView) -> Result<PriceContent, DomainError> {
         grandfather_until: view.grandfather_until,
         supersedes_price_id: view.supersedes_price_id,
     })
+}
+
+/// Refuse the two Slice-10 primitives until Slice 10 lands.
+///
+/// The refusal is **not value-conditioned**: `inst-tt-forbidden` refuses an
+/// *explicit* window of any value, `current` included, so a check that only
+/// caught `trailing_period` would accept the default spelled out and store a
+/// field nothing judges. The same holds for the allowance under either rollover
+/// policy — `none` needs the band compile and `carry` needs a
+/// `pricing_plan_grant` row, and neither exists.
+///
+/// The message names the field and says why, because the caller's next action
+/// differs from every other 400 on this surface: there is nothing to correct in
+/// the request, the primitive is unsupported.
+fn refuse_unlanded_primitives(view: &PriceContentView) -> Result<(), DomainError> {
+    if view.tier_qualification_window.is_some() {
+        return Err(DomainError::InvalidRequest(
+            "content.tier_qualification_window is not supported yet: the gear can store the value \
+             and cannot judge it. Slice 10's refusals (TIER_QUAL_ON_NON_TIERED, \
+             TIER_QUAL_WINDOW_INCOMPATIBLE, TIER_QUAL_ZERO_BAND_LOCK, FIXTURE_MISSING) and the \
+             trailing-tier fixture the window's publish block needs have not landed, so an \
+             accepted window would be an authoring error nothing reports. Omit the field"
+                .to_owned(),
+        ));
+    }
+    if view.included_allowance.is_some() {
+        return Err(DomainError::InvalidRequest(
+            "content.included_allowance is not supported yet: the gear can store the declaration \
+             and cannot honour it. Slice 10's allowance compile (the $0 band, the offset band set, \
+             the display marker, the carry grant) and its six publish refusals have not landed, so \
+             a stored allowance would be billed from the first unit. Omit the field"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// One band. An absent `to_qty` is the **open** top, not a missing value.

@@ -14,15 +14,16 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
-    AvailableFromNotBackdated, CustomIntervalBounds, HybridCompleteness, PurchaseQtyRange,
-    SetupRowShape, UsageMarketCompleteness,
+    AvailableFromNotBackdated, BaseMarketCompleteness, CustomIntervalBounds, CycleDeclared,
+    HybridCompleteness, PurchaseQtyRange, SetupRowShape, UsageMarketCompleteness,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_rules::{
-    AVAILABLE_FROM_IN_PAST, HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL, PURCHASE_QTY_RANGE_INVALID,
-    SETUP_ROW_INVALID, USAGE_MARKET_INCOMPLETE,
+    AVAILABLE_FROM_IN_PAST, BASE_MARKET_INCOMPLETE, CYCLE_METADATA_MISSING, HYBRID_INCOMPLETE,
+    INVALID_CUSTOM_INTERVAL, PURCHASE_QTY_RANGE_INVALID, SETUP_ROW_INVALID,
+    USAGE_MARKET_INCOMPLETE,
 };
 use crate::domain::plan_shape::{
     BillingCycle, CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape,
@@ -791,5 +792,267 @@ fn a_baseline_that_carried_no_date_makes_a_past_one_newly_set() {
     assert_eq!(
         codes(&findings(&AvailableFromNotBackdated, &subject)),
         vec![AVAILABLE_FROM_IN_PAST]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// inst-cs-declared (D-149 clause 2)
+// ---------------------------------------------------------------------------
+
+/// A plan with a clean shape and **no cycle at all** — the state that used to
+/// reach publish unjudged.
+fn cycleless() -> PlanShape {
+    let mut subject = PlanShape::new(plan(), 3, now());
+    subject.phases = terminal_graph();
+    subject.rows = vec![recurring(0xb001, "usd", "US")];
+    subject
+}
+
+#[test]
+fn a_plan_with_no_cycle_is_refused_by_name_rather_than_passing_vacuously() {
+    // The point of the rule. Delete `CycleDeclared` from `plan_shape_rules` and
+    // this fails - and so does
+    // `the_whole_cycle_shape_step_passes_a_cycleless_plan_without_this_rule`
+    // below, which is the same fact stated over the step rather than the rule.
+    let report = findings(&CycleDeclared, &cycleless());
+
+    assert_eq!(codes(&report), vec![CYCLE_METADATA_MISSING]);
+    assert!(
+        details(&report).contains("billingCycle"),
+        "the report names the field: {}",
+        details(&report)
+    );
+}
+
+#[test]
+fn the_whole_cycle_shape_step_passes_a_cycleless_plan_without_this_rule() {
+    // The arithmetic that made the gap: five rules, each correctly declining to
+    // judge a plan whose cycle it cannot read, adding up to no judgement. Every
+    // other rule of the step is run here against the same cycleless plan and
+    // every one of them says nothing.
+    let subject = cycleless();
+
+    for report in [
+        findings(&bounds(), &subject),
+        findings(&HybridCompleteness, &subject),
+        findings(&BaseMarketCompleteness, &subject),
+        findings(&UsageMarketCompleteness, &subject),
+        findings(&SetupRowShape, &subject),
+        findings(&PurchaseQtyRange, &subject),
+        findings(&AvailableFromNotBackdated, &subject),
+    ] {
+        assert!(
+            report.violations.is_empty(),
+            "each rule of the step correctly declines: {:?}",
+            codes(&report)
+        );
+    }
+}
+
+#[test]
+fn a_recurring_plan_with_no_frequency_is_refused_naming_that_field_instead() {
+    // One code, two fields (D-146's line): the operator's next action is the
+    // same - author the field the plan is missing - and the report says which.
+    let mut subject = shape(BillingCycle::Recurring);
+    subject.rows = vec![recurring(0xb001, "usd", "US")];
+
+    let report = findings(&CycleDeclared, &subject);
+
+    assert_eq!(codes(&report), vec![CYCLE_METADATA_MISSING]);
+    assert!(
+        details(&report).contains("frequency"),
+        "{}",
+        details(&report)
+    );
+}
+
+#[test]
+fn a_cycle_that_does_not_recur_owes_no_frequency() {
+    // Scoped by `has_recurring_part`, never by a cycle list re-spelled in the
+    // rule: a one-time or usage-only plan has no recurrence to describe, and a
+    // rule demanding one would be a fault the author cannot fix.
+    for cycle in [BillingCycle::OneTime, BillingCycle::Usage] {
+        let report = findings(&CycleDeclared, &shape(cycle));
+        assert!(
+            report.violations.is_empty(),
+            "{cycle}: {:?}",
+            codes(&report)
+        );
+    }
+}
+
+#[test]
+fn a_first_publish_with_no_baseline_is_not_a_fault_this_rule_reports() {
+    // The `inst-cs-declared` posture, and the case the G5 plan flagged: the rule
+    // asks what the plan says about itself, not what it used to say. A plan with
+    // a declared cycle and frequency and NO published baseline is a clean first
+    // publish.
+    let mut subject = shape(BillingCycle::Recurring);
+    subject.frequency = Some(Frequency::Monthly);
+    subject.rows = vec![recurring(0xb001, "usd", "US")];
+    assert!(subject.baseline.is_none(), "this is a first publish");
+
+    assert!(findings(&CycleDeclared, &subject).violations.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// inst-cs-onetime / inst-cs-recurring (D-149 clause 1)
+// ---------------------------------------------------------------------------
+
+/// A recurring plan selling in two markets with a base row in only one of them.
+fn recurring_missing_a_market() -> PlanShape {
+    let mut subject = shape(BillingCycle::Recurring);
+    subject.frequency = Some(Frequency::Monthly);
+    subject.rows = vec![
+        recurring(0xb001, "usd", "US"),
+        // A setup row makes EUR/EU a market the plan sells in, and it is not a
+        // base row of the kind the cycle mandates.
+        {
+            let mut fee = record(
+                0xb002,
+                ChargeKind::OneTimeSetup,
+                "eur",
+                "EU",
+                phase_id(TERMINAL),
+            );
+            fee.row.amount_minor = Some(minor(1_000));
+            fee
+        },
+    ];
+    subject
+}
+
+#[test]
+fn a_recurring_plan_selling_where_it_has_no_base_row_is_refused_naming_the_market() {
+    // `inst-cs-recurring` registered NOTHING before this rule: its other two
+    // clauses are Slice 6's `billingTiming` and the frequency half of
+    // `CYCLE_METADATA_MISSING`.
+    let report = findings(&BaseMarketCompleteness, &recurring_missing_a_market());
+
+    assert_eq!(codes(&report), vec![BASE_MARKET_INCOMPLETE]);
+    let detail = details(&report);
+    assert!(detail.contains("EUR"), "the market is named: {detail}");
+    assert!(detail.contains("EU"), "{detail}");
+    assert!(detail.contains("recurring"), "the kind is named: {detail}");
+}
+
+#[test]
+fn a_one_time_plan_selling_where_it_has_no_base_row_is_refused_the_same_way() {
+    // The other cardinality arm, and the reason it is one rule: a one-time plan
+    // sold in a market with no `one_time` row is bought there for nothing.
+    let mut subject = shape(BillingCycle::OneTime);
+    subject.rows = vec![
+        {
+            let mut base = record(0xb001, ChargeKind::OneTime, "usd", "US", phase_id(TERMINAL));
+            base.row.amount_minor = Some(minor(4_900));
+            base
+        },
+        usage(0xb002, "eur", "EU", "api_calls", phase_id(TERMINAL)),
+    ];
+
+    let report = findings(&BaseMarketCompleteness, &subject);
+
+    assert_eq!(codes(&report), vec![BASE_MARKET_INCOMPLETE]);
+    assert!(
+        details(&report).contains("one_time"),
+        "{}",
+        details(&report)
+    );
+}
+
+#[test]
+fn a_usage_only_plan_owes_no_base_row_at_all() {
+    // The cycle that mandates none. A usage-only plan's market completeness is
+    // `UsageMarketCompleteness`'s, over the metered lines - and a rule demanding
+    // a base row here would be one no usage plan could ever satisfy.
+    let mut subject = shape(BillingCycle::Usage);
+    subject.rows = vec![usage(0xb001, "usd", "US", "api_calls", phase_id(TERMINAL))];
+
+    assert!(
+        findings(&BaseMarketCompleteness, &subject)
+            .violations
+            .is_empty()
+    );
+}
+
+#[test]
+fn every_market_short_of_a_base_row_is_reported_and_not_only_the_first() {
+    // Section 9's enumerate-all contract: an author remediates in one pass.
+    let mut subject = shape(BillingCycle::Recurring);
+    subject.frequency = Some(Frequency::Monthly);
+    subject.rows = vec![
+        recurring(0xb001, "usd", "US"),
+        usage(0xb002, "eur", "EU", "api_calls", phase_id(TERMINAL)),
+        usage(0xb003, "gbp", "UK", "api_calls", phase_id(TERMINAL)),
+    ];
+
+    let report = findings(&BaseMarketCompleteness, &subject);
+
+    assert_eq!(report.violations.len(), 2, "{:?}", details(&report));
+    assert!(
+        report
+            .violations
+            .iter()
+            .all(|v| v.code == BASE_MARKET_INCOMPLETE)
+    );
+}
+
+#[test]
+fn the_base_market_rule_and_the_hybrid_rule_never_contest_one_plan() {
+    // Two codes, two questions, and a plan must not get both for one remedy.
+    // `HYBRID_INCOMPLETE` means a part is missing ANYWHERE and never names a
+    // market; `BASE_MARKET_INCOMPLETE` means a part exists and does not reach
+    // every sold market.
+
+    // (a) A hybrid with no recurring part at all: the hybrid rule speaks, and
+    //     the market rule defers.
+    let mut no_part = shape(BillingCycle::Hybrid);
+    no_part.frequency = Some(Frequency::Monthly);
+    no_part.rows = vec![usage(0xb001, "usd", "US", "api_calls", phase_id(TERMINAL))];
+    assert_eq!(
+        codes(&findings(&HybridCompleteness, &no_part)),
+        vec![HYBRID_INCOMPLETE]
+    );
+    assert!(
+        findings(&BaseMarketCompleteness, &no_part)
+            .violations
+            .is_empty(),
+        "the market rule defers: the remediation is 'add the recurring part', \
+         not 'add it in four markets'"
+    );
+
+    // (b) A hybrid whose recurring part exists and misses a market: the market
+    //     rule speaks, and the hybrid rule is satisfied.
+    let mut short_market = shape(BillingCycle::Hybrid);
+    short_market.frequency = Some(Frequency::Monthly);
+    short_market.rows = vec![
+        recurring(0xb001, "usd", "US"),
+        usage(0xb002, "usd", "US", "api_calls", phase_id(TERMINAL)),
+        usage(0xb003, "eur", "EU", "api_calls", phase_id(TERMINAL)),
+    ];
+    assert!(
+        findings(&HybridCompleteness, &short_market)
+            .violations
+            .is_empty(),
+        "both parts are present somewhere"
+    );
+    assert_eq!(
+        codes(&findings(&BaseMarketCompleteness, &short_market)),
+        vec![BASE_MARKET_INCOMPLETE]
+    );
+}
+
+#[test]
+fn a_non_hybrid_plan_with_no_base_row_anywhere_is_still_reported_here() {
+    // The deferral is hybrid-only, because on any other cycle there is no hybrid
+    // rule to defer to - and a plan with no base row at all would then be
+    // reported by nothing.
+    let mut subject = shape(BillingCycle::Recurring);
+    subject.frequency = Some(Frequency::Monthly);
+    subject.rows = vec![usage(0xb001, "usd", "US", "api_calls", phase_id(TERMINAL))];
+
+    assert_eq!(
+        codes(&findings(&BaseMarketCompleteness, &subject)),
+        vec![BASE_MARKET_INCOMPLETE]
     );
 }

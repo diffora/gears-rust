@@ -357,9 +357,16 @@ async fn the_band_set_comes_back_in_quantity_order_however_the_rows_were_written
     // through it would prove an in-memory sort and leave the read side unpinned.
     let mut content = graduated_content();
     content.row.bands = descending.clone();
-    repo.update_draft(&scope, tenant(), price_id, RowVersion::new(0), content)
-        .await
-        .expect("replace the band set, descending");
+    repo.update_draft(
+        &scope,
+        tenant(),
+        price_id,
+        RowVersion::new(0),
+        content,
+        stamp(),
+    )
+    .await
+    .expect("replace the band set, descending");
 
     // The physical rows really are the wrong way round: this reads the table
     // with no ORDER BY at all, so it is measuring what the repository has to
@@ -738,7 +745,14 @@ async fn a_grandfathering_horizon_off_its_class_is_the_callers_mistake_not_the_s
     // **stored** row rather than the submitted key — which is why the check
     // cannot be the create path's alone.
     let err = repo
-        .update_draft(&scope, tenant(), price_id, RowVersion::new(0), content)
+        .update_draft(
+            &scope,
+            tenant(),
+            price_id,
+            RowVersion::new(0),
+            content,
+            stamp(),
+        )
         .await
         .expect_err("a horizon submitted onto a non-grandfathered row must be refused");
     assert_eq!(
@@ -837,7 +851,14 @@ async fn an_authored_instant_finer_than_the_quantum_is_refused_on_both_write_pat
     // silence, so nothing downstream would ever report it.
     content.grandfather_until = Some(at(20) + chrono::TimeDelta::microseconds(1));
     let err = repo
-        .update_draft(&scope, tenant(), price_id, RowVersion::new(0), content)
+        .update_draft(
+            &scope,
+            tenant(),
+            price_id,
+            RowVersion::new(0),
+            content,
+            stamp(),
+        )
         .await
         .expect_err("a sub-millisecond horizon must be refused on the edit path too");
     assert!(
@@ -905,9 +926,16 @@ async fn a_draft_may_shed_its_bands_and_its_tiered_kind_in_one_edit() {
     // authoring edit rather than as a schema case, because that is what it is.
     let mut content = flat_content();
     content.grandfather_until = Some(at(23));
-    repo.update_draft(&scope, tenant(), price_id, RowVersion::new(0), content)
-        .await
-        .expect("a tiered draft may become a flat one in a single edit");
+    repo.update_draft(
+        &scope,
+        tenant(),
+        price_id,
+        RowVersion::new(0),
+        content,
+        stamp(),
+    )
+    .await
+    .expect("a tiered draft may become a flat one in a single edit");
 
     let read = repo
         .find(&scope, tenant(), price_id)
@@ -1110,7 +1138,14 @@ async fn an_edit_advances_the_tag_and_the_previous_tag_stops_working() {
     let mut content = flat_content();
     content.row.amount_minor = Some(money(2_000));
     let edited = repo
-        .update_draft(&scope, tenant(), price_id, RowVersion::new(0), content)
+        .update_draft(
+            &scope,
+            tenant(),
+            price_id,
+            RowVersion::new(0),
+            content,
+            stamp(),
+        )
         .await
         .expect("the first edit holds the current version");
     assert_eq!(edited.row.amount_minor, Some(money(2_000)));
@@ -1121,7 +1156,14 @@ async fn an_edit_advances_the_tag_and_the_previous_tag_stops_working() {
     let mut stale = flat_content();
     stale.row.amount_minor = Some(money(3_000));
     let err = repo
-        .update_draft(&scope, tenant(), price_id, RowVersion::new(0), stale)
+        .update_draft(
+            &scope,
+            tenant(),
+            price_id,
+            RowVersion::new(0),
+            stale,
+            stamp(),
+        )
         .await
         .expect_err("a submit against a superseded tag must be refused");
     assert_eq!(
@@ -1181,6 +1223,7 @@ async fn a_frozen_row_refuses_by_name_and_an_absent_one_is_not_found() {
             price_id,
             RowVersion::new(0),
             graduated_content(),
+            stamp(),
         )
         .await
         .expect_err("a published row is frozen in content");
@@ -1199,7 +1242,7 @@ async fn a_frozen_row_refuses_by_name_and_an_absent_one_is_not_found() {
     // and the band trigger would answer `RepoError::Db`, so the caller would be
     // told the store is broken rather than that the row is published.
     let err = repo
-        .delete_draft(&scope, tenant(), price_id, RowVersion::new(0))
+        .delete_draft(&scope, tenant(), price_id, RowVersion::new(0), stamp())
         .await
         .expect_err("only a never-published draft is deletable");
     assert_eq!(
@@ -1218,7 +1261,14 @@ async fn a_frozen_row_refuses_by_name_and_an_absent_one_is_not_found() {
 
     let absent = Uuid::from_u128(0xb_71);
     let err = repo
-        .update_draft(&scope, tenant(), absent, RowVersion::new(0), flat_content())
+        .update_draft(
+            &scope,
+            tenant(),
+            absent,
+            RowVersion::new(0),
+            flat_content(),
+            stamp(),
+        )
         .await
         .expect_err("that row was never authored");
     assert_eq!(
@@ -1252,7 +1302,14 @@ async fn an_update_replaces_the_whole_band_set() {
         TierBand::open(500, money(20)),
     ];
     let edited = repo
-        .update_draft(&scope, tenant(), price_id, RowVersion::new(0), content)
+        .update_draft(
+            &scope,
+            tenant(),
+            price_id,
+            RowVersion::new(0),
+            content,
+            stamp(),
+        )
         .await
         .expect("replace the band set");
 
@@ -1313,9 +1370,16 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
     content.grandfather_until = Some(at(20));
     content.supersedes_price_id = None;
 
-    repo.update_draft(&scope, tenant(), price_id, RowVersion::new(0), content)
-        .await
-        .expect("replace the whole content");
+    repo.update_draft(
+        &scope,
+        tenant(),
+        price_id,
+        RowVersion::new(0),
+        content,
+        stamp(),
+    )
+    .await
+    .expect("replace the whole content");
 
     let read = repo
         .find(&scope, tenant(), price_id)
@@ -1404,9 +1468,16 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
     let mut resized = package_content;
     resized.row.package_size = Some(500);
     resized.row.package_price_minor = Some(money(2_999));
-    repo.update_draft(&scope, tenant(), package_id, RowVersion::new(0), resized)
-        .await
-        .expect("re-block the package row");
+    repo.update_draft(
+        &scope,
+        tenant(),
+        package_id,
+        RowVersion::new(0),
+        resized,
+        stamp(),
+    )
+    .await
+    .expect("re-block the package row");
 
     let read = repo
         .find(&scope, tenant(), package_id)
@@ -1448,9 +1519,16 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
     seated.row.amount_minor = Some(money(2_500));
     seated.row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
     seated.row.manual_quantity = None;
-    repo.update_draft(&scope, tenant(), per_unit_id, RowVersion::new(0), seated)
-        .await
-        .expect("re-price the per-unit row");
+    repo.update_draft(
+        &scope,
+        tenant(),
+        per_unit_id,
+        RowVersion::new(0),
+        seated,
+        stamp(),
+    )
+    .await
+    .expect("re-price the per-unit row");
 
     let read = repo
         .find(&scope, tenant(), per_unit_id)
@@ -1479,7 +1557,7 @@ async fn deleting_a_draft_takes_its_bands_with_it() {
     // Abandoning a draft is a write like any other: a caller working from a
     // read it did not refresh would otherwise discard an edit it never saw.
     let err = repo
-        .delete_draft(&scope, tenant(), price_id, RowVersion::new(4))
+        .delete_draft(&scope, tenant(), price_id, RowVersion::new(4), stamp())
         .await
         .expect_err("a stale tag must not delete");
     assert_eq!(
@@ -1500,7 +1578,7 @@ async fn deleting_a_draft_takes_its_bands_with_it() {
     // The bands go first, inside the transaction: the foreign key declares the
     // default NO ACTION on both backends, so the row cannot leave while its
     // children point at it.
-    repo.delete_draft(&scope, tenant(), price_id, RowVersion::new(0))
+    repo.delete_draft(&scope, tenant(), price_id, RowVersion::new(0), stamp())
         .await
         .expect("the current tag deletes");
     assert_eq!(
@@ -1609,13 +1687,14 @@ async fn another_tenants_price_row_is_invisible_and_unwritable() {
             price_id,
             RowVersion::new(0),
             flat_content(),
+            stamp(),
         )
         .await
         .expect_err("a foreign draft is not writable");
     assert!(matches!(err, RepoError::NotFound { .. }));
 
     let err = repo
-        .delete_draft(&scope, tenant(), price_id, RowVersion::new(0))
+        .delete_draft(&scope, tenant(), price_id, RowVersion::new(0), stamp())
         .await
         .expect_err("a foreign draft is not deletable");
     assert!(matches!(err, RepoError::NotFound { .. }));
@@ -2059,9 +2138,16 @@ async fn a_row_whose_content_moved_since_validation_is_refused_by_its_own_tag() 
     // The world moves: the row's content changes and its tag advances with it.
     let mut edited = flat_content();
     edited.row.amount_minor = Some(money(4_242));
-    repo.update_draft(&scope, tenant(), price_id, RowVersion::new(0), edited)
-        .await
-        .expect("edit the draft");
+    repo.update_draft(
+        &scope,
+        tenant(),
+        price_id,
+        RowVersion::new(0),
+        edited,
+        stamp(),
+    )
+    .await
+    .expect("edit the draft");
 
     let refusal = publish_rows(&provider, &scope, tenant(), plan(), validated)
         .await
@@ -2142,7 +2228,7 @@ async fn a_row_deleted_since_validation_refuses_the_whole_publish() {
             .expect("author");
     }
     let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
-    repo.delete_draft(&scope, tenant(), dropped, RowVersion::new(0))
+    repo.delete_draft(&scope, tenant(), dropped, RowVersion::new(0), stamp())
         .await
         .expect("discard one of them");
 
@@ -2336,4 +2422,14 @@ async fn the_keyset_page_walks_the_same_total_order_the_list_declares() {
         .find(|row| row.price_id == ids[0])
         .expect("the recurring row is in the page");
     assert_eq!(banded.row.charge_kind, ChargeKind::Recurring);
+}
+
+/// The actor and instant every mutating repository call now records (D-135 - the
+/// audit row commits inside the mutation's own transaction).
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: uuid::Uuid::from_u128(0xac_10),
+        recorded_at: chrono::Utc::now(),
+        correlation_id: None,
+    }
 }

@@ -45,6 +45,14 @@ pub struct Model {
     /// `None` until `CatalogVersionPublished` resolves the handle.
     pub catalog_version: Option<i64>,
     pub requested_at: DateTime<Utc>,
+    /// When this gear first saw the registry's answer for the handle (D-166).
+    ///
+    /// Deliberately **not** paired with `catalog_version`: it is set while that
+    /// column is still NULL, which is the state it exists to describe. See the
+    /// migration's doc for why a recorded observation cannot be derived from the
+    /// commit — the finalize and the warm share a transaction, so "committed but
+    /// unwarm" is unreachable in storage.
+    pub commit_observed_at: Option<DateTime<Utc>>,
     pub committed_at: Option<DateTime<Utc>>,
 }
 

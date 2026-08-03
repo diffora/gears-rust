@@ -15,10 +15,16 @@
 //! anything at that pin — there is no read-model resolution surface in this
 //! gear at all, and the delta a version freezes deliberately omits the facts
 //! whose slices are unbuilt (the `PriceWindow` intervals and the derived
-//! coverage end, the GA-gate flags, the registry `sellable` flag, the grant set
-//! and the Slice-6 cross-boundary pair). So a version is pinnable and its
-//! payload is incomplete, and a reader is entitled to know which of the six
-//! sellability predicates it can evaluate from one: not (1), not (5), not (6).
+//! coverage end, the GA-gate flags, the registry `sellable` flag, and the grant
+//! set). So a version is pinnable and its payload is incomplete, and a reader is
+//! entitled to know which of the six sellability predicates it can evaluate from
+//! one: not (1), not (5), not (6).
+//!
+//! The Slice-6 cross-boundary contract used to be on that list as a **pair** and
+//! is not on it any more: D-169 struck `crossBoundaryWarningText` from the
+//! contract — the copy belongs to the surface that renders it, PRD AC #66 — so
+//! the marker had nothing left to wait for and every resolved plan subject now
+//! carries it.
 
 use chrono::{DateTime, Utc};
 

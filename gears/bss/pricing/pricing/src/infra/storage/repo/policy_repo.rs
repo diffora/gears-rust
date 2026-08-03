@@ -134,19 +134,22 @@ impl AuthoringPolicy {
 
     /// The tier-band soft cap in force for this tenant.
     ///
-    /// No rule in this crate reads it yet: `nfr-size-limits` makes both soft
-    /// caps a **SHOULD** that emits a publish warning, and §5 registers no code
-    /// for either, so minting one here would put a discriminator on the wire
-    /// that no document defines. The value is carried because the carrier is
-    /// what D-152 decided — a cap whose per-tenant value is unreadable is the
-    /// same silence one layer down.
+    /// Read by
+    /// [`PlanSizeWithinSoftCaps`](crate::domain::publish::rules::PlanSizeWithinSoftCaps)
+    /// as of D-160, which named the advisory code `nfr-size-limits`' **SHOULD**
+    /// needed. An earlier version of this doc said nothing read it and gave the
+    /// reason: minting a discriminator no document defined would have put a code
+    /// on the wire no consumer could act on. The document defines it now.
+    ///
+    /// It stays **soft**: the finding rides `warnings[]` and never blocks.
     #[must_use]
     pub const fn max_tier_bands_per_row(&self) -> u32 {
         self.max_tier_bands_per_row
     }
 
     /// The price-row soft cap in force for this tenant; see
-    /// [`AuthoringPolicy::max_tier_bands_per_row`] for why nothing reads it yet.
+    /// [`AuthoringPolicy::max_tier_bands_per_row`] for what reads it and why it
+    /// never blocks.
     #[must_use]
     pub const fn max_price_rows_per_plan(&self) -> u32 {
         self.max_price_rows_per_plan

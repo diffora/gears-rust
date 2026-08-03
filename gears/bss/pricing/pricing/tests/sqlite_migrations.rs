@@ -269,3 +269,53 @@ async fn the_version_index_on_the_ref_table_is_not_unique() {
         "the replacement must be non-unique, got: {created}"
     );
 }
+
+/// The `CREATE TABLE ...` statement `SQLite` recorded for `table`.
+async fn table_sql(conn: &sea_orm::DatabaseConnection, table: &str) -> String {
+    let sql =
+        format!("SELECT sql AS v FROM sqlite_master WHERE type = 'table' AND name = '{table}'");
+    conn.query_one(Statement::from_string(
+        sea_orm::DatabaseBackend::Sqlite,
+        sql,
+    ))
+    .await
+    .expect("query sqlite_master")
+    .expect("the table row is there")
+    .try_get::<String>("", "v")
+    .expect("a table this chain created carries its DDL")
+}
+
+#[tokio::test]
+async fn the_ref_table_records_the_commit_observation_and_pairs_it_with_nothing() {
+    // D-166 clause (1). The column is what every post-commit clause in the set
+    // was written against and none of them had: `requested_at` measures the
+    // batching wait the requirement explicitly puts OUTSIDE degraded handling,
+    // and `committed_at` is stamped by the finalize, which is the step that
+    // never runs on the path the signal exists for.
+    //
+    // The absence of a CHECK is the assertion's other half.
+    // `chk_pricing_catalog_version_ref_commit` exists because a version and its
+    // commit instant are one fact; this column's whole purpose is to be settable
+    // while `catalog_version` is still NULL.
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    let ddl = table_sql(&conn, "pricing_catalog_version_ref").await;
+    assert!(
+        ddl.contains("commit_observed_at"),
+        "the SQLite arm must create the column: {ddl}"
+    );
+    assert!(
+        !ddl.replace("commit_observed_at text", "")
+            .contains("commit_observed_at"),
+        "and pair it with nothing - no CHECK may mention it: {ddl}"
+    );
+}

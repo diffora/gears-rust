@@ -63,6 +63,7 @@
 use bss_pricing::domain::audit::{
     AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash, genesis_prev_hash,
 };
+use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::audit_log;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewAuditEntry, audit_repo};
@@ -71,7 +72,7 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{AccessScope, SecureEntityExt};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -432,4 +433,63 @@ async fn a_mutation_row_carrying_segment_heads_is_impossible() {
     )
     .await
     .expect_err("a mutation row may not carry segment heads");
+}
+
+// ---------------------------------------------------------------------------
+// The loser of a same-segment race is a retriable contention (D-159)
+// ---------------------------------------------------------------------------
+
+// The chain-head contention itself is **unprovable here, and provably so.** The
+// head is `MAX(seq)` over the segment, so `append` always targets a free
+// position on a well-formed segment - which is the module CONTRACT's own point
+// ("a fork is unrepresentable"). The only way to occupy the target is a genuine
+// concurrent writer, and `sqlite::memory:` serializes writers. What IS proved
+// here is the other direction: that the recognition narrows the internal arm and
+// does not swallow it. The recognition itself is one function at all three
+// serialization points, and it is proved end to end at the two whose violation a
+// single-writer suite can provoke - `sqlite_publish_commit.rs` (the outbox
+// sequence) and `sqlite_plan_repo.rs` (the current-revision partial UNIQUE).
+
+#[tokio::test]
+async fn a_corrupt_head_is_still_a_fault_and_not_a_contention() {
+    // The narrowing, from the other side: the recognition must narrow the
+    // internal arm rather than swallow it. A head whose `row_hash` is not 32
+    // bytes is an invariant breach and the caller is owed a fault, not "retry".
+    let db = provider().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = db.conn().expect("conn");
+    let am = audit_log::ActiveModel {
+        tenant_id: sea_orm::ActiveValue::Set(TENANT),
+        chain_id: sea_orm::ActiveValue::Set(CHAIN),
+        seq: sea_orm::ActiveValue::Set(0),
+        entry_kind: sea_orm::ActiveValue::Set("mutation".to_owned()),
+        recorded_at: sea_orm::ActiveValue::Set(at(9)),
+        actor_principal_id: sea_orm::ActiveValue::Set(ACTOR),
+        action: sea_orm::ActiveValue::Set("publish".to_owned()),
+        subject_kind: sea_orm::ActiveValue::Set("plan_revision".to_owned()),
+        subject_ref: sea_orm::ActiveValue::Set("plan/0".to_owned()),
+        before_state: sea_orm::ActiveValue::Set(None),
+        after_state: sea_orm::ActiveValue::Set(None),
+        approval_ref: sea_orm::ActiveValue::Set(None),
+        correlation_id: sea_orm::ActiveValue::Set(None),
+        segment_heads: sea_orm::ActiveValue::Set(None),
+        prev_hash: sea_orm::ActiveValue::Set(None),
+        row_hash: sea_orm::ActiveValue::Set(vec![0_u8]),
+    };
+    audit_log::Entity::insert(am.clone())
+        .secure()
+        .scope_with_model(&scope, &am)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("seed a head the writer cannot link to");
+
+    let refusal = audit_repo::append(&conn, &scope, entry(TENANT, CHAIN, "plan/1", 12))
+        .await
+        .expect_err("a short row hash is an invariant breach");
+
+    assert!(
+        matches!(refusal, RepoError::CorruptRow(_)),
+        "not a contention: {refusal:?}"
+    );
 }

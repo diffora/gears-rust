@@ -76,20 +76,19 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use serde_json::{Value as JsonValue, json};
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::domain::audit::{AuditAction, AuditSubjectKind};
+use crate::domain::audit::{AuditAction, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanRevision;
 use crate::domain::plan_shape::{PhaseGraph, PlanShape, PublishedBaseline};
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
-use crate::domain::publish::rules::{PublishRuleParams, run_publish_rules};
+use crate::domain::publish::rules::{PublishRuleParams, SoftSizeCaps, run_publish_rules};
 use crate::domain::publish::{PlanPublishUnit, PublishAuthorization, PublishReceipt};
 use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::{PhaseId, PlanId};
@@ -515,18 +514,18 @@ impl PublishService {
                         &scope,
                         NewAuditEntry {
                             tenant_id,
-                            chain_id: unit.plan_id.get(),
+                            chain_id: audit_repo::plan_chain(unit.plan_id),
                             recorded_at: now,
                             actor_principal_id,
                             action: AuditAction::Publish,
                             subject_kind: AuditSubjectKind::PlanRevision,
-                            subject_ref: format!("{}/{}", unit.plan_id, unit.revision),
-                            before_state: Some(revision_state(
+                            subject_ref: audit_repo::plan_revision_ref(unit.plan_id, unit.revision),
+                            before_state: Some(subject_state(
                                 LifecycleState::Draft,
                                 expected.get(),
                                 None,
                             )),
-                            after_state: Some(revision_state(
+                            after_state: Some(subject_state(
                                 published_revision.lifecycle_state,
                                 published_revision.row_version.get(),
                                 Some(&pending.pending_ref),
@@ -640,6 +639,13 @@ async fn rule_params(
         policy.interval_bounds(),
         policy.descriptor_rule(),
         policy.default_rounding_policy_ref().map(ToOwned::to_owned),
+        // The two soft caps, which had no consumer at all until D-160 named the
+        // advisory code. Read in the same pass as everything else, so the
+        // commit's second run judges the caps the state then holds.
+        SoftSizeCaps::new(
+            policy.max_tier_bands_per_row(),
+            policy.max_price_rows_per_plan(),
+        ),
     ))
 }
 
@@ -664,27 +670,6 @@ fn publish_request_id(tenant_id: Uuid, unit: PlanPublishUnit) -> String {
         "plan-publish/{tenant_id}/{}/{}",
         unit.plan_id, unit.revision
     )
-}
-
-/// The revision's before/after state, as the audit record's `jsonb` columns
-/// hold it (`inst-au-complete`: before/after version refs).
-///
-/// The after-state carries the **pending version ref** as well, because that is
-/// what connects the mutation to the addressability it produced; an auditor
-/// reading the record otherwise has the flip and no way to reach the version it
-/// landed in. Wire keys in `camelCase`, as the outbox payload's are.
-fn revision_state(state: LifecycleState, row_version: u64, pending_ref: Option<&str>) -> JsonValue {
-    match pending_ref {
-        Some(pending) => json!({
-            "lifecycleState": state.as_str(),
-            "rowVersion": row_version,
-            "pendingVersionRef": pending,
-        }),
-        None => json!({
-            "lifecycleState": state.as_str(),
-            "rowVersion": row_version,
-        }),
-    }
 }
 
 /// Build the publish subject from storage, through whichever runner the

@@ -189,6 +189,23 @@ pub enum RepoError {
     /// that do not actually share a key.
     #[error("pricing repo: duplicate canonical scope key: {0}")]
     DuplicateScopeKey(String),
+    /// Another write of this aggregate reached a per-aggregate serialization
+    /// point first (D-159).
+    ///
+    /// Recognised from the driver's **own** unique-violation class
+    /// ([`DbErr::sql_err`]), not from a message substring, so both backends are
+    /// covered by one predicate: SQLSTATE `23505` on Postgres, error codes 1555
+    /// and 2067 on `SQLite`.
+    ///
+    /// It narrows [`RepoError::Db`] rather than replacing it: everything that is
+    /// not a unique violation at one of those three points is still a storage
+    /// fault and still reaches the caller as one.
+    #[error("pricing repo: another mutation of {aggregate} committed first; retry")]
+    ConcurrentMutation {
+        /// The aggregate whose serialization point refused — what the caller is
+        /// told to retry against.
+        aggregate: String,
+    },
     /// A grandfathering horizon authored on a row that is not a grandfathered
     /// generation.
     ///
@@ -266,6 +283,48 @@ pub enum RepoError {
         /// The client-supplied key that is held.
         client_key: String,
     },
+}
+
+/// A per-aggregate serialization point's refusal, told apart from a storage
+/// fault (D-159).
+///
+/// **Keyed on the platform's own predicate, never on a substring written here.**
+/// `ScopeError::is_unique_violation` folds Postgres SQLSTATE `23505` and `SQLite`
+/// extended code 2067 into one answer, via `sea_orm`'s `DbErr::sql_err()`. It
+/// carries a message-matching **fallback** of its own, for proxies that strip the
+/// SQLSTATE — that fallback is the toolkit's and is shared with every gear, which
+/// is the difference between a shared predicate and a substring this crate
+/// invented.
+///
+/// Called at exactly the three points D-159 names — the audit chain head, the
+/// outbox's per-aggregate sequence, and the current-revision partial `UNIQUE` —
+/// and nowhere else. Every other unique violation in this crate means something
+/// different (`DUPLICATE_SCOPE_KEY` on a canonical key, the idempotency claim's
+/// own CAS) and is answered by the check that owns it.
+///
+/// **What it does not distinguish, stated because it is the residue.** The class
+/// says *a* unique index refused and not *which*: `pricing_outbox` carries two,
+/// its per-aggregate sequence and `uq_pricing_outbox_dedup_key`, and the driver
+/// exposes the constraint identity only inside a message. Both mean "another
+/// write of this aggregate got here first" and both remedy the same way, which is
+/// why one answer serves — but a Postgres suite is what would assert the
+/// constraint **names**, and until there is one that half rests on inspection.
+///
+/// `aggregate` is what the caller retries against, and it is named in the wire
+/// message because D-159 requires it: a 409 that does not say which aggregate
+/// contended tells a bulk run nothing about which row to re-drive.
+#[must_use]
+pub fn contention_or_db(
+    err: &toolkit_db::secure::ScopeError,
+    aggregate: &str,
+    context: &str,
+) -> RepoError {
+    if err.is_unique_violation() {
+        return RepoError::ConcurrentMutation {
+            aggregate: aggregate.to_owned(),
+        };
+    }
+    RepoError::Db(format!("{context}: {err}"))
 }
 
 /// Map a storage failure into the gear's rejection vocabulary.
@@ -354,6 +413,7 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         RepoError::IdempotencyKeyInFlight { .. } => {
             DomainError::IdempotencyKeyInFlight(err.to_string())
         }
+        RepoError::ConcurrentMutation { .. } => DomainError::ConcurrentMutation(err.to_string()),
         RepoError::ValueOutOfRange { .. } => DomainError::InvalidRequest(err.to_string()),
         RepoError::GrandfatherHorizonOffClass { .. } => {
             DomainError::GrandfatherUntilForbidden(err.to_string())

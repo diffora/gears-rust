@@ -874,3 +874,317 @@ async fn a_write_aimed_at_a_tenant_outside_the_compiled_scope_is_denied() {
         "a cross-tenant write must leave no row behind"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The audit trail the three plan routes write (D-135, D-145, D-158).
+// ---------------------------------------------------------------------------
+
+/// The records on one plan's segment, in seq order.
+///
+/// The segment is the **plan's** (D-135 keys it on the audited subject's
+/// aggregate), so this is exactly the answer to "who changed this plan" — the
+/// question `pricing_audit_log` answered with nothing before this group.
+async fn plan_records(harness: &Harness, plan_id: Uuid) -> Vec<(String, String, String)> {
+    rest_support::audit_rows(harness)
+        .await
+        .into_iter()
+        .filter(|row| row.chain_id == plan_id)
+        .map(|row| (row.action, row.subject_kind, row.subject_ref))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_plan_create_writes_exactly_one_record_naming_the_revision() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(create_body("gold")),
+            &keyed("audit-create"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let plan_id = body_json(response).await["plan_id"]
+        .as_str()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .expect("the id is answered");
+
+    assert_eq!(
+        plan_records(&harness, plan_id).await,
+        vec![(
+            "create".to_owned(),
+            "plan_revision".to_owned(),
+            format!("{plan_id}/0")
+        )],
+        "one record, naming the (plan_id, revision) durable name"
+    );
+}
+
+#[tokio::test]
+async fn a_plan_patch_writes_exactly_one_record_whichever_facet_it_took() {
+    // One record per **route**, not per table the facet touched: the mutation an
+    // auditor is asked about is the operator's call, and a `PATCH` submits
+    // exactly one facet (D-173's one-facet rule).
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "shape": { "plan_tier": "silver" } })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let records = plan_records(&harness, plan_id).await;
+    assert_eq!(
+        records.last(),
+        Some(&(
+            "update".to_owned(),
+            "plan_revision".to_owned(),
+            format!("{plan_id}/0")
+        )),
+        "{records:?}"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|(action, ..)| action == "update")
+            .count(),
+        1,
+        "exactly one, not one per child table: {records:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_plan_patch_on_a_phase_facet_also_writes_exactly_one_record() {
+    // The other three facets run through `plan_shape_repo`, each in its own
+    // transaction, so each needs its own record - and a test on the shape facet
+    // alone would pass over three writers that do not write.
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "phases": [{
+                    "phase_id": Uuid::now_v7(),
+                    "kind": "evergreen",
+                    "ordinal": 0
+                }]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let records = plan_records(&harness, plan_id).await;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|(action, ..)| action == "update")
+            .count(),
+        1,
+        "{records:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_abandon_flip_is_audited_exactly_as_the_deletion_it_replaces_was() {
+    // D-145 in as many words. The flip is a distinct action from a delete
+    // because the row survives and its `(plan_id, revision)` name stays
+    // consumed - an auditor reading `delete` here would read a permanent name as
+    // reusable.
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    harness.abandon_draft(plan_id, 0).await;
+
+    let records = plan_records(&harness, plan_id).await;
+    assert_eq!(
+        records.last(),
+        Some(&(
+            "abandon".to_owned(),
+            "plan_revision".to_owned(),
+            format!("{plan_id}/0")
+        )),
+        "{records:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_patch_leaves_no_record_of_having_happened() {
+    // The record is inside the mutation's own transaction (D-135), so a refusal
+    // writes neither the edit nor a trace of one. A post-hoc writer would pass
+    // this by accident; what it would fail is the converse, which
+    // `tests/sqlite_plan_repo.rs` proves by making the append itself refuse.
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+    let before = plan_records(&harness, plan_id).await.len();
+
+    let stale = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "shape": { "plan_tier": "silver" } })),
+            &[("if-match", "\"0-9\"")],
+        ))
+        .await;
+
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        plan_records(&harness, plan_id).await.len(),
+        before,
+        "a refused edit records nothing"
+    );
+}
+
+/// One record's action and the pair `inst-au-complete` names first.
+type StatePair = (String, Option<serde_json::Value>, Option<serde_json::Value>);
+
+/// The records on one plan's segment with their before/after states, in seq
+/// order.
+///
+/// A second reader beside `plan_records`, because the triple that one returns
+/// left `before_state` and `after_state` **unasserted on every route** - and they
+/// are the fields `inst-au-complete` names first. Blanking both to `None` in
+/// either writer used to leave the whole suite green.
+async fn plan_state_pairs(harness: &Harness, plan_id: Uuid) -> Vec<StatePair> {
+    rest_support::audit_rows(harness)
+        .await
+        .into_iter()
+        .filter(|row| row.chain_id == plan_id)
+        .map(|row| (row.action, row.before_state, row.after_state))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_patch_on_a_published_plan_audits_the_revision_it_minted() {
+    // The revision-opening is a mutation transaction of its own, and an operator
+    // call that lands on a published plan is **two** of them. Auditing only the
+    // second left "who created plan/1?" unanswerable, though D-145 makes that
+    // number permanent and every revision-scoped child table copies against it.
+    //
+    // Worse, the two can part company: the open commits and the facet write
+    // fails, and the plan then holds a revision number nothing recorded the
+    // minting of. Delete `open_revision`'s `audit_repo::append` and this fails.
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_current_plan(&harness, plan_id).await;
+
+    // The published revision stands at version 1: the publish flip advanced it.
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "shape": { "plan_tier": "silver" } })),
+            &[("if-match", "\"0-1\"")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let records = plan_records(&harness, plan_id).await;
+    // The successor's identity, then the edit that landed on it.
+    assert!(
+        records.contains(&(
+            "create".to_owned(),
+            "plan_revision".to_owned(),
+            format!("{plan_id}/1")
+        )),
+        "the minted revision is recorded: {records:?}"
+    );
+    assert!(
+        records.contains(&(
+            "update".to_owned(),
+            "plan_revision".to_owned(),
+            format!("{plan_id}/1")
+        )),
+        "and so is the edit: {records:?}"
+    );
+}
+
+#[tokio::test]
+async fn every_plan_record_carries_the_before_and_after_state_its_action_implies() {
+    // `inst-au-complete`'s first field, on every plan route. A create has no
+    // before-state - the revision did not exist, and the absence is the whole
+    // difference between minting a name and editing one - and every other action
+    // has both.
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+    harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "shape": { "plan_tier": "silver" } })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    harness.abandon_draft(plan_id, 0).await;
+
+    let pairs = plan_state_pairs(&harness, plan_id).await;
+    assert_eq!(pairs.len(), 3, "create, update, abandon: {pairs:?}");
+
+    let (action, before, after) = &pairs[0];
+    assert_eq!(action, "create");
+    assert!(before.is_none(), "a create has no before-state: {before:?}");
+    assert_eq!(
+        after.as_ref().and_then(|state| state.get("lifecycleState")),
+        Some(&serde_json::json!("draft"))
+    );
+    assert_eq!(
+        after.as_ref().and_then(|state| state.get("rowVersion")),
+        Some(&serde_json::json!(0))
+    );
+
+    let (action, before, after) = &pairs[1];
+    assert_eq!(action, "update");
+    assert_eq!(
+        before.as_ref().and_then(|state| state.get("rowVersion")),
+        Some(&serde_json::json!(0)),
+        "the version the caller's precondition matched"
+    );
+    assert_eq!(
+        after.as_ref().and_then(|state| state.get("rowVersion")),
+        Some(&serde_json::json!(1)),
+        "and the one the swap advanced it to"
+    );
+    assert_eq!(
+        before
+            .as_ref()
+            .and_then(|state| state.get("lifecycleState")),
+        Some(&serde_json::json!("draft"))
+    );
+
+    let (action, before, after) = &pairs[2];
+    assert_eq!(action, "abandon");
+    assert_eq!(
+        before
+            .as_ref()
+            .and_then(|state| state.get("lifecycleState")),
+        Some(&serde_json::json!("draft")),
+        "the flip's before-state is the draft it discarded"
+    );
+    assert_eq!(
+        after.as_ref().and_then(|state| state.get("lifecycleState")),
+        Some(&serde_json::json!("abandoned")),
+        "and its after-state is the tombstone, which is what makes D-145's flip \
+         distinguishable from a deletion in the record"
+    );
+}

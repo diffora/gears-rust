@@ -47,6 +47,35 @@
 //! content digest would have bought and this does not, and it is stated in §4.4
 //! for the same reason it is stated here — a reader is entitled to know which
 //! risk they are carrying.
+//!
+//! # Two rostered fields have no rules and no compile, and publish will freeze them
+//!
+//! `tier_qualification_window` and `included_allowance` are in the roster below
+//! and **Slice 10 has landed nothing else**: not one of the ten refusals
+//! `inst-ac-gate` / `inst-tt-forbidden` / `inst-tt-window-pair` /
+//! `inst-tt-zero-band` / `inst-tt-fixture` state, and not the allowance compile
+//! (`inst-ac-band`, `inst-ac-marker`, `inst-ac-carry`) that gives the declaration
+//! its meaning. So `ep-1` tells a consumer these two fields are part of the set an
+//! evaluator reads, and nothing in this gear judges either value or honours the
+//! allowance.
+//!
+//! What holds the line today is **one refusal at one surface**:
+//! `api::rest::prices::refuse_unlanded_primitives` rejects a non-null value on
+//! `POST …/plans/{planId}/prices` and `PATCH …/prices/{priceId}`, the only mounted
+//! routes that can carry either field. It is not a property of the type, the
+//! column or the roster — the domain model, the storage round trip and the D-129
+//! supersession guard all carry both fields quite happily.
+//!
+//! **So the freeze is one route away.** `POST …/plans/{planId}/publish` is not
+//! mounted (`PublishService::commit` has no production caller), and the day Slice 5
+//! mounts it, a stored value reaches
+//! [`crate::domain::projection`] and freezes into an immutable ≥ 7-year version
+//! **with no further code change and no gate that would notice**. A group that
+//! mounts that route, or that adds a second writer of `PriceRow`, owes the ten
+//! refusals or a second refusal at its own boundary. No DTO in this gear sets
+//! `deny_unknown_fields`, so the surface refusal is also contingent on both
+//! members remaining modelled fields rather than silently ignored ones (D-174
+//! clause 1).
 
 use crate::domain::price_row::PriceRow;
 

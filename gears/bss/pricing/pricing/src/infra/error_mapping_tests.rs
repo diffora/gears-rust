@@ -206,3 +206,63 @@ fn a_registry_failure_becomes_the_fail_closed_domain_variant() {
         ));
     }
 }
+
+#[test]
+fn a_same_aggregate_contention_is_a_409_with_its_own_code() {
+    // D-159. A loser at a per-aggregate serialization point used to reach the
+    // caller as `Internal` -> 500, indistinguishable from a dead connection, for
+    // a request whose entire remedy is to retry.
+    assert_eq!(
+        status(DomainError::ConcurrentMutation("plan p".to_owned())),
+        409
+    );
+    assert!(
+        rendered(DomainError::ConcurrentMutation("plan p".to_owned()))
+            .contains("CONCURRENT_MUTATION")
+    );
+}
+
+#[test]
+fn a_contention_is_not_a_stale_version_and_the_two_are_tellable_apart() {
+    // The distinction is the reason the code exists. Nothing the caller presented
+    // was stale, so a caller told `STALE_VERSION` would refresh a version that
+    // was never wrong - and one whose precondition genuinely failed must still be
+    // told to refresh.
+    let contention = rendered(DomainError::ConcurrentMutation("plan p".to_owned()));
+    let stale = rendered(DomainError::StaleVersion(
+        "current 3, submitted 2".to_owned(),
+    ));
+
+    assert!(contention.contains("CONCURRENT_MUTATION"));
+    assert!(!contention.contains("STALE_VERSION"), "{contention}");
+    assert!(stale.contains("STALE_VERSION"));
+    assert!(!stale.contains("CONCURRENT_MUTATION"), "{stale}");
+    // Both are 409: each is a conflict a retry resolves, and the code is the
+    // discriminator rather than the status (sec 3.3).
+    assert_eq!(
+        status(DomainError::ConcurrentMutation("plan p".to_owned())),
+        status(DomainError::StaleVersion("s".to_owned()))
+    );
+}
+
+#[test]
+fn a_contention_is_not_the_callers_own_duplicate_request() {
+    // `IDEMPOTENCY_KEY_IN_FLIGHT`'s subject is the caller's own retry;
+    // `CONCURRENT_MUTATION`'s is somebody else's write. Same status, different
+    // sentence, and a bulk run branches on which.
+    let contention = rendered(DomainError::ConcurrentMutation("plan p".to_owned()));
+    assert!(
+        !contention.contains("IDEMPOTENCY_KEY_IN_FLIGHT"),
+        "{contention}"
+    );
+}
+
+#[test]
+fn a_genuine_storage_failure_is_still_an_internal_fault() {
+    // The recognition NARROWS `Internal` rather than swallowing it: a dead
+    // connection must not be answered "retry, somebody else got here first".
+    assert_eq!(
+        status(DomainError::Internal("the disk is gone".to_owned())),
+        500
+    );
+}

@@ -63,8 +63,47 @@
 //! [`CatalogEvent`](crate::domain::events::CatalogEvent), and an audit action
 //! spelled the same would be a second home for one string.
 //!
-//! Only what G5 writes is declared. A variant with no writer would read as
-//! coverage to everyone who greps for it.
+//! Only what the crate **writes** is declared. A variant with no writer would
+//! read as coverage to everyone who greps for it — D-158's own constraint, and
+//! the reason `retire`, `approve`, `reject`, `deny`, `backdate_import` and
+//! `policy_update` are absent below though S5 §6 declares all six.
+//!
+//! ## Three of the five actions are this module's spelling and are **owed to the
+//! document**. Reported.
+//!
+//! S5 §6 declares the `action` vocabulary and opens it with "exactly the records
+//! this design set already requires somebody to write": `publish`, `abandon`,
+//! `retire`, `approve`, `reject`, `deny`, `backdate_import`, `policy_update`.
+//! Two sentences of the same section require more than that list enumerates —
+//! *"every mutation leaves an immutable trail an auditor can rely on for 7+
+//! years"* and, normatively, *"**Every mutation MUST record**
+//! actor/timestamp/before-after/approval trail"* — and draft authoring is a
+//! mutation. So the obligation covers the six mutating authoring routes and the
+//! enumeration covers one of them (`abandon`, by D-145).
+//!
+//! [`AuditAction::Create`], [`AuditAction::Update`] and [`AuditAction::Delete`]
+//! are therefore **this module's spelling of a record the set requires and does
+//! not name**, in the `snake_case` shape D-158 fixes. D-158's own instruction is
+//! that "a slice that adds an audited record adds its token **here**", meaning
+//! the document — so the spelling is owed back to S5 §6 and is **reported rather
+//! than treated as declared**. It is not the same act as minting a wire code: an
+//! `action` is a stored discriminator on an additive vocabulary whose only reader
+//! (S12 `inst-he-read`'s Auditor-only sibling) does not exist yet, and the store
+//! is greenfield, so a document choosing a different verb costs a rename.
+//!
+//! The alternative was to leave five of six mutating routes writing nothing,
+//! which is the state the register classes *wrong now* over the state where the
+//! trail is visibly absent: `pricing_audit_log` is the store D-12 confines to the
+//! Auditor, and it answered "who changed this plan" with nothing,
+//! indistinguishably from "nobody did".
+//!
+//! ## There is no audit **read** surface, and that is Slice 12's
+//!
+//! `inst-au-read` puts the Auditor-only trail behind `audit × read`, paginated
+//! per D-125. Nothing in this crate reads `pricing_audit_log` outside the tests
+//! that verify the chain. So these records are written and, today, readable only
+//! by an operator with database access — which is worth knowing before treating
+//! the trail as an operator-facing feature.
 //!
 //! ## What is deliberately absent
 //!
@@ -104,24 +143,51 @@ const PRESENT: u8 = 0x01;
 
 /// What was done to the audited subject.
 ///
-/// One variant, because this group writes one kind of record. See the module
-/// doc for why the token is this module's own naming decision and why it is not
-/// the event name.
+/// Five variants, one per mutating path this crate has. See the module doc for
+/// why three of the spellings are owed back to S5 §6, and why the tokens are not
+/// the event names.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AuditAction {
+    /// A draft plan revision or a draft price row was authored.
+    Create,
+    /// A draft's content was replaced — a plan facet, or a price row's whole
+    /// content.
+    Update,
+    /// A never-published draft price row was removed (`inst-ps-nodelete` keeps
+    /// this off a published one).
+    Delete,
+    /// A plan's open draft revision was discarded — the flip, not a deletion
+    /// (D-145). It is a distinct action from [`AuditAction::Delete`] because the
+    /// row survives and its number stays consumed.
+    Abandon,
     /// A publish commit moved the subject into `published`.
     Publish,
 }
 
 impl AuditAction {
     /// Every action, stable order.
-    pub const ALL: &'static [Self] = &[Self::Publish];
+    ///
+    /// **Every entry here has a production writer**, which is D-158's constraint
+    /// and what `tests/sqlite_audit_chain.rs` asserts by walking this slice: a
+    /// vocabulary entry nobody writes reads as coverage to everyone who greps
+    /// for it.
+    pub const ALL: &'static [Self] = &[
+        Self::Create,
+        Self::Update,
+        Self::Delete,
+        Self::Abandon,
+        Self::Publish,
+    ];
 
     /// The persisted `action` token.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Delete => "delete",
+            Self::Abandon => "abandon",
             Self::Publish => "publish",
         }
     }
@@ -135,25 +201,93 @@ impl fmt::Display for AuditAction {
 
 /// What kind of thing the audited subject is.
 ///
-/// One variant, spelled as S5 §6 spells the same subject for
-/// `pricing_approval`; see the module doc.
+/// Both variants are spelled as S5 §6 spells the same subjects for
+/// `pricing_approval`, **verbatim** — unlike the three actions above, nothing
+/// here is minted. See the module doc.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AuditSubjectKind {
     /// One revision row of a plan — the `(plan_id, revision)` durable name.
     PlanRevision,
+    /// One price row, named by its `price_id`.
+    ///
+    /// Its **chain** is still the plan's (D-135 keys the segment on the audited
+    /// subject's *aggregate*, and a price row's aggregate is the plan it prices),
+    /// which is what makes "who changed this plan" one segment to walk rather
+    /// than a join.
+    PriceUnit,
 }
 
 impl AuditSubjectKind {
     /// Every subject kind, stable order.
-    pub const ALL: &'static [Self] = &[Self::PlanRevision];
+    pub const ALL: &'static [Self] = &[Self::PlanRevision, Self::PriceUnit];
 
     /// The persisted `subject_kind` token.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PlanRevision => "plan_revision",
+            Self::PriceUnit => "price_unit",
         }
+    }
+}
+
+/// Who caused a mutation and under which request — the audit fields a repository
+/// cannot derive from the row it is writing.
+///
+/// Threaded through every mutating repository call rather than defaulted, and
+/// there is **no unaudited form of any of them**: a second entry point that
+/// skipped the record would make `pricing_audit_log` a trail that is *silently*
+/// incomplete, which is strictly worse than one visibly absent because a reader
+/// cannot tell "nobody changed this" from "this path does not write".
+///
+/// `recorded_at` is the **caller's** instant for [`AuditRecord`]'s reason: the
+/// record is hashed over it, so a repository reading its own clock would make two
+/// records of one transaction disagree about when the transaction happened.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuditStamp {
+    /// **Pseudonymous** principal id of the acting operator (`inst-au-pii`).
+    pub actor_principal_id: Uuid,
+    /// When the mutation was recorded, UTC — the caller's instant.
+    pub recorded_at: DateTime<Utc>,
+    /// The correlation id of the causing request.
+    ///
+    /// `None` on every authoring route today, and that is a gap rather than a
+    /// choice: no correlation id reaches an Axum handler in this gear — the
+    /// publish path takes one as a parameter because its caller is in-process.
+    /// **Reported**, because `inst-au-complete` lists the correlation id among a
+    /// record's required fields.
+    pub correlation_id: Option<Uuid>,
+}
+
+/// A mutated subject's before/after state, as the audit record's `jsonb` columns
+/// hold it (`inst-au-complete`: before/after version refs).
+///
+/// One rendering for every audited subject in the crate — a plan revision, a
+/// price row, a publish commit — because a second one is a second answer to
+/// "what did this row look like". `pending_ref` is `Some` only on the publish
+/// commit's after-state, which is what connects that mutation to the
+/// addressability it produced; an auditor reading the record otherwise has the
+/// flip and no way to reach the version it landed in.
+///
+/// Wire keys `camelCase`, as the outbox payload's are.
+#[must_use]
+pub fn subject_state(
+    state: crate::domain::lifecycle::LifecycleState,
+    row_version: u64,
+    pending_ref: Option<&str>,
+) -> serde_json::Value {
+    match pending_ref {
+        Some(pending) => serde_json::json!({
+            "lifecycleState": state.as_str(),
+            "rowVersion": row_version,
+            "pendingVersionRef": pending,
+        }),
+        None => serde_json::json!({
+            "lifecycleState": state.as_str(),
+            "rowVersion": row_version,
+        }),
     }
 }
 

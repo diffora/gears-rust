@@ -35,11 +35,34 @@
 //! transaction**, so a committed ref always has a warm delta and the state
 //! "committed but unwarm" is not reachable. A version is therefore incomplete
 //! exactly while it still has a **pending** ref — which is what
-//! [`catalog_version_ref_repo::list_pending`] returns. The re-drive is
+//! [`catalog_version_ref_repo::list_pending_for_tenant`] returns. The re-drive is
 //! consequently the same read as the first warm, and this pass needs no
 //! "committed but incomplete" scan at all. **Reported**, because the plan this
 //! group was built from expected two reads and the finalize's position
 //! collapses them into one.
+//!
+//! # The scan is bounded per tenant, and the bound is a fact the pass acts on
+//! (D-163)
+//!
+//! One tenant at a time: `pending_tenants` finds the tenants holding a pending
+//! ref, and each is then read and resolved on its own. The bound has to be per
+//! tenant rather than per pass, because on a cross-tenant page ordered by request
+//! instant one tenant's stuck backlog fills the whole budget and what it defers
+//! is every **other** tenant's completions — their frontiers do not advance, so
+//! their publishes are unpinnable because someone else's are.
+//!
+//! Both bounds then feed [`PassCoverage`]: a tenant whose page **filled**, or one
+//! for which the registry **errored** on any ref, gets no completion decision
+//! this pass. The pass still resolves and warms everything it holds; what it does
+//! not do is count a subject set it knows is partial. The frontier lags, which is
+//! the safe direction, and `pin_eligibility_overdue` is what says so out loud.
+//!
+//! **Two numbers and an order, and they are the owner's** — D-163 hands them to
+//! §F.2 rather than choosing them. `jobs.pending_refs_per_tenant` defaults to the
+//! 500 this module used to spend cross-tenant;
+//! `jobs.pending_tenants_per_pass` defaults to 250, and past it the tail of the
+//! tenant order is not swept at all. The order is ascending tenant id and is not
+//! rotating, which would need a cursor no table in §3.7 carries. **Reported.**
 //!
 //! # The two alarms, and the sink that does not exist
 //!
@@ -63,23 +86,46 @@
 //! precisely §4.4's own "no new event name is introduced; consumers observe
 //! completion via the marker". No column, no flag. **Reported as a gap.**
 //!
-//! # The degraded threshold is the batching SLO, because the 5s one is not
-//! measurable here
+//! # The two signals measure two waits, and the instant that separates them
+//! (D-166)
 //!
-//! §1.2 marks a publish degraded when post-commit warming misses the **5s**
-//! SLO. In this gear the warm cannot begin until the registry commits the
-//! batch, and D-47 budgets that at p95 <= 60s and **max 5 minutes** — so
-//! measuring 5s from the only instant this store records (`requested_at`, the
-//! moment the handle was requested inside the publish transaction) would mark
-//! **every** publish degraded, including every one behaving exactly as
-//! designed. The instant that would make the 5s rule measurable is when
-//! `CatalogVersionPublished` fired, and nothing records it: `committed_at` on
-//! the ref row is stamped by *this* pass's finalize, i.e. at the warm, so it
-//! cannot bound the warm.
+//! `commit_observed_at` on the ref row is **when this gear first saw the
+//! registry's answer** for that handle. The sweep stamps it the moment
+//! `committed_version` answers `Ok(Some(_))`, in a statement of its own, before
+//! and regardless of whether the projection then lands. That placement is the
+//! whole mechanism: the projector writes a subject's delta warm in the **same
+//! transaction that finalizes its ref**, so "committed but unwarm" is not a
+//! state this store can hold and the observation has to be **recorded** rather
+//! than derived from the ref's committed-ness.
 //!
-//! The threshold used is therefore `config.jobs.catalog_version_overdue_after()`
-//! — the ratified max batching delay, the same one `commit_overdue` uses.
-//! **Reported.**
+//! With it the two Critical signals stop overlapping:
+//!
+//! - **`PlanPublishDegraded`** — the ref is still unresolved, its commit **has**
+//!   been observed, and that observation is older than §1.2's **5s** propagation
+//!   SLO (`config.jobs.readmodel_degraded_after()`). This is the condition
+//!   `fr-publish-fanout-atomicity` states and the batching wait is now outside
+//!   it by construction rather than by hope.
+//! - **`pricing.catalogversion.commit_overdue`** — the ref is pending, **not yet
+//!   observed committed**, past the max batching-delay SLO
+//!   (`config.jobs.catalog_version_overdue_after()`). The registry has not
+//!   answered.
+//!
+//! The two are disjoint over one clock, which is the defect they were: an
+//! earlier version of this module measured **both** against the batching SLO —
+//! correctly for its own information, having no post-commit instant — so an
+//! operator could not tell "the registry has not answered" from "the registry
+//! answered and the warm is failing", the one distinction
+//! `fr-publish-fanout-atomicity` exists to draw. Nothing goes silent in the
+//! split: the four `(pending?, observed?, age)` states each land on exactly one
+//! signal or none, and either failing state also holds the frontier and is
+//! reported by `pin_eligibility_overdue`.
+//!
+//! `commit_observed_at` is an **upper bound** on the registry's commit — the
+//! observation lags it by at most one sweep pass — so the degraded signal is
+//! **late rather than false**, which is the safe direction for a Critical. The
+//! accurate form is the registry supplying its own commit instant with the
+//! version, and that is the registry gear's owed half of D-163's adoption, not
+//! something this gear can approximate any closer.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -96,41 +142,12 @@ use crate::domain::error::DomainError;
 use crate::domain::ports::{CatalogVersionRegistryError, CatalogVersionRegistryV1};
 use crate::domain::read_model::SubjectKind;
 use crate::domain::scope_key::PlanId;
-use crate::infra::read_model::ReadModelProjector;
+use crate::infra::read_model::{PassCoverage, ReadModelProjector};
 use crate::infra::storage::repo::{
     NewOutboxEvent, PendingVersionRow, PlanPublishDegradedPayload, catalog_version_ref_repo,
     outbox_repo, pin_frontier_repo,
 };
 use crate::infra::storage::repo_failure;
-
-/// The `pricing_catalog_version_ref` rows one pass will look at.
-///
-/// Bounded because the sweep runs every few seconds across every tenant of a
-/// deployment, and an unbounded backlog read into memory would turn a transient
-/// registry outage into a memory problem.
-///
-/// **Two costs of the bound, both real, neither fixed here.**
-///
-/// The read is **cross-tenant and oldest-first**, so it is FIFO by request
-/// instant across the whole deployment: a tenant holding the oldest 500 refs
-/// delays every other tenant's publishes until its backlog drains. That is fair
-/// and it is slow, and it is a starvation an earlier version of this doc denied
-/// ("nothing is starved by a steady arrival rate") on the strength of the
-/// ordering alone — which says only that nothing is starved *within* a tenant.
-///
-/// A version whose refs **straddle the page boundary** is split across passes,
-/// so the first pass sees a partial subject set and can declare the version
-/// complete. That one is a correctness risk rather than a latency one, and it
-/// is not left to a premise: `refuse_projection_below_frontier` in
-/// [`crate::infra::read_model`] refuses the straggler loudly when it arrives at
-/// a version the frontier has already passed.
-///
-/// Both are **reported and deferred**. Fixing the first needs a per-tenant
-/// fairness policy (round-robin, or a per-tenant cap) that no document in the
-/// set states; fixing the second needs the page to be closed under version,
-/// which cannot be expressed while a pending ref carries no version. Neither
-/// belongs in a guess made here.
-const PENDING_SCAN_LIMIT: u64 = 500;
 
 /// The `pricing_pin_frontier` rows one pass reads for the pin-eligibility
 /// alarm. One row per tenant that has ever completed a version, so this bounds
@@ -145,16 +162,38 @@ const ALARM_COMMIT_OVERDUE: &str = "pricing.catalogversion.commit_overdue";
 /// within the same SLO. Likewise the design set's string.
 const ALARM_PIN_ELIGIBILITY_OVERDUE: &str = "pricing.readmodel.pin_eligibility_overdue";
 
+/// What the registry answered for one tenant's pending refs.
+///
+/// The two halves are one value because they are one fact about the pass: which
+/// versions it may project, and whether it is entitled to judge any of them
+/// complete (D-163 clause 2). Splitting them invites a caller to take the map and
+/// forget the qualification, which is the defect.
+#[derive(Default)]
+struct Resolution {
+    /// Refs grouped by the version the registry answered, ascending.
+    by_version: BTreeMap<CatalogVersion, Vec<PendingVersionRow>>,
+    /// At least one ref of this tenant could **not** be resolved this pass — a
+    /// registry error, not an `Ok(None)`.
+    any_unresolved: bool,
+}
+
 /// What one pass did. Returned rather than only logged so the suite can assert
 /// the pass's behaviour instead of scraping its output.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SweepReport {
     /// The pass returned early because no registry is wired.
     pub inert: bool,
-    /// Pending refs read this pass.
+    /// Tenants holding a pending ref that this pass swept.
+    pub tenants_seen: u64,
+    /// Pending refs read this pass, summed over those tenants.
     pub pending_seen: u64,
     /// Distinct `(tenant, version)` pairs handed to the projector.
     pub versions_projected: u64,
+    /// Versions this pass ended up judging **complete** — the decision the
+    /// D-163 completeness bound gates, carried separately from
+    /// [`SweepReport::frontiers_advanced`] because a complete version whose
+    /// predecessor is outstanding advances nothing and is still complete.
+    pub versions_complete: u64,
     /// Subjects the projector actually wrote a delta for.
     pub subjects_projected: u64,
     /// Subjects whose own transaction refused. Their refs stay pending.
@@ -196,69 +235,190 @@ impl ReadModelWarmJob {
         }
     }
 
-    /// Run one pass.
+    /// Run one pass, **tenant by tenant**.
     ///
-    /// Cross-tenant under [`AccessScope::allow_all`] with the system actor
+    /// Read under [`AccessScope::allow_all`] with the system actor
     /// [`SecurityContext::anonymous`], narrowing to `AccessScope::for_tenant`
     /// before every per-tenant write — the sanctioned pattern the sibling
     /// ledger's jobs document.
     ///
-    /// A per-version projection fault is **isolated**: it is logged and the
-    /// pass continues, because one tenant's unprojectable plan must not stop
-    /// every other tenant's publishes from becoming pinnable. The ref stays
-    /// pending, so the next tick re-drives it and its age eventually trips
-    /// `commit_overdue`.
+    /// # Why the shape is per tenant and not one cross-tenant page
+    ///
+    /// The pending scan has to be bounded, and D-163 clause (2) says the bound
+    /// is **per tenant**. On a cross-tenant page ordered by request instant one
+    /// tenant's stuck backlog fills the whole budget, and what it defers is every
+    /// other tenant's **completions** — so their frontiers do not advance and
+    /// their publishes are unpinnable because someone else's are. That is not a
+    /// latency detail; it is one tenant's outage becoming another's.
+    ///
+    /// A per-tenant fault is **isolated**: it is logged and the pass moves to
+    /// the next tenant. The refs stay pending, so the next tick re-drives them.
+    /// The one thing that stops the whole pass is an **unconfigured** registry,
+    /// which is a deployment state rather than a fault.
+    ///
+    /// `pin_eligibility_overdue` is evaluated once at the end over the union of
+    /// every tenant's still-pending refs, because its first half is a
+    /// **cross-tenant** frontier read: a per-tenant read cannot find a tenant
+    /// whose frontier is stale precisely because nothing of it has moved.
     ///
     /// # Errors
-    /// [`DomainError::Internal`] only when the pass cannot start — the pending
-    /// read itself failing. Everything after that is isolated within the pass.
+    /// [`DomainError::Internal`] only when the pass cannot start — the tenant
+    /// discovery read itself failing. Everything after that is isolated within
+    /// the pass.
     pub async fn run(&self, now: DateTime<Utc>) -> Result<SweepReport, DomainError> {
         let conn = self
             .db
             .conn()
             .map_err(|e| DomainError::Internal(format!("bss-pricing: warm sweep: {e}")))?;
-        let pending = catalog_version_ref_repo::list_pending(
+        let tenants = catalog_version_ref_repo::pending_tenants(
             &conn,
             &AccessScope::allow_all(),
-            PENDING_SCAN_LIMIT,
+            self.jobs.pending_tenants_per_pass,
         )
         .await
         .map_err(|e| repo_failure(&e))?;
 
         let mut report = SweepReport {
-            pending_seen: as_count(pending.len()),
+            tenants_seen: as_count(tenants.len()),
             ..SweepReport::default()
         };
-        if pending.is_empty() {
+        if tenants.is_empty() {
             return Ok(report);
         }
-        let Some(resolved) = self.resolve(&pending, &mut report).await else {
-            return Ok(report);
-        };
-        self.project_all(resolved, now, &mut report).await;
-
-        // Re-read, because the predicate sec 3.6 states is "**still** pending
-        // past the max batching delay" and the pass has just resolved some of
-        // them. Evaluating it on the answer the registry gave, as an earlier
-        // version did, left two whole classes silent: a registry that
-        // **errors**, and a ref the registry **has** committed whose projection
-        // keeps failing - which is exactly sec 4.4's "a stuck version now holds
-        // the frontier, which is exactly what that alarm signals". Evaluating it
-        // on the pre-pass snapshot instead would alarm for refs this very pass
-        // fixed. One bounded query answers the predicate as written.
-        let still_pending = catalog_version_ref_repo::list_pending(
-            &conn,
-            &AccessScope::allow_all(),
-            PENDING_SCAN_LIMIT,
-        )
-        .await
-        .map_err(|e| repo_failure(&e))?;
-        for row in &still_pending {
-            self.observe_overdue(row, now, &mut report).await;
+        let mut still_pending: Vec<PendingVersionRow> = Vec::new();
+        for tenant_id in tenants {
+            if !self
+                .sweep_tenant(&conn, tenant_id, now, &mut report, &mut still_pending)
+                .await
+            {
+                return Ok(report);
+            }
         }
         self.observe_pin_eligibility(&conn, &still_pending, now, &mut report)
             .await;
         Ok(report)
+    }
+
+    /// One tenant's whole pass: read its pending refs, resolve them, project
+    /// what the registry answered, and observe the two signals over what is
+    /// still pending afterwards.
+    ///
+    /// Returns `false` only for an **unconfigured** registry, which stops the
+    /// whole sweep; every other failure is isolated to this tenant and answers
+    /// `true`.
+    async fn sweep_tenant(
+        &self,
+        conn: &impl DBRunner,
+        tenant_id: Uuid,
+        now: DateTime<Utc>,
+        report: &mut SweepReport,
+        still_pending: &mut Vec<PendingVersionRow>,
+    ) -> bool {
+        let bound = self.jobs.pending_refs_per_tenant;
+        let Some(pending) = self.read_pending(conn, tenant_id, bound).await else {
+            return true;
+        };
+        if pending.is_empty() {
+            return true;
+        }
+        report.pending_seen += as_count(pending.len());
+
+        // A full page means refs this pass did not see, so no version of this
+        // tenant may be judged complete (D-163 clause 2). The count the read
+        // already returned says it; no second query is needed to ask.
+        let saturated = as_count(pending.len()) >= bound;
+        let Some(resolution) = self.resolve(conn, &pending, now, report).await else {
+            return false;
+        };
+        let coverage = if saturated {
+            PassCoverage::ScanSaturated
+        } else if resolution.any_unresolved {
+            PassCoverage::RefUnresolved
+        } else {
+            PassCoverage::Whole
+        };
+        // The answers this pass got, by handle. The degraded emission names the
+        // publish by its plan and **version** (D-166), and this is where the
+        // version is: the ref row cannot carry it while the row is still
+        // pending, and the condition being observable at all means some pass
+        // asked the registry - which is this one, for every pending ref.
+        let observed: BTreeMap<String, CatalogVersion> = resolution
+            .by_version
+            .iter()
+            .flat_map(|(version, rows)| {
+                rows.iter()
+                    .map(move |row| (row.pending_ref.clone(), *version))
+            })
+            .collect();
+        self.project_all(tenant_id, resolution.by_version, coverage, now, report)
+            .await;
+        self.observe_tenant(conn, tenant_id, &observed, now, report, still_pending)
+            .await;
+        true
+    }
+
+    /// One tenant's oldest pending refs, or `None` when the read itself failed —
+    /// which is isolated to this tenant rather than ending the pass.
+    async fn read_pending(
+        &self,
+        conn: &impl DBRunner,
+        tenant_id: Uuid,
+        bound: u64,
+    ) -> Option<Vec<PendingVersionRow>> {
+        match catalog_version_ref_repo::list_pending_for_tenant(
+            conn,
+            &AccessScope::allow_all(),
+            tenant_id,
+            bound,
+        )
+        .await
+        {
+            Ok(rows) => Some(rows),
+            Err(e) => {
+                tracing::error!(
+                    error = ?e,
+                    tenant_id = %tenant_id,
+                    "bss-pricing: could not read a tenant's pending refs; the pass continues with \
+                     the next tenant and this one is re-driven next tick"
+                );
+                None
+            }
+        }
+    }
+
+    /// Raise the two per-ref signals over what is **still** pending for this
+    /// tenant after its projections, and collect those rows for the
+    /// pin-eligibility pass.
+    ///
+    /// The re-read is load-bearing: the predicate §3.6 states is "**still**
+    /// pending past the max batching delay", and this pass has just resolved some
+    /// of them. Evaluating it on the registry's answer instead — as an earlier
+    /// version did — left two whole classes silent: a registry that **errors**,
+    /// and a ref the registry **has** committed whose projection keeps failing,
+    /// which is exactly §4.4's "a stuck version now holds the frontier".
+    /// Evaluating it on the pre-pass snapshot would alarm for refs this very pass
+    /// fixed.
+    async fn observe_tenant(
+        &self,
+        conn: &impl DBRunner,
+        tenant_id: Uuid,
+        observed: &BTreeMap<String, CatalogVersion>,
+        now: DateTime<Utc>,
+        report: &mut SweepReport,
+        still_pending: &mut Vec<PendingVersionRow>,
+    ) {
+        let Some(rows) = self
+            .read_pending(conn, tenant_id, self.jobs.pending_refs_per_tenant)
+            .await
+        else {
+            return;
+        };
+        for row in &rows {
+            self.observe_commit_overdue(row, now, report);
+            self.observe_degraded(row, observed.get(&row.pending_ref), now, report)
+                .await;
+        }
+        still_pending.extend(rows);
     }
 
     /// Raise `pricing.readmodel.pin_eligibility_overdue` on the **frontier's
@@ -358,18 +518,33 @@ impl ReadModelWarmJob {
     /// defect, and a pass alarming about it every five seconds would drown the
     /// boot that depends on it.
     ///
-    /// Grouping into a `BTreeMap` keyed `(tenant, version)` is what makes a
-    /// tenant's versions arrive in **ascending** order at the projector, so the
-    /// frontier's next-version-in-order check never sees a gap this very pass
-    /// is about to fill.
+    /// Grouping into a `BTreeMap` keyed by version is what makes a tenant's
+    /// versions arrive in **ascending** order at the projector, so the frontier's
+    /// next-version-in-order check never sees a gap this very pass is about to
+    /// fill.
+    ///
+    /// **The commit observation is stamped here** (D-166 clause 1), on the
+    /// `Ok(Some(_))` arm, in a statement of its own **before** any projection is
+    /// attempted. That is not tidiness: the finalize and the warm share one
+    /// transaction, so an observation written inside it would roll back on
+    /// exactly the path — a committed version whose projection keeps failing —
+    /// that the degraded signal exists to name. A stamp that failed to write is
+    /// logged and the resolution continues: the next pass re-observes, so the
+    /// signal is delayed by a tick rather than lost.
+    ///
+    /// **A registry error is recorded as coverage, not only logged** (D-163
+    /// clause 2). It leaves a sibling of some version at an unknown version, so
+    /// this pass may not judge any of this tenant's versions complete — see
+    /// [`PassCoverage`] for why `Ok(None)` is not the same fact.
     async fn resolve(
         &self,
+        conn: &impl DBRunner,
         pending: &[PendingVersionRow],
+        now: DateTime<Utc>,
         report: &mut SweepReport,
-    ) -> Option<BTreeMap<(Uuid, CatalogVersion), Vec<PendingVersionRow>>> {
+    ) -> Option<Resolution> {
         let ctx = SecurityContext::anonymous();
-        let mut resolved: BTreeMap<(Uuid, CatalogVersion), Vec<PendingVersionRow>> =
-            BTreeMap::new();
+        let mut resolution = Resolution::default();
         for row in pending {
             match self
                 .registry
@@ -387,49 +562,103 @@ impl ReadModelWarmJob {
                 Err(e) => {
                     // A configured registry that cannot answer is a transient
                     // outage, not a catalog defect: the ref stays pending and
-                    // its age is what eventually alarms.
+                    // its age is what eventually alarms. What the outage DOES
+                    // cost is this pass's right to judge completeness, because a
+                    // ref of unknown version may belong to a version this pass
+                    // is about to call complete.
                     tracing::warn!(
                         error = %e,
                         pending_ref = %row.pending_ref,
-                        "bss-pricing: registry could not resolve a pending version ref"
+                        "bss-pricing: registry could not resolve a pending version ref; no \
+                         completion is decided for this tenant on this pass"
                     );
+                    resolution.any_unresolved = true;
                 }
                 // Not committed yet. Not an error and not an alarm here - the
                 // registry batches, and the wait is budgeted. Its age is
                 // observed by the pass, uniformly with every other answer.
                 Ok(None) => {}
-                Ok(Some(version)) => resolved
-                    .entry((row.tenant_id, version))
-                    .or_default()
-                    .push(row.clone()),
+                Ok(Some(version)) => {
+                    self.observe_commit(conn, row, now).await;
+                    resolution
+                        .by_version
+                        .entry(version)
+                        .or_default()
+                        .push(row.clone());
+                }
             }
         }
-        Some(resolved)
+        Some(resolution)
     }
 
-    /// Drive the projector over every resolved version, isolating faults.
+    /// Stamp `commit_observed_at` on a ref whose commit this pass has just seen.
     ///
-    /// A per-version failure is logged and the pass continues: one tenant's
-    /// unprojectable plan must not stop every other tenant's publishes from
-    /// becoming pinnable. The ref stays pending, so the next tick re-drives it
-    /// and its age eventually trips `commit_overdue`.
+    /// Write-once in the repository, so the instant stays the **first** sighting:
+    /// a stamp that advanced every pass would hold the degraded clock at zero
+    /// forever and the signal would never raise.
+    ///
+    /// Under the tenant's own scope, not the system one — the same narrowing
+    /// every other per-tenant write in this pass does.
+    async fn observe_commit(
+        &self,
+        conn: &impl DBRunner,
+        row: &PendingVersionRow,
+        now: DateTime<Utc>,
+    ) {
+        if row.commit_observed_at.is_some() {
+            return;
+        }
+        let scope = AccessScope::for_tenant(row.tenant_id);
+        if let Err(e) = catalog_version_ref_repo::observe_commit(
+            conn,
+            &scope,
+            row.tenant_id,
+            &row.pending_ref,
+            now,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = ?e,
+                pending_ref = %row.pending_ref,
+                "bss-pricing: could not record the commit observation; the next pass re-observes \
+                 and the degraded signal is a tick late rather than lost"
+            );
+        }
+    }
+
+    /// Drive the projector over every version this tenant resolved into,
+    /// isolating faults.
+    ///
+    /// A per-version failure is logged and the pass continues: one unprojectable
+    /// plan must not stop the tenant's other publishes from becoming pinnable.
+    /// The ref stays pending, so the next tick re-drives it and its age
+    /// eventually trips `commit_overdue`.
+    ///
+    /// `coverage` rides through unchanged; the projector is where it gates the
+    /// completeness decision, because that is where both decisions are made.
     async fn project_all(
         &self,
-        resolved: BTreeMap<(Uuid, CatalogVersion), Vec<PendingVersionRow>>,
+        tenant_id: Uuid,
+        by_version: BTreeMap<CatalogVersion, Vec<PendingVersionRow>>,
+        coverage: PassCoverage,
         now: DateTime<Utc>,
         report: &mut SweepReport,
     ) {
-        for ((tenant_id, version), rows) in resolved {
-            let scope = AccessScope::for_tenant(tenant_id);
+        let scope = AccessScope::for_tenant(tenant_id);
+        for (version, rows) in by_version {
             match self
                 .projector
-                .project_version(&scope, tenant_id, version, &rows, now)
+                .project_version(&scope, tenant_id, version, &rows, coverage, now)
                 .await
             {
                 Ok(outcome) => {
                     report.versions_projected += 1;
                     report.subjects_projected += as_count(outcome.projected);
                     report.subjects_failed += as_count(outcome.failed);
+                    if outcome.complete {
+                        report.versions_complete += 1;
+                    }
                     if outcome.frontier_advanced_to.is_some() {
                         report.frontiers_advanced += 1;
                     }
@@ -445,18 +674,29 @@ impl ReadModelWarmJob {
         }
     }
 
-    /// A ref that was still waiting when this pass read it: alarm on its age,
-    /// and mark its publish degraded once.
+    /// **The registry has not answered.** A ref pending, its commit **not yet
+    /// observed**, past the max batching-delay SLO — §3.6's predicate as D-166
+    /// clause (4) narrows it.
     ///
-    /// Evaluated for **every** pending ref of the pass, whatever the registry
-    /// answered — see [`ReadModelWarmJob::run`] for the two classes an
-    /// answer-conditioned version left silent.
-    async fn observe_overdue(
+    /// The narrowing is the whole of the D-166 repair on this side: without it
+    /// this alarm also fires on a ref the registry *has* committed whose warm is
+    /// failing, which is a different fault with a different remedy, and an
+    /// operator holding both under one string cannot tell which they have.
+    ///
+    /// Evaluated for every still-pending ref whatever the registry said **this**
+    /// pass, because the qualification is on the row's recorded observation and
+    /// not on this pass's answer: a registry that errors leaves a ref ageing
+    /// with no observation, which is exactly the outage the alarm most needs to
+    /// name.
+    fn observe_commit_overdue(
         &self,
         row: &PendingVersionRow,
         now: DateTime<Utc>,
         report: &mut SweepReport,
     ) {
+        if row.commit_observed_at.is_some() {
+            return;
+        }
         let waited = now.signed_duration_since(row.requested_at);
         let Ok(threshold) = chrono::Duration::from_std(self.jobs.catalog_version_overdue_after())
         else {
@@ -474,11 +714,49 @@ impl ReadModelWarmJob {
             subject_ref = %row.subject_ref,
             waited_secs = waited.num_seconds(),
             "bss-pricing: a catalog version request has stood pending past the max batching \
-             delay; remediation is a registry re-request, never a silent re-emit"
+             delay with no answer from the registry; remediation is a registry re-request, never \
+             a silent re-emit"
         );
         report.commit_overdue += 1;
+    }
 
-        if self.mark_degraded(row, now).await {
+    /// **The registry answered and the warm has not landed.** A ref still
+    /// unresolved whose commit **was** observed, older than §1.2's 5s
+    /// propagation SLO — `fr-publish-fanout-atomicity`'s own condition, D-166
+    /// clause (2).
+    ///
+    /// `observed` is this pass's answer for the handle, and it is what names the
+    /// version in the event's dedup key. It is absent only when the registry
+    /// errored for this specific ref on this pass, having answered on an earlier
+    /// one; the emission then waits for the next pass rather than being keyed on
+    /// something else, because a second keying of one degradation is a second
+    /// event for it.
+    async fn observe_degraded(
+        &self,
+        row: &PendingVersionRow,
+        observed: Option<&CatalogVersion>,
+        now: DateTime<Utc>,
+        report: &mut SweepReport,
+    ) {
+        let Some(seen_at) = row.commit_observed_at else {
+            return;
+        };
+        let Ok(threshold) = chrono::Duration::from_std(self.jobs.readmodel_degraded_after()) else {
+            return;
+        };
+        if now.signed_duration_since(seen_at) < threshold {
+            return;
+        }
+        let Some(version) = observed.copied() else {
+            tracing::debug!(
+                pending_ref = %row.pending_ref,
+                "bss-pricing: a degraded publish's version is unknown this pass (the registry did \
+                 not answer); the emission waits for the next one"
+            );
+            return;
+        };
+
+        if self.mark_degraded(row, version, seen_at, now).await {
             report.degraded_emitted += 1;
         }
     }
@@ -527,7 +805,13 @@ impl ReadModelWarmJob {
     /// this gear, so no publish unit here can have produced one, and the
     /// projector refuses them by name rather than this pass inventing an event
     /// for a subject that cannot exist.
-    async fn mark_degraded(&self, row: &PendingVersionRow, now: DateTime<Utc>) -> bool {
+    async fn mark_degraded(
+        &self,
+        row: &PendingVersionRow,
+        catalog_version: CatalogVersion,
+        commit_observed_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> bool {
         if row.subject_kind != SubjectKind::Plan {
             return false;
         }
@@ -536,8 +820,9 @@ impl ReadModelWarmJob {
         };
         let payload = PlanPublishDegradedPayload {
             plan_id: PlanId::new(plan_id),
+            catalog_version,
             pending_version_ref: row.pending_ref.clone(),
-            requested_at: row.requested_at,
+            commit_observed_at,
             correlation_id: Uuid::now_v7(),
         };
         let scope = AccessScope::for_tenant(row.tenant_id);

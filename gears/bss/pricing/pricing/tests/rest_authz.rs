@@ -250,6 +250,64 @@ async fn the_census_covers_every_route_the_routers_register() {
     );
 }
 
+/// Every `.rs` file at or under `src/api/rest`, **recursively**.
+///
+/// Recursive because the earlier version of this scan read one directory level,
+/// so any file in a future `src/api/rest/**` subdirectory evaded it entirely -
+/// and a guard that a reorganisation switches off silently is a guard that reads
+/// as coverage to everyone who greps for it.
+fn rest_sources() -> Vec<std::path::PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/rest");
+    let mut found = vec![root.with_extension("rs")];
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the REST layer is where it has always been") {
+            let path = entry.expect("readable dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The source of `path` with `//` comments and every `#![…]`/`#[…]` line dropped,
+/// joined into one string so a declaration split across lines is one subject.
+///
+/// Comments are stripped because this file's own prose names the type it bans,
+/// and a scan that matched its own explanation would have to be weakened until it
+/// matched nothing.
+fn scannable(path: &std::path::Path) -> String {
+    let stripped = std::fs::read_to_string(path)
+        .expect("readable source")
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    normalized(&stripped)
+}
+
+/// One line, whitespace collapsed and **removed around every `::`**.
+///
+/// The path separator is where a formatter is free to break, so
+/// `AccessScope\n    ::allow_all()` and `AccessScope::allow_all()` are one
+/// construction written two ways. A scan that could not see that was one a
+/// `cargo fmt` could switch off.
+fn normalized(source: &str) -> String {
+    source
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" ::", "::")
+        .replace(":: ", "::")
+}
+
 #[test]
 fn no_handler_can_build_an_access_scope_of_its_own() {
     // What makes "the authz gate before the repository" falsifiable rather than a
@@ -263,33 +321,37 @@ fn no_handler_can_build_an_access_scope_of_its_own() {
     //
     // The real guarantee is structural - every repository method takes a
     // `&AccessScope`, and the only producer of one on a REST path is
-    // `crate::authz::access_scope`, which *is* the gate. This asserts exactly
-    // that: no file under `src/api/rest/` may **construct** an `AccessScope`.
-    // It is a stronger anchor than banning `allow_all` alone, because
-    // `AccessScope::for_tenant` would be just as much of a bypass and reads far
-    // more innocent. Type positions (`scope: &AccessScope`) are untouched - the
-    // pattern is the `::` of a constructor call.
-    let rest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/rest");
+    // `crate::authz::access_scope`, which *is* the gate.
+    //
+    // # What the earlier version of this scan could not see
+    //
+    // It matched the literal `AccessScope::` line by line over one directory
+    // level, so four things evaded it: an alias (`use … AccessScope as Reach`), a
+    // qualified call (`<AccessScope>::for_tenant`), a declaration split across
+    // lines, and any file in a subdirectory. This one bans the **import** rather
+    // than one spelling of the call: a file that cannot name the type in a value
+    // position cannot construct one, whatever it calls it - and a type position
+    // (`scope: &AccessScope`) needs the import too, which is why the test asserts
+    // what the import is *used for* rather than that it is absent.
     let mut offenders: Vec<String> = Vec::new();
-
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&rest)
-        .expect("the REST layer is where it has always been")
-        .map(|entry| entry.expect("readable dir entry").path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-        .collect();
-    files.push(rest.with_extension("rs"));
+    let files = rest_sources();
     assert!(files.len() > 5, "the scan found almost nothing: {files:?}");
 
-    for path in files {
-        let source = std::fs::read_to_string(&path).expect("readable source");
-        for (number, line) in source.lines().enumerate() {
-            if line.contains("AccessScope::") {
-                offenders.push(format!(
-                    "{}:{}: {}",
-                    path.display(),
-                    number + 1,
-                    line.trim()
-                ));
+    for path in &files {
+        let source = scannable(path);
+        // Any construction reachable from this file, under any name the file gave
+        // the type. `AccessScope` cannot be built without naming it or an alias of
+        // it, and an alias is established by an import this scan reads.
+        let aliases = access_scope_names(&source);
+        for alias in &aliases {
+            for pattern in [
+                format!("{alias}::"),
+                format!("<{alias}>::"),
+                format!("{alias} {{"),
+            ] {
+                if source.contains(&pattern) {
+                    offenders.push(format!("{}: {pattern}", path.display()));
+                }
             }
         }
     }
@@ -299,6 +361,68 @@ fn no_handler_can_build_an_access_scope_of_its_own() {
         "a handler that builds its own AccessScope has bypassed the PEP; the only producer on \
          a REST path is `crate::authz::access_scope`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// Every name `source` can refer to `AccessScope` by — the type's own name, plus
+/// whatever an `as` clause renamed it to.
+///
+/// A file that never imports the type at all yields nothing to look for, which is
+/// correct: it cannot construct one.
+fn access_scope_names(source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    if !source.contains("AccessScope") {
+        return names;
+    }
+    names.push("AccessScope".to_owned());
+    // `use … AccessScope as Reach` — the alias is the token after `as`.
+    let mut rest = source;
+    while let Some(at) = rest.find("AccessScope as ") {
+        let tail = &rest[at + "AccessScope as ".len()..];
+        let alias: String = tail
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !alias.is_empty() {
+            names.push(alias);
+        }
+        rest = tail;
+    }
+    names
+}
+
+#[test]
+fn the_scan_would_catch_each_evasion_the_earlier_one_missed() {
+    // A guard's own falsifiability. Each string below is a construction the
+    // line-by-line literal scan let through, and each must be caught now -
+    // otherwise the fix is a comment.
+    for evasion in [
+        "use toolkit_db::secure::AccessScope as Reach; let s = Reach::allow_all();",
+        "let s = <AccessScope>::for_tenant(t);",
+        "use toolkit_db::secure::AccessScope; let s = AccessScope\n    ::allow_all();",
+    ] {
+        let joined = normalized(&evasion.lines().collect::<Vec<_>>().join(" "));
+        let aliases = access_scope_names(&joined);
+        let caught = aliases.iter().any(|alias| {
+            joined.contains(&format!("{alias}::")) || joined.contains(&format!("<{alias}>::"))
+        });
+        assert!(caught, "this evasion is not caught: {evasion}");
+    }
+}
+
+#[test]
+fn the_scan_reads_more_than_one_directory_level() {
+    // The other half of the earlier scan's blindness. `read_dir` is not
+    // recursive, so a `src/api/rest/**` subdirectory was invisible - and this
+    // asserts the walk descends rather than that it happens to find enough files.
+    let files = rest_sources();
+    assert!(
+        files.iter().any(|path| path.ends_with("api/rest/plans.rs")),
+        "the walk missed a file it must see: {files:?}"
+    );
+    assert!(
+        files.iter().any(|path| path.ends_with("api/rest.rs")),
+        "including the module root: {files:?}"
     );
 }
 
