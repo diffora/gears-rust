@@ -64,8 +64,9 @@ pub mod rules;
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::scope_key::PlanId;
-use crate::domain::snapshot::VersionRef;
+use crate::domain::snapshot::{PricingSnapshotRef, VersionRef};
 
 /// The subject of a plan publish: one revision of one plan.
 ///
@@ -250,6 +251,24 @@ impl PublishReceipt {
     #[must_use]
     pub const fn audit_seq(&self) -> u64 {
         self.audit_seq
+    }
+
+    /// The catalog-side `pricingSnapshotRef` this commit stamped — all three
+    /// segments (D-162).
+    ///
+    /// The evaluation-policy generation is taken from the constant rather than
+    /// carried in the receipt: it is the publishing gear's, not the publish's,
+    /// so there is no call site that could stamp a period with a semantics its
+    /// rows were never frozen under. The version ref is still structurally
+    /// pending; `CatalogVersionPublished` finalizes it through
+    /// [`PricingSnapshotRef::finalize`].
+    #[must_use]
+    pub fn snapshot_ref(&self) -> PricingSnapshotRef {
+        PricingSnapshotRef::new(
+            self.version_ref.clone(),
+            self.published_price_ids.clone(),
+            EVALUATION_POLICY_GENERATION.to_owned(),
+        )
     }
 }
 

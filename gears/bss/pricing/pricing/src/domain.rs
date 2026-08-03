@@ -7,6 +7,7 @@
 pub mod audit;
 pub mod concurrency;
 pub mod error;
+pub mod evaluation_policy;
 pub mod events;
 pub mod instant;
 pub mod lifecycle;

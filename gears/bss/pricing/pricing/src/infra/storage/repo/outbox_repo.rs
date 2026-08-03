@@ -47,18 +47,23 @@
 //! spelling *would* be caught — but caught as a driver error inside a publish
 //! transaction, which is not where a frozen contract should be discovered.
 //!
-//! # A gap this file names and does not fill
+//! # A gap this file named, and what filled it
 //!
 //! [`PricingSnapshotRef`](crate::domain::snapshot::PricingSnapshotRef) has three
 //! parts: the version ref, the resolved price ids, and an
-//! `evaluation_policy_version`. The commit produces the first two.
-//! **Nothing in this gear produces the third, and no document says what does** —
-//! `01-foundation.md` §4.4 and `fr-pricing-snapshot` both name the field, and no
-//! section names its source or its format. So [`PlanPublishedPayload`] carries
-//! the two halves the commit genuinely has and **does not** stamp a snapshot
-//! ref: a placeholder in a published payload is a value a consumer would pin
-//! against, and the first thing that pins against an invented policy version is
-//! the last thing that can tell it was invented.
+//! `evaluation_policy_version`. Until D-162 the commit produced the first two
+//! and this file stamped nothing for the third, because no document in this gear
+//! or in Rating named a producer or a format for it and a placeholder in a
+//! published payload is a value a consumer pins against — the first thing to pin
+//! against an invented policy version being the last thing that could tell it
+//! was invented (D-161).
+//!
+//! D-162 gives it a producer: the **evaluation-policy generation**, a declared
+//! constant of this gear ([`EVALUATION_POLICY_GENERATION`]) naming which
+//! evaluation-policy field set the frozen row content is to be read under. So
+//! the payload now carries all three segments. The ban stands — what is stamped
+//! is the generation the gear declares and whose roster
+//! `01-foundation.md` §4.4 pins, never a filler.
 //!
 //! # One more naming decision, recorded because nothing else records it
 //!
@@ -77,6 +82,7 @@ use serde_json::{Value as JsonValue, json};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureInsertExt};
 use uuid::Uuid;
 
+use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::events::CatalogEvent;
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::RepoError;
@@ -112,6 +118,14 @@ impl PlanPublishedPayload {
     /// from the Rust field names — the sibling precedent is `price_repo`'s
     /// `allowance_json`, which persists the D-45 declaration in the spelling the
     /// design set uses rather than the one the struct happens to have.
+    ///
+    /// `evaluationPolicyVersion` is read from the constant rather than carried
+    /// on the struct (D-162): it is a property of the gear that published, not
+    /// of the publish, so a caller able to supply one could stamp a period with
+    /// a semantics its rows were never frozen under. The three segments are
+    /// stamped **flat**, beside the payload's other keys, because no document
+    /// declares a `pricingSnapshotRef` envelope for this event and inventing
+    /// one here would put a wire structure on the record that nothing agreed to.
     #[must_use]
     pub fn to_value(&self) -> JsonValue {
         json!({
@@ -119,6 +133,7 @@ impl PlanPublishedPayload {
             "revision": self.revision,
             "pendingVersionRef": self.pending_version_ref,
             "priceIds": self.price_ids,
+            "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
             "correlationId": self.correlation_id,
         })
     }

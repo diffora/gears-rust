@@ -8,6 +8,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::{NewOutboxEvent, PlanPublishedPayload, outbox_id, plan_published_dedup_key};
+use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::events::CatalogEvent;
 use crate::domain::scope_key::PlanId;
 
@@ -94,21 +95,43 @@ fn the_payload_carries_the_pending_handle_and_the_published_rows() {
             "revision": 2,
             "pendingVersionRef": "pend-7",
             "priceIds": [Uuid::from_u128(1), Uuid::from_u128(2)],
+            "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
             "correlationId": CORRELATION,
         })
     );
 }
 
 #[test]
-fn the_payload_stamps_no_snapshot_ref() {
-    // `PricingSnapshotRef` has three parts and the commit produces two: nothing
-    // in this gear produces `evaluation_policy_version` and no document says
-    // what does. A placeholder here is a value a consumer would pin against.
+fn the_payload_stamps_all_three_snapshot_segments() {
+    // This test used to pin the *absence* of the third segment, because
+    // `PricingSnapshotRef` has three parts, the commit produced two, and no
+    // document said what produced the third. D-162 says: the evaluation-policy
+    // generation, a declared constant of the gear. So the pin flips, and the
+    // thing it still forbids is the one D-161 forbade -- a value that is not a
+    // real generation.
     let rendered = payload().to_value();
     let object = rendered.as_object().expect("a payload is a JSON object");
 
+    assert_eq!(
+        object.get("pendingVersionRef"),
+        Some(&json!("pend-7")),
+        "segment 1: the registry's pending handle"
+    );
+    assert_eq!(
+        object.get("priceIds"),
+        Some(&json!([Uuid::from_u128(1), Uuid::from_u128(2)])),
+        "segment 2: the resolved price ids"
+    );
+    assert_eq!(
+        object.get("evaluationPolicyVersion"),
+        Some(&json!(EVALUATION_POLICY_GENERATION)),
+        "segment 3: the evaluation-policy generation"
+    );
+
+    // No `pricingSnapshotRef` envelope: the three segments are stamped flat
+    // because no document declares a nesting for this event, and a wire
+    // structure invented at a keyboard is what D-158 forbids one line over.
     assert!(!object.contains_key("pricingSnapshotRef"));
-    assert!(!object.contains_key("evaluationPolicyVersion"));
 }
 
 #[test]

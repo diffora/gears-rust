@@ -3,6 +3,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use super::{PlanPublishUnit, PublishAuthorization, PublishReceipt};
+use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::scope_key::PlanId;
 use crate::domain::snapshot::VersionRef;
 use uuid::Uuid;
@@ -70,4 +71,41 @@ fn a_receipt_names_the_unit_and_what_it_moved() {
     assert_eq!(receipt.revision(), 3);
     assert_eq!(receipt.published_price_ids(), [Uuid::from_u128(31)]);
     assert_eq!(receipt.audit_seq(), 4);
+}
+
+#[test]
+fn a_receipt_composes_the_three_segment_snapshot_ref() {
+    // The commit's three artifacts as one composite (D-162): the pending
+    // handle, the rows it published, and the generation their content is to be
+    // read under. Before D-162 the third had no producer and the composite
+    // could not be built at all outside a test.
+    let receipt = PublishReceipt::new(
+        unit(),
+        "pend-9".to_owned(),
+        vec![Uuid::from_u128(31), Uuid::from_u128(32)],
+        2,
+    );
+    let snapshot = receipt.snapshot_ref();
+
+    assert_eq!(
+        snapshot.version_ref(),
+        &VersionRef::Pending("pend-9".into())
+    );
+    assert_eq!(
+        snapshot.price_ids(),
+        [Uuid::from_u128(31), Uuid::from_u128(32)]
+    );
+    assert_eq!(
+        snapshot.evaluation_policy_version(),
+        EVALUATION_POLICY_GENERATION
+    );
+}
+
+#[test]
+fn a_receipts_snapshot_ref_carries_no_version_the_registry_has_not_given() {
+    // The receipt's ref is structurally pending, and so is the composite it
+    // builds: finalizing is `CatalogVersionPublished`'s, never the commit's.
+    let snapshot = PublishReceipt::new(unit(), "pend-9".to_owned(), Vec::new(), 0).snapshot_ref();
+
+    assert!(!snapshot.version_ref().is_committed());
 }

@@ -38,6 +38,7 @@ use async_trait::async_trait;
 use bss_pricing::config::LimitsConfig;
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::error::DomainError;
+use bss_pricing::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan_shape::{PhaseKind, PlanPhase};
@@ -445,6 +446,12 @@ async fn a_first_publish_leaves_exactly_the_five_artifacts_and_nothing_else() {
     assert_eq!(
         events[0].payload.get("pendingVersionRef"),
         Some(&serde_json::json!("pend-0"))
+    );
+    // All three snapshot segments reach the stored row, not just the two the
+    // commit could produce before D-162 gave the third a producer.
+    assert_eq!(
+        events[0].payload.get("evaluationPolicyVersion"),
+        Some(&serde_json::json!(EVALUATION_POLICY_GENERATION))
     );
 
     // 5. One audit row at seq 0.
