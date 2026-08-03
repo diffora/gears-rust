@@ -205,13 +205,61 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 4,
-    "anchored:no-account": 9,
-    "suspicious:multi-region": 44,
+    "anchored:no-account": 6,
+    "suspicious:multi-region": 46,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 20,
+    "suspicious:weak-coverage": 21,
     "covered:strong": 0,
 }
-#: Moved 2026-08-03, **third move of the day** (was 5 / 10 / 40 / 22, judged 62, total
+#: Moved 2026-08-03, **fourth move of the day** (was 4 / 9 / 44 / 20, judged 64, total
+#: unchanged at 77) after the **D-163…D-168 docs wave** — the fifth implementation-side wave,
+#: raised by building Group **G6**, the read side. **Six movers**, every one diffed per-id
+#: against the pre-wave tree (`99523f15`) in a detached worktree, and four controlled runs
+#: separate them exactly.
+#:
+#: - **One is the `DF_CUTOFF = 0.25` artifact**, and for the first time the term is not
+#:   `catalog`: **`same`** moved 0.24968 -> 0.25126 and stopped being discriminating. It is the
+#:   **only** term that crossed in either direction (checked exhaustively over the 4,835 terms
+#:   both trees share; `catalog` moved 0.24797 -> 0.24537, further inside). Neutralising that
+#:   one term on both trees removes `fr-one-time-setup` (multi -> weak, having lost the
+#:   `DESIGN.md` 499-510 digest window at 0.606) and reproduces every other mover unchanged.
+#: - **Three gained register prose and nothing else** — the `mentions` class the tenth capture
+#:   named: `fr-min-qty-floor` (weak -> multi, `DESIGN.md` 499-510 at 0.605),
+#:   `nfr-mutation-latency` (weak -> multi, the same window at 0.714) and `nfr-observability`
+#:   (no-account -> weak, the `DECISIONS.md` preamble 19-30 at 0.633). Every new region of all
+#:   three is either the D-72 register digest or the preamble — the two documents a wave is
+#:   *obliged* to grow. A judge should be expected to answer `mentions` for all three.
+#: - **One gained a genuine account, and it is the one requirement this wave is about.**
+#:   `fr-publish-fanout-atomicity` (no-account -> multi) gains `DECISIONS.md:1399-1410` at 0.743
+#:   — **D-166's entry**, which is what gives its degraded clause a start instant — plus the
+#:   preamble at 0.786 and the digest at 0.657. Its two pre-existing regions **fell** in the
+#:   same move (0.273 -> 0.186, 0.545 -> 0.400), the documented terse-prose recall effect: its
+#:   PRD declaration grew by a paragraph, so the discriminating-term set grew and the unchanged
+#:   anchors match a smaller fraction of it.
+#: - **One is a pre-existing account promoted by two terms of adjacent growth, and it is worth
+#:   the whole note.** `fr-supersession` (no-account -> weak) gains `design/01-foundation.md`
+#:   463-474 — §3.7's table-bullet list — at **exactly 0.600**, up from 0.582 on the *same*
+#:   window content: 64/110 discriminating terms matched, now 66/110. The two are **`batching`**
+#:   and **`delay`**, both from D-166's vocabulary landing in the `pricing_catalog_version_ref`
+#:   and `pricing_pin_frontier` bullets; neither has anything to do with supersession. What the
+#:   window does carry about supersession — `supersedes_price_id`, the published-plane partial
+#:   `UNIQUE`, the `published -> superseded` whitelist, the price-history bullet — is unchanged
+#:   and was always there, always sub-threshold. Isolated by the cleanest controlled run
+#:   available here: reverting **only** those two bullets to their pre-wave text *in place*
+#:   (each bullet is one line, so every line number stays identical to the post tree) gives
+#:   **zero** movers, so it is content and not the window grid; and the pre-wave tree plus
+#:   **only** the six new status-board rows also gives **zero** movers, so no part of this move
+#:   is the grid.
+#:
+#: **Not one mover gained a region in a design slice as an account of itself** — the closest is
+#: `fr-supersession`, whose design-slice region is an old account tipped over by two words of
+#: someone else's rule. This is the **fifth** consecutive wave to grow the judged share
+#: (64 -> 67 = 87%) with no design slice creating an account for any mover, and it is recorded
+#: as a measurement-health signal rather than tuned away: nothing was reworded in either
+#: direction, and the two words that moved `fr-supersession` are the correct words for the
+#: sentence they are in.
+#:
+#: Superseded record — the **third move of the day** (was 5 / 10 / 40 / 22, judged 62, total
 #: unchanged at 77) after the **D-162 docs edit** — the product owner's answer to the §F.1 fork
 #: D-161 opened the wave before: `pricingSnapshotRef`'s evaluation-policy segment is a
 #: **vocabulary generation**, `ep-<n>`, over a nine-field roster the design set had never
@@ -682,7 +730,12 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 64, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 67, "ledger": 17}
+#: pricing 64 -> 67 on 2026-08-03 with the D-163…D-168 wave: three ids promoted out of
+#: `anchored:no-account` (`fr-publish-fanout-atomicity`, `fr-supersession`,
+#: `nfr-observability`), the `multi`/`weak` traffic between them being judge-neutral.
+#: Per-id record beside `PINNED_TRIAGE_PRICING`, including why only one of the three is
+#: an account this wave wrote.
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):

@@ -412,6 +412,75 @@ separately-justified commit — never a way to make a failing change look green.
     inferred. Noted beside `PINNED_JUDGE_CALLS`; nothing was reworded to move a score in either
     direction.
 
+16. **2026-08-03, sixteenth capture — after the D-163…D-168 docs wave.** Document movement
+    only, no checker change. This is the **fifth implementation-side wave**, raised by building
+    Group **G6** — the **read side**: turning a pending `CatalogVersion` handle into a committed
+    number, projecting the frozen per-subject read model, advancing the pin frontier, and
+    running the degraded path. Where G3 (tenth capture) found rules the set does not state, G4
+    (thirteenth) found rules it states and cannot enforce, and G5 (fourteenth) found it
+    contradicting itself and promising values with no producer, **G6 found rules decidable only
+    under premises nobody had written down, and clauses that cannot be satisfied with what
+    exists.** Six decisions — D-163 batch atomicity as the registry's contract, the bound on
+    when the projector may call a version complete, and the straggler refusal whose price is
+    stated with the guarantee; D-164 pin-eligibility per tenant and the frontier's forward walk;
+    D-165 the ref row freezing the revision **and** the lifecycle state its own publish judged;
+    D-166 one recorded instant and three disjoint publish-visibility predicates; D-167 what a
+    delta carries before Slices 4/6/7/10 and what each absence owes; D-168 the Slice-6 contract
+    pair stamped as a pair or not at all, its text forked to the owner — plus three mechanical
+    fixes carrying no id.
+
+    **The finding set did not move.** `live-text.txt` and `live-json.json` are byte-identical
+    and were re-captured to no effect; `live-show-known-debt.txt` differs **only in line
+    numbers** — the same 21 `P1/propagation-missing` members, every one shifted **uniformly
+    +6**, one per status-board row the six decisions added. Live findings unchanged at 2 (both
+    rating-side), suppressed unchanged at 59; `--gear gears/bss/pricing/docs --auto-context`
+    still reports 0 live and 59 suppressed, so no pinned-debt member was paid down and none was
+    added. **No wire code was minted** — the wave's two refusals both live on the projector,
+    which has no caller, so by D-146's own line a refusal there has nobody to report to and
+    `P3/code-unreferenced` has nothing to gain or lose.
+
+    **The triage pin moved: `anchored:no-account` 9 → 6, `suspicious:multi-region` 44 → 46,
+    `suspicious:weak-coverage` 20 → 21, judged 64 → 67, `no-region` and the total unchanged
+    (4, 77).** **Six movers**, every one diffed per-id against the pre-wave tree (`99523f15`) in
+    a detached worktree, with four controlled runs separating them:
+
+    - **One `DF_CUTOFF` artifact, on a new term.** `same` moved 0.24968 → 0.25126 and stopped
+      being discriminating — the **only** term to cross in either direction, checked
+      exhaustively over the 4,835 terms both trees share (`catalog`, the term behind the twelfth
+      entry and the thirteenth and fourteenth captures, moved 0.24797 → 0.24537, further
+      inside). Neutralising it on both trees removes `fr-one-time-setup` (multi → weak, having
+      lost the `DESIGN.md` digest window at 0.606) and reproduces every other mover unchanged.
+    - **Three gained register prose and nothing else** — `fr-min-qty-floor`,
+      `nfr-mutation-latency` and `nfr-observability`, at 0.605–0.714, every new region either
+      `DESIGN.md` §4 (the D-72 digest) or the `DECISIONS.md` preamble. The `mentions` class.
+    - **One gained a genuine account**, and it is the one requirement the wave is about:
+      `fr-publish-fanout-atomicity` (no-account → multi) gains D-166's entry at
+      `DECISIONS.md:1399-1410` (0.743), the preamble (0.786) and the digest (0.657), while its
+      two pre-existing regions **fell** (0.273 → 0.186, 0.545 → 0.400) because its own PRD
+      declaration grew by a paragraph — the documented terse-prose recall effect.
+    - **One is an old account tipped over by two words of someone else's rule.**
+      `fr-supersession` (no-account → weak) gains §3.7's table-bullet window at **exactly
+      0.600**, up from 0.582 on the *same* content: 64/110 discriminating terms → 66/110, and
+      the two are **`batching`** and **`delay`**, from D-166's sentences in the
+      `pricing_catalog_version_ref` and `pricing_pin_frontier` bullets. Neither says anything
+      about supersession; what the window does say about it (`supersedes_price_id`, the
+      published-plane partial `UNIQUE`, the `published → superseded` whitelist, the price-history
+      bullet) is unchanged and was always sub-threshold.
+
+    Two controlled runs settle the grid question and one settles the content question.
+    (i) Pre-wave tree plus **only** the six new status-board rows: **zero** movers, so no part
+    of this is the fixed window grid. (ii) Pre-wave tree with **only** `DESIGN.md` and
+    `DECISIONS.md` replaced: five of the six, `fr-supersession` excepted. (iii) The post-wave
+    foundation slice with **only** the two §3.7 bullets reverted *in place* — each is a single
+    line, so every line number stays identical — **zero** movers, which is what proves
+    `fr-supersession` is content and not grid.
+
+    **Not one mover gained a region in a design slice as an account of itself.** The judged
+    share is now 67/77 = 87% and this is the **fifth** consecutive wave to grow it that way;
+    the previous four are the tenth and thirteenth-to-fifteenth entries above. It is recorded
+    as a measurement-health signal, not tuned away — nothing was reworded in either direction,
+    and `batching` and `delay` are the right words for the sentences they are in.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:
