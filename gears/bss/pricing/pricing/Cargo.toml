@@ -63,6 +63,12 @@ tokio-util = { workspace = true }
 
 # REST surface: the axum router the capability mounts.
 axum = { workspace = true }
+# The `Page<T>` + `PageInfo` list envelope D-125's cursor contract is served in,
+# shared with the sibling ledger's list surfaces rather than re-spelled here.
+toolkit-odata = { workspace = true, features = ["with-utoipa"] }
+# The opaque pagination cursor's URL-safe base64 (D-125). The encoding is
+# declared once in `api::rest::cursor` and is a wire detail, never a stored one.
+base64 = { workspace = true }
 # `#[toolkit_macros::api_dto(...)]` expands to `#[derive(utoipa::ToSchema)]`, so
 # the crate has to be a direct dependency of every gear carrying REST DTOs.
 utoipa = { workspace = true }

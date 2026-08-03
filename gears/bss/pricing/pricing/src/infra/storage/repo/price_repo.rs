@@ -122,37 +122,46 @@ const SUBJECT: &str = "price row";
 // The stored token sets.
 //
 // Each list is the inverse of an `as_str()` the domain already owns, written
-// out here rather than added to the domain because parsing a column is a
-// storage concern and nothing above this boundary has a token to read. A
+// out here rather than added to the domain because parsing a column was a
+// storage concern and nothing above this boundary had a token to read. A
 // variant added to one of these enums without a line here reads back as
 // `CorruptRow` — loud, and never as a silently different value.
+//
+// **They are `pub` now, and the REST surface reads through them rather than
+// declaring a second set.** The authoring routes parse the same tokens off a
+// request that these parse off a column, and two tables would be two answers to
+// "is `partner` a legal overlay" — free to disagree the day a variant lands in
+// one of them. The lists stay here rather than moving onto the domain enums
+// because moving them would put a *parse* on a type whose job is to render, and
+// because these are the tables whose completeness the `CorruptRow` path already
+// depends on.
 // ---------------------------------------------------------------------------
 
 /// Axis 4. One value today; the list exists so a stored `partner` overlay is
 /// refused rather than quietly read as `base`.
-const PRICE_OVERLAYS: &[PriceOverlay] = &[PriceOverlay::Base];
+pub const PRICE_OVERLAYS: &[PriceOverlay] = &[PriceOverlay::Base];
 /// Axis 6. All **three** normative classes: a list that carried only the two
 /// the cutover machinery uses would read a stored `new_subscriptions_only` row
 /// — the class PRD AC #59 and W3 both name — as an invariant breach.
-const PRICE_ELIGIBILITIES: &[PriceEligibility] = &[
+pub const PRICE_ELIGIBILITIES: &[PriceEligibility] = &[
     PriceEligibility::AllSubscriptions,
     PriceEligibility::NewSubscriptionsOnly,
     PriceEligibility::ExistingGrandfathered,
 ];
 /// Axis 7.
-const CHARGE_KINDS: &[ChargeKind] = &[
+pub const CHARGE_KINDS: &[ChargeKind] = &[
     ChargeKind::Recurring,
     ChargeKind::Usage,
     ChargeKind::OneTime,
     ChargeKind::OneTimeSetup,
 ];
 /// Where a non-usage `per_unit` row's quantity comes from.
-const QUANTITY_SOURCES: &[QuantitySource] = &[
+pub const QUANTITY_SOURCES: &[QuantitySource] = &[
     QuantitySource::SubscriptionSeatCount,
     QuantitySource::Manual,
 ];
 /// The billable-unit quantization.
-const BILLING_GRANULARITIES: &[BillingGranularity] = &[
+pub const BILLING_GRANULARITIES: &[BillingGranularity] = &[
     BillingGranularity::PerSecond,
     BillingGranularity::PerMinute,
     BillingGranularity::PerHour,
@@ -160,28 +169,28 @@ const BILLING_GRANULARITIES: &[BillingGranularity] = &[
     BillingGranularity::WholeUnit,
 ];
 /// The counter-reset window.
-const TIER_AGGREGATION_WINDOWS: &[TierAggregationWindow] = &[
+pub const TIER_AGGREGATION_WINDOWS: &[TierAggregationWindow] = &[
     TierAggregationWindow::CalendarMonth,
     TierAggregationWindow::InvoicePeriod,
     TierAggregationWindow::SubscriptionLifetime,
     TierAggregationWindow::PerEvent,
 ];
 /// The D-40 tier-qualification window.
-const TIER_QUALIFICATION_WINDOWS: &[TierQualificationWindow] = &[
+pub const TIER_QUALIFICATION_WINDOWS: &[TierQualificationWindow] = &[
     TierQualificationWindow::Current,
     TierQualificationWindow::TrailingPeriod,
 ];
 /// How the in-window `Q` is derived (D-44).
-const AGGREGATION_FUNCTIONS: &[AggregationFunction] = &[
+pub const AGGREGATION_FUNCTIONS: &[AggregationFunction] = &[
     AggregationFunction::Sum,
     AggregationFunction::Peak,
     AggregationFunction::TimeWeighted,
 ];
 /// The granule a non-`sum` window is cut into (D-44).
-const AGGREGATION_GRANULARITIES: &[AggregationGranularity] =
+pub const AGGREGATION_GRANULARITIES: &[AggregationGranularity] =
     &[AggregationGranularity::Hour, AggregationGranularity::Day];
 /// What happens to an unused allowance (D-45).
-const ROLLOVER_POLICIES: &[RolloverPolicy] = &[RolloverPolicy::None, RolloverPolicy::Carry];
+pub const ROLLOVER_POLICIES: &[RolloverPolicy] = &[RolloverPolicy::None, RolloverPolicy::Carry];
 
 /// Everything a **new** draft price row needs.
 ///
@@ -269,62 +278,20 @@ impl PriceRepo {
         tenant_id: Uuid,
         draft: NewPriceDraft,
     ) -> Result<PriceRecord, RepoError> {
-        // The row's own `charge_kind` is not stored: the axis is the key's, and
-        // the copy on `PriceRow` is a convenience the shape rules read. So a
-        // record read back always agrees with its own key, and a caller that
-        // handed the two of them different answers gets the key's.
-        let charge_kind = draft.scope_key.charge_kind();
-        let mut record = PriceRecord {
-            price_id: draft.price_id,
-            scope_key: draft.scope_key,
-            row: PriceRow {
-                charge_kind,
-                ..draft.content.row
-            },
-            tax_inclusive: draft.content.tax_inclusive,
-            billing_timing: draft.content.billing_timing,
-            rounding_policy_ref: draft.content.rounding_policy_ref,
-            grandfather_until: draft.content.grandfather_until,
-            supersedes_price_id: draft.content.supersedes_price_id,
-            lifecycle_state: LifecycleState::Draft,
-            created_by: draft.created_by,
-            created_at_utc: draft.created_at_utc,
-            row_version: RowVersion::new(0),
-        };
-        // Answered in the order a read gives back, not the order it was
-        // authored in. `find` sorts because the table carries no ordinal, and a
-        // create that answered in authoring order would hand the caller a
-        // record that stops equalling itself after one round trip.
-        record.row.bands.sort_by_key(|band| band.from_qty);
-        // Refused before the transaction opens, and before the CHECK that would
-        // otherwise refuse it: the key is in hand here, so the pairing costs a
-        // comparison rather than a round trip and a 500.
-        check_grandfather_horizon(
-            record.grandfather_until,
-            record.scope_key.price_eligibility(),
-        )?;
-        check_authored_instant("grandfatherUntil", record.grandfather_until)?;
-        // Rendered before the transaction opens: a quantity the column cannot
-        // hold is the caller's mistake, and there is no reason to hold a
-        // transaction open to find it.
-        let row = insert_model(tenant_id, &record)?;
-        let bands = band_models(tenant_id, record.price_id, &record.row.bands)?;
+        // Rendered and value-checked before the transaction opens: a quantity no
+        // column can hold, or a horizon off its class, is the caller's mistake,
+        // and there is no reason to hold a transaction open to find it. That is
+        // also why the split below is `prepare_draft` + `insert_prepared` rather
+        // than one runner-taking body — `create_draft_on` runs both, which the
+        // seam needs, and this path keeps the refusal ahead of the BEGIN.
+        let prepared = prepare_draft(tenant_id, draft)?;
 
         let scope = scope.clone();
         let (_, outcome) = self
             .db
             .db()
             .in_transaction::<PriceRecord, RepoError, _>(move |txn| {
-                Box::pin(async move {
-                    if let Some(occupant) =
-                        find_key_occupant(txn, &scope, tenant_id, &record.scope_key).await?
-                    {
-                        return Err(duplicate_key(&record.scope_key, &occupant));
-                    }
-                    insert_price(txn, &scope, row).await?;
-                    insert_bands(txn, &scope, bands).await?;
-                    Ok(record)
-                })
+                Box::pin(async move { insert_prepared(txn, &scope, tenant_id, prepared).await })
             })
             .await;
         outcome.map_err(tx_failure)
@@ -356,9 +323,12 @@ impl PriceRepo {
     /// of the contract and not an accident of the plan index. It is the same
     /// order on both backends: Postgres compares `uuid` byte-wise and `SQLite`
     /// compares the canonical lowercase hyphenated text, and hex digits sort in
-    /// ASCII exactly as the bytes they spell do. D-125's cursor contract is a
-    /// REST concern and lands with the list surface in G7; this is only the
-    /// stable order such a cursor will need.
+    /// ASCII exactly as the bytes they spell do. D-125's cursor contract is a REST
+    /// concern and it now **has** its list surface
+    /// (`api::rest::prices::list_plan_prices`), which walks
+    /// [`PriceRepo::list_for_plan_page`] over exactly this order. This method
+    /// keeps its unbounded form for the callers that genuinely want the whole
+    /// set - the publish assembler is one - and is not the paginated one.
     ///
     /// An **empty** `states` selects nothing. Reading it as "every state" would
     /// hand a caller whose filter computed to nothing the whole catalog, which
@@ -376,6 +346,48 @@ impl PriceRepo {
         states: &[LifecycleState],
     ) -> Result<Vec<PriceRecord>, RepoError> {
         load_for_plan(&self.conn()?, scope, tenant_id, plan_id, states).await
+    }
+
+    /// One **page** of a plan's price rows, resuming strictly after `after`.
+    ///
+    /// [`PriceRepo::list_for_plan`] returns the whole `Vec` with no bound, and
+    /// paginating that in memory would be a lie about D-125's contract: the
+    /// promise is a walk that never skips or duplicates a row at or before the
+    /// cursor, and a walk that read everything first would hold the whole plan
+    /// in memory to serve a hundred rows of it. This is the keyset form, on the
+    /// `price_id ASC` total order [`PriceRepo::list_for_plan`]'s doc already
+    /// declares as part of its contract — the same order on both backends,
+    /// because Postgres compares `uuid` byte-wise and `SQLite` compares the
+    /// canonical lowercase hyphenated text, and hex digits sort in ASCII exactly
+    /// as the bytes they spell do.
+    ///
+    /// **The caller asks for `limit + 1`** to learn whether another page exists
+    /// without a second query; deciding `next_cursor` is the surface's, since
+    /// only it knows the page size it promised.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when a stored row cannot be read as the domain
+    /// value its columns are `CHECK`-constrained to hold.
+    pub async fn list_for_plan_page(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        states: &[LifecycleState],
+        after: Option<Uuid>,
+        limit: u64,
+    ) -> Result<Vec<PriceRecord>, RepoError> {
+        load_page(
+            &self.conn()?,
+            scope,
+            tenant_id,
+            plan_id,
+            states,
+            after,
+            Some(limit),
+        )
+        .await
     }
 
     /// Replace an open draft's content, and its band set, under the caller's
@@ -819,20 +831,46 @@ pub async fn load_for_plan(
     plan_id: PlanId,
     states: &[LifecycleState],
 ) -> Result<Vec<PriceRecord>, RepoError> {
+    load_page(runner, scope, tenant_id, plan_id, states, None, None).await
+}
+
+/// The keyset walk under [`load_for_plan`] and [`PriceRepo::list_for_plan_page`].
+///
+/// `after` resumes **strictly after** a `price_id`, and `limit` bounds the page.
+/// Both ride the `price_id ASC` total order [`PriceRepo::list_for_plan`]'s
+/// contract already promises on both backends, which is exactly what makes a
+/// keyset walk possible: an offset over an append-only store names a different
+/// row every time somebody inserts ahead of it (D-125 forbids one for that
+/// reason).
+async fn load_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    states: &[LifecycleState],
+    after: Option<Uuid>,
+    limit: Option<u64>,
+) -> Result<Vec<PriceRecord>, RepoError> {
     if states.is_empty() {
         return Ok(Vec::new());
     }
     let tokens: Vec<&str> = states.iter().copied().map(LifecycleState::as_str).collect();
-    let rows = price::Entity::find()
+    let mut filter = Condition::all()
+        .add(price::Column::TenantId.eq(tenant_id))
+        .add(price::Column::PlanId.eq(plan_id.get()))
+        .add(price::Column::LifecycleState.is_in(tokens));
+    if let Some(cursor) = after {
+        filter = filter.add(price::Column::PriceId.gt(cursor));
+    }
+    let mut query = price::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(price::Column::TenantId.eq(tenant_id))
-                .add(price::Column::PlanId.eq(plan_id.get()))
-                .add(price::Column::LifecycleState.is_in(tokens)),
-        )
-        .order_by(price::Column::PriceId, Order::Asc)
+        .filter(filter)
+        .order_by(price::Column::PriceId, Order::Asc);
+    if let Some(limit) = limit {
+        query = query.limit(limit);
+    }
+    let rows = query
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("list plan price rows: {e}")))?;
@@ -1218,6 +1256,112 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
         supersedes_price_id: Set(content.supersedes_price_id),
         ..price::ActiveModel::default()
     })
+}
+
+/// A create, rendered and value-checked, with no statement issued yet.
+///
+/// It exists so [`PriceRepo::create_draft`] can keep refusing a caller mistake
+/// **before** it opens a transaction while [`create_draft_on`] still has one
+/// runner-taking entry point. Both go through this and through
+/// [`insert_prepared`]; neither restates the other's body.
+struct PreparedDraft {
+    /// The record as it will be answered, bands already in read order.
+    record: PriceRecord,
+    /// The row, rendered.
+    row: price::ActiveModel,
+    /// Its band set, rendered.
+    bands: Vec<price_tier_band::ActiveModel>,
+}
+
+/// Render a create and refuse every value the store cannot take, statement-free.
+fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft, RepoError> {
+    // The row's own `charge_kind` is not stored: the axis is the key's, and the
+    // copy on `PriceRow` is a convenience the shape rules read. So a record read
+    // back always agrees with its own key, and a caller that handed the two of
+    // them different answers gets the key's.
+    let charge_kind = draft.scope_key.charge_kind();
+    let mut record = PriceRecord {
+        price_id: draft.price_id,
+        scope_key: draft.scope_key,
+        row: PriceRow {
+            charge_kind,
+            ..draft.content.row
+        },
+        tax_inclusive: draft.content.tax_inclusive,
+        billing_timing: draft.content.billing_timing,
+        rounding_policy_ref: draft.content.rounding_policy_ref,
+        grandfather_until: draft.content.grandfather_until,
+        supersedes_price_id: draft.content.supersedes_price_id,
+        lifecycle_state: LifecycleState::Draft,
+        created_by: draft.created_by,
+        created_at_utc: draft.created_at_utc,
+        row_version: RowVersion::new(0),
+    };
+    // Answered in the order a read gives back, not the order it was authored in.
+    // `find` sorts because the table carries no ordinal, and a create that
+    // answered in authoring order would hand the caller a record that stops
+    // equalling itself after one round trip.
+    record.row.bands.sort_by_key(|band| band.from_qty);
+    // Before the CHECK that would otherwise refuse it: the key is in hand here,
+    // so the pairing costs a comparison rather than a round trip and a 500.
+    check_grandfather_horizon(
+        record.grandfather_until,
+        record.scope_key.price_eligibility(),
+    )?;
+    check_authored_instant("grandfatherUntil", record.grandfather_until)?;
+    let row = insert_model(tenant_id, &record)?;
+    let bands = band_models(tenant_id, record.price_id, &record.row.bands)?;
+    Ok(PreparedDraft { record, row, bands })
+}
+
+/// The three statements a create issues, through whichever runner holds them.
+///
+/// The occupancy read, the row and the band set are one unit by rule rather than
+/// by preference: a row whose geometry can land a moment late is a row that is
+/// briefly wrong, and the duplicate check is a read the insert would otherwise
+/// race with across a commit boundary.
+async fn insert_prepared(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    prepared: PreparedDraft,
+) -> Result<PriceRecord, RepoError> {
+    let PreparedDraft { record, row, bands } = prepared;
+    if let Some(occupant) = find_key_occupant(runner, scope, tenant_id, &record.scope_key).await? {
+        return Err(duplicate_key(&record.scope_key, &occupant));
+    }
+    insert_price(runner, scope, row).await?;
+    insert_bands(runner, scope, bands).await?;
+    Ok(record)
+}
+
+/// Create a draft price row and its bands through whichever runner the caller
+/// holds.
+///
+/// [`PriceRepo::create_draft`] supplies its own transaction; the other caller is
+/// `infra::idempotent`, which must run the insert inside the **same**
+/// transaction as the idempotency claim guarding it — see
+/// [`create_draft_on`](super::plan_repo::create_draft_on)'s sibling note and
+/// `idempotency_repo`'s module doc for why splitting the two inverts the
+/// guarantee. The row-and-bands-in-one-transaction invariant this module's doc
+/// names holds either way: the seam supplies the transaction, the method
+/// supplies its own.
+///
+/// # Errors
+/// [`RepoError::DuplicateScopeKey`] naming the key and its occupant;
+/// [`RepoError::GrandfatherHorizonOffClass`] for a horizon off the grandfathered
+/// class; [`RepoError::TimestampPrecisionExceeded`] for a horizon finer than the
+/// millisecond quantum; [`RepoError::ValueOutOfRange`] for an authored quantity
+/// past its column; [`RepoError::Db`] on a scope or storage failure, including
+/// losing the `uq_pricing_price_scope_key_draft` race;
+/// [`RepoError::CorruptRow`] only for a `row_version` that cannot be stored.
+pub async fn create_draft_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    draft: NewPriceDraft,
+) -> Result<PriceRecord, RepoError> {
+    insert_prepared(runner, scope, tenant_id, prepare_draft(tenant_id, draft)?).await
 }
 
 /// The whole insert: content, plus the columns only a creation writes.

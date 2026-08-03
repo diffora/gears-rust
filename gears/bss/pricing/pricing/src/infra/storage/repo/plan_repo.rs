@@ -105,10 +105,12 @@ const SUBJECT: &str = "plan revision";
 
 /// Everything a plan's **first** revision needs.
 ///
-/// The plan id is caller-supplied rather than minted here: the authoring
-/// surface that mints it (G7) is also the one that has to return it in a
-/// `Location` header before the row is durable, and a repository that generated
-/// ids would make an idempotent retry create a second plan.
+/// The plan id is caller-supplied rather than minted here: the authoring surface
+/// that mints it (`api::rest::plans::create_plan`, which now exists) is also the
+/// one that has to return it in a `Location` header before the row is durable,
+/// and a repository that generated ids would make an idempotent retry create a
+/// second plan. That surface mints inside the idempotency gate's transaction, so
+/// a replay is answered the id the first call minted.
 ///
 /// `created_at_utc` is caller-supplied for the same reason [`PlanRepo::open_revision`]
 /// takes `now`: the catalog "mutates state only in response to explicit
@@ -189,30 +191,7 @@ impl PlanRepo {
         scope: &AccessScope,
         draft: NewPlanDraft,
     ) -> Result<PlanRevision, RepoError> {
-        let tenant_id = draft.tenant_id;
-        check_authored_instant("availableFrom", draft.available_from)?;
-        check_authored_instant("availableTo", draft.available_to)?;
-        let opened = PlanRevision {
-            plan_id: draft.plan_id,
-            revision: 0,
-            sku_id: draft.sku_id,
-            plan_tier: draft.plan_tier,
-            billing_cycle: draft.billing_cycle,
-            frequency: draft.frequency,
-            plan_tier_override: draft.plan_tier_override,
-            purchase_min_qty: draft.purchase_min_qty,
-            purchase_max_qty: draft.purchase_max_qty,
-            invoice_grouping_key: draft.invoice_grouping_key,
-            available_from: draft.available_from,
-            available_to: draft.available_to,
-            lifecycle_state: LifecycleState::Draft,
-            created_by: draft.created_by,
-            created_at_utc: draft.created_at_utc,
-            row_version: RowVersion::new(0),
-        };
-        let row = revision_model(tenant_id, &opened)?;
-        insert_revision(&self.conn()?, scope, row).await?;
-        Ok(opened)
+        create_draft_on(&self.conn()?, scope, draft).await
     }
 
     /// Read one revision by its composite identity.
@@ -383,33 +362,42 @@ impl PlanRepo {
     ///
     /// # Two things this does not do yet, and who owes them
     ///
-    /// **The audit record, now owed by the authoring surface (G7).** D-145 is
-    /// explicit that the flip "is audited exactly as the deletion was", and the
-    /// deletion it replaces was audited too. The debt is **narrower** than it
-    /// was, and narrower is not paid: there is now a writer —
+    /// **The audit record, and why the authoring surface did not pay it.**
+    /// D-145 is explicit that the flip "is audited exactly as the deletion was",
+    /// and the deletion it replaces was audited too. There is a writer —
     /// [`audit_repo::append`](super::audit_repo::append), which lands with the
     /// publish commit and takes a runner precisely so a record can join a
-    /// mutation's own transaction — and nothing is still written here. The
-    /// reason is no longer "there is nowhere to write it" but **this method is
-    /// not given an actor**: `inst-au-complete` requires an actor principal and
-    /// a correlation id on every record, [`PlanRepo::create_draft`] takes a
-    /// `created_by` and this signature takes neither, and supplying them means
-    /// changing a signature whose only caller is the REST surface that has not
-    /// been built. So the remainder belongs to **G7**, with the surface that
-    /// supplies one. **This debt is still open after the child copies were paid
-    /// and after the writer arrived**, and it never had an anchor of its own the
-    /// way the child tables did: the debt lives in this sentence, and deleting
-    /// the sentence is how it would be lost.
+    /// mutation's own transaction — and nothing is still written here.
     ///
-    /// **The plan-level refusal, owed by the authoring surface (G7).** This
+    /// The authoring REST surface arrived and **deliberately did not pay this**,
+    /// which narrows the debt to a shape somebody can finish. D-14 requires the
+    /// audit row to commit inside the mutation's **own** transaction, and only
+    /// the two guarded creates get one (`infra::idempotent`); `update_draft`,
+    /// `delete_draft`, this method and `open_revision` each open their own or
+    /// run on a bare connection, so a surface that audited what it could would
+    /// make `pricing_audit_log` a trail that is **silently incomplete** —
+    /// strictly worse than one that is visibly absent, against
+    /// `inst-au-complete`'s "every plan/price mutation". Paying it properly
+    /// needs runner-taking forms for all four of those, an actor and a
+    /// correlation id threaded through each, and one wave that lands all six
+    /// paths at once. That wave is what owes this, not a surface group. **The
+    /// debt lives in this sentence** — it never had an anchor of its own the way
+    /// the child tables did, so deleting the sentence is how it would be lost.
+    ///
+    /// **The plan-level refusal, now paid by the authoring surface.** This
     /// method names the revision it discards, so a caller that names one the
     /// plan does not have is told [`RepoError::NotFound`] — a 404. S2 §5 says
     /// abandoning a plan **that holds no open draft revision** answers
     /// `LIFECYCLE_FORBIDDEN`, which is a different question about a different
     /// subject: it is asked of the *plan*, and answering it means resolving the
-    /// plan's open draft first. `POST …/plans/{planId}/abandon` is the surface
-    /// that resolves it, so the discrimination belongs there, over
-    /// [`PlanRepo::find_open_draft`] and this call.
+    /// plan's open draft first. `POST …/plans/{planId}/abandon`
+    /// (`api::rest::plans::abandon_plan_draft`) resolves it over
+    /// [`PlanRepo::find_open_draft`], [`PlanRepo::find_current`] and
+    /// [`PlanRepo::max_revision`], and discriminates the three answers the
+    /// design set asks for: `LIFECYCLE_FORBIDDEN` for a plan with a current
+    /// revision and no draft, `PLAN_ABANDONED_NO_SUCCESSOR` for a plan whose
+    /// every revision is a tombstone, and a 404 for a plan with no revisions at
+    /// all. Nothing about this method changed.
     ///
     /// # Errors
     /// [`RepoError::NotFound`] when no such revision is visible to `scope`;
@@ -652,7 +640,20 @@ impl PlanRepo {
     /// through the same scoped path as every other read here: the maximum has to
     /// be the maximum *the caller can see*, and the ordered read is served by
     /// `idx_pricing_plan_tenant`, whose trailing column is `revision`.
-    async fn max_revision(
+    ///
+    /// **Public because `None` is a fact the authoring surface needs and cannot
+    /// get any other way.** A plan with no current revision and no open draft is
+    /// either absent (`404`) or spent — every revision `abandoned`,
+    /// `PLAN_ABANDONED_NO_SUCCESSOR` (D-145 as amended) — and the only thing
+    /// separating the two is whether the chain holds a row at all. The
+    /// alternatives were a fifth lifecycle state or answering the spent plan a
+    /// not-found, which is what the surface used to do and what `02` §5 names as
+    /// the defect.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when a stored revision number is not a count.
+    pub async fn max_revision(
         &self,
         scope: &AccessScope,
         tenant_id: Uuid,
@@ -715,6 +716,57 @@ fn tx_failure(err: TxError<RepoError>) -> RepoError {
 // transaction-bypass guard — and because `plan_shape_repo` writes the child
 // rows of these very revisions under the same compare-and-swap.
 // ---------------------------------------------------------------------------
+
+/// Create a plan's revision `0` through whichever runner the caller holds.
+///
+/// [`PlanRepo::create_draft`] is a two-line delegation to this, on a plain
+/// connection; the other caller is `infra::idempotent`, which has to run the
+/// insert inside the **same** transaction as the idempotency claim that guards
+/// it — split across two transactions the claim commits while the mutation does
+/// not, and every retry of a request that never happened is answered "already
+/// done", forever (`idempotency_repo`'s module doc). One implementation with two
+/// entry points rather than two spellings of one insert, which is
+/// [`load_current`]'s reason applied to a write: the seam and the direct caller
+/// must issue the same statements, and the proof is that the pre-existing
+/// `tests/sqlite_plan_repo.rs` suite still pins this path unedited.
+///
+/// # Errors
+/// [`RepoError::TimestampPrecisionExceeded`] when an authored availability bound
+/// is finer than the millisecond quantum (D-144);
+/// [`RepoError::ValueOutOfRange`] when an authored purchase quantity or custom
+/// interval is past what its column can hold; [`RepoError::Db`] on a scope or
+/// storage failure, including the primary-key collision
+/// [`PlanRepo::create_draft`]'s own doc describes.
+pub async fn create_draft_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    draft: NewPlanDraft,
+) -> Result<PlanRevision, RepoError> {
+    let tenant_id = draft.tenant_id;
+    check_authored_instant("availableFrom", draft.available_from)?;
+    check_authored_instant("availableTo", draft.available_to)?;
+    let opened = PlanRevision {
+        plan_id: draft.plan_id,
+        revision: 0,
+        sku_id: draft.sku_id,
+        plan_tier: draft.plan_tier,
+        billing_cycle: draft.billing_cycle,
+        frequency: draft.frequency,
+        plan_tier_override: draft.plan_tier_override,
+        purchase_min_qty: draft.purchase_min_qty,
+        purchase_max_qty: draft.purchase_max_qty,
+        invoice_grouping_key: draft.invoice_grouping_key,
+        available_from: draft.available_from,
+        available_to: draft.available_to,
+        lifecycle_state: LifecycleState::Draft,
+        created_by: draft.created_by,
+        created_at_utc: draft.created_at_utc,
+        row_version: RowVersion::new(0),
+    };
+    let row = revision_model(tenant_id, &opened)?;
+    insert_revision(runner, scope, row).await?;
+    Ok(opened)
+}
 
 /// Read one revision's stored row by its composite identity, scoped.
 async fn load_revision_row(

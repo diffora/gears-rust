@@ -2222,3 +2222,118 @@ async fn a_validated_row_of_another_plan_is_caught_by_the_count() {
         "and the row that did move rolled back with the transaction"
     );
 }
+
+#[tokio::test]
+async fn the_keyset_page_walks_the_same_total_order_the_list_declares() {
+    // The caller `list_for_plan_filters_by_state_and_orders_stably` was written
+    // for. D-125 forbids offset pagination over an append-only store, so the
+    // page has to be a keyset walk on the `price_id ASC` order that test pins —
+    // and this is where the two are shown to be the same order rather than two
+    // orders that happen to agree today.
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let ids = [
+        Uuid::from_u128(0xbb01),
+        Uuid::from_u128(0xbb02),
+        Uuid::from_u128(0xbb03),
+        Uuid::from_u128(0xbb04),
+    ];
+
+    for (price_id, charge_kind) in [
+        (ids[3], ChargeKind::OneTimeSetup),
+        (ids[1], ChargeKind::OneTime),
+        (ids[0], ChargeKind::Recurring),
+        (ids[2], ChargeKind::Usage),
+    ] {
+        let mut content = flat_content();
+        content.row = PriceRow::new(charge_kind, Some(ModelKind::Flat));
+        content.row.amount_minor = Some(money(1_000));
+        repo.create_draft(
+            &scope,
+            tenant(),
+            draft(price_id, base_key(charge_kind), content),
+        )
+        .await
+        .expect("create");
+    }
+
+    // The whole result, in one page, is exactly what the unbounded list gives.
+    let whole = repo
+        .list_for_plan(&scope, tenant(), plan(), &[LifecycleState::Draft])
+        .await
+        .expect("list");
+    let paged = repo
+        .list_for_plan_page(
+            &scope,
+            tenant(),
+            plan(),
+            &[LifecycleState::Draft],
+            None,
+            100,
+        )
+        .await
+        .expect("page");
+    assert_eq!(
+        paged.iter().map(|row| row.price_id).collect::<Vec<_>>(),
+        whole.iter().map(|row| row.price_id).collect::<Vec<_>>(),
+        "the page and the list must not be two orders"
+    );
+
+    // `limit` bounds the page; `after` resumes STRICTLY after the key, so the
+    // row the cursor names is never handed out twice.
+    let first = repo
+        .list_for_plan_page(&scope, tenant(), plan(), &[LifecycleState::Draft], None, 2)
+        .await
+        .expect("first page");
+    assert_eq!(
+        first.iter().map(|row| row.price_id).collect::<Vec<_>>(),
+        vec![ids[0], ids[1]]
+    );
+
+    let second = repo
+        .list_for_plan_page(
+            &scope,
+            tenant(),
+            plan(),
+            &[LifecycleState::Draft],
+            Some(ids[1]),
+            2,
+        )
+        .await
+        .expect("second page");
+    assert_eq!(
+        second.iter().map(|row| row.price_id).collect::<Vec<_>>(),
+        vec![ids[2], ids[3]],
+        "`after` is exclusive, or a walk repeats one row on every page boundary"
+    );
+
+    // Past the end there is nothing, and an empty state set still selects
+    // nothing - the page inherits both of `list_for_plan`'s contracts.
+    assert!(
+        repo.list_for_plan_page(
+            &scope,
+            tenant(),
+            plan(),
+            &[LifecycleState::Draft],
+            Some(ids[3]),
+            2,
+        )
+        .await
+        .expect("past the end")
+        .is_empty()
+    );
+    assert!(
+        repo.list_for_plan_page(&scope, tenant(), plan(), &[], None, 2)
+            .await
+            .expect("no states")
+            .is_empty()
+    );
+
+    // The bands travel with the row on the paged path too: a page that dropped
+    // them would answer a geometry no rule could evaluate.
+    let banded = paged
+        .iter()
+        .find(|row| row.price_id == ids[0])
+        .expect("the recurring row is in the page");
+    assert_eq!(banded.row.charge_kind, ChargeKind::Recurring);
+}

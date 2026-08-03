@@ -299,6 +299,14 @@ gears:
           identity:
             subject_id: "22222222-6a88-4768-9dfc-6bcd5187d9ed"
             subject_tenant_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+            # As on tenant A: a real AuthN resolver always sets a subject_type,
+            # and the gears that check it (bss-ledger, bss-pricing) refuse a
+            # context without one with 401 - before their PEP gate. Without this
+            # line the cross-tenant isolation tests read as "not authenticated"
+            # rather than as "authenticated and out of scope", which is the one
+            # thing they exist to tell apart. Additive; gears that do not check
+            # it are unaffected.
+            subject_type: "gts.cf.core.security.subject_user.v1~"
             token_scopes: ["*"]
         # Nil-tenant token: static-authz denies requests with the nil UUID
         # tenant, producing a clean 403 Forbidden. Used by
@@ -390,9 +398,13 @@ gears:
     # Gear-specific database (SQLite for E2E, like the other user gears; the
     # gear ships dual PG/SQLite migrations). No config block needed — the
     # defaults are correct for E2E, including the in-repository path of the
-    # joint conformance-fixture registry (the publish gate is closed for every
-    # model kind until pricing's validator earns the corpus's `publish` half,
-    # which is the honest state and blocks nothing this gear currently serves).
+    # joint conformance-fixture registry. That registry's nine rows all carry
+    # `oracle = true` and `publish = true`, so the gate is OPEN for every model
+    # kind here — pricing's validator has earned the corpus's `publish` half.
+    # (This comment said the opposite until 2026-08-03; it had been stale since
+    # the registry was regenerated.) The gate blocks nothing this gear serves
+    # either way: there is no publish endpoint, because it cannot construct a
+    # PublishAuthorization without Slice 5's approval store.
     database:
       server: "sqlite_users"
       file: "bss_pricing.db"

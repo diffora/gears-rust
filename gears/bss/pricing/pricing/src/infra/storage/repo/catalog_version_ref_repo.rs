@@ -69,9 +69,14 @@
 //!   ones" would put the threshold — a config value — inside a SQL predicate,
 //!   where the job that owns the threshold cannot see it.
 //! - **A per-plan read for the publish status API.** §3.6 says a pending ref
-//!   "surfaces on the publish status API", and that surface is G7's. The
-//!   repository method arrives with it; one written now would be a shape fixed
-//!   before its reader.
+//!   "surfaces on the publish status API" — and there is no such path anywhere
+//!   in the design set: no slice §5 table declares one, and the publish endpoint
+//!   it would accompany cannot be built until Slice 5 supplies an approval
+//!   record (see `module::PricingRuntime::publish`). So the debt is **not** a
+//!   surface group's; it belongs to whoever lands the publish plane, and minting
+//!   a path no table declares would be inventing surface — the same discipline
+//!   as inventing a code. `find` therefore still has no caller outside the
+//!   commit and the sweep, which is the honest state and not an oversight.
 
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, Utc};

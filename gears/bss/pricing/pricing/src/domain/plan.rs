@@ -151,14 +151,20 @@ pub struct PlanRevision {
 ///
 /// It is deliberately **not** `Option<Option<T>>`. The double option is the
 /// usual way to make "set this nullable column back to NULL" expressible, and
-/// G3 has no surface that can express it: the request shape that distinguishes
-/// an omitted JSON member from an explicit `null` arrives with the REST layer
-/// (G7). Building the double option now would add a state every repository
-/// method and every test has to reason about on behalf of a caller that cannot
-/// produce it. So this is a **known limitation, stated rather than designed
-/// around** — and Slice 2 widens what it costs rather than quietly inheriting
-/// it: until G7, a `sku_id`, `plan_tier`, `billing_cycle`, `frequency`,
-/// `purchase_min_qty`, `purchase_max_qty`, `invoice_grouping_key`,
+/// until the REST layer landed no surface could express it at all: the request
+/// shape that distinguishes an omitted JSON member from an explicit `null` is a
+/// transport shape. **The surface exists now** (`api::rest::plans`,
+/// `PATCH /bss-pricing/v1/plans/{planId}`) **and the limitation does not move
+/// with it**, because paying it is a change to *this type* and to
+/// `plan_repo::patched_columns` rather than to the surface: every field would
+/// gain a third state that every repository method, every rule and every test
+/// has to reason about, and `serde`'s `Option<Option<T>>` needs
+/// `#[serde(default, deserialize_with = ...)]` per member to distinguish absent
+/// from null at all. So this is a **known limitation, stated rather than
+/// designed around**, and it is now owed by whichever wave next changes the
+/// draft patch shape — not by a surface group. Slice 2 widens what it costs
+/// rather than quietly inheriting it: a `sku_id`, `plan_tier`, `billing_cycle`,
+/// `frequency`, `purchase_min_qty`, `purchase_max_qty`, `invoice_grouping_key`,
 /// `available_from` or `available_to` that has been set cannot be cleared
 /// through a patch — only replaced, or discarded by abandoning the draft
 /// revision, which keeps the revision number it consumed (D-145).

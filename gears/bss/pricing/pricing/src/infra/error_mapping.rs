@@ -76,6 +76,19 @@ impl From<DomainError> for CanonicalError {
             D::PlanRetiredNoSuccessor(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation("lifecycle_state", detail, "PLAN_RETIRED_NO_SUCCESSOR")
                 .create(),
+            // The sibling of the line above and refused for the same structural
+            // reason — no further revision will ever open — but kept apart from
+            // it deliberately: that code would assert a retirement that never
+            // happened, and a retired plan still has a current revision, a warm
+            // delta and a clone route forward where this one has none (D-145 as
+            // amended, `02-plan-definition.md` §5).
+            D::PlanAbandonedNoSuccessor(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation(
+                    "lifecycle_state",
+                    detail,
+                    "PLAN_ABANDONED_NO_SUCCESSOR",
+                )
+                .create(),
             // The `cohort` rule's sibling (D-147): one axis-conditioned field,
             // one code. It is a publish refusal about the row's eligibility
             // class, not a malformed request, which is why it lands here and no

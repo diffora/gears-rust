@@ -35,12 +35,15 @@ use toolkit_db::{DBProvider, DbError};
 use tracing::info;
 
 use crate::api::rest::frontier::ApiState as CatalogVersionApiState;
+use crate::api::rest::state::AuthoringState;
 use crate::config::BssPricingConfig;
 use crate::domain::ports::{CatalogVersionRegistryV1, UnconfiguredCatalogVersionRegistryV1};
 use crate::infra::fixture_gate::FixtureGate;
 use crate::infra::jobs::readmodel_warm::ReadModelWarmJob;
 use crate::infra::publish::PublishService;
-use crate::infra::storage::repo::PinFrontierRepo;
+use crate::infra::storage::repo::{
+    IdempotencyGate, PinFrontierRepo, PlanRepo, PlanShapeRepo, PriceRepo,
+};
 
 /// The coordination-lease key of the read-model warm sweep.
 ///
@@ -96,12 +99,40 @@ pub(crate) struct PricingRuntime {
     /// an option; a registry that cannot be read leaves it CLOSED for every kind
     /// and does not abort the boot.
     ///
-    /// The allow that remains is a narrower debt than the one it replaces: the
-    /// engine has no **caller** because this gear has no authoring REST surface
-    /// at all. `POST /bss-pricing/v1/plans/{planId}/publish` is G7's.
+    /// # The allow that remains, and why its reason changed
+    ///
+    /// The authoring REST surface exists now, and it did **not** give this
+    /// engine a caller — so the old reason ("called by the authoring REST
+    /// surface (G7)") became false rather than merely stale, which by this
+    /// crate's own norm is worse than an allow whose reason has come true.
+    ///
+    /// The real blocker is Slice 5. [`PublishService::commit`] requires a
+    /// `PublishAuthorization`, which has exactly two arms and no `Default`,
+    /// deliberately, so that there is no way to reach the commit with the
+    /// question unanswered. `Approved` needs a `pricing_approval` row in
+    /// `approved` state whose pinned `content_hash` still matches — there is no
+    /// such table, no repository and no Slice-5 code of any kind.
+    /// `AutoPublishable` needs an explicitly configured per-currency threshold
+    /// and a materiality evaluator that scored this change below it — neither
+    /// exists, and `05-governance.md` G1 makes that decisive rather than
+    /// inconvenient: **no configured threshold means all changes are material,
+    /// and a first publish is always material.** So with Slice 5 absent, every
+    /// publish this gear could be asked for is material, material means
+    /// `Approved`, and `Approved` has no record to name.
+    ///
+    /// Constructing `AutoPublishable` anyway would be exactly the fail-open the
+    /// design set has closed by hand five times (D-50, D-62, D-104, D-109,
+    /// D-115). Registering `POST …/plans/{planId}/publish` to return 501 was
+    /// also rejected: an `OpenAPI`-registered operation is a promise, and
+    /// `domain::rules`'s absence discipline reads the same way inverted.
+    ///
+    /// **The owner is the group that lands Slice 5** — the approval store, its
+    /// state machine and the threshold policy — not a surface group.
     #[allow(
         dead_code,
-        reason = "called by the authoring REST surface (G7), which is the only thing that can reach a publish"
+        reason = "no caller until Slice 5 exists: `commit` needs a PublishAuthorization, whose \
+                  Approved arm needs a pricing_approval row that has no table and whose \
+                  AutoPublishable arm is unreachable by governance G1's fail-safe"
     )]
     pub publish: PublishService,
     /// The `CatalogVersion` registry, resolved at init with the fail-closed
@@ -117,6 +148,9 @@ pub(crate) struct PricingRuntime {
     /// Per-request state for the catalog-version REST surface, built here so
     /// `register_rest` composes routers and does no wiring of its own.
     pub catalog_version_api: Arc<CatalogVersionApiState>,
+    /// Per-request state for the plan and price authoring surfaces, built here
+    /// for the same reason: one place wires, one place composes.
+    pub authoring_api: Arc<AuthoringState>,
 }
 
 #[toolkit::gear(name = "bss-pricing", capabilities = [db, rest, stateful], deps = [types_registry, authz_resolver], lifecycle(entry = "serve", stop_timeout = "30s"))]
@@ -408,6 +442,19 @@ impl Gear for BssPricingGear {
             pin_frontier: PinFrontierRepo::new(db.clone()),
         });
 
+        // The authoring surface's state. The repositories are cheap clones over
+        // the provider; `db` is carried because `infra::idempotent` opens the
+        // one transaction the at-most-once contract requires, and the gate holds
+        // the configured retention window because expiry is decided on the claim
+        // path rather than by a reaper.
+        let authoring_api = Arc::new(AuthoringState {
+            db: db.clone(),
+            plans: PlanRepo::new(db.clone()),
+            shapes: PlanShapeRepo::new(db.clone()),
+            prices: PriceRepo::new(db.clone()),
+            idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
+        });
+
         // The publish engine takes the gate by value - it is the only thing
         // that consults it, and a second holder would be a second answer to
         // "is this deployment's corpus green for that shape". The registry is
@@ -429,6 +476,7 @@ impl Gear for BssPricingGear {
             publish,
             catalog_version_registry,
             catalog_version_api,
+            authoring_api,
         })));
         info!("bss-pricing: runtime published");
         Ok(())
@@ -449,10 +497,27 @@ impl DatabaseCapability for BssPricingGear {
     }
 }
 
-/// `RestApiCapability` impl. The authoring and read-model routers mount here as
-/// their slices land; the gear reserves its prefix either way, so an
-/// unconfigured boot answers 404 under `/bss-pricing/v1` rather than colliding
-/// with another gear's namespace.
+/// `RestApiCapability` impl.
+///
+/// # What is mounted, and what is not
+///
+/// **Nine routes.** The pin-eligibility frontier (`frontier`), the plan
+/// authoring plane — read, create, patch, abandon (`plans`) — and the price
+/// authoring plane — create, patch, delete, list (`prices`). Every one of them
+/// gates on its catalogued `(resource_type, action)` pair before touching a
+/// repository, and `tests/rest_authz.rs` drives the whole set to prove it.
+///
+/// **The design set declares roughly forty surfaces across Slices 2-12** and the
+/// other thirty-odd are not mounted, because a route whose handler has nothing
+/// to call is not a route: there is no approval store, no window store, no
+/// overlay, bundle, customer-group, import, migration, bulk or preview table,
+/// no audit or history read, and no read-model resolution query. The one route
+/// whose handler *does* have something to call and still cannot be built is
+/// `POST /bss-pricing/v1/plans/{planId}/publish` — see
+/// [`PricingRuntime::publish`] for why, at length.
+///
+/// The gear reserves its prefix either way, so an unconfigured boot answers 404
+/// under `/bss-pricing/v1` rather than colliding with another gear's namespace.
 ///
 /// Two layers wrap the merged routers, exactly as the sibling ledger does: the
 /// per-request PEP (the value, not the `Arc` — `PolicyEnforcer: Clone`), which
@@ -471,6 +536,14 @@ impl RestApiCapability for BssPricingGear {
         Ok(router
             .merge(crate::api::rest::frontier::router(
                 Arc::clone(&rt.catalog_version_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::plans::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::prices::router(
+                Arc::clone(&rt.authoring_api),
                 openapi,
             ))
             .layer(axum::Extension((*rt.enforcer).clone()))

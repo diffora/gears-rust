@@ -88,6 +88,23 @@ pub enum DomainError {
     /// sentence implied was the very call being refused.
     #[error("plan is retired and takes no successor revision: {0}")]
     PlanRetiredNoSuccessor(String),
+    /// An authoring call named a plan whose **every** revision is `abandoned`.
+    ///
+    /// It holds no current revision and no open draft and can acquire neither:
+    /// a first draft is minted at revision `0` outright, and a successor
+    /// presupposes a current revision to succeed from — so a plan created and
+    /// discarded before its first publish has spent its id (D-145 as amended
+    /// 2026-08-02; `02-plan-definition.md` §5, `01-foundation.md` §3.3).
+    ///
+    /// Deliberately not [`DomainError::PlanRetiredNoSuccessor`], which would
+    /// assert a retirement that never happened and which describes a plan that
+    /// still has a current revision, a warm delta and a clone route forward.
+    /// Deliberately not [`DomainError::LifecycleForbidden`] either, by D-146's
+    /// own line: that code holds the refusals describing **no** alternative
+    /// action, and this one describes a specific one — the id is spent, so mint
+    /// a new plan and stop retrying this one.
+    #[error("plan holds only abandoned revisions and takes no further revision: {0}")]
+    PlanAbandonedNoSuccessor(String),
     /// A grandfathering horizon on a row whose eligibility class is not
     /// `existing_grandfathered`.
     ///

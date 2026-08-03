@@ -127,29 +127,7 @@ impl RowVersion {
     /// sign, a non-digit, and a version past `u64`.
     pub fn from_etag(raw: &str) -> Result<Self, DomainError> {
         let refuse = |why: &str| DomainError::InvalidRequest(format!("If-Match {raw}: {why}"));
-        let tag = raw.trim();
-
-        if tag == "*" {
-            return Err(refuse(
-                "the wildcard matches any version and would overwrite whichever one is current",
-            ));
-        }
-        if tag.starts_with("W/") {
-            return Err(refuse(
-                "RFC 9110 forbids a weak validator here; a weak comparison cannot decide whether a write is safe",
-            ));
-        }
-        if tag.contains(',') {
-            return Err(refuse(
-                "one entity tag is expected, and a list does not say which version was read",
-            ));
-        }
-        let Some(digits) = tag
-            .strip_prefix('"')
-            .and_then(|inner| inner.strip_suffix('"'))
-        else {
-            return Err(refuse("a strong entity tag is wrapped in double quotes"));
-        };
+        let digits = strong_tag_body(raw)?;
         if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
             return Err(refuse("the tag must quote one or more ASCII digits"));
         }
@@ -158,6 +136,44 @@ impl RowVersion {
             .map(Self)
             .map_err(|_| refuse("the version is past the representable range"))
     }
+}
+
+/// Unwrap **one strong entity tag** and hand back the text inside its quotes.
+///
+/// Extracted from [`RowVersion::from_etag`] rather than copied, because a second
+/// reader of `If-Match` arrived: a plan revision's tag has to name the revision
+/// it was minted against as well as the version (`api::rest::preconditions`),
+/// and if that reader re-implemented the envelope it would be free to accept a
+/// weak validator or a wildcard on the very verbs where those are the defect.
+/// The three refusals of *meaning* live here once, and both readers get them.
+///
+/// # Errors
+///
+/// [`DomainError::InvalidRequest`] for the wildcard `*`, a weak validator
+/// (`W/"…"`), a comma-separated list, and anything not wrapped in double quotes.
+/// What is **inside** the quotes is the caller's to interpret.
+pub fn strong_tag_body(raw: &str) -> Result<&str, DomainError> {
+    let refuse = |why: &str| DomainError::InvalidRequest(format!("If-Match {raw}: {why}"));
+    let tag = raw.trim();
+
+    if tag == "*" {
+        return Err(refuse(
+            "the wildcard matches any version and would overwrite whichever one is current",
+        ));
+    }
+    if tag.starts_with("W/") {
+        return Err(refuse(
+            "RFC 9110 forbids a weak validator here; a weak comparison cannot decide whether a write is safe",
+        ));
+    }
+    if tag.contains(',') {
+        return Err(refuse(
+            "one entity tag is expected, and a list does not say which version was read",
+        ));
+    }
+    tag.strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .ok_or_else(|| refuse("a strong entity tag is wrapped in double quotes"))
 }
 
 impl fmt::Display for RowVersion {

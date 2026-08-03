@@ -66,7 +66,9 @@
 //! # The pre-check mutates nothing
 //!
 //! That is what makes it a pre-check, and it is what `POST …/plans/{id}/publish`
-//! (G7) calls before routing to approval. A non-empty report comes back as a
+//! would call before routing to approval — **an endpoint that does not exist**,
+//! because it cannot construct a `PublishAuthorization` without Slice 5's
+//! approval record (see [`PublishService::commit`]). A non-empty report comes back as a
 //! **report**; turning it into `DomainError::ValidationFailed` is the surface's
 //! choice, because the submit path wants to *show* a report while the commit
 //! path wants to *fail* on one.
@@ -318,9 +320,20 @@ impl PublishService {
     /// `sea_orm::DbErr` out of the error type, and [`DomainError`] is a
     /// `Clone + Eq` value type carried into responses that cannot hold one, so
     /// every failure would classify as non-retryable and the loop would be
-    /// decoration. The retry decision therefore sits with the caller — G7's
-    /// endpoint and its client — and a retriable-contention refusal is **owed**,
-    /// together with the wire code the design set does not name for it.
+    /// decoration. The retry decision therefore sits with the caller — the
+    /// publish endpoint and its client.
+    ///
+    /// **Half of that debt is discharged and half is not.** The wire code
+    /// arrived: `CONCURRENT_MUTATION` (D-159, 409, naming the aggregate) is
+    /// declared for exactly this class, over the gear's three per-aggregate
+    /// serialization points. What is still missing is any *path* that raises it
+    /// — this method flattens a lost race into `RepoError::Db`, i.e. a 500 — and
+    /// the mapping is not added here because the refusal has to be recognized
+    /// from a backend-specific constraint violation, which is the coupling
+    /// `RepoError`'s own doc refuses and which only a layer that knows the
+    /// backend can do. So: the **code** is no longer owed, the **recognition**
+    /// is, and it belongs with the publish endpoint that would have a client to
+    /// tell.
     ///
     /// **One refusal after the registry request is permanent, and it is moved
     /// ahead of it.** Every other post-request refusal self-heals, because the
@@ -349,7 +362,10 @@ impl PublishService {
     /// [`publish_revision`](crate::infra::storage::repo::plan_repo::publish_revision)'s
     /// compare-and-swap refuses the second attempt. The client-key gate answers
     /// a different question — "is this the same HTTP request" — and it needs a
-    /// header only a surface receives. It belongs to G7 with the endpoint.
+    /// header only a surface receives. It belongs with the endpoint, which is
+    /// unbuildable until Slice 5; the machinery it would use exists now
+    /// (`infra::idempotent`), so what is owed is the endpoint and not the
+    /// plumbing.
     ///
     /// # Errors
     /// [`DomainError::ValidationFailed`] carrying the whole report when the
