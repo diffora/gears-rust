@@ -338,7 +338,19 @@ read from there: the `currency`/`region` axes and `tax_category_ref` in
 `reserved_*`, `discount_ref`, `min_qty_*`, `included_allowance` and `tier_qualification_window`
 in [`10-advanced-primitives.md`](./10-advanced-primitives.md) §6 (2026-08-02: the pointer was
 missing, so this list read as the table and `included_allowance` looked absent from the design
-set):
+set).
+
+**Before adding, removing or re-homing a `pricing_price` column, read the evaluation-policy
+roster (D-162, [`01-foundation.md`](./01-foundation.md) §4.4).** Nine of this row's fields are
+the roster that the `pricingSnapshotRef` evaluation-policy generation names, and a change to
+that **set** — an addition, a removal, or a field crossing the boundary in either direction —
+bumps the generation, in the log §4.4 declares, under the id of the decision making it.
+Changing a rostered field's requiredness, enum values, default or meaning does **not**: the
+generation tracks the shape of the evaluation input, not its semantics. Fields outside the
+roster (identity, money, and the Slice-6 contract columns) move under their own contracts and
+never touch it. Which nine is **§4.4's statement and is deliberately not copied here** — that
+block is what the gear's guard reads, and two hand-maintained copies is how the D-127 class
+re-enters (a list that can drift is a guard that differs):
 
 | Column | Type | Notes |
 |--------|------|-------|

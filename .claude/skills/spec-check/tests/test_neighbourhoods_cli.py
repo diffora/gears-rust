@@ -204,14 +204,67 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #:   so a class that stops occurring is distinguishable from one that never existed.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
-    "no-region": 5,
-    "anchored:no-account": 10,
-    "suspicious:multi-region": 40,
+    "no-region": 4,
+    "anchored:no-account": 9,
+    "suspicious:multi-region": 44,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 22,
+    "suspicious:weak-coverage": 20,
     "covered:strong": 0,
 }
-#: Moved 2026-08-03, **second move of the day** (was 5 / 14 / 28 / 30, judged 58, total
+#: Moved 2026-08-03, **third move of the day** (was 5 / 10 / 40 / 22, judged 62, total
+#: unchanged at 77) after the **D-162 docs edit** — the product owner's answer to the §F.1 fork
+#: D-161 opened the wave before: `pricingSnapshotRef`'s evaluation-policy segment is a
+#: **vocabulary generation**, `ep-<n>`, over a nine-field roster the design set had never
+#: written down, with an append-only log the gear's build replays so the bump cannot be
+#: forgotten. **Six movers**, every one diffed per-id against the pre-edit tree (`e3fcd727`)
+#: in a detached worktree.
+#:
+#: **This is the first move in four waves with no `DF_CUTOFF` component at all.** Checked
+#: exhaustively over the union of both trees' terms (4,809 -> 4,835): **zero** terms crossed
+#: `DF_CUTOFF = 0.25` in either direction. `catalog`, the term behind the twelfth entry and
+#: the thirteenth and fourteenth captures, moved 0.24957 -> 0.24797 — further inside, not
+#: across. So every mover here is a region gain, and all six have the same cause.
+#:
+#: **All six gained the two documents a wave is obliged to grow, and nothing else.** Every
+#: new region of every mover is either `DESIGN.md` §4 (the D-72 register digest — windows
+#: 499-510 and 505-516) or the `DECISIONS.md` "How to use this document" preamble (19-30).
+#: **Not one gained a region in a design slice, in the PRD, or in the new normative §4.4
+#: block this edit added** — which is worth stating precisely because §4.4 is where the whole
+#: substance went.
+#: - `nfr-read-latency` no-region -> weak. `DESIGN.md:499-510` at 0.643, its **first
+#:   candidate region ever**. The digest paragraph mentions the read path; the requirement is
+#:   a p95 latency number. A judge should answer `mentions`.
+#: - `fr-bundle-composition` no-account -> weak. `DESIGN.md:505-516` at 0.607.
+#: - `fr-custom-frequency` weak -> multi. `DESIGN.md:499-510` at 0.621.
+#: - `fr-package-pricing` weak -> multi. `DESIGN.md:499-510` at **exactly 0.600**.
+#: - `fr-invoice-currency-binding` weak -> multi. `DECISIONS.md:19-30` at **exactly 0.600**.
+#:   Two of six landing on the threshold to the third decimal is the honest measure of how
+#:   much of this move is signal.
+#: - `fr-consumer-readmodel-resolution` weak -> multi, and the only one with a claim to being
+#:   a real account: its declaration reads "model kind, ordered tier bands, and
+#:   evaluation-policy fields", and the D-162 digest paragraph is the first text in the set
+#:   that says which fields those are. It gains `DESIGN.md:505-516` at 0.638 and
+#:   `DECISIONS.md:19-30` at 0.606; its `DECISIONS.md` body region re-anchored 919-930 ->
+#:   913-924 at the **identical 0.617**, a window-grid effect of the one board row, not a
+#:   second account.
+#:
+#: Controlled in both directions against the pre-edit tree. (i) Base + **only** the new
+#: status-board row, nothing else: **zero** movers — so none of this is the grid. (ii) Base
+#: with **only** `DESIGN.md` and `DECISIONS.md` replaced by their post-edit versions, every
+#: design slice and the PRD left at `e3fcd727`: reproduces all six movers, in the same
+#: directions, and nothing else. The design-slice and PRD edits of this wave move the pin by
+#: **nothing**.
+#:
+#: **Judged is now 64/77 = 83%, and this is the fourth consecutive wave to grow it for
+#: reasons that are not the design set.** Standing rule 4 says a class that stops being a
+#: minority is a statement about the search rather than about the documents; the controlled
+#: run above is the cleanest evidence yet that it is — a mandatory register digest, which
+#: every requirement's vocabulary can match because it summarises all of them, is being
+#: counted as a second account 44 times. Noted here and beside `PINNED_JUDGE_CALLS` rather
+#: than acted on: changing the scorer is not a docs wave's business, and nothing was reworded
+#: to move a score in either direction.
+#:
+#: (Previous move, same day, recorded below.) Moved 2026-08-03, **second move of the day** (was 5 / 14 / 28 / 30, judged 58, total
 #: unchanged at 77) after the **D-155…D-161 docs wave** — the fourth implementation-side
 #: wave, raised by building Group **G5**, the **publish commit** (the pipeline re-run inside
 #: the commit transaction, the lifecycle flips, the transactional outbox, the fail-closed
@@ -617,7 +670,19 @@ PINNED_TRIAGE_LEDGER = {
 #: rule 4 says a class that stops being a minority is a statement about the search, and three
 #: consecutive waves have grown the two documents every requirement's terms can match. Per-id
 #: record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 62, "ledger": 17}
+#: (62 → 64 on the 2026-08-03 D-162 re-pin, the third of that day. **Two** ids entered the
+#: judged set and none left it: `nfr-read-latency` out of `no-region` and
+#: `fr-bundle-composition` out of `anchored:no-account`. Neither was promoted by an account
+#: about its own subject — both gained the D-72 register digest and nothing else, one of them
+#: its first candidate region ever. The +4/−2 between `multi-region` and `weak-coverage` is
+#: judge-neutral. **The share is 64/77 = 83% and this is the fourth consecutive wave to grow
+#: it without a design slice moving**, which the D-162 controlled run demonstrates outright
+#: rather than by inference: replacing only `DESIGN.md` and `DECISIONS.md` in the pre-edit
+#: tree reproduces every mover, and the design-slice and PRD edits reproduce none. The digest
+#: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
+#: requirement's vocabulary can match it — which is a property of the corpus, not of the
+#: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
+PINNED_JUDGE_CALLS = {"pricing": 64, "ledger": 17}
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):

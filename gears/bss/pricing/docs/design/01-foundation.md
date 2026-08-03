@@ -538,7 +538,7 @@ Every state change that reaches production follows one path:
 1. **Author draft** — create/update/clone in `draft` (ETag-checked, idempotency-deduped). Only `draft` rows are mutable; a never-published `draft` **price** row is deletable, while a plan's open `draft` **revision** row is abandoned rather than deleted (D-145, §4.3).
 2. **Validate (fail closed)** — the aggregate validation pipeline runs the §17.4 rule set plus every slice-registered rule; a single failure blocks the submission with an enumerated report. This step is a **pre-check**: the same rule set re-runs inside the publish-commit transaction of step 4 (approval approves content; the commit re-validates state — a commit-time failure voids the approval and returns the subject to draft with the report). No `PlanPublished`, no read-model warm on any failure.
 3. **Approve** — a material change (above the configured threshold, or a first publish) requires the submitter **plus ≥ 1 independent approver** (two distinct principals; self-approval rejected + audited). Fail-safe: the two-person rule applies unless an explicit threshold is configured and the change is below it and it is not a first publish. Pending approval is **not** a `lifecycle_state`: the subject stays `draft` and remains mutable — the open Slice 5 approval record marks it, and any mutation of the subject **voids** that record ("returns to draft" in the PRD means the approval record closes).
-4. **Freeze + emit** — the publish commit re-runs the pipeline, **requests the `CatalogVersion`**, transitions the row set, and stamps the catalog-side `pricingSnapshotRef` identifiers; the frozen event set is enqueued transactionally (`PlanPublished` with a **pending** version ref). **The request is made inside this transaction, after the re-validation passes and before any write (normative, D-156, 2026-08-03, found while building the commit).** §3.6 had it after the enqueue, which cannot be built: at that point there is no handle for the payload to carry. Earlier than stated is worse than later — a commit-time validation failure would strand a pending ref that nothing ever commits, tripping `pricing.catalogversion.commit_overdue` (§3.6) for a publish that never happened. The cost is a **network round-trip inside an open database transaction**, and it is bounded by deriving the `request_id` from `(tenant_id, plan_id, revision)`, so a rolled-back-then-retried commit re-requests the *same* handle rather than orphaning one and any pending handle is attributable to the unit that asked for it; the one **permanent** post-request refusal — a retired predecessor, which no retry can ever make publishable — is therefore asked **before** the request. **The catalog-side stamp is the two segments the commit can produce, and no placeholder for the third (normative, D-161, 2026-08-03):** the pending version ref and the resolved price ids are stamped; the *evaluation-policy version* named by `fr-pricing-snapshot` and by Rating's composition contract has **no producer, format or owner in either gear**, so publish stamps nothing for it and the fork is open (`DECISIONS.md` §F.1). Rating's `SnapshotComposer` fail-closes on a missing pricing pre-stamp, which is the correct guard and the reason no placeholder is minted: a fabricated version *satisfies* that guard, is pinned immutably on posted periods, and cannot be told from a real one afterwards. §4.4 carries the same statement.
+4. **Freeze + emit** — the publish commit re-runs the pipeline, **requests the `CatalogVersion`**, transitions the row set, and stamps the catalog-side `pricingSnapshotRef` identifiers; the frozen event set is enqueued transactionally (`PlanPublished` with a **pending** version ref). **The request is made inside this transaction, after the re-validation passes and before any write (normative, D-156, 2026-08-03, found while building the commit).** §3.6 had it after the enqueue, which cannot be built: at that point there is no handle for the payload to carry. Earlier than stated is worse than later — a commit-time validation failure would strand a pending ref that nothing ever commits, tripping `pricing.catalogversion.commit_overdue` (§3.6) for a publish that never happened. The cost is a **network round-trip inside an open database transaction**, and it is bounded by deriving the `request_id` from `(tenant_id, plan_id, revision)`, so a rolled-back-then-retried commit re-requests the *same* handle rather than orphaning one and any pending handle is attributable to the unit that asked for it; the one **permanent** post-request refusal — a retired predecessor, which no retry can ever make publishable — is therefore asked **before** the request. **The catalog-side stamp is all three segments (normative, D-162, 2026-08-03):** the pending version ref, the resolved price ids, and the **evaluation-policy generation** — the declared `ep-<n>` constant naming the evaluation-policy field set the frozen row content is to be read under, whose roster, bump rule and log are §4.4's. D-161 decided the half that could be decided before the segment had a producer at all — publish stamps a real value or **no placeholder** — and that ban is unchanged: Rating's `SnapshotComposer` fail-closes on a missing pricing pre-stamp, which is the correct guard, and a fabricated version *satisfies* that guard, is pinned immutably on posted periods, and cannot be told from a real one afterwards. §4.4 carries the same statement.
 5. **Version + warm** — the registry (sole incrementer) batches approved publishes and emits `CatalogVersionPublished`; the read model warms to the 5s SLO or the publish is marked degraded (`PlanPublishDegraded`). No intermediate state exposes a rateable-but-incomplete plan.
 
 **The commit flips exactly the row set its re-validation judged (normative, D-155, 2026-08-03,
@@ -839,20 +839,88 @@ evaluation-policy version) pinned on charges and `BillableItem`s — stamped at 
 **pending** version ref, finalized to the committed `CatalogVersion` on
 `CatalogVersionPublished`, and immutable thereafter; posted invoice periods MUST NOT re-query
 mutable catalog rows. The **normative composition SoR is Tariffs**; the catalog-side view is
-the aligned entry and MUST NOT diverge from it. **Of those three catalog-side parts the commit
-can produce two, and it stamps no placeholder for the third (normative, D-161, 2026-08-03,
-found while building the publish commit).** The pending version ref and the resolved price ids
-are stamped as described. The **evaluation-policy version** is named here, in `fr-pricing-snapshot`,
-and in Rating's composition contract as a segment this gear writes at publish — and **no
-document in either gear names what produces its value or what shape it has**. Publish therefore
-stamps nothing for it, deliberately: Rating's `SnapshotComposer` rejects a context whose pricing
-pre-stamp is missing (fail-closed, never fabricating a segment), which is the correct guard,
-and an invented version would *satisfy* that guard while being pinned immutably on posted
-periods and indistinguishable from a real one for the retention horizon. What the segment is —
-a vocabulary generation, a content digest, or nothing at all once the fields resolve through the
-price ids at the pinned version — is an open fork for the product owner jointly with Rating
-([`../DECISIONS.md`](../DECISIONS.md) §F.1), and until it closes the composer's fail-closed arm
-is load-bearing rather than defensive. On read-model outage the read path **fails
+the aligned entry and MUST NOT diverge from it. **All three catalog-side parts are stamped by
+the commit (normative, D-162, 2026-08-03).** The pending version ref and the resolved price ids
+are stamped as described. The **evaluation-policy version** — named here, in
+`fr-pricing-snapshot` and in Rating's composition contract as a segment this gear writes at
+publish, and until D-162 given no producer, format or owner by any document of either gear
+(D-161) — is the **evaluation-policy generation**, defined immediately below. Publish stamps
+the generation the gear currently declares. It stamps a real value or none: D-161's ban on a
+placeholder stands unchanged and is what the generation is built to respect, since Rating's
+`SnapshotComposer` fail-closes on a missing pre-stamp (correctly) and would be *satisfied* by a
+fabricated one, immutably and on posted money.
+
+#### The evaluation-policy generation (normative, D-162)
+
+The generation names **which evaluation-policy field set** the frozen row content of a snapshot
+is to be read under. Its format is `ep-<n>`, `n` a positive integer, monotone, and **opaque to
+consumers except for equality** — two snapshots carrying the same generation were frozen under
+the same field set, and two carrying different generations were not. It is a **declared
+constant** of this gear, not a per-publish value: every publish of one generation stamps the
+same string, and the string moves only when a decision moves the field set.
+
+The **roster** is the set of `pricing_price` fields that tell an evaluator how to derive the
+billable quantity and select the rate. It deliberately excludes the row's **identity** (the
+scope-key axes and the metered line it prices), its **money** (amounts, bands, package price)
+and the **consumer-contract** fields Slice 6 owns (proration, anchoring, billing timing, tax,
+rounding) — those move under their own contracts and are not what this segment qualifies. The
+roster is spelled in the `snake_case` of the §6 column lists, one spelling, because the set
+names these fields in three registers elsewhere and a guard cannot match prose.
+
+The **bump rule**, precisely: a change **requires** a bump when it adds a field to the roster,
+removes one, or moves a field across the roster boundary in either direction. A change
+**requires no bump** when it changes a rostered field's *requiredness*, its enum's value set,
+its default, or its meaning; when it adds a `pricing_price` field outside the roster; or when it
+changes anything about money, identity or the Slice-6 contract fields. **What the generation
+therefore does not claim** is stated rather than left to be discovered: it tracks the field
+*set*, not the meaning of a field. D-58 made `tier_aggregation_window` mandatory on `package`
+rows and would not bump it; a decision that redefined `peak` would not bump it either. A reader
+carrying a generation carries the guarantee that the *shape* of the evaluation input has not
+moved, and no guarantee at all about semantics inside that shape — the risk a content digest
+would have covered and this does not ([`../DECISIONS.md`](../DECISIONS.md) D-162).
+
+The roster, the fields deliberately outside it, and the generation log are declared here, and
+this block is normative — the gear's guard reads it:
+
+```text
+evaluation-policy-generation: ep-1
+
+log:
+  ep-1  D-162  + model_kind
+  ep-1  D-162  + package_size
+  ep-1  D-162  + billing_granularity
+  ep-1  D-162  + tier_aggregation_window
+  ep-1  D-162  + tier_qualification_window
+  ep-1  D-162  + aggregation_function
+  ep-1  D-162  + aggregation_granularity
+  ep-1  D-162  + max_hold_granules
+  ep-1  D-162  + included_allowance
+
+outside:
+  charge_kind          identity - scope-key axis 7
+  meter                identity - the metered line the row prices
+  dimension_key        identity - the line's dimension discriminator
+  amount_minor         money
+  bands                money
+  package_price_minor  money - D-122's "legitimate price lever"
+  quantity_source      quantity origin, not quantity derivation
+  manual_quantity      quantity origin, not quantity derivation
+```
+
+The log is **append-only and replayed**: the roster is what applying its `+` and `-` operations
+in order produces, the generations run `ep-1`, `ep-2`, … without gaps, and the last one is the
+declared generation. That is the bump rule as a mechanism rather than as a request — a field
+cannot join the roster without a log line, a log line is a generation, and the last generation
+is the constant. Rewriting an existing line to smuggle a field into a past generation is
+available and is not an evasion of the guard: it is a falsification of what a numbered decision
+admitted, in a normative document, which is a different act with a different reviewer.
+
+`ep-1` opens the log with the nine fields as they stand and claims **no retroactive history**.
+D-44, D-45 and D-122 each moved this set before it was written down, and reconstructing
+generations for them would mint versions no snapshot was ever stamped with — the same
+fabrication D-161 clause (1) refuses, one artifact over.
+
+On read-model outage the read path **fails
 closed** (never serves stale). After a degraded publish the warm **re-drive continues past the
 SLO**; on completion it sets the warm-completion marker (the version becomes resolvable —
 monotonicity unaffected) and clears the degraded mark, raising an operations alarm meanwhile;

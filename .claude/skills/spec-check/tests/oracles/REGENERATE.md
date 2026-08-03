@@ -358,6 +358,60 @@ separately-justified commit — never a way to make a failing change look green.
     `weak-coverage` is judge-neutral, both classes being in `JUDGED`. Nothing was reworded to
     move a score back, in either direction. Per-id record beside `PINNED_TRIAGE_PRICING`.
 
+15. **2026-08-03, fifteenth capture — after the D-162 docs edit.** Document movement only, no
+    checker change. D-162 is the product owner's answer to the §F.1 fork D-161 opened one wave
+    earlier: `pricingSnapshotRef`'s evaluation-policy segment is a **vocabulary generation**,
+    `ep-<n>`, a declared constant of the gear naming which evaluation-policy field set a
+    snapshot's frozen row content is read under. Writing it required writing down the field set,
+    which the design set never had — the phrase runs through it sixty-odd times unexpanded and is
+    expanded once, in the PRD glossary, as three fields three later decisions added to — so the
+    edit declares a **nine-field roster**, what sits outside it and why, and an **append-only
+    generation log** the gear's build replays, since a generation nobody remembers to bump
+    asserts on posted money a stability that is not there.
+
+    **The finding set did not move.** `live-text.txt` and `live-json.json` are byte-identical
+    and were re-captured to no effect; `live-show-known-debt.txt` differs **only in line
+    numbers** — the same 21 `P1/propagation-missing` members, every one shifted **uniformly
+    +1**, the single status-board row the decision added. Live findings unchanged at 2 (both
+    rating-side), suppressed unchanged at 59; `--gear gears/bss/pricing/docs --auto-context`
+    still reports 0 live and 59 suppressed. **No wire code was minted**, which is the point of
+    a generation: the segment is a value, not a refusal, so `P3/code-unreferenced` has nothing
+    to gain or lose. One near-miss is worth recording because it was caught rather than
+    committed — a draft of the register entry spelled `EVAL_POLICY_MISPLACED` while arguing
+    why `quantity_source` sits outside the roster, which **paid down a pinned
+    `P3/code-unreferenced` member** (59 → 58) without any rule having started to raise it. The
+    sentence was reworded to name the response rather than the token. A pin paid by a register
+    mention is a pin paid by nothing.
+
+    **The triage pin moved: `no-region` 5 → 4, `anchored:no-account` 10 → 9, `multi-region`
+    40 → 44, `weak-coverage` 22 → 20, judged 62 → 64, total unchanged at 77.** **Six movers**,
+    each diffed per-id against the pre-edit tree (`e3fcd727`) in a detached worktree, and for
+    the first time in four waves there is **no `DF_CUTOFF` component at all**: checked
+    exhaustively over the union of both trees' terms (4,809 → 4,835), **zero** crossed the
+    cutoff in either direction, and `catalog` — the term behind the twelfth entry and the
+    thirteenth and fourteenth captures — moved 0.24957 → 0.24797, further inside rather than
+    across.
+
+    All six are region gains with **one** cause. Every new region of every mover is either
+    `DESIGN.md` §4 (the D-72 register digest, windows 499-510 / 505-516) or the `DECISIONS.md`
+    preamble (19-30): `nfr-read-latency` no-region → weak at 0.643 (its first candidate region
+    ever), `fr-bundle-composition` no-account → weak at 0.607, `fr-custom-frequency` at 0.621,
+    `fr-package-pricing` at exactly 0.600, `fr-invoice-currency-binding` at exactly 0.600, and
+    `fr-consumer-readmodel-resolution` at 0.638 + 0.606. Only the last has a claim to being a
+    real account — its declaration names "model kind, ordered tier bands, and evaluation-policy
+    fields", and the digest paragraph is the first text in the set that says which fields those
+    are. **Not one mover gained a region in a design slice, in the PRD, or in the new normative
+    §4.4 block**, which is where all of the edit's substance went.
+
+    Two controlled runs settle it, and they are the cleanest separation any capture has had.
+    (i) Pre-edit tree plus **only** the new status-board row: **zero** movers, so none of this
+    is the fixed window grid. (ii) Pre-edit tree with **only** `DESIGN.md` and `DECISIONS.md`
+    replaced: reproduces all six movers in the same directions and nothing else. The judged
+    share is now 64/77 = 83% and this is the fourth consecutive wave to grow it without a
+    design slice moving — standing rule 4's concern, now demonstrated outright rather than
+    inferred. Noted beside `PINNED_JUDGE_CALLS`; nothing was reworded to move a score in either
+    direction.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:
