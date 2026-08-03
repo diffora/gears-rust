@@ -256,6 +256,55 @@ flowchart TB
 5c. [ ] - `p2` - **Fixture gate (normative, D-60, 2026-07-29 cross-gear review fix):** `trailing_tier` is a registered `FixtureGate` variant (Slice 3 conformance registry) covering qualification from the prior anchor period, the period-boundary re-qualification, the locked-rate pin, and bootstrap. Publish of **any** row with `tierQualificationWindow = trailing_period` without the green joint fixture is blocked (`FIXTURE_MISSING`, 422), exactly like a `modelKind` variant or the D-44 `level-aggregation` variant. This is the publish block rating SEAMS M12 already relies on ("blocks any `trailing_period` row publish until adopted") — it was asserted on the rating side but had no gate, no code and no DoD clause in pricing, so the primitive could be sold and then failed closed at first rating - `inst-tt-fixture`
 6. [ ] - `p2` - The qualification window and the resolved locked rate are part of the **joint Rating contract** (PRD §consumer-contracts): Rating computes the trailing aggregate and re-qualifies at each period boundary; Tariffs reads the locked rate from the pin - `inst-tt-joint`
 
+**`includedAllowance` and `tierQualificationWindow` are refused on every authoring path until the
+rules above are built (normative, D-177, 2026-08-03, found while closing the implementation's debt
+against this set).** Their two columns are declared in
+[`03-price-structure.md`](./03-price-structure.md) §6 and were reachable by the authoring surface
+before any of this section existed, so a value could be stored, echoed back and projected while
+**none** of the ten refusals above — `ALLOWANCE_ON_NON_USAGE`, `ALLOWANCE_DOUBLE_FREE`,
+`ALLOWANCE_ON_NON_SUM`, `ALLOWANCE_QUANTITY_INVALID`, `ALLOWANCE_KIND_UNSUPPORTED`,
+`ALLOWANCE_WITH_RESERVATION`, `TIER_QUAL_ON_NON_TIERED`, `TIER_QUAL_WINDOW_INCOMPATIBLE`,
+`TIER_QUAL_ZERO_BAND_LOCK`, `FIXTURE_MISSING` — could judge it, and while neither the allowance
+compile (`inst-ac-band`, `inst-ac-marker`, `inst-ac-carry`) nor the lock (`inst-tt-lock`) exists to
+give the value meaning. Four clauses.
+
+1. **Refused, not ignored.** A non-null value in either field is a **malformed request** under the
+   Foundation validation envelope (400, **no code minted** — the class D-141 settled and D-171
+   applies to an absent precondition), on **every** authoring path: the price create and the price
+   `PATCH` today, and Slice 12's **bulk import** when it lands, which is a second authoring path
+   onto the same draft plane (D-118) and is bound by this clause rather than exempt from it. The
+   refusal names the field and says the primitive has not landed; it does not pretend to have
+   judged anything.
+2. **The two members stay modelled.** Deleting them from the request types is **worse** than
+   refusing them: D-174 clause (1) puts a member this gear does not model *outside* the idempotency
+   digest and therefore replays it, so an authored allowance would become a **silently ignored**
+   field rather than a refused one. For the same reason the two fields stay in `ep-1`'s
+   evaluation-policy roster ([`01-foundation.md`](./01-foundation.md) §4.4) and in the projected
+   delta: the roster is an append-only log and removing a field would bump a generation for a field
+   nobody can author, which is the fabrication D-162 refuses.
+3. **This refusal is the only thing holding the publish freeze, and it is therefore load-bearing.**
+   A stored value is frozen by publish into an immutable ≥ 7-year version
+   ([`01-foundation.md`](./01-foundation.md) §4.4) with no gate that would notice, so the refusal
+   may be removed **only** in the
+   change that lands the rules and the compile together — not before, and not by a group tidying an
+   unreachable branch. The group that mounts `POST /bss-pricing/v1/plans/{planId}/publish` (Slice 5)
+   inherits this as a precondition to check rather than a detail: at that point publish becomes the
+   freezing act, and it is safe only while every authoring path still refuses.
+4. **One of the ten cannot be built even with this slice, and by design.** `FIXTURE_MISSING` on the
+   `trailing_tier` variant (`inst-tt-fixture`) needs that variant **registered in the joint
+   conformance registry**, which is a counterparty act with Rating (D-60) and not pricing's to mint
+   alone — rating SEAMS M12 carries it as open on their side. Until it is registered the block
+   cannot fire, which is why it is named here rather than left to read as coverage.
+
+Rejected: **building the ten gates now, without the compile.** A `graduated` row with
+`includedAllowance {100, none}` would pass all six `inst-ac-gate` rules and publish with no `$0`
+band prepended, no authored band offset, no marker materialized and no `pricing_plan_grant` row for
+a `carry` policy — so Rating bills the first hundred units at the authored rate and the operator is
+charged for an allowance that was accepted, **validated**, and silently ignored. That is worse than
+refusing, and it is the posture four decisions of this set already take for an unlanded fact
+(D-149 clause 3, D-161 clause 1, D-167 clause 3, D-168 clause 1): state what cannot be answered
+rather than synthesise an answer.
+
 ## 4. States (CDSL)
 
 No slice-owned state machine. The prepaid grant's sellability rides the GA-gate flag
@@ -310,7 +359,11 @@ semantics, so this list and [`03-price-structure.md`](./03-price-structure.md) �
 disjoint parts of one physical row. `included_allowance` in particular is declared here rather
 than there because the D-45 compile is this slice's (2026-08-02: the reciprocal pointer was
 missing at both ends, so the column read as absent from the design set when looked for beside the
-other price-shape columns):
+other price-shape columns). **Two of these columns are declared and not yet authorable** — every
+authoring path refuses a non-null `included_allowance` or `tier_qualification_window` until this
+slice's rules land (**D-177**, §3), which is a statement about the *surface* and not about the
+schema: the columns exist, round-trip and are frozen in the snapshot, because what holds the line
+is one refusal rather than any property of the column, the type or the roster:
 
 | Column | Type | Notes |
 |--------|------|-------|

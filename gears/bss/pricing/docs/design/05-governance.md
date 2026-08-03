@@ -335,7 +335,7 @@ hash-blind even where the subject resource is read-restricted.
 **Output**: an immutable, tamper-evident audit record
 
 **Steps**:
-1. [ ] - `p1` - Record completeness: actor, timestamp, **before/after version refs**, approval trail (submitter/approver/decision/reason), correlation id - `inst-au-complete`
+1. [ ] - `p1` - Record completeness: actor, timestamp, **before/after version refs**, approval trail (submitter/approver/decision/reason), correlation id. **The correlation id has one producer for the whole gear and it is the request's, not the record's (normative, D-178, 2026-08-03):** it is the request-scoped correlation the gear's HTTP edge establishes — the value the platform propagates inbound when there is one, minted at the edge when there is not — so every audit record and every `pricing_outbox` row a single operator call produces carries **one** value, which is what lets an auditor pull a plan revision's record and its price rows' records (different `chain_id`s, by D-135) as one action. An in-process producer supplies its own: that is why the publish commit takes one as a parameter. It is **never** the `Idempotency-Key` (client-minted, per-operation, and the subject of a *different* comparison — Foundation §3.7) and never derived from the payload; and because it is minted when absent, the field is always satisfiable and never NULL - `inst-au-complete`
 1a. [ ] - `p1` - **PII minimization:** the audit trail stores **pseudonymous principal ids**, never display names/emails — the 7-year retention then holds no directly-identifying operator PII and GDPR erasure of a departed operator stays an IdP concern, not an audit rewrite - `inst-au-pii`
 2. [ ] - `p1` - Tamper evidence per G4 (D-14): append-only role + triggers (as the Foundation tables) **plus** in-DB hash-chained rows committed in the mutation transaction; **chains are per tenant** (2026-07-31 review fix — residency-bound tenants live on different cells' databases, so a cross-tenant chain is physically impossible; per-tenant chains also keep verification and WORM anchoring residency-local) **and segmented within a tenant by `chain_id` = the audited subject's aggregate** — plan, overlay, payer, policy, bulk operation (**D-135**, 2026-08-01 review fix). A chain is a strict sequence: writing row *N* needs row *N−1*'s hash, so one chain per tenant meant every audited mutation of that tenant contended on a single head **inside** its mutation transaction — all authoring serialized by construction, against a ≥ 50 rows/s repricing SLO whose per-row cost model did not even list the audit write (S12 §10). Segmented, concurrent mutations of different aggregates proceed independently while a bulk run's rows — one plan, one `chain_id` — extend sequentially inside that plan's own transaction anyway (D-134). Tamper-evidence is preserved by a periodic per-tenant **roll-up** row chaining the current segment heads: deleting a row breaks its segment, deleting a segment breaks the roll-up. The verification job (`pricing_audit_chain_verified`) walks segments and roll-up alike, and the roll-up head MAY be async-anchored to external WORM/object-lock storage — prior versions cannot be mutated or deleted within retention - `inst-au-tamper`
 3. [ ] - `p1` - Retention ≥ 7 years, tenant/jurisdiction-configurable as the **maximum applicable minimum** (G5); the storage-limitation-maximum question is an open Legal item — the retention engine takes a per-jurisdiction config, not a hardcoded value - `inst-au-retention`
@@ -421,7 +421,8 @@ most one open-ended row exists per key (D-81); append-only (same REVOKE + trigge
 addressability. Its only reader is Slice 11's `SnapshotSynthesizer` (`inst-sy-select`).
 
 **`pricing_audit_log` (Foundation-owned; this slice is the writer contract)** — actor,
-timestamp, before/after version refs, approval trail, correlation id, denied-attempt records,
+timestamp, before/after version refs, approval trail, correlation id (the request's own, one
+producer for the gear — **D-178**, `inst-au-complete`), denied-attempt records,
 backdate provenance; append-only + tamper evidence (G4); per-jurisdiction retention config (G5).
 Hash-chained and segmented per `(tenant_id, chain_id)`, `chain_id` being the audited subject's
 aggregate (D-135, Foundation §3.7).
@@ -440,8 +441,8 @@ seven years and is the one D-12 confines to the Auditor.
   D-135 already keys the chain on the audited subject's aggregate, so two spellings would let
   the approval record and the audit record of one decision disagree about what the decision was
   about.
-- **`action`** — a declared, **additive** `snake_case` verb set, opened with exactly the records
-  this design set already requires somebody to write: `publish` (Foundation §4.2), `abandon`
+- **`action`** — a declared, **additive** `snake_case` verb set: `create` / `update` / `delete`
+  (the draft-authoring mutations — **D-175**, below), `publish` (Foundation §4.2), `abandon`
   (the audited discard flip, D-145), `retire` ([`11-lifecycle.md`](./11-lifecycle.md)),
   `approve` / `reject` (`inst-tp-record`), `deny` (`inst-rb-audit`, and `inst-tp-selfaudit`'s
   attempted-violation record), `backdate_import` (`inst-bd-store`), `policy_update` (D-10's
@@ -450,6 +451,26 @@ seven years and is the one D-12 confines to the Auditor.
   same transaction is `publish` — and a token with **no writer is not declared**, because a
   vocabulary entry nobody writes reads as coverage to everyone who greps for it. A slice that
   adds an audited record adds its token here rather than inventing one at the keyboard.
+
+**The three draft-authoring verbs, and what closes this set (normative, D-175, 2026-08-03, found
+while auditing the writers this section's own MUST obliges).** `create`, `update` and `delete`
+are the records of the six mutating authoring surfaces: `create` for a draft plan revision
+minted (a plan's first draft at revision `0`, **and** the successor revision a `PATCH` on a
+published plan opens — Foundation §4.3, D-170) and for a draft price row authored; `update` for a
+plan facet replaced (one per call, D-173) and for a draft price row's content replaced; `delete`
+for a never-published draft price row removed, which `inst-ps-nodelete` keeps off a published
+one. `abandon` stays distinct from `delete` by D-145: the plan revision row survives as a
+tombstone and its number stays consumed, so a reader who cannot tell the two apart cannot tell a
+discarded draft from a row that was never there. **The opening list above stated this set's
+provenance, not its closure** — it named the records this design set already required *somebody*
+to write, while `inst-au-complete` and §8's `dod-audit` ("**every mutation MUST record**
+actor/timestamp/before-after/approval trail") require more than that list enumerated: five of the
+six authoring mutations had a normative record and no token. So the set's closure rule is stated with it, as the companion of "no token
+without a writer": **no writer without a token** — every mutating surface this design set
+specifies carries an `action` here, and the roster is audited against that set rather than
+appended to as records happen to land. The `denied attempt` record is the other rule still
+holding: it has no token because this gear has no writer for it (no approval record, no approval
+`chain_id`), and one declared here would read as coverage.
 
 **Contention on a segment is a retriable refusal (D-159, 2026-08-03).** The segment head is
 `MAX(seq)` under the primary key `(tenant_id, chain_id, seq)`, so two mutations of one aggregate

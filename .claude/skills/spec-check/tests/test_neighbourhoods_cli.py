@@ -204,14 +204,85 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #:   so a class that stops occurring is distinguishable from one that never existed.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
-    "no-region": 3,
-    "anchored:no-account": 5,
-    "suspicious:multi-region": 52,
+    "no-region": 4,
+    "anchored:no-account": 6,
+    "suspicious:multi-region": 54,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 17,
+    "suspicious:weak-coverage": 13,
     "covered:strong": 0,
 }
-#: Moved 2026-08-03, **sixth move of the day** (was 4 / 5 / 49 / 19, judged 68, total unchanged
+#: Moved 2026-08-03 (was 3 / 5 / 52 / 17, judged 69, total unchanged at 77) after the
+#: **D-175…D-178 docs wave** — the seventh implementation-side wave, raised by Group **G8**,
+#: whose purpose was closing six waves of the register's own owed-back clauses rather than
+#: building a plane. **Four movers**, each diffed per-id against the pre-wave tree (`5a8c801e`)
+#: in a detached worktree, with **five** controlled runs. **This is the first move in eight
+#: captures that LOWERS the judged share (69 -> 67), and the whole of the -2 is the window
+#: grid.**
+#:
+#: **One `DF_CUTOFF` component, the first in four edits — and it is not the cause of anything.**
+#: Checked exhaustively over the 4,992 terms both trees share: exactly one crossed
+#: `DF_CUTOFF = 0.25`, **`unit` 0.25042 -> 0.24661**, moving *inside* and therefore becoming
+#: discriminating. The mechanism is dilution rather than usage: the pricing corpus went from
+#: 2,404 to 2,433 windows (this wave adds lines, `WINDOW_STEP` is 6), so every term's document
+#: frequency fell slightly and `unit` was sitting four ten-thousandths outside. It touches one
+#: mover, `fr-supersession`, by adding **1** to a 110-term denominator, and the arithmetic below
+#: shows it is neither necessary nor sufficient there. The two historical oscillators moved as
+#: expected and did not cross: `catalog` 0.24626 -> 0.24127 (further inside), `same`
+#: 0.25707 -> 0.26141 (further outside).
+#:
+#: **Five controlled runs split the four movers exactly 2 + 2.**
+#: (i) Pre-wave tree with **only** `DESIGN.md` and `DECISIONS.md` replaced: the two
+#:     `mentions`-class gainers below and nothing else.
+#: (ii) Pre-wave tree with everything **except** those two replaced (the PRD and the five
+#:     design slices this wave propagates into): the two departures and nothing else.
+#: (iii) Pre-wave tree with **38 blank lines** inserted at the two points this wave adds text
+#:     to `design/01-foundation.md` (7 above §3.3's precondition block, 31 inside it) — the
+#:     exact shift this wave puts above §3.7, with **no content at all**: **both** departures
+#:     reproduce exactly. The grid is sufficient on its own.
+#: (iv) Pre-wave tree with **only** `design/01-foundation.md` replaced: the same two
+#:     departures, so no other edited file contributes to them.
+#: (v) Pre-wave tree with the PRD, S2, S5, S10 and S12 replaced and S1 left alone: **zero**
+#:     movers. Five edited design surfaces and a PRD edit move nothing whatever.
+#:
+#: - `fr-per-seat` weak -> multi. Gains `DECISIONS.md:19-30`, the register preamble — the
+#:   documented `mentions` class, and the same window that promoted this id one wave ago. Judge-
+#:   neutral (both classes are in `JUDGED`).
+#: - `fr-price-history-export` weak -> multi. Gains `DECISIONS.md:19-30` as well, and nothing
+#:   else. Also judge-neutral. Both of these are the preamble growing by a wave narrative that
+#:   summarises every requirement in the gear, which is why any requirement's vocabulary can
+#:   match it.
+#: - `nfr-event-propagation` weak -> **no-region**, and it is a pure grid effect with **no** DF
+#:   component (`unit` is not among its 17 discriminating terms). Its only region was
+#:   `design/01-foundation.md:487-498` at 11/17 = **0.6471**; post-wave the best window that
+#:   §3.7's bullets fall into scores 9/17 = **0.5294**, under the 0.6 threshold, so the id has no
+#:   region at all. Nothing about its neighbourhood changed in substance — `pricing_outbox`'s
+#:   bullet is still its genuine account and this wave *extended* that bullet (D-178's
+#:   correlation producer) — but 38 lines were added above §3.7, the 12-line window at step 6
+#:   re-slices, and two of the eleven matched terms now fall on opposite sides of a boundary.
+#:   **This exactly reverses the previous capture's promotion**, which entry 18 recorded as
+#:   arriving on the single preposition `within` from a rejected-alternative clause.
+#: - `fr-supersession` weak -> **anchored:no-account**. 67/110 = **0.6091** at
+#:   `design/01-foundation.md:487-498` — a hundredth above threshold, which entry 18 flagged as
+#:   threshold-adjacent for two consecutive waves and reproduced under blank lines alone — to
+#:   63/111 = **0.5676** post-wave. The decomposition matters because `unit` is in this id's
+#:   terms: at the **old** denominator the new match count still fails (63/110 = 0.5727 < 0.6),
+#:   and at the **new** denominator the old match count still passes (67/111 = 0.6036 > 0.6). So
+#:   the grid is necessary and sufficient and the DF crossing is neither; it contributes 0.005 of
+#:   a 0.041 fall. Its other regions are id-anchored only, hence `anchored:no-account`.
+#:
+#: **Judged 69 -> 67 = 87%, ending seven consecutive waves of growth — and the mechanism is the
+#: measurement, not the documents.** Said plainly, as the wave brief asks: this wave's increment
+#: comes from **neither** a design slice **nor** the digest/preamble in any load-bearing sense.
+#: The two `mentions` gains are the obligatory summary documents as always and are judge-neutral;
+#: the entire judged-share change is two threshold-adjacent ids losing a window they only ever
+#: held by a hundredth, because text was added *above* the window they held. Entry 18 predicted
+#: exactly this for both ids and named the mechanism (a blank-line shift reproduces it), so this
+#: capture is that prediction coming true rather than a new phenomenon. Nothing was reworded in
+#: either direction to chase the number, and no threshold was touched: what a re-slice this
+#: fragile actually says is that a 12-line window at step 6 is a coarse instrument near 0.6, and
+#: that is recorded as a measurement-health signal for whoever tunes it.
+#:
+#: (Previous move, recorded below.) Moved 2026-08-03, **sixth move of the day** (was 4 / 5 / 49 / 19, judged 68, total unchanged
 #: at 77) after the **D-170…D-174 docs wave** — the sixth implementation-side wave, raised by
 #: building Group **G7**, the gear's REST surface, and the one that closes Phase 2. **Four
 #: movers**, each diffed per-id against the pre-wave tree (`f8f3ed51`) in a detached worktree,
@@ -844,7 +915,7 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 69, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 67, "ledger": 17}
 #: pricing 68 -> 69 on the 2026-08-03 D-170…D-174 wave (G7, the REST surface), the sixth move
 #: of that day. **One** id entered the judged set and none left it: `nfr-event-propagation`,
 #: out of `no-region`; the +3/−2 between `multi-region` and `weak-coverage` is judge-neutral.

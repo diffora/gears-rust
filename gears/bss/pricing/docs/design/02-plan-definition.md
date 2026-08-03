@@ -387,6 +387,18 @@ first draft: the lost update D-145 removes from storage, arriving through the re
 the number. The tag is **opaque** to the caller — copied back verbatim into `If-Match` (D-171),
 never constructed or parsed.
 
+**And the successor arm's comparison happens inside the transaction that opens the revision**
+(**D-176**, 2026-08-03, [`01-foundation.md`](./01-foundation.md) §3.3). The arm's tag names a row
+the arm does not write — the current revision, which the successor is **copied** from — so there
+is no UPDATE for the swap to ride on, and a comparison made before the insert's transaction opens
+is a hint: a publish landing between the two makes some other revision current, and the successor
+is copied from a revision the caller never read while the call answers `200` as though the
+precondition had held. The current revision's identity and version are therefore re-read inside
+that transaction, and the facet write this same call performs **shares** it — two transactions
+cannot carry one precondition, and the half-way state is not a no-op but an open draft occupying
+this plan's single editable slot, which every later `PATCH` from any operator then takes instead
+of this arm.
+
 **A `PATCH` carries exactly one facet** (**D-173**, 2026-08-03, found while building the surface).
 The Purpose cell named four — cycle, phases, add-ons, descriptors — and this slice's storage
 cannot apply them as one: the cycle lives on the plan revision row and the other three in the

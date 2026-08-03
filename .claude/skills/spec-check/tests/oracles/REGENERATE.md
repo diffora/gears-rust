@@ -626,6 +626,92 @@ separately-justified commit — never a way to make a failing change look green.
     reworded in either direction, and `within`, `authz`, `direction` and `stack` are the right
     words for the sentences they are in. Per-id record beside `PINNED_TRIAGE_PRICING`.
 
+19. **2026-08-03, nineteenth capture — after the D-175…D-178 docs wave.** Document movement
+    only, no checker change. This is the **seventh implementation-side wave** and the first
+    raised by a group whose purpose was **closing** the register's owed-back clauses rather than
+    building a plane: Group **G8** built six waves of follow-through (761 → 847 tests; five audit
+    writers where there had been one; the four plan-shape rules, the soft-cap advisory, the
+    contention refusal, the degraded instant, the completeness bound, the cross-boundary marker),
+    and closing them is what surfaced what the design set owed back. Where G3 (tenth capture)
+    found rules the set does not state, G4 (thirteenth) rules it states and cannot enforce, G5
+    (fourteenth) the set contradicting itself, G6 (sixteenth) rules decidable only under unwritten
+    premises and G7 (eighteenth) a contract with no stated transport, **G8 found the set's own
+    accounts of itself untrue.** Four decisions — D-175 the three draft-authoring audit verbs
+    `create`/`update`/`delete` plus the `action` vocabulary's closure rule ("no writer without a
+    token", the companion of D-158's "no token without a writer"); D-176 a precondition evaluated
+    **inside** the transaction that writes the mutation it guards; D-177 the two Slice-10
+    primitives refused on every authoring path, with the refusal named load-bearing against the
+    publish freeze; D-178 the correlation id's single producer — plus five mechanical corrections
+    carrying no id, four of them corrections to the register itself.
+
+    **The finding set did not move.** `live-text.txt` and `live-json.json` are **byte-identical**
+    and were re-captured to no effect; `live-show-known-debt.txt` differs **only in line
+    numbers** — the same 21 `P1/propagation-missing` members, every one shifted **uniformly +4**,
+    one per status-board row the four decisions added, and the member set is identical modulo
+    those numbers (verified by parsing both files and comparing with line numbers stripped). Live
+    findings unchanged at 2 (both rating-side), suppressed unchanged at 59; `--gear
+    gears/bss/pricing/docs --auto-context` still reports **0 live and 59 suppressed**, so no
+    pinned-debt member was paid down and none was added. **No wire code was minted.** The wave
+    names ten Slice-10 codes in `design/10-advanced-primitives.md` §3 and two Foundation codes in
+    §3.3, and every one of them is already both declared and referenced by the rule that raises
+    it — which the byte-identical `live-text.txt` proves rather than asserts. The standing caution
+    held: a pin paid down by a prose mention rather than by the rule that raises it is a pin paid
+    by nothing, and nothing here names a pinned unreferenced code.
+
+    **The triage pin moved, and for the first time in eight captures it moved *down*:
+    `no-region` 3 → 4, `anchored:no-account` 5 → 6, `suspicious:multi-region` 52 → 54,
+    `suspicious:weak-coverage` 17 → 13, judged 69 → 67, total unchanged at 77.** **Four movers**,
+    each diffed per-id against the pre-wave tree (`5a8c801e`) in a detached worktree, with
+    **five** controlled runs. **One `DF_CUTOFF` component, the first in four edits, and it causes
+    nothing:** over the 4,992 terms both trees share exactly one crossed the cutoff — `unit`
+    0.25042 → 0.24661, moving *inside* — by **dilution** rather than usage, the pricing corpus
+    going from 2,404 to 2,433 windows so every document frequency fell slightly and `unit` was
+    sitting four ten-thousandths outside. The two historical oscillators did not cross: `catalog`
+    0.24626 → 0.24127 (further inside), `same` 0.25707 → 0.26141 (further outside).
+
+    The four split **2 + 2**:
+
+    - **Two are the register preamble, the documented `mentions` class and judge-neutral.**
+      `fr-per-seat` and `fr-price-history-export` each gain `DECISIONS.md:19-30` and nothing else
+      — the preamble grew by a wave narrative that summarises every requirement in the gear, so
+      any requirement's vocabulary can match it. Both weak → multi, both classes in `JUDGED`.
+    - **Two are threshold-adjacent ids losing a window to the line grid, and they are the whole
+      of the −2.** `nfr-event-propagation` weak → **no-region**: its only region was
+      `design/01-foundation.md:487-498` at 11/17 = **0.6471**, and the best window §3.7's bullets
+      now fall into scores 9/17 = **0.5294**. No DF component at all (`unit` is not among its 17
+      terms) and no substantive change to its neighbourhood — `pricing_outbox`'s bullet is still
+      its genuine account and this wave *extended* it — but 38 lines were added above §3.7 and a
+      12-line window at step 6 re-slices, putting two of the eleven matched terms on opposite
+      sides of a boundary. This **exactly reverses the eighteenth capture's promotion**, which
+      arrived on the single preposition `within` from a rejected-alternative clause.
+      `fr-supersession` weak → **anchored:no-account**: 67/110 = **0.6091** → 63/111 =
+      **0.5676**. Because `unit` *is* in this id's terms the decomposition is stated: at the old
+      denominator the new match count still fails (63/110 = 0.5727), and at the new denominator
+      the old match count still passes (67/111 = 0.6036), so the grid is necessary **and**
+      sufficient and the DF crossing is neither — 0.005 of a 0.041 fall.
+
+    Five controlled runs settle it. (i) Pre-wave tree with **only** `DESIGN.md` and
+    `DECISIONS.md` replaced: the two `mentions` gainers and nothing else. (ii) Pre-wave tree with
+    everything **except** those two: the two departures and nothing else. (iii) Pre-wave tree with
+    **38 blank lines** inserted at the two points this wave adds text to
+    `design/01-foundation.md` — the exact shift it puts above §3.7, with **no content at all**:
+    **both** departures reproduce exactly, so the grid is sufficient on its own. (iv) Pre-wave
+    tree with only `design/01-foundation.md` replaced: the same two departures, so no other
+    edited file contributes. (v) Pre-wave tree with the PRD, S2, S5, S10 and S12 replaced and S1
+    left alone: **zero** movers — five edited design surfaces and a PRD edit move nothing
+    whatever.
+
+    **The judged share is 67/77 = 87%, ending seven consecutive waves of growth.** Said plainly:
+    this wave's increment comes from **neither** a design slice **nor** the digest and preamble in
+    any load-bearing sense. The two preamble gains are judge-neutral; the entire judged-share
+    change is two ids losing a window they only ever held by a hundredth, because text was added
+    *above* it. The eighteenth entry predicted this for both ids and named the mechanism — a
+    blank-line shift reproduces it — so this is that prediction coming true rather than a new
+    phenomenon. Nothing was reworded in either direction to chase the number and no threshold was
+    touched. What a re-slice this fragile says is that a 12-line window at step 6 is a coarse
+    instrument near 0.6; recorded as a measurement-health signal for whoever tunes it. Per-id
+    record beside `PINNED_TRIAGE_PRICING`.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

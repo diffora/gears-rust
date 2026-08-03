@@ -145,6 +145,7 @@ flowchart TB
 - Any Phase-1 failure → `BULK_VALIDATION_FAILED` (422, per-row report; nothing committed)
 - A row addressing a **published** row's scope key with changed content → fails Phase 1 per-row (`IMPORT_TARGETS_PUBLISHED` — the import is draft-plane authoring, D-118; published-price changes are a repricing run)
 - An interactive edit hitting a row under the bulk lock → conflict naming the bulk operation (Foundation `fr-concurrent-edit`)
+- A row carrying `includedAllowance` or `tierQualificationWindow` → fails Phase 1 per-row while Slice 10's rules are unbuilt (**D-177**, [`10-advanced-primitives.md`](./10-advanced-primitives.md) §3: the refusal binds **every** authoring path, and this is the second one onto the same draft plane — a rule that lives on one surface is not a rule)
 
 **Steps**:
 1. [ ] - `p2` - API: POST /bss-pricing/v1/bulk-imports (rows + client idempotency key) - `inst-bi-api`
