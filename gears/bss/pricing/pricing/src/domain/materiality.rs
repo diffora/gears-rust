@@ -265,15 +265,62 @@ impl MaterialityReason {
     }
 }
 
+/// The row that reached its bar, in its own currency, and by how much — §6's
+/// *"per-currency deltas, tripped rows"* (D-187).
+///
+/// The three facts a `FinanceReviewer` needs in order to sign for a
+/// [`MaterialityReason::ThresholdReached`] unit, and the three the evaluator holds at
+/// the moment it answers: it walks rows in their own currency, and [`compare`] knows
+/// which move reached the bar. Before D-187 it threw the move away, so a stored verdict
+/// said a bar was reached and could not say which row, in which currency, or by how
+/// much.
+///
+/// **The move, not a re-derivation of it.** `from_minor`/`to_minor` are the operand that
+/// actually tripped — which for a band vector is *one* band of several, and the one an
+/// operator has to look at. Re-deriving it at read time cannot work: the policy may have
+/// moved since, and §3 evaluates materiality **once at submit**, so a re-derivation would
+/// answer a different question from the one that was signed.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrippedRow {
+    /// The price row whose move reached the bar.
+    pub price_id: uuid::Uuid,
+    /// The currency the bar belongs to. `inst-mat-percurrency` compares each row in
+    /// its own currency, so the currency is part of *which bar was reached* and not
+    /// decoration.
+    pub currency: CurrencyCode,
+    /// The baseline amount, in that currency's minor units.
+    pub from_minor: i64,
+    /// The proposed amount, same units.
+    pub to_minor: i64,
+}
+
 /// What the evaluator answers: `material` with its reason, or
 /// `auto_publishable`.
+///
+/// **Not `Copy`, and the cost is deliberate** (D-187 clause (2)). [`MaterialityReason`]
+/// is a `Copy` roster its own `ALL` ranges over, and this type was `Copy` only because it
+/// held one. Carrying §6's declared operands means carrying a [`CurrencyCode`], which is
+/// a heap value — a tripped row's id alone could have ridden as a `Uuid` and stayed
+/// `Copy`, and would have left the reviewer unable to tell which currency's bar was
+/// reached, which is the distinction `inst-mat-percurrency` is built around. So the
+/// verdict is cloned where it used to be copied; the register priced that before the
+/// change rather than after.
 #[domain_model]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MaterialityVerdict {
     /// A second principal is required. The publish opens an approval unit.
     Material {
         /// Which rule made it material.
         reason: MaterialityReason,
+        /// The row that reached its bar, when a row is what answered.
+        ///
+        /// `None` for every other reason, and that is not an omission:
+        /// `alwaysMaterialTrigger` is an answer about the **act** and
+        /// `noConfiguredThreshold` one about the **policy**, so neither names a row
+        /// that tripped — filling it in with the change set's first row would put a
+        /// row in front of a reviewer as though it had tripped something.
+        tripped: Option<TrippedRow>,
     },
     /// The change may publish on one principal. See the module doc for the five
     /// rules that must all have declined for this to be the answer.
@@ -281,23 +328,48 @@ pub enum MaterialityVerdict {
 }
 
 impl MaterialityVerdict {
-    /// Material, for `reason`.
+    /// Material, for `reason`, with no row to name.
+    ///
+    /// The constructor every reason but [`MaterialityReason::ThresholdReached`] uses.
+    /// The one that does uses [`Self::tripped_row`], so a caller cannot answer
+    /// `thresholdReached` and forget the evidence by taking the shorter constructor.
     #[must_use]
     pub const fn material(reason: MaterialityReason) -> Self {
-        Self::Material { reason }
+        Self::Material {
+            reason,
+            tripped: None,
+        }
+    }
+
+    /// Material because `tripped` reached its currency's bar.
+    #[must_use]
+    pub const fn tripped_row(tripped: TrippedRow) -> Self {
+        Self::Material {
+            reason: MaterialityReason::ThresholdReached,
+            tripped: Some(tripped),
+        }
     }
 
     /// Does this change need a second principal?
     #[must_use]
-    pub const fn is_material(self) -> bool {
+    pub const fn is_material(&self) -> bool {
         matches!(self, Self::Material { .. })
     }
 
     /// The rule that fired, or `None` on an auto-publishable change.
     #[must_use]
-    pub const fn reason(self) -> Option<MaterialityReason> {
+    pub const fn reason(&self) -> Option<MaterialityReason> {
         match self {
-            Self::Material { reason } => Some(reason),
+            Self::Material { reason, .. } => Some(*reason),
+            Self::AutoPublishable => None,
+        }
+    }
+
+    /// The row that reached its bar, when one did.
+    #[must_use]
+    pub const fn tripped(&self) -> Option<&TrippedRow> {
+        match self {
+            Self::Material { tripped, .. } => tripped.as_ref(),
             Self::AutoPublishable => None,
         }
     }
@@ -904,8 +976,13 @@ pub fn evaluate(
             // configured, and would make the stored column unable to tell that
             // world from "this currency has no entry" — which is the one
             // distinction this rule is built around.
-            Comparison::Reached => {
-                return MaterialityVerdict::material(MaterialityReason::ThresholdReached);
+            Comparison::Reached(moved) => {
+                return MaterialityVerdict::tripped_row(TrippedRow {
+                    price_id: row.price_id,
+                    currency: row.scope_key.currency().clone(),
+                    from_minor: moved.from_minor,
+                    to_minor: moved.to_minor,
+                });
             }
             // The bar could not be evaluated: a percent entry against a zero
             // baseline. §3 puts that under the G1 fail-safe in the same breath as
@@ -931,8 +1008,14 @@ enum Comparison {
     /// Every operand is under the bar. The only outcome that does not end the walk.
     Below,
     /// At least one operand **reaches** the bar (`>=`, per
-    /// [`delta::AmountMove::reaches_absolute`]'s stated boundary).
-    Reached,
+    /// [`delta::AmountMove::reaches_absolute`]'s stated boundary), carrying **the
+    /// operand that did**.
+    ///
+    /// Carried rather than recomputed at the call site, because for a band vector the
+    /// tripping move is one band of several and the caller has no way to tell which
+    /// (D-187): a caller re-deriving it would have to re-run the comparison and pick,
+    /// which is this function's own decision spelled a second time.
+    Reached(delta::AmountMove),
     /// The bar cannot be evaluated against this delta at all.
     NotComparable,
 }
@@ -977,11 +1060,11 @@ fn compare(delta: &delta::RowDelta, basis: ThresholdBasis) -> Comparison {
         match basis {
             ThresholdBasis::Absolute { minor } => {
                 if moved.reaches_absolute(minor) {
-                    return Comparison::Reached;
+                    return Comparison::Reached(*moved);
                 }
             }
             ThresholdBasis::Percent { bp } => match moved.reaches_percent(i64::from(bp)) {
-                Some(true) => return Comparison::Reached,
+                Some(true) => return Comparison::Reached(*moved),
                 Some(false) => {}
                 None => answer = Comparison::NotComparable,
             },

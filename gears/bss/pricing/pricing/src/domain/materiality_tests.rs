@@ -259,8 +259,8 @@ fn an_above_threshold_amount_change_is_material() {
     let verdict = evaluate(&change, Some(&policy), Some(&baseline));
 
     assert_eq!(
-        verdict,
-        MaterialityVerdict::material(MaterialityReason::ThresholdReached),
+        verdict.reason(),
+        Some(MaterialityReason::ThresholdReached),
         "a move of 900 reaches a bar of 500, and USD has that bar"
     );
     assert_ne!(
@@ -364,9 +364,17 @@ fn one_band_over_the_bar_trips_a_row_whose_other_bands_did_not_move() {
     let verdict = evaluate(&change, Some(&policy), Some(&baseline));
 
     assert_eq!(
-        verdict,
-        MaterialityVerdict::material(MaterialityReason::ThresholdReached),
+        verdict.reason(),
+        Some(MaterialityReason::ThresholdReached),
         "the top band moved by 900 against a bar of 500"
+    );
+    // And D-187's payload names **which** band, which is this case's whole subject: the
+    // bottom band moved by 1 and an aggregate would have hidden the top one behind it.
+    let tripped = verdict.tripped().expect("a tripped row is named");
+    assert_eq!(
+        (tripped.from_minor, tripped.to_minor),
+        (100, 1000),
+        "the band that reached the bar, not the row's first band"
     );
 }
 
@@ -474,9 +482,18 @@ fn one_row_over_its_own_currencys_bar_trips_the_whole_change() {
 
     let verdict = evaluate(&change, Some(&policy), Some(&baseline));
 
+    assert_eq!(verdict.reason(), Some(MaterialityReason::ThresholdReached));
+    // The payload names the currency that tripped, and this case is where that earns
+    // its place: both rows are in the change set, only one reached its bar, and a
+    // reviewer told merely `thresholdReached` would have to guess which.
     assert_eq!(
-        verdict,
-        MaterialityVerdict::material(MaterialityReason::ThresholdReached)
+        verdict
+            .tripped()
+            .expect("a tripped row is named")
+            .currency
+            .as_str(),
+        "EUR",
+        "the row that moved by 900, not the one that moved by 100"
     );
 }
 
@@ -737,5 +754,74 @@ fn a_window_mutation_is_not_a_pure_shape_revision() {
     assert_eq!(
         evaluate(&cancelled, Some(&policy), Some(&baseline)),
         MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger)
+    );
+}
+
+/// **§6's declared payload: which row, in which currency, by how much** (D-187).
+///
+/// The column is declared as *"evaluator output: per-currency deltas, tripped rows,
+/// trigger source"*, and what was stored was the verdict token alone. The consequence
+/// landed on the reviewer rather than on the gate: a `thresholdReached` unit said a bar
+/// was reached and could not say *which row*, *in which currency*, or *by how much* —
+/// precisely the content a `FinanceReviewer` needs in order to sign for it.
+///
+/// The evaluator holds all three at the moment it answers. It walks rows in their own
+/// currency and `compare` already knows which move reached the bar; it simply threw the
+/// move away. So this is an unwritten rather than an unknowable, which is why the
+/// declaration was not narrowed to match the code.
+#[test]
+fn a_tripped_row_is_named_with_its_currency_and_its_move() {
+    let policy = configured_policy();
+    let published = row("USD", 1000);
+    let baseline = PublishedPriceBaseline::of_records([published]);
+    let change = ChangeSet::of_records([row("USD", 1900)]);
+
+    let verdict = evaluate(&change, Some(&policy), Some(&baseline));
+
+    let tripped = verdict
+        .tripped()
+        .expect("a thresholdReached verdict names the row that reached the bar");
+    assert_eq!(
+        tripped.price_id,
+        Uuid::from_u128(0xb0_01),
+        "the row an operator has to look at"
+    );
+    assert_eq!(
+        tripped.currency.as_str(),
+        "USD",
+        "and the currency the bar belongs to - the comparison is per currency"
+    );
+    assert_eq!(
+        (tripped.from_minor, tripped.to_minor),
+        (1000, 1900),
+        "by how much: the move that reached the bar, not a re-derivation of it"
+    );
+    assert_eq!(
+        verdict.reason(),
+        Some(MaterialityReason::ThresholdReached),
+        "the token stays the discriminator; the evidence rides beside it"
+    );
+}
+
+/// The evidence is **absent** where there is none, and that is not an omission.
+///
+/// `alwaysMaterialTrigger` is an answer about the act, `noConfiguredThreshold` about
+/// the policy: neither names a row that reached a bar, because in neither case did one.
+/// Filling the field in anyway — with the first row of the change set, say — would put a
+/// row in front of a reviewer as though it had tripped something.
+#[test]
+fn a_verdict_that_tripped_no_row_carries_no_tripped_row() {
+    let published = row("USD", 1000);
+    let baseline = PublishedPriceBaseline::of_records([published]);
+    let change = ChangeSet::of_records([row("USD", 1010)]);
+
+    let unconfigured = evaluate(&change, /* policy */ None, Some(&baseline));
+    assert_eq!(
+        unconfigured.reason(),
+        Some(MaterialityReason::NoConfiguredThreshold)
+    );
+    assert!(
+        unconfigured.tripped().is_none(),
+        "the fail-safe is about the policy, not about a row"
     );
 }

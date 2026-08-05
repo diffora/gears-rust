@@ -163,7 +163,7 @@ fn a_window_the_pin_moves_for_moves_the_document_too() {
 fn the_materiality_verdict_survives_the_column_it_is_stored_in() {
     let verdict = MaterialityVerdict::material(MaterialityReason::NoConfiguredThreshold);
 
-    let stored = serde_json::to_value(MaterialityView::from(verdict)).expect("render");
+    let stored = serde_json::to_value(MaterialityView::from(&verdict)).expect("render");
     let read: MaterialityView = serde_json::from_value(stored).expect("read back");
 
     assert!(read.material);

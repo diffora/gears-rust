@@ -374,7 +374,7 @@ async fn publish_plan(
                 tenant,
                 plan_id,
                 Uuid::now_v7(),
-                serde_json::to_value(MaterialityView::from(verdict)).map_err(|e| {
+                serde_json::to_value(MaterialityView::from(&verdict)).map_err(|e| {
                     CanonicalError::from(DomainError::Internal(format!(
                         "cannot render the materiality verdict: {e}"
                     )))
@@ -383,7 +383,7 @@ async fn publish_plan(
             )
             .await
             .map_err(CanonicalError::from)?;
-        return Ok(submitted(&opened, verdict));
+        return Ok(submitted(&opened, &verdict));
     }
 
     // Still unreachable from this route, and the module doc has the corrected
@@ -406,7 +406,7 @@ async fn publish_plan(
         )
         .await
         .map_err(CanonicalError::from)?;
-    Ok(auto_published(&receipt, verdict))
+    Ok(auto_published(&receipt, &verdict))
 }
 
 // ---------------------------------------------------------------------------
@@ -569,7 +569,7 @@ async fn materiality_of(
 }
 
 /// The 202 a submit answers with.
-fn submitted(record: &ApprovalRecord, verdict: MaterialityVerdict) -> Response {
+fn submitted(record: &ApprovalRecord, verdict: &MaterialityVerdict) -> Response {
     (
         StatusCode::ACCEPTED,
         Json(PublishOutcomeView {
@@ -599,7 +599,7 @@ fn published(record: &ApprovalRecord, receipt: &PublishReceipt) -> Response {
 
 /// The 200 an auto-publishable commit would answer with. See the module doc for why
 /// nothing reaches it from this route today — the reason is D-88, not the policy.
-fn auto_published(receipt: &PublishReceipt, verdict: MaterialityVerdict) -> Response {
+fn auto_published(receipt: &PublishReceipt, verdict: &MaterialityVerdict) -> Response {
     (
         StatusCode::OK,
         Json(PublishOutcomeView {

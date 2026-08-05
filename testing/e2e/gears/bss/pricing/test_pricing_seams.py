@@ -617,6 +617,11 @@ def test_a_material_change_blocks_until_a_second_principal_has_seen_it(
     assert submitted["materiality"] == {
         "material": True,
         "reason": "noConfiguredThreshold",
+        # D-187: the evaluator now stores which row reached which currency's bar. The
+        # fail-safe is an answer about the *policy*, so no row tripped and the field is
+        # null - asserted rather than dropped, because a row named here would be a row
+        # put in front of a reviewer as though it had tripped something.
+        "tripped": None,
     }
     assert submitted["receipt"] is None, "nothing was frozen"
     unit = submitted["approval"]
@@ -1521,7 +1526,13 @@ def test_a_threshold_policy_takes_two_principals_before_it_is_in_force(
     )
     assert unit["submitter_principal"] == SUBMITTER_PRINCIPAL_ID
     assert unit["approver_principal"] is None
-    assert unit["materiality"] == {"material": True, "reason": "alwaysMaterialTrigger"}
+    # `tripped` is null: `alwaysMaterialTrigger` is an answer about the act (D-10 makes
+    # any policy diff material), so no row reached a bar here (D-187).
+    assert unit["materiality"] == {
+        "material": True,
+        "reason": "alwaysMaterialTrigger",
+        "tripped": None,
+    }
     assert body["proposed"]["entries"] == [
         {
             "currency": POLICY_CURRENCY,

@@ -548,7 +548,7 @@ fn policy_diff_materiality() -> Result<serde_json::Value, CanonicalError> {
         /* policy */ None,
         /* baseline */ None,
     );
-    serde_json::to_value(MaterialityView::from(verdict)).map_err(|e| {
+    serde_json::to_value(MaterialityView::from(&verdict)).map_err(|e| {
         CanonicalError::from(DomainError::Internal(format!(
             "cannot render the materiality verdict: {e}"
         )))

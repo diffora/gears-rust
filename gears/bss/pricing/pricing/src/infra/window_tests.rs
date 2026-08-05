@@ -84,7 +84,7 @@ fn stored(from: i64, to: Option<i64>) -> WindowRecord {
 /// (D-191): the gate records the body it is handed, and on the refused arm that body
 /// names the approval. Only the fields these cases read are meaningful; the rest are the
 /// store's shape.
-fn submitted_unit(verdict: MaterialityVerdict) -> ApprovalRecord {
+fn submitted_unit(verdict: &MaterialityVerdict) -> ApprovalRecord {
     ApprovalRecord {
         approval_id: uuid::Uuid::from_u128(0x_a1),
         tenant_id: uuid::Uuid::from_u128(0x_7e),
@@ -263,7 +263,12 @@ fn the_controlled_arm_echoes_the_stored_interval_and_not_the_request() {
     );
 
     let verdict = MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
-    let pending = pending_approval(&planned, window_id, verdict, submitted_unit(verdict));
+    let pending = pending_approval(
+        &planned,
+        window_id,
+        verdict.clone(),
+        submitted_unit(&verdict),
+    );
 
     assert_eq!(pending.window_id, window_id);
     assert_eq!(pending.plan_id, plan());
@@ -295,7 +300,12 @@ fn the_controlled_arm_carries_a_threshold_reason_when_that_is_what_answered() {
     let planned = planned(Op::Schedule, None, Some(30));
 
     let verdict = MaterialityVerdict::material(MaterialityReason::NoConfiguredThreshold);
-    let pending = pending_approval(&planned, window_id, verdict, submitted_unit(verdict));
+    let pending = pending_approval(
+        &planned,
+        window_id,
+        verdict.clone(),
+        submitted_unit(&verdict),
+    );
 
     assert_eq!(
         pending.verdict,

@@ -151,16 +151,54 @@ pub struct MaterialityView {
     /// counted: this list read as three of the four that existed, which is the
     /// count-beside-a-roster shape that leaves exactly one of them true.
     pub reason: Option<String>,
+    /// The row that reached its bar, in its own currency, and by how much — §6's
+    /// *"per-currency deltas, tripped rows"* (D-187). Present only under
+    /// `thresholdReached`, which is the only reason a **row** answered: the fail-safe is
+    /// about the policy and `alwaysMaterialTrigger` about the act, so on those there is
+    /// no row that tripped and naming one would mislead a reviewer.
+    pub tripped: Option<TrippedRowView>,
 }
 
-impl From<MaterialityVerdict> for MaterialityView {
-    fn from(verdict: MaterialityVerdict) -> Self {
+/// §6's tripped row, as the wire and the stored `materiality` document render it.
+///
+/// The same document in both places by construction: this is what
+/// `api::rest::windows::verdict_json` serialises into the column, so a reviewer reads
+/// what was stored rather than a second rendering of the same verdict.
+// `(request, response)` because [`MaterialityView`] is: the stored `materiality`
+// document is read **back** out of the column by the approvals surface, so every member
+// of it has to parse as well as render. A response-only member would compile until the
+// first read of a unit that tripped a row.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct TrippedRowView {
+    /// The price row whose move reached the bar — what an operator has to look at.
+    pub price_id: Uuid,
+    /// The currency whose bar it was. `inst-mat-percurrency` compares each row in its
+    /// own currency, so this is part of *which bar was reached*.
+    pub currency: String,
+    /// The baseline amount, in that currency's minor units.
+    pub from_minor: i64,
+    /// The proposed amount, same units.
+    pub to_minor: i64,
+}
+
+/// **By reference, since the verdict stopped being `Copy`** (D-187): it carries a
+/// currency, which is a heap value. A by-value `From` would make every render site a
+/// move or a clone, and the two that render one verdict twice would have to clone it.
+impl From<&MaterialityVerdict> for MaterialityView {
+    fn from(verdict: &MaterialityVerdict) -> Self {
         Self {
             material: verdict.is_material(),
             reason: verdict
                 .reason()
                 .map(MaterialityReason::as_str)
                 .map(str::to_owned),
+            tripped: verdict.tripped().map(|tripped| TrippedRowView {
+                price_id: tripped.price_id,
+                currency: tripped.currency.as_str().to_owned(),
+                from_minor: tripped.from_minor,
+                to_minor: tripped.to_minor,
+            }),
         }
     }
 }

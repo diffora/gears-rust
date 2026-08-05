@@ -1187,7 +1187,7 @@ fn view_of(outcome: &WindowMutationOutcome) -> WindowMutationOutcomeView {
         WindowMutationOutcome::SubmittedForApproval(pending) => WindowMutationOutcomeView {
             outcome: crate::api::rest::publish::OUTCOME_SUBMITTED.to_owned(),
             window: WindowMutationView::from(pending.as_ref()),
-            materiality: Some(MaterialityView::from(pending.verdict)),
+            materiality: Some(MaterialityView::from(&pending.verdict)),
             approval: Some(ApprovalView::from(&pending.approval)),
         },
     }
@@ -1230,7 +1230,7 @@ fn replayed(status: i32, body: &serde_json::Value) -> Response {
 /// [`DomainError::Internal`] when the view will not serialize, which is unreachable
 /// and reported rather than unwrapped.
 pub fn verdict_json(
-    verdict: crate::domain::materiality::MaterialityVerdict,
+    verdict: &crate::domain::materiality::MaterialityVerdict,
 ) -> Result<serde_json::Value, DomainError> {
     serde_json::to_value(MaterialityView::from(verdict))
         .map_err(|e| DomainError::Internal(format!("cannot render the materiality verdict: {e}")))

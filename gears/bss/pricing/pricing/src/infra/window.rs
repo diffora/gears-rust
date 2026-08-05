@@ -325,7 +325,7 @@ pub struct PendingApproval {
 /// renders back out. So the one producer of that shape stays in `api::rest` and arrives
 /// here as a function pointer — which is also what keeps a unit opened on this path and
 /// one opened on the publish path from storing two different documents.
-pub type VerdictJson = fn(MaterialityVerdict) -> Result<JsonValue, DomainError>;
+pub type VerdictJson = fn(&MaterialityVerdict) -> Result<JsonValue, DomainError>;
 
 /// The window mutation workflow over one database provider.
 #[derive(Clone)]
@@ -1195,7 +1195,7 @@ where
                 // the window id names nothing readable at this point.
                 planned.price_id,
                 Uuid::now_v7(),
-                verdict_json(verdict)?,
+                verdict_json(&verdict)?,
                 stamp,
                 &planned.unit_subject_ref(window_id),
             )
