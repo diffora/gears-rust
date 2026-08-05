@@ -1194,3 +1194,218 @@ async fn assert_only_the_winners_proposal_landed(pg: &Pg) {
         "the loser's whole transaction rolled back - its unit and its version rows together"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The same guard's position on the OTHER arm: `retire`
+// ---------------------------------------------------------------------------
+
+/// The two retirements of the race below.
+const TOMBSTONE_WINNER: Uuid = Uuid::from_u128(0x_b5);
+const TOMBSTONE_LOSER: Uuid = Uuid::from_u128(0x_b6);
+
+/// D-192's guard-above-the-mint, pinned on **`retire`** — the arm nothing propagated the
+/// `propose` pin to.
+///
+/// # Why this needs its own case, and why it is the *easier* of the two to reach
+///
+/// The two arms of D-192 are **independent text**. `ThresholdService::propose` and
+/// `ThresholdService::retire` each open their unit before their version rows and each
+/// carries its own comment saying so; nothing shares the ordering between them, so the
+/// `propose` pin
+/// ([`two_proposals_intersecting_on_a_currency_meet_the_mint_guard_and_not_the_version_key`])
+/// would stay green with `retire`'s two writes swapped back.
+///
+/// And the failure is **easier** to reach here, which is the point the register makes:
+/// `pricing_approval_threshold_tombstone` is keyed `(tenant, version)` rather than by
+/// currency, so a loser meets that key on **any** collision at all — there is no
+/// intersecting-currency contrivance to arrange, because two retirements of one tenant
+/// always mint the same number and always collide. With the rows written first the loser
+/// is answered a bare `RepoError::Db` off that primary key, which renders **500**: a
+/// server fault for a race whose whole remedy is to decide or withdraw the retirement the
+/// tenant already holds.
+///
+/// # The choreography is the file's, and step 3 is load-bearing for this path's own reason
+///
+/// 1. the winner runs `retire`'s two writes and **parks**, holding both uncommitted — the
+///    tenant's one open-proposal slot in `uq_pricing_approval_policy_pending`, and version
+///    0's tombstone row;
+/// 2. the loser starts; it reads a store with no committed policy, mints 0, and its
+///    `INSERT` blocks;
+/// 3. a third connection **observes the block**, which proves the loser's reads already
+///    happened;
+/// 4. only then is the winner released, and the loser's insert resolves into the refusal.
+///
+/// Without step 3 the loser would read the winner's committed rows and mint 1, colliding
+/// with nothing — and worse, it would be refused by `require_policy_match` with
+/// `STALE_VERSION` first, because `ThresholdState::tag` covers the tenant's pending
+/// proposal as well as its effective version (D-186). Green, and about the `If-Match`
+/// premise rather than about the guard.
+///
+/// # The winner is staged and the loser is driven, for the sibling case's reason
+///
+/// `retire` owns its transaction and cannot be parked mid-flight, and what has to be held
+/// uncommitted is *both* of its writes. So the winner is composed here out of the same two
+/// calls `retire` makes, in `retire`'s order — and nothing depends on that order, both
+/// being uncommitted at the park. **The loser is the real `ThresholdService::retire`**,
+/// which is where all of this case's sensitivity to the write order lives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_retirements_meet_the_mint_guard_and_not_the_tombstone_key() {
+    let pg = Pg::applied().await;
+    let asserted = AssertedPolicy {
+        tag: ThresholdService::new(DBProvider::<DbError>::new(pg.db().await))
+            .state(&scope(), TENANT)
+            .await
+            .expect("the policy state reads")
+            .tag(),
+        now: policy_effective_from(),
+    };
+
+    let observer = pg.raw().await;
+    let written = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+
+    let winner = {
+        let db = pg.db().await;
+        let (written, release) = (Arc::clone(&written), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<(), RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        bss_pricing::infra::storage::repo::approval_repo::open(
+                            txn,
+                            &scope(),
+                            policy_proposal(TOMBSTONE_WINNER, 0),
+                            stamp_of(SUBMITTER, at(12)),
+                        )
+                        .await?;
+                        threshold_repo::open_tombstone(
+                            txn,
+                            &scope(),
+                            TENANT,
+                            0,
+                            policy_effective_from(),
+                            stamp_of(SUBMITTER, at(12)),
+                        )
+                        .await?;
+                        written.notify_one();
+                        release.notified().await;
+                        Ok(())
+                    })
+                })
+                .await;
+            out
+        })
+    };
+
+    written.notified().await;
+
+    let loser = {
+        let db = pg.db().await;
+        tokio::spawn(async move {
+            ThresholdService::new(DBProvider::<DbError>::new(db))
+                .retire(
+                    &scope(),
+                    TENANT,
+                    TOMBSTONE_LOSER,
+                    policy_effective_from(),
+                    asserted,
+                    json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
+                    stamp_of(SUBMITTER, at(12)),
+                )
+                .await
+        })
+    };
+
+    pg_support::wait_until_a_backend_blocks(&observer).await;
+    release.notify_one();
+
+    tokio::time::timeout(RACE_TIMEOUT, winner)
+        .await
+        .expect("the winner must finish once released")
+        .expect("its task must not panic")
+        .expect("the winner is uncontended and must commit");
+
+    let refusal = tokio::time::timeout(RACE_TIMEOUT, loser)
+        .await
+        .expect("the loser must be released by the winner's commit")
+        .expect("its task must not panic")
+        .expect_err("one tenant cannot hold two open policy proposals");
+
+    // **The assertion the case exists for.** With the tombstone written first this is
+    // `DomainError::Internal` off `(tenant, version)` — a 500 for a race whose remedy is
+    // to decide or withdraw the retirement the tenant already holds.
+    //
+    // The tenant in the detail is what says the **index** answered rather than
+    // `open_policy_unit`'s in-transaction pre-check, which reaches the same code one
+    // statement earlier: the check names the holding unit and its version, and the index
+    // names the tenant precisely because it cannot name a unit a rollback might unmake.
+    match &refusal {
+        DomainError::PendingChangeUnitExists(detail) => assert!(
+            detail.contains(&TENANT.to_string()),
+            "the mint guard must be what answered, not the pre-check: {detail}"
+        ),
+        other => panic!("the loser must get the typed refusal, not a storage fault: {other:?}"),
+    }
+
+    assert_only_the_winners_retirement_landed(&pg).await;
+}
+
+/// The winner's retirement, intact and alone, in both stores the act writes to.
+///
+/// Split out for [`assert_only_the_winners_proposal_landed`]'s reason, and it asserts the
+/// one thing that case cannot: that the surviving version 0 is a **tombstone** and not an
+/// entry version. `latest_version` reads both threshold tables, so a case that only
+/// counted versions would pass against a store holding the wrong kind of row at 0.
+async fn assert_only_the_winners_retirement_landed(pg: &Pg) {
+    let provider = DBProvider::<DbError>::new(pg.db().await);
+    let conn = provider.conn().expect("conn");
+
+    assert_eq!(
+        threshold_repo::latest_version(&conn, &scope(), TENANT)
+            .await
+            .expect("read the version sequence"),
+        Some(0),
+        "exactly one retirement minted a version"
+    );
+    let stored = threshold_repo::read_version(&conn, &scope(), TENANT, 0)
+        .await
+        .expect("read version 0")
+        .expect("the winner's version is there");
+    // A tombstone is a version with **no entries** — `StoredVersion`'s own doc: "empty
+    // exactly on a tombstone". Asserted off the entry set rather than a predicate,
+    // because the store's row shape is what distinguishes the two tables and the domain's
+    // `ThresholdVersion::is_tombstone` is derived from the same emptiness.
+    assert!(
+        stored.entries.is_empty(),
+        "version 0 must be the retirement D-185 declares and not an entry version: {:?}",
+        stored.entries
+    );
+    assert_eq!(stored.effective_from, policy_effective_from());
+
+    assert_eq!(
+        bss_pricing::infra::storage::repo::approval_repo::read(
+            &conn,
+            &scope(),
+            TENANT,
+            TOMBSTONE_WINNER
+        )
+        .await
+        .expect("read the winner's unit")
+        .expect("the winner's unit is there")
+        .state,
+        ApprovalState::Submitted
+    );
+    assert!(
+        bss_pricing::infra::storage::repo::approval_repo::read(
+            &conn,
+            &scope(),
+            TENANT,
+            TOMBSTONE_LOSER
+        )
+        .await
+        .expect("read the loser's unit")
+        .is_none(),
+        "the loser's whole transaction rolled back - its unit and its tombstone together"
+    );
+}
