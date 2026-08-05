@@ -132,6 +132,24 @@ pub const WINDOW_NOT_CANCELLABLE: &str = "WINDOW_NOT_CANCELLABLE";
 /// Slice 5 historical-import path, which schedules no windows at all.
 pub const WINDOW_START_IN_PAST: &str = "WINDOW_START_IN_PAST";
 
+/// The window states an interval competes for its canonical scope key with.
+///
+/// A `cancelled` window never took effect and an `expired` one cannot be
+/// intersected by anything a caller may create: `inst-ws-future-start` bounds a new
+/// interval into the future, and a window is `expired` only once its `effective_to`
+/// has passed. Neither is therefore an occupant, and treating them as ones would
+/// make a key unusable forever after its first reprice — the shape
+/// `price_repo::find_key_occupant` rejects one table over, for the same reason.
+///
+/// **It lives here, in the domain, because both of its consumers need it and one of
+/// them cannot see the other.** `window_repo::refuse_overlap` asks it of a `SELECT`
+/// predicate; [`supersession::compose_windows`](crate::domain::supersession::compose_windows)
+/// asks it of a key's plane in memory, to tell coverage at the changeover from an
+/// interval that merely spans it. A copy in the domain beside the original in infra
+/// is how two mechanisms come to disagree about one set — the drift the unit guard's
+/// shared field list exists to prevent, one plane over.
+pub const OCCUPYING_STATES: &[WindowState] = &[WindowState::Scheduled, WindowState::Active];
+
 /// Where one window stands in §4's machine.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

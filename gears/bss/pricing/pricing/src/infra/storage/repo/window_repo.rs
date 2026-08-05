@@ -192,15 +192,18 @@ use crate::infra::storage::entity::{price, price_window};
 use crate::infra::storage::repo::{check_authored_instant, price_repo};
 use crate::infra::storage::{RepoError, contention_or_db};
 
-/// The window states an interval competes for its key with.
+/// The window states an interval competes for its key with —
+/// [`crate::domain::window::OCCUPYING_STATES`], where the argument for the set
+/// lives.
 ///
-/// A `cancelled` window never took effect and an `expired` one cannot be
-/// intersected by anything a caller may create: `inst-ws-future-start` bounds a
-/// new interval into the future, and a window is `expired` only once its
-/// `effective_to` has passed. Neither is therefore an occupant, and treating them
-/// as ones would make a key unusable forever after its first reprice — the shape
-/// `price_repo::find_key_occupant` rejects one table over, for the same reason.
-const OCCUPYING_STATES: &[WindowState] = &[WindowState::Scheduled, WindowState::Active];
+/// **Moved to `domain::window` and re-exported here rather than copied** (2026-08-05,
+/// with D-88's compose). Its whole justification is a chain of domain facts — a
+/// cancelled window never took effect, an expired one cannot be intersected by
+/// anything `inst-ws-future-start` admits — so a second consumer that could not reach
+/// this module would otherwise have hand-maintained its own list. That is exactly how
+/// the unit-guard field list nearly drifted, and the fix there was the same one: one
+/// place, two callers.
+use crate::domain::window::OCCUPYING_STATES;
 
 /// A window to schedule.
 ///

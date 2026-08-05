@@ -48,8 +48,10 @@
 
 use chrono::{DateTime, Duration, Utc};
 use toolkit_macros::domain_model;
+use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::window::{OCCUPYING_STATES, WindowInterval, WindowState};
 
 /// The wire code §5 declares for a changeover instant that has fallen behind its
 /// floor (architectural 422, rendered 400 — Foundation §3.3).
@@ -126,6 +128,147 @@ pub fn check_changeover_instant(
         },
         moment.remedy()
     )))
+}
+
+/// One of a key's windows as **compose** needs to see it: its durable name and its
+/// interval.
+///
+/// [`WindowInterval`] deliberately carries no `window_id` — its doc gives the
+/// reason, and the reason is about the *consumer* side: a consumer resolving a price
+/// at `t` asks which interval covers `t`, and freezing a truth-side identifier into
+/// a ≥ 7-year INSERT-only store serves a reader with no call to make with it.
+///
+/// Compose is the opposite question. It is an **operator-side, truth-side** act that
+/// must name the row it is about to shorten, so it needs the pair, and pairing it
+/// here rather than widening `WindowInterval` is what keeps that argument intact.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedWindow {
+    /// The window's durable name.
+    pub window_id: Uuid,
+    /// Its interval and state.
+    pub interval: WindowInterval,
+}
+
+/// The predecessor window's `effectiveTo` and where it moves to.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowShorten {
+    /// The window being shortened — the one that covers the changeover.
+    pub window_id: Uuid,
+    /// Its new end: the changeover instant itself.
+    pub effective_to: DateTime<Utc>,
+}
+
+/// The two window operations `inst-su-compose` composes, proven adjacent.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ComposedWindows {
+    /// (b) — the predecessor's window, shortened to the changeover.
+    pub shorten: WindowShorten,
+    /// (c) — the successor's window, `[changeover, …)`.
+    pub successor: WindowInterval,
+}
+
+/// Compose `inst-su-compose`'s two window operations over one key's window plane.
+///
+/// # What it decides, and what it deliberately does not
+///
+/// It answers two questions about the key's plane at the changeover instant, and
+/// both are refusals `inst-su-compose` promises a *committed* unit can never
+/// produce — which is precisely why they are produced here:
+///
+/// 1. **Is there coverage at the changeover?** The window that covers it is the one
+///    being superseded, and its end moves to the changeover. A key with none is
+///    **dormant** — coverage already ended, or never started — and the unit
+///    presupposes current coverage. The design set's remedy is a plain publish plus
+///    a window schedule, a *revival* rather than a supersession, so the refusal says
+///    that instead of inviting a retry.
+/// 2. **Would the successor collide?** The successor is open-ended (`[changeover,
+///    …)`), so anything on the key beginning at or after the changeover is inside
+///    it. That is `WINDOW_OVERLAP`, and compose is the last place it can be a
+///    refusal rather than a half-applied unit.
+///
+/// It does **not** check the changeover instant's floors — that is
+/// [`check_changeover_instant`], asked twice at two moments, and folding it in here
+/// would give compose one of the two answers and hide which. It does not check the
+/// millisecond quantum either: D-144's quantum is the store's, stated at
+/// [`crate::domain::instant`], and a second owner of that rule is how the two come
+/// to disagree. And it does not look for **pre-existing** interior gaps on the key:
+/// the shorten moves one end earlier and the successor fills from exactly that
+/// instant, so it can open no new gap, and an old one is `inst-fg-detect`'s at
+/// publish. A compose that re-refused it would report a defect this act neither
+/// caused nor can fix.
+///
+/// # Coverage is the occupying states, and that set is not a choice made here
+///
+/// `cancelled` and `expired` windows are not coverage: a cancelled window is a
+/// schedule that never happened (which is why D-121 keeps it out of the read model)
+/// and an expired one is history. That is exactly `window_repo`'s `OCCUPYING_STATES`
+/// — the same set `refuse_overlap` uses — and it matters twice here, because an
+/// interval-only reading would both *shorten* a cancelled window that carries
+/// nothing and *ignore* a scheduled sibling that would collide.
+///
+/// A `scheduled` window that covers the changeover **is** coverage. Repricing a key
+/// whose window has not opened yet is a supersession like any other: the covering
+/// window's start is untouched and only its end moves, so nothing
+/// `inst-ws-immutable` freezes is disturbed.
+///
+/// # The successor is open-ended even where its predecessor was not
+///
+/// `inst-su-compose` says `[changeover, …)` without qualification, and that is
+/// right rather than merely literal: a predecessor's `effectiveTo` was a fact about
+/// **the old price's** planned end, and inheriting it would silently plant a
+/// trailing void at an instant nobody chose in this act. If the key's coverage
+/// should end, that is a `PATCH` on the successor's window — its own act, with its
+/// own materiality.
+///
+/// # Errors
+/// [`DomainError::LifecycleForbidden`] when the key is dormant at the changeover;
+/// [`DomainError::WindowOverlap`] naming the window the successor would collide
+/// with.
+pub fn compose_windows(
+    plane: &[NamedWindow],
+    changeover: DateTime<Utc>,
+) -> Result<ComposedWindows, DomainError> {
+    let occupying = || {
+        plane
+            .iter()
+            .filter(|window| OCCUPYING_STATES.contains(&window.interval.state))
+    };
+
+    let covering = occupying()
+        .find(|window| window.interval.covers(changeover))
+        .ok_or_else(|| {
+            DomainError::LifecycleForbidden(format!(
+                "the canonical scope key is dormant at {}: no scheduled or active window covers \
+                 that instant, and a supersession presupposes current coverage. Revive the key \
+                 with a publish and a window schedule instead",
+                changeover.to_rfc3339()
+            ))
+        })?;
+
+    // Anything beginning at or after the changeover is inside the successor's
+    // open-ended interval. The covering window is excluded by construction rather
+    // than by identity: it covers the changeover, so its start is strictly before.
+    if let Some(collision) = occupying().find(|window| window.interval.effective_from >= changeover)
+    {
+        return Err(DomainError::WindowOverlap(format!(
+            "window {} begins at {}, which the successor's open-ended interval from {} already \
+             covers; the key carries later coverage that this supersession would not replace",
+            collision.window_id,
+            collision.interval.effective_from.to_rfc3339(),
+            changeover.to_rfc3339()
+        )));
+    }
+
+    Ok(ComposedWindows {
+        shorten: WindowShorten {
+            window_id: covering.window_id,
+            effective_to: changeover,
+        },
+        successor: WindowInterval::new(changeover, None, WindowState::Scheduled),
+    })
 }
 
 #[cfg(test)]
