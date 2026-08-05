@@ -714,3 +714,271 @@ async fn every_state_the_machine_declares_is_reached_by_a_decision_and_stored() 
         "every state the machine declares must be one the store was driven into"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The mint guard: one open policy proposal per tenant, as an index (D-192)
+// ---------------------------------------------------------------------------
+
+/// One `NewApproval` over a threshold-policy version, the shape
+/// `infra::approval::open_policy_unit` builds.
+///
+/// `subject_ref` is the **version number** and nothing else — a policy unit has no
+/// plan and no revision — which is why the rule this file is about cannot be the
+/// exact-`subject_ref` reading the other planes use: every proposal names a different
+/// subject. It holds no key, for `open_policy_unit`'s own reason: a threshold policy
+/// prices nothing, so freezing a canonical scope key while a reviewer thinks about it
+/// would make every publish in the tenant wait on a governance edit.
+fn policy_proposal(approval_id: Uuid, tenant_id: Uuid, version: u64) -> NewApproval {
+    NewApproval {
+        approval_id,
+        tenant_id,
+        subject_ref: version.to_string(),
+        subject_kind: AuditSubjectKind::Policy,
+        content_hash: vec![0xc0, 0x1d],
+        materiality: json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
+        held_keys: std::collections::BTreeSet::new(),
+    }
+}
+
+/// **The case that isolates `uq_pricing_approval_policy_pending` from the check in
+/// front of it (D-192 clause (2)).**
+///
+/// `infra::approval::open_policy_unit` reads `find_pending_policy_unit` and *then*
+/// inserts, so every path through the service refuses a second proposal before this
+/// index is consulted — which means a service-level or route-level case stays green
+/// with the index dropped and proves nothing about it. The two writers that race are
+/// two calls to `approval_repo::open`, and that is exactly what this drives: the
+/// check is bypassed rather than mocked, so what answers here can only be the store.
+///
+/// What the index prevents is the **mint**, not the second unit for its own sake. Two
+/// proposals that both get past the check mint version *n* off the same
+/// `threshold_repo::latest_version` and both insert their entries under the key
+/// `(tenant, version, currency)` — which permits disjoint currency sets — leaving one
+/// version number holding a row set no approver ever saw, on a table that refuses
+/// `UPDATE` and `DELETE`.
+///
+/// And the answer is asserted, not only the refusal: `PendingPolicyUnitHeld` rather
+/// than `ConcurrentMutation`, because the two indexes on this table want different
+/// things said to their losers and `policy_guard_or_contention` is the only place
+/// that can tell them apart.
+#[tokio::test]
+async fn a_second_open_policy_proposal_is_refused_by_the_mint_guard_and_not_as_contention() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    let first = Uuid::from_u128(0xb1);
+    approval_repo::open(
+        &conn,
+        &scope,
+        policy_proposal(first, TENANT, 0),
+        opened_under(),
+    )
+    .await
+    .expect("the first proposal opens its unit");
+
+    let refused = approval_repo::open(
+        &conn,
+        &scope,
+        // A **different** id and a **different** version number, which is the pair the
+        // corrupt state is actually reached through: nothing here collides on a
+        // primary key, and an index keyed on the version number would have admitted
+        // it.
+        policy_proposal(Uuid::from_u128(0xb2), TENANT, 1),
+        stamp_of(SUBMITTER, at(10)),
+    )
+    .await
+    .expect_err("the index refuses a second open proposal for one tenant");
+
+    assert_eq!(
+        refused,
+        RepoError::PendingPolicyUnitHeld {
+            tenant_id: TENANT.to_string()
+        },
+        "the mint guard's loser is a pending-unit conflict, not a retry"
+    );
+
+    // **And nothing landed.** A refusal that had written the row first would leave the
+    // tenant with two units and the guard reporting a violation it had already
+    // permitted.
+    assert!(
+        approval_repo::read(&conn, &scope, TENANT, Uuid::from_u128(0xb2))
+            .await
+            .expect("the read succeeds")
+            .is_none(),
+        "the refused proposal opened no second unit"
+    );
+    assert_eq!(
+        approval_repo::find_pending_policy_unit(&conn, &scope, TENANT)
+            .await
+            .expect("the pending read succeeds")
+            .map(|held| held.approval_id),
+        Some(first),
+        "and the unit still under review is the first one"
+    );
+}
+
+/// The guard is **partial**, so the tenant is not locked out for ever.
+///
+/// Paired with the case above for `a_withdrawn_proposal_frees_the_tenant_to_propose_again`'s
+/// reason, one plane down: an index without `WHERE state = 'submitted'` would say "one
+/// policy proposal per tenant **ever**" and pass every assertion above while making a
+/// tenant whose first proposal was decided unable to author a second version for the
+/// rest of time. Both terminal directions are driven — the approved one and the
+/// withdrawn one — because the predicate is about leaving `submitted` and not about
+/// which door was taken.
+#[tokio::test]
+async fn a_decided_policy_unit_holds_nothing_and_the_tenant_proposes_again() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    for (n, (id, next, decision, approver)) in [
+        (
+            Uuid::from_u128(0xc1),
+            Uuid::from_u128(0xc2),
+            ApprovalDecision::Approve,
+            Some(APPROVER),
+        ),
+        (
+            Uuid::from_u128(0xc3),
+            Uuid::from_u128(0xc4),
+            ApprovalDecision::Void,
+            None,
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let version = u64::try_from(n).expect("two rounds") * 2;
+        approval_repo::open(
+            &conn,
+            &scope,
+            policy_proposal(*id, TENANT, version),
+            stamp_of(SUBMITTER, at(9)),
+        )
+        .await
+        .expect("the proposal opens");
+        approval_repo::decide(
+            &conn,
+            &scope,
+            TENANT,
+            *id,
+            *decision,
+            *approver,
+            // Neither terminal direction here carries one: `inst-as-reject` is the
+            // only decision that requires a reason, and a reject would be a third
+            // round saying nothing this pair does not.
+            None,
+            stamp_of(APPROVER, at(11)),
+        )
+        .await
+        .expect("the decision lands");
+
+        approval_repo::open(
+            &conn,
+            &scope,
+            policy_proposal(*next, TENANT, version + 1),
+            stamp_of(SUBMITTER, at(12)),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!("a tenant whose proposal left `submitted` must be able to author another: {e}")
+        });
+        approval_repo::decide(
+            &conn,
+            &scope,
+            TENANT,
+            *next,
+            ApprovalDecision::Void,
+            None,
+            None,
+            stamp_of(APPROVER, at(13)),
+        )
+        .await
+        .expect("clear the way for the next round");
+    }
+}
+
+/// One tenant's open proposal is not another tenant's.
+///
+/// The conjunct an index on the wrong columns loses first. `(tenant_id)` under the
+/// predicate is the rule; a unique index on `subject_kind` alone — or on nothing but
+/// the predicate — would make the whole deployment hold one policy proposal at a
+/// time, which no test above can see because they all use one tenant.
+#[tokio::test]
+async fn the_guard_is_per_tenant_and_not_per_deployment() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+
+    for (id, tenant) in [
+        (Uuid::from_u128(0xe1), TENANT),
+        (Uuid::from_u128(0xe2), OTHER_TENANT),
+    ] {
+        approval_repo::open(
+            &conn,
+            &AccessScope::for_tenant(tenant),
+            policy_proposal(id, tenant, 0),
+            opened_under(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("tenant {tenant} must be able to open its own proposal: {e}"));
+    }
+}
+
+/// A **taken `approval_id`** is still `ConcurrentMutation`, and the discriminator is
+/// what keeps it so.
+///
+/// The other half of `policy_guard_or_contention`. Both unique indexes on this table
+/// can be violated by a policy insert and the two refusals send an operator to
+/// different places — *retry* against *decide the proposal you already have* — so a
+/// branch that answered the mint guard for every unique violation would be as wrong
+/// as the one that answered contention for all of them. The first unit is **decided**
+/// here, so the guard's predicate does not hold and the primary key is the only thing
+/// left to refuse the insert; `rest_threshold_policy::a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_storage_failure`
+/// is the service-level statement of the same fact.
+#[tokio::test]
+async fn a_policy_unit_reusing_a_decided_units_id_is_contention_and_not_the_mint_guard() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let taken = Uuid::from_u128(0xd1);
+
+    approval_repo::open(
+        &conn,
+        &scope,
+        policy_proposal(taken, TENANT, 0),
+        opened_under(),
+    )
+    .await
+    .expect("the first proposal opens");
+    approval_repo::decide(
+        &conn,
+        &scope,
+        TENANT,
+        taken,
+        ApprovalDecision::Approve,
+        Some(APPROVER),
+        None,
+        stamp_of(APPROVER, at(11)),
+    )
+    .await
+    .expect("approve it, so the mint guard's predicate no longer holds");
+
+    let refused = approval_repo::open(
+        &conn,
+        &scope,
+        policy_proposal(taken, TENANT, 1),
+        stamp_of(SUBMITTER, at(12)),
+    )
+    .await
+    .expect_err("the primary key refuses a second unit under one id");
+
+    assert_eq!(
+        refused,
+        RepoError::ConcurrentMutation {
+            aggregate: format!("approval {taken}")
+        },
+        "a duplicate id is retriable contention; only the mint guard is a pending-unit conflict"
+    );
+}

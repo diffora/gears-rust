@@ -854,7 +854,19 @@ pub async fn body_json(response: Response<Body>) -> serde_json::Value {
 /// with the wrong one.
 pub async fn problem_code(response: Response<Body>) -> String {
     let body = body_json(response).await;
-    find_code(&body).unwrap_or_else(|| panic!("no wire code in the problem document: {body}"))
+    code_in(&body)
+}
+
+/// The same code, off a problem document a caller already holds.
+///
+/// [`problem_code`] consumes the response, so a case that asserts the code **and**
+/// something else about the body — that a refusal names the unit holding a key, say —
+/// could otherwise only read one of the two. Both spellings go through [`find_code`],
+/// which is the point: a second reading of the document here would be free to disagree
+/// with the one every other case uses.
+#[must_use]
+pub fn code_in(body: &serde_json::Value) -> String {
+    find_code(body).unwrap_or_else(|| panic!("no wire code in the problem document: {body}"))
 }
 
 /// The code can ride either the `reason` of an aborted/denied error or a

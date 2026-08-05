@@ -157,7 +157,7 @@ use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::{approval, approval_key};
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
-use crate::infra::storage::{RepoError, contention_or_db};
+use crate::infra::storage::{RepoError, contention_or_db, policy_guard_or_contention};
 
 /// The subjects this gear can open an approval over.
 ///
@@ -277,12 +277,17 @@ pub struct ApprovalRecord {
 /// pair of fields; [`NewApproval`] says why.
 ///
 /// # Errors
-/// [`RepoError::ConcurrentMutation`] when the id is already taken — the primary
-/// key is this table's one serialization point, and a loser there is told to
-/// retry rather than told the store failed (D-159); and when the audit append
-/// loses a same-segment race, which rolls this insert back with it.
-/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`] on
-/// a `subject_ref` no writer in this crate could have produced.
+/// [`RepoError::ConcurrentMutation`] when the id is already taken — a loser on a
+/// caller-minted primary key is told to retry rather than told the store failed
+/// (D-159); and when the audit append loses a same-segment race, which rolls this
+/// insert back with it. [`RepoError::PendingPolicyUnitHeld`] when a **policy** unit
+/// finds the tenant's one open-proposal slot taken (D-192 clause (2)) — the primary
+/// key is no longer this table's only serialization point, which is why the two are
+/// told apart here rather than folded into one conflict.
+/// [`RepoError::PendingKeyHeld`] when one of `held_keys` is held by another
+/// `submitted` unit. [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] on a `subject_ref` no writer in this crate could have
+/// produced.
 pub async fn open(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -310,11 +315,32 @@ pub async fn open(
         .exec(runner)
         .await
         .map_err(|e| {
-            contention_or_db(
-                &e,
-                &format!("approval {}", new.approval_id),
-                "insert pricing_approval",
-            )
+            // **Two unique indexes stand on this table, and they want different
+            // answers.** The primary key is the caller-minted `approval_id` and its
+            // loser is told to retry; `uq_pricing_approval_policy_pending` is D-192's
+            // mint guard and its loser is told to decide or withdraw the proposal the
+            // tenant already has. `policy_guard_or_contention` is the only place that
+            // can tell them apart, and it explains what it costs to do so.
+            //
+            // The subject-kind conjunct is here rather than inside it because it is a
+            // fact about *this* write and not about the driver's message: the guard's
+            // predicate is `subject_kind = 'policy'`, so no other kind can have
+            // violated it, and a plan-revision or window unit reaching that branch
+            // would be a misreading rather than a refusal.
+            if new.subject_kind == AuditSubjectKind::Policy {
+                policy_guard_or_contention(
+                    &e,
+                    new.tenant_id,
+                    &format!("approval {}", new.approval_id),
+                    "insert pricing_approval",
+                )
+            } else {
+                contention_or_db(
+                    &e,
+                    &format!("approval {}", new.approval_id),
+                    "insert pricing_approval",
+                )
+            }
         })?;
 
     // The keys this unit holds, in the same transaction as the unit. The order is

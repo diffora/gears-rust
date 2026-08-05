@@ -213,6 +213,7 @@ const EXPECTED_PARTIAL_INDEXES: &[&str] = &[
     "idx_pricing_outbox_undrained",
     "idx_pricing_price_supersedes",
     "uq_pricing_approval_key_pending",
+    "uq_pricing_approval_policy_pending",
     "uq_pricing_plan_current",
     "uq_pricing_plan_open_draft",
     "uq_pricing_plan_phase_terminal",

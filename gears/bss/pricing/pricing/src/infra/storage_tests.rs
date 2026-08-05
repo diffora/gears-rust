@@ -5,7 +5,7 @@
 //! and a wrong wire code everywhere at once. Each case below pins the *category*
 //! a refusal lands in, which is the part a consumer branches on.
 
-use super::{RepoError, repo_failure};
+use super::{RepoError, names_the_policy_guard, repo_failure};
 use crate::domain::concurrency::{RowVersion, require_match};
 use crate::domain::error::DomainError;
 
@@ -459,5 +459,81 @@ fn a_key_the_register_refused_a_second_hold_on_is_a_pending_unit_conflict() {
     assert!(
         detail.ends_with("decide it, or withdraw it to free the key"),
         "the constraint path must close with the check path's own instruction: {detail}"
+    );
+}
+
+#[test]
+fn a_tenants_second_open_policy_proposal_is_the_same_conflict_as_a_held_key() {
+    // **The mint guard's arm (D-192 clause (2)), and it had none.**
+    // `uq_pricing_approval_policy_pending` closes the two-writer race
+    // `open_policy_unit`'s read-then-write check cannot see, so its refusal reaches a
+    // caller only through `repo_failure` - and a corruption of this arm to `Internal`
+    // would turn an invariant conflict into a 500 nobody can act on, which is the
+    // defect class this file's sibling case above records having been found twice.
+    let err = RepoError::PendingPolicyUnitHeld {
+        tenant_id: "b0b0cafe-0000-0000-0000-000000000001".to_owned(),
+    };
+
+    let DomainError::PendingChangeUnitExists(detail) = repo_failure(&err) else {
+        panic!("a second open proposal must map to PENDING_CHANGE_UNIT_EXISTS, never to Internal");
+    };
+    // The tenant is carried through: this is the one path that cannot name the unit,
+    // so the subject of the sentence is all the refusal has to identify itself by.
+    assert!(detail.contains("b0b0cafe"), "got: {detail}");
+
+    // **The convergence with the check path, asserted rather than claimed**, exactly as
+    // the held-key case asserts its own. `infra::approval::open_policy_unit` builds its
+    // sentence by hand and this one comes off a `thiserror` display, so only a test
+    // holds them together - and what they must share is the closing instruction, which
+    // is what a caller acts on. The check path names the holding unit and this one
+    // cannot, so the comparison is against the shared clause and not the whole string.
+    assert!(
+        detail.ends_with("decide it, or withdraw it to propose another"),
+        "the constraint path must close with the check path's own instruction: {detail}"
+    );
+}
+
+#[test]
+fn the_mint_guard_is_told_from_the_primary_key_by_the_name_each_backend_prints() {
+    // `policy_guard_or_contention` reads the driver's message, which this crate
+    // otherwise refuses to do, and its doc argues why this is the narrow case. What
+    // that argument rests on is *these three strings*, so they are pinned here rather
+    // than left to a Postgres suite nobody runs on a laptop: two renderings of the
+    // guard, one per backend, and the primary key's rendering which must not match.
+    //
+    // Both are captured from a real driver - the `SQLite` pair by running the two
+    // colliding inserts against the mirror, the Postgres one from that server's
+    // documented `unique_violation` message - and a rename of the index that forgot
+    // this function reddens here.
+    assert!(
+        names_the_policy_guard(
+            "database error: Execution Error: error returned from database: duplicate key value \
+             violates unique constraint \"uq_pricing_approval_policy_pending\""
+        ),
+        "Postgres names the index"
+    );
+    assert!(
+        names_the_policy_guard(
+            "database error: Execution Error: error returned from database: (code: 2067) UNIQUE \
+             constraint failed: pricing_approval.tenant_id"
+        ),
+        "`SQLite` names the indexed columns instead"
+    );
+    assert!(
+        !names_the_policy_guard(
+            "database error: Execution Error: error returned from database: (code: 1555) UNIQUE \
+             constraint failed: pricing_approval.approval_id"
+        ),
+        "and the primary key is the other index on this table, whose loser is told to retry"
+    );
+    // The qualified form is what is matched, so another table's `tenant_id` cannot be
+    // read as this rule. `pricing_approval_key`'s own register is the near miss that
+    // makes this worth a line: its partial unique index leads on `tenant_id` too.
+    assert!(
+        !names_the_policy_guard(
+            "database error: Execution Error: error returned from database: (code: 2067) UNIQUE \
+             constraint failed: pricing_approval_key.tenant_id, pricing_approval_key.scope_key"
+        ),
+        "the register one plane over is not the mint guard"
     );
 }

@@ -1036,12 +1036,33 @@ pub(crate) async fn refuse_held_key(
 /// any of them. Holding the plan keys of a tenant while a reviewer thinks about a
 /// threshold would make every publish in that tenant wait on a governance edit,
 /// which is the opposite of what `inst-co-single-pending` protects. What serializes
-/// two proposals instead is [`approval_repo::find_pending_policy_unit`], the
-/// per-tenant reading of the same rule.
+/// two proposals instead is the pair below — the per-tenant reading of the same
+/// rule, and the index that makes it a rule rather than a comparison.
+///
+/// # Two guards, and the read is not the guarantee (D-192 clause (2))
+///
+/// The check below is a **read-then-write**: it reads
+/// [`approval_repo::find_pending_policy_unit`] and then inserts, so under
+/// `READ COMMITTED` two proposals can both read a store with no pending policy unit
+/// and both commit — and because `ThresholdService::propose` mints its version number
+/// off `threshold_repo::latest_version` in the same transaction, both then land on
+/// version *n*. `pricing_approval_threshold`'s key is `(tenant, version, currency)`
+/// and permits disjoint currency sets, so the tenant is left holding one version
+/// number over a row set no approver signed, on a table that refuses `UPDATE` and
+/// `DELETE`.
+///
+/// `uq_pricing_approval_policy_pending` (`m20260802_000022`) is what makes that state
+/// unreachable, and the check **stays** — D-148's arrangement, for D-148's reason: the
+/// read is the ordinary answer and the only one that can name the unit holding the
+/// proposal open, which is what an operator acts on; the index is the invariant, which
+/// no reader racing a writer can step through. The loser of the race is told the same
+/// code by way of [`crate::infra::storage::RepoError::PendingPolicyUnitHeld`], so a
+/// caller's remedy does not depend on which transaction committed first.
 ///
 /// # Errors
 /// [`DomainError::PendingChangeUnitExists`] (409) when the tenant already holds a
-/// pending proposal; [`DomainError::Internal`] on a storage failure.
+/// pending proposal — from the check below, or from the index when the check lost a
+/// race; [`DomainError::Internal`] on a storage failure.
 pub(crate) async fn open_policy_unit(
     runner: &impl DBRunner,
     scope: &AccessScope,

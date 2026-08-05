@@ -332,6 +332,38 @@ pub enum RepoError {
         /// The canonical scope key the register refused a second hold on.
         key: String,
     },
+    /// The tenant already holds a `submitted` approval-threshold policy proposal
+    /// (D-192 clause (2), `PENDING_CHANGE_UNIT_EXISTS`).
+    ///
+    /// **Raised by `uq_pricing_approval_policy_pending`, not by a comparison**, and
+    /// it is [`RepoError::PendingKeyHeld`]'s sibling one plane over: same rule shape,
+    /// different subject. A threshold policy touches no canonical scope key — it is
+    /// tenant-wide and prices nothing — so `pricing_approval_key` cannot carry this
+    /// rule and the register is the approval store's own partial index instead.
+    ///
+    /// `infra::approval::open_policy_unit` also *checks* for a pending proposal
+    /// inside its transaction and produces the ordinary 409 — the one that can name
+    /// the unit holding the proposal open, which an index violation cannot. This
+    /// variant is the other half: the loser of two concurrent proposals, both of
+    /// which read a store with no pending policy unit before either wrote. Without
+    /// the index both commit, both mint version *n* off the same `latest_version`,
+    /// and the tenant is left with one version number holding the union of two
+    /// disjoint currency sets — a row set no approver saw, on a table that then
+    /// refuses `UPDATE` and `DELETE`.
+    ///
+    /// It carries the tenant and **not** the holding unit, for
+    /// [`RepoError::PendingKeyHeld`]'s reason: at the moment the index fires the
+    /// winning transaction may not have committed, so there is no unit this
+    /// transaction is entitled to read, and naming one a rollback might unmake would
+    /// be worse than naming none.
+    #[error(
+        "pricing repo: tenant {tenant_id} already holds a submitted approval-threshold policy \
+         proposal; decide it, or withdraw it to propose another"
+    )]
+    PendingPolicyUnitHeld {
+        /// The tenant the mint guard refused a second open proposal for.
+        tenant_id: String,
+    },
     /// A window interval intersects one already on the same canonical scope key
     /// (`07-pricewindow-linkage.md` §6, `WINDOW_OVERLAP`).
     ///
@@ -498,6 +530,99 @@ pub fn contention_or_db(
     RepoError::Db(format!("{context}: {err}"))
 }
 
+/// The mint guard's refusal, or [`contention_or_db`]'s ordinary answer (D-192
+/// clause (2)).
+///
+/// `pricing_approval` carries **two** unique indexes since
+/// `m20260802_000022`: its primary key, `approval_id`, which the caller mints; and
+/// `uq_pricing_approval_policy_pending`, "one open policy proposal per tenant". They
+/// want different answers, and this is the one place that can tell them apart:
+///
+/// * a duplicate `approval_id` is [`RepoError::ConcurrentMutation`] — 409
+///   `CONCURRENT_MUTATION`, *retry*. It is one of the two caller-minted primary keys
+///   [`contention_or_db`]'s doc reports as a divergence from D-159, and
+///   `rest_threshold_policy::a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_storage_failure`
+///   pins it;
+/// * a second open proposal is [`RepoError::PendingPolicyUnitHeld`] — 409
+///   `PENDING_CHANGE_UNIT_EXISTS`, *decide or withdraw the one you have*. Told to
+///   retry instead, the caller would retry, be refused by
+///   `open_policy_unit`'s own check, and reach the right answer one round trip late
+///   under a code that sent them somewhere else first.
+///
+/// # It reads the driver's message, which this crate otherwise refuses to do
+///
+/// Stated plainly because [`contention_or_db`]'s doc argues the other way — that a
+/// shared predicate beats "a substring this crate invented" — and the residue it
+/// names is exactly this: *"the class says a unique index refused and not **which**
+/// … the driver exposes the constraint identity only inside a message"*. Three
+/// things make this the narrow case rather than a precedent:
+///
+/// * **the literals are DDL this chain owns**, not vendor phrasing. `sea_orm` has no
+///   structured constraint identity — `SqlErr::UniqueConstraintViolation` carries a
+///   `String` — so the alternatives were an `ON CONFLICT DO NOTHING` on the primary
+///   key of a table whose whole discipline is that nothing is silently swallowed, or
+///   a read-then-write pre-check for the *other* index, which is the shape D-192 is
+///   about removing;
+/// * **the fallback is today's behaviour.** An unrecognised message is
+///   [`contention_or_db`], so a driver or proxy that renders violations differently
+///   degrades to "retry" — safe, because a retry then meets the in-transaction check
+///   — and never to a 500;
+/// * **it is asserted on the mirror**, by
+///   `tests/sqlite_approval_repo.rs::a_second_open_policy_proposal_is_refused_by_the_mint_guard_and_not_as_contention`
+///   and its primary-key twin, so a rename of the index that forgot this function
+///   reddens. The Postgres half of the predicate rests on the index name reaching the
+///   message, which is that server's documented rendering and what
+///   `postgres_migrations.rs`'s partial-index census keeps true of the name.
+///
+/// **The residue runs the other way and is worth naming.** An unrecognised message
+/// degrades safely, but a *recognised* one can be wrong: a future second unique index on
+/// `pricing_approval` whose key involves `tenant_id` would render the same substring on
+/// the `SQLite` mirror and be reported as this guard — a specific wrong answer rather
+/// than a generic retry, which is the one direction the fallback does not cover. What
+/// keeps it visible is the index census in `tests/sqlite_migrations.rs` and
+/// `tests/postgres_migrations.rs`: a second index on this table cannot be added without
+/// appearing there, so the reader adding it meets this function's name in the same diff.
+/// If one is ever added, narrow the `SQLite` arm to the index name the way the Postgres
+/// arm already is.
+///
+/// `tenant_id` is what the refusal names; the *unit* it cannot name, and
+/// [`RepoError::PendingPolicyUnitHeld`] says why.
+#[must_use]
+pub fn policy_guard_or_contention(
+    err: &toolkit_db::secure::ScopeError,
+    tenant_id: uuid::Uuid,
+    aggregate: &str,
+    context: &str,
+) -> RepoError {
+    if err.is_unique_violation() && names_the_policy_guard(&err.to_string()) {
+        return RepoError::PendingPolicyUnitHeld {
+            tenant_id: tenant_id.to_string(),
+        };
+    }
+    contention_or_db(err, aggregate, context)
+}
+
+/// Does this driver message name `uq_pricing_approval_policy_pending` rather than
+/// `pricing_approval`'s primary key?
+///
+/// Two renderings, one per backend, both of them names `m20260802_000022` writes:
+///
+/// * **Postgres** names the index — `duplicate key value violates unique constraint
+///   "uq_pricing_approval_policy_pending"`;
+/// * **`SQLite`** names the indexed **columns** rather than the index, so the guard
+///   reads `UNIQUE constraint failed: pricing_approval.tenant_id` where the primary
+///   key reads `… pricing_approval.approval_id`. `tenant_id` is unique on this table
+///   under no other index, which is what makes the column a sufficient
+///   discriminator; the qualified form is matched so that another table's
+///   `tenant_id` cannot be mistaken for it.
+///
+/// Split out and taking a `&str` so both renderings are asserted directly, without
+/// staging a database race for either.
+fn names_the_policy_guard(message: &str) -> bool {
+    message.contains("uq_pricing_approval_policy_pending")
+        || message.contains("pricing_approval.tenant_id")
+}
+
 /// Map a storage failure into the gear's rejection vocabulary.
 ///
 /// A frontier regression is a **precondition** failure, not an internal fault:
@@ -613,6 +738,13 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         // key and both end in the same instruction; `storage_tests` asserts that
         // rather than this comment claiming it.
         RepoError::PendingKeyHeld { .. } => DomainError::PendingChangeUnitExists(err.to_string()),
+        // The mint guard's loser, on the same code and for the same reason one arm up:
+        // "another open proposal already holds this" is one condition, and which of two
+        // transactions committed first must not change what the caller is told to do
+        // about it. `PendingPolicyUnitHeld`'s own doc says what it cannot carry.
+        RepoError::PendingPolicyUnitHeld { .. } => {
+            DomainError::PendingChangeUnitExists(err.to_string())
+        }
         // Asserted end to end by
         // `rest_windows::an_overlapping_schedule_is_refused_by_its_code_and_writes_nothing`,
         // which was the seventh arm of this fold found with no observation of what it

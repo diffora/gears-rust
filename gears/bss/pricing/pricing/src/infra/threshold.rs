@@ -385,10 +385,17 @@ impl ThresholdService {
     /// One transaction, and the whole reason `threshold_repo` takes a runner: the
     /// version rows and the unit that pins them commit together or not at all. The
     /// version number is minted **inside** it off
-    /// [`threshold_repo::latest_version`], so two concurrent proposals cannot agree
-    /// on one number — and if they somehow read the same one, the primary key of
-    /// `pricing_approval_threshold` refuses the loser rather than letting two
-    /// proposals share a subject ref.
+    /// [`threshold_repo::latest_version`].
+    ///
+    /// **That is not by itself enough, and D-192 clause (2) is what closes it.** Two
+    /// concurrent proposals under `READ COMMITTED` read the same `latest_version` and
+    /// mint the same number, and `pricing_approval_threshold`'s key —
+    /// `(tenant, version, currency)` — permits disjoint currency sets, so its primary
+    /// key refuses only a *currency* the version already holds and admits the merge.
+    /// What stops the pair reaching that point at all is
+    /// `uq_pricing_approval_policy_pending`, the index behind
+    /// [`crate::infra::approval::open_policy_unit`]'s check: at most one `submitted`
+    /// policy unit per tenant, so at most one proposal is in flight to mint anything.
     ///
     /// **What that refusal reaches the caller as, corrected.** This used to say only
     /// "the primary key refuses the loser", which reads as though the loser were told
@@ -401,8 +408,14 @@ impl ThresholdService {
     /// `rest_threshold_policy::a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_storage_failure`.
     /// Both directions are safe — nothing partial commits — and the difference is what
     /// an operator is told to do about it, which is why it is written down rather than
-    /// smoothed over. Closing it means classifying the version table's key the way the
-    /// approval table's is; that is a `storage`-level decision this group reports.
+    /// smoothed over. **Still open, and deliberately so**: the version table's key is
+    /// now unreachable from this path — the mint guard above admits one proposal at a
+    /// time, so no second caller is here to collide on a number — and classifying a
+    /// violation of it would be classifying a write nothing can perform. It becomes a
+    /// live question again only if `open_version` acquires a second caller, which is
+    /// what the sentence is left here for. The approval table's own key *is* classified,
+    /// beside the mint guard, and `storage::policy_guard_or_contention` is where the two
+    /// are told apart.
     ///
     /// The diff is **not applied**: the rows land in a version nothing points at
     /// until [`effective_version`] finds its unit approved. That is D-10 — *"the
@@ -480,6 +493,32 @@ impl ThresholdService {
                         .map_err(|refusal| DomainError::ThresholdInvalid(refusal.detail()))?;
                     let rows: Vec<ThresholdEntryRow> =
                         version.entries().iter().map(row_of).collect();
+                    // **The unit before the rows, and that ordering is the mint guard's
+                    // (D-192 clause (2)).** Both are this transaction's, so atomicity is
+                    // indifferent to the order; what is not indifferent is *which*
+                    // constraint a loser meets first. `open_version` appends under the key
+                    // `(tenant, version, currency)`, so two proposals that both minted
+                    // version `n` collide there only if their currency sets **intersect**
+                    // — and that collision renders 500, this store's insert not being one
+                    // `storage` classifies. Opening the unit first puts
+                    // `uq_pricing_approval_policy_pending` ahead of it, so the loser is
+                    // refused `PENDING_CHANGE_UNIT_EXISTS` whatever the two proposals
+                    // happen to price, and no version rows are written by a transaction
+                    // that is going to roll back.
+                    //
+                    // `open_policy_unit` reads nothing from the version store — it hashes
+                    // the in-memory `ThresholdVersion` and names it by number — so there is
+                    // nothing here for the rows to have to exist for.
+                    let record = crate::infra::approval::open_policy_unit(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        approval_id,
+                        &version,
+                        materiality,
+                        stamp,
+                    )
+                    .await?;
                     threshold_repo::open_version(
                         txn,
                         &scope,
@@ -491,16 +530,6 @@ impl ThresholdService {
                     )
                     .await
                     .map_err(|e| repo_failure(&e))?;
-                    let record = crate::infra::approval::open_policy_unit(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        approval_id,
-                        &version,
-                        materiality,
-                        stamp,
-                    )
-                    .await?;
                     Ok((version, record))
                 })
             })
@@ -591,16 +620,11 @@ impl ThresholdService {
                         ))
                     })?;
                     let version = ThresholdVersion::tombstone(number, effective_from);
-                    threshold_repo::open_tombstone(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        next,
-                        effective_from,
-                        stamp,
-                    )
-                    .await
-                    .map_err(|e| repo_failure(&e))?;
+                    // The unit before the row, for [`Self::propose`]'s reason. The
+                    // tombstone table is keyed `(tenant, version)` rather than by
+                    // currency, so a loser here would meet *its* key on any collision
+                    // rather than only an intersecting one — the same 500, reached more
+                    // easily.
                     let record = crate::infra::approval::open_policy_unit(
                         txn,
                         &scope,
@@ -611,6 +635,16 @@ impl ThresholdService {
                         stamp,
                     )
                     .await?;
+                    threshold_repo::open_tombstone(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        next,
+                        effective_from,
+                        stamp,
+                    )
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
                     Ok((version, record))
                 })
             })

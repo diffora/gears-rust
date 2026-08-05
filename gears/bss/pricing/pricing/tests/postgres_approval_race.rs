@@ -776,3 +776,101 @@ async fn two_submits_holding_one_key_contend_on_the_register_and_one_is_refused(
         "and the loser's whole transaction rolled back - unit, register row and trail"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The mint guard's classification, measured on the server that renders it
+// ---------------------------------------------------------------------------
+
+/// **`uq_pricing_approval_policy_pending`'s loser is a pending-unit conflict on
+/// Postgres too, and that is a measurement rather than an inspection** (D-192 clause
+/// (2)).
+///
+/// `infra::storage::policy_guard_or_contention` tells the mint guard from the table's
+/// primary key by **reading the driver's message** — the one place in this crate that
+/// does — because `sea_orm` exposes no structured constraint identity. Its `SQLite` arm
+/// is asserted by `tests/sqlite_approval_repo.rs`'s twin; its **Postgres** arm rested on
+/// that server's documented rendering carrying the index name, which is inspection. This
+/// executes it. If Postgres ever renders a `unique_violation` without the index name, the
+/// classification degrades to `ConcurrentMutation` — safe, but wrong about what the
+/// caller should do — and only this case says so.
+///
+/// # It sits in a race suite and needs no race, deliberately
+///
+/// D-192's own correction: the state *needs no concurrency to reproduce*, so two
+/// sequential `open` calls produce it. What this suite supplies is the machinery — a
+/// migrated server and a repository driven over it — and a second Postgres test binary
+/// for one case would cost a container per run.
+///
+/// # And it bypasses the check rather than mocking it
+///
+/// `infra::approval::open_policy_unit` reads `find_pending_policy_unit` and *then*
+/// inserts, so every path through the service refuses a second proposal before the index
+/// is consulted: a service-level case stays green with the index dropped. The two writers
+/// that can actually race are two calls to `approval_repo::open`, so that is what this
+/// drives.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_policy_mint_guard_answers_a_pending_unit_conflict_on_postgres() {
+    let pg = Pg::applied().await;
+    let provider = DBProvider::<DbError>::new(pg.db().await);
+    let conn = provider.conn().expect("conn");
+
+    bss_pricing::infra::storage::repo::approval_repo::open(
+        &conn,
+        &scope(),
+        policy_proposal(Uuid::from_u128(0x_b1), 0),
+        stamp_of(SUBMITTER, at(12)),
+    )
+    .await
+    .expect("the first proposal opens its unit");
+
+    let refused = bss_pricing::infra::storage::repo::approval_repo::open(
+        &conn,
+        &scope(),
+        // A different id **and** a different version number — the pair the corrupt state
+        // is actually reached through. Nothing here collides on a primary key, and an
+        // index keyed on the version number would have admitted exactly this.
+        policy_proposal(Uuid::from_u128(0x_b2), 1),
+        stamp_of(SUBMITTER, at(12)),
+    )
+    .await
+    .expect_err("the index refuses a second open proposal for one tenant");
+
+    assert_eq!(
+        refused,
+        RepoError::PendingPolicyUnitHeld {
+            tenant_id: TENANT.to_string()
+        },
+        "on Postgres as on the mirror: the mint guard's loser is told to decide or \
+         withdraw the proposal it already holds, not to retry"
+    );
+
+    assert!(
+        bss_pricing::infra::storage::repo::approval_repo::read(
+            &conn,
+            &scope(),
+            TENANT,
+            Uuid::from_u128(0x_b2)
+        )
+        .await
+        .expect("read the refused unit")
+        .is_none(),
+        "and nothing landed - a refusal that wrote first would leave two units behind"
+    );
+}
+
+/// One policy proposal, as `open_policy_unit` builds one.
+fn policy_proposal(
+    approval_id: Uuid,
+    version: u64,
+) -> bss_pricing::infra::storage::repo::approval_repo::NewApproval {
+    bss_pricing::infra::storage::repo::approval_repo::NewApproval {
+        approval_id,
+        tenant_id: TENANT,
+        subject_ref: version.to_string(),
+        subject_kind: bss_pricing::domain::audit::AuditSubjectKind::Policy,
+        content_hash: vec![0xc0, 0x1d],
+        materiality: json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
+        held_keys: BTreeSet::new(),
+    }
+}

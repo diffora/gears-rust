@@ -40,10 +40,19 @@
 //!   second unit on those keys forever, and no test that only decides an approval
 //!   would notice.
 //!
-//! All six are re-created here, verbatim. `pricing_approval` carries **no index**
-//! beyond its primary key and **no inbound foreign key** — `pricing_approval_key`
-//! reaches it through trigger sub-selects rather than a `REFERENCES` clause, by
-//! `000017`'s own design — so the rebuild needs no index and no constraint work.
+//! All six are re-created here, verbatim. `pricing_approval` carries **no inbound
+//! foreign key** — `pricing_approval_key` reaches it through trigger sub-selects
+//! rather than a `REFERENCES` clause, by `000017`'s own design — so the rebuild needs
+//! no constraint work.
+//!
+//! **It carried no index either, and since `m20260802_000022` it does.** That
+//! migration adds `uq_pricing_approval_policy_pending`, D-192's mint guard, and sorts
+//! **after** this file, so this rebuild is still correct as it stands: on the way down
+//! the guard's own `DROP INDEX` has already run, and on the way back up it is
+//! re-created after this rebuild. What is no longer true is the general claim — a
+//! rebuild of this table appended *after* `000022` would take the index with the
+//! `DROP TABLE` and would have to restate it, the way the eight triggers below are
+//! restated. `tests/sqlite_migrations.rs`'s index census is what says so.
 //!
 //! **And two more triggers have to move, on the other table.** The first draft of
 //! this migration said the two `pricing_approval_key` triggers that sub-select this

@@ -429,19 +429,46 @@ async fn a_future_dated_version_leaves_the_tenant_on_the_one_already_in_force() 
 /// different subject and an exact read would find nothing. Two open proposals would
 /// leave two reviewers approving two versions whose order of arrival then decides
 /// the tenant's thresholds, which is the race the rule exists to close.
+///
+/// **What is asserted here is the mint (D-192 clause (2)), which two of these
+/// assertions are new for.** The refusal itself was pinned; that the refused proposal
+/// had not already *consumed a version number* was not, and the version rows are
+/// written **before** the unit — `open_version` precedes `open_policy_unit` inside one
+/// transaction — so a build whose refusal landed outside that transaction would leave
+/// version 1's rows behind and the next proposal would mint 2 over a row set nobody
+/// proposed. `latest_minted` is the only reader that can see that: `effective` cannot,
+/// an unapproved version not being effective either way.
+///
+/// The other new assertion is what makes this test the **check's** proof and not the
+/// index's. Since `uq_pricing_approval_policy_pending` exists, deleting
+/// `find_pending_policy_unit`'s refusal leaves the status, the code and both
+/// write-side assertions exactly as they are — the index refuses the insert and
+/// `repo_failure` answers the same code, deliberately. What only the check can produce
+/// is a body that **names the unit holding the proposal open**, which is what an
+/// operator acts on, so that is asserted rather than assumed.
 #[tokio::test]
 async fn a_second_proposal_while_one_is_under_review_is_refused() {
     let h = Harness::new().await;
-    assert_eq!(
-        propose_as(&h, PROPOSER, proposal("EUR", 500))
-            .await
-            .status(),
-        StatusCode::ACCEPTED
-    );
+    let opened = body_json(propose_as(&h, PROPOSER, proposal("EUR", 500)).await).await;
+    let holding_id = opened["approval"]["approval_id"]
+        .as_str()
+        .expect("the first proposal's unit")
+        .to_owned();
 
     let response = propose_as(&h, PROPOSER, proposal("USD", 900)).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(problem_code(response).await, "PENDING_CHANGE_UNIT_EXISTS");
+    let problem = body_json(response).await;
+    assert_eq!(
+        rest_support::code_in(&problem),
+        "PENDING_CHANGE_UNIT_EXISTS",
+        "got: {problem}"
+    );
+    // The explanatory half, and the only half the index cannot supply: which unit to
+    // decide or withdraw. See the doc above.
+    assert!(
+        problem.to_string().contains(&holding_id),
+        "the refusal must name the unit holding the proposal open: {problem}"
+    );
 
     // And nothing was written: the version rows and the unit commit together, so a
     // refused proposal leaves neither behind. Without this the refusal could be a
@@ -451,6 +478,11 @@ async fn a_second_proposal_while_one_is_under_review_is_refused() {
         approval_rows(&h).await.len(),
         1,
         "the refused proposal opened no second unit"
+    );
+    assert_eq!(
+        latest_minted(&h).await,
+        Some(0),
+        "and it consumed no version number: the mint is inside the refused transaction"
     );
     let policy = read_policy_as(&h, PROPOSER).await;
     assert_eq!(policy["pending_approval"]["subject_ref"], "0");

@@ -159,6 +159,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_price_window_price",
     "idx_pricing_read_model_resolve",
     "uq_pricing_approval_key_pending",
+    "uq_pricing_approval_policy_pending",
     "uq_pricing_outbox_dedup_key",
     "uq_pricing_outbox_sequence",
     "uq_pricing_plan_current",
@@ -762,6 +763,51 @@ async fn the_pending_key_register_is_unique_and_partial_on_submitted() {
     assert!(
         ddl.contains("WHERE state = 'submitted'"),
         "partial on `submitted`, so a decided unit frees its keys: {ddl}"
+    );
+}
+
+#[tokio::test]
+async fn the_policy_mint_guard_is_unique_per_tenant_and_partial_on_both_conjuncts() {
+    // The **shape** and not only the name, for the sibling case's reason: each half of
+    // this predicate refuses a different legitimate flow if it goes missing, and the
+    // name census cannot see either loss.
+    //
+    // * without `subject_kind = 'policy'` the index would refuse a tenant's second
+    //   **plan-revision or window** unit - one tenant holding several of those at once
+    //   is the ordinary case, and `inst-co-single-pending` puts that rule on
+    //   `pricing_approval_key` per canonical scope key rather than per tenant;
+    // * without `state = 'submitted'` it would say "one policy proposal per tenant
+    //   **ever**", and a tenant whose first proposal was decided or withdrawn could
+    //   never author a second version.
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    let ddl = index_sql(&conn, "uq_pricing_approval_policy_pending")
+        .await
+        .expect("D-192's mint guard");
+    assert!(
+        ddl.to_ascii_uppercase().contains("UNIQUE"),
+        "one open policy proposal: {ddl}"
+    );
+    assert!(
+        ddl.contains("(tenant_id)"),
+        "and it is per tenant, not per deployment: {ddl}"
+    );
+    assert!(
+        ddl.contains("subject_kind = 'policy'"),
+        "narrowed to the plane where the rule is per tenant: {ddl}"
+    );
+    assert!(
+        ddl.contains("state = 'submitted'"),
+        "partial on `submitted`, so a decided proposal holds nothing: {ddl}"
     );
 }
 
