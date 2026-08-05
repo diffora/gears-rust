@@ -76,6 +76,26 @@ def _problem_codes(payload: dict) -> set:
     return found
 
 
+def _assert_no_effective_policy(client, headers, api_base):
+    """The tenant has no threshold policy in force.
+
+    A precondition, not an assertion about the surface. Every case that expects
+    `noConfiguredThreshold` depends on it, and it is **not** guaranteed by anything
+    the test framework enforces: the one case that configures a policy is last in
+    source order and the store is wiped between runs by the run protocol. If either
+    changes, this fails where the dependency is, with the version that is in force.
+    """
+    policy = client.get(f"{api_base}/config/approval-threshold-policy", headers=headers)
+    assert policy.status_code == 200, policy.text
+    assert policy.json()["effective"] is None, (
+        "a threshold policy is in force, so materiality will not answer "
+        "`noConfiguredThreshold` here. Either a case that configures one ran before "
+        "this one, or a previous run's store survived - the protocol's "
+        "`rm -rf ~/.cf-gears/bss-pricing` is what clears it: "
+        f"{policy.text}"
+    )
+
+
 def _create_plan(client, headers, key, tier="gold"):
     return client.post(
         "/bss-pricing/v1/plans",
@@ -572,7 +592,7 @@ def _submit_for_publish(client, headers, plan_id, etag):
 
 
 def test_a_material_change_blocks_until_a_second_principal_has_seen_it(
-    client, auth_headers, auth_headers_reviewer, audit_segment
+    client, auth_headers, auth_headers_reviewer, audit_segment, api_base
 ):
     """The whole reason Slice 5 exists, on the wire, as one narrative.
 
@@ -583,13 +603,15 @@ def test_a_material_change_blocks_until_a_second_principal_has_seen_it(
     the approve before it landed. Split into five, each would re-stage the four
     steps before it and assert against its own private world.
     """
+    _assert_no_effective_policy(client, auth_headers, api_base)
     plan_id, etag = _assemble_publishable_plan(client, auth_headers)
 
     # 1. A material publish does not publish. Every publish is material here and
-    #    that is by rule: no approval-threshold policy can be configured, so
-    #    `inst-mat-failsafe` answers `noConfiguredThreshold` for every call, and
-    #    configuring the policy that would change that is itself an
-    #    always-material act (D-10).
+    #    that is by rule: this tenant has no approval-threshold policy in force
+    #    (asserted just above, because it is a precondition and not a property of
+    #    this deployment), so `inst-mat-failsafe` answers `noConfiguredThreshold`
+    #    for every call - and configuring the policy that would change that is
+    #    itself an always-material act (D-10).
     submitted = _submit_for_publish(client, auth_headers, plan_id, etag)
     assert submitted["outcome"] == "submitted_for_approval"
     assert submitted["materiality"] == {
@@ -1376,14 +1398,29 @@ def test_a_schedule_through_the_route_is_refused_before_the_materiality_gate(
 # Slice 6 / G6: the one two-person act this deployment can complete.
 # ---------------------------------------------------------------------------
 #
-# A currency **no other case in this module uses**, and that is the whole reason
-# it is not `USD`. `inst-mat-percurrency`'s fail-safe half makes a row whose
-# currency has no entry material with reason `noConfiguredThreshold` — the same
-# token an unset policy produces — so a `CHF` policy in force leaves every `USD`
-# assertion in this file exactly as it was, and
-# `test_a_material_change_blocks_until_a_second_principal_has_seen_it` keeps
-# reading `noConfiguredThreshold`. A `USD` entry would have changed that test's
-# verdict to `rowWithoutBaseline` from a case three hundred lines away.
+# A currency no other case uses — which is tidy and is **not** what protects the
+# module. The argument that used to stand here was false and is worth stating so it
+# is not reinvented: it claimed `inst-mat-percurrency`'s fail-safe half would answer
+# `noConfiguredThreshold` for a `USD` row while a `CHF` policy was in force, leaving
+# every other case untouched. `evaluate` never reaches that half here. Its order is
+# registered trigger, then unset policy, then **`baseline is None` ->
+# `firstPublish`**, and only then the per-currency walk — and on this stand no plan
+# ever publishes, so `baseline` is `None` for every plan. With any policy approved,
+# a `USD` publish therefore answers `firstPublish`, not `noConfiguredThreshold`, and
+# the currency chosen is irrelevant. (The old counterfactual was wrong the same way:
+# `rowWithoutBaseline` needs a baseline that exists.)
+#
+# **What actually protects the module is order plus the wipe**, neither of which is
+# enforced: pytest collects in source order and this is the last case in the file,
+# and the run protocol's `rm -rf ~/.cf-gears/bss-pricing` clears the store between
+# runs. Both matter because the policy store is the one piece of tenant-singleton
+# state this module writes, and `effective_from` is not compared against anything
+# (D-188), so a `2099` policy is in force the moment it is approved.
+#
+# So the cases that depend on an unset policy assert it as a **precondition** rather
+# than trusting the ordering — see `_assert_no_effective_policy`. A run whose order
+# changed then fails at the case that broke it, naming the policy, instead of three
+# hundred lines away on a materiality token nobody was thinking about.
 POLICY_CURRENCY = "CHF"
 POLICY_ABSOLUTE_MINOR = 500
 POLICY_EFFECTIVE_FROM = "2099-03-01T00:00:00Z"
