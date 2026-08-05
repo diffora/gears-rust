@@ -59,25 +59,31 @@
 //! rests on is the **column** existing on `PriceRecord` — not on the act being
 //! performable.
 //!
-//! This paragraph used to claim a reachable path: *"a successor draft row on a key
-//! that already carries a published row, whose `grandfatherUntil` is earlier than the
-//! baseline's"*. **No mounted surface reaches that path.** The authoring door refuses
-//! it — `price_repo::insert_prepared` refuses a draft row whose key
-//! `find_key_occupant` finds occupied, `DUPLICATE_SCOPE_KEY` — and the way to reprice
-//! an occupied key is the D-88 supersession unit. That unit now has its **row half**
-//! (`price_repo::insert_successor_draft_on`, D-195, which is where the row *pair*
-//! below finally becomes constructible), its compose (`domain::supersession`) and its
-//! cross-plane commit (`infra::supersession`) — but no orchestrator, no approval unit
-//! and no route, so nothing a caller can invoke stages the pair yet. (The enumeration
-//! is corrected as of 2026-08-05: it said "no compose, no commit" for a day after both
-//! landed.) And `update_draft`'s swap guard carries
+//! This paragraph used to claim a reachable path, then claimed for two waves that
+//! **no** mounted surface reached it. Both are now out of date and the sequence is worth
+//! keeping, because it is the same sentence corrected three times: *"a successor draft
+//! row on a key that already carries a published row, whose `grandfatherUntil` is
+//! earlier than the baseline's"*. The **authoring** door still refuses that row —
+//! `price_repo::insert_prepared` refuses a draft whose key `find_key_occupant` finds
+//! occupied, `DUPLICATE_SCOPE_KEY` — and the way to reprice an occupied key is the D-88
+//! supersession unit. **That unit is whole as of 2026-08-06**: the row half
+//! (`price_repo::insert_successor_draft_on`, D-195, where the row *pair* below became
+//! constructible), the compose (`domain::supersession`), the cross-plane commit
+//! (`infra::supersession::commit_supersession`), the orchestrator and approval unit
+//! (`infra::supersession::SupersessionService`) and the route
+//! (`POST …/plans/{planId}/supersessions`). So a caller **can** now stage the pair, and
+//! [`triggered_by_row`]'s horizon arm is reachable from a mounted surface for the first
+//! time.
+//!
+//! What is *still* only unit-tested is that arm's own staging: a successor whose
+//! `grandfatherUntil` is earlier than its predecessor's. Reaching it needs a
+//! grandfathered key, and `price_repo::refuse_unsupersedable_class` refuses to supersede
+//! an `existing_grandfathered` generation at all (Foundation §4.3), so the horizon arm's
+//! subject is a key the one new door will not touch. `update_draft`'s swap guard carries
 //! `lifecycle_state = 'draft'`, so a published row's horizon cannot be moved in place
-//! either. So [`triggered_by_row`] is reachable as a **function** and its two arms are
-//! unit-tested over hand-built rows; what no mounted surface can present is the row
-//! *pair* either arm needs. The `true` is left as it is because the subject — the
-//! column, the comparison, the record — is genuinely here and because flipping it to
-//! `false` would say the design set's clause is another slice's, which is not the
-//! defect. The defect is that its authoring act is missing, and it is reported.
+//! either. The `true` is left as it is for the reason it always was: the subject — the
+//! column, the comparison, the record — is genuinely here, and flipping it to `false`
+//! would say the design set's clause is another slice's, which is not the defect.
 
 use toolkit_macros::domain_model;
 

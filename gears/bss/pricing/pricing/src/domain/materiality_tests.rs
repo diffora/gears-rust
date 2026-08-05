@@ -206,29 +206,33 @@ fn a_row_added_to_a_published_plan_is_material_having_no_baseline() {
 /// # This change set is one `create_draft` refuses to author, and that is stated
 /// # rather than fixed
 ///
-/// **No mounted surface can reach this comparison.** The change set is a row that
-/// moved on a key the baseline already carries — a *reprice of an occupied key* — and
-/// the **authoring** door refuses one unconditionally: `price_repo::insert_prepared`
-/// refuses when `find_key_occupant` finds a `draft` or `published` row there, with the
-/// repository's own sentence: *"this is not the way to reprice an occupied key. That is
-/// the D-88 supersession unit"*. D-88's **row half** now exists —
-/// `price_repo::insert_successor_draft_on` (D-195) authors exactly this pair, and it is
-/// what will make this comparison reachable — as do its compose
-/// (`domain::supersession::plan_supersession`) and its cross-plane commit
-/// (`infra::supersession::commit_supersession`). What does not exist is the
-/// orchestrator, the approval unit and the route (enumeration corrected 2026-08-05). So a plan-revision change set is
-/// still always either a row with no baseline (`inst-mat-newrow`, step 3a) or no moved
-/// row at all (D-115's pure-shape clause), and `evaluate`'s row walk is reached from
-/// the window plane, where every delta is zero by construction. **This test stays a
-/// unit test over a hand-built input; the end-to-end case D-183 owes is a different
-/// test and is owed by the group that finishes the unit.**
+/// **A mounted surface reaches this comparison now, and it is not the publish route**
+/// (corrected 2026-08-06, D-88's orchestrator and route landing). The change set is a
+/// row that moved on a key the baseline already carries — a *reprice of an occupied
+/// key* — and the **authoring** door still refuses one unconditionally:
+/// `price_repo::insert_prepared` refuses when `find_key_occupant` finds a `draft` or
+/// `published` row there, with the repository's own sentence: *"this is not the way to
+/// reprice an occupied key. That is the D-88 supersession unit"*. That unit is whole:
+/// `insert_successor_draft_on` (D-195) authors the pair, `plan_supersession` composes
+/// it, `commit_supersession` writes it, and `POST …/plans/{planId}/supersessions`
+/// carries it — so `evaluate` is now reached over an **authored** change set with a
+/// real per-currency delta, and `tests/sqlite_supersession_unit.rs` holds both halves:
+/// the `thresholdReached` case and the `AutoPublishable` one.
 ///
-/// So this is a legitimate unit test of `evaluate` over a **hand-built** input, and
-/// it is kept for that: it exercises the comparison §3 specifies and the production
-/// paths cannot yet present, which is the difference between a rule that is absent
-/// and a rule whose subject is. **D-88 is what makes it reachable.** Deleting it
-/// would leave the only shape §3 says auto-publishes with no executable statement at
-/// all, and the four halves below with nothing to be halves of.
+/// **D-183 expected that to arrive through a *publish*, and it will not.** D-195's
+/// exclusion rule is what forbids it: `infra::publish::validated_draft_rows` drops a
+/// draft row whose key already carries a published row, because that row is not the
+/// plan-revision unit's to publish. So a plan-revision change set is *still* always
+/// either a row with no baseline (`inst-mat-newrow`, step 3a) or no moved row at all
+/// (D-115's pure-shape clause) — permanently, by design rather than for want of a
+/// surface — and the end-to-end case D-183 asked for on the publish path is unreachable
+/// rather than unwritten.
+///
+/// So this stays a legitimate unit test of `evaluate` over a **hand-built** input, and
+/// it is kept for the reason it always was: it is the only executable statement of the
+/// shape §3 says auto-publishes on a **plan revision**, which is the one subject no
+/// production path will ever present. Deleting it would leave that shape unstated and
+/// the four halves below with nothing to be halves of.
 #[test]
 fn a_below_threshold_amount_change_on_unchanged_geometry_auto_publishes() {
     let policy = configured_policy();
