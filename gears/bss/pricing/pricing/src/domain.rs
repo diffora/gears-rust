@@ -4,13 +4,16 @@
 //! entities and transports live in [`crate::infra`] and [`crate::api`], and the
 //! domain is what stays true regardless of where the rows are stored.
 
+pub mod approval;
 pub mod audit;
 pub mod concurrency;
+pub mod coverage;
 pub mod error;
 pub mod evaluation_policy;
 pub mod events;
 pub mod instant;
 pub mod lifecycle;
+pub mod materiality;
 pub mod money;
 pub mod plan;
 pub mod plan_rules;
@@ -23,5 +26,7 @@ pub mod publish;
 pub mod read_model;
 pub mod rules;
 pub mod scope_key;
+pub mod sellability;
 pub mod snapshot;
 pub mod validation;
+pub mod window;

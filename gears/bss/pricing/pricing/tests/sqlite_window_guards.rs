@@ -1,0 +1,567 @@
+//! The window store's guards on the executed `SQLite` mirror.
+//!
+//! `tests/postgres_window.rs` proves the canonical objects. This suite exists
+//! because the mirror is not a copy of them: Postgres carries **one** PL/pgSQL
+//! function with five `IF` arms, and `SQLite` — which has no procedural language
+//! and whose `RAISE(ABORT, …)` takes a literal message only — carries **five
+//! separate triggers**, each with a `WHEN` clause that has to re-state the early
+//! return the Postgres arm above it gets for free. Those are five different
+//! objects, and a mirror whose arms fire in the wrong order, or whose `WHEN`
+//! clauses overlap, is a backend divergence no assertion about Postgres can see.
+//!
+//! Two of the differences are more than mechanical and each has a test here that
+//! could not be written against Postgres at all:
+//!
+//! * **every instant is `text` here, so every comparison is lexicographic**, and
+//!   the rule that makes that safe has two halves. Between two **stored** instants
+//!   it is exact, because every writer renders a `DateTime<Utc>` the same way and
+//!   that rendering is fixed-width and monotonic — so
+//!   `chk_pricing_price_window_interval` and the two ordering CHECKs compare the
+//!   columns directly. Against **`CURRENT_TIMESTAMP`** it is not, and arm 5 is the
+//!   only guard here with the clock on one side: `CURRENT_TIMESTAMP` renders
+//!   `YYYY-MM-DD HH:MM:SS`, a **space** at byte 11 where the stored text has `T`,
+//!   so the arm normalizes with `datetime(…)`.
+//!
+//!   **The fixtures below are therefore written in the rendering the store
+//!   actually holds** — `2099-01-01T00:00:00+00:00`, measured off a `SeaORM`
+//!   write, not a legible `2099-01-01 00:00:00 +00:00` — because a test using any
+//!   other spelling proves nothing about the deployed comparison. That sentence
+//!   used to be here inverted, and it was: the fixtures were space-separated
+//!   throughout while arm 5 compared a `substr(…, 1, 19)` prefix that read `'T'`
+//!   (0x54) against `' '` (0x20). Every stored instant on **today's UTC date**
+//!   therefore sorted greater than the clock and read as future, the arm was
+//!   inoperative for exactly that window, and a suite of cross-date fixtures —
+//!   where the date prefix decides before byte 11 is reached — kept it green while
+//!   an end that had elapsed an hour earlier could be moved thirty days into the
+//!   future. [`the_mirror_refuses_an_end_that_passed_earlier_today`] is the case
+//!   that would have caught it, and it computes its instants in SQL so that "past"
+//!   and "today" are facts rather than fixtures that age.
+//! * **the biconditional CHECKs compare booleans on a backend with no boolean
+//!   type.** `(state IN ('active','expired')) = (activated_at IS NOT NULL)` is two
+//!   `0`/`1` integers here, and it is worth executing rather than reasoning about.
+//!
+//! Raw SQL throughout, deliberately past every repository — the layer that cannot
+//! see a guard stop refusing. `tests/sqlite_window_repo.rs` is the other half: what
+//! the repository refuses, and the non-overlap rule no schema object carries.
+
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use sea_orm::DatabaseConnection;
+
+mod common;
+
+use common::{exec, migrated_db, must_succeed};
+
+const TENANT: &str = "11111111-1111-1111-1111-111111111111";
+const PLAN: &str = "22222222-2222-2222-2222-222222222222";
+const PHASE: &str = "33333333-3333-3333-3333-333333333333";
+const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
+const ROW: &str = "aaaaaaaa-0000-0000-0000-000000000001";
+const OTHER_ROW: &str = "aaaaaaaa-0000-0000-0000-000000000002";
+const WINDOW: &str = "bbbbbbbb-0000-0000-0000-000000000001";
+const SECOND: &str = "bbbbbbbb-0000-0000-0000-000000000002";
+
+/// Instants well clear of the clock in both directions, **in the rendering the
+/// store actually holds** — RFC 3339 with a `T` separator and a `+00:00` offset,
+/// which is what `SeaORM` writes into these `text` columns (measured). See the
+/// module doc: a fixture in any other spelling would compare differently from a
+/// real row against both `CURRENT_TIMESTAMP` and a sibling column.
+const FUTURE_FROM: &str = "'2099-01-01T00:00:00+00:00'";
+/// A future instant **inside** `[FUTURE_FROM, FUTURE_TO)`. It exists so that a
+/// test moving `effective_from` leaves `effective_to > effective_from` and
+/// `chk_pricing_price_window_interval` has nothing to say — otherwise the CHECK
+/// answers and the trigger arm under test is shadowed by it.
+const MID_FUTURE: &str = "'2099-03-01T00:00:00+00:00'";
+const FUTURE_TO: &str = "'2099-06-01T00:00:00+00:00'";
+const FURTHER_FUTURE: &str = "'2099-12-01T00:00:00+00:00'";
+const PAST: &str = "'2020-01-01T00:00:00+00:00'";
+const FURTHER_PAST: &str = "'2020-06-01T00:00:00+00:00'";
+/// One second after [`FUTURE_FROM`], for the `activated_at` of a window whose
+/// start is `FUTURE_FROM`: `chk_pricing_price_window_activation_order` requires an
+/// activation not to precede the start it was the arrival of.
+const ACTIVATED: &str = "'2099-01-01T00:00:01+00:00'";
+
+/// **Today's UTC date, at 00:00:00, in the deployed rendering** — computed in SQL
+/// so that it is a fact and not a fixture that ages.
+///
+/// Its whole purpose is to tie the *date* prefix with `CURRENT_TIMESTAMP` while
+/// lying strictly in the past, which is the one shape arm 5's old `substr`
+/// comparison read backwards. It is in the past at every instant of every day
+/// except the exact zero of midnight, where it equals the clock and arm 5's `<=`
+/// still fires — so the case holds around the clock.
+const TODAY_MIDNIGHT: &str = "strftime('%Y-%m-%dT%H:%M:%S+00:00','now','start of day')";
+/// Thirty days before [`TODAY_MIDNIGHT`], so an interval ending there is non-empty.
+const A_MONTH_AGO: &str = "strftime('%Y-%m-%dT%H:%M:%S+00:00','now','start of day','-30 days')";
+
+/// Reject, **and** for the stated reason.
+///
+/// The fragment is the whole assertion. This table carries five CHECKs and five
+/// triggers and every one of their names — and every literal message — contains
+/// `pricing_price_window`, so a test that accepted any error naming the table would
+/// pass with the trigger it means to prove switched off, refused instead by an arm
+/// it never intended to reach.
+async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
+    let err = exec(conn, sql)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("the guard must reject: {sql}"));
+    let message = err.to_string();
+    assert!(
+        message.contains("pricing_price_window"),
+        "the rejection must name the guard it came from, got: {message}"
+    );
+    assert!(
+        message.contains(because),
+        "the rejection must be the one under test (`{because}`), got: {message}"
+    );
+}
+
+/// A migrated mirror with the two parent price rows seeded.
+async fn seeded() -> DatabaseConnection {
+    let conn = migrated_db().await;
+    for (id, charge_kind) in [(ROW, "recurring"), (OTHER_ROW, "one_time")] {
+        must_succeed(
+            &conn,
+            &format!(
+                "INSERT INTO pricing_price (
+                     price_id, tenant_id, plan_id, currency, region, phase,
+                     charge_kind, amount_minor, model_kind, lifecycle_state,
+                     created_by, created_at_utc)
+                 VALUES ('{id}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
+                     '{charge_kind}', 1000, 'flat', 'published', '{ACTOR}',
+                     '2026-08-04T09:00:00+00:00')"
+            ),
+        )
+        .await;
+    }
+    conn
+}
+
+fn base_window(id: &str) -> Vec<(String, String)> {
+    [
+        ("window_id", format!("'{id}'")),
+        ("tenant_id", format!("'{TENANT}'")),
+        ("price_id", format!("'{ROW}'")),
+        ("effective_from", FUTURE_FROM.to_owned()),
+        ("effective_to", FUTURE_TO.to_owned()),
+        ("state", "'scheduled'".to_owned()),
+        ("reason_code", "'priceIncrease'".to_owned()),
+        ("created_by", format!("'{ACTOR}'")),
+        ("created_at", "'2026-08-04T09:00:00+00:00'".to_owned()),
+    ]
+    .into_iter()
+    .map(|(column, value)| (column.to_owned(), value))
+    .collect()
+}
+
+fn insert(id: &str, overrides: &[(&str, &str)]) -> String {
+    let mut columns = base_window(id);
+    for (name, value) in overrides {
+        match columns.iter_mut().find(|(column, _)| column == name) {
+            Some(slot) => (*value).clone_into(&mut slot.1),
+            None => columns.push(((*name).to_owned(), (*value).to_owned())),
+        }
+    }
+    let names = columns
+        .iter()
+        .map(|(column, _)| column.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = columns
+        .iter()
+        .map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("INSERT INTO pricing_price_window ({names}) VALUES ({values})")
+}
+
+fn update(id: &str, set: &str) -> String {
+    format!("UPDATE pricing_price_window SET {set} WHERE window_id = '{id}'")
+}
+
+/// The moves that are supposed to work, so that the five arms below are proved to
+/// be a whitelist rather than a blanket ban. A table nothing can be written to at
+/// all would otherwise pass every refusal test in this file.
+#[tokio::test]
+async fn the_whole_life_of_a_window_is_storable_on_the_mirror() {
+    let conn = seeded().await;
+    must_succeed(&conn, &insert(WINDOW, &[])).await;
+    must_succeed(
+        &conn,
+        &update(
+            WINDOW,
+            &format!("state = 'active', activated_at = {ACTIVATED}"),
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &update(WINDOW, &format!("effective_to = {FURTHER_FUTURE}")),
+    )
+    .await;
+    must_succeed(&conn, &update(WINDOW, "effective_to = NULL")).await;
+    // And a bound taken back on. It is here because the window has to be bounded
+    // again before it can expire — `chk_pricing_price_window_open_ended` states
+    // `inst-ws-expire`'s "an open-ended window never expires" physically, so the
+    // sequence that used to stand here (open the end, then expire) was a window
+    // ending at an instant it did not have.
+    must_succeed(
+        &conn,
+        &update(WINDOW, &format!("effective_to = {FURTHER_FUTURE}")),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &update(
+            WINDOW,
+            &format!("state = 'expired', expired_at = {FURTHER_FUTURE}"),
+        ),
+    )
+    .await;
+    // And the other edge out of `scheduled`, on a second window.
+    must_succeed(&conn, &insert(SECOND, &[])).await;
+    must_succeed(
+        &conn,
+        &update(
+            SECOND,
+            "state = 'cancelled', cancelled_at = '2026-08-04T10:00:00+00:00'",
+        ),
+    )
+    .await;
+}
+
+/// The eight CHECKs on the backend with **no boolean type**, where each
+/// biconditional is a comparison of two `0`/`1` integers.
+///
+/// Every row below is [`base_window`] with **exactly one** thing moved, so each
+/// refusal is a fact about the constraint it names rather than about whichever
+/// neighbour answered first. The three ordering constraints are the fiddly ones and
+/// each entry says which of its siblings it had to stay clear of.
+#[tokio::test]
+async fn the_mirrors_checks_refuse_what_the_canonical_ones_do() {
+    let conn = seeded().await;
+    for (overrides, because) in [
+        (
+            vec![("state", "'paused'")],
+            "chk_pricing_price_window_state",
+        ),
+        (
+            vec![("effective_to", FUTURE_FROM)],
+            "chk_pricing_price_window_interval",
+        ),
+        (
+            vec![("activated_at", ACTIVATED)],
+            "chk_pricing_price_window_activated_at",
+        ),
+        (
+            vec![("expired_at", FUTURE_TO)],
+            "chk_pricing_price_window_expired_at",
+        ),
+        (
+            vec![("cancelled_at", "'2026-08-04T10:00:00+00:00'")],
+            "chk_pricing_price_window_cancelled_at",
+        ),
+        // `inst-ws-activate` WHEN `now >= effectiveFrom`: an activation stamped
+        // before the start it was the arrival of. The row is `active` with an
+        // `activated_at`, so the biconditional is satisfied and the *order* is the
+        // only thing wrong — and this is the lexicographic comparison of two stored
+        // instants, which is why both are in the deployed rendering.
+        (
+            vec![("state", "'active'"), ("activated_at", PAST)],
+            "chk_pricing_price_window_activation_order",
+        ),
+        // `inst-ws-expire` WHEN `now >= effectiveTo`, one edge over. `activated_at`
+        // is set at the start (so the activation biconditional and the activation
+        // *order* are both satisfied) and `effective_to` is present (so the
+        // open-ended constraint is silent); the expiry instant is the only fault.
+        (
+            vec![
+                ("state", "'expired'"),
+                ("activated_at", FUTURE_FROM),
+                ("expired_at", FUTURE_FROM),
+            ],
+            "chk_pricing_price_window_expiry_order",
+        ),
+        // `inst-ws-expire`, verbatim: an open-ended window never expires. With
+        // `effective_to` NULL the interval CHECK admits the row and
+        // `expired_at >= effective_to` evaluates to NULL — which a CHECK admits —
+        // so this constraint is the only one that can answer, which is exactly why
+        // it is a third constraint and not a clause of the second.
+        (
+            vec![
+                ("state", "'expired'"),
+                ("effective_to", "NULL"),
+                ("activated_at", FUTURE_FROM),
+                ("expired_at", FUTURE_TO),
+            ],
+            "chk_pricing_price_window_open_ended",
+        ),
+    ] {
+        must_be_rejected(&conn, &insert(WINDOW, &overrides), because).await;
+    }
+    // The other direction of the activation biconditional, which is the one the
+    // one-way form would accept: an `active` window with no `activated_at`, issued
+    // as a sanctioned flip so that no trigger arm can answer first.
+    must_succeed(&conn, &insert(WINDOW, &[])).await;
+    must_be_rejected(
+        &conn,
+        &update(WINDOW, "state = 'active'"),
+        "chk_pricing_price_window_activated_at",
+    )
+    .await;
+}
+
+/// The foreign key on the mirror, which had no test at all.
+///
+/// It is not a formality here: `PRAGMA foreign_keys` is **1** on this connection
+/// (`sqlx` sets it), so the constraint is live and removing it from the migration
+/// let a window name a price row that does not exist — with every read's key
+/// resolution then having nothing to resolve. `tests/sqlite_window_repo.rs` cannot
+/// prove it, because there the repository's scope gate answers first and by design
+/// (`a_window_on_a_row_that_is_not_there_is_refused_before_the_foreign_key`), which
+/// is the whole reason a raw statement is needed.
+///
+/// **This is the one refusal in this file [`must_be_rejected`] cannot assert**, and
+/// the reason is the backend rather than a shortcut: `SQLite`'s foreign-key error is
+/// the bare string `FOREIGN KEY constraint failed`, naming neither the constraint
+/// nor the table, where Postgres names `fk_pricing_price_window_price` outright.
+/// The fragment is still unique inside this suite — no CHECK name and no trigger
+/// message here contains it — so the assertion stays as sharp as the driver allows.
+#[tokio::test]
+async fn the_mirror_refuses_a_window_on_a_price_row_that_does_not_exist() {
+    let conn = seeded().await;
+    let sql = insert(
+        WINDOW,
+        &[("price_id", "'aaaaaaaa-0000-0000-0000-0000000000ff'")],
+    );
+    let err = exec(&conn, &sql)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("the foreign key must reject: {sql}"));
+    let message = err.to_string();
+    assert!(
+        message.contains("FOREIGN KEY"),
+        "the rejection must be the foreign key's rather than a CHECK's or a \
+         trigger's, got: {message}"
+    );
+}
+
+/// Mirror arm 1.
+#[tokio::test]
+async fn the_mirror_refuses_a_delete() {
+    let conn = seeded().await;
+    must_succeed(&conn, &insert(WINDOW, &[])).await;
+    must_be_rejected(
+        &conn,
+        &format!("DELETE FROM pricing_price_window WHERE window_id = '{WINDOW}'"),
+        "cancel is a state, not a deletion",
+    )
+    .await;
+}
+
+/// Mirror arm 2, with the statement only it can refuse: a **future** end moving on
+/// a terminal row. `expired -> active` would be refused by arm 4 as well.
+#[tokio::test]
+async fn the_mirror_refuses_every_mutation_of_a_terminal_window() {
+    let conn = seeded().await;
+    must_succeed(
+        &conn,
+        &insert(
+            WINDOW,
+            &[
+                ("state", "'expired'"),
+                ("activated_at", ACTIVATED),
+                ("expired_at", FUTURE_TO),
+            ],
+        ),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &update(WINDOW, &format!("effective_to = {FURTHER_FUTURE}")),
+        "immutable history",
+    )
+    .await;
+}
+
+/// Mirror arm 3, with the shadow-escaping statement: a frozen column moving inside
+/// a sanctioned flip. On this backend the escape is doubly necessary — arms 3 and 4
+/// are separate triggers, and if arm 3's `WHEN` were wrong it is arm 4 that would
+/// answer, with a different message and a green test.
+///
+/// **The target is [`MID_FUTURE`] and not [`FURTHER_FUTURE`], which is the whole
+/// point of that constant.** With `FURTHER_FUTURE` the new start lands *after*
+/// `effective_to`, so `chk_pricing_price_window_interval` refuses the statement
+/// too and removing arm 3 reddened this test only on the message — verbatim the
+/// failure mode it was written to escape. `MID_FUTURE` sits inside the interval,
+/// so every CHECK is satisfied and arm 3 is the only object left that can answer.
+#[tokio::test]
+async fn the_mirror_refuses_a_frozen_column_inside_a_sanctioned_flip() {
+    let conn = seeded().await;
+    must_succeed(&conn, &insert(WINDOW, &[])).await;
+    must_be_rejected(
+        &conn,
+        &update(
+            WINDOW,
+            &format!(
+                "state = 'active', activated_at = {ACTIVATED}, \
+                 effective_from = {MID_FUTURE}"
+            ),
+        ),
+        "bound to its price row and its start",
+    )
+    .await;
+    // And the binding §6 names in its own sentence, to a row that really exists so
+    // that the foreign key is satisfied and only the whitelist can answer.
+    must_succeed(&conn, &insert(SECOND, &[])).await;
+    must_be_rejected(
+        &conn,
+        &update(SECOND, &format!("price_id = '{OTHER_ROW}'")),
+        "bound to its price row and its start",
+    )
+    .await;
+}
+
+/// Arm 3 on **`effective_from` alone**, which is the column the migration reports
+/// as its headline divergence from `inst-ws-immutable`'s literal scope — and which
+/// had no unshadowed proof at all.
+///
+/// The statement is the plainest one there is: a `scheduled` window's start moved
+/// to another future instant *inside* its own interval. Arm 2 is silent (the row is
+/// not terminal), arm 4 is silent (`state` does not move), arm 5 is silent
+/// (`effective_to` does not move), and every CHECK is satisfied — the interval is
+/// still non-empty and there is no `activated_at` for the ordering constraint to
+/// have an opinion about. Arm 3 is the only object in the schema that refuses it,
+/// and if it did not the freeze the migration calls "stricter than the instruction"
+/// would not exist at all.
+#[tokio::test]
+async fn the_mirror_refuses_a_start_moved_to_another_future_instant() {
+    let conn = seeded().await;
+    must_succeed(&conn, &insert(WINDOW, &[])).await;
+    must_be_rejected(
+        &conn,
+        &update(WINDOW, &format!("effective_from = {MID_FUTURE}")),
+        "bound to its price row and its start",
+    )
+    .await;
+}
+
+/// Mirror arm 4: `scheduled -> expired`, with `expired_at` set so that the CHECK
+/// has nothing to say and the edge itself is the only thing wrong.
+#[tokio::test]
+async fn the_mirror_refuses_an_unsanctioned_transition() {
+    let conn = seeded().await;
+    must_succeed(&conn, &insert(WINDOW, &[])).await;
+    must_be_rejected(
+        &conn,
+        &update(
+            WINDOW,
+            &format!("state = 'expired', activated_at = {ACTIVATED}, expired_at = {FUTURE_TO}"),
+        ),
+        "not a sanctioned one",
+    )
+    .await;
+}
+
+/// **Mirror arm 5, and the test this suite exists for.**
+///
+/// The comparison is against the clock rather than against a sibling column, so
+/// both directions have to be executed: an end moved **into** the past is refused,
+/// an end that has **already** passed cannot be moved even forward, and — the half
+/// that would otherwise be silently broken — a legal move to a future instant still
+/// lands. `the_whole_life_of_a_window_is_storable_on_the_mirror` carries that third
+/// case, so a comparison that read every instant as past would redden there rather
+/// than here.
+///
+/// **Both windows here start in the past on purpose.** With a `2099` start, moving
+/// the end to `2020` leaves `effective_to < effective_from` and
+/// `chk_pricing_price_window_interval` refuses the statement as well — so the first
+/// assertion was shadowed and reddened on the message when arm 5 was removed. A
+/// past start makes the target instant still later than the start, which leaves the
+/// clock as the only thing wrong with it.
+#[tokio::test]
+async fn the_mirror_refuses_an_end_moved_into_or_out_of_the_past() {
+    let conn = seeded().await;
+    must_succeed(
+        &conn,
+        &insert(
+            WINDOW,
+            &[("effective_from", PAST), ("effective_to", FUTURE_TO)],
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &update(WINDOW, &format!("state = 'active', activated_at = {PAST}")),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &update(WINDOW, &format!("effective_to = {FURTHER_PAST}")),
+        "only be moved while it is in the future",
+    )
+    .await;
+
+    // An end that has already passed, seeded straight into that shape because no
+    // sanctioned mutation can produce it — which is also the statement that makes a
+    // born-in-a-state INSERT guard unavailable to this table.
+    must_succeed(
+        &conn,
+        &insert(
+            SECOND,
+            &[
+                ("effective_from", PAST),
+                ("effective_to", FURTHER_PAST),
+                ("state", "'active'"),
+                ("activated_at", PAST),
+            ],
+        ),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &update(SECOND, &format!("effective_to = {FURTHER_FUTURE}")),
+        "only be moved while it is in the future",
+    )
+    .await;
+}
+
+/// **Arm 5 on the one shape a text prefix reads backwards**, and the case that
+/// would have caught the arm being switched off.
+///
+/// An end that elapsed earlier **today**, moved thirty days into the future. Every
+/// other assertion in this file straddles a date boundary, where the date prefix
+/// decides the comparison before byte 11 is reached — and byte 11 is where the
+/// stored `T` met `CURRENT_TIMESTAMP`'s space. On a same-UTC-day instant the prefix
+/// ties, `'T'` (0x54) beat `' '` (0x20), and arm 5 read the elapsed end as future
+/// and said nothing. Measured against the deployed table before the fix: this
+/// `UPDATE` was **accepted**, and through the repository an end an hour behind the
+/// clock moved thirty days ahead.
+///
+/// Both instants are computed in SQL rather than written down, because "today" is
+/// the one thing a literal cannot be. Arms 2, 3 and 4 are silent — the row is
+/// `active`, no frozen column moves, `state` does not move — and every CHECK is
+/// satisfied, so arm 5 is the only object that can answer.
+#[tokio::test]
+async fn the_mirror_refuses_an_end_that_passed_earlier_today() {
+    let conn = seeded().await;
+    must_succeed(
+        &conn,
+        &insert(
+            WINDOW,
+            &[
+                ("effective_from", A_MONTH_AGO),
+                ("effective_to", TODAY_MIDNIGHT),
+                ("state", "'active'"),
+                ("activated_at", A_MONTH_AGO),
+            ],
+        ),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &update(WINDOW, &format!("effective_to = {FURTHER_FUTURE}")),
+        "only be moved while it is in the future",
+    )
+    .await;
+}

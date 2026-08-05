@@ -7,18 +7,69 @@
 //! [`crate::infra::publish`] respectively — because the words have to be
 //! agreed before either can be written against them.
 //!
-//! ## One publish unit, and the ones that are not here
+//! ## Two publish units, one type, and the criterion that decided it
 //!
-//! [`PlanPublishUnit`] is a struct rather than a one-variant enum. §4.2 names
-//! four kinds of publish unit that run the **same** engine path — the plan
-//! publish (this one), plan retirement (D-128), window mutations (D-99), and
-//! the `PriceOverlay` and customer-group membership units (D-06) — and three of
-//! them need storage this gear has not built: there is no `PriceWindow` store,
-//! no overlay revision table and no membership record. A single-variant enum
-//! today would be a shape pretending to be a choice; when the second unit
-//! arrives it gets its own type or this one grows a discriminator, and either
-//! way the decision is made with the second unit in hand rather than guessed at
-//! now.
+//! [`PlanPublishUnit`] carries a [`PublishUnitKind`] discriminator. It used to be
+//! a struct with no kind at all, over a paragraph that said the second unit would
+//! either get its own type or make this one grow a discriminator, *"and either way
+//! the decision is made with the second unit in hand rather than guessed at now."*
+//! **The second unit is in hand.** D-99 makes every window *mutation* — a
+//! schedule, a future-`effectiveTo` adjustment, a cancellation — a publish unit
+//! through this same engine path.
+//!
+//! **The criterion is the subject, and it is the design set's own, not one
+//! invented here.** `01-foundation.md` §3.7 keys `pricing_read_model` on
+//! `subject_kind ∈ {plan, price_overlay, overlay_index, group_membership}` and
+//! D-157 puts that same pair on `pricing_catalog_version_ref`, so **which subject
+//! a unit projects is a declared, enumerated fact about it**. Hence:
+//!
+//! > A publish unit that projects a **different subject** gets its own type. A
+//! > publish unit that projects the **same subject** and differs only in which of
+//! > its facts moved gets a variant.
+//!
+//! Applied to the four kinds §4.2 names, the criterion says something different
+//! about each rather than "add a variant every time":
+//!
+//! - **window mutations** (D-99) — *"windows are plan facts, so they need no
+//!   subject kind of their own"*, verbatim. Same `plan` subject, same
+//!   `(plan_id, revision)`, same re-projection. **A variant**, and it is here.
+//! - **plan retirement** (D-128) — the `published → retired` flip re-projects the
+//!   plan subject and pins that same revision number. Same subject: **a variant**,
+//!   owed by the group that builds retirement.
+//! - **the `PriceOverlay` unit** and **customer-group membership** (D-06) — each
+//!   projects `price_overlay` / `group_membership`, and the overlay unit projects
+//!   a *second* subject with it (the D-112/D-133 `overlay_index` shard). Different
+//!   subjects, and one of them plural: **their own types**, with their own subject
+//!   refs and their own revisions, when Slice 9 lands them.
+//!
+//! **What the rejected option would have cost.** A sibling `WindowPublishUnit`
+//! would restate the plan identity, the revision, and every field
+//! [`PublishService::commit`](crate::infra::publish::PublishService::commit) reads
+//! off the unit — `unit.plan_id` for the assembly, `unit.revision` for the
+//! shape-equality check that refuses a moved draft, both again for the pending
+//! ref's `subject_revision` and for the registry request id. Two carriers of one
+//! subject are two things free to disagree about **which revision a version
+//! froze**, on the path whose whole discipline is that the commit flips exactly
+//! the row set its re-validation judged (D-155). The discriminator makes that
+//! disagreement unrepresentable: there is one subject, and the kind says only what
+//! moved.
+//!
+//! **What the discriminator is deliberately not.** It is not a `subject_kind`.
+//! Nothing here or downstream writes `window` into `pricing_read_model` or into
+//! `pricing_catalog_version_ref` — D-99 forbids it in as many words — and nothing
+//! here extends `AuditSubjectKind`, which D-158 binds to
+//! `chk_pricing_approval_subject_kind` as one enumeration extended only beside its
+//! writer.
+//!
+//! **What is not built.** The commit's own handling of a window mutation is not in
+//! this group: [`PublishService::commit`](crate::infra::publish::PublishService::commit)
+//! still assembles the plan's **open draft revision** and refuses a unit whose
+//! revision is not the draft's, while a window mutation is a unit over the plan's
+//! *current published* revision. So today the discriminator changes exactly one
+//! observable thing — the registry `request_id`, so the two units of one revision
+//! cannot dedup onto each other — and the group that builds `WindowService` owes
+//! the commit path that reads the kind. **Reported**, rather than left for that
+//! group to discover from a signature that already admits their unit.
 //!
 //! ## The approval gate is a value, not a call
 //!
@@ -68,11 +119,64 @@ use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::scope_key::PlanId;
 use crate::domain::snapshot::{PricingSnapshotRef, VersionRef};
 
-/// The subject of a plan publish: one revision of one plan.
+/// Which of the plan subject's facts a publish unit moved.
+///
+/// The discriminator, and **only** a discriminator: it carries no second copy of
+/// the subject, no revision and no state. See the module doc for the criterion
+/// that made this a variant set rather than a second type.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PublishUnitKind {
+    /// The plan's own content — the revision, its Slice-2 children and its price
+    /// rows (§4.2 step 1's authored draft).
+    ///
+    /// The default because it is the unit the engine path was written for and the
+    /// only one any surface can reach today.
+    #[default]
+    PlanContent,
+    /// One window mutation: a schedule, a future-`effectiveTo` adjustment or a
+    /// cancellation (D-99, `inst-ws-publishunit`).
+    ///
+    /// It names the window because two mutations of one plan at one revision are
+    /// **two units** — a schedule on one key and a cancellation on another are
+    /// separate change sets with separate materiality — and the id is what tells
+    /// them apart in the registry request that makes each addressable.
+    ///
+    /// **Activation and expiry are not here, and their absence is the rule.**
+    /// D-99: the read model carries window *intervals*, so a time-driven flip
+    /// changes nothing projected and needs no version. A variant for them would be
+    /// a shape saying the opposite.
+    WindowMutation {
+        /// The window whose interval or state the mutation moved.
+        window_id: Uuid,
+    },
+}
+
+impl PublishUnitKind {
+    /// The token that discriminates one unit's registry request from another's.
+    ///
+    /// A **stable string**, and the plan-content token is `plan-publish` — the
+    /// prefix `publish_request_id` already used before there was a kind at all.
+    /// Preserved deliberately: `request_id` is the registry's own idempotency
+    /// handle, so re-spelling it would make every outstanding pending ref
+    /// unreachable by the retry that is supposed to find it. This is
+    /// `PIN_DOMAIN_SEP`'s question one plane over, and the answer is the same —
+    /// an encoding is re-frozen only when the re-freeze is the intent.
+    #[must_use]
+    pub fn request_token(self) -> String {
+        match self {
+            Self::PlanContent => "plan-publish".to_owned(),
+            Self::WindowMutation { window_id } => format!("window-mutation/{window_id}"),
+        }
+    }
+}
+
+/// The subject of a publish, and which of its facts moved.
 ///
 /// `(plan_id, revision)` is the durable name D-145 made permanent — the number
 /// is minted once and never re-minted — so naming the unit by it is naming
-/// exactly one row for the life of the plan.
+/// exactly one row for the life of the plan. Every unit of this type names that
+/// same subject; [`PlanPublishUnit::kind`] says what about it changed.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlanPublishUnit {
@@ -80,13 +184,39 @@ pub struct PlanPublishUnit {
     pub plan_id: PlanId,
     /// Which of its revisions.
     pub revision: u64,
+    /// Which of the subject's facts this unit moved.
+    pub kind: PublishUnitKind,
 }
 
 impl PlanPublishUnit {
-    /// Name a publish unit.
+    /// Name a plan-content publish unit — §4.2's ordinary path.
+    ///
+    /// **There is deliberately no `new`.** Both constructors are named for their
+    /// kind, so every construction in the crate states which unit it is rather
+    /// than inheriting a default from whichever arm happens to be first. That is
+    /// the whole benefit a discriminator has over a second type: it is only worth
+    /// having if the choice is visible where the unit is built.
     #[must_use]
-    pub const fn new(plan_id: PlanId, revision: u64) -> Self {
-        Self { plan_id, revision }
+    pub const fn plan_content(plan_id: PlanId, revision: u64) -> Self {
+        Self {
+            plan_id,
+            revision,
+            kind: PublishUnitKind::PlanContent,
+        }
+    }
+
+    /// Name a window-mutation publish unit (D-99).
+    ///
+    /// `revision` is the plan's **current** revision — the one the mutation's
+    /// re-projection will freeze — and not an open draft's: a window mutation
+    /// authors no plan content and opens no revision.
+    #[must_use]
+    pub const fn window_mutation(plan_id: PlanId, revision: u64, window_id: Uuid) -> Self {
+        Self {
+            plan_id,
+            revision,
+            kind: PublishUnitKind::WindowMutation { window_id },
+        }
     }
 }
 
@@ -109,6 +239,28 @@ pub enum PublishAuthorization {
         submitter_principal: Uuid,
         /// The independent principal that approved it.
         approver_principal: Uuid,
+        /// **The content that approval was over** — the record's pinned
+        /// `content_hash` (`inst-ap-pin`).
+        ///
+        /// It is a member of the authorization rather than an argument beside
+        /// it because it is what the authorization *is about*: a decision names
+        /// a change set, and an `Approved` that named a record and not its
+        /// content would be a permission to publish whatever the plan happens
+        /// to hold at commit time.
+        ///
+        /// The window this closes is the one `inst-ap-pin` deliberately leaves
+        /// open. That instruction scopes the TOCTOU void to a **`submitted`**
+        /// record, in as many words, so a mutation after the approve does not
+        /// void anything — correct as specified, and it leaves the approve and
+        /// the commit with a gap between them. The commit's own
+        /// compare-and-swap does not cover it either: it swaps on the
+        /// *revision's* row version, and a price row edited inside the window
+        /// moves the row's version and not the revision's. So the digest
+        /// travels with the decision and
+        /// [`PublishService::commit`](crate::infra::publish::PublishService::commit)
+        /// re-derives it **inside its own transaction**, where nothing can move
+        /// between the check and the freeze.
+        content_hash: [u8; 32],
     },
     /// A below-threshold, non-first publish that needs no approver
     /// (`inst-ap-materiality`).
@@ -121,21 +273,43 @@ impl PublishAuthorization {
     /// **What the caller must already have established**, none of which this
     /// constructor re-checks: that `approval_ref` names a `pricing_approval`
     /// row in `approved` state whose `subject_ref` is the unit being published;
-    /// that its pinned `content_hash` still matches the submitted content
-    /// (S5 §6's TOCTOU guard); that the approver holds the scope
-    /// `inst-rb-approve` requires; and that the two principals are distinct
-    /// (`inst-tp-distinct` — see the module doc for why that one is not
-    /// asserted here).
+    /// that the approver holds the scope `inst-rb-approve` requires; and that
+    /// the two principals are distinct (`inst-tp-distinct` — see the module doc
+    /// for why that one is not asserted here).
+    ///
+    /// **One item left that list on 2026-08-04**, and it is the one that used to
+    /// read "that its pinned `content_hash` still matches the submitted
+    /// content". A precondition a caller establishes *before* calling is a
+    /// precondition that stops holding the moment it returns, and this one has a
+    /// live window on the other side of it. It is now carried instead —
+    /// `content_hash` is a member — and re-derived inside the commit's
+    /// transaction. See the field's own doc.
     #[must_use]
     pub const fn approved(
         approval_ref: Uuid,
         submitter_principal: Uuid,
         approver_principal: Uuid,
+        content_hash: [u8; 32],
     ) -> Self {
         Self::Approved {
             approval_ref,
             submitter_principal,
             approver_principal,
+            content_hash,
+        }
+    }
+
+    /// The digest this authorization is over, when there is a decision behind
+    /// it.
+    ///
+    /// `None` on the auto-publishable arm, and that is not a hole: nobody
+    /// reviewed anything, so there is no content a second person was shown and
+    /// nothing for a re-derivation to disagree with.
+    #[must_use]
+    pub const fn pinned_content_hash(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Approved { content_hash, .. } => Some(*content_hash),
+            Self::AutoPublishable => None,
         }
     }
 

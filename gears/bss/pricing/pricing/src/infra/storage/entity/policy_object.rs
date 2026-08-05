@@ -2,12 +2,19 @@
 //! object (`design/01-foundation.md` §3.7).
 //!
 //! Absence is meaningful on every nullable column here, and in each case it is
-//! the fail-safe or ratified reading: no approval threshold means the two-person
-//! rule always applies, no default rounding policy means every published row
-//! must carry its own `rounding_policy_ref` or fail publish, and an absent cap
-//! (D-152) means the ratified launch value from the deployment section — so a
-//! tenant that configures nothing is governed by the numbers PRD §14 ratified
-//! rather than by whatever a `NOT NULL DEFAULT` happened to say.
+//! the fail-safe or ratified reading: no default rounding policy means every
+//! published row must carry its own `rounding_policy_ref` or fail publish, and an
+//! absent cap (D-152) means the ratified launch value from the deployment
+//! section — so a tenant that configures nothing is governed by the numbers PRD
+//! §14 ratified rather than by whatever a `NOT NULL DEFAULT` happened to say.
+//!
+//! **The approval threshold is not here, and used to be.**
+//! `approval_threshold_minor` / `approval_threshold_currency` were one currency's
+//! absolute threshold; §6 requires per-currency `{absolute_minor | percent}`
+//! entries and D-10 requires the policy to be versioned, neither of which a single
+//! column pair can carry. `m20260802_000018` moved the fact to
+//! [`super::approval_threshold`] and dropped the pair in the same migration, so
+//! there is exactly one place to read a threshold from.
 //!
 //! The four caps and the descriptor required-set extension sit here **for now**:
 //! they are per-tenant settings with no settings gear to live in, and D-152's
@@ -29,10 +36,6 @@ use uuid::Uuid;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
-    /// Material-change threshold in minor units. `None` => the two-person rule
-    /// applies unconditionally.
-    pub approval_threshold_minor: Option<i64>,
-    pub approval_threshold_currency: Option<String>,
     /// `tax_inclusive` | `tax_exclusive`.
     pub tax_display_mode: String,
     /// The tenant default named rounding-policy id; optional by design.

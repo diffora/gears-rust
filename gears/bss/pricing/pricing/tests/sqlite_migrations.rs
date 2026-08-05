@@ -20,6 +20,17 @@
 //!    the shared `coord_leases` table (spliced in for the singleton warm
 //!    re-drive) is checked; `coord` does not export its entity.
 //!
+//! 4. **The object census** — every trigger and every index the chain creates, by
+//!    name, in both directions. That is a fourth property rather than a detail of
+//!    the first: a table can exist with its guards missing, and on the backend the
+//!    in-crate suite actually runs, a **dropped trigger or index changes nothing
+//!    any application-level test can see**. Deleting
+//!    `uq_pricing_approval_key_pending` or any of the register's `RAISE(ABORT)`
+//!    triggers left the whole suite green — the contention tests are answered by
+//!    `approval_repo::find_pending_key_holder`, which is a `SELECT` — so the rule
+//!    silently degraded from a constraint to a check. The census is what makes that
+//!    a red test.
+//!
 //! Postgres-backed coverage is testcontainers-gated by convention in this repo
 //! and none is added: the append-only guards are mirrored onto `SQLite` as
 //! `RAISE(ABORT, ...)` triggers, so `sqlite_append_only.rs` exercises them with
@@ -28,9 +39,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use bss_pricing::infra::storage::entity::{
-    audit_log, catalog_version_ref, idempotency_dedup, operator_flag, outbox, pin_frontier, plan,
-    plan_addon_rule, plan_descriptor_set, plan_phase, policy_object, price, price_tier_band,
-    read_model,
+    approval, approval_key, approval_threshold, audit_log, catalog_version_ref, idempotency_dedup,
+    operator_flag, outbox, pin_frontier, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
+    policy_object, price, price_tier_band, price_window, read_model,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
@@ -56,8 +67,479 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_idempotency_dedup",
     "pricing_outbox",
     "pricing_audit_log",
+    "pricing_approval",
+    "pricing_approval_key",
+    "pricing_approval_threshold",
+    "pricing_price_window",
     "coord_leases",
 ];
+
+/// Every trigger the chain creates.
+///
+/// Transcribed rather than counted, and asserted **in both directions**: a trigger
+/// missing from the database fails, and a trigger the database has and this list does
+/// not fails too. The second half is what makes it a census — a guard added without a
+/// line here is a guard nobody decided to add.
+const EXPECTED_TRIGGERS: &[&str] = &[
+    "trg_pricing_approval_born_submitted",
+    "trg_pricing_approval_flip_whitelist",
+    "trg_pricing_approval_immutable_once_decided",
+    "trg_pricing_approval_key_born_submitted",
+    "trg_pricing_approval_key_born_under_a_pending_unit",
+    "trg_pricing_approval_key_follow_state",
+    "trg_pricing_approval_key_follows_its_unit",
+    "trg_pricing_approval_key_follows_once",
+    "trg_pricing_approval_key_no_delete",
+    "trg_pricing_approval_key_pinned_columns",
+    "trg_pricing_approval_no_delete",
+    "trg_pricing_approval_pinned_columns",
+    "trg_pricing_approval_threshold_no_delete",
+    "trg_pricing_approval_threshold_no_update",
+    "trg_pricing_audit_log_no_delete",
+    "trg_pricing_audit_log_no_update",
+    "trg_pricing_plan_addon_rule_no_delete",
+    "trg_pricing_plan_addon_rule_no_insert",
+    "trg_pricing_plan_addon_rule_no_update",
+    "trg_pricing_plan_descriptor_set_no_delete",
+    "trg_pricing_plan_descriptor_set_no_insert",
+    "trg_pricing_plan_descriptor_set_no_update",
+    "trg_pricing_plan_draft_flip_whitelist",
+    "trg_pricing_plan_flip_whitelist",
+    "trg_pricing_plan_frozen_columns",
+    "trg_pricing_plan_no_delete",
+    "trg_pricing_plan_phase_no_delete",
+    "trg_pricing_plan_phase_no_insert",
+    "trg_pricing_plan_phase_no_update",
+    "trg_pricing_price_draft_flip_whitelist",
+    "trg_pricing_price_flip_whitelist",
+    "trg_pricing_price_frozen_columns",
+    "trg_pricing_price_grandfather_monotonic",
+    "trg_pricing_price_no_delete",
+    "trg_pricing_price_tier_band_kind_insert",
+    "trg_pricing_price_tier_band_kind_update",
+    "trg_pricing_price_tier_band_no_delete",
+    "trg_pricing_price_tier_band_no_insert",
+    "trg_pricing_price_tier_band_no_update",
+    "trg_pricing_price_tier_band_parent_kind",
+    "trg_pricing_price_window_flip_whitelist",
+    "trg_pricing_price_window_frozen_columns",
+    "trg_pricing_price_window_future_end",
+    "trg_pricing_price_window_immutable_history",
+    "trg_pricing_price_window_no_delete",
+];
+
+/// Every index the chain creates, `uq_` and `idx_` alike.
+///
+/// The `uq_` half is the load-bearing one: each of those is a **rule** — one current
+/// revision per plan, one open draft, one published row per scope key, one pending
+/// holder per key — and an index dropped from the chain turns the rule into whatever
+/// the application happens to check. Asserted in both directions, for
+/// [`EXPECTED_TRIGGERS`]' reason.
+const EXPECTED_INDEXES: &[&str] = &[
+    "idx_pricing_approval_key_approval",
+    "idx_pricing_audit_log_recorded",
+    "idx_pricing_audit_log_subject",
+    "idx_pricing_catalog_version_ref_version",
+    "idx_pricing_idempotency_dedup_created",
+    "idx_pricing_operator_flag_by_flag",
+    "idx_pricing_outbox_undrained",
+    "idx_pricing_plan_addon_rule_revision",
+    "idx_pricing_plan_descriptor_set_revision",
+    "idx_pricing_plan_phase_revision",
+    "idx_pricing_plan_tenant",
+    "idx_pricing_price_plan",
+    "idx_pricing_price_supersedes",
+    "idx_pricing_price_tier_band_price",
+    "idx_pricing_price_window_due",
+    "idx_pricing_price_window_price",
+    "idx_pricing_read_model_resolve",
+    "uq_pricing_approval_key_pending",
+    "uq_pricing_outbox_dedup_key",
+    "uq_pricing_outbox_sequence",
+    "uq_pricing_plan_current",
+    "uq_pricing_plan_open_draft",
+    "uq_pricing_plan_phase_terminal",
+    "uq_pricing_price_meter_line_current",
+    "uq_pricing_price_scope_key_current",
+    "uq_pricing_price_scope_key_draft",
+];
+
+/// Every named CHECK constraint the chain declares, **by name**.
+///
+/// A roster and not a count, for `postgres_migrations.rs`'s reason: a count cannot tell
+/// a guard from a tautology.
+const EXPECTED_CHECKS: &[&str] = &[
+    "chk_pricing_approval_approver",
+    "chk_pricing_approval_decided_at",
+    "chk_pricing_approval_distinct_principals",
+    "chk_pricing_approval_key_state",
+    "chk_pricing_approval_reason",
+    "chk_pricing_approval_state",
+    "chk_pricing_approval_subject_kind",
+    "chk_pricing_approval_threshold_absolute_non_negative",
+    "chk_pricing_approval_threshold_basis",
+    "chk_pricing_approval_threshold_currency",
+    "chk_pricing_approval_threshold_percent_positive",
+    "chk_pricing_approval_threshold_version",
+    "chk_pricing_audit_log_entry_kind",
+    "chk_pricing_audit_log_rollup",
+    "chk_pricing_audit_log_seq",
+    "chk_pricing_catalog_version_ref_commit",
+    "chk_pricing_catalog_version_ref_subject_kind",
+    "chk_pricing_catalog_version_ref_subject_lifecycle",
+    "chk_pricing_catalog_version_ref_subject_revision",
+    "chk_pricing_catalog_version_ref_version",
+    "chk_pricing_idempotency_dedup_answered",
+    "chk_pricing_idempotency_dedup_status",
+    "chk_pricing_operator_flag_name",
+    "chk_pricing_outbox_event_name",
+    "chk_pricing_outbox_sequence",
+    "chk_pricing_pin_frontier_version",
+    "chk_pricing_plan_addon_rule_qty_range",
+    "chk_pricing_plan_addon_rule_required_max_qty",
+    "chk_pricing_plan_addon_rule_step_qty",
+    "chk_pricing_plan_availability",
+    "chk_pricing_plan_billing_cycle",
+    "chk_pricing_plan_custom_interval_n",
+    "chk_pricing_plan_custom_interval_pairing",
+    "chk_pricing_plan_custom_interval_unit",
+    "chk_pricing_plan_frequency",
+    "chk_pricing_plan_lifecycle_state",
+    "chk_pricing_plan_phase_display_trial_days",
+    "chk_pricing_plan_phase_kind",
+    "chk_pricing_plan_purchase_qty",
+    "chk_pricing_plan_revision",
+    "chk_pricing_policy_object_interval_days_cap",
+    "chk_pricing_policy_object_interval_months_cap",
+    "chk_pricing_policy_object_notice_floor",
+    "chk_pricing_policy_object_price_row_cap",
+    "chk_pricing_policy_object_tax_display",
+    "chk_pricing_policy_object_tier_band_cap",
+    "chk_pricing_price_aggregation_function",
+    "chk_pricing_price_aggregation_granularity",
+    "chk_pricing_price_amount_non_negative",
+    "chk_pricing_price_billing_granularity",
+    "chk_pricing_price_billing_timing",
+    "chk_pricing_price_charge_kind",
+    "chk_pricing_price_cohort_eligibility",
+    "chk_pricing_price_eligibility",
+    "chk_pricing_price_grandfather_until",
+    "chk_pricing_price_lifecycle_state",
+    "chk_pricing_price_manual_quantity",
+    "chk_pricing_price_max_hold_granules",
+    "chk_pricing_price_model_kind",
+    "chk_pricing_price_overlay",
+    "chk_pricing_price_package_fields_kind",
+    "chk_pricing_price_package_price",
+    "chk_pricing_price_package_size",
+    "chk_pricing_price_quantity_source",
+    "chk_pricing_price_tier_aggregation_window",
+    "chk_pricing_price_tier_band_from_qty",
+    "chk_pricing_price_tier_band_unit_price",
+    "chk_pricing_price_tier_band_width",
+    "chk_pricing_price_tier_qualification_window",
+    "chk_pricing_price_window_activated_at",
+    "chk_pricing_price_window_activation_order",
+    "chk_pricing_price_window_cancelled_at",
+    "chk_pricing_price_window_expired_at",
+    "chk_pricing_price_window_expiry_order",
+    "chk_pricing_price_window_interval",
+    "chk_pricing_price_window_open_ended",
+    "chk_pricing_price_window_state",
+    "chk_pricing_read_model_catalog_version",
+    "chk_pricing_read_model_subject_kind",
+    "chk_pricing_read_model_warm_marker",
+];
+
+/// Every trigger's body, pinned by digest.
+///
+/// A function rather than a `const` because the digests are computed; the list is the
+/// roster and the order is `sqlite_master`'s name order.
+fn expected_trigger_bodies() -> Vec<(String, u64)> {
+    [
+        (
+            "trg_pricing_approval_born_submitted",
+            8_026_324_167_547_094_374_u64,
+        ),
+        (
+            "trg_pricing_approval_flip_whitelist",
+            7_582_204_510_596_437_500_u64,
+        ),
+        (
+            "trg_pricing_approval_immutable_once_decided",
+            8_082_372_707_353_450_395_u64,
+        ),
+        (
+            "trg_pricing_approval_key_born_submitted",
+            2_440_950_770_022_816_954_u64,
+        ),
+        (
+            "trg_pricing_approval_key_born_under_a_pending_unit",
+            17_401_364_553_705_688_472_u64,
+        ),
+        (
+            "trg_pricing_approval_key_follow_state",
+            1_503_439_957_052_833_582_u64,
+        ),
+        (
+            "trg_pricing_approval_key_follows_its_unit",
+            3_659_799_981_708_444_309_u64,
+        ),
+        (
+            "trg_pricing_approval_key_follows_once",
+            17_250_957_205_851_589_411_u64,
+        ),
+        (
+            "trg_pricing_approval_key_no_delete",
+            8_268_739_358_483_246_584_u64,
+        ),
+        (
+            "trg_pricing_approval_key_pinned_columns",
+            2_791_595_470_115_359_269_u64,
+        ),
+        (
+            "trg_pricing_approval_no_delete",
+            13_958_316_444_295_959_010_u64,
+        ),
+        (
+            "trg_pricing_approval_pinned_columns",
+            16_147_021_889_530_757_421_u64,
+        ),
+        (
+            "trg_pricing_approval_threshold_no_delete",
+            12_053_586_872_877_274_445_u64,
+        ),
+        (
+            "trg_pricing_approval_threshold_no_update",
+            11_709_629_607_986_505_725_u64,
+        ),
+        (
+            "trg_pricing_audit_log_no_delete",
+            4_599_062_756_050_227_754_u64,
+        ),
+        (
+            "trg_pricing_audit_log_no_update",
+            8_228_055_037_257_075_408_u64,
+        ),
+        (
+            "trg_pricing_plan_addon_rule_no_delete",
+            16_098_381_818_331_615_522_u64,
+        ),
+        (
+            "trg_pricing_plan_addon_rule_no_insert",
+            3_837_286_324_373_750_486_u64,
+        ),
+        (
+            "trg_pricing_plan_addon_rule_no_update",
+            16_520_572_091_884_197_445_u64,
+        ),
+        (
+            "trg_pricing_plan_descriptor_set_no_delete",
+            7_950_040_988_195_990_411_u64,
+        ),
+        (
+            "trg_pricing_plan_descriptor_set_no_insert",
+            6_417_891_462_364_744_011_u64,
+        ),
+        (
+            "trg_pricing_plan_descriptor_set_no_update",
+            17_644_945_910_566_070_594_u64,
+        ),
+        (
+            "trg_pricing_plan_draft_flip_whitelist",
+            1_063_197_060_918_151_682_u64,
+        ),
+        (
+            "trg_pricing_plan_flip_whitelist",
+            2_936_899_670_102_780_293_u64,
+        ),
+        (
+            "trg_pricing_plan_frozen_columns",
+            12_503_936_757_081_989_316_u64,
+        ),
+        ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
+        (
+            "trg_pricing_plan_phase_no_delete",
+            10_318_237_350_173_185_356_u64,
+        ),
+        (
+            "trg_pricing_plan_phase_no_insert",
+            5_810_769_608_047_845_284_u64,
+        ),
+        (
+            "trg_pricing_plan_phase_no_update",
+            3_878_195_498_503_408_715_u64,
+        ),
+        (
+            "trg_pricing_price_draft_flip_whitelist",
+            12_283_433_772_935_461_712_u64,
+        ),
+        (
+            "trg_pricing_price_flip_whitelist",
+            6_864_967_922_611_899_704_u64,
+        ),
+        (
+            "trg_pricing_price_frozen_columns",
+            17_494_586_689_977_764_545_u64,
+        ),
+        (
+            "trg_pricing_price_grandfather_monotonic",
+            6_472_678_356_918_752_723_u64,
+        ),
+        ("trg_pricing_price_no_delete", 4_952_185_589_843_057_617_u64),
+        (
+            "trg_pricing_price_tier_band_kind_insert",
+            12_169_947_829_544_681_527_u64,
+        ),
+        (
+            "trg_pricing_price_tier_band_kind_update",
+            4_931_887_817_904_621_455_u64,
+        ),
+        (
+            "trg_pricing_price_tier_band_no_delete",
+            18_080_063_622_350_427_273_u64,
+        ),
+        (
+            "trg_pricing_price_tier_band_no_insert",
+            8_466_772_667_392_780_886_u64,
+        ),
+        (
+            "trg_pricing_price_tier_band_no_update",
+            17_300_718_464_613_080_632_u64,
+        ),
+        (
+            "trg_pricing_price_tier_band_parent_kind",
+            13_015_595_855_638_009_436_u64,
+        ),
+        (
+            "trg_pricing_price_window_flip_whitelist",
+            7_945_364_764_739_140_221_u64,
+        ),
+        (
+            "trg_pricing_price_window_frozen_columns",
+            3_006_703_635_329_582_194_u64,
+        ),
+        (
+            "trg_pricing_price_window_future_end",
+            674_975_173_687_143_698_u64,
+        ),
+        (
+            "trg_pricing_price_window_immutable_history",
+            2_969_521_874_630_654_905_u64,
+        ),
+        (
+            "trg_pricing_price_window_no_delete",
+            8_334_934_610_813_099_928_u64,
+        ),
+    ]
+    .into_iter()
+    .map(|(name, hash)| ((*name).to_owned(), hash))
+    .collect()
+}
+
+/// Every **named CHECK constraint** the chain created, in name order.
+///
+/// The census `SQLite` had none of, and it is the backend every in-crate suite runs on.
+/// A CHECK is not a `sqlite_master` object of its own — it lives inside its table's
+/// `CREATE TABLE` text — so a dropped one leaves the table, the trigger census and the
+/// index census all green while the value it refused reaches the column. Two of this
+/// chain's migrations **re-type whole table bodies by hand** (`SQLite` cannot
+/// `ALTER TABLE ... DROP CONSTRAINT`, so `m20260802_000018` and `m20260802_000019`
+/// rebuild), which is exactly the operation a constraint goes missing in.
+///
+/// Read out of the DDL rather than out of the migration sources on purpose: the
+/// question is what the database ended up with.
+async fn checks_of(conn: &sea_orm::DatabaseConnection) -> Vec<String> {
+    let sql = "SELECT sql AS v FROM sqlite_master WHERE type = 'table' \
+               AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY name";
+    let rows = conn
+        .query_all(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .expect("query sqlite_master");
+    let mut names: Vec<String> = Vec::new();
+    for row in rows {
+        let ddl: String = row.try_get("", "v").expect("the table's DDL");
+        // `CONSTRAINT <name> CHECK` is how every one of them is declared; the name is
+        // what a refusal message carries, so it is what a census can be written
+        // against.
+        let mut rest = ddl.as_str();
+        while let Some(at) = rest.find("CONSTRAINT ") {
+            rest = &rest[at + "CONSTRAINT ".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if rest[name.len()..].trim_start().starts_with("CHECK") {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+/// A stable, dependency-free digest of one string — FNV-1a, 64-bit.
+///
+/// **Not a security primitive and deliberately not `sha2`** (DE0708 bans it in this
+/// crate): what this pins is a transcription, and the adversary is a typo in a
+/// hand-rebuilt trigger body rather than a forger.
+fn digest(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Every trigger the chain created as `(name, digest-of-body)`, in name order.
+///
+/// The name census answers "is the trigger there" and **nothing about what it does**.
+/// That gap is not hypothetical here: `m20260802_000019` re-types eight trigger bodies
+/// by hand, because a `SQLite` table rebuild drops the triggers attached to the old
+/// table and they have to be re-created — and a `RAISE(ABORT)` whose `WHEN` clause lost
+/// a disjunct is a guard that still exists, still has its name, and refuses less.
+async fn trigger_bodies(conn: &sea_orm::DatabaseConnection) -> Vec<(String, u64)> {
+    let sql = "SELECT name AS n, sql AS v FROM sqlite_master WHERE type = 'trigger' \
+               AND name NOT LIKE 'sqlite_%' ORDER BY name";
+    let rows = conn
+        .query_all(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .expect("query sqlite_master");
+    rows.into_iter()
+        .map(|row| {
+            let name: String = row.try_get("", "n").expect("the trigger's name");
+            let body: String = row.try_get("", "v").expect("the trigger's body");
+            // Whitespace-normalised, so a reformat that changes no rule does not
+            // present as a changed guard.
+            let normalised = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            (name, digest(&normalised))
+        })
+        .collect()
+}
+
+/// Every object of one `sqlite_master` type the chain created, in name order.
+async fn objects_of(conn: &sea_orm::DatabaseConnection, kind: &str) -> Vec<String> {
+    let sql = format!(
+        "SELECT name AS v FROM sqlite_master WHERE type = '{kind}' \
+         AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    );
+    conn.query_all(Statement::from_string(
+        sea_orm::DatabaseBackend::Sqlite,
+        sql,
+    ))
+    .await
+    .expect("query sqlite_master")
+    .iter()
+    .map(|row| row.try_get::<String>("", "v").expect("a name"))
+    .collect()
+}
 
 /// Read every row of an entity under a tenant scope, asserting the table and
 /// its column set are what the entity expects.
@@ -181,6 +663,86 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         idempotency_dedup::Entity,
         outbox::Entity,
         audit_log::Entity,
+        approval::Entity,
+        approval_key::Entity,
+        approval_threshold::Entity,
+        price_window::Entity,
+    );
+}
+
+#[tokio::test]
+async fn the_chain_creates_every_trigger_and_every_index() {
+    // The property the whole suite lacked: on `SQLite` a missing guard is invisible
+    // to every application-level test, because the rules it enforces are also
+    // checked in Rust. `uq_pricing_approval_key_pending` is the sharpest case —
+    // delete it and `inst-co-single-pending` degrades from a constraint a concurrent
+    // writer cannot step through into a `SELECT` that races, with nothing red.
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    assert_eq!(
+        objects_of(&conn, "trigger").await,
+        EXPECTED_TRIGGERS,
+        "the trigger census: a dropped guard, or one added without a line here"
+    );
+    assert_eq!(
+        objects_of(&conn, "index").await,
+        EXPECTED_INDEXES,
+        "the index census: a dropped rule, or one added without a line here"
+    );
+    assert_eq!(
+        checks_of(&conn).await,
+        EXPECTED_CHECKS,
+        "the CHECK census: `SQLite` had none, and two migrations re-type whole table bodies by hand"
+    );
+    assert_eq!(
+        trigger_bodies(&conn).await,
+        expected_trigger_bodies(),
+        "the trigger **body** census: a name census cannot see a `RAISE(ABORT)` whose `WHEN` lost \
+         a disjunct, and `m20260802_000019` re-types eight of these by hand. A legitimate change \
+         to a trigger re-pins its digest here, deliberately"
+    );
+}
+
+#[tokio::test]
+async fn the_pending_key_register_is_unique_and_partial_on_submitted() {
+    // The **shape** and not only the name, because the two halves say different
+    // things and only one of them is `inst-co-single-pending`. `UNIQUE` alone would
+    // say "one row per key ever", which refuses a second unit over a key whose first
+    // unit was decided and withdrawn - the escape `inst-as-void` exists to give. The
+    // `WHERE state = 'submitted'` predicate **is** the rule: a decided unit holds
+    // nothing.
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    let ddl = index_sql(&conn, "uq_pricing_approval_key_pending")
+        .await
+        .expect("the register's constraint");
+    let upper = ddl.to_ascii_uppercase();
+    assert!(upper.contains("UNIQUE"), "one holder per key: {ddl}");
+    assert!(
+        ddl.contains("(tenant_id, scope_key)"),
+        "and the key is per tenant: {ddl}"
+    );
+    assert!(
+        ddl.contains("WHERE state = 'submitted'"),
+        "partial on `submitted`, so a decided unit frees its keys: {ddl}"
     );
 }
 
@@ -227,6 +789,30 @@ async fn down_then_up_round_trips() {
             .await
             .unwrap_or_else(|e| panic!("re-up {} must succeed: {e}", migration.name()));
     }
+    // **The second `up` gets the same census as the first.** It used to assert only
+    // `EXPECTED_TABLES`, so the second expansion of every `sqlite_rebuild!` — the one a
+    // rollback-then-forward actually runs — had no trigger, index or CHECK census at
+    // all: a rebuild that dropped a guard on the way back up left this green.
+    assert_eq!(
+        objects_of(&conn, "trigger").await,
+        EXPECTED_TRIGGERS,
+        "the re-up must restore every trigger"
+    );
+    assert_eq!(
+        objects_of(&conn, "index").await,
+        EXPECTED_INDEXES,
+        "the re-up must restore every index"
+    );
+    assert_eq!(
+        checks_of(&conn).await,
+        EXPECTED_CHECKS,
+        "the re-up must restore every CHECK"
+    );
+    assert_eq!(
+        trigger_bodies(&conn).await,
+        expected_trigger_bodies(),
+        "and restore them with the same bodies, not merely the same names"
+    );
     for table in EXPECTED_TABLES {
         assert!(
             table_exists(&conn, table).await,

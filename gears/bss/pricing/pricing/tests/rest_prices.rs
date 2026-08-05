@@ -11,6 +11,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
 mod rest_support;
 
 use axum::http::StatusCode;

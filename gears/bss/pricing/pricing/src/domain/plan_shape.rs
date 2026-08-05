@@ -41,6 +41,50 @@
 //! and the two answers are free to disagree the day the publish unit changes
 //! what it feeds in.
 //!
+//! ## `windows` is the plane the coverage rules range over, and it is
+//! deliberately unfiltered
+//!
+//! [`PlanShape::windows`] carries the plan's window plane grouped per canonical
+//! scope key — the input `inst-wc-required`, `inst-wc-perkey`, `inst-fg-detect`
+//! and `inst-wc-availability` are evaluated against
+//! ([`crate::domain::coverage`]).
+//!
+//! **It is subject content, not rule configuration**, which is why it is a field
+//! here rather than an argument on
+//! [`PublishRuleParams`](crate::domain::publish::rules::PublishRuleParams). That
+//! type carries the world *outside* the subject a rule compares against — the
+//! tenant's default rounding policy, its size caps, its descriptor requirements
+//! — and a window set is not outside the subject: a version freezes the
+//! intervals (D-99, D-121) and a reviewer approves what will be frozen. So the
+//! approval content pin covers it, and
+//! [`content_hash`](crate::domain::approval::content_pin::content_hash) hashes
+//! it; a pin over less than the change set is a pin a window schedule walks
+//! through.
+//!
+//! **The read behind it is draft-inclusive and filters no window state, and that
+//! is the substance rather than an oversight.** The distinction is between
+//! *validating a hypothetical* and *asserting a fact*:
+//!
+//! - The coverage rules and `window_repo`'s overlap check ask "**if** this row
+//!   were current on this key, would the interval set be sound?" — over a change
+//!   set made of `draft` rows about to publish. Filtering by lifecycle state
+//!   there would let two intervals on one key pass by having one of them belong
+//!   to a row the filter dropped, which is exactly what
+//!   `price_repo::load_scope_keys_for_plan` states as its own reason for
+//!   carrying no filter.
+//! - `read_model::project_windows` and the activation sweep **assert facts to a
+//!   consumer**, and both restrict to
+//!   [`PROJECTED_ROW_STATES`](crate::domain::projection::PROJECTED_ROW_STATES)
+//!   — the sweep by a subquery, added after it was found flipping a `draft`
+//!   row's window and emitting `PriceWindowActivated` for it.
+//!
+//! A later group narrowing this read to make it match the projection's would be
+//! moving it across that line. Which intervals *contribute coverage* is the
+//! reader's question and each reader states its own answer:
+//! [`KeyWindows::coverage_end`](crate::domain::window::KeyWindows::coverage_end)
+//! drops `cancelled`, and [`crate::domain::coverage`] names the state set
+//! `inst-wc-required` and `inst-fg-detect` read.
+//!
 //! ## The `ALL` lists live here, and the parsing does not
 //!
 //! Each of the four token enums exports an `ALL` const — one member per
@@ -84,6 +128,7 @@ use uuid::Uuid;
 use crate::domain::money::CurrencyCode;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
+use crate::domain::window::KeyWindows;
 
 /// The §17.1 billing-cycle matrix: what commercial shape the plan is.
 ///
@@ -574,6 +619,18 @@ pub struct PlanShape {
     /// Which revision of it — the second half of the durable name
     /// `(plan_id, revision)` (D-145).
     pub revision: u64,
+    /// The catalog SKU this revision binds, when one is bound.
+    ///
+    /// **Carried here because it is authored content**
+    /// ([`PlanShapePatch::sku_id`](crate::domain::plan::PlanShapePatch::sku_id)
+    /// moves it on an open draft) **and because the approval content pin hashes
+    /// this type and nothing else.** A field a patch can move and the pin cannot
+    /// see is a rebind that survives a re-verification: the reviewer approved a
+    /// plan selling one SKU and the commit sells another, with every digest
+    /// equal. No rule in [`crate::domain::plan_rules`] reads it yet — the
+    /// tier-equality half of P3 is the one that will, and it needs the registry
+    /// this gear does not call.
+    pub sku_id: Option<Uuid>,
     /// The §17.1 cycle. `None` is an authored-but-unfinished draft, not a
     /// default: nothing in the matrix is implied.
     pub billing_cycle: Option<BillingCycle>,
@@ -607,6 +664,18 @@ pub struct PlanShape {
     pub descriptor_set: Option<DescriptorSet>,
     /// The candidate row set the publish would produce; see the module doc.
     pub rows: Vec<PriceRecord>,
+    /// The plan's window plane, one entry per canonical scope key; see the
+    /// module doc for why it is here and why the read behind it is unfiltered.
+    ///
+    /// Built by `infra::publish::assemble` through
+    /// [`group_by_key_seeded`](crate::domain::window::group_by_key_seeded),
+    /// seeded with [`PlanShape::rows`]' keys — so a candidate key with no window
+    /// at all is present with an empty interval list rather than absent, and
+    /// reads as [`CoverageEnd::Uncovered`](crate::domain::window::CoverageEnd).
+    /// Keys the candidate set does not mention are here too when a window sits
+    /// on one: a `superseded` predecessor's shortened interval is part of its
+    /// key's coverage, and that key's successor is a candidate row.
+    pub windows: Vec<KeyWindows>,
     /// The plan's current published revision, when it has one. `None` is a
     /// first publish; see [`PublishedBaseline`].
     pub baseline: Option<PublishedBaseline>,
@@ -627,6 +696,7 @@ impl PlanShape {
         Self {
             plan_id,
             revision,
+            sku_id: None,
             billing_cycle: None,
             frequency: None,
             plan_tier: None,
@@ -640,6 +710,7 @@ impl PlanShape {
             addon_rules: Vec::new(),
             descriptor_set: None,
             rows: Vec::new(),
+            windows: Vec::new(),
             baseline: None,
             evaluated_at,
         }

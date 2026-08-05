@@ -7,8 +7,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
-    GRANDFATHER_UNTIL_FORBIDDEN, PLAN_SIZE_SOFT_CAP_EXCEEDED, PublishRuleParams,
-    ROUNDING_POLICY_UNRESOLVED, SoftSizeCaps, run_publish_rules,
+    GRANDFATHER_UNTIL_FORBIDDEN, PLAN_SIZE_SOFT_CAP_EXCEEDED, PRIMITIVE_RULES_UNBUILT,
+    PublishRuleParams, ROUNDING_POLICY_UNRESOLVED, SoftSizeCaps, run_publish_rules,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
@@ -24,6 +24,7 @@ use crate::domain::rules::MODEL_KIND_MISSING;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 fn plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x91a4))
@@ -115,6 +116,16 @@ fn a_row_shape_fault_and_a_plan_shape_fault_appear_in_one_report_in_the_fixed_or
         Some(MODEL_KIND_MISSING),
         "the row half of the report comes first"
     );
+    // And the slice-7 coverage set comes **last**, which `rules.rs`'s module doc
+    // argues for and nothing asserted: a report naming an uncovered key before it
+    // names the row that is not a row reads back to front. This fixture authors no
+    // window, so the coverage set has a finding of its own to place — which is what
+    // makes the position assertable at all rather than vacuous.
+    assert_eq!(
+        found.last().map(String::as_str),
+        Some(crate::domain::coverage::WINDOW_COVERAGE_MISSING),
+        "the window plane is a statement about a set of rows, so it reads last"
+    );
     assert!(found.iter().any(|code| code == PLANTIER_MISSING));
     assert!(found.iter().any(|code| code == PHASE_GRAPH_INVALID));
 }
@@ -142,6 +153,11 @@ fn one_awful_plan_produces_every_expected_violation_rather_than_the_first() {
         HYBRID_INCOMPLETE,
         PLANTIER_MISSING,
         PHASE_GRAPH_INVALID,
+        // Slice 7's, and the sixth this plan produces: both rows sit on one
+        // canonical scope key and it holds no window, so `inst-wc-required` names
+        // it once. The roster was five while the report was six, which `any(...)`
+        // tolerates in silence — the whole failure mode this test is named for.
+        crate::domain::coverage::WINDOW_COVERAGE_MISSING,
     ] {
         assert!(
             found.iter().any(|code| code == expected),
@@ -164,6 +180,54 @@ fn a_clean_plan_yields_an_empty_report() {
 
     assert_eq!(codes(&report), Vec::<String>::new());
     assert!(report.is_publishable());
+}
+
+/// The aggregate **runs** Slice 7's coverage set, and that is a fact of its own.
+///
+/// `domain/coverage_tests.rs` proves what each coverage rule refuses; this proves
+/// that `run_publish_rules` — the function §4.2 step 2 and step 4 both call — is
+/// wired to them. Without it the rules would be a pipeline nothing runs, which is
+/// exactly the state the whole of this module was written to end.
+///
+/// The subject is `clean_plan()` with its window removed and nothing else changed,
+/// so the only thing that can produce a finding is the set under test.
+///
+/// # What removing the registration actually reddens, corrected
+///
+/// The commit that landed this rule claimed the `report.absorb(window_coverage_rules()…)`
+/// line reddens *"exactly that test and nothing else, measured across the whole
+/// suite"*, and an earlier version of this doc said the same in the other
+/// direction — that deleting it *"would leave every coverage assertion in the crate
+/// green"*. **Both were false, and the property is stronger than they claimed.**
+/// Removing the line reddens **four**:
+///
+/// - this test, on the aggregate report being empty;
+/// - `a_row_shape_fault_and_a_plan_shape_fault_appear_in_one_report_in_the_fixed_order`,
+///   on the coverage finding no longer being last;
+/// - `one_awful_plan_produces_every_expected_violation_rather_than_the_first`, on
+///   the sixth code being absent from the report;
+/// - and `rest_windows::the_report_names_the_uncovered_key_the_publish_refusal_named`
+///   — **the second independent guard, and the one worth naming**, because it holds
+///   the property *across the router*: it takes the refused key off a real `POST
+///   …/publish` response and the reported key off a real `GET …/coverage`, and
+///   asserts the two strings are equal. An in-process registration test cannot
+///   witness that the refusal reaches the wire at all.
+///
+/// The **second** direction of the proof is unchanged and does hold: not one of the
+/// seventy-four fixture-churn tests reddens, which is what says the churn was this
+/// rule and not something else the fixtures happened to be missing.
+#[test]
+fn the_aggregate_runs_the_slice_seven_coverage_set() {
+    let mut uncovered = clean_plan();
+    uncovered.windows = Vec::new();
+
+    let report = run_publish_rules(&uncovered, &params(Some("half_up")));
+
+    assert_eq!(
+        codes(&report),
+        [crate::domain::coverage::WINDOW_COVERAGE_MISSING],
+        "the aggregate carries the coverage set, and the covered fixture proves the finding is the window's absence and not the plan's"
+    );
 }
 
 #[test]
@@ -274,6 +338,20 @@ fn clean_plan() -> PlanShape {
         additional: std::collections::BTreeMap::new(),
     });
     shape.rows = vec![record(0xb001, Some(ModelKind::Flat), Some("half_up"))];
+    // `inst-wc-required`: a billable row whose canonical scope key holds no
+    // active or scheduled window fails publish, so a plan the whole set passes
+    // has to say when its row is effective. Seven fixtures in this file published
+    // with no window at all until the rule registered, which is the same vacuous
+    // pass `inst-cs-declared` closed two lines above — a fixture that satisfies a
+    // rule by not reaching it.
+    //
+    // Open-ended, because nothing in this file is about coverage *ending*: the
+    // interval set has to be sound and this is the soundest one there is. The
+    // cases that vary it live in `domain/coverage_tests.rs`.
+    shape.windows = vec![KeyWindows {
+        scope_key: shape.rows[0].scope_key.clone(),
+        intervals: vec![WindowInterval::new(now(), None, WindowState::Scheduled)],
+    }];
     shape
 }
 
@@ -522,5 +600,140 @@ fn the_row_type_gained_no_field_and_the_evaluation_policy_roster_did_not_move() 
         crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION,
         "ep-1",
         "so the generation stands"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-179 — publish refuses a stored Slice-10 primitive whose rules are unbuilt
+// ---------------------------------------------------------------------------
+
+/// The world in which the property is observable.
+///
+/// Without this the three refusals below would pass identically against a rule
+/// that refused every plan, which is the defect class this program keeps paying
+/// for: a test that never establishes the negative case is not evidence about
+/// the positive one.
+#[test]
+fn a_plan_carrying_neither_unjudged_primitive_publishes() {
+    let report = run_publish_rules(&clean_plan(), &params(Some("half_up")));
+    assert!(
+        report.is_publishable(),
+        "the fixture the D-179 cases vary must itself be clean: {:?}",
+        codes(&report)
+    );
+    assert!(
+        !codes(&report).contains(&PRIMITIVE_RULES_UNBUILT.to_owned()),
+        "and it must not be carrying the very code under test"
+    );
+}
+
+/// D-45's field, refused at the act that would freeze it (D-179, D-177 §3).
+#[test]
+fn a_stored_row_carrying_an_included_allowance_is_refused_at_publish() {
+    use crate::domain::price_row::{IncludedAllowance, RolloverPolicy};
+
+    let mut shape = clean_plan();
+    shape.rows[0].row.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+
+    let report = run_publish_rules(&shape, &params(Some("half_up")));
+    assert!(
+        !report.is_publishable(),
+        "publish is the freezing act and this value has no rule that judged it"
+    );
+    assert!(
+        codes(&report).contains(&PRIMITIVE_RULES_UNBUILT.to_owned()),
+        "and the refusal must name its own reason, got {:?}",
+        codes(&report)
+    );
+}
+
+/// D-40's field, on its own — one rule, two independent reasons.
+#[test]
+fn a_stored_row_carrying_a_tier_qualification_window_is_refused_at_publish() {
+    use crate::domain::price_row::TierQualificationWindow;
+
+    let mut shape = clean_plan();
+    shape.rows[0].row.tier_qualification_window = Some(TierQualificationWindow::TrailingPeriod);
+
+    let report = run_publish_rules(&shape, &params(Some("half_up")));
+    assert!(!report.is_publishable());
+    assert!(
+        codes(&report).contains(&PRIMITIVE_RULES_UNBUILT.to_owned()),
+        "got {:?}",
+        codes(&report)
+    );
+}
+
+/// The refusal names the row, because that is the edit — and both fields on one
+/// row are two findings, not one, since clearing either leaves the other.
+#[test]
+fn both_fields_on_one_row_are_reported_separately_and_name_the_row() {
+    use crate::domain::price_row::{IncludedAllowance, RolloverPolicy, TierQualificationWindow};
+
+    let mut shape = clean_plan();
+    shape.rows[0].row.included_allowance = Some(IncludedAllowance {
+        quantity: 5,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+    shape.rows[0].row.tier_qualification_window = Some(TierQualificationWindow::Current);
+    let price_id = shape.rows[0].price_id.to_string();
+
+    let report = run_publish_rules(&shape, &params(Some("half_up")));
+    let mine: Vec<_> = report
+        .violations
+        .iter()
+        .filter(|v| v.code == PRIMITIVE_RULES_UNBUILT)
+        .collect();
+    assert_eq!(
+        mine.len(),
+        2,
+        "clearing one field leaves the other, so each is its own finding"
+    );
+    for violation in mine {
+        assert_eq!(
+            violation.subject, price_id,
+            "the subject is the row the operator edits"
+        );
+    }
+}
+
+/// The code is spelled as the design set spells it (`01-foundation.md` §3.3).
+#[test]
+fn the_unjudged_primitive_code_is_spelled_as_the_design_set_spells_it() {
+    assert_eq!(PRIMITIVE_RULES_UNBUILT, "PRIMITIVE_RULES_UNBUILT");
+}
+
+/// D-179 clause (4): the gate is stable across re-entry.
+///
+/// The second run of a mechanism is the question this program has learned to
+/// ask. This one consumes nothing and clears nothing, so a re-submitted publish
+/// reads the same stored row and takes the same refusal — it is not a one-shot
+/// that a retry walks past.
+#[test]
+fn the_refusal_is_the_same_on_the_second_run() {
+    use crate::domain::price_row::TierQualificationWindow;
+
+    let mut shape = clean_plan();
+    shape.rows[0].row.tier_qualification_window = Some(TierQualificationWindow::Current);
+
+    let first = run_publish_rules(&shape, &params(Some("half_up")));
+    let second = run_publish_rules(&shape, &params(Some("half_up")));
+    // Assert the refusal is PRESENT in both before asserting they agree: two
+    // empty reports also agree, so equality alone would pass against no rule at
+    // all — the vacuous shape this file's other cases exist to avoid.
+    for (label, report) in [("first", &first), ("second", &second)] {
+        assert!(
+            codes(report).contains(&PRIMITIVE_RULES_UNBUILT.to_owned()),
+            "the {label} run must refuse, got {:?}",
+            codes(report)
+        );
+    }
+    assert_eq!(
+        codes(&first),
+        codes(&second),
+        "a re-entered publish must take the same refusal, not walk past a spent one"
     );
 }

@@ -13,7 +13,9 @@
 use chrono::{TimeZone, Utc};
 use serde_json::json;
 
-use super::{CROSS_BOUNDARY_CHANGE_POLICY, PROJECTED_ROW_STATES, PlanSubjectDelta};
+use super::{
+    CROSS_BOUNDARY_CHANGE_POLICY, PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta,
+};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
@@ -26,6 +28,7 @@ use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 fn plan_id() -> PlanId {
     PlanId::new(uuid::Uuid::from_u128(0x9_1a4))
@@ -67,6 +70,7 @@ fn shape_only() -> PlanSubjectDelta {
             additional: std::collections::BTreeMap::new(),
         }),
         prices: Vec::new(),
+        windows: Vec::new(),
     }
 }
 
@@ -314,4 +318,173 @@ fn the_projected_row_states_are_the_two_that_are_not_never_published_drafts() {
         !PROJECTED_ROW_STATES.contains(&LifecycleState::Draft),
         "a never-published draft is exactly what D-121 excludes"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The window facts (D-99, D-121)
+// ---------------------------------------------------------------------------
+
+/// The eight axes and one window on the plan's recurring key.
+fn recurring_key() -> ScopeKey {
+    ScopeKey::new(
+        plan_id(),
+        CurrencyCode::new("USD").expect("iso currency"),
+        Region::new("EU").expect("region"),
+        terminal_phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("a valid canonical scope key")
+}
+
+fn at(day: u32) -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 9, day, 0, 0, 0)
+        .single()
+        .expect("a well-defined UTC instant")
+}
+
+/// D-121's projected window states: `scheduled | active | expired`.
+///
+/// A CANCELLED window is not projected - it is not history a consumer resolves
+/// against, it is a schedule that never happened. An `expired` window IS
+/// projected: rating pins current versions and rates past instants, so dropping
+/// the predecessor's expired interval fails a legitimately covered arrears
+/// period closed.
+#[test]
+fn the_projected_window_states_are_the_three_d121_names() {
+    assert_eq!(
+        PROJECTED_WINDOW_STATES,
+        [
+            WindowState::Scheduled,
+            WindowState::Active,
+            WindowState::Expired
+        ]
+    );
+    assert!(
+        !PROJECTED_WINDOW_STATES.contains(&WindowState::Cancelled),
+        "a cancelled window is a schedule that never happened"
+    );
+    assert!(
+        PROJECTED_WINDOW_STATES.contains(&WindowState::Expired),
+        "the predecessor's expired interval is what an arrears period at a past \
+         instant resolves against"
+    );
+    // Every state accounted for: three in, one out. A fifth state fails this
+    // rather than silently joining or missing the projection.
+    assert_eq!(WindowState::ALL.len(), 4);
+}
+
+/// The delta carries intervals and states and a derived coverage end - never a
+/// point-in-time boolean (D-99).
+///
+/// The `activeNow`-shaped absence is what this test is for. Were the payload to
+/// carry one, every activation and expiry would owe a re-projection of an
+/// INSERT-only store whose whole contract is that a completed version never
+/// changes - which is precisely why `inst-ws-publishunit` makes those two
+/// transitions *not* publish units.
+#[test]
+fn the_payload_carries_intervals_and_a_coverage_end_and_no_active_flag() {
+    let delta = PlanSubjectDelta {
+        windows: vec![KeyWindows {
+            scope_key: recurring_key(),
+            intervals: vec![
+                WindowInterval::new(at(10), Some(at(20)), WindowState::Expired),
+                WindowInterval::new(at(20), Some(at(30)), WindowState::Active),
+            ],
+        }],
+        ..shape_only()
+    };
+
+    let value = delta.to_value();
+    let groups = value
+        .get("windows")
+        .expect("windows")
+        .as_array()
+        .expect("array");
+    assert_eq!(groups.len(), 1, "one key, one group");
+    let group = &groups[0];
+
+    // The key the facts are filed under, rendered axis by axis exactly as a
+    // price row's is - a consumer matches on axes, not on a display string.
+    assert_eq!(
+        group.get("scopeKey").and_then(|k| k.get("chargeKind")),
+        Some(&json!("recurring"))
+    );
+    // The intervals, in time order, each with its state.
+    assert_eq!(
+        group.get("intervals"),
+        Some(&json!([
+            {
+                "effectiveFrom": at(10),
+                "effectiveTo": at(20),
+                "state": "expired",
+            },
+            {
+                "effectiveFrom": at(20),
+                "effectiveTo": at(30),
+                "state": "active",
+            },
+        ]))
+    );
+    // The derived end, as a discriminated object: a bare null would have to
+    // stand for "covered forever" and "covered nowhere" at once, which are
+    // opposite answers under the D-80 horizon predicate.
+    assert_eq!(
+        group.get("coverageEnd"),
+        Some(&json!({ "kind": "ends", "at": at(30) }))
+    );
+
+    // And no point-in-time answer anywhere in the document, under any spelling.
+    let rendered = value.to_string().to_ascii_lowercase();
+    for forbidden in ["activenow", "isactive", "activeat", "sellablenow"] {
+        assert!(
+            !rendered.contains(forbidden),
+            "a frozen delta must not answer a question about the reader's clock \
+             ({forbidden}): {rendered}"
+        );
+    }
+}
+
+/// An open-ended key renders the open end as its own kind, and a key with no
+/// coverage renders as uncovered - the two answers a nullable instant would
+/// have had to share.
+#[test]
+fn open_ended_and_uncovered_are_two_different_payload_answers() {
+    let open = PlanSubjectDelta {
+        windows: vec![KeyWindows {
+            scope_key: recurring_key(),
+            intervals: vec![WindowInterval::new(at(10), None, WindowState::Active)],
+        }],
+        ..shape_only()
+    };
+    let uncovered = PlanSubjectDelta {
+        windows: vec![KeyWindows {
+            scope_key: recurring_key(),
+            intervals: Vec::new(),
+        }],
+        ..shape_only()
+    };
+
+    let end = |delta: PlanSubjectDelta| {
+        delta
+            .to_value()
+            .get("windows")
+            .expect("windows")
+            .as_array()
+            .expect("array")[0]
+            .get("coverageEnd")
+            .cloned()
+            .expect("coverageEnd")
+    };
+
+    assert_eq!(end(open), json!({ "kind": "open_ended", "at": null }));
+    assert_eq!(end(uncovered), json!({ "kind": "uncovered", "at": null }));
+}
+
+/// A plan with no windows renders an empty array rather than an absent key: a
+/// missing key and an empty array are not the same claim about a plan.
+#[test]
+fn a_plan_with_no_windows_still_renders_the_key() {
+    assert_eq!(shape_only().to_value().get("windows"), Some(&json!([])));
 }

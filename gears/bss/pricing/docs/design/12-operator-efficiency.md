@@ -145,7 +145,7 @@ flowchart TB
 - Any Phase-1 failure → `BULK_VALIDATION_FAILED` (422, per-row report; nothing committed)
 - A row addressing a **published** row's scope key with changed content → fails Phase 1 per-row (`IMPORT_TARGETS_PUBLISHED` — the import is draft-plane authoring, D-118; published-price changes are a repricing run)
 - An interactive edit hitting a row under the bulk lock → conflict naming the bulk operation (Foundation `fr-concurrent-edit`)
-- A row carrying `includedAllowance` or `tierQualificationWindow` → fails Phase 1 per-row while Slice 10's rules are unbuilt (**D-177**, [`10-advanced-primitives.md`](./10-advanced-primitives.md) §3: the refusal binds **every** authoring path, and this is the second one onto the same draft plane — a rule that lives on one surface is not a rule)
+- A row carrying `includedAllowance` or `tierQualificationWindow` → fails Phase 1 per-row while Slice 10's rules are unbuilt (**D-177**, [`10-advanced-primitives.md`](./10-advanced-primitives.md) §3: the refusal binds **every** authoring path, and this is the second one onto the same draft plane — a rule that lives on one surface is not a rule). **Until this arm is built, publish is what catches such a row** (**D-179**, S10 §3 clause 5): it refuses one on its own authority with `PRIMITIVE_RULES_UNBUILT` ([`01-foundation.md`](./01-foundation.md) §3.3), whatever put the value there. This arm therefore **inherits** that code rather than minting a second one, and building it moves the refusal earlier — to the per-row Phase 1 report, where the operator can fix the batch — instead of adding a rule
 
 **Steps**:
 1. [ ] - `p2` - API: POST /bss-pricing/v1/bulk-imports (rows + client idempotency key) - `inst-bi-api`

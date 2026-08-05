@@ -71,8 +71,6 @@ async fn seed(provider: &DBProvider<DbError>, tenant_id: Uuid, caps: policy_obje
     let scope = AccessScope::for_tenant(tenant_id);
     let row = policy_object::ActiveModel {
         tenant_id: Set(tenant_id),
-        approval_threshold_minor: Set(None),
-        approval_threshold_currency: Set(None),
         tax_display_mode: Set("tax_exclusive".to_owned()),
         default_rounding_policy_ref: Set(None),
         enforced_migration_notice_days: Set(60),

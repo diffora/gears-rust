@@ -20,6 +20,22 @@ fn defaults_are_the_ratified_launch_values() {
         cfg.jobs.readmodel_degraded_after_secs < cfg.jobs.catalog_version_overdue_secs,
         "the post-commit SLO must be the tighter of the two"
     );
+    // The window plane's two. 300s is the order of D-47's max batching delay (the
+    // design set names no activation SLO at all - `jobs::window_activation`'s
+    // module doc reports it), and 60s is an order of magnitude inside the 5-minute
+    // changeover floors `inst-gc-compose` / `inst-su-instant` impose.
+    assert_eq!(cfg.jobs.window_activation_tick_secs, 60);
+    assert_eq!(cfg.jobs.window_activation_overdue_secs, 300);
+    // The relation between them is what actually matters - a sweep must be able to
+    // cross a boundary before the boundary is late - and it is asserted here of the
+    // **defaults only**. Every other pair is refused by `validate` itself; see
+    // `a_cadence_at_or_past_the_overdue_threshold_is_rejected`, which is where the
+    // invariant lives now. This line was the whole of it while the validator
+    // refused nothing but the two zeroes.
+    assert!(
+        cfg.jobs.window_activation_tick_secs < cfg.jobs.window_activation_overdue_secs,
+        "a sweep must be able to cross a boundary before the boundary is late"
+    );
     assert_eq!(cfg.limits.max_tier_bands_per_row, 100);
     assert_eq!(cfg.limits.max_price_rows_per_plan, 500);
     // PRD 14: `customEveryNDays <= 366`, `customEveryNMonths <= 24`, ratified
@@ -152,6 +168,108 @@ fn a_zero_degraded_threshold_is_rejected() {
             field: "jobs.readmodel_degraded_after_secs"
         })
     );
+}
+
+/// The four cadences and bounds whose zero-checks had no test of their own.
+///
+/// A table rather than four functions, in `zero_limits_are_rejected_by_field`'s
+/// shape, and it exists because this file already carried the defect it closes:
+/// three of `JobsConfig`'s seven fields had a per-field test and the rest had a
+/// `validate` arm and nothing asserting it. Two of the four are the window
+/// plane's, added with the sweep; the other two are D-163's and were unproved
+/// before it — reported rather than left, since the file is one roster and a
+/// roster that covers half its struct is the shape a later field is added under.
+#[test]
+fn the_remaining_zero_cadences_and_bounds_are_rejected_by_field() {
+    for (jobs, field) in [
+        (
+            JobsConfig {
+                pending_refs_per_tenant: 0,
+                ..JobsConfig::default()
+            },
+            "jobs.pending_refs_per_tenant",
+        ),
+        (
+            JobsConfig {
+                pending_tenants_per_pass: 0,
+                ..JobsConfig::default()
+            },
+            "jobs.pending_tenants_per_pass",
+        ),
+        (
+            // Zero would raise the Warn for every window the sweep ever flips:
+            // a boundary is always at least zero seconds old by the time a pass
+            // reads it.
+            JobsConfig {
+                window_activation_overdue_secs: 0,
+                ..JobsConfig::default()
+            },
+            "jobs.window_activation_overdue_secs",
+        ),
+        (
+            // `tokio::time::interval` panics on a zero period, so this one is
+            // the difference between a boot that fails and a lifecycle that dies
+            // on its first tick.
+            JobsConfig {
+                window_activation_tick_secs: 0,
+                ..JobsConfig::default()
+            },
+            "jobs.window_activation_tick_secs",
+        ),
+    ] {
+        assert_eq!(
+            jobs.validate(),
+            Err(ConfigError::ZeroInterval { field }),
+            "{field} must be rejected by name"
+        );
+    }
+}
+
+/// A sweep cadence at or past the overdue threshold is refused, by **both**
+/// field names.
+///
+/// The relation is not a taste: the overdue condition is read off the due set, so
+/// a window whose boundary arrived just after a pass is found by the *next* pass
+/// up to one whole tick later, and with `tick >= threshold` that first, entirely
+/// healthy attempt is already late. `600 / 300` was accepted by `validate()` and
+/// reported `activated: 1` and `overdue: 1` for the same window —
+/// `pricing.window.activation_overdue`, whose meaning per §7 is *the lease
+/// singleton is stalled*, raised once per window on every ordinary flip, forever.
+///
+/// Equality is refused with the same arm and for the same reason: at `tick ==
+/// threshold` a boundary that arrives one instant after a pass is exactly a
+/// threshold old when the next pass finds it, and the comparison that raises the
+/// alarm is `>=`.
+#[test]
+fn a_cadence_at_or_past_the_overdue_threshold_is_rejected() {
+    let expected = ConfigError::CadenceNotInsideThreshold {
+        cadence: "jobs.window_activation_tick_secs",
+        threshold: "jobs.window_activation_overdue_secs",
+    };
+
+    for tick in [300, 600] {
+        let jobs = JobsConfig {
+            window_activation_overdue_secs: 300,
+            window_activation_tick_secs: tick,
+            ..JobsConfig::default()
+        };
+
+        assert_eq!(
+            jobs.validate(),
+            Err(expected),
+            "a {tick}s cadence under a 300s threshold alarms on every healthy flip"
+        );
+    }
+
+    // One second inside it is accepted: the arm refuses a **relation** between two
+    // knobs, not a value of either, so an operator who slows the sweep and moves
+    // the alarm bar with it is still free to.
+    let inside = JobsConfig {
+        window_activation_overdue_secs: 300,
+        window_activation_tick_secs: 299,
+        ..JobsConfig::default()
+    };
+    assert!(inside.validate().is_ok());
 }
 
 #[test]

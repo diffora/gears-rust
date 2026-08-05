@@ -1,0 +1,198 @@
+//! The approval surface's pure pieces: the state filter, the digest rendering,
+//! the pinned-content projection, and the one rule this surface **cannot**
+//! enforce.
+
+use chrono::{TimeZone, Utc};
+use uuid::Uuid;
+
+use super::{MaterialityView, PinnedContentView, hex, region_grant_of_this_surface, state_filter};
+use crate::domain::approval::{ApprovalState, content_hash};
+use crate::domain::materiality::{MaterialityReason, MaterialityVerdict};
+use crate::domain::money::CurrencyCode;
+use crate::domain::plan_shape::{BillingCycle, PlanShape};
+use crate::domain::scope_key::{
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+};
+use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
+use crate::infra::approval::RegionGrant;
+
+fn instant(day: u32) -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 8, day, 0, 0, 0).unwrap()
+}
+
+/// The scope key the window group below is filed under.
+fn scope_key() -> ScopeKey {
+    ScopeKey::new(
+        PlanId::new(Uuid::from_u128(0x9_1a4)),
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("eu").expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xf1)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("all_subscriptions pairs with cohort none")
+}
+
+fn shape() -> PlanShape {
+    let mut shape = PlanShape::new(
+        PlanId::new(Uuid::from_u128(0x9_1a4)),
+        3,
+        Utc.with_ymd_and_hms(2026, 8, 4, 10, 0, 0).unwrap(),
+    );
+    shape.sku_id = Some(Uuid::from_u128(0x5_c1));
+    shape.plan_tier = Some("gold".to_owned());
+    shape.billing_cycle = Some(BillingCycle::Recurring);
+    shape.windows = vec![KeyWindows {
+        scope_key: scope_key(),
+        intervals: vec![WindowInterval::new(
+            instant(4),
+            Some(instant(11)),
+            WindowState::Scheduled,
+        )],
+    }];
+    shape
+}
+
+#[test]
+fn an_absent_state_filter_is_every_state_and_not_none() {
+    // A caller that named no filter asked for everything. Answering an empty
+    // page would be a filter nobody applied — and the queue's whole purpose is
+    // "pending **and** decided".
+    assert!(state_filter(None).expect("no filter").is_empty());
+}
+
+#[test]
+fn a_named_state_narrows_and_an_unknown_one_is_refused() {
+    assert_eq!(
+        state_filter(Some("submitted")).expect("a known token"),
+        vec![ApprovalState::Submitted]
+    );
+    state_filter(Some("pending")).expect_err("`pending` is not a state of this machine");
+}
+
+#[test]
+fn every_state_the_machine_has_is_reachable_through_the_filter() {
+    // Ranged over `ALL` rather than over four literals: a state added later
+    // arrives here rather than being silently unfilterable.
+    for state in ApprovalState::ALL {
+        assert_eq!(
+            state_filter(Some(state.as_str())).expect("a known token"),
+            vec![*state]
+        );
+    }
+}
+
+#[test]
+fn the_digest_renders_as_lower_case_hex_of_the_whole_pin() {
+    let digest = content_hash(&shape());
+
+    let rendered = hex(&digest);
+
+    assert_eq!(rendered.len(), 64, "32 bytes render as 64 hex characters");
+    assert!(
+        rendered
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    );
+    // And it is the digest, not a truncation of it: the last byte survives.
+    assert!(rendered.ends_with(&format!("{:02x}", digest[31])));
+}
+
+#[test]
+fn the_pinned_content_carries_the_plan_the_pin_was_taken_over() {
+    let shape = shape();
+
+    let view = PinnedContentView::from(&shape);
+
+    assert_eq!(view.plan_id, shape.plan_id.get());
+    assert_eq!(view.revision, shape.revision);
+    // `sku_id` is the field the pin was blind to until 2026-08-04, so a reviewer
+    // reading this view has to be shown it.
+    assert_eq!(view.sku_id, shape.sku_id);
+    assert_eq!(view.plan_tier, shape.plan_tier);
+    assert_eq!(view.billing_cycle.as_deref(), Some("recurring"));
+    // And `windows` is the same case with the operands swapped: the pin framed it
+    // from the day it existed and this view did not, so two subjects differing
+    // only in their intervals rendered identically here and hashed apart. D-61's
+    // invariant is that the document is the content the hash covers.
+    assert_eq!(view.windows.len(), 1, "one key, one entry");
+    assert_eq!(view.windows[0].scope_key.region, "eu");
+    assert_eq!(view.windows[0].scope_key.charge_kind, "recurring");
+    assert_eq!(
+        view.windows[0].intervals.len(),
+        1,
+        "one interval, from the shape's own group"
+    );
+    assert_eq!(view.windows[0].intervals[0].effective_from, instant(4));
+    assert_eq!(view.windows[0].intervals[0].effective_to, Some(instant(11)));
+    assert_eq!(view.windows[0].intervals[0].state, "scheduled");
+}
+
+/// The document a reviewer reads and the digest they sign move **together**.
+///
+/// The property the omission broke, stated as one assertion rather than as a list
+/// of members: change the window plane and both the pin and the view change; change
+/// nothing and neither does. A member missing from the view fails the first half
+/// while every field-by-field assertion above still passes, because a field nobody
+/// renders cannot disagree with anything.
+#[test]
+fn a_window_the_pin_moves_for_moves_the_document_too() {
+    let pinned = shape();
+    let mut moved = shape();
+    moved.windows[0].intervals[0].effective_to = Some(instant(12));
+
+    assert_ne!(
+        content_hash(&pinned),
+        content_hash(&moved),
+        "the interval is content: the pin has to move"
+    );
+    assert_ne!(
+        serde_json::to_value(PinnedContentView::from(&pinned)).expect("render the pinned document"),
+        serde_json::to_value(PinnedContentView::from(&moved)).expect("render the moved document"),
+        "and the document the reviewer reads has to move with it"
+    );
+}
+
+/// The verdict round-trips through the column it is stored in.
+///
+/// One shape for the store and the wire, so the reviewer reads back what the
+/// submit wrote. Asserted through `serde_json` because that is the path the
+/// column takes.
+#[test]
+fn the_materiality_verdict_survives_the_column_it_is_stored_in() {
+    let verdict = MaterialityVerdict::material(MaterialityReason::NoConfiguredThreshold);
+
+    let stored = serde_json::to_value(MaterialityView::from(verdict)).expect("render");
+    let read: MaterialityView = serde_json::from_value(stored).expect("read back");
+
+    assert!(read.material);
+    assert_eq!(read.reason.as_deref(), Some("noConfiguredThreshold"));
+}
+
+/// **`inst-ap-scope` is not enforced on this surface, and this is the test that
+/// says so out loud.**
+///
+/// It is not a test of a feature; it is a pin on a gap, so that the day a
+/// pricing-region grant gets a declared transport the change is visible instead
+/// of silent. See [`region_grant_of_this_surface`]'s doc for the whole argument:
+/// nothing in the design set says how the grant travels, `SecurityContext`
+/// carries no claim that could hold it, and `authz::SUPPORTED_PROPERTIES` is two
+/// uuid-typed properties.
+///
+/// What the surface hands over is therefore the **fact** that it has no grant to
+/// hand over, and `infra::approval::judge` resolves that against the change set
+/// it re-derived itself — so `change_set_regions.is_subset(approver_regions)`
+/// holds by construction and `REGION_SCOPE_DENIED` is unreachable over HTTP. The
+/// rule itself is built and both its directions are driven through the service,
+/// in `tests/sqlite_approval_service.rs`, under [`RegionGrant::Explicit`]. What
+/// is missing is one transport.
+///
+/// **This used to assert over a set the surface computed**, from a read taken
+/// before the judgement transaction — see `region_grant_of_this_surface`'s doc
+/// for what that manufactured. The value is unchanged and the *time* it is
+/// established at is not, which is why the assertion is now about the variant.
+#[test]
+fn the_region_rule_is_not_enforced_at_this_surface() {
+    assert_eq!(region_grant_of_this_surface(), RegionGrant::Untransported);
+}

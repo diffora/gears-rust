@@ -1,0 +1,1119 @@
+//! The approval surface — `design/05-governance.md` §5's four approval rows:
+//! the reviewer's queue, the record, and the three decisions
+//! (`inst-ap-decide`, `inst-as-approve`, `inst-as-reject`, `inst-as-void`).
+//!
+//! # The `GET` on one record carries the **pinned content**, and that is the
+//! # whole reason it exists
+//!
+//! §3's reviewability invariant (D-61) is explicit: *"`GET
+//! /bss-pricing/v1/approvals/{id}` MUST return the **pinned content** the
+//! approval's `content_hash` covers (not the hash alone), so approval is never
+//! hash-blind even where the subject resource is read-restricted"*. A reviewer
+//! handed 32 bytes and an `approve` button is a signature on a digest, and the
+//! two-person rule then certifies that somebody clicked.
+//!
+//! **What the store can and cannot give.** §6's `pricing_approval` carries a
+//! `content_hash` and **no content column**, so there is no pinned document to
+//! return: the only content this gear holds is the subject itself. So
+//! [`ApprovalDetailView`] carries the subject **re-derived now** plus
+//! [`ApprovalDetailView::content_matches_pin`], and the flag is not decoration —
+//! it is the difference between "this is what was signed for" and "this is what
+//! is there". On a `submitted` unit the two agree or the TOCTOU guard has
+//! already voided the record, which is exactly the state a reviewer decides in.
+//! Reported as a divergence rather than papered over: satisfying D-61 literally
+//! needs a content column §6 does not declare.
+//!
+//! The rendering is the **authoring plane's own** — [`PlanPhaseView`],
+//! [`AddonRuleView`], [`DescriptorSetView`], [`FrequencyView`],
+//! [`PriceRowView`], [`ScopeKeyView`] — plus [`WindowIntervalView`], which is
+//! `GET …/coverage`'s, so a reviewer reads the change set in the same shape the
+//! author wrote it and the operator inspects it. A second rendering of one fact is
+//! a second answer to it.
+//!
+//! [`PinnedContentView`] carries exactly the fields the pin hashes and no
+//! others. `evaluated_at` and `baseline` are outside the digest
+//! (`domain::approval::content_pin`'s module doc argues both), so putting them
+//! here would show a reviewer content their signature does not cover. **The
+//! conversion is an exhaustive destructure** and that is what keeps the sentence
+//! true: it was dot-access until 2026-08-04, and `PlanShape::windows` walked
+//! straight past it into the pin.
+//!
+//! # The three decisions declare no precondition header, and that is decided
+//!
+//! §5's idempotency cell for all three reads *per decision*, and the decision is
+//! at-most-once **by construction**: `approval_repo`'s compare-and-swap carries
+//! `state = 'submitted'` in its own predicate, so the second arrival is refused
+//! `APPROVAL_NOT_PENDING` (409) whether it is a retry or a race. An `If-Match`
+//! would be a second answer to a question the store already answers, over a
+//! record that carries no version column at all; an `Idempotency-Key` would
+//! store a response body for a replay the state machine makes unreachable. The
+//! `POST`s therefore declare neither, and `tests/module_test.rs` asserts the
+//! read routes declare none either.
+//!
+//! # `withdraw` is gated `approval × approve`, and no default role can reach it
+//!
+//! §3's endpoint map has one row for this whole path — *"`GET/POST
+//! /bss-pricing/v1/approvals*` (S5) | `approval × read` / `approve`"* — so a
+//! `POST` here is `approve`, and that is what this router enforces.
+//!
+//! **It is also a contradiction inside the design set, and it is reported
+//! rather than resolved by widening the gate.** `inst-as-void` names the
+//! withdrawer as *"the submitter (or a `CatalogAdmin`)"*; the role matrix in the
+//! same section gives `CatalogAdmin` `approval × read` and deliberately **not**
+//! `approval × approve` (*"it publishes, it does not approve itself"*), and a
+//! submitter holds `plan × publish` under `FinanceManager` or `CatalogAdmin`,
+//! neither of which carries `approve` either. So under the default matrix the
+//! only principal who can withdraw a unit is a `FinanceReviewer`, who is neither
+//! of the two the transition names. Gating on `read` instead would let anyone
+//! who can see a unit close it, which is worse and is not what the map says.
+
+use std::sync::Arc;
+
+use axum::body::Bytes;
+use axum::extract::{Extension, Path, Query};
+use axum::{Json, Router, http::HeaderMap, http::StatusCode};
+use chrono::{DateTime, Utc};
+use toolkit::api::canonical_prelude::CanonicalError;
+use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit_db::secure::AccessScope;
+use toolkit_odata::Page;
+use toolkit_security::SecurityContext;
+use uuid::Uuid;
+
+use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
+use crate::api::rest::correlation::{CorrelationId, require_correlation};
+use crate::api::rest::cursor::{self, PageRequest};
+use crate::api::rest::error::authz_error_to_canonical;
+use crate::api::rest::plans::{AddonRuleView, DescriptorSetView, FrequencyView, PlanPhaseView};
+use crate::api::rest::preconditions;
+use crate::api::rest::prices::{PriceRowView, ScopeKeyView};
+use crate::api::rest::state::GovernanceState;
+use crate::api::rest::windows::WindowIntervalView;
+use crate::domain::approval::{ApprovalState, DecisionBy};
+use crate::domain::error::DomainError;
+use crate::domain::materiality::{
+    MaterialityReason, MaterialityVerdict, ThresholdBasis, ThresholdEntry, ThresholdVersion,
+};
+use crate::domain::plan_shape::PlanShape;
+use crate::domain::window::KeyWindows;
+use crate::infra::approval::{ApprovalDetail, DecideRequest, PinnedSubject, RegionGrant};
+use crate::infra::storage::repo::approval_repo::ApprovalRecord;
+
+/// `OpenAPI` tag applied to every approval operation (DE0205).
+const TAG: &str = "BSS Pricing Approvals";
+
+/// The reviewer's queue.
+///
+/// The literal is repeated in the `OperationBuilder` call below because DE0801
+/// validates a **literal** argument and silently passes a `const` one, so the
+/// route-shape rule only binds where the literal is; the two spellings are
+/// pinned together by `tests/module_test.rs`'s route census.
+pub const APPROVALS: &str = "/bss-pricing/v1/approvals";
+/// One approval record, with the content its pin covers (D-61).
+pub const APPROVAL: &str = "/bss-pricing/v1/approvals/{approvalId}";
+/// The approve action, as a sub-resource segment (D-140: never a colon method).
+pub const APPROVAL_APPROVE: &str = "/bss-pricing/v1/approvals/{approvalId}/approve";
+/// The reject action.
+pub const APPROVAL_REJECT: &str = "/bss-pricing/v1/approvals/{approvalId}/reject";
+/// The withdraw action (`inst-as-void`).
+pub const APPROVAL_WITHDRAW: &str = "/bss-pricing/v1/approvals/{approvalId}/withdraw";
+
+// ---------------------------------------------------------------------------
+// Views and requests.
+// ---------------------------------------------------------------------------
+
+/// The evaluator's verdict, as it is stored and as it is read back.
+///
+/// **One shape for both**, which is why it is here rather than split between a
+/// storage struct and a wire struct: `pricing_approval.materiality` is free-form
+/// `jsonb` and §6 describes its payload — *"per-currency deltas, tripped rows,
+/// trigger source"* — without declaring a schema. Two renderings of one column
+/// would be two answers to what it holds.
+///
+/// **Two of the three fields §6 names are computed and not carried here, and that
+/// is a reported gap rather than the absence this doc used to claim.** It said all
+/// three were properties of "the threshold comparison this phase does not perform";
+/// the comparison is performed — `evaluate` walks per-currency deltas and knows which
+/// row tripped — and what this shape carries is still only the rule that fired.
+/// Widening it means the verdict type carries the tripped row and its currency, which
+/// costs [`MaterialityVerdict`] its `Copy` and every holder of one a borrow; owed
+/// rather than done here.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct MaterialityView {
+    /// Whether a second principal is required.
+    pub material: bool,
+    /// Which rule fired: `noConfiguredThreshold` | `firstPublish` |
+    /// `rowWithoutBaseline` | `alwaysMaterialTrigger` | `thresholdReached`. Absent on
+    /// an auto-publishable change.
+    ///
+    /// The roster is [`MaterialityReason::ALL`]'s and is transcribed rather than
+    /// counted: this list read as three of the four that existed, which is the
+    /// count-beside-a-roster shape that leaves exactly one of them true.
+    pub reason: Option<String>,
+}
+
+impl From<MaterialityVerdict> for MaterialityView {
+    fn from(verdict: MaterialityVerdict) -> Self {
+        Self {
+            material: verdict.is_material(),
+            reason: verdict
+                .reason()
+                .map(MaterialityReason::as_str)
+                .map(str::to_owned),
+        }
+    }
+}
+
+/// One approval record, as §6's columns stand.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct ApprovalView {
+    /// The record's durable name.
+    pub approval_id: Uuid,
+    /// The pinned subject — `<planId>/<revision>` for a plan revision.
+    pub subject_ref: String,
+    /// What kind of thing the subject is (`plan_revision`).
+    pub subject_kind: String,
+    /// The pinned digest, lower-case hex. Carried **beside** the content rather
+    /// than instead of it (D-61); it is what an auditor re-computes.
+    pub content_hash: String,
+    /// `submitted` | `approved` | `rejected` | `voided`.
+    pub state: String,
+    /// Who opened it — a pseudonymous principal id (`inst-au-pii`).
+    pub submitter_principal: Uuid,
+    /// Who approved or rejected it. `null` while pending **and on a void**: the
+    /// column is `approver_principal`, a withdraw exercises no review authority,
+    /// and `chk_pricing_approval_distinct_principals` refuses a submitter's own
+    /// id there.
+    pub approver_principal: Option<Uuid>,
+    /// Mandatory on a reject; carried by the machine-driven voids too, which
+    /// write why they closed.
+    pub reason: Option<String>,
+    /// The evaluator's verdict as stored. `null` when the column does not hold
+    /// this shape — a later slice's writer, not an error.
+    pub materiality: Option<MaterialityView>,
+    /// When it was opened, UTC.
+    pub submitted_at: DateTime<Utc>,
+    /// When it was decided, UTC; `null` exactly while pending.
+    pub decided_at: Option<DateTime<Utc>>,
+}
+
+impl From<&ApprovalRecord> for ApprovalView {
+    fn from(record: &ApprovalRecord) -> Self {
+        Self {
+            approval_id: record.approval_id,
+            subject_ref: record.subject_ref.clone(),
+            subject_kind: record.subject_kind.as_str().to_owned(),
+            content_hash: hex(&record.content_hash),
+            state: record.state.as_str().to_owned(),
+            submitter_principal: record.submitter_principal,
+            approver_principal: record.approver_principal,
+            reason: record.reason.clone(),
+            materiality: serde_json::from_value(record.materiality.clone()).ok(),
+            submitted_at: record.submitted_at,
+            decided_at: record.decided_at,
+        }
+    }
+}
+
+/// Exactly the plan content the pin hashes.
+///
+/// Every member is a field `content_pin::put_plan_shape` frames, and the two
+/// fields of [`PlanShape`] it does **not** frame — `evaluated_at` and
+/// `baseline` — are absent here for the same reason they are absent there: a
+/// reviewer must not be shown content their signature does not cover.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedContentView {
+    /// The plan under approval.
+    pub plan_id: Uuid,
+    /// Which revision of it.
+    pub revision: u64,
+    /// The catalog SKU this revision binds. Hashed since 2026-08-04, because a
+    /// rebind inside the approve→commit window would otherwise re-derive to the
+    /// same digest.
+    pub sku_id: Option<Uuid>,
+    /// `one_time` | `recurring` | `usage` | `hybrid`.
+    pub billing_cycle: Option<String>,
+    /// The recurring frequency, interval and all.
+    pub frequency: Option<FrequencyView>,
+    /// The plan's tier.
+    pub plan_tier: Option<String>,
+    /// Whether the tier diverges from the parent SKU's under an audited
+    /// override.
+    pub plan_tier_override: bool,
+    /// Start of the availability window, UTC.
+    pub available_from: Option<DateTime<Utc>>,
+    /// End of the availability window, UTC.
+    pub available_to: Option<DateTime<Utc>>,
+    /// Minimum purchasable quantity.
+    pub purchase_min_qty: Option<u64>,
+    /// Maximum purchasable quantity.
+    pub purchase_max_qty: Option<u64>,
+    /// The Billing invoice-layout hint (D-96).
+    pub invoice_grouping_key: Option<String>,
+    /// The phase chain.
+    pub phases: Vec<PlanPhaseView>,
+    /// The add-on composition rules.
+    pub addon_rules: Vec<AddonRuleView>,
+    /// The billing descriptor set.
+    pub descriptor_set: Option<DescriptorSetView>,
+    /// The candidate row set this publish would produce.
+    pub rows: Vec<PriceRowView>,
+    /// The window plane the pin covers, one entry per canonical scope key.
+    ///
+    /// Hashed since 2026-08-04 and shown here from the same day, for the reason
+    /// `sku_id` is: a field inside the digest and outside this document is a field
+    /// a reviewer is told `content_matches_pin: false` about while looking at a
+    /// page that does not contain it. Two plans differing **only** in their window
+    /// intervals rendered byte-identical here and hashed differently.
+    pub windows: Vec<PinnedWindowsView>,
+}
+
+/// One canonical scope key's window set, as the pinned document renders it.
+///
+/// The interval rendering is [`WindowIntervalView`] — `GET …/coverage`'s own, not
+/// a second spelling of it — and the key is [`ScopeKeyView`], the authoring
+/// plane's, which is what [`PriceRowView`] shows a reviewer a few lines above. A
+/// second rendering of one fact is a second answer to it.
+///
+/// What it does **not** carry is a coverage end or a gap list: those are *derived*
+/// from the intervals, the pin frames the intervals, and a document showing a
+/// reviewer a derivation their signature does not cover is the failure this whole
+/// view exists to avoid. `GET …/coverage` is where the derived answers live.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedWindowsView {
+    /// The eight axes the windows are filed under.
+    pub scope_key: ScopeKeyView,
+    /// The key's intervals, in the order the pin frames them.
+    pub intervals: Vec<WindowIntervalView>,
+}
+
+impl From<&KeyWindows> for PinnedWindowsView {
+    fn from(group: &KeyWindows) -> Self {
+        let KeyWindows {
+            scope_key,
+            intervals,
+        } = group;
+        Self {
+            scope_key: ScopeKeyView::from(scope_key),
+            intervals: intervals.iter().map(WindowIntervalView::from).collect(),
+        }
+    }
+}
+
+/// **An exhaustive destructure, and that is the guard** —
+/// `domain::approval::content_pin`'s discipline, here for its reason.
+///
+/// The dot-access version of this function let [`PlanShape::windows`] into the pin
+/// and past this view in one commit: `put_plan_shape`'s pattern refused to compile
+/// and reported the new field, `PlanSubjectDelta`'s `let Self { .. }` did the same,
+/// and this conversion said nothing because a field nobody reads produces no
+/// error. So the next field added to the shape is an E0027 here as well, and
+/// whoever adds it decides whether a reviewer is shown it instead of discovering
+/// later that they were not.
+///
+/// The two the pin does not frame are named and discarded rather than skipped with
+/// `..`, so the pattern stays a census.
+impl From<&PlanShape> for PinnedContentView {
+    fn from(shape: &PlanShape) -> Self {
+        let PlanShape {
+            plan_id,
+            revision,
+            sku_id,
+            billing_cycle,
+            frequency,
+            plan_tier,
+            plan_tier_override,
+            available_from,
+            available_to,
+            purchase_min_qty,
+            purchase_max_qty,
+            invoice_grouping_key,
+            phases,
+            addon_rules,
+            descriptor_set,
+            rows,
+            windows,
+            // Outside the digest, so outside this document: showing a reviewer
+            // content their signature does not cover is what the pin's module doc
+            // argues against for both of these.
+            baseline: _,
+            evaluated_at: _,
+        } = shape;
+        Self {
+            plan_id: plan_id.get(),
+            revision: *revision,
+            sku_id: *sku_id,
+            billing_cycle: billing_cycle.map(|cycle| cycle.as_str().to_owned()),
+            frequency: frequency.map(FrequencyView::from),
+            plan_tier: plan_tier.clone(),
+            plan_tier_override: *plan_tier_override,
+            available_from: *available_from,
+            available_to: *available_to,
+            purchase_min_qty: *purchase_min_qty,
+            purchase_max_qty: *purchase_max_qty,
+            invoice_grouping_key: invoice_grouping_key.clone(),
+            phases: phases
+                .phases()
+                .iter()
+                .copied()
+                .map(PlanPhaseView::from)
+                .collect(),
+            addon_rules: addon_rules
+                .iter()
+                .cloned()
+                .map(AddonRuleView::from)
+                .collect(),
+            descriptor_set: descriptor_set.clone().map(DescriptorSetView::from),
+            rows: rows.iter().map(PriceRowView::from).collect(),
+            windows: windows.iter().map(PinnedWindowsView::from).collect(),
+        }
+    }
+}
+
+/// Exactly the threshold-policy version the pin hashes — the reviewer's document
+/// for a D-10 unit.
+///
+/// A **second** pinned-content member rather than a widening of
+/// [`PinnedContentView`], for the reason `PinnedSubject` is a sum type: the two
+/// subjects share no field, and a single view carrying the union of both would
+/// have every member `null` for one of the two kinds. A reviewer would then be
+/// reading a document whose shape does not say what they are approving, and the
+/// exhaustive-destructure guard below would have nothing to be exhaustive over.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedThresholdPolicyView {
+    /// Which version of the tenant's policy this proposal is.
+    pub version: u64,
+    /// When its thresholds start applying, once approved.
+    pub effective_from: DateTime<Utc>,
+    /// The per-currency entries, in the order the pin frames them.
+    pub entries: Vec<ThresholdEntryView>,
+}
+
+/// One currency's proposed threshold.
+///
+/// The two bases are two nullable members and **exactly one is set**, which is the
+/// store's column shape rather than the domain's enum. The wire keeps the columns
+/// because a generated client reads `absoluteMinor` or `percentBp` and a tagged
+/// union would make the common case — read the number — a two-step. The invariant
+/// is held one layer in, by `ThresholdBasis`, and it is the constructor that a
+/// caller of the `PUT` meets.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct ThresholdEntryView {
+    /// The ISO 4217 code, uppercase.
+    pub currency: String,
+    /// The absolute threshold in the currency's minor units, or `null`.
+    ///
+    /// **§6's *"in minor units at the currency's ISO 4217 precision"* is a semantic
+    /// anchor and not a validation this surface can perform**, and the distinction is
+    /// worth stating rather than dismissing. As a *rule* about an integer already
+    /// declared to be in minor units it constrains nothing — there is no value of this
+    /// field a precision check could refuse, which is why `parse_entries` has no arm
+    /// for it. What it does fix is what the number **means**: `50000` on `EUR` is
+    /// €500.00 and not €50000, and on a zero-decimal currency (`JPY`, `KRW`) minor
+    /// units *are* major units, so the same integer is ¥50000. That is what a client
+    /// authoring a threshold and an auditor reading one both need, and it is the same
+    /// anchor `MinorAmount` carries on a price row. The scale itself is another gear's
+    /// reference data (`ledger_currency_scale_registry`), which this gear reaches
+    /// through SDK clients and never through a schema.
+    pub absolute_minor: Option<i64>,
+    /// The relative threshold in **basis points** (`10000` = 100%), or `null`.
+    pub percent_bp: Option<u32>,
+}
+
+/// **An exhaustive destructure, and that is the guard** — [`From<&PlanShape>`]'s
+/// discipline, applied to the second subject on the day it arrived rather than
+/// after a field went missing from a reviewer's document.
+///
+/// [`ThresholdEntry`] is destructured; [`ThresholdVersion`] cannot be, its fields
+/// being private behind the constructor that refuses an empty or duplicated entry
+/// set — which is the exposure `content_pin`'s module doc counts and carries the
+/// same obligation here: a fourth field on the version is a field this view will
+/// silently omit unless somebody adds it.
+///
+/// [`From<&PlanShape>`]: PinnedContentView
+impl From<&ThresholdVersion> for PinnedThresholdPolicyView {
+    fn from(version: &ThresholdVersion) -> Self {
+        Self {
+            version: version.version(),
+            effective_from: version.effective_from(),
+            entries: version
+                .entries()
+                .iter()
+                .map(|entry| {
+                    let ThresholdEntry { currency, basis } = entry;
+                    let (absolute_minor, percent_bp) = match *basis {
+                        ThresholdBasis::Absolute { minor } => (Some(minor), None),
+                        ThresholdBasis::Percent { bp } => (None, Some(bp)),
+                    };
+                    ThresholdEntryView {
+                        currency: currency.as_str().to_owned(),
+                        absolute_minor,
+                        percent_bp,
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One record **and what its pin covers** — D-61.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct ApprovalDetailView {
+    /// The record.
+    pub approval: ApprovalView,
+    /// The pinned **plan**, re-derived. `null` when the unit is not about a plan,
+    /// and when it is but can no longer be derived at all — the draft published,
+    /// or was abandoned.
+    pub pinned_content: Option<PinnedContentView>,
+    /// The pinned **threshold-policy version**, re-derived. `null` on every unit
+    /// that is not a D-10 policy proposal.
+    ///
+    /// At most one of this and `pinned_content` is ever set, and which one is a
+    /// fact about `approval.subject_kind`. Two members rather than one polymorphic
+    /// one because the two documents share no field; see
+    /// [`PinnedThresholdPolicyView`].
+    pub pinned_threshold_policy: Option<PinnedThresholdPolicyView>,
+    /// **The act this unit is being decided on**, read off the record's own
+    /// subject. `null` on every unit that is not a window mutation.
+    ///
+    /// D-61 asks that a reviewer read what they are signing for, and for a window
+    /// unit `pinned_content` alone cannot answer it: the pinned subject is the plan
+    /// as it already stands, so a cancel and a lengthening render the same document.
+    /// This names the operation and the interval it moves. It is not part of the
+    /// digest and does not need to be — it rides `subject_ref` on an append-only
+    /// store, so nothing can move it after the signature.
+    pub proposed_act: Option<ProposedActView>,
+    /// Whether the pinned content above still digests to `approval.content_hash`.
+    ///
+    /// **Read this before deciding.** `false` means the document above is *not*
+    /// the one the pin was taken over, and an approve would be refused
+    /// `APPROVAL_CONTENT_MISMATCH` (409). See the module doc for why the field
+    /// exists at all rather than the stored content being returned.
+    pub content_matches_pin: bool,
+}
+
+/// A reject: the mandatory reason (`inst-as-reject`).
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct RejectApprovalRequest {
+    /// Why the change is refused. Blank is absent — a `reason` column holding a
+    /// space satisfies `chk_pricing_approval_reason` and tells an auditor
+    /// nothing.
+    pub reason: String,
+}
+
+/// A withdraw: an optional note.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct WithdrawApprovalRequest {
+    /// Why the unit is being closed without a decision. Optional — §4 makes no
+    /// reason mandatory on this edge, and the machine-driven voids write their
+    /// own.
+    pub reason: Option<String>,
+}
+
+/// The two pagination query parameters plus the state filter (D-125).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ApprovalPageQuery {
+    /// Records per page; server default 100, hard cap 1,000.
+    pub limit: Option<u64>,
+    /// The opaque token a previous page returned.
+    pub cursor: Option<String>,
+    /// One of `submitted` | `approved` | `rejected` | `voided`. Absent is every
+    /// state, which is what "pending/decided approvals" asks for.
+    pub state: Option<String>,
+}
+
+/// Build the Axum router for the approval surface and register its operations.
+///
+/// No route declares a 422: §3.3's status-rendering rule makes every
+/// architectural 422 in the design set reach the wire as a 400 carrying its
+/// code, so a 422 here would document a response no path can emit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one builder chain per operation; flat is clearer than helpers that hide which route declares which response"
+)]
+pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Router {
+    let mut router = Router::new();
+
+    router = OperationBuilder::get("/bss-pricing/v1/approvals")
+        .operation_id("bss_pricing.list_approvals")
+        .summary("List the tenant's approval units (cursor-paginated)")
+        .description(
+            "One page of the tenant's approval records, in `approval_id` order, with an opaque \
+             `cursor` and a `limit` whose server default is 100 and whose hard cap is 1,000 \
+             (D-125). `state` narrows the page to one of `submitted`, `approved`, `rejected` or \
+             `voided`; omitting it returns every state, which is what a reviewer's queue over \
+             pending **and** decided units asks for. The pinned content is **not** on this \
+             page - a page of a hundred units would be a hundred plan assemblies - so a \
+             reviewer opens `GET /bss-pricing/v1/approvals/{approvalId}` before deciding, which \
+             is the surface D-61's reviewability invariant binds.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Records per page (default 100, hard cap 1,000)",
+            "integer",
+        )
+        .query_param("cursor", false, "Opaque base64url pagination cursor")
+        .query_param(
+            "state",
+            false,
+            "submitted | approved | rejected | voided; absent is every state",
+        )
+        .handler(list_approvals)
+        .json_response_with_schema::<Page<ApprovalView>>(
+            openapi,
+            StatusCode::OK,
+            "One page of the tenant's approval units.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    router = OperationBuilder::get("/bss-pricing/v1/approvals/{approvalId}")
+        .operation_id("bss_pricing.get_approval")
+        .summary("Read an approval unit and the content its pin covers")
+        .description(
+            "Returns the record **and the pinned content** - D-61's reviewability invariant, \
+             which exists because deny-by-default otherwise turns the two-person rule into a \
+             hash-blind signature: an approver who cannot read the subject resource can still \
+             read what they are approving here. `pinned_content` carries exactly the fields the \
+             content hash covers, and `content_matches_pin` says whether the subject as it \
+             stands still digests to the pin. A record outside the caller's scope reads exactly \
+             like an absent one (404, no existence leak) - what a pending unit tells an observer \
+             is that a price change is in flight.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("approvalId", "The approval unit to read.")
+        .handler(get_approval)
+        .json_response_with_schema::<ApprovalDetailView>(
+            openapi,
+            StatusCode::OK,
+            "The record and the content its pin covers.",
+        )
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    router = OperationBuilder::post("/bss-pricing/v1/approvals/{approvalId}/approve")
+        .operation_id("bss_pricing.approve_approval")
+        .summary("Approve a pending unit as the independent second principal")
+        .description(
+            "Moves a `submitted` unit to `approved` (`inst-as-approve`). The submitter may not \
+             be the approver - identity, never role, so one human holding both `plan x publish` \
+             and `approval x approve` is still refused `SELF_APPROVAL_FORBIDDEN` (403), and the \
+             attempt is written to the audit trail as a `deny` record before the refusal is \
+             returned (`inst-tp-selfaudit`). The pinned content hash is re-verified against the \
+             subject as it now stands; a mismatch is `APPROVAL_CONTENT_MISMATCH` (409) - a \
+             reviewer can only ever approve exactly what they saw. A record that has already \
+             been decided or voided is `APPROVAL_NOT_PENDING` (409). The decision needs no \
+             precondition header: the store's compare-and-swap carries `state = 'submitted'`, \
+             so the second arrival is refused whether it is a retry or a race. Approving does \
+             not publish; `POST /bss-pricing/v1/plans/{planId}/publish` does, and it re-verifies \
+             the pin again at the commit.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("approvalId", "The pending unit to approve.")
+        .handler(approve_approval)
+        .json_response_with_schema::<ApprovalView>(
+            openapi,
+            StatusCode::OK,
+            "The record as it stands after the decision.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    router = OperationBuilder::post("/bss-pricing/v1/approvals/{approvalId}/reject")
+        .operation_id("bss_pricing.reject_approval")
+        .summary("Reject a pending unit, with its mandatory reason")
+        .description(
+            "Moves a `submitted` unit to `rejected` (`inst-as-reject`), returning the plan's \
+             draft revision to the author. The `reason` is **mandatory** and a blank one is \
+             refused `REASON_REQUIRED` (400 carrying the code - the design set types it 422 and \
+             the canonical family has no such category, so the code is the discriminator). The \
+             two-person rule and the approver's scope apply exactly as they do to an approve: a \
+             reject returns the plan to `draft`, so it is not the harmless direction, and a \
+             reviewer denied the authority to approve a change is denied the authority to unwind \
+             it. The pin is **not** re-verified - the subject returns to `draft` either way, so \
+             there is nothing a mismatch would protect.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("approvalId", "The pending unit to reject.")
+        .json_request::<RejectApprovalRequest>(openapi, "The mandatory reason.")
+        .handler(reject_approval)
+        .json_response_with_schema::<ApprovalView>(
+            openapi,
+            StatusCode::OK,
+            "The record as it stands after the decision.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    router = OperationBuilder::post("/bss-pricing/v1/approvals/{approvalId}/withdraw")
+        .operation_id("bss_pricing.withdraw_approval")
+        .summary("Withdraw a pending unit without deciding it")
+        .description(
+            "Moves a `submitted` unit to `voided` (`inst-as-void`) **and frees the subject it \
+             held**: a pending unit holds its plan's subject under \
+             `PENDING_CHANGE_UNIT_EXISTS`, so without this path the only escape was mutating \
+             the subject's content. A fresh submit afterwards opens a **new** record - approval \
+             records are immutable once decided (`inst-as-immutable`) and there is no re-open. \
+             The two-person rule does **not** apply here: a withdraw's actor is the submitter, \
+             which is exactly who S4 names, so a distinctness rule would make the escape hatch \
+             unreachable by the person it is for. `approver_principal` therefore stays null - a \
+             withdraw exercises no review authority. An already-decided record is \
+             `APPROVAL_NOT_PENDING` (409).",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("approvalId", "The pending unit to withdraw.")
+        .json_request::<WithdrawApprovalRequest>(openapi, "An optional note.")
+        .handler(withdraw_approval)
+        .json_response_with_schema::<ApprovalView>(openapi, StatusCode::OK, "The voided record.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    // D-178's edge, applied here rather than where the routers are merged so it
+    // travels with the routes: a surface reachable without it cannot build an
+    // `AuditStamp`, and `correlation::require_correlation` answers 500 rather
+    // than minting a second value per record.
+    router
+        .layer(Extension(state))
+        .layer(axum::middleware::from_fn(
+            crate::api::rest::correlation::establish,
+        ))
+}
+
+// ---------------------------------------------------------------------------
+// Handlers.
+// ---------------------------------------------------------------------------
+
+/// `GET /approvals`.
+async fn list_approvals(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Query(query): Query<ApprovalPageQuery>,
+) -> Result<Json<Page<ApprovalView>>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = read_scope(&enforcer, &ctx, None).await?;
+
+    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let states = state_filter(query.state.as_deref())?;
+    // One row more than the page, so "is there another page" is answered without
+    // a second query and without a page of `next_cursor` pointing at nothing.
+    let probe = page.limit.saturating_add(1);
+    let mut records = state
+        .approvals
+        .list(&scope, ctx.subject_tenant_id(), &states, page.after, probe)
+        .await
+        .map_err(CanonicalError::from)?;
+
+    let has_more = u64::try_from(records.len()).unwrap_or(u64::MAX) > page.limit;
+    if has_more {
+        records.pop();
+    }
+    let next = has_more
+        .then(|| records.last().map(|record| record.approval_id))
+        .flatten();
+    Ok(Json(Page {
+        items: records.iter().map(ApprovalView::from).collect(),
+        page_info: cursor::page_info(next, page.limit),
+    }))
+}
+
+/// `GET /approvals/{approvalId}`.
+async fn get_approval(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(approval_id): Path<Uuid>,
+) -> Result<Json<ApprovalDetailView>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = read_scope(&enforcer, &ctx, Some(approval_id)).await?;
+
+    let detail = state
+        .approvals
+        .find(&scope, ctx.subject_tenant_id(), approval_id, Utc::now())
+        .await
+        .map_err(CanonicalError::from)?
+        .ok_or_else(|| CanonicalError::from(not_readable(approval_id)))?;
+    Ok(Json(detail_view(&detail)))
+}
+
+/// `POST /approvals/{approvalId}/approve`.
+async fn approve_approval(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
+    Path(approval_id): Path<Uuid>,
+) -> Result<Json<ApprovalView>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
+    let scope = decide_scope(&enforcer, &ctx, approval_id).await?;
+    decide(
+        &state,
+        &scope,
+        &ctx,
+        correlation,
+        approval_id,
+        DecisionBy::Approve(ctx.subject_id()),
+        None,
+    )
+    .await
+}
+
+/// `POST /approvals/{approvalId}/reject`.
+async fn reject_approval(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
+    Path(approval_id): Path<Uuid>,
+    _headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ApprovalView>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
+    let scope = decide_scope(&enforcer, &ctx, approval_id).await?;
+    // `Bytes` + `parse_body`, never axum's `Json` extractor: its rejection for a
+    // body that parses as JSON but not as the target type is a 422, and no path
+    // in this gear may emit one.
+    let body: RejectApprovalRequest = preconditions::parse_body(&body)?;
+    decide(
+        &state,
+        &scope,
+        &ctx,
+        correlation,
+        approval_id,
+        DecisionBy::Reject(ctx.subject_id()),
+        Some(body.reason),
+    )
+    .await
+}
+
+/// `POST /approvals/{approvalId}/withdraw`.
+async fn withdraw_approval(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
+    Path(approval_id): Path<Uuid>,
+    _headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ApprovalView>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
+    let scope = decide_scope(&enforcer, &ctx, approval_id).await?;
+    // An empty body is a withdraw with no note, which is the ordinary case; a
+    // body that is present must still be well-formed.
+    let body: WithdrawApprovalRequest = if body.is_empty() {
+        WithdrawApprovalRequest { reason: None }
+    } else {
+        preconditions::parse_body(&body)?
+    };
+    decide(
+        &state,
+        &scope,
+        &ctx,
+        correlation,
+        approval_id,
+        // `Some(subject_id)`: the withdrawer is a human and the record's audit
+        // trail names them. It is **not** written to `approver_principal` - see
+        // `infra::approval::judge`, which passes `approver()` precisely so a
+        // submitter's own withdraw does not collide with
+        // `chk_pricing_approval_distinct_principals`.
+        DecisionBy::Void(Some(ctx.subject_id())),
+        body.reason,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Shared pieces.
+// ---------------------------------------------------------------------------
+
+/// The three decisions, spelled once.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the three routes' whole request, gathered: the service and the compiled scope, the \
+              authenticated principal and the correlation its request was given, the record \
+              addressed, and the decision with its reason. Folding them would name a DTO none of \
+              the three routes has"
+)]
+async fn decide(
+    state: &GovernanceState,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    approval_id: Uuid,
+    decision: DecisionBy,
+    reason: Option<String>,
+) -> Result<Json<ApprovalView>, CanonicalError> {
+    let now = Utc::now();
+    let tenant = ctx.subject_tenant_id();
+    let record = state
+        .approvals
+        .decide(
+            scope,
+            tenant,
+            DecideRequest {
+                approval_id,
+                decision,
+                reason,
+                approver_regions: region_grant_of_this_surface(),
+                stamp: audit_stamp(ctx, now, correlation),
+            },
+        )
+        .await
+        .map_err(CanonicalError::from)?;
+    Ok(Json(ApprovalView::from(&record)))
+}
+
+/// The `approval × read` gate, for the two reads.
+async fn read_scope(
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    approval_id: Option<Uuid>,
+) -> Result<AccessScope, CanonicalError> {
+    crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &crate::authz::resource_types::APPROVAL,
+        crate::authz::actions::READ,
+        /* owner_tenant_id */ None,
+        /* resource_id */ approval_id,
+        /* require_constraints */ true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)
+}
+
+/// The `approval × approve` gate, for the three decisions.
+///
+/// `owner_tenant_id = Some(caller's tenant)` because these are writes, so
+/// `access_scope`'s membership assertion refuses a target outside the compiled
+/// scope — the degraded flat-`In` decision does not re-check the property.
+async fn decide_scope(
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    approval_id: Uuid,
+) -> Result<AccessScope, CanonicalError> {
+    crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &crate::authz::resource_types::APPROVAL,
+        crate::authz::actions::APPROVE,
+        /* owner_tenant_id */ Some(ctx.subject_tenant_id()),
+        /* resource_id */ Some(approval_id),
+        /* require_constraints */ true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)
+}
+
+/// The deciding principal's **pricing-region** grant, as this surface can
+/// establish it.
+///
+/// **It cannot, and this function is the report rather than the plumbing.**
+/// `inst-ap-scope` requires the approver's grant to cover every pricing region
+/// the pinned change set touches, and `inst-rb-preview-scope` says a grant
+/// *"carries an explicit pricing-region set"* and stops there: **no document in
+/// the set says how that set is transported** — which claim, which PDP
+/// constraint, which resource property. `SecurityContext` exposes a subject, a
+/// tenant, a subject type and token scopes; `authz::SUPPORTED_PROPERTIES` is
+/// `owner_tenant_id` and `resource_id`, both uuid-typed, while a pricing region
+/// is a string on a price row's scope key. There is nothing here to read a grant
+/// from that would not be a property name invented in this file.
+///
+/// So it answers [`RegionGrant::Untransported`], whose own doc carries the
+/// consequence: **`inst-ap-scope` is not enforced on this surface** and
+/// `REGION_SCOPE_DENIED` is unreachable over HTTP. The rule itself is built and
+/// both its directions are driven through the service
+/// (`domain::approval::decision` judges it, `tests/sqlite_approval_service.rs`
+/// exercises it under [`RegionGrant::Explicit`]); what is missing is one
+/// transport, not the rule.
+///
+/// # It used to return a set, and that was a defect rather than a spelling
+///
+/// It read the pinned subject through `ApprovalService::find` and returned the
+/// change set's own reach — the same *value* the untransported variant now
+/// resolves to, established at a different **time**. `judge` re-derives the
+/// change set inside the judgement transaction, so a mutation adding a row in a
+/// new region between the two reads made `is_subset` fail and answered
+/// `OutOfScope`: a 403, and a `deny` audit record classing an innocent reviewer
+/// as an attempted authority violation. Handing the *fact* over instead of a
+/// stale answer leaves one read where there were two, and drops a whole plan
+/// assembly off every decision as a side effect.
+///
+/// Whichever wave declares the transport replaces this function's body with a
+/// read of it and returns [`RegionGrant::Explicit`];
+/// `approvals_tests::the_region_rule_is_not_enforced_at_this_surface` is the
+/// assertion that has to change when it does.
+const fn region_grant_of_this_surface() -> RegionGrant {
+    RegionGrant::Untransported
+}
+
+/// The state filter, read through [`ApprovalState::ALL`] rather than parsed.
+///
+/// One authority for what states exist, so a state added later cannot go missing
+/// from a literal list here while still compiling.
+fn state_filter(token: Option<&str>) -> Result<Vec<ApprovalState>, DomainError> {
+    let Some(token) = token else {
+        return Ok(Vec::new());
+    };
+    ApprovalState::ALL
+        .iter()
+        .copied()
+        .find(|state| state.as_str() == token)
+        .map(|state| vec![state])
+        .ok_or_else(|| {
+            let known: Vec<&str> = ApprovalState::ALL
+                .iter()
+                .copied()
+                .map(ApprovalState::as_str)
+                .collect();
+            DomainError::InvalidRequest(format!(
+                "state `{token}` is not one of {}",
+                known.join(", ")
+            ))
+        })
+}
+
+/// The act a window unit is being decided on, for the reviewer's read.
+///
+/// A projection of [`crate::infra::window::ProposedAct`], which is parsed from the
+/// record's own subject. Instants are rendered as the subject spells them rather
+/// than re-parsed: the subject is the authenticated artifact, and a re-parse that
+/// normalised an offset would show a reviewer something other than what was signed.
+#[toolkit_macros::api_dto(response)]
+#[derive(Debug, Clone)]
+pub struct ProposedActView {
+    /// `schedule`, `adjust` or `cancel`.
+    pub operation: String,
+    /// The window the act is on; `null` for a schedule, whose window does not exist yet.
+    pub window_id: Option<Uuid>,
+    /// The price row a schedule would put a window on; `null` for the other two acts.
+    pub price_id: Option<Uuid>,
+    /// The start a schedule proposes; `null` for the other two.
+    pub effective_from: Option<String>,
+    /// The end the act proposes; `null` means open-ended.
+    pub effective_to: Option<String>,
+    /// The end as it stands before the act; `null` for a schedule, and for a window
+    /// that is already open-ended.
+    pub current_effective_to: Option<String>,
+}
+
+impl From<crate::infra::window::ProposedAct> for ProposedActView {
+    fn from(act: crate::infra::window::ProposedAct) -> Self {
+        Self {
+            operation: act.operation,
+            window_id: act.window_id,
+            price_id: act.price_id,
+            effective_from: act.effective_from,
+            effective_to: act.effective_to,
+            current_effective_to: act.current_effective_to,
+        }
+    }
+}
+
+/// Render one detail, pin and all.
+fn detail_view(detail: &ApprovalDetail) -> ApprovalDetailView {
+    ApprovalDetailView {
+        approval: ApprovalView::from(&detail.record),
+        pinned_content: detail
+            .subject
+            .as_ref()
+            .and_then(PinnedSubject::plan)
+            .map(PinnedContentView::from),
+        pinned_threshold_policy: detail
+            .subject
+            .as_ref()
+            .and_then(PinnedSubject::threshold_policy)
+            .map(PinnedThresholdPolicyView::from),
+        // Only a window unit's subject names an act; every other kind's subject is
+        // an id, and the parser answers `None` for anything it did not build.
+        proposed_act: (detail.record.subject_kind
+            == crate::domain::audit::AuditSubjectKind::Window)
+            .then(|| crate::infra::window::parse_unit_subject(&detail.record.subject_ref))
+            .flatten()
+            .map(ProposedActView::from),
+        content_matches_pin: detail.content_matches_pin,
+    }
+}
+
+/// "Absent, or not yours" — one answer for both.
+///
+/// A 403 for another tenant's unit would confirm it exists, and what a pending
+/// unit tells an observer is that a price change is in flight.
+fn not_readable(approval_id: Uuid) -> DomainError {
+    DomainError::NotFound {
+        subject: "approval".to_owned(),
+        id: approval_id.to_string(),
+    }
+}
+
+/// Lower-case hex, so the digest survives a JSON round trip a byte array would
+/// not.
+///
+/// Hand-rolled rather than through `write!` for one reason: writing into a
+/// `String` cannot fail, so every spelling that uses the formatter has to
+/// discard a `Result` that carries a `#[must_use]`, and this crate's lint set
+/// refuses all three ways of doing that. Two table lookups per byte is the
+/// smaller cost.
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
+#[cfg(test)]
+#[path = "approvals_tests.rs"]
+mod approvals_tests;

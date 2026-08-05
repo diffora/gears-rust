@@ -33,15 +33,18 @@
 //! incompleteness is declared here rather than left for a reader to discover.
 //! One line per absent fact, with the slice that owns it:
 //!
-//! - **`PriceWindow` intervals and states, and the derived coverage end**
-//!   (Slice 7 — D-99, D-121). There is no window store in this gear: no
-//!   interval columns on `pricing_price`, no window table. So a version
-//!   produced before Slice 7 **cannot answer sellability predicate (1)** —
-//!   "an active window covers `t` with the D-80 coverage horizon"
-//!   (`07-pricewindow-linkage.md` `inst-sg-surface`) — from the pin, which is
-//!   what `inst-sg-pinned` requires of it. The D-121 **horizon** `H` is absent
-//!   for the same reason and its own premise is stated where the projector
-//!   applies it.
+//! - ~~**`PriceWindow` intervals and states, and the derived coverage end**~~ —
+//!   **landed 2026-08-04 and struck from this list.** [`PlanSubjectDelta::windows`]
+//!   carries them, grouped per canonical scope key, so a version this module
+//!   renders **does** answer sellability predicate (1) — "an active window covers
+//!   `t` with the D-80 coverage horizon" (`07-pricewindow-linkage.md`
+//!   `inst-sg-surface`) — from the pin, which is what `inst-sg-pinned` requires of
+//!   it. The line is struck rather than deleted because `inst-sg-pinned`'s
+//!   arithmetic is stated against this list: it says a version projected before
+//!   these facts exist answers **three of six**, and with predicate (1)'s operand
+//!   present that becomes **four of six**. The D-121 **horizon** `H` is still
+//!   absent, for a different reason than this fact was, and its own premise is
+//!   stated where the projector applies it.
 //! - **The GA-gate flags** `not_sellable_ga` and the prepaid-execution gate
 //!   (Slice 4 / Slice 10) — sellability predicate (5). Neither has a store
 //!   here.
@@ -166,6 +169,7 @@ use crate::domain::price_row::{
     QuantitySource, TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 /// The lifecycle states a plan-subject delta draws its price rows from.
 ///
@@ -188,6 +192,28 @@ use crate::domain::scope_key::{PlanId, ScopeKey};
 /// delta carries as [`PlanSubjectDelta::lifecycle_state`].
 pub const PROJECTED_ROW_STATES: &[LifecycleState] =
     &[LifecycleState::Published, LifecycleState::Superseded];
+
+/// The window states a plan-subject delta carries (D-121).
+///
+/// `PROJECTED_ROW_STATES`' sibling, one plane over, and the two absences are the
+/// rule rather than a filter that happened to be written:
+///
+/// - **`cancelled` is out.** It is not history a consumer resolves against; it is
+///   a schedule that never happened. A frozen delta advertising a cancelled
+///   interval would tell a reader a key is covered over a span nothing was ever
+///   effective on — the trailing void D-62 → D-80 → D-94 close, arriving from the
+///   projection side instead of the truth side.
+/// - **`expired` is in**, and it is the load-bearing one. Rating pins *current*
+///   versions and rates *past* instants, so after a changeover the predecessor's
+///   expired interval is what a legitimately covered arrears period resolves
+///   against. Dropping it would fail that period closed on a key that was covered
+///   the whole time — the same mistake `superseded` in `PROJECTED_ROW_STATES`
+///   avoids on the row plane, for the same reason.
+pub const PROJECTED_WINDOW_STATES: &[WindowState] = &[
+    WindowState::Scheduled,
+    WindowState::Active,
+    WindowState::Expired,
+];
 
 /// The K3 cross-boundary marker, on every resolved `plan` subject row (D-169
 /// clause 1, `06-consumer-contracts.md` §3 `inst-pi-crossboundary` and §6).
@@ -272,6 +298,76 @@ pub struct PlanSubjectDelta {
     pub descriptor_set: Option<DescriptorSet>,
     /// The price rows the version freezes, drawn from [`PROJECTED_ROW_STATES`].
     pub prices: Vec<PriceRecord>,
+    /// The plan's window facts, grouped per canonical scope key, drawn from
+    /// [`PROJECTED_WINDOW_STATES`] (D-99, D-121).
+    ///
+    /// **Intervals, states and a derived coverage end — never a point-in-time
+    /// boolean.** `inst-sg-surface` is explicit about it and the reason is what
+    /// makes activation and expiry *not* publish units: a consumer re-derives
+    /// "active at `t`" from the frozen interval, so `now` crossing an
+    /// `effectiveFrom` changes a truth row and changes nothing projected. An
+    /// `activeNow` flag would put the answer to a question about the reader's
+    /// clock into an artifact frozen years earlier, and every time-driven flip
+    /// would then owe a re-projection of a store whose whole contract is that a
+    /// completed version never changes.
+    ///
+    /// Grouped **per key** rather than per price row because every consumer of
+    /// these facts asks a per-key question — predicate (1), the D-80 horizon,
+    /// `inst-el-bootstrap`'s generation match — and one key legitimately spans two
+    /// rows (a supersession leaves a `superseded` predecessor beside its
+    /// `published` successor, and their two windows are one coverage run).
+    ///
+    /// # Which keys this enumerates: exactly the ones [`PlanSubjectDelta::prices`]
+    /// does
+    ///
+    /// One group per distinct canonical scope key of the projected price rows, and
+    /// **no others** — a consumer-visible fact rather than an implementation
+    /// detail, which is why it is stated here beside the field a consumer reads.
+    /// Two consequences, and each closes a way the two lists could disagree:
+    ///
+    /// - a projected key whose windows were all cancelled (or that has none at all)
+    ///   is **present**, with an empty interval list and a `coverageEnd` of
+    ///   [`CoverageEnd::Uncovered`](crate::domain::window::CoverageEnd::Uncovered).
+    ///   "This key is uncovered" therefore has one declared spelling (D-167 clause
+    ///   1) rather than being inferred from a missing group;
+    /// - a window hanging off a row D-121 excludes — a never-published draft — is
+    ///   absent, and contributes no key of its own. A draft row legitimately shares
+    ///   a key with the published row it will supersede, so this is a filter on the
+    ///   **row**, never on the key.
+    ///
+    /// Without it a consumer walking `windows` would meet keys no projected row
+    /// backs, and a key's frozen coverage end could run past anything published is
+    /// effective over.
+    ///
+    /// # The `state` token is the state **at projection time**
+    ///
+    /// **"Active at `t`" is derived from `interval ∧ now`, never read off the
+    /// token.** The token records where the window stood when the version was
+    /// projected, and a consumer that branched on it would be asking about a moment
+    /// that has passed.
+    ///
+    /// The argument, rather than the assertion: the token is **stale by
+    /// construction** for every window the `WindowActivationJob` ever flips, because
+    /// D-99 makes an activation re-project nothing. So if sellability predicate (1)
+    /// read the token, an activation *would* owe a re-projection — contradicting the
+    /// very decision that makes the window plane cheap — and until one arrived the
+    /// key would read unsellable forever behind a token frozen at `scheduled`. The
+    /// derived reading is the only coherent one, and it is also why
+    /// [`PROJECTED_WINDOW_STATES`] carries `scheduled` at all: a scheduled window's
+    /// interval is future-covering and has to be visible before the window is
+    /// active, which is exactly what the D-80 coverage horizon looks ahead over.
+    ///
+    /// What the token *is* for is the two questions about the past that the interval
+    /// cannot answer: whether a key's coverage over some span was ever real
+    /// (`cancelled` never reaches here at all) and whether a run of intervals is one
+    /// coverage run or a predecessor plus a successor.
+    ///
+    /// **This reading is a divergence to report, not a document to edit.** The design
+    /// set nowhere says which reading a consumer takes: `inst-sg-surface` says "an
+    /// **active** window covers `t`" while D-99 says active-at-`t` is derived at read
+    /// time, and nothing reconciles the two. Stated here because it is what G5 codes
+    /// predicate (1) against and this is where the payload is declared.
+    pub windows: Vec<KeyWindows>,
 }
 
 impl PlanSubjectDelta {
@@ -310,6 +406,7 @@ impl PlanSubjectDelta {
             addon_rules,
             descriptor_set,
             prices,
+            windows,
         } = self;
 
         json!({
@@ -330,6 +427,7 @@ impl PlanSubjectDelta {
             "addonRules": addon_rules.iter().map(addon_rule_value).collect::<Vec<_>>(),
             "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
             "prices": prices.iter().map(price_value).collect::<Vec<_>>(),
+            "windows": windows.iter().map(key_windows_value).collect::<Vec<_>>(),
             "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
             // Read from the constant for `evaluationPolicyVersion`'s reason: it
             // is a property of the gear that projected, not of the projection,
@@ -507,6 +605,50 @@ fn row_value(row: &PriceRow) -> JsonValue {
             json!({ "quantity": quantity, "rolloverPolicy": rollover_policy.as_str() })
         }),
     })
+}
+
+/// One canonical scope key's window facts: its ordered intervals and the coverage
+/// end derived from them (`inst-sg-surface`).
+///
+/// Destructured without a rest pattern for [`PlanSubjectDelta::to_value`]'s
+/// reason.
+fn key_windows_value(group: &KeyWindows) -> JsonValue {
+    let KeyWindows {
+        scope_key,
+        intervals,
+    } = group;
+    json!({
+        "scopeKey": scope_key_value(scope_key),
+        "coverageEnd": coverage_end_value(group.coverage_end()),
+        "intervals": intervals.iter().map(interval_value).collect::<Vec<_>>(),
+    })
+}
+
+/// One window interval and the state it is held under.
+fn interval_value(interval: &WindowInterval) -> JsonValue {
+    let WindowInterval {
+        effective_from,
+        effective_to,
+        state,
+    } = interval;
+    json!({
+        "effectiveFrom": effective_from,
+        "effectiveTo": effective_to,
+        "state": state.as_str(),
+    })
+}
+
+/// The derived coverage end, as a **discriminated object** rather than a nullable
+/// instant.
+///
+/// A bare `null` would have to stand for two answers that are opposites under the
+/// D-80 horizon predicate — covered forever, and not covered at all — so a
+/// consumer reading `"coverageEnd": null` could not tell "this key sells
+/// indefinitely" from "this key sells nowhere". The `kind` token is what makes the
+/// two distinguishable to a reader that has only the JSON, which is every reader
+/// this payload has. See [`CoverageEnd`](crate::domain::window::CoverageEnd).
+fn coverage_end_value(end: crate::domain::window::CoverageEnd) -> JsonValue {
+    json!({ "kind": end.as_str(), "at": end.at() })
 }
 
 /// One tier band. The open top is rendered as `null` rather than as a sentinel

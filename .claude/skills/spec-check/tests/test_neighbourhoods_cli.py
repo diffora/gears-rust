@@ -204,14 +204,169 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #:   so a class that stops occurring is distinguishable from one that never existed.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
-    "no-region": 4,
+    "no-region": 3,
     "anchored:no-account": 6,
-    "suspicious:multi-region": 54,
+    "suspicious:multi-region": 59,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 13,
+    "suspicious:weak-coverage": 9,
     "covered:strong": 0,
 }
-#: Moved 2026-08-03 (was 3 / 5 / 52 / 17, judged 69, total unchanged at 77) after the
+#: Moved 2026-08-05 (was 3 / 5 / 59 / 10, judged 69) by the **D-183…D-193 phase-4 close docs wave**
+#: — eleven register entries plus a status-board paragraph and one clause each in S3, S5 and S7.
+#: Total requirements unchanged at 77; **judged 69 -> 68**, the single mover out of the judged set
+#: being `fr-supersession`.
+#:
+#: **Five triage movers, all hand-checked per id against the pre-wave tree (`b65201b52`) in a
+#: detached worktree, and the blank-line control reproduces NONE of them** — 121 blank lines in
+#: `DECISIONS.md` and 2 each in S5/S7, no content anywhere, leaves the histogram byte-identical to
+#: pre-wave. So every mover here is content, not the window grid re-slicing, which is the opposite
+#: of entries 18-21's finding and is why the control was worth running:
+#:
+#:   id                       region that moved                        direction
+#:   fr-future-gap-coverage   DECISIONS.md @ 0.625 gained              -> multi-region
+#:   fr-scheduled-migration   DECISIONS.md @ 0.603 gained              -> multi-region
+#:   fr-package-pricing       DECISIONS.md @ 0.600, DESIGN.md @ 0.600  -> weak-coverage
+#:   fr-price-history-export  DECISIONS.md @ 0.603 lost                -> weak-coverage
+#:   fr-supersession          design/01-foundation @ 0.600 lost        -> anchored:no-account
+#:
+#: Two kinds, and they need opposite readings. The two **gains** are honest content: the new
+#: entries genuinely discuss window coverage (D-184/D-189/D-190/D-191) and version scheduling
+#: (D-185/D-188/D-192), so those requirements really do have a second account now.
+#:
+#: The three **losses** are threshold-straddlers and **not** document defects. Every lost region
+#: scored within 0.003 of `SCORE_THRESHOLD` (0.600, 0.600, 0.603), and in each case the losing
+#: document was **never edited by this wave** — `design/01-foundation.md`, `DESIGN.md` and the
+#: pre-existing half of `DECISIONS.md`. What moved is the corpus-wide document-frequency cutoff:
+#: adding ~121 lines of content changes which terms are ubiquitous enough to drop, which changes a
+#: requirement's discriminating-term set, which changes the *recall* of an unchanged window. The
+#: shift is visible directly in `fr-supersession`'s untouched id anchors, which moved by exactly one
+#: thousandth in the same run (`DESIGN.md` 0.118 -> 0.119, `design/01-foundation.md` 0.164 ->
+#: 0.165). `fr-supersession`'s design account still exists in prose; the search stopped counting it
+#: as an account.
+#:
+#: Recorded rather than tuned. The metric being sensitive to corpus growth at the third decimal is
+#: a property of `SCORE_THRESHOLD` as a hard cut, already acknowledged in SKILL.md's terse-prose
+#: note, and a docs wave is not the place to change a scorer — least of all on the sample that
+#: exposed it (standing rule 6).
+#: **Held unmoved 2026-08-04** through the **D-182 docs wave** — the window plane's single register
+#: entry, plus one status-board row, one preamble sentence and one clause each in S7
+#: `inst-fg-trailing` and S11 `inst-rt-cancel`. Recorded although nothing moved, because the note
+#: below named the register preamble a permanent threshold-straddler and this is the first wave to
+#: append to it since: a zero from that window is a measurement, not an absence of one.
+#:
+#: **Zero triage movers, zero judge movers, three region movers**, each diffed per id against the
+#: pre-wave tree (`4d007405`) in a detached worktree, and the blank-line control (1 / 9 blank lines
+#: at this wave's two `DECISIONS.md` insertion points, no content anywhere) separates them exactly:
+#:
+#:   id                        window before -> after                      control
+#:   fr-prepaid-credit-grant   DECISIONS.md:547-558 -> 553-564             reproduced
+#:   nfr-size-limits           DECISIONS.md:1357-1368 -> region dropped    reproduced
+#:   fr-future-gap-coverage    design/07:205-216 -> 199-210                NOT reproduced
+#:
+#: The first two are the grid re-slicing pre-existing text on a +10-line offset, with **zero**
+#: content contribution, and neither changes class (4 -> 4 regions; and 3 -> 2 stays
+#: `multi-region`, two regions still over threshold). The third is this wave's content and is the
+#: one that should have moved: the wave grows `inst-fg-trailing` **in place**, both the losing and
+#: the winning window contain that rule's line, the region count stays at 2 and the class stays
+#: `weak-coverage` — the window re-centres on the rule that grew. `design/07` gains no lines, which
+#: is why the control cannot reproduce it.
+#:
+#: **The straddling window was measured directly rather than argued about.** `DECISIONS.md:19-30`
+#: grew 66,743 -> 68,440 bytes and its region membership is **44 ids before, 44 after, 44 in the
+#: control — the same 44, none gained, none lost.** So the note below is not weakened: a window
+#: carrying a large fraction of every requirement's vocabulary is also one an ordinary append
+#: cannot push further. No term-level `DF_CUTOFF` sweep was run, deliberately — with zero triage
+#: movers there is no crossing to attribute, and computing one would invite reading a number as a
+#: cause. Nothing was reworded (rule 6); no threshold was touched.
+#:
+#: (Previous move, recorded below.) Moved 2026-08-03 (was 4 / 5 / 54 / 14, judged 68, total unchanged at 77) after the
+#: **phase-closing docs wave** — the wave that lands D-180 (`submit`/`withdraw` join S5 §6's
+#: `action` roster), D-181 (the correlation id is minted, not adopted from an inbound trace id)
+#: and two id-less records of what the phase proved by execution.
+#:
+#: **Six movers, and not one is a coverage change.** Each was diffed per id against the pre-wave
+#: tree (`e7704c10`) in a detached worktree, and each gains exactly **one** new `term-overlap`
+#: region scoring **0.600–0.667** — every one of them just over the 0.6 threshold, and every one
+#: of them in one of only **two** windows:
+#:
+#:   id                          window                          score before -> after
+#:   fr-bundle-composition       DECISIONS.md:19-30              0.595 -> 0.603
+#:   fr-customer-group-pricing   DECISIONS.md:19-30              0.593 -> 0.613
+#:   fr-customer-group-pricing   design/01-foundation.md:541-552 0.593 -> 0.600
+#:   fr-model-kind               DECISIONS.md:19-30              0.590 -> 0.667
+#:   fr-sellability-gate         DECISIONS.md:19-30              0.574 -> 0.609
+#:   nfr-event-propagation       design/01-foundation.md:541-552 0.588 -> 0.647
+#:   nfr-publish-propagation     design/01-foundation.md:541-552 0.588 -> 0.647
+#:
+#: **The newly matched terms decide it.** Term-for-term, what crossed each requirement into its
+#: new class is generic vocabulary this wave's prose happens to contain, never a statement about
+#: the requirement: `primary` (bundle composition), `groups`/`many` (customer-group pricing),
+#: `applies`/`implicit`/`matrix` (model kind), `applies`/`execution`/`offered`/`void`
+#: (sellability gate), `events` (event propagation), `rating` (publish propagation) — the last
+#: two from one clause naming the four gears the outbox emits to. The wave is about the audit
+#: `action` vocabulary and the correlation id; it says nothing about bundles, customer groups,
+#: model kinds or sellability, and neither new window cites any of the six ids.
+#:
+#: **The mechanism is the two mega-windows, and it is worth naming as measurement health.**
+#: `DECISIONS.md:19-30` is the register's TOC plus its **single-line, 67 KB** wave preamble, and
+#: `design/01-foundation.md:541-552` is §3.7's bullet block at **29 KB**. A region's score is the
+#: *fraction* of a requirement's discriminating terms the window carries, so a 12-line window
+#: that happens to hold one enormous paragraph carries a large fraction of **any** vocabulary and
+#: sits permanently within a term or two of 0.6. Four of the six moved on 1 term of 116, 3 of 39,
+#: 4 of 115 and 1 of 17 respectively; at 17 terms the score's own granularity (0.059) is coarser
+#: than the distance these ids sat from the threshold. Any wave that appends to either place will
+#: flip a handful of ids in whichever direction it happens to push. That is a property of the
+#: instrument meeting two documents that grew a paragraph-per-line habit, not of the design set.
+#:
+#: **One `DF_CUTOFF` crossing, and it is the known oscillator.** Exhaustively over the 5,141
+#: terms both trees share, exactly one crossed: **`unit` 0.24426 -> 0.25070**, moving *outside*
+#: and so ceasing to discriminate — the same term entry 20 recorded crossing *inside*
+#: (0.25042 -> 0.24661) one wave earlier, oscillating on window-count dilution alone (2,481 ->
+#: 2,501 windows). It touches exactly one mover and there the arithmetic is complete without any
+#: content at all: `fr-customer-group-pricing` on `design/01-foundation.md:541-552` matches **48**
+#: terms before and after, and 48/81 = 0.593 becomes 48/80 = 0.600 — the threshold crossed by a
+#: shrinking denominator and nothing else. `catalog` 0.23700 -> 0.23471 and `same` 0.25796 ->
+#: 0.26190 moved as expected and did not cross.
+#:
+#: **The blank-line control is decisive in the other direction, and that is new.** The pre-wave
+#: tree with **26 / 19 / 72 blank lines** at this wave's three insertion points and no content at
+#: all reproduces the *old* histogram exactly (4 / 5 / 54 / 14). So unlike entries 18–20 this
+#: move is **not** the grid re-slicing pre-existing text: the line count is innocent and the added
+#: words are the cause. What the words are is the paragraph above — six ids each tipped by one to
+#: four terms of ordinary English inside a window that was already 96–99% of the way there.
+#: Nothing was reworded to move a score back (rule 6) and no threshold was touched.
+#:
+#: (Previous move, recorded below.) Moved 2026-08-03 (was 4 / 6 / 54 / 13, judged 67, total unchanged at 77) after the
+#: **D-179 docs wave** — phase 3's group **G1**, which mints the publish-path code for the
+#: freeze D-177 described and repairs the `deny`-token contradiction in S5 §6.
+#:
+#: **One mover, and it is the window grid alone.** `fr-supersession`
+#: `anchored:no-account` -> `suspicious:weak-coverage`, gaining a single `term-overlap` region
+#: in `design/01-foundation.md` at **0.604** — four thousandths over the 0.6 threshold. Its
+#: three id-anchored regions are unchanged at 0.072 / 0.117 / 0.162.
+#:
+#: **This exactly reverses the previous capture's departure, and it is the same oscillator.**
+#: Entry 19 recorded this id falling 0.6091 -> 0.5676 when 38 lines went in above §3.7, and
+#: flagged it as threshold-adjacent for two consecutive waves. This wave adds **13** lines to
+#: `design/01-foundation.md` §3.3 — the `PRIMITIVE_RULES_UNBUILT` declaration — and the id
+#: comes back over.
+#:
+#: **One controlled run, and it is decisive.** Pre-wave tree (`c7c2f872`) with **13 blank
+#: lines** inserted at the exact insertion point of this wave's §3.3 paragraph and **no content
+#: at all**: identical counts, and `fr-supersession` at the identical **0.604**. The prose
+#: contributes nothing — the new paragraph is about two unauthorable Slice-10 primitives and
+#: does not mention supersession — so the region is pre-existing §3.7 text that a 12-line window
+#: at step 6 re-slices back onto. The grid is necessary and sufficient; there is no `DF_CUTOFF`
+#: component to decompose because there is no content component either.
+#:
+#: **What this adds to the model.** Entries 18 and 19 established the grid mechanism on
+#: *downward* moves and reproduced them under blank lines. This is the first capture to
+#: reproduce an **upward** move the same way, on the same id, in the opposite direction, from an
+#: edit thirteen lines long. The measurement-health signal entry 19 recorded — a 12-line window
+#: at step 6 is a coarse instrument near 0.6 — now has a matched pair. Nothing was reworded to
+#: move the score in either direction (rule 6), and no threshold was touched.
+#:
+#: (Previous move, recorded below.) Moved 2026-08-03 (was 3 / 5 / 52 / 17, judged 69, total unchanged at 77) after the
 #: **D-175…D-178 docs wave** — the seventh implementation-side wave, raised by Group **G8**,
 #: whose purpose was closing six waves of the register's own owed-back clauses rather than
 #: building a plane. **Four movers**, each diffed per-id against the pre-wave tree (`5a8c801e`)
@@ -915,7 +1070,30 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 67, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 68, "ledger": 17}
+#: pricing 69 -> 68 on the 2026-08-05 **D-183…D-193 phase-4 close docs wave**. One mover,
+#: `fr-supersession`, whose only account (`design/01-foundation.md`, `term-overlap`) scored
+#: **exactly 0.600** and fell under the threshold when corpus growth changed the
+#: discriminating-term set. Its document was not edited by the wave and its prose account
+#: still exists — see the straddler analysis beside `PINNED_TRIAGE_PRICING`.
+#: pricing 68 -> 69 on the 2026-08-03 **phase-closing docs wave** (D-180/D-181 plus two id-less
+#: records of what the phase proved by execution). **One net id entered the judged set**:
+#: `nfr-event-propagation`, out of `no-region`, which is not judged, into `weak-coverage`, which
+#: is. The other five movers are `weak-coverage` -> `multi-region`, both judged, so they are
+#: judge-neutral and change only the histogram's shape. Not one of the six is an account: each
+#: gains a single `term-overlap` region at 0.600–0.667 in one of the corpus's two mega-windows,
+#: on one to four terms of generic vocabulary. `nfr-event-propagation`'s own increment is the
+#: word **`events`**, from a clause naming the four gears `pricing_outbox` emits to. Unusually,
+#: the blank-line control does **not** reproduce this move — the added words are the cause, and
+#: they are still not an account. Full per-id decomposition, including the single `DF_CUTOFF`
+#: crossing (`unit`, the known oscillator, back outside), beside `PINNED_TRIAGE_PRICING`.
+#: pricing 67 -> 68 on the 2026-08-03 **D-179** wave (phase 3, G1). **One** id entered the
+#: judged set and none left it: `fr-supersession`, out of `anchored:no-account`, which is not a
+#: judged class, into `weak-coverage`, which is. It is the same threshold-adjacent id that left
+#: the judged set one capture ago at 0.6091 -> 0.5676, returning at **0.604**, and a controlled
+#: run with 13 **blank** lines at this wave's insertion point reproduces it identically — so the
+#: increment is the window grid and not an account. See the note beside
+#: `PINNED_TRIAGE_PRICING`.
 #: pricing 68 -> 69 on the 2026-08-03 D-170…D-174 wave (G7, the REST surface), the sixth move
 #: of that day. **One** id entered the judged set and none left it: `nfr-event-propagation`,
 #: out of `no-region`; the +3/−2 between `multi-region` and `weak-coverage` is judge-neutral.

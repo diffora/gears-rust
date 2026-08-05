@@ -112,6 +112,14 @@ bss-fixtures-conformance = { workspace = true }
 # are denied — which is format-independent, so JSON stands in for the YAML the
 # platform parses at boot.
 serde_json = { workspace = true }
+# The Postgres testcontainers harness (`tests/postgres_*.rs`), adopted from the
+# sibling ledger rather than invented. Tests reach `testcontainers` items
+# through the `testcontainers_modules::testcontainers` re-export, so the bare
+# `testcontainers` crate is not a direct dep. It carries what the SQLite mirror
+# cannot: the chain executed on the backend it targets, and the concurrency
+# D-159 and D-135 describe — SQLite serializes writers, so it can neither
+# confirm nor refute a claim about two of them.
+testcontainers-modules = { workspace = true }
 toolkit = { workspace = true, features = ["db"] }
 # `tower::ServiceExt::oneshot` drives the REST router in `tests/rest_*.rs`
 # without binding a socket.

@@ -8,15 +8,19 @@
 //!
 //! Capabilities: `db` (the Foundation tables and their append-only enforcement
 //! are migrations), `rest` (the authoring + read-model surfaces), `stateful`
-//! (the read-model warm re-drive, and later the window-activation job Slice 7
-//! owns). Declared dependencies are the PEP and the type registry: every
-//! ctx-bearing path gates through `access_scope` before touching a repository,
-//! and the AuthZ label type-schemas are registered at init.
+//! (the read-model warm re-drive **and** the Slice 7 window-activation sweep —
+//! that clause used to say "and later the window-activation job Slice 7 owns",
+//! and later arrived). Declared dependencies are the PEP and the type registry:
+//! every ctx-bearing path gates through `access_scope` before touching a
+//! repository, and the AuthZ label type-schemas are registered at init.
 //!
-//! The `stateful` entry now drives the read-model warm sweep, which is the only
-//! thing in this gear that turns a publish's pending handle into a version a
-//! consumer can pin: without the ticker `pricing_read_model` stays empty
-//! whatever else is built.
+//! The `stateful` entry drives **two** independent leased tickers, each with its
+//! own key and cadence (`crate::infra::jobs` states what each is for). Neither
+//! waits on the other: the warm re-drive is what turns a publish's pending handle
+//! into a version a consumer can pin — without it `pricing_read_model` stays
+//! empty whatever else is built — and the activation sweep is what makes a
+//! scheduled window take effect at its own instant rather than at the next
+//! publish.
 
 use std::sync::Arc;
 
@@ -35,15 +39,18 @@ use toolkit_db::{DBProvider, DbError};
 use tracing::info;
 
 use crate::api::rest::frontier::ApiState as CatalogVersionApiState;
-use crate::api::rest::state::AuthoringState;
+use crate::api::rest::state::{AuthoringState, GovernanceState};
 use crate::config::BssPricingConfig;
 use crate::domain::ports::{CatalogVersionRegistryV1, UnconfiguredCatalogVersionRegistryV1};
+use crate::infra::approval::ApprovalService;
 use crate::infra::fixture_gate::FixtureGate;
 use crate::infra::jobs::readmodel_warm::ReadModelWarmJob;
+use crate::infra::jobs::window_activation::WindowActivationJob;
 use crate::infra::publish::PublishService;
 use crate::infra::storage::repo::{
     IdempotencyGate, PinFrontierRepo, PlanRepo, PlanShapeRepo, PriceRepo,
 };
+use crate::infra::window::WindowService;
 
 /// The coordination-lease key of the read-model warm sweep.
 ///
@@ -51,14 +58,25 @@ use crate::infra::storage::repo::{
 /// tenant, so there is nothing per-tenant to hold.
 const WARM_LEASE_KEY: &str = "bss-pricing:readmodel-warm";
 
+/// The coordination-lease key of the window activation/expiry sweep.
+///
+/// Per gear and per pass, never per tenant, for [`WARM_LEASE_KEY`]'s reason
+/// stated above — one sweep is one pass over every tenant, so a per-tenant key
+/// would be a lock on a thing nobody takes.
+///
+/// A **second** key rather than a share of the first, because the two passes are
+/// independent (`crate::infra::jobs` says so): one key would make them a queue,
+/// and a window boundary would then wait on a registry that is not answering.
+const WINDOW_ACTIVATION_LEASE_KEY: &str = "bss-pricing:window-activation";
+
 /// Per-process state built by [`Gear::init`] and read by
 /// [`RestApiCapability::register_rest`] and [`BssPricingGear::serve`].
 pub(crate) struct PricingRuntime {
-    /// Database provider for the background work: the read-model warm sweep
-    /// runs under a system context (`AccessScope::allow_all`, narrowed per
-    /// tenant before every write), not a per-request `SecureORM` scope, and the
-    /// coordination lease that makes it a singleton is built over the same
-    /// handle.
+    /// Database provider for the background work: the sweeps run under a system
+    /// context (`AccessScope::allow_all`, narrowed per tenant before every write),
+    /// not a per-request `SecureORM` scope, and the coordination leases that make
+    /// each of them a singleton are built over this same handle — one
+    /// `LeaseManager` per ticker, each on its own key.
     ///
     /// Acquired here rather than later on purpose: `db_required()` is what
     /// proves the declared `db` capability actually resolved, and a boot that
@@ -75,66 +93,6 @@ pub(crate) struct PricingRuntime {
     /// `register_rest`. Authz is security-critical, so a missing client fails
     /// init — there is no no-op fallback.
     pub enforcer: Arc<authz_resolver_sdk::PolicyEnforcer>,
-    /// The publish engine: the subject assembler, the aggregate rule set and
-    /// the §4.2 step-2 pre-check, over the repositories and the
-    /// joint-conformance gate.
-    ///
-    /// **This is where the fixture gate and the `CatalogVersion` registry now
-    /// live**, and both used to sit on this struct with a `dead_code` allow
-    /// waiting for exactly this field. The registry is still resolved from
-    /// `ClientHub` with a fail-closed default and still does NOT hard-fail init:
-    /// the registry gear has no code in this repository, and a catalog that
-    /// could not boot without it could not be developed at all. The cost is paid
-    /// at the right moment instead — the commit requests addressability and
-    /// stops when the answer is "unconfigured", so nothing becomes
-    /// consumer-visible without a real version.
-    ///
-    /// The gate's own story is the same: it used to sit here with a
-    /// `dead_code` allow reading "consulted by the publish engine, which lands
-    /// with the publish path" — the publish path has landed, the
-    /// gate is consulted by [`PublishService::precheck`], and the field it was
-    /// waiting for is this one. The gate is still loaded once at init rather
-    /// than per publish, because the registry is a static generated artifact and
-    /// the gate runs inside a publish transaction, where reading a file is not
-    /// an option; a registry that cannot be read leaves it CLOSED for every kind
-    /// and does not abort the boot.
-    ///
-    /// # The allow that remains, and why its reason changed
-    ///
-    /// The authoring REST surface exists now, and it did **not** give this
-    /// engine a caller — so the old reason ("called by the authoring REST
-    /// surface (G7)") became false rather than merely stale, which by this
-    /// crate's own norm is worse than an allow whose reason has come true.
-    ///
-    /// The real blocker is Slice 5. [`PublishService::commit`] requires a
-    /// `PublishAuthorization`, which has exactly two arms and no `Default`,
-    /// deliberately, so that there is no way to reach the commit with the
-    /// question unanswered. `Approved` needs a `pricing_approval` row in
-    /// `approved` state whose pinned `content_hash` still matches — there is no
-    /// such table, no repository and no Slice-5 code of any kind.
-    /// `AutoPublishable` needs an explicitly configured per-currency threshold
-    /// and a materiality evaluator that scored this change below it — neither
-    /// exists, and `05-governance.md` G1 makes that decisive rather than
-    /// inconvenient: **no configured threshold means all changes are material,
-    /// and a first publish is always material.** So with Slice 5 absent, every
-    /// publish this gear could be asked for is material, material means
-    /// `Approved`, and `Approved` has no record to name.
-    ///
-    /// Constructing `AutoPublishable` anyway would be exactly the fail-open the
-    /// design set has closed by hand five times (D-50, D-62, D-104, D-109,
-    /// D-115). Registering `POST …/plans/{planId}/publish` to return 501 was
-    /// also rejected: an `OpenAPI`-registered operation is a promise, and
-    /// `domain::rules`'s absence discipline reads the same way inverted.
-    ///
-    /// **The owner is the group that lands Slice 5** — the approval store, its
-    /// state machine and the threshold policy — not a surface group.
-    #[allow(
-        dead_code,
-        reason = "no caller until Slice 5 exists: `commit` needs a PublishAuthorization, whose \
-                  Approved arm needs a pricing_approval row that has no table and whose \
-                  AutoPublishable arm is unreachable by governance G1's fail-safe"
-    )]
-    pub publish: PublishService,
     /// The `CatalogVersion` registry, resolved at init with the fail-closed
     /// default.
     ///
@@ -151,6 +109,8 @@ pub(crate) struct PricingRuntime {
     /// Per-request state for the plan and price authoring surfaces, built here
     /// for the same reason: one place wires, one place composes.
     pub authoring_api: Arc<AuthoringState>,
+    /// Per-request state for the approval surface and the publish mount.
+    pub governance_api: Arc<GovernanceState>,
 }
 
 #[toolkit::gear(name = "bss-pricing", capabilities = [db, rest, stateful], deps = [types_registry, authz_resolver], lifecycle(entry = "serve", stop_timeout = "30s"))]
@@ -171,12 +131,14 @@ impl Default for BssPricingGear {
 impl BssPricingGear {
     /// Lifecycle entry (`stateful` capability).
     ///
-    /// The Foundation's background work is the read-model warm re-drive, and it
-    /// is not optional: the publish commit leaves a **pending**
-    /// `CatalogVersion` handle and no version, so without this ticker nothing
-    /// ever resolves it, `pricing_read_model` stays empty and no version ever
-    /// becomes pin-eligible. §4.4's "the re-drive continues past the SLO with
-    /// no bound" is this loop coming round again.
+    /// Two tickers, spawned below and both joined — `crate::infra::jobs` says what
+    /// each is for and why neither waits on the other. Neither is optional, for two
+    /// different reasons: the publish commit leaves a **pending** `CatalogVersion`
+    /// handle and no version, so without the warm re-drive nothing ever resolves it,
+    /// `pricing_read_model` stays empty and no version becomes pin-eligible (§4.4's
+    /// "the re-drive continues past the SLO with no bound" is that loop coming round
+    /// again); and without the activation sweep a scheduled window takes effect at
+    /// no instant at all.
     ///
     /// An unconfigured gear still parks on the token: a gear compiled in but
     /// absent from `gears:` has no runtime and therefore no work.
@@ -192,27 +154,46 @@ impl BssPricingGear {
 
         info!(
             warm_tick_secs = rt.config.jobs.readmodel_warm_tick_secs,
+            window_activation_tick_secs = rt.config.jobs.window_activation_tick_secs,
             "bss-pricing: lifecycle started"
         );
         let tasks = cancel.child_token();
         let warm = Self::spawn_warm_ticker(Arc::clone(&rt), tasks.clone());
+        let activation = Self::spawn_activation_ticker(Arc::clone(&rt), tasks.clone());
 
         cancel.cancelled().await;
         tasks.cancel();
-        Self::stop(warm).await;
+        Self::stop(warm, activation).await;
         Ok(())
     }
 
-    /// Wind the ticker down and say so.
+    /// Wind both tickers down and say so.
     ///
-    /// A join error is a **panic** in the sweep, and it is reported rather than
-    /// swallowed: the loop catches every tick failure itself, so reaching this
-    /// arm means something the job's own error handling did not model.
-    async fn stop(warm: tokio::task::JoinHandle<()>) {
-        if let Err(e) = warm.await {
-            tracing::warn!(error = %e, "bss-pricing: warm ticker did not join cleanly");
-        }
+    /// A join error is a **panic** in a sweep, and it is reported rather than
+    /// swallowed: each loop catches every tick failure itself, so reaching one of
+    /// these arms means something the job's own error handling did not model.
+    ///
+    /// **Both are joined, and neither is skipped when the other faults.** They
+    /// are cancelled by one token and each holds a coordination lease whose slot
+    /// frees itself at the TTL, so a shutdown that abandoned the second handle
+    /// would leave a task writing to a database the process is closing — the one
+    /// state a `stop_timeout` cannot help with.
+    async fn stop(warm: tokio::task::JoinHandle<()>, activation: tokio::task::JoinHandle<()>) {
+        Self::join_ticker(warm, "readmodel-warm").await;
+        Self::join_ticker(activation, "window-activation").await;
         info!("bss-pricing: lifecycle cancelled");
+    }
+
+    /// Await one ticker's handle, reporting a panic rather than swallowing it.
+    ///
+    /// One function for both, and the `ticker` field is what tells them apart:
+    /// two copies of this `if let` is two places the warning could be dropped
+    /// from, and the second handle is exactly the one a shutdown is tempted to
+    /// stop caring about.
+    async fn join_ticker(handle: tokio::task::JoinHandle<()>, ticker: &'static str) {
+        if let Err(e) = handle.await {
+            tracing::warn!(error = %e, ticker, "bss-pricing: a ticker did not join cleanly");
+        }
     }
 
     /// Spawn the read-model warm ticker: a cancellable loop driving one
@@ -285,7 +266,7 @@ impl BssPricingGear {
         job: &ReadModelWarmJob,
         ttl: std::time::Duration,
     ) {
-        let Some(guard) = Self::take_warm_lease(lease, ttl).await else {
+        let Some(guard) = Self::take_lease(lease, WARM_LEASE_KEY, ttl).await else {
             return;
         };
         if let Err(e) = job.run(Utc::now()).await {
@@ -298,23 +279,168 @@ impl BssPricingGear {
         }
     }
 
-    /// Take the singleton slot, or say why not.
+    /// Spawn the window activation/expiry ticker: a cancellable loop driving one
+    /// [`WindowActivationJob`] pass every `jobs.window_activation_tick_secs`.
+    ///
+    /// [`Self::spawn_warm_ticker`]'s shape, and its three properties hold here
+    /// for the same reasons — `MissedTickBehavior::Delay`, the `biased` select,
+    /// and a tick failure logged rather than fatal. What is **not** inherited is
+    /// the argument about what the lease is for.
+    ///
+    /// # What THIS lease buys, which is not what the warm sweep's buys
+    ///
+    /// [`Self::spawn_warm_ticker`]'s doc is precise that its lease removes
+    /// **wasted work, not a correctness hole**, because every write on that path
+    /// is guarded by a key or a predicate. That is a claim measured on that path,
+    /// and it is not inherited: it was checked here, and the check had two halves
+    /// with two different answers.
+    ///
+    /// * **The flip was already guarded.** `window_repo::transition` carries
+    ///   `state = <expected>` **and** §4's boundary condition into its `UPDATE`'s
+    ///   `WHERE`, so a second sweep's flip matches zero rows and `activated_at` —
+    ///   the instant a price took effect — is written exactly once. So far the
+    ///   warm sweep's sentence holds.
+    /// * **The event was not.** Two concurrent sweeps flipping one window would
+    ///   have enqueued **two** `PriceWindowActivated` rows for one transition.
+    ///   At-least-once delivery lets a consumer see one event twice; it does not
+    ///   let one transition *be* two events, at two `seq` positions of the plan's
+    ///   stream, dedupable by nothing a consumer holds. A lease cannot close that,
+    ///   because a lease can be **lost** — losing it is what a takeover is.
+    ///
+    /// So it was closed in the store instead:
+    /// `outbox_repo::price_window_transition_dedup_key` covers
+    /// `(window_id, transition)`, and the row is refused by the **pair** of
+    /// constraints that key reaches — `uq_pricing_outbox_dedup_key` and the
+    /// `outbox_id` primary key, which `outbox_repo::outbox_id` derives from the same
+    /// `(tenant_id, dedup_key)` precisely so a repeat collides on both. Which of the
+    /// two answers first is not knowable from here and does not matter:
+    /// `contention_or_db`'s own comment records that the driver's error class cannot
+    /// tell a table's unique constraints apart, so naming one member would be
+    /// picking a winner nothing observes.
+    ///
+    /// The flip and the enqueue share **one transaction**, so a committed flip
+    /// cannot stand without its event nor an event without its flip. That is a
+    /// property of the code's shape — one `in_transaction` closure containing both
+    /// writes — and it is stated as one rather than as suite-proved, because the
+    /// suite does not prove it. `tests/postgres_window_activation.rs` races two
+    /// sweeps and proves **one flip, one event**; in that race the loser's `UPDATE`
+    /// matches zero rows and `transition` answers `Ok` on the self-edge once the
+    /// winner commits, so the loser has nothing on the window side to roll back. The
+    /// property that needs the transaction is a *committed* flip whose enqueue then
+    /// fails, and no test exercises that — it would take an enqueue made to fail
+    /// after a successful flip, which is a fault this suite has no way to inject.
+    ///
+    /// **With that key in place the sentence is true of this path too**, and the
+    /// difference from the warm sweep is where the guard lives rather than
+    /// whether there is one: this lease removes wasted work, and the dedup key is
+    /// what makes losing the lease safe.
+    ///
+    /// The TTL is the tick interval, for [`Self::spawn_warm_ticker`]'s reason: it
+    /// bounds only how long a **crashed** holder blocks its peers, and a longer
+    /// slot would stall the sweep for a whole deployment — here at the cost of
+    /// window boundaries going uncrossed, which is what the Warn alarm the pass
+    /// raises would then report.
+    fn spawn_activation_ticker(
+        rt: Arc<PricingRuntime>,
+        token: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(rt.config.jobs.window_activation_interval());
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let lease = coord::LeaseManager::new(rt.db.db());
+            let job = WindowActivationJob::new(rt.db.clone(), rt.config.jobs.clone());
+            loop {
+                tokio::select! {
+                    biased;
+                    () = token.cancelled() => break,
+                    _ = iv.tick() => {
+                        Self::activation_pass(
+                            &lease,
+                            &job,
+                            rt.config.jobs.window_activation_interval(),
+                        )
+                        .await;
+                    }
+                }
+            }
+        })
+    }
+
+    /// One leased activation pass. Extracted so the ticker stays a ticker.
+    async fn activation_pass(
+        lease: &coord::LeaseManager,
+        job: &WindowActivationJob,
+        ttl: std::time::Duration,
+    ) {
+        let Some(guard) = Self::take_lease(lease, WINDOW_ACTIVATION_LEASE_KEY, ttl).await else {
+            return;
+        };
+        match job.run(Utc::now()).await {
+            Ok(report) => Self::log_activation(&report),
+            Err(e) => {
+                tracing::error!(error = %e, "bss-pricing: window activation sweep tick failed");
+            }
+        }
+        if let Err(e) = guard.release().await {
+            // The slot frees itself at the TTL, so a failed release costs one
+            // skipped tick rather than a stuck sweep.
+            tracing::warn!(
+                error = %e,
+                "bss-pricing: could not release the window activation sweep lease"
+            );
+        }
+    }
+
+    /// Report a pass that moved something, and stay silent about one that did not.
+    ///
+    /// A pass that found nothing due is the steady state at every tick for as long
+    /// as no boundary falls inside one, so logging it at `info` would bury the
+    /// passes that did something under the passes that did not. The alarm the pass
+    /// raises for a late boundary is `tracing::error!` inside the job and is not
+    /// gated by this.
+    fn log_activation(report: &crate::infra::jobs::window_activation::ActivationReport) {
+        if report.activated == 0 && report.expired == 0 && report.failed == 0 {
+            return;
+        }
+        info!(
+            activated = report.activated,
+            expired = report.expired,
+            failed = report.failed,
+            overdue = report.overdue,
+            "bss-pricing: window activation sweep moved windows"
+        );
+    }
+
+    /// Take a singleton slot, or say why not.
     ///
     /// `LeaseHeld` is **debug**: in a multi-replica deployment every replica
     /// but one loses this every tick, which is the mechanism working rather
     /// than a fault.
-    async fn take_warm_lease(
+    ///
+    /// One function for both passes because the acquire is one rule — the key is
+    /// what differs, and a second copy of this match is a second place the
+    /// `LeaseHeld` arm could be promoted to a warning by somebody who had not
+    /// read the sentence above.
+    async fn take_lease(
         lease: &coord::LeaseManager,
+        key: &'static str,
         ttl: std::time::Duration,
     ) -> Option<coord::LeaseGuard> {
-        match lease.acquire(WARM_LEASE_KEY, ttl).await {
+        match lease.acquire(key, ttl).await {
             Ok(guard) => Some(guard),
             Err(coord::CoordError::LeaseHeld) => {
-                tracing::debug!("bss-pricing: read-model warm sweep skipped (a peer holds it)");
+                tracing::debug!(
+                    lease = key,
+                    "bss-pricing: sweep skipped (a peer holds its lease)"
+                );
                 None
             }
             Err(e) => {
-                tracing::error!(error = %e, "bss-pricing: could not acquire the warm sweep lease");
+                tracing::error!(
+                    error = %e,
+                    lease = key,
+                    "bss-pricing: could not acquire a sweep lease"
+                );
                 None
             }
         }
@@ -469,14 +595,32 @@ impl Gear for BssPricingGear {
             Arc::clone(&catalog_version_registry),
         );
 
+        // The governance surface's state, and the publish engine's **only**
+        // holder. It sat on `PricingRuntime` behind a `dead_code` allow for two
+        // phases because nothing could reach `commit`; the route that reaches it
+        // is mounted here, so the engine moves to the state that serves it
+        // rather than staying somewhere with an allow and a second reader.
+        let governance_api = Arc::new(GovernanceState {
+            db: db.clone(),
+            plans: PlanRepo::new(db.clone()),
+            prices: PriceRepo::new(db.clone()),
+            approvals: ApprovalService::new(db.clone()),
+            publish,
+            // The same registry `Arc` the engine holds. Two requesters of one
+            // registry, never two incrementers — `api::rest::state`'s module doc
+            // carries the argument and the correction it replaces.
+            windows: WindowService::new(db.clone(), Arc::clone(&catalog_version_registry)),
+            thresholds: crate::infra::threshold::ThresholdService::new(db.clone()),
+        });
+
         self.runtime.store(Some(Arc::new(PricingRuntime {
             db,
             config,
             enforcer,
-            publish,
             catalog_version_registry,
             catalog_version_api,
             authoring_api,
+            governance_api,
         })));
         info!("bss-pricing: runtime published");
         Ok(())
@@ -487,10 +631,10 @@ impl Gear for BssPricingGear {
 /// any catalog code reads the database.
 ///
 /// The list is the gear's own Foundation chain plus the shared `coord` lease
-/// migration — the read-model warm re-drive is a singleton job, so it needs the
-/// lease table (see `infra::storage::migrations`). The platform runner applies
-/// them in **name** order and rejects duplicate names outright, which is what
-/// `tests/module_test.rs` pins.
+/// migration — this gear's background work is coordinated as a singleton, so it
+/// needs the lease table (see `infra::storage::migrations`). The platform runner
+/// applies them in **name** order and rejects duplicate names outright, which is
+/// what `tests/module_test.rs` pins.
 impl DatabaseCapability for BssPricingGear {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
         crate::infra::storage::migrations::Migrator::migrations()
@@ -501,20 +645,44 @@ impl DatabaseCapability for BssPricingGear {
 ///
 /// # What is mounted, and what is not
 ///
-/// **Nine routes.** The pin-eligibility frontier (`frontier`), the plan
-/// authoring plane — read, create, patch, abandon (`plans`) — and the price
-/// authoring plane — create, patch, delete, list (`prices`). Every one of them
-/// gates on its catalogued `(resource_type, action)` pair before touching a
-/// repository, and `tests/rest_authz.rs` drives the whole set to prove it.
+/// **`tests/module_test.rs`'s `declared_paths()` is the roster of what is mounted,
+/// and this doc deliberately neither counts it nor repeats it.** It used to open
+/// "Fifteen routes" and enumerate them; the number was wrong by four the moment G3
+/// and G4 mounted the window plane, and the enumeration was wrong in the same edit
+/// that fixed a paragraph ten lines below it. A count beside a roster leaves only one
+/// of the two true, and it is never the prose. What is worth saying here is the
+/// property rather than the list: every mounted route gates on its catalogued
+/// `(resource_type, action)` pair before touching a repository, and
+/// `tests/rest_authz.rs` drives the whole set to prove it.
 ///
-/// **The design set declares roughly forty surfaces across Slices 2-12** and the
-/// other thirty-odd are not mounted, because a route whose handler has nothing
-/// to call is not a route: there is no approval store, no window store, no
-/// overlay, bundle, customer-group, import, migration, bulk or preview table,
-/// no audit or history read, and no read-model resolution query. The one route
-/// whose handler *does* have something to call and still cannot be built is
-/// `POST /bss-pricing/v1/plans/{planId}/publish` — see
-/// [`PricingRuntime::publish`] for why, at length.
+/// **The design set declares roughly forty surfaces across Slices 2-12** and most are
+/// not mounted, because a route whose handler has nothing to call is not a route:
+/// there is no overlay, bundle, customer-group, import, migration, bulk or preview
+/// table, no audit or history read, and no read-model resolution query.
+///
+/// **The three window surfaces have left that list**, and the sentence that used
+/// to keep them on it is withdrawn rather than edited around. It read that
+/// `POST …/prices/{priceId}/windows` and `PATCH`/`DELETE …/price-windows/{windowId}`
+/// "still have nothing to call", namely the `WindowService` — which
+/// [`crate::infra::window::WindowService`] now is, built a few lines above and held
+/// on `GovernanceState`. D-99's requirement is what it implements rather than what
+/// blocks it: each mutation requests a pending `CatalogVersion` ref, re-projects the
+/// plan subject and answers **202**, so nothing advertises coverage a consumer's
+/// pinned read model has not seen.
+///
+/// **`GET/PUT /bss-pricing/v1/config/approval-threshold-policy` has left that list
+/// too**, and the sentence that kept it there is withdrawn rather than edited
+/// around. It read that the surface "has no policy store, which is why every
+/// publish is material (D-10's fail-safe)" — `pricing_approval_threshold` is that
+/// store, and the two routes are mounted above. What the withdrawn sentence got
+/// right is worth restating at its real strength: a publish is still material
+/// wherever a tenant has no **approved** version, because the fail-safe is a rule
+/// about the policy's absence and not about the store's, and configuring one is
+/// itself an always-material act (D-10) that a second principal has to sign.
+///
+/// One absence on the approval plane is still worth naming because it is adjacent
+/// to what *is* mounted: `POST /bss-pricing/v1/historical-imports` has no
+/// reference-price store.
 ///
 /// The gear reserves its prefix either way, so an unconfigured boot answers 404
 /// under `/bss-pricing/v1` rather than colliding with another gear's namespace.
@@ -523,6 +691,22 @@ impl DatabaseCapability for BssPricingGear {
 /// per-request PEP (the value, not the `Arc` — `PolicyEnforcer: Clone`), which
 /// every gated handler extracts, and the canonical-error middleware that renders
 /// a `CanonicalError` as its RFC 9457 problem document.
+///
+/// **D-178's correlation edge is deliberately not a third one here.** It is
+/// applied inside each mutating router's own `router()`
+/// ([`correlation::establish`](crate::api::rest::correlation::establish)), so it
+/// travels with the routes rather than with whoever composes them: the crate's
+/// route suites build those routers directly and would otherwise drive a gear
+/// whose edge is missing, which is the one configuration that must never be
+/// tested as though it were production. The read-only `frontier` router does not
+/// carry it, because nothing behind it writes an audit record or an outbox row.
+/// A surface added without it cannot build an `AuditStamp` and answers 500 —
+/// **to a caller who should have got 403**, because `require_correlation` runs
+/// above the authz gate in every handler. That is the cost of the placement, and
+/// `tests/rest_authz.rs::every_mutating_router_applies_the_correlation_edge`
+/// is what stops a router being written without the edge: it scans the source
+/// rather than a maintained list, so a fifth router none of the route suites
+/// drive is caught before it is mounted.
 impl RestApiCapability for BssPricingGear {
     fn register_rest(
         &self,
@@ -544,6 +728,22 @@ impl RestApiCapability for BssPricingGear {
             ))
             .merge(crate::api::rest::prices::router(
                 Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::windows::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::approvals::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::publish::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::threshold_policy::router(
+                Arc::clone(&rt.governance_api),
                 openapi,
             ))
             .layer(axum::Extension((*rt.enforcer).clone()))

@@ -65,37 +65,79 @@
 //!
 //! Only what the crate **writes** is declared. A variant with no writer would
 //! read as coverage to everyone who greps for it — D-158's own constraint, and
-//! the reason `retire`, `approve`, `reject`, `deny`, `backdate_import` and
-//! `policy_update` are absent below though S5 §6 declares all six.
+//! the reason `retire`, `backdate_import` and `policy_update` are absent below
+//! though S5 §6 declares them. [`AuditAction::Deny`], [`AuditAction::Approve`]
+//! and [`AuditAction::Reject`] each left that list when their writer arrived;
+//! see the note at the end of this doc.
 //!
-//! ## Three of the five actions are this module's spelling and are **owed to the
+//! ## Two of the ten actions are this module's spelling and are **owed to the
 //! document**. Reported.
 //!
-//! S5 §6 declares the `action` vocabulary and opens it with "exactly the records
-//! this design set already requires somebody to write": `publish`, `abandon`,
-//! `retire`, `approve`, `reject`, `deny`, `backdate_import`, `policy_update`.
-//! Two sentences of the same section require more than that list enumerates —
-//! *"every mutation leaves an immutable trail an auditor can rely on for 7+
-//! years"* and, normatively, *"**Every mutation MUST record**
-//! actor/timestamp/before-after/approval trail"* — and draft authoring is a
-//! mutation. So the obligation covers the six mutating authoring routes and the
-//! enumeration covers one of them (`abandon`, by D-145).
+//! **The three that used to be here are paid.** `create`, `update` and `delete`
+//! were minted by the authoring wave and reported as owed; **D-175 declared all
+//! three** on 2026-08-03, so this section no longer names them. What it names now
+//! is the same gap on the approval plane, found by the same rule and reported the
+//! same way.
 //!
-//! [`AuditAction::Create`], [`AuditAction::Update`] and [`AuditAction::Delete`]
-//! are therefore **this module's spelling of a record the set requires and does
-//! not name**, in the `snake_case` shape D-158 fixes. D-158's own instruction is
-//! that "a slice that adds an audited record adds its token **here**", meaning
-//! the document — so the spelling is owed back to S5 §6 and is **reported rather
-//! than treated as declared**. It is not the same act as minting a wire code: an
-//! `action` is a stored discriminator on an additive vocabulary whose only reader
-//! (S12 `inst-he-read`'s Auditor-only sibling) does not exist yet, and the store
-//! is greenfield, so a document choosing a different verb costs a rename.
+//! S5 §6's `action` roster is `create | update | delete | publish | abandon |
+//! retire | approve | reject | deny | backdate_import | policy_update`, and
+//! D-175 clause (2) closes it with **no writer without a token**: every mutating
+//! surface this design set specifies carries an `action` there. Two of this
+//! slice's surfaces do not.
 //!
-//! The alternative was to leave five of six mutating routes writing nothing,
-//! which is the state the register classes *wrong now* over the state where the
-//! trail is visibly absent: `pricing_audit_log` is the store D-12 confines to the
-//! Auditor, and it answered "who changed this plan" with nothing,
-//! indistinguishably from "nobody did".
+//! - **[`AuditAction::Submit`]** — the approval unit `POST …/plans/{planId}/publish`
+//!   opens on a material change (§4's initial state: *"submitted (opened by a
+//!   material change unit … submitter recorded)"*). Its warrant is **`dod-audit`
+//!   and nothing wider**: §8's *"**every mutation MUST record**"*, and an insert
+//!   into `pricing_approval` is a mutation. That is D-175's own ground, and it is
+//!   enough.
+//!
+//!   **The citation this bullet used to carry is withdrawn.** It also cited
+//!   `inst-tp-record` — *"submitter and approver identities + timestamps land on
+//!   the approval record **and in the audit trail**"* — and that instruction is
+//!   assigned by S5 §6 to `approve`/`reject`, whose records satisfy it through
+//!   `approval_repo`'s `unit_state` rendering `submitterPrincipal` on both halves
+//!   of the pair. It would be satisfied with no `submit` token at all. Nor is the
+//!   submit a *distinct surface* the roster overlooked: it is the non-committing
+//!   arm of `POST …/plans/{planId}/publish`, a route the roster already names
+//!   through `publish`. Overstating the warrant would hand the docs wave a
+//!   stronger claim than the debt actually is.
+//! - **[`AuditAction::Withdraw`]** — `POST …/approvals/{approvalId}/withdraw`,
+//!   which `inst-as-void` specifies **and calls audited** in as many words. It is
+//!   not `reject` (a different edge, by a different authority, with a mandatory
+//!   reason) and not `abandon` (D-145's plan-draft flip); the roster has no verb
+//!   for it either.
+//!
+//! Both are **this module's spelling of a record the set requires and does not
+//! name**, in the `snake_case` shape D-158 fixes, and both are **reported rather
+//! than treated as declared** — D-158's instruction is that "a slice that adds an
+//! audited record adds its token **here**", meaning the document, and a code
+//! group may not edit one. It is not the same act as minting a wire code: an
+//! `action` is a stored discriminator on a vocabulary D-158 makes explicitly
+//! **additive**, whose only reader (S12 `inst-he-read`'s Auditor-only sibling)
+//! does not exist yet, in a greenfield store — so a document choosing `void` over
+//! `withdraw` costs a rename and not a contract change. This is D-175's situation
+//! reproduced exactly, and D-175 was ratified on the condition that the debt land
+//! in S5 §6 in the next documentation wave.
+//!
+//! The alternative was to leave the submit and the withdraw writing nothing.
+//! That is the state the code-debt register classes *wrong now* rather than
+//! *absent*: `pricing_audit_log` is the store D-12 confines to the Auditor, and a
+//! withdrawn unit would answer "who withdrew this" with nothing —
+//! indistinguishably from "the guard voided it", which is the *other* way a unit
+//! reaches `voided` and the one no principal asked for.
+//!
+//! ## The machine-driven void writes **no** record, and that is a boundary
+//!
+//! [`AuditAction::Withdraw`] is a **human** act. The TOCTOU guard
+//! (`approval_repo::void_pending_for_plan`, `inst-ap-pin`) closes a unit with no
+//! principal at all, from inside the transaction of the mutation that
+//! invalidated it — and that mutation has already written its own record, on the
+//! **same** segment (D-135 keys both on the plan) at the same instant, under the
+//! actor who caused it. A second record there would need an actor the act does
+//! not have: `actor_principal_id` is a non-null `uuid` precisely because
+//! `inst-au-pii` makes the actor a fact rather than a nicety, and a synthetic one
+//! would be the trail asserting a principal that did not act.
 //!
 //! ## There is no audit **read** surface, and that is Slice 12's
 //!
@@ -112,11 +154,23 @@
 //!   segments and the roll-up alike and is off the mutation path by definition;
 //!   this module gives it the primitives it will recompute with and nothing
 //!   more.
-//! - **A `denied attempt` action.** `inst-tp-selfaudit` and S5's
-//!   denied-mutation records are refusals written against subjects this group
-//!   cannot reach — there is no approval record and no approval `chain_id` — so
-//!   the action is not declared. A token declared here with no writer is
-//!   indistinguishable from a record nobody writes.
+//! - **`retire`, `backdate_import` and `policy_update`.** S5 §6 declares all
+//!   three and this gear has no writer for any of them: there is no retirement
+//!   surface (Slice 11), no `pricing_historical_price` store (`inst-bd-store`)
+//!   and no threshold-policy store (D-10). A token declared here with no writer
+//!   is indistinguishable from a record nobody writes, so they stay owed.
+//!
+//! `approve`, `reject` and `deny` **are** declared, and this list is where they
+//! stopped being owed. It once said of the first two that "their writer is the
+//! approval trail that threads an `AuditStamp` through `approval_repo` — which
+//! does not exist yet", and of the third that the denied-attempt record was
+//! unreachable because "there is no approval record and no approval `chain_id`".
+//! Both are now false: `pricing_approval` exists, a plan-revision subject's chain
+//! is the plan's by D-135, `crate::infra::storage::repo::approval_repo` takes the
+//! stamp and writes the decision's record inside the deciding transaction, and
+//! `crate::infra::approval::decide` writes the refused attempt's. The rule was
+//! never "declare nothing until everything is built"; it is one token, one
+//! writer, landing together.
 
 use chrono::{DateTime, Utc};
 use std::fmt;
@@ -143,8 +197,8 @@ const PRESENT: u8 = 0x01;
 
 /// What was done to the audited subject.
 ///
-/// Five variants, one per mutating path this crate has. See the module doc for
-/// why three of the spellings are owed back to S5 §6, and why the tokens are not
+/// Ten variants, one per audited path this crate has. See the module doc for
+/// why two of the spellings are owed back to S5 §6, and why the tokens are not
 /// the event names.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -163,6 +217,47 @@ pub enum AuditAction {
     Abandon,
     /// A publish commit moved the subject into `published`.
     Publish,
+    /// A material change unit was opened over the subject and awaits an
+    /// independent reviewer (§4's initial state).
+    ///
+    /// **Minted here, owed to S5 §6, on `dod-audit` alone** — the module doc says
+    /// why `inst-tp-record` is not this token's warrant. Its writer is
+    /// [`approval_repo::open`](crate::infra::storage::repo::approval_repo::open),
+    /// inside the transaction that takes the content pin.
+    Submit,
+    /// An independent reviewer agreed and the publish may continue
+    /// (`inst-as-approve`, `inst-tp-record`).
+    Approve,
+    /// A reviewer refused the change unit, with the mandatory reason
+    /// `inst-as-reject` requires.
+    Reject,
+    /// The submitter, or a `CatalogAdmin`, withdrew a pending unit without
+    /// mutating its subject — freeing the pinned scope key (`inst-as-void`).
+    ///
+    /// **Minted here, owed to S5 §6.** Distinct from [`AuditAction::Reject`]
+    /// (another edge, another authority, a mandatory reason) and from
+    /// [`AuditAction::Abandon`] (D-145's plan-draft flip, on the other plane).
+    /// The **machine-driven** void writes no record at all; the module doc says
+    /// why.
+    Withdraw,
+    /// An attempt to exercise an authority the principal does not hold, refused
+    /// (`inst-rb-audit`, and `inst-tp-selfaudit`'s attempted-violation record).
+    ///
+    /// **The one token here whose record is not a mutation**, and the reason it
+    /// still belongs: a self-approval attempt is the financial-fraud vector this
+    /// slice exists for, and a trail that recorded only what succeeded would
+    /// hold no evidence that it was ever tried. Its `before_state` /
+    /// `after_state` pair therefore reads differently from every other action's
+    /// - see `crate::infra::approval` for what each holds and why.
+    ///
+    /// Its writer is `crate::infra::approval::record_denial`, **inside the
+    /// judgement transaction** — like every other record in this crate. This doc
+    /// used to say "in a second transaction, the judgement's rolled back with the
+    /// refusal"; the judgement returns the refusal as `Ok` and therefore commits,
+    /// so that was never true and the record now commits with the judgement it
+    /// belongs to. Its siblings [`AuditAction::Approve`] and
+    /// [`AuditAction::Reject`] record the decisions that were *taken*.
+    Deny,
 }
 
 impl AuditAction {
@@ -178,6 +273,11 @@ impl AuditAction {
         Self::Delete,
         Self::Abandon,
         Self::Publish,
+        Self::Submit,
+        Self::Approve,
+        Self::Reject,
+        Self::Withdraw,
+        Self::Deny,
     ];
 
     /// The persisted `action` token.
@@ -189,6 +289,11 @@ impl AuditAction {
             Self::Delete => "delete",
             Self::Abandon => "abandon",
             Self::Publish => "publish",
+            Self::Submit => "submit",
+            Self::Approve => "approve",
+            Self::Reject => "reject",
+            Self::Withdraw => "withdraw",
+            Self::Deny => "deny",
         }
     }
 }
@@ -216,11 +321,56 @@ pub enum AuditSubjectKind {
     /// which is what makes "who changed this plan" one segment to walk rather
     /// than a join.
     PriceUnit,
+    /// One `pricing_price_window` row, named by its `window_id`.
+    ///
+    /// **Declared in S5 §6 already**, in the enumeration D-158 takes verbatim from
+    /// `pricing_approval` — so this member implements a token the design set names
+    /// rather than minting one, and the gear's standing rule that a token with no
+    /// writer is not declared is what kept it out until now. It has **two** writers,
+    /// and they arrived one change apart: `infra::window`'s three mutations write the
+    /// audit record, and `infra::approval::ApprovalService::submit_window_mutation`
+    /// opens a pending unit under the same token — the D-62/D-99 window unit
+    /// `inst-co-single-pending` names among the units that hold a key. This sentence
+    /// asserted the second writer before it existed; it now names it.
+    ///
+    /// Its **chain** is the plan's, exactly as [`AuditSubjectKind::PriceUnit`]'s
+    /// is and for the same reason: D-135 keys a segment on the audited subject's
+    /// *aggregate*, a window's aggregate is the plan its row prices, and D-99 makes
+    /// windows plan facts outright. That is also why S5 §6's aggregate list —
+    /// plan, overlay, payer, policy, bulk operation — correctly omits `window`: a
+    /// subject kind is not an aggregate, and reading the omission as a gap would
+    /// give one plan two chains to interleave.
+    Window,
+    /// One **version** of the tenant's approval-threshold policy, named by its
+    /// version number.
+    ///
+    /// **Declared in S5 §6 already**, in the same enumeration D-158 takes verbatim
+    /// from `pricing_approval` — so this member implements a token the design set
+    /// names rather than minting one, and it stayed out until its writer existed.
+    /// That writer is
+    /// [`ApprovalService::submit_threshold_policy`](crate::infra::approval::ApprovalService::submit_threshold_policy),
+    /// the D-10 unit a `PUT /config/approval-threshold-policy` opens, and it landed
+    /// in the same change as this member and as
+    /// `chk_pricing_approval_subject_kind`'s fourth token.
+    ///
+    /// Its **chain** is *not* the plan's, and it is the first member of this
+    /// enumeration that is not. D-135 keys a segment on the audited subject's
+    /// aggregate; a threshold policy has no plan and S5 §6's own aggregate list —
+    /// plan, overlay, payer, **policy**, bulk operation — names `policy` as one in
+    /// its own right. So it gets [`policy_chain`](crate::infra::storage::repo::audit_repo::policy_chain),
+    /// one segment per tenant, which is also what keeps a policy proposal off the
+    /// head every mutation of some arbitrary plan is contending for.
+    Policy,
 }
 
 impl AuditSubjectKind {
     /// Every subject kind, stable order.
-    pub const ALL: &'static [Self] = &[Self::PlanRevision, Self::PriceUnit];
+    pub const ALL: &'static [Self] = &[
+        Self::PlanRevision,
+        Self::PriceUnit,
+        Self::Window,
+        Self::Policy,
+    ];
 
     /// The persisted `subject_kind` token.
     #[must_use]
@@ -228,6 +378,8 @@ impl AuditSubjectKind {
         match self {
             Self::PlanRevision => "plan_revision",
             Self::PriceUnit => "price_unit",
+            Self::Window => "window",
+            Self::Policy => "policy",
         }
     }
 }
@@ -251,14 +403,25 @@ pub struct AuditStamp {
     pub actor_principal_id: Uuid,
     /// When the mutation was recorded, UTC — the caller's instant.
     pub recorded_at: DateTime<Utc>,
-    /// The correlation id of the causing request.
+    /// The correlation id of the causing request (D-178, `inst-au-complete`).
     ///
-    /// `None` on every authoring route today, and that is a gap rather than a
-    /// choice: no correlation id reaches an Axum handler in this gear — the
-    /// publish path takes one as a parameter because its caller is in-process.
-    /// **Reported**, because `inst-au-complete` lists the correlation id among a
-    /// record's required fields.
-    pub correlation_id: Option<Uuid>,
+    /// **Not an `Option`, and that is the guard rather than a tidy-up.** D-178
+    /// clause (1) makes the field *always satisfiable and never NULL* — the value
+    /// the platform propagates inbound when there is one, minted at the gear's
+    /// HTTP edge when there is not
+    /// ([`crate::api::rest::correlation`]). A `None` here was the shape that let
+    /// every authoring record write NULL while the type said the field was
+    /// carried, so the absence is removed from the type instead of being
+    /// forbidden by a convention: a caller that has no correlation cannot build a
+    /// stamp, and a repository that takes a stamp is holding a real one.
+    ///
+    /// Clause (2) is what makes it worth threading rather than minting per
+    /// record: **every** record and every `pricing_outbox` row one operator call
+    /// produces carries **one** value. D-135 segments the chain per aggregate, so
+    /// the two records a single `PATCH` writes when it opens a successor revision
+    /// sit at two positions — and after Slice 12's bulk plane, on two segments —
+    /// with this as the only thing saying they were one act.
+    pub correlation_id: Uuid,
 }
 
 /// A mutated subject's before/after state, as the audit record's `jsonb` columns
@@ -335,6 +498,14 @@ pub struct AuditRecord<'a> {
     /// The approval record the mutation ran under, when it had one.
     pub approval_ref: Option<Uuid>,
     /// The correlation id of the request that caused the mutation.
+    ///
+    /// **Still an `Option` where [`AuditStamp`]'s is not**, deliberately: this is
+    /// the *hashing* input, and the encoding has to span everything the column
+    /// can hold. `pricing_audit_log.correlation_id` is nullable, so a
+    /// verification job re-walking a row written before D-178 must be able to
+    /// rebuild its preimage — and it cannot if the only representable value is a
+    /// present one. What D-178 removes is the ability of a **writer** to produce
+    /// NULL, not the ability of a **verifier** to read one.
     pub correlation_id: Option<Uuid>,
 }
 
@@ -501,7 +672,19 @@ fn digest32(buf: &[u8]) -> [u8; 32] {
 /// every operator-facing diagnostic use.
 #[must_use]
 pub fn hex32(digest: &[u8; 32]) -> String {
-    let mut out = String::with_capacity(64);
+    hex_bytes(digest)
+}
+
+/// The same rendering over a slice whose length the type does not fix.
+///
+/// The stored `content_hash` of an approval unit is a `Vec<u8>` — the column is
+/// `bytes`, and a batch subject's pin is a digest *over a set* (§6), so the
+/// length is the store's business rather than this function's. One rendering for
+/// both, so a digest an operator reads in a diagnostic and the same digest in an
+/// audit record are the same string.
+#[must_use]
+pub fn hex_bytes(digest: &[u8]) -> String {
+    let mut out = String::with_capacity(digest.len() * 2);
     for byte in digest {
         out.push(hex_nibble(*byte >> 4));
         out.push(hex_nibble(*byte & 0x0f));

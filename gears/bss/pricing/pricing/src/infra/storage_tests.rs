@@ -307,6 +307,107 @@ fn a_duplicate_meeting_an_unanswered_claim_is_its_own_refusal() {
 }
 
 #[test]
+fn an_overlap_on_a_canonical_scope_key_carries_the_window_code() {
+    // `WINDOW_OVERLAP` (§5, 409) is the one window refusal with no schema object at
+    // all — §6 puts it inside every mutation because the key is eight columns of
+    // `pricing_price` — so this arm is the *only* thing between the repository's
+    // refusal and the wire. All three parts of the sentence survive, because an
+    // operator needs the key to know which of a plan's keys refused, the requested
+    // interval to see what they composed, and the conflicting window to act on.
+    let err = RepoError::WindowOverlap {
+        key: "plan=91a1|currency=USD|region=EU|charge_kind=recurring".to_owned(),
+        requested: "[2099-09-15T00:00:00+00:00, 2099-09-25T00:00:00+00:00)".to_owned(),
+        conflicting: "window 0000-07 at [2099-09-10T00:00:00+00:00, \
+                      2099-09-20T00:00:00+00:00)"
+            .to_owned(),
+    };
+
+    let DomainError::WindowOverlap(detail) = repo_failure(&err) else {
+        panic!("an overlap on a canonical scope key must map to WINDOW_OVERLAP");
+    };
+    assert!(detail.contains("charge_kind=recurring"), "got: {detail}");
+    assert!(detail.contains("2099-09-25"), "got: {detail}");
+    assert!(detail.contains("window 0000-07"), "got: {detail}");
+    // And emphatically not a conflict-free internal fault: before the arm existed
+    // the caller read a 500 for a request whose whole remedy is a different interval.
+    assert!(!matches!(repo_failure(&err), DomainError::Internal(_)));
+}
+
+#[test]
+fn a_refused_window_edge_lands_with_the_other_refused_lifecycle_edges() {
+    // **It mints no code**, and that is the assertion rather than an omission: §5
+    // names a code for every window refusal an operator can *provoke* — a
+    // cancellation of an active window, a start in the past, a mutation of history —
+    // and an unsanctioned edge is not one of them. What reaches here is a sweep whose
+    // ordering assumption broke, or an edge whose §4 condition has not arrived, so it
+    // renders as the refused lifecycle edge it is (`LIFECYCLE_FORBIDDEN`, 400) and
+    // carries the state and the boundary in its sentence.
+    let err = RepoError::WindowStateForbidden {
+        window_id: "0000-21".to_owned(),
+        state: "scheduled".to_owned(),
+        attempted: "the transition to active at 2099-09-02T00:00:00+00:00, before its \
+                    effective_from 2099-09-10T00:00:00+00:00"
+            .to_owned(),
+    };
+
+    let DomainError::LifecycleForbidden(detail) = repo_failure(&err) else {
+        panic!("a refused window edge must map to LIFECYCLE_FORBIDDEN");
+    };
+    assert!(detail.contains("scheduled"), "got: {detail}");
+    assert!(detail.contains("2099-09-10"), "got: {detail}");
+    // The sibling window refusal the store *does* answer with a code of its own, so
+    // the two are told apart by the mapping rather than by reading the sentence.
+    let historical = RepoError::WindowHistorical {
+        window_id: "0000-18".to_owned(),
+        frozen: "it is cancelled, and an expired or cancelled window is immutable history"
+            .to_owned(),
+    };
+    assert!(matches!(
+        repo_failure(&historical),
+        DomainError::WindowHistoricalImmutable(_)
+    ));
+}
+
+#[test]
+fn an_empty_window_interval_is_the_callers_mistake_and_keeps_its_rendering() {
+    // The third of the three window arms, and the one the commit that closed the
+    // class missed: corrupting it to `Internal` left the whole suite green at 1127.
+    // §5 declares eight window codes and none of them covers `effectiveTo <=
+    // effectiveFrom`, so this rides `INVALID_REQUEST` — a value the gear cannot
+    // interpret — rather than minting a ninth.
+    let err = RepoError::WindowIntervalEmpty {
+        requested: "[2099-09-20T00:00:00+00:00, 2099-09-20T00:00:00+00:00)".to_owned(),
+    };
+
+    let DomainError::InvalidRequest(detail) = repo_failure(&err) else {
+        panic!("an empty window interval must map to INVALID_REQUEST");
+    };
+    // **By equality**, which pins two things a containment check would not: that the
+    // half-open rendering reaches the caller intact — the bracket asymmetry is what
+    // says *why* two equal instants are not a span — and that the arm carries the
+    // repository's own sentence rather than a generic one.
+    assert_eq!(
+        detail,
+        "pricing repo: the window interval [2099-09-20T00:00:00+00:00, \
+         2099-09-20T00:00:00+00:00) is empty; effective_to must be strictly after \
+         effective_from"
+    );
+
+    // The merge with `ValueOutOfRange` is deliberate and this is what makes it
+    // honest: one category, because both are an authored value the request can be
+    // reshaped around — and two distinguishable sentences, so a consumer is not
+    // asked to act on a distinction the mapping refused to draw.
+    let sibling = RepoError::ValueOutOfRange {
+        field: "package_size".to_owned(),
+        value: "18446744073709551615".to_owned(),
+    };
+    let DomainError::InvalidRequest(sibling_detail) = repo_failure(&sibling) else {
+        panic!("the merged sibling arm must land in the same category");
+    };
+    assert_ne!(detail, sibling_detail);
+}
+
+#[test]
 fn a_driver_fault_and_a_corrupt_reading_stay_internal() {
     // Neither is a caller mistake and neither is reshapeable into a request
     // that would succeed, which is exactly the line between a bad request and
@@ -317,4 +418,46 @@ fn a_driver_fault_and_a_corrupt_reading_stay_internal() {
     ] {
         assert!(matches!(repo_failure(&err), DomainError::Internal(_)));
     }
+}
+
+#[test]
+fn a_key_the_register_refused_a_second_hold_on_is_a_pending_unit_conflict() {
+    // **Both halves of the arm, and this is the half that had none.**
+    // `uq_pricing_approval_key_pending` is what closes the two-writer race
+    // `ApprovalService::submit`'s check cannot see, so its refusal reaches a caller
+    // only through `repo_failure` — and the only assertion on it was a `#[ignore]`
+    // Postgres race, which means a corruption of this arm to `Internal` would have
+    // left the whole non-ignored suite green and turned an invariant conflict into a
+    // 500 nobody can act on. That defect class has been found twice in this crate.
+    //
+    // It must land on the **same** code as the in-transaction check, which is
+    // `inst-co-single-pending`'s own: a caller must not be told to do two different
+    // things about one condition depending on which of two transactions committed
+    // first.
+    let err = RepoError::PendingKeyHeld {
+        key: "3f2a|EUR|eu|base|9c1|all_subscriptions|recurring|none".to_owned(),
+    };
+
+    let DomainError::PendingChangeUnitExists(detail) = repo_failure(&err) else {
+        panic!("a held key must map to PENDING_CHANGE_UNIT_EXISTS, never to Internal");
+    };
+    // The key is carried through, because it is what the operator acts on: which
+    // unit to decide or withdraw is found by the key it holds.
+    assert!(detail.contains("3f2a|EUR|eu"), "got: {detail}");
+    // And the remedy is named, which is what separates this from a bare conflict.
+    assert!(detail.contains("withdraw"), "got: {detail}");
+
+    // **The convergence, asserted rather than claimed.** The check path builds its
+    // own sentence (`infra::approval::refuse_held_key`) and this one comes off a
+    // `thiserror` display, so the two bodies can only be held together by a test.
+    // What they share is what a caller reads and acts on: the key, and the same
+    // closing instruction. What they cannot share is the holding unit — at the moment
+    // the index fires, the transaction that inserted the winning row may not have
+    // committed, so there is no unit this path is entitled to name — and the
+    // comparison is written against the *shared* clause for that reason rather than
+    // against the whole string.
+    assert!(
+        detail.ends_with("decide it, or withdraw it to free the key"),
+        "the constraint path must close with the check path's own instruction: {detail}"
+    );
 }

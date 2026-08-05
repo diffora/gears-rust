@@ -15,12 +15,13 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
 mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::plans::PLANS;
 use rest_support::{
-    Harness, body_json, etag_of, location_of, plan_count, plan_row_version, plan_state,
+    Harness, audit_rows, body_json, etag_of, location_of, plan_count, plan_row_version, plan_state,
     problem_code, request, seed_current_plan, seed_draft_plan, with_headers,
 };
 use uuid::Uuid;
@@ -1000,6 +1001,137 @@ async fn a_plan_patch_on_a_phase_facet_also_writes_exactly_one_record() {
     );
 }
 
+/// One phase-chain body, so the two pins below differ in nothing but the plan.
+fn phase_chain(phase_id: Uuid) -> serde_json::Value {
+    serde_json::json!({
+        "phases": [{ "phase_id": phase_id, "kind": "evergreen", "ordinal": 0 }]
+    })
+}
+
+/// **`pricing_plan_phase`'s primary key is client-reachable, and the second
+/// caller to reach it gets a 500.** Pinned, not fixed.
+///
+/// `PRIMARY KEY (phase_id, plan_revision)` carries no `plan_id` and no
+/// `tenant_id` (`m20260802_000012_create_pricing_plan_phase.rs`), and `phase_id`
+/// is **client-supplied** — `PlanPhaseView` is `api_dto(request, response)` and
+/// its own doc invites reuse across revisions (D-83). So two plans of one tenant
+/// standing at revision `0` cannot both file a phase under the same id: the
+/// first is a 200 and the second collides on the PK.
+///
+/// The refusal is a generic 500 with no wire code, which is the wrong class —
+/// this gear reserves a conflict for exactly this shape — and the slot is
+/// occupied database-wide rather than per tenant, which the sibling test below
+/// pins.
+///
+/// **This is frozen Phase-2 schema and G5 deliberately did not change the
+/// migration.** What a test can do is stop the behaviour being a surprise: if a
+/// later slice widens the key or maps the failure onto a conflict, this reddens
+/// and the change gets written down. `rest_support::Publishable` already works
+/// around it by minting a phase id per plan, with the workaround named in its
+/// doc; this is the same finding stated as an executable fact.
+#[tokio::test]
+async fn two_plans_of_one_tenant_collide_on_a_shared_phase_id_and_the_second_answers_500() {
+    let harness = Harness::new().await;
+    let shared_phase = Uuid::now_v7();
+    let first = Uuid::now_v7();
+    let second = Uuid::now_v7();
+    seed_draft_plan(&harness, first).await;
+    seed_draft_plan(&harness, second).await;
+
+    let accepted = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(first),
+            Some(phase_chain(shared_phase)),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    assert_eq!(
+        accepted.status(),
+        StatusCode::OK,
+        "the first filing must succeed, or the second proves nothing"
+    );
+
+    let collided = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(second),
+            Some(phase_chain(shared_phase)),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(
+        collided.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the PK collision surfaces as an internal fault, not as the conflict class"
+    );
+    // And the body is the platform's generic internal fault - no gear code, so a
+    // client cannot tell what happened or that retrying under another phase id
+    // would work. That is half of why this is filed as a defect rather than a
+    // quirk, and it is asserted rather than described so a later reclassification
+    // reddens here.
+    let body = body_json(collided).await;
+    assert_eq!(
+        body["type"],
+        "gts://gts.cf.core.errors.err.v1~cf.core.err.internal.v1~"
+    );
+    // The refused PATCH rolled back: the second plan is exactly as it was.
+    assert_eq!(
+        plan_row_version(&harness, second, 0).await,
+        Some(0),
+        "a failed child write must not have moved the revision"
+    );
+}
+
+/// The same collision **across tenants**, which is the half that matters for
+/// isolation.
+///
+/// `phase_id` is client-supplied and the key carries no `tenant_id`, so an
+/// authenticated caller of one tenant can occupy a `(phase_id, 0)` slot that a
+/// caller of another tenant then cannot use. Nothing leaks — the second caller
+/// learns only that their own write failed — but a tenant's write can be made to
+/// fail by a stranger, and that is a property worth a red test if it ever
+/// changes.
+#[tokio::test]
+async fn a_phase_id_taken_by_one_tenant_is_taken_for_the_other_too() {
+    let harness = Harness::new().await;
+    let shared_phase = Uuid::now_v7();
+    let mine = Uuid::now_v7();
+    let theirs = Uuid::now_v7();
+    seed_draft_plan(&harness, mine).await;
+    rest_support::seed_foreign_plan(&harness, theirs).await;
+
+    let accepted = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(mine),
+            Some(phase_chain(shared_phase)),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    assert_eq!(accepted.status(), StatusCode::OK);
+
+    let collided = harness
+        .other_tenant()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(theirs),
+            Some(phase_chain(shared_phase)),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(
+        collided.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the key has no tenant column, so the slot is occupied database-wide"
+    );
+}
+
 #[tokio::test]
 async fn the_abandon_flip_is_audited_exactly_as_the_deletion_it_replaces_was() {
     // D-145 in as many words. The flip is a distinct action from a delete
@@ -1187,4 +1319,114 @@ async fn every_plan_record_carries_the_before_and_after_state_its_action_implies
         "and its after-state is the tombstone, which is what makes D-145's flip \
          distinguishable from a deletion in the record"
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-178 — one correlation per operator call
+// ---------------------------------------------------------------------------
+
+/// **Two records, one call, one correlation id.**
+///
+/// The successor arm of `PATCH /plans/{planId}` writes **two** audit records:
+/// `open_revision`'s `create` for the revision it mints, and the facet write's
+/// `update`. D-178 clause (2) is that a single operator call produces **one**
+/// correlation across everything it writes, and it is the clause with teeth:
+/// D-135 segments the chain per aggregate, so a call whose records land at two
+/// positions - and, once the bulk plane lands, on two segments - has the
+/// correlation as the only thing saying they were one act.
+///
+/// **Asserting "not NULL" here would prove nothing**, which is why the assertion
+/// is equality between the two. A per-handler `Uuid::now_v7()` - the shape this
+/// task replaced on the publish route, and the shape a later group would reach
+/// for again - satisfies non-NULL on every record and fails this.
+#[tokio::test]
+async fn two_records_of_one_patch_carry_one_correlation_id() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_current_plan(&harness, plan_id).await;
+    let before = audit_rows(&harness).await.len();
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "shape": { "plan_tier": "platinum" } })),
+            &[("if-match", "\"0-1\"")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let rows = audit_rows(&harness).await;
+    let written = &rows[before..];
+    assert_eq!(
+        written.len(),
+        2,
+        "the successor arm mints a revision and writes a facet: two records"
+    );
+    assert_eq!(
+        written
+            .iter()
+            .map(|row| row.action.as_str())
+            .collect::<Vec<_>>(),
+        vec!["create", "update"],
+        "and they are those two acts, in that order"
+    );
+
+    let first = written[0]
+        .correlation_id
+        .expect("the minted revision's record carries a correlation");
+    let second = written[1]
+        .correlation_id
+        .expect("the facet write's record carries a correlation");
+    assert_eq!(
+        first, second,
+        "one operator call, one correlation - a value minted per record would pass a \
+         not-NULL assertion and fail this one"
+    );
+}
+
+/// And two calls are two correlations.
+///
+/// The other half of "request-scoped". Without it a constant - or a value minted
+/// once at gear boot - would satisfy the test above, and every record the gear
+/// ever wrote would correlate to every other one.
+#[tokio::test]
+async fn two_patches_carry_two_correlation_ids() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let first_tag = {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                "PATCH",
+                &plan_path(plan_id),
+                Some(serde_json::json!({ "shape": { "plan_tier": "platinum" } })),
+                &[("if-match", "\"0-0\"")],
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        etag_of(&response).expect("a tag")
+    };
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({ "shape": { "plan_tier": "titanium" } })),
+            &[("if-match", &first_tag)],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let rows = audit_rows(&harness).await;
+    let updates: Vec<_> = rows
+        .iter()
+        .filter(|row| row.action == "update")
+        .filter_map(|row| row.correlation_id)
+        .collect();
+    assert_eq!(updates.len(), 2, "two facet writes, two records");
+    assert_ne!(updates[0], updates[1], "two calls are two acts");
 }

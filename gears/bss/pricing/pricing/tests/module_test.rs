@@ -7,10 +7,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use bss_pricing::api::rest::state::AuthoringState;
+use bss_pricing::api::rest::state::{AuthoringState, GovernanceState};
+use bss_pricing::config::LimitsConfig;
+use bss_pricing::infra::approval::ApprovalService;
+use bss_pricing::infra::fixture_gate::FixtureGate;
+use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::repo::{
     IdempotencyGate, PinFrontierRepo, PlanRepo, PlanShapeRepo, PriceRepo,
 };
+use bss_pricing::infra::window::WindowService;
 use bss_pricing::module::BssPricingGear;
 use toolkit::GearCtx;
 use toolkit::api::OpenApiRegistryImpl;
@@ -50,19 +55,31 @@ fn every_migration_name_is_unique() {
     );
 }
 
-/// The nine routes this gear serves, spelled through the modules' own consts.
+/// Every route this gear serves, spelled through the modules' own consts.
 ///
-/// A tenth path registered without a line here fails the census below, which is
-/// what stops a route landing without anybody deciding it should. The list is
+/// A path registered without a line here fails the census below, which is what
+/// stops a route landing without anybody deciding it should — **as long as the
+/// router that registers it is merged into `registered_operations`**, which is
+/// hand-written and was the hole `rest_authz.rs`'s
+/// `every_mounted_router_is_merged_into_both_censuses` now closes. The list is
 /// also the only thing pinning those `const`s against the **literals** the
 /// `OperationBuilder` calls take: DE0801 validates a literal argument and
 /// silently passes a `const` one, so the route-shape rule binds where the
 /// literal is, and this binds the two spellings together.
 fn declared_paths() -> Vec<(&'static str, &'static str)> {
+    use bss_pricing::api::rest::approvals::{
+        APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
+    };
+    use bss_pricing::api::rest::frontier::FRONTIER;
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
+    use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+    use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
+    use bss_pricing::api::rest::windows::{
+        PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
+    };
     vec![
-        ("GET", "/bss-pricing/v1/catalog-version/frontier"),
+        ("GET", FRONTIER),
         ("GET", PLAN),
         ("POST", PLANS),
         ("PATCH", PLAN),
@@ -71,11 +88,47 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", PLAN_PRICES),
         ("PATCH", PLAN_PRICE),
         ("DELETE", PLAN_PRICE),
+        // Slice 7's two reads: the coverage report an operator remediates from,
+        // and the gate's surface over one pinned delta. Two routes and not one
+        // because they answer different questions over different row sets - see
+        // the `api::rest::windows` module doc.
+        ("GET", PLAN_COVERAGE),
+        ("GET", PLAN_SELLABILITY),
+        // Slice 7's mutating half: the window surfaces §5 declares, each a publish
+        // unit (D-99) answering 202, and two of them under D-62's two-person control.
+        // The `DELETE` carries no idempotency header, which is §5's own column and is
+        // reported as a divergence in `api::rest::windows`.
+        ("POST", PRICE_WINDOWS),
+        ("PATCH", PRICE_WINDOW),
+        ("DELETE", PRICE_WINDOW),
+        // Slice 5's entrance: the publish mount and the approval surface.
+        ("POST", PLAN_PUBLISH),
+        ("GET", APPROVALS),
+        ("GET", APPROVAL),
+        ("POST", APPROVAL_APPROVE),
+        ("POST", APPROVAL_REJECT),
+        ("POST", APPROVAL_WITHDRAW),
+        // Slice 5's governance config: the threshold policy a D-10 unit is opened
+        // over. The `PUT` carries **no** precondition header of any kind and is
+        // therefore absent from both rosters below — §5's `ETag` cell is a
+        // divergence reported in `api::rest::threshold_policy`'s module doc, whose
+        // short form is that a tenant's first proposal has no prior version to name
+        // and a mandatory `If-Match` would make the bootstrap unreachable.
+        ("GET", APPROVAL_THRESHOLD_POLICY),
+        ("PUT", APPROVAL_THRESHOLD_POLICY),
     ]
 }
 
-/// Build the three routers over a connected-but-empty database and hand back
+/// Build every mounted router over a connected-but-empty database and hand back
 /// what they registered.
+///
+/// The number of them is deliberately not in this sentence: it said "three" while six
+/// were merged, and a count beside a roster is one more thing to keep true. **The
+/// sentence then said "a seventh router" while the seventh was already in the chain
+/// below** — the same defect one clause over, which is why the ordinal is gone too. The
+/// merge chain below is the roster, and `rest_authz.rs`'s
+/// `every_mounted_router_is_merged_into_both_censuses` is what stops **the next** router
+/// being written without joining it.
 ///
 /// No migrations: nothing here sends a request, and the registration happens
 /// while the router is built. What this needs a provider for is that the states
@@ -94,8 +147,34 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         db: db.clone(),
         plans: PlanRepo::new(db.clone()),
         shapes: PlanShapeRepo::new(db.clone()),
-        prices: PriceRepo::new(db),
+        prices: PriceRepo::new(db.clone()),
         idempotency: IdempotencyGate::new(Duration::from_hours(1)),
+    });
+    // The registry is the fail-closed production default and the fixture gate is
+    // loaded from a path that does not exist, which closes it. Neither matters:
+    // registration happens while the router is built and nothing here sends a
+    // request. Wiring a working pair would be wiring a publish this test does
+    // not perform.
+    let governance = Arc::new(GovernanceState {
+        db: db.clone(),
+        thresholds: bss_pricing::infra::threshold::ThresholdService::new(db.clone()),
+        plans: PlanRepo::new(db.clone()),
+        prices: PriceRepo::new(db.clone()),
+        approvals: ApprovalService::new(db.clone()),
+        windows: WindowService::new(
+            db.clone(),
+            Arc::new(
+                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
+            ),
+        ),
+        publish: PublishService::new(
+            db,
+            &LimitsConfig::default(),
+            FixtureGate::load(std::path::Path::new("/nonexistent/registry.toml")),
+            Arc::new(
+                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
+            ),
+        ),
     });
 
     drop(
@@ -104,17 +183,36 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 Arc::clone(&authoring),
                 &openapi,
             ))
-            .merge(bss_pricing::api::rest::prices::router(authoring, &openapi)),
+            .merge(bss_pricing::api::rest::prices::router(
+                Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::windows::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::approvals::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::publish::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::threshold_policy::router(
+                governance, &openapi,
+            )),
     );
     openapi
 }
 
 #[tokio::test]
-async fn the_registered_route_set_is_exactly_the_nine_paths() {
+async fn the_registered_route_set_is_exactly_the_declared_paths() {
     // Six groups built repositories, guards, a validator, a commit and a
-    // projector; this is the whole of what an operator can reach. A route added
-    // later without a line in `declared_paths` fails here rather than shipping
-    // ungated and undocumented.
+    // projector, and Slice 5 gave the commit an entrance; this is the whole of
+    // what an operator can reach. A route added later without a line in
+    // `declared_paths` fails here rather than shipping ungated and
+    // undocumented.
     let openapi = registered_operations().await;
 
     let mut found: Vec<String> = openapi
@@ -217,32 +315,66 @@ async fn an_unconfigured_gear_reserves_its_prefix_and_answers_404_under_it() {
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
-/// The six mutating routes, each of which D-171 requires to declare `If-Match`.
+/// Every mutating route that declares a precondition header, and which one.
 ///
 /// Transcribed rather than derived from the router, for `declared_paths`' reason:
 /// a declaration dropped from a registration is invisible if the expectation is
-/// read off the same registration.
+/// read off the same registration. The count is deliberately not in this
+/// sentence — the roster below is the roster, and a number beside it is one more
+/// thing to keep true (the doc said "six" against a list of seven for a whole
+/// phase).
+///
+/// **The three approval decisions are deliberately not here.** §5's idempotency
+/// cell for them reads *per decision*, and the decision is at-most-once by
+/// construction: `approval_repo`'s compare-and-swap carries `state =
+/// 'submitted'` in its own predicate, so a retry is refused
+/// `APPROVAL_NOT_PENDING` whether or not a header was sent. An approval record
+/// carries no version column for an `If-Match` to name, and declaring one would
+/// tell a generated client to send a precondition the server cannot test.
+///
+/// **`DELETE /price-windows/{windowId}` is deliberately not here either**, and it is
+/// the one absence a test enforces rather than a doc asserting: §5's Idempotency cell
+/// for that surface is **empty**, so it declares neither header, and
+/// `the_window_cancel_declares_no_precondition_header` is what keeps a later group
+/// from adding one to be helpful.
 fn if_match_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
+    use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+    use bss_pricing::api::rest::windows::{PRICE_WINDOW, PRICE_WINDOWS};
     vec![
         ("PATCH", PLAN),
         ("POST", PLAN_ABANDON),
         ("PATCH", PLAN_PRICE),
         ("DELETE", PLAN_PRICE),
-        // The two creates assert their precondition through the idempotency gate
-        // rather than through a version, and are listed under
-        // `idempotency_key_routes` instead.
+        // The publish mount: its tag names the revision it freezes **and** that
+        // revision's version, which is what the commit's compare-and-swap
+        // submits.
+        ("POST", PLAN_PUBLISH),
+        // Slice 7's window `PATCH`: §5 gives it an **ETag**, and on a window route the
+        // tag is the window row's own version (D-141's rule for a price row, applied
+        // to the surface that addresses one window by id).
+        ("PATCH", PRICE_WINDOW),
+        // The creates assert their precondition through the idempotency gate rather
+        // than through a version, and are listed under `idempotency_key_routes` too —
+        // the window schedule among them, which is §5's own Idempotency cell for it.
         ("POST", PLANS),
         ("POST", PLAN_PRICES),
+        ("POST", PRICE_WINDOWS),
     ]
 }
 
-/// The two creates, each of which requires an `Idempotency-Key` (D-141/D-142).
+/// The creates, each of which requires an `Idempotency-Key` (D-141/D-142, and §5's
+/// Idempotency column for the window schedule).
 fn idempotency_key_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::plans::PLANS;
     use bss_pricing::api::rest::prices::PLAN_PRICES;
-    vec![("POST", PLANS), ("POST", PLAN_PRICES)]
+    use bss_pricing::api::rest::windows::PRICE_WINDOWS;
+    vec![
+        ("POST", PLANS),
+        ("POST", PLAN_PRICES),
+        ("POST", PRICE_WINDOWS),
+    ]
 }
 
 /// The header parameters one registered operation declares.
@@ -263,11 +395,15 @@ fn declared_headers(openapi: &OpenApiRegistryImpl, method: &str, path: &str) -> 
 
 #[tokio::test]
 async fn every_mutating_route_declares_its_precondition_header() {
-    // D-171's owed clause: the declarations exist on all six routes and **no test
-    // reads the registration's params**, so deleting one failed nothing. A
+    // D-171's owed clause: the declarations existed on every mutating route and
+    // **no test read the registration's params**, so deleting one failed nothing. A
     // declaration is what a generated client sends; a route whose `If-Match` is
     // undeclared is one whose clients omit the header and are then refused 400 by
     // a server that never told them to send it.
+    //
+    // The roster is `if_match_routes()` and the count is deliberately not repeated
+    // here: it said "six" against a list of seven (five `If-Match` plus the two
+    // creates, which assert their precondition through the idempotency gate).
     //
     // Delete one `.param(if_match_param(...))` and exactly this assertion fails.
     let openapi = registered_operations().await;
@@ -312,6 +448,10 @@ async fn a_read_route_declares_no_precondition_header() {
     for (method, path) in [
         ("GET", bss_pricing::api::rest::plans::PLAN),
         ("GET", bss_pricing::api::rest::prices::PLAN_PRICES),
+        ("GET", bss_pricing::api::rest::approvals::APPROVALS),
+        ("GET", bss_pricing::api::rest::approvals::APPROVAL),
+        ("GET", bss_pricing::api::rest::windows::PLAN_COVERAGE),
+        ("GET", bss_pricing::api::rest::windows::PLAN_SELLABILITY),
     ] {
         let headers = declared_headers(&openapi, method, path);
         assert!(
@@ -319,4 +459,29 @@ async fn a_read_route_declares_no_precondition_header() {
             "{method} {path} declares an If-Match it cannot honour: {headers:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn the_window_cancel_declares_no_precondition_header() {
+    // §5's Idempotency cell for `DELETE /price-windows/{windowId}` is **empty**, and
+    // `api::rest::windows` reports that as the design set's call rather than an
+    // omission to improve on — the refusal of a second cancellation
+    // (`WINDOW_NOT_CANCELLABLE`) is what stands in for a key.
+    //
+    // A **mutating** route with no declared precondition is otherwise exactly the hole
+    // `every_mutating_route_declares_its_precondition_header` closes, so the absence
+    // needs its own assertion or it is indistinguishable from a forgotten
+    // declaration. Add a header here to be helpful and this reddens.
+    let openapi = registered_operations().await;
+
+    let headers = declared_headers(
+        &openapi,
+        "DELETE",
+        bss_pricing::api::rest::windows::PRICE_WINDOW,
+    );
+
+    assert!(
+        headers.is_empty(),
+        "the cancel takes neither an If-Match nor an Idempotency-Key: {headers:?}"
+    );
 }

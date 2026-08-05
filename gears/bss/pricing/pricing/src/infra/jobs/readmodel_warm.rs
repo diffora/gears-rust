@@ -823,6 +823,20 @@ impl ReadModelWarmJob {
             catalog_version,
             pending_version_ref: row.pending_ref.clone(),
             commit_observed_at,
+            // Minted, and it is the one place in the gear that still is. D-178
+            // clause (2) says the correlation belongs to the operator call — and
+            // this alarm has no operator call: it is raised by a periodic sweep
+            // observing a publish that committed in some other process, possibly
+            // days earlier, whose correlation this job never saw. "An in-process
+            // producer supplies its own" is the clause that covers it. What the
+            // value still buys is that the alarm's own emission is nameable.
+            //
+            // The granularity is stated rather than left to be inferred: it is
+            // **per alarm**, not per sweep, so two degraded handles observed by
+            // one pass carry two values and nothing says they were seen together.
+            // That is the right reading of clause (2) — the clause is about an
+            // operator call, and a sweep is not one — but it does mean the sweep
+            // is not itself a joinable unit. Nothing needs it to be today.
             correlation_id: Uuid::now_v7(),
         };
         let scope = AccessScope::for_tenant(row.tenant_id);

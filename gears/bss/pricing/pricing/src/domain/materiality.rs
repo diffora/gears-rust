@@ -1,0 +1,923 @@
+//! The materiality evaluator — `cpt-cf-bss-pricing-algo-materiality`
+//! (`design/05-governance.md` §3), steps 1, 2, 3, 3a and 4.
+//!
+//! One question: does this change set need a second principal, or may it
+//! publish on one? [`evaluate`] answers it, and the design set's G1 fixes the
+//! default direction — **material unless proved otherwise**. Five rules make
+//! a change material, and this module is exactly those five:
+//!
+//! | Rule | The world it refuses to auto-publish |
+//! |---|---|
+//! | `inst-mat-registered` | the act, or its content, is on §3 step 4's trigger list |
+//! | `inst-mat-failsafe` | the tenant has no explicitly configured threshold policy |
+//! | `inst-mat-first` | the plan has no published baseline, so no delta is computable |
+//! | `inst-mat-newrow` | a row in the change set has no baseline row of its own |
+//! | `inst-mat-percurrency` | a row's delta reaches its **own currency's** threshold, or its currency has no entry |
+//!
+//! Five rules and **five** reasons, and the pairing is not one-to-one:
+//! `inst-mat-percurrency` answers with two of them, because "no entry for this
+//! currency" and "reached the entry it has" are two states an operator acts on
+//! differently. [`MaterialityReason`] is the roster.
+//!
+//! [`MaterialityVerdict::AutoPublishable`] is what is left when all five
+//! decline, and §3 states that residue in one sentence: *"a pure amount change on
+//! unchanged geometry, below an explicitly configured threshold, not a first
+//! publish."* It is the arm [`PublishAuthorization::auto_publishable`] says must
+//! not be reached by an evaluator that cannot answer.
+//!
+//! [`PublishAuthorization::auto_publishable`]:
+//! crate::domain::publish::PublishAuthorization::auto_publishable
+//!
+//! # The verdict carries which rule fired, and that is not decoration
+//!
+//! A bool would make the arms one event. Three things need them kept
+//! apart. `pricing_approval.materiality` is a stored column an auditor reads
+//! years later, and "material" alone does not say whether a reviewer was
+//! required because the tenant never configured a policy or because a new
+//! market row appeared. An operator told only "approval required" cannot tell
+//! which of them they could act on — only the threshold ones are a configuration
+//! they own, and a registered trigger is not a configuration at all. And a test
+//! suite that asserts materiality without asserting *which rule produced it*
+//! cannot tell an implemented arm from a missing one: every such assertion
+//! passes against `fn evaluate(..) -> Material`. The reason is
+//! what makes each arm removable-and-observable one at a time.
+//!
+//! # Two things named "baseline", and they are not the same thing
+//!
+//! [`crate::domain::plan_shape::PublishedBaseline`] already exists and is the
+//! **plan shape's** referent: the terminal phase id, the phases in use and the
+//! published availability window, for three Slice-2 rules that are comparisons.
+//! It carries no price rows at all, so `inst-mat-newrow` — "has *this row* a
+//! baseline of its own" — cannot be asked of it.
+//!
+//! [`PublishedPriceBaseline`] is the price-row referent, and it is a separate
+//! type with a distinguishable name rather than a field added to the other one.
+//! Two rules with different subjects sharing one carrier is how a rule silently
+//! acquires a second owner, and a reader who greps `PublishedBaseline` should
+//! not have to work out which of two meanings the hit has.
+//!
+//! # An empty policy object is not a configured policy
+//!
+//! [`ThresholdPolicy::of_entries`] answers `None` for an empty entry set, so
+//! `inst-mat-failsafe` sees it as the absence it is. The design set makes the
+//! per-currency reading explicit — *"the G1 fail-safe applies per currency, not
+//! per policy object"* — and a policy object carrying zero entries has a
+//! threshold for no currency at all. Admitting one as "configured" would let a
+//! tenant clear every entry and auto-publish everything, which is the fail-open
+//! this rule exists to close.
+//!
+//! # The three parts that were absent, and what answers them now
+//!
+//! This section used to name three deliberate absences and state, as an
+//! obligation, what they would cost the group that changed them. **This is that
+//! group**, so the section is answered rather than deleted: the reachability
+//! argument below is kept as the history it is, because a reader meeting
+//! [`evaluate`] still needs to know which of its silences were decisions and which
+//! of its rules arrived together — and because the obligation it states is the one
+//! that decided this group's shape.
+//!
+//! | Was absent | Answers it now |
+//! |---|---|
+//! | Per-currency thresholds and the delta comparison (§3 step 3, `inst-mat-percurrency`) | [`evaluate`]'s row walk, against [`ThresholdPolicy::entry`] |
+//! | The D-115 delta domain | [`delta::row_delta`] |
+//! | The registered always-material triggers (§3 step 4, `inst-mat-registered`) | [`triggers`] |
+//!
+//! **The reachability argument, as history.** All three were unreachable while
+//! `policy` was always `None`, and it was always `None` because no threshold policy
+//! could exist: there was no store, no `GET/PUT
+//! /bss-pricing/v1/config/approval-threshold-policy`, and — decisively — **D-10
+//! makes that PUT itself an always-material act**. That last clause has not
+//! changed and is now the bootstrap rather than the reason for an absence: a
+//! tenant still cannot configure a threshold without first completing an approved
+//! unit, because the PUT's own unit is `Trigger::ThresholdPolicyDiff`. *"A
+//! single-reviewer tenant simply leaves the policy unset ⇒ everything material"*
+//! is still the design set's own sentence and still what this module does.
+//!
+//! **What it cost this group, and it is why the four parts landed together.** The
+//! moment [`ThresholdPolicy::of_entries`] acquired a production caller, an
+//! evaluator that examined neither the threshold nor the triggers would have
+//! answered [`MaterialityVerdict::AutoPublishable`] for an **above**-threshold
+//! change and for **every** registered trigger — precisely the fail-open the design
+//! set has closed by hand five times (D-50, D-62, D-104, D-109, D-115). So the
+//! policy store, the delta domain, the trigger registry and this evaluator are one
+//! change, not a sequence.
+//!
+//! **Most registered triggers still name subjects this crate cannot author** —
+//! cutovers, `PriceOverlay` line sets, group memberships, bundles, prepaid grants,
+//! retirement, bulk batches. They are not omitted: [`triggers::Trigger`] declares
+//! each with its owning slice and answers
+//! [`triggers::Trigger::subject_exists_in_this_crate`] `false`, so the set does not
+//! read as half-built and no token claims a writer it has not got.
+//!
+//! **All four window acts are decided here, and the division of labour is the only
+//! thing left outside.** [`crate::infra::window`] decides *inside its mutating
+//! transaction* whether a `PATCH` shortens (D-176 — a classification made before the
+//! transaction opened is a hint) and hands that fact over as
+//! [`ChangeSet::of_window_mutation`]'s `act`; [`evaluate`] turns it into a verdict.
+//! This paragraph used to say the same thing about `ChangeSet::of_act` and it was one
+//! group early: `infra::window` wrote `material(AlwaysMaterialTrigger)` by hand on its
+//! controlled arm and never called this function at all, which is exactly the second
+//! owner the sentence warned against. Now a second copy of §3 step 4 per caller does
+//! not exist, because no caller has one.
+//!
+//! What a **window mutation** brings to the row walk is worth stating, because it is
+//! the only production caller that reaches it: its change set is the plan's published
+//! rows, unchanged, so every delta is zero and no bar is ever reached. The rule that
+//! decides a schedule or a lengthening is therefore `inst-mat-percurrency`'s fail-safe
+//! half — has this plan's currency an entry at all.
+//!
+//! **"Implementing half a registered instruction gives it two owners, free to
+//! disagree the day the other half lands."** That sentence stood here against
+//! `inst-mat-percurrency`'s cheap fail-closed half, and it is **discharged rather
+//! than wrong**: both halves of that instruction land in this change — the
+//! per-currency comparison and the no-entry fail-safe — so the instruction has one
+//! owner and it is [`evaluate`]. The argument itself still holds and
+//! [`crate::domain::publish`] still makes it for `inst-tp-distinct`.
+
+use chrono::{DateTime, Utc};
+use toolkit_macros::domain_model;
+
+use crate::domain::money::CurrencyCode;
+use crate::domain::price_record::PriceRecord;
+use crate::domain::publish::PublishUnitKind;
+use crate::domain::scope_key::ScopeKey;
+
+pub mod delta;
+pub mod triggers;
+
+/// Why a change set is material.
+///
+/// Five arms, all five of which [`evaluate`] answers with. There is no `Other` and
+/// no catch-all — a reason means a rule, and a rule that arrives without a name
+/// arrives without an owner.
+///
+/// [`Self::AlwaysMaterialTrigger`] used to be the odd one out, declared for a rule
+/// this module did not evaluate and written by `infra::window` instead. It is no
+/// longer: §3 step 4 is evaluated here, from [`triggers`]'s one list.
+///
+/// # Why "over its threshold" is an arm of its own
+///
+/// [`Self::ThresholdReached`] was absent while the comparison was, and its absence
+/// made the module say the opposite of what it meant: a row that **reached** its
+/// configured bar was reported `noConfiguredThreshold`, which is the state in which
+/// no bar exists. That is the exact fault [`evaluate`]'s trigger ordering is argued
+/// from forty lines on — *"told `noConfiguredThreshold` about a window cancellation,
+/// an operator would configure a threshold and watch the cancellation stay
+/// material"* — and it was committed one arm over. It also defeated the per-currency
+/// fail-safe's own purpose: a reader of the stored column could not tell *"GBP has
+/// no entry"* from *"USD moved 900 over its bar of 500"*, and those are the two
+/// answers `inst-mat-percurrency` exists to keep apart — one is a configuration the
+/// operator owns, the other is a change they must have reviewed.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MaterialityReason {
+    /// `inst-mat-failsafe` — the tenant configured no threshold policy, so
+    /// there is nothing to be below.
+    ///
+    /// **And `inst-mat-percurrency`'s fail-safe half**: a policy is configured but
+    /// *this row's currency* has no entry in it. The design set folds the two
+    /// deliberately — *"the G1 fail-safe applies **per currency**, not per policy
+    /// object"* — because what the operator can act on is identical: configure an
+    /// entry. It does **not** cover a row that reached an entry it has;
+    /// [`Self::ThresholdReached`] is that.
+    NoConfiguredThreshold,
+    /// `inst-mat-first` — the plan has no published baseline. A first publish
+    /// has no prior state to delta against, so no threshold can be applied to
+    /// it at all.
+    FirstPublish,
+    /// `inst-mat-newrow` — at least one row in the change set is on a scope key
+    /// the baseline does not carry. A new currency/region/phase/chargeKind row
+    /// has no predecessor to compare with.
+    RowWithoutBaseline,
+    /// `inst-mat-registered` — the act, or its content, is on §3 step 4's
+    /// **registered always-material trigger** list, so it is material whatever a
+    /// threshold says and whatever delta it carries.
+    ///
+    /// **[`evaluate`] produces it, and that is what changed.** This doc used to say
+    /// the opposite, on the ground that a registered trigger is a property of the
+    /// *act* and the evaluator "is handed a change set of scope keys and a baseline"
+    /// in which "this call is a window cancellation" is not expressible. That was a
+    /// statement about [`ChangeSet`], which now carries the act
+    /// ([`ChangeSet::of_act`]) — declared by the surface performing it, because only
+    /// that surface, inside its own mutating transaction, can tell a shortening from
+    /// an extension. The content-derived half — D-115's two and the
+    /// `grandfatherUntil` horizon — the evaluator derives itself.
+    ///
+    /// **Which** trigger fired is recoverable and is deliberately not a second
+    /// stored token: the unit names its subject (`subject_kind` and the subject's
+    /// own id), and the audit record of the act carries the state pair that tells a
+    /// cancel from a shortening. A stored token per trigger would be a vocabulary
+    /// that grows with the trigger list and says nothing the subject does not.
+    /// [`triggers::Trigger::as_str`] exists for the diagnostic, not for the column.
+    AlwaysMaterialTrigger,
+    /// `inst-mat-percurrency` proper — a row's delta **reaches** the threshold its
+    /// own currency's entry states (§3's G3: any row trips the whole change).
+    ///
+    /// The arm the comparison needed and did not have. It is deliberately **not**
+    /// distinguished by direction or by basis: §3 thresholds the size of a move and
+    /// says nothing about its sign, and an operator's remedy — have a second
+    /// principal look, or configure a different bar — is the same either way.
+    ///
+    /// **Which** row and which currency tripped is not in the token, and that is a
+    /// gap rather than a decision. §6 describes the stored payload as *"per-currency
+    /// deltas, tripped rows, trigger source"*, and this enum is a `Copy` roster of
+    /// unit variants that [`Self::ALL`] and [`Self::as_str`] both range over — so the
+    /// operands would have to ride the jsonb beside the token, which is
+    /// `api::rest::approvals::MaterialityView`'s shape and not this one. Reported as
+    /// owed rather than half-built here.
+    ThresholdReached,
+}
+
+impl MaterialityReason {
+    /// Every reason, stable order — the order §3 states the rules in.
+    pub const ALL: &'static [Self] = &[
+        Self::NoConfiguredThreshold,
+        Self::FirstPublish,
+        Self::RowWithoutBaseline,
+        Self::AlwaysMaterialTrigger,
+        Self::ThresholdReached,
+    ];
+
+    /// The token that lands in `pricing_approval.materiality`.
+    ///
+    /// The design set describes that column's payload — *"per-currency deltas,
+    /// tripped rows, trigger source"* (§6) — but declares no schema for it. **Two of
+    /// those three are now computed and still not stored**, which is a gap this group
+    /// reports rather than the absence the sentence here used to claim: [`evaluate`]
+    /// walks per-currency deltas and knows which row tripped, and what it hands on is
+    /// the rule that fired. The token is minted here rather than at whichever surface
+    /// stores it first, so the spellings have one owner.
+    ///
+    /// **A token, not a wire code.** §5's Problem-response list is the code
+    /// vocabulary a client branches on (`THRESHOLD_INVALID`,
+    /// `APPROVAL_CONTENT_MISMATCH`, …) and none of these is in it; these are the
+    /// content of a `jsonb` column §6 leaves unschematised. Adding [`Self::ThresholdReached`]
+    /// is therefore not minting a code the design set does not name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoConfiguredThreshold => "noConfiguredThreshold",
+            Self::FirstPublish => "firstPublish",
+            Self::RowWithoutBaseline => "rowWithoutBaseline",
+            Self::AlwaysMaterialTrigger => "alwaysMaterialTrigger",
+            Self::ThresholdReached => "thresholdReached",
+        }
+    }
+}
+
+/// What the evaluator answers: `material` with its reason, or
+/// `auto_publishable`.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialityVerdict {
+    /// A second principal is required. The publish opens an approval unit.
+    Material {
+        /// Which rule made it material.
+        reason: MaterialityReason,
+    },
+    /// The change may publish on one principal. See the module doc for the five
+    /// rules that must all have declined for this to be the answer.
+    AutoPublishable,
+}
+
+impl MaterialityVerdict {
+    /// Material, for `reason`.
+    #[must_use]
+    pub const fn material(reason: MaterialityReason) -> Self {
+        Self::Material { reason }
+    }
+
+    /// Does this change need a second principal?
+    #[must_use]
+    pub const fn is_material(self) -> bool {
+        matches!(self, Self::Material { .. })
+    }
+
+    /// The rule that fired, or `None` on an auto-publishable change.
+    #[must_use]
+    pub const fn reason(self) -> Option<MaterialityReason> {
+        match self {
+            Self::Material { reason } => Some(reason),
+            Self::AutoPublishable => None,
+        }
+    }
+}
+
+/// The tenant's approval-threshold policy: one entry per currency it has
+/// explicitly configured.
+///
+/// The entry's **value** was deliberately not modelled while nothing compared
+/// against it — "a field no comparison reads is a shape guessed before the code
+/// that would have constrained it". [`evaluate`] compares against it now, so the
+/// entry carries its basis, and the shape is the one `pricing_approval_threshold`
+/// stores rather than one guessed for it.
+///
+/// Two load-bearing properties: whether a policy was configured at all
+/// (`inst-mat-failsafe`), and whether **this row's currency** has an entry
+/// (`inst-mat-percurrency`'s fail-safe half). The second is why the type is keyed
+/// per currency and not a single pair.
+///
+/// Its production caller is `infra::threshold::effective_policy`, which reads the
+/// greatest version an independent principal approved.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThresholdPolicy {
+    entries: Vec<ThresholdEntry>,
+}
+
+/// Which basis one currency's threshold is stated in.
+///
+/// **An enum rather than two `Option`s, and the compiler is the guard**: §6's
+/// `{absolute_minor | percent}` is a choice, and a pair of options can represent
+/// "both" and "neither" — the first leaves the evaluator picking one with nothing
+/// in the design set saying which, and the second is an entry that thresholds
+/// nothing while still counting as "this currency has an entry", which is
+/// `inst-mat-percurrency`'s fail-safe switched off by an empty row. The store says
+/// the same thing with `chk_pricing_approval_threshold_basis`; this says it where
+/// no test is needed to prove it.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThresholdBasis {
+    /// An absolute move, in the currency's own minor units.
+    Absolute {
+        /// §6's `absolute_minor ≥ 0`; zero is a real threshold and makes
+        /// everything in that currency material.
+        minor: i64,
+    },
+    /// A relative move, in **basis points** (`10_000` = 100%).
+    ///
+    /// Basis points rather than a percentage, per `m20260802_000018`'s recorded
+    /// decision: the design set declares no representation for §6's `percent > 0`,
+    /// and D-104's `share_bp` / `platform_cut_bp` are the set's own idiom. An
+    /// integer also keeps the comparison integral — no floating point beside
+    /// money.
+    Percent {
+        /// §6's `percent > 0`, in basis points.
+        bp: u32,
+    },
+}
+
+/// One currency's threshold entry.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThresholdEntry {
+    /// The ISO 4217 code this entry thresholds.
+    pub currency: CurrencyCode,
+    /// The basis, exactly one of two by construction.
+    pub basis: ThresholdBasis,
+}
+
+impl ThresholdPolicy {
+    /// A policy over `entries`, or `None` when there are none — an empty entry set
+    /// is not a configured policy, for the reason the module doc gives.
+    ///
+    /// Duplicates collapse and **the first entry for a currency wins**. An entry
+    /// set is a set, and two entries for one currency would be a policy with two
+    /// answers for one row, whichever order they were read in. First-wins rather
+    /// than last-wins because the store hands them back ordered by currency, so
+    /// there is no "later" for a reader to appeal to; the surface refuses a
+    /// duplicate key outright, which is where an operator hears about it.
+    #[must_use]
+    pub fn of_entries(entries: impl IntoIterator<Item = ThresholdEntry>) -> Option<Self> {
+        let mut kept: Vec<ThresholdEntry> = Vec::new();
+        for entry in entries {
+            if !kept.iter().any(|held| held.currency == entry.currency) {
+                kept.push(entry);
+            }
+        }
+        (!kept.is_empty()).then_some(Self { entries: kept })
+    }
+
+    /// This currency's entry, or `None` — which is `inst-mat-percurrency`'s
+    /// fail-safe half and not a missing lookup: *"a row whose currency has no
+    /// threshold entry in the configured policy is material (the G1 fail-safe
+    /// applies per currency, not per policy object)"*.
+    #[must_use]
+    pub fn entry(&self, currency: &CurrencyCode) -> Option<&ThresholdEntry> {
+        self.entries
+            .iter()
+            .find(|entry| &entry.currency == currency)
+    }
+
+    /// The currencies with an explicit entry, in the order they were configured.
+    pub fn currencies(&self) -> impl Iterator<Item = &CurrencyCode> {
+        self.entries.iter().map(|entry| &entry.currency)
+    }
+}
+
+/// Why a proposed threshold version is not one — the domain half of
+/// `THRESHOLD_INVALID` (`design/05-governance.md` §5).
+///
+/// An enum rather than a string, for [`MaterialityReason`]'s reason: the surface
+/// renders one wire code and the operator needs to know which of the shape rules
+/// they broke, and a caller of [`ThresholdVersion::new`] that had to parse a
+/// sentence to find out would be a second reading of the same refusal.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThresholdRefusal {
+    /// The proposal names no currency at all.
+    ///
+    /// The refusal itself is sound and local: an empty version writes **zero rows**,
+    /// which `latest_version` cannot see, `read_version` cannot tell from a version
+    /// nobody proposed, and an approval pin would cover nothing. So it is refused here,
+    /// where the operator hears about it, rather than written and lost.
+    ///
+    /// **What is *not* this variant's to record is the capability gap behind it**, and
+    /// this doc used to try. §6's *"unset ⇒ two-person rule always"* is a **state**, and
+    /// this store can only ever enter it as the bootstrap: a tenant that has configured
+    /// a threshold can never return to the fail-safe, because retiring a policy would
+    /// need a tombstone row — a version that says "no thresholds" and is
+    /// distinguishable from a version nobody proposed — which the table has no column
+    /// for. That is a gap in what the gear can do, whose home is a register entry
+    /// naming the column its removal needs, not a comment on the refusal that happens
+    /// to sit nearest it. Reported as owed.
+    NoEntries,
+    /// Two entries name one currency, which is a policy with two answers for one
+    /// row.
+    ///
+    /// [`ThresholdPolicy::of_entries`] collapses duplicates first-wins because a
+    /// *read* of the store must be total. A **proposal** is authored, so the
+    /// operator is told rather than silently having one of their two entries
+    /// dropped — the same split `of_entries`' own doc names.
+    DuplicateCurrency(String),
+}
+
+impl ThresholdRefusal {
+    /// The sentence the surface renders, naming the field the operator can move.
+    #[must_use]
+    pub fn detail(&self) -> String {
+        match self {
+            Self::NoEntries => "entries: a threshold policy version names at least one currency; \
+                                an empty proposal writes no rows, so it is a version no approval \
+                                can pin and no reader can distinguish from one nobody proposed"
+                .to_owned(),
+            Self::DuplicateCurrency(currency) => format!(
+                "entries: currency {currency} appears twice; one currency has one threshold, or \
+                 the evaluator has two answers for one row"
+            ),
+        }
+    }
+}
+
+/// One **version** of the tenant's threshold policy, as an approval unit pins it.
+///
+/// # Why the pinned subject is a version and not a [`ThresholdPolicy`]
+///
+/// D-10 makes a policy PUT an always-material approval unit, so what a reviewer is
+/// shown is a *proposal*: content that is not yet the tenant's policy and may never
+/// become it. `pricing_approval` carries a `content_hash` and no content column, so
+/// the pin has to cover something re-derivable — which is exactly what the versioned
+/// store gives it (`m20260802_000018`'s module doc argues the shape). A
+/// [`ThresholdPolicy`] carries no version and no `effective_from`, so it cannot name
+/// the row set a pin was taken over; this can.
+///
+/// The two extra fields are hashed for that reason and not for completeness:
+/// `version` is what [`crate::infra::threshold`] resolves the effective policy
+/// through, and `effective_from` is authored — an operator who could move it after a
+/// reviewer signed would move when the approved thresholds start applying.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThresholdVersion {
+    version: u64,
+    effective_from: DateTime<Utc>,
+    entries: Vec<ThresholdEntry>,
+}
+
+impl ThresholdVersion {
+    /// One proposed or stored version.
+    ///
+    /// The entry order is **the caller's**, and every caller hands them over sorted
+    /// by currency: `threshold_repo::read_version` orders in SQL, and the surface
+    /// sorts an authored set before it proposes one. That is load-bearing rather
+    /// than tidy — the pin is taken over this rendering, so a version that hashed
+    /// in the order an operator typed would re-derive to a different digest than it
+    /// was signed under. It is not re-sorted here, because a constructor that
+    /// quietly reordered its argument would leave the two callers free to disagree
+    /// about the order and never find out.
+    ///
+    /// # Errors
+    /// [`ThresholdRefusal::NoEntries`] for an empty entry set;
+    /// [`ThresholdRefusal::DuplicateCurrency`] when two entries name one currency.
+    pub fn new(
+        version: u64,
+        effective_from: DateTime<Utc>,
+        entries: Vec<ThresholdEntry>,
+    ) -> Result<Self, ThresholdRefusal> {
+        if entries.is_empty() {
+            return Err(ThresholdRefusal::NoEntries);
+        }
+        for (at, entry) in entries.iter().enumerate() {
+            if entries[..at]
+                .iter()
+                .any(|held| held.currency == entry.currency)
+            {
+                return Err(ThresholdRefusal::DuplicateCurrency(
+                    entry.currency.as_str().to_owned(),
+                ));
+            }
+        }
+        Ok(Self {
+            version,
+            effective_from,
+            entries,
+        })
+    }
+
+    /// Which version this is — the `version` half of the store's primary key.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The instant the version was **authored to** start applying.
+    ///
+    /// Stated that way because nothing enforces it: `infra::threshold::effective_version`
+    /// makes the greatest approved version effective at once, whatever this says, and
+    /// that module's doc reports the gap and names its direction. Read here as "what the
+    /// reviewer signed" — which is real, the pin covering it — rather than as "when the
+    /// thresholds start applying", which this crate does not yet make true.
+    #[must_use]
+    pub const fn effective_from(&self) -> DateTime<Utc> {
+        self.effective_from
+    }
+
+    /// The entries, in the order the pin frames them.
+    #[must_use]
+    pub fn entries(&self) -> &[ThresholdEntry] {
+        &self.entries
+    }
+
+    /// This version read as a policy [`evaluate`] can compare against.
+    ///
+    /// `Option` because [`ThresholdPolicy::of_entries`] is the one authority on
+    /// what counts as configured, and re-deciding it here would be a second answer.
+    /// It is `Some` for every version this type can hold — the constructor refuses
+    /// an empty entry set — and the `None` arm is kept rather than unwrapped so
+    /// that the day the store learns to express a retirement, this reads it
+    /// correctly instead of panicking.
+    #[must_use]
+    pub fn policy(&self) -> Option<ThresholdPolicy> {
+        ThresholdPolicy::of_entries(self.entries.iter().cloned())
+    }
+}
+
+/// The submitted change set, as materiality sees it: the rows it would publish,
+/// **and** the act that submitted them.
+///
+/// It used to be the scope keys alone, and its own doc said the amounts, the band
+/// geometry and the contract fields "are the operands of the comparison this phase
+/// does not perform; they arrive with it". This is the phase they arrive in, so it
+/// carries whole [`PriceRecord`]s: `inst-mat-percurrency` compares a delta and
+/// [`delta::row_delta`] takes that delta over a row's content, not its key.
+///
+/// # The act is here, and it is what made `AlwaysMaterialTrigger` answerable
+///
+/// [`MaterialityReason::AlwaysMaterialTrigger`]'s doc used to say the evaluator
+/// "does not see" the act — *"it is handed a change set of scope keys and a
+/// baseline, and 'this call is a window cancellation' is not expressible in
+/// either"*. That was a statement about this type. Making it expressible is what
+/// lets §3 step 4 be evaluated where §3 puts it, instead of at each surface that
+/// performs a registered act; a second copy of the trigger list per surface is how
+/// a rule acquires as many owners as it has callers.
+///
+/// The act is **declared by the surface**, not inferred: whether a `PATCH` is a
+/// shortening is decided inside the mutating transaction against the stored row
+/// (D-176), and nothing reconstructable from a row set could tell it from an
+/// extension.
+///
+/// # And the **subject** is here, because one rule is about the plan's revision and
+/// # not about the rows
+///
+/// `inst-mat-registered`'s pure-shape clause (D-115) is a statement about a **plan
+/// revision**: *"a pure-shape revision contains zero price rows, so the per-row
+/// evaluation had nothing to trip on"*. Its detectable signature — a change set that
+/// moves no row — is also the signature of every **window mutation**, which by
+/// construction publishes the plan's rows exactly as they already stand. Without the
+/// subject on the change set, `evaluate` answered `planShapeRevisionContent` for a
+/// window schedule that revised no shape, which makes every window mutation material
+/// whatever the threshold says and takes D-62's answer for the two acts it does not
+/// govern.
+///
+/// The subject is [`PublishUnitKind`], the discriminator `PlanPublishUnit` already
+/// carries, rather than a second enumeration of the same fact.
+/// [`Option::None`](Option) is *"this act is no publish unit at all"* — the D-10
+/// policy diff, whose unit is an approval unit over a threshold version and which
+/// publishes nothing.
+///
+/// [`PublishUnitKind`]: crate::domain::publish::PublishUnitKind
+/// [`PlanPublishUnit`]: crate::domain::publish::PlanPublishUnit
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeSet {
+    unit: Option<PublishUnitKind>,
+    act: Option<triggers::Trigger>,
+    rows: Vec<PriceRecord>,
+}
+
+impl ChangeSet {
+    /// A **plan-revision** publish that is not itself a registered trigger — §4.2's
+    /// ordinary path.
+    ///
+    /// Its materiality genuinely is the threshold policy's question, and it is the
+    /// one subject D-115's pure-shape clause is about.
+    #[must_use]
+    pub fn of_records(rows: impl IntoIterator<Item = PriceRecord>) -> Self {
+        Self {
+            unit: Some(PublishUnitKind::PlanContent),
+            act: None,
+            rows: rows.into_iter().collect(),
+        }
+    }
+
+    /// A **window mutation** (D-99), with the registered trigger it is when it is
+    /// one.
+    ///
+    /// `act` is `Some` for D-62's two — a cancel, and a `PATCH` that shortens — and
+    /// `None` for a schedule and a lengthening, whose materiality is the threshold
+    /// policy's question. The caller decides which, inside its mutating transaction
+    /// and against the stored row (D-176); what it must not do is decide the
+    /// *verdict*, which is why it hands the act over instead of minting one.
+    ///
+    /// `rows` is the row set the mutation's re-projection would freeze — the plan's
+    /// **published** rows, which is why a window mutation's delta is zero on every
+    /// one of them and its threshold question is really *"does this plan's every
+    /// currency have an entry"*. That is `inst-mat-percurrency`'s fail-safe half
+    /// reaching the window plane through its one owner rather than a second copy of
+    /// it in `infra::window`.
+    #[must_use]
+    pub fn of_window_mutation(
+        window_id: uuid::Uuid,
+        act: Option<triggers::Trigger>,
+        rows: impl IntoIterator<Item = PriceRecord>,
+    ) -> Self {
+        Self {
+            unit: Some(PublishUnitKind::WindowMutation { window_id }),
+            act,
+            rows: rows.into_iter().collect(),
+        }
+    }
+
+    /// A change set from a registered act (§3 step 4) that is **no publish unit** —
+    /// today exactly the D-10 threshold-policy diff.
+    ///
+    /// `rows` is still whatever row set the act would publish, because the act being
+    /// material does not excuse the evaluator from seeing what it touches: the
+    /// verdict is stored and read years later. For the policy diff that set is
+    /// genuinely empty — a threshold prices nothing — and the unit's own
+    /// `subject_kind` is what tells it apart in the store.
+    #[must_use]
+    pub fn of_act(act: triggers::Trigger, rows: impl IntoIterator<Item = PriceRecord>) -> Self {
+        Self {
+            unit: None,
+            act: Some(act),
+            rows: rows.into_iter().collect(),
+        }
+    }
+
+    /// The registered trigger this act is, if it is one.
+    #[must_use]
+    pub const fn act(&self) -> Option<triggers::Trigger> {
+        self.act
+    }
+
+    /// Which publish unit's content this is, if it is a publish unit's at all.
+    #[must_use]
+    pub const fn unit(&self) -> Option<PublishUnitKind> {
+        self.unit
+    }
+
+    /// Is this change set a **plan revision's** content — the one subject D-115's
+    /// pure-shape clause ranges over?
+    ///
+    /// The predicate lives here rather than as a `matches!` at the call site so that
+    /// the day a third unit kind appears, the compiler asks this question once.
+    #[must_use]
+    pub const fn revises_plan_content(&self) -> bool {
+        matches!(self.unit, Some(PublishUnitKind::PlanContent))
+    }
+
+    /// The rows the change would publish.
+    pub fn rows(&self) -> impl Iterator<Item = &PriceRecord> {
+        self.rows.iter()
+    }
+
+    /// The keys those rows sit on — `inst-mat-newrow`'s whole question.
+    pub fn keys(&self) -> impl Iterator<Item = &ScopeKey> {
+        self.rows.iter().map(|row| &row.scope_key)
+    }
+}
+
+/// The plan's currently published price rows, by scope key — the referent
+/// `inst-mat-first` and `inst-mat-newrow` are each defined against.
+///
+/// `None` at the [`evaluate`] call site is a **first publish**; an instance
+/// carrying no key for a row is that **row's** first publish. The two are
+/// different rules and the design set states them separately, which is why the
+/// absence is representable at both levels.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedPriceBaseline {
+    rows: Vec<PriceRecord>,
+}
+
+impl PublishedPriceBaseline {
+    /// The baseline of a plan whose published rows are `rows`.
+    ///
+    /// Whole records rather than keys, for [`ChangeSet`]'s reason: a delta needs
+    /// the amount it moved **from**, and a baseline that carried only keys could
+    /// answer `inst-mat-newrow` and nothing else.
+    #[must_use]
+    pub fn of_records(rows: impl IntoIterator<Item = PriceRecord>) -> Self {
+        Self {
+            rows: rows.into_iter().collect(),
+        }
+    }
+
+    /// Is there a published row on `key`?
+    #[must_use]
+    pub fn covers(&self, key: &ScopeKey) -> bool {
+        self.rows.iter().any(|row| &row.scope_key == key)
+    }
+
+    /// The published row on `key`, when there is one.
+    ///
+    /// `None` is `inst-mat-newrow`'s world and the delta domain's absent operand
+    /// at once, which is why the two rules read the same accessor: a row the
+    /// baseline does not carry has no predecessor to delta against **because** it
+    /// has no predecessor at all.
+    #[must_use]
+    pub fn row(&self, key: &ScopeKey) -> Option<&PriceRecord> {
+        self.rows.iter().find(|row| &row.scope_key == key)
+    }
+}
+
+/// Evaluate a change set's materiality — §3's steps 1, 2, 3, 3a and 4.
+///
+/// `policy` is the tenant's approval-threshold policy and `baseline` the plan's
+/// published price rows; `None` on either is the absence its rule is named for.
+/// Materiality is evaluated **once, at submit** (§3 step 3): a later policy
+/// change neither re-evaluates nor voids a pending approval, so the arguments
+/// are the world as it stood when the unit was opened, never as it stands when
+/// the unit is decided.
+#[must_use]
+pub fn evaluate(
+    change: &ChangeSet,
+    policy: Option<&ThresholdPolicy>,
+    baseline: Option<&PublishedPriceBaseline>,
+) -> MaterialityVerdict {
+    // §3 step 4's **act** half, ahead of everything, and the order is a decision
+    // rather than §3's numbering. A registered act is material "whatever a
+    // threshold says and whatever delta it carries", so no answer below could
+    // change it — while every answer below would *replace* its reason with one the
+    // operator cannot act on. Told `noConfiguredThreshold` about a window
+    // cancellation, an operator would configure a threshold and watch the
+    // cancellation stay material; `alwaysMaterialTrigger` is the fact. §3 numbers
+    // its rules; it does not fix their precedence, and the three below already
+    // carry a precedence this module chose on the same ground.
+    if triggers::triggered(change).is_some() {
+        return MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
+    }
+    // Step 1, `inst-mat-failsafe`. First of the three because it is the only one
+    // that holds with no knowledge of the subject at all.
+    let Some(policy) = policy else {
+        return MaterialityVerdict::material(MaterialityReason::NoConfiguredThreshold);
+    };
+    // Step 2, `inst-mat-first`.
+    let Some(baseline) = baseline else {
+        return MaterialityVerdict::material(MaterialityReason::FirstPublish);
+    };
+    // Step 3a, `inst-mat-newrow`. One row without a predecessor trips the whole
+    // change, as one row over its threshold does (§3's any-row-trips reading, G3).
+    if change.keys().any(|key| !baseline.covers(key)) {
+        return MaterialityVerdict::material(MaterialityReason::RowWithoutBaseline);
+    }
+    // Step 4's whole-change-set half — D-115's pure-shape revision. Before the row
+    // walk, because a revision that moves no row has no row for the walk to trip
+    // on: that is exactly the hole D-115 exists to close.
+    //
+    // **Only for a plan-revision publish**, and the gate is the rule's own scope
+    // rather than a carve-out: D-115 is about a *revision* whose content is the
+    // plan's shape. A window mutation moves an interval and no row, so it has the
+    // same detectable signature and none of the meaning — and answering
+    // `planShapeRevisionContent` for one would make every schedule and every
+    // lengthening material whatever a threshold said, which is D-62's answer taken
+    // for the two acts D-62 deliberately does not govern.
+    if change.revises_plan_content() && triggers::triggered_by_content(change, baseline).is_some() {
+        return MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
+    }
+    // Step 3, `inst-mat-percurrency`: each row's delta, in its **own** currency
+    // (S5's constraint G3), against that currency's own entry.
+    for row in change.rows() {
+        let Some(entry) = policy.entry(row.scope_key.currency()) else {
+            // `inst-mat-percurrency`'s fail-safe half. The reason is
+            // `inst-mat-failsafe`'s and not a fourth token, because the design set
+            // says so in as many words: "the G1 fail-safe applies **per currency,
+            // not per policy object**". What the operator can act on is identical —
+            // configure an entry for this currency.
+            return MaterialityVerdict::material(MaterialityReason::NoConfiguredThreshold);
+        };
+        // Step 3a guaranteed a predecessor for every key above; this is that row.
+        let Some(published) = baseline.row(&row.scope_key) else {
+            return MaterialityVerdict::material(MaterialityReason::RowWithoutBaseline);
+        };
+        // Step 4's per-row half — the horizon and D-115's incomputable deltas.
+        if triggers::triggered_by_row(row, published).is_some() {
+            return MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
+        }
+        match compare(&delta::row_delta(row, published), entry.basis) {
+            Comparison::Below => {}
+            // `inst-mat-percurrency` proper, and its **own** reason: this currency
+            // has an entry and the row reached it. Reporting the fail-safe token
+            // here would tell an operator to configure a threshold that is already
+            // configured, and would make the stored column unable to tell that
+            // world from "this currency has no entry" — which is the one
+            // distinction this rule is built around.
+            Comparison::Reached => {
+                return MaterialityVerdict::material(MaterialityReason::ThresholdReached);
+            }
+            // The bar could not be evaluated: a percent entry against a zero
+            // baseline. §3 puts that under the G1 fail-safe in the same breath as
+            // the no-entry case — *"no percentage is computable"* — so it carries
+            // the fail-safe's token and not the tripped one.
+            Comparison::NotComparable => {
+                return MaterialityVerdict::material(MaterialityReason::NoConfiguredThreshold);
+            }
+        }
+    }
+    MaterialityVerdict::AutoPublishable
+}
+
+/// What comparing one row's delta against its currency's entry produced.
+///
+/// Three states rather than a bool, because the comparison has three outcomes and
+/// two of them are material for **different** reasons an operator acts on
+/// differently. Folding [`Self::NotComparable`] into [`Self::Reached`] — which the
+/// predicate this replaced did, with `unwrap_or(true)` — stores "this row moved past
+/// its bar" about a row whose bar could not be evaluated at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Comparison {
+    /// Every operand is under the bar. The only outcome that does not end the walk.
+    Below,
+    /// At least one operand **reaches** the bar (`>=`, per
+    /// [`delta::AmountMove::reaches_absolute`]'s stated boundary).
+    Reached,
+    /// The bar cannot be evaluated against this delta at all.
+    NotComparable,
+}
+
+/// Compare `delta` against `basis`.
+///
+/// **Any operand trips it**, because §3's G3 is an any-row-trips rule and a band
+/// vector is that rule one level down: a `graduated` row whose top band doubled has
+/// moved, whatever the bands beneath it did, and an aggregate over the vector would
+/// let a large move in one band hide behind small ones in the others.
+///
+/// [`Comparison::Reached`] **dominates** [`Comparison::NotComparable`] across a band
+/// vector, and the precedence is the same one [`evaluate`] applies to its own rules:
+/// a band that is provably over its bar is the sharper and more actionable fact than
+/// a sibling band whose percentage has no denominator, and both answers are material
+/// either way. Reported in the direction that names something the operator can look
+/// at.
+///
+/// A percent basis with a zero baseline is [`Comparison::NotComparable`], which is §3
+/// step 3 verbatim — *"A percent-only policy against a zero (or NULL) baseline is
+/// likewise material — no percentage is computable"* — and its verdict at the call
+/// site is the **G1 fail-safe**, on the same warrant the per-currency no-entry case
+/// takes it: no delta computable ⇒ material.
+///
+/// The `NotComputable` arm of [`delta::RowDelta`] answers `NotComparable` and is
+/// **not** the arm that reports it: [`triggers::triggered_by_row`] has already
+/// answered `AlwaysMaterialTrigger` for exactly this row, one line above the only
+/// call site, so this arm has **no removal proof and that is reported rather than
+/// hidden**. It is written out rather than left to a wildcard so that reordering
+/// those two lines fails safe instead of auto-publishing a change with no computable
+/// delta.
+fn compare(delta: &delta::RowDelta, basis: ThresholdBasis) -> Comparison {
+    let moves: &[delta::AmountMove] = match delta {
+        delta::RowDelta::Amount(one) | delta::RowDelta::PackagePrice(one) => {
+            std::slice::from_ref(one)
+        }
+        delta::RowDelta::BandVector(many) => many,
+        delta::RowDelta::NotComputable(_) => return Comparison::NotComparable,
+    };
+    let mut answer = Comparison::Below;
+    for moved in moves {
+        match basis {
+            ThresholdBasis::Absolute { minor } => {
+                if moved.reaches_absolute(minor) {
+                    return Comparison::Reached;
+                }
+            }
+            ThresholdBasis::Percent { bp } => match moved.reaches_percent(i64::from(bp)) {
+                Some(true) => return Comparison::Reached,
+                Some(false) => {}
+                None => answer = Comparison::NotComparable,
+            },
+        }
+    }
+    answer
+}
+
+#[cfg(test)]
+#[path = "materiality_tests.rs"]
+mod materiality_tests;

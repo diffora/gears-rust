@@ -213,6 +213,14 @@ pub struct NewPriceDraft {
     pub created_by: Uuid,
     /// When the request was authored, UTC.
     pub created_at_utc: DateTime<Utc>,
+    /// The causing request's correlation id (D-178).
+    ///
+    /// The third field of the [`AuditStamp`](crate::domain::audit::AuditStamp)
+    /// this path writes its record under, and the only one the draft did not
+    /// already carry: `created_by` is the actor and `created_at_utc` is the
+    /// instant. Carried on the draft rather than as a second argument so the
+    /// create cannot be called with a correlation belonging to another request.
+    pub correlation_id: Uuid,
 }
 
 /// `SeaORM`-backed repository over draft price rows and their tier bands.
@@ -959,6 +967,123 @@ async fn load_row(
         .map_err(|e| RepoError::Db(format!("read price row: {e}")))
 }
 
+/// The canonical scope key of one price row, through whichever runner the caller
+/// holds.
+///
+/// The window store's question, and it is deliberately narrower than
+/// [`PriceRepo::find`]'s. A window is bound to a **row** (§6 makes the binding
+/// immutable) while non-overlap and coverage are per **key**, so every window read
+/// has to resolve one into the other — and the band set, the authored shape and
+/// the entity tag are no part of that question. Answering it with a whole
+/// [`PriceRecord`] would put a second query on the path for values the caller
+/// discards, on the publish path and inside every window mutation's transaction.
+///
+/// `None` means no such row **or** one outside the caller's scope, deliberately
+/// the same answer either way for [`PriceRepo::find`]'s reason.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+/// when a stored axis is outside the enumeration its CHECK admits, or when the
+/// eight axes together do not form a legal key.
+pub async fn load_scope_key(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+) -> Result<Option<ScopeKey>, RepoError> {
+    let Some(row) = load_row(runner, scope, tenant_id, price_id).await? else {
+        return Ok(None);
+    };
+    to_scope_key(&row).map(Some)
+}
+
+/// Every row of one plan paired with its canonical scope key.
+///
+/// The window plane's other question: which of a plan's rows share a key, because
+/// that is the set non-overlap is checked across and the set coverage is computed
+/// per.
+///
+/// **No lifecycle filter**, and that is the substance rather than an omission.
+/// `chk_pricing_price_lifecycle_state` admits three states and a window's
+/// key-mates include every one of them: a `superseded` predecessor still occupies
+/// the key over its shortened interval (which is exactly what a supersession
+/// leaves behind), and a `draft` row is one publish away from being current on the
+/// key its window would then take effect on. A filter here would let two
+/// intervals on one key pass the overlap check by having one of them belong to a
+/// row in a state the filter dropped.
+///
+/// Ordered by `price_id` ascending, [`load_for_plan`]'s order and on both
+/// backends for its reason.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+/// when a stored axis is outside the enumeration its CHECK admits.
+pub async fn load_scope_keys_for_plan(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<Vec<(Uuid, ScopeKey)>, RepoError> {
+    price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PlanId.eq(plan_id.get())),
+        )
+        .order_by(price::Column::PriceId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read the scope keys of plan {plan_id}: {e}")))?
+        .iter()
+        .map(|row| Ok((row.price_id, to_scope_key(row)?)))
+        .collect()
+}
+
+/// Which plan each of a set of price rows belongs to, **across tenants**.
+///
+/// The activation sweep's question, and the only one it has about
+/// `pricing_price`. Window events are ordered per `(tenant, plan)` (§7) and the
+/// outbox aggregate is therefore the plan, while `pricing_price_window` carries
+/// a `price_id` and no plan — so a cross-tenant sweep holding a page of due
+/// windows needs exactly this map and nothing else on the row.
+///
+/// **Deliberately not [`load_scope_key`] per row.** The key is eight axes and
+/// resolving it costs one query per window; the sweep needs one column, and a
+/// pass over a thousand due windows would otherwise take a thousand round trips
+/// to discard seven axes each time. The window *mutation* paths still resolve
+/// the whole key, because non-overlap and coverage are per key — this is the one
+/// caller whose question really is "which aggregate does this event belong to".
+///
+/// **No `tenant_id` argument**, which is what makes it the sweep's: the caller
+/// reads under the sanctioned [`AccessScope::allow_all`] system scope and the
+/// scope is the only gate. A per-tenant caller passes its own scope and gets its
+/// own rows, because `price_id` is a primary key and cannot be another tenant's
+/// under a narrowed scope.
+///
+/// Ordered by `price_id`, [`load_for_plan`]'s order and for its reason.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn load_plan_ids(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    price_ids: impl Iterator<Item = Uuid>,
+) -> Result<Vec<(Uuid, PlanId)>, RepoError> {
+    Ok(price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(price::Column::PriceId.is_in(price_ids)))
+        .order_by(price::Column::PriceId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read the plans of a price-row set: {e}")))?
+        .into_iter()
+        .map(|row| (row.price_id, PlanId::new(row.plan_id)))
+        .collect())
+}
+
 /// Read one row's bands, ascending by lower bound. See the module doc for why
 /// the order is here and not left to the caller.
 async fn load_bands(
@@ -1299,6 +1424,12 @@ struct PreparedDraft {
     row: price::ActiveModel,
     /// Its band set, rendered.
     bands: Vec<price_tier_band::ActiveModel>,
+    /// The causing request's correlation (D-178), carried through from the draft.
+    ///
+    /// [`PriceRecord`] holds the row's columns and the correlation is not one —
+    /// it belongs to the request, not to the price — so it rides here rather than
+    /// being smuggled onto the record and stored.
+    correlation_id: Uuid,
 }
 
 /// Render a create and refuse every value the store cannot take, statement-free.
@@ -1339,7 +1470,12 @@ fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft,
     check_authored_instant("grandfatherUntil", record.grandfather_until)?;
     let row = insert_model(tenant_id, &record)?;
     let bands = band_models(tenant_id, record.price_id, &record.row.bands)?;
-    Ok(PreparedDraft { record, row, bands })
+    Ok(PreparedDraft {
+        record,
+        row,
+        bands,
+        correlation_id: draft.correlation_id,
+    })
 }
 
 /// The three statements a create issues, through whichever runner holds them.
@@ -1354,15 +1490,21 @@ async fn insert_prepared(
     tenant_id: Uuid,
     prepared: PreparedDraft,
 ) -> Result<PriceRecord, RepoError> {
-    let PreparedDraft { record, row, bands } = prepared;
+    let PreparedDraft {
+        record,
+        row,
+        bands,
+        correlation_id,
+    } = prepared;
     if let Some(occupant) = find_key_occupant(runner, scope, tenant_id, &record.scope_key).await? {
         return Err(duplicate_key(&record.scope_key, &occupant));
     }
     insert_price(runner, scope, row).await?;
     insert_bands(runner, scope, bands).await?;
     // The record, in the same transaction as the insert (D-135). The stamp is the
-    // draft's own - `created_by` is the actor, `created_at_utc` the instant - so
-    // this path needs nothing threaded that it did not already have.
+    // draft's own - `created_by` is the actor, `created_at_utc` the instant, and
+    // `correlation_id` the request's (D-178), which the draft carries for exactly
+    // this line.
     record_price_mutation(
         runner,
         scope,
@@ -1373,7 +1515,7 @@ async fn insert_prepared(
         AuditStamp {
             actor_principal_id: record.created_by,
             recorded_at: record.created_at_utc,
-            correlation_id: None,
+            correlation_id,
         },
     )
     .await?;
@@ -1391,10 +1533,25 @@ async fn insert_prepared(
 /// nothing existed, which is the difference between a create and an edit and is
 /// expressible only as an absence.
 ///
+/// # This is also the TOCTOU void's rail (`inst-ap-pin`)
+///
+/// All three row mutations land here — create, update and delete — so a pending
+/// approval unit pinned to the row's plan is voided here, in the mutation's own
+/// transaction. `plan_repo::record_revision_mutation` is the same rail for the
+/// shape plane, and its doc explains why the void rides the audit writer rather
+/// than nine call sites; the surface enumeration is in
+/// [`crate::infra::approval::void_pending_units_of`].
+///
+/// **A price create voids**, unlike a plan create. The difference is not the
+/// verb: a new row joins the candidate set the pin already covers, while a new
+/// plan cannot join a pin taken before it existed.
+///
 /// # Errors
 /// [`RepoError::Db`] or [`RepoError::CorruptRow`] from the chain append, both of
 /// which roll the mutation back with them. That is the point: a mutation whose
-/// record cannot be written must not commit.
+/// record cannot be written must not commit. [`RepoError::Db`] from the void,
+/// for the same reason: nor may one that could not close the approval it
+/// invalidated.
 async fn record_price_mutation(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1404,6 +1561,14 @@ async fn record_price_mutation(
     before: Option<RowVersion>,
     stamp: AuditStamp,
 ) -> Result<(), RepoError> {
+    crate::infra::approval::void_pending_units_of(
+        runner,
+        scope,
+        tenant_id,
+        record.scope_key.plan_id(),
+        stamp.recorded_at,
+    )
+    .await?;
     audit_repo::append(
         runner,
         scope,

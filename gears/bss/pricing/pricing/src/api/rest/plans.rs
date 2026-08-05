@@ -43,9 +43,11 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
+use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions::{self, RevisionTag};
 use crate::api::rest::state::AuthoringState;
+use crate::domain::audit::AuditStamp;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
@@ -573,7 +575,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(router, openapi);
 
-    router.layer(Extension(state))
+    // D-178's edge, applied here rather than where the routers are merged so it
+    // travels with the routes: a surface reachable without it cannot build an
+    // `AuditStamp`, and `correlation::require_correlation` answers 500 rather
+    // than minting a second value per record.
+    router
+        .layer(Extension(state))
+        .layer(axum::middleware::from_fn(
+            crate::api::rest::correlation::establish,
+        ))
 }
 
 /// `GET /plans/{planId}`.
@@ -701,10 +711,12 @@ async fn create_plan(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let scope = crate::authz::access_scope(
         &enforcer,
@@ -747,7 +759,13 @@ async fn create_plan(
                 // Minted here rather than before the claim: a replay must answer
                 // the first caller's id, and an id minted outside the guarded
                 // body would be a second one nobody was ever told about.
-                let draft = draft_shape.into_draft(PlanId::new(Uuid::now_v7()), tenant, actor, now);
+                let draft = draft_shape.into_draft(
+                    PlanId::new(Uuid::now_v7()),
+                    tenant,
+                    actor,
+                    now,
+                    correlation,
+                );
                 plan_repo::create_draft_on(txn, &scope_for_body, draft).await
             })
         },
@@ -771,11 +789,15 @@ async fn patch_plan(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
     Path(plan_id): Path<Uuid>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<([(axum::http::HeaderName, String); 1], Json<PlanView>), CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // Once, at the top: on the arm that opens a successor this call writes
+    // **two** records, and D-178 clause (2) is that they carry one value.
+    let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let plan_id = PlanId::new(plan_id);
     let scope = write_scope(&enforcer, &ctx, plan_id.get(), tenant).await?;
@@ -783,11 +805,12 @@ async fn patch_plan(
     let body: PatchPlanRequest = preconditions::parse_body(&body)?;
     let asserted = preconditions::if_match_revision(&headers)?;
     let facet = Facet::of(body)?;
-    let stamp = audit_stamp(&ctx, Utc::now());
+    let stamp = audit_stamp(&ctx, Utc::now(), correlation);
 
     // The revision the patch lands on, and the version the store will match.
-    let target =
-        target_revision(&state, &scope, tenant, plan_id, asserted, ctx.subject_id()).await?;
+    // It takes the **same** stamp: the successor it may open is the first of the
+    // two records this one call writes.
+    let target = target_revision(&state, &scope, tenant, plan_id, asserted, stamp).await?;
     let revision = target.revision;
     let expected = target.expected;
 
@@ -832,10 +855,12 @@ async fn abandon_plan_draft(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
     Path(plan_id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<([(axum::http::HeaderName, String); 1], Json<PlanView>), CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let plan_id = PlanId::new(plan_id);
     let scope = write_scope(&enforcer, &ctx, plan_id.get(), tenant).await?;
@@ -850,7 +875,7 @@ async fn abandon_plan_draft(
         // No draft: either the id is spent, or the plan has a current revision
         // and there is simply nothing to discard, or it does not exist at all.
         return Err(CanonicalError::from(
-            no_draft_to_abandon(&state, &scope, tenant, plan_id).await,
+            no_open_draft(&state.plans, &scope, tenant, plan_id, "abandon").await,
         ));
     };
 
@@ -869,7 +894,7 @@ async fn abandon_plan_draft(
             plan_id,
             revision,
             expected,
-            audit_stamp(&ctx, Utc::now()),
+            audit_stamp(&ctx, Utc::now(), correlation),
         )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
@@ -1001,7 +1026,7 @@ async fn target_revision(
     tenant: Uuid,
     plan_id: PlanId,
     asserted: RevisionTag,
-    actor: Uuid,
+    stamp: AuditStamp,
 ) -> Result<PatchTarget, CanonicalError> {
     let draft = state
         .plans
@@ -1023,7 +1048,7 @@ async fn target_revision(
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
     let Some(current) = current else {
         return Err(CanonicalError::from(
-            spent_or_absent(state, scope, tenant, plan_id).await,
+            spent_or_absent(&state.plans, scope, tenant, plan_id).await,
         ));
     };
     // The tag has to have been read from THIS revision, and to carry its
@@ -1037,7 +1062,7 @@ async fn target_revision(
 
     let opened = state
         .plans
-        .open_revision(scope, tenant, plan_id, actor, Utc::now())
+        .open_revision(scope, tenant, plan_id, stamp)
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
     Ok(PatchTarget {
@@ -1055,7 +1080,7 @@ async fn target_revision(
 /// because that difference is the diagnosis - a caller one revision behind
 /// published in between, and a caller naming a revision the plan never had is
 /// pasting a tag from somewhere else.
-fn require_same_revision(
+pub(crate) fn require_same_revision(
     plan_id: PlanId,
     asserted: RevisionTag,
     resolved: u64,
@@ -1091,21 +1116,17 @@ fn plan_tag(view: &PlanView) -> String {
 /// reported as the invariant breach it is rather than dressed as a lifecycle
 /// refusal.
 async fn spent_or_absent(
-    state: &AuthoringState,
+    plans: &PlanRepo,
     scope: &AccessScope,
     tenant: Uuid,
     plan_id: PlanId,
 ) -> DomainError {
-    let highest = match state.plans.max_revision(scope, tenant, plan_id).await {
+    let highest = match plans.max_revision(scope, tenant, plan_id).await {
         Err(e) => return repo_failure(&e),
         Ok(None) => return not_readable(plan_id),
         Ok(Some(highest)) => highest,
     };
-    match state
-        .plans
-        .find_revision(scope, tenant, plan_id, highest)
-        .await
-    {
+    match plans.find_revision(scope, tenant, plan_id, highest).await {
         Err(e) => repo_failure(&e),
         Ok(Some(row)) if row.lifecycle_state == LifecycleState::Abandoned => {
             DomainError::PlanAbandonedNoSuccessor(format!(
@@ -1124,27 +1145,34 @@ async fn spent_or_absent(
     }
 }
 
-/// Why an abandon found no open draft.
+/// Why a verb that needs the plan's open draft found none.
 ///
 /// Three answers, and they are three because the operator's next action differs:
 /// a spent plan is `PLAN_ABANDONED_NO_SUCCESSOR` (mint a new plan), a plan with
 /// a current revision and no draft is `LIFECYCLE_FORBIDDEN` - S2 §5 in as many
 /// words, and D-146's line about the code that holds refusals describing no
 /// alternative action - and a plan with nothing at all is a 404.
-async fn no_draft_to_abandon(
-    state: &AuthoringState,
+///
+/// **Shared with the publish mount**, which is why it takes a verb and a
+/// repository rather than the abandon's state: S2 §5 gives `POST …/abandon` and
+/// `POST …/publish` the same three refusals over the same missing subject, and
+/// two spellings of one discrimination would be two chances for one of them to
+/// answer a bare 404 for a plan whose id is spent.
+pub(crate) async fn no_open_draft(
+    plans: &PlanRepo,
     scope: &AccessScope,
     tenant: Uuid,
     plan_id: PlanId,
+    verb: &str,
 ) -> DomainError {
-    match state.plans.find_current(scope, tenant, plan_id).await {
+    match plans.find_current(scope, tenant, plan_id).await {
         Err(e) => repo_failure(&e),
         Ok(Some(current)) => DomainError::LifecycleForbidden(format!(
-            "plan {plan_id} holds no open draft revision to abandon; its current revision {} \
+            "plan {plan_id} holds no open draft revision to {verb}; its current revision {} \
              is {}",
             current.revision, current.lifecycle_state
         )),
-        Ok(None) => spent_or_absent(state, scope, tenant, plan_id).await,
+        Ok(None) => spent_or_absent(plans, scope, tenant, plan_id).await,
     }
 }
 
@@ -1216,8 +1244,9 @@ fn replayed(status: i32, body: &serde_json::Value) -> Response {
 // Foundation validation envelope's own case and mints no code.
 // ---------------------------------------------------------------------------
 
-/// A create's shape, parsed, and still missing the four things only the handler
-/// knows: the minted id, the tenant, the actor and the authoring instant.
+/// A create's shape, parsed, and still missing the five things only the handler
+/// knows: the minted id, the tenant, the actor, the authoring instant and the
+/// request's correlation.
 struct DraftShape {
     /// The catalog SKU this plan realizes.
     sku_id: Option<Uuid>,
@@ -1255,6 +1284,7 @@ impl DraftShape {
         tenant_id: Uuid,
         created_by: Uuid,
         created_at_utc: DateTime<Utc>,
+        correlation_id: Uuid,
     ) -> NewPlanDraft {
         NewPlanDraft {
             plan_id,
@@ -1271,6 +1301,7 @@ impl DraftShape {
             invoice_grouping_key: self.invoice_grouping_key,
             available_from: self.available_from,
             available_to: self.available_to,
+            correlation_id,
         }
     }
 }

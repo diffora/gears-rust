@@ -1,0 +1,1472 @@
+//! The approval workflow, as the surfaces will drive it: open a pinned unit,
+//! decide it, and record the attempts that were refused.
+//!
+//! [`crate::domain::approval::decision`] holds the judgement and is pure;
+//! [`crate::infra::storage::repo::approval_repo`] holds the store and judges
+//! nothing. This is the layer in between, and it exists for the three things
+//! neither of those can do: re-derive the pinned subject from the database,
+//! commit the decision, and **write the attempted-violation record**
+//! `inst-tp-selfaudit` requires.
+//!
+//! # `approval_repo` takes the `AuditStamp` now, and the trail is complete
+//!
+//! The phase's Global Constraints say every mutating repository call takes one.
+//! `approval_repo::open` and `decide` did not, which G2 reported rather than
+//! absorbed: `AuditAction` declared no `submit`, `approve`, `reject` or
+//! `withdraw`, so a stamp threaded there would have named a record those
+//! functions cannot write. The tokens and their writers landed together, so both
+//! functions take a stamp and both append inside the transaction that mutates —
+//! see `approval_repo`'s own module doc. What is left here is the `deny` record
+//! of a refused attempt, and the two rulings this group owed on it.
+//!
+//! # Ruling 1 — **reversed**: the denial record is written in the judgement
+//! transaction, because that transaction commits
+//!
+//! This section used to argue that the record needs a second transaction, and
+//! **its premise was false**. The argument ran: the decision runs inside one
+//! transaction — read the record, re-assemble the subject, judge, swap — and a
+//! refusal makes that transaction *roll back*, so a record written inside it
+//! would be a record that never existed; therefore the refusal travels out as a
+//! value and the caller writes the record in a transaction of its own.
+//!
+//! **A refusal does not roll that transaction back.** [`judge`] returns
+//! `Ok(`[`Outcome::Refused`]`)` — a refusal is the transaction's *answer*, not
+//! its failure — and `in_transaction` commits on `Ok` and rolls back only on
+//! `Err` (`toolkit_db::secure::SecureConn::in_transaction`). The refusal path's
+//! transaction has always committed. Nothing was ever at risk of being rolled
+//! away, and the whole two-transaction shape was paying a crash window for a
+//! hazard that did not exist.
+//!
+//! So the record is written **inside** [`judge`], on the refusal branch, before
+//! the outcome is returned — the fourth alternative, which the ruling never
+//! considered. It needs no `SAVEPOINT` (there is nothing to undo: the swap has
+//! not run and the transaction has done nothing but read), no second connection
+//! and no outbox row, and it closes the window the old ruling called
+//! irreducible: the judgement and its `deny` record now commit or fail together.
+//!
+//! What the reversal does **not** change:
+//!
+//! - **A refused decision still leaves the unit exactly as it found it.** The
+//!   swap is on the other branch; the refusal branch's only write is the record.
+//! - **A record that cannot be written still fails the whole decision.** It
+//!   fails it harder, and better: the append's error is an `Err` out of `judge`,
+//!   so the transaction rolls back and `decide` answers 500 rather than a clean
+//!   403. An attempt this gear could not record must not be reported as though
+//!   the trail were complete.
+//! - **`inst-tp-selfaudit` is still satisfied** — *"rejected **and** written to
+//!   `pricing_audit_log`"* — and now by a single commit rather than by two that
+//!   a crash could separate.
+//!
+//! The three previously-examined alternatives are moot. Writing the record
+//! *before* judging is still wrong for its own reason (the refusal is not known
+//! until after the re-derivation, and a record written for every decision would
+//! have to be retracted on the append-only store whose triggers forbid exactly
+//! that), and it is not what this does: the record is written after the
+//! judgement, in the same transaction.
+//!
+//! # Ruling 2 — the `deny` record's before/after pair is **ratified**, and it is
+//! now the plane's shape rather than one action's exception
+//!
+//! This section used to open "nothing changed, so there is no before and after of
+//! a change", and read the pair as an exception peculiar to `deny`. It is not an
+//! exception: **no** record on the approval plane is about a change to the
+//! subject. An approve, a reject and a withdraw are all judgements *about* content
+//! that stood still, so every one of them renders the **unit** rather than the
+//! subject — `approval_repo::append_trail` writes the unit's state before and
+//! after the flip. The `deny` pair is the same reading with the one difference the
+//! act forces, and it is ratified as written:
+//!
+//! - `before_state` — **the record as it stood**: its state, its subject and its
+//!   submitter. An auditor needs to know which unit was attacked.
+//! - `after_state` — **the attempt**: the code it was refused with, the decision
+//!   that was asked for, and the principal who asked.
+//!
+//! The asymmetry is load-bearing and is why the pair is not simply
+//! `append_trail`'s. There is no "after" state of the unit to render — the swap
+//! never ran and the row is byte-identical to `before_state` — so a pair rendered
+//! the sibling way would be the same object twice, and a reader could not tell a
+//! refused attempt from a decision that changed nothing. The refusal has to go
+//! somewhere, and the `after` half is the only half free to hold it.
+//!
+//! `approval_ref` carries the approval id, so the record joins to the unit
+//! without parsing the subject.
+//!
+//! # The TOCTOU void hangs off the two audit choke points, and off one more
+//! call site
+//!
+//! [`void_pending_units_of`] is called from
+//! [`record_revision_mutation`](crate::infra::storage::repo::plan_repo) and
+//! `price_repo`'s `record_price_mutation`, which between them are the audit
+//! writer of every authoring mutation of a plan's shape or rows — and from
+//! `plan_repo::open_revision`, which is neither.
+//!
+//! **The inheritance argument that used to stand here is false and is withdrawn.**
+//! It read: the Global Constraint of this phase is that every mutating
+//! repository call takes an `AuditStamp` and lands a record, therefore a surface
+//! added later cannot mutate a pinned subject without passing through one of
+//! those two functions, therefore it inherits the void without anybody
+//! remembering. The middle step does not hold. Landing a record and landing it
+//! *through those two functions* are different obligations, and the crate
+//! already contains four writers that honour the first without the second:
+//! `create_draft`, `create_draft_on`, the publish commit, and `open_revision`,
+//! which inserts a revision row, copies three child tables and appends its own
+//! `Create` record. Three of those are argued exceptions; the fourth was simply
+//! not noticed, and it was not noticed *because* the argument said it could not
+//! exist.
+//!
+//! So the placement is kept for what it is actually worth — nine surfaces
+//! covered by two call sites instead of nine — and the claim it was justified
+//! with is replaced by an obligation on the reader: a **direct** audit writer is
+//! a void site to be decided about, and the enumeration in
+//! [`void_pending_units_of`]'s doc lists every one of them with its decision.
+//! A later slice inherits the void only where it goes through the rail.
+
+use std::collections::BTreeSet;
+
+use chrono::{DateTime, Utc};
+use serde_json::{Value as JsonValue, json};
+use toolkit_db::secure::{AccessScope, DBRunner};
+use toolkit_db::{DBProvider, DbError};
+use uuid::Uuid;
+
+use crate::domain::approval::content_pin::threshold_content_hash;
+use crate::domain::approval::{
+    DecisionBy, DecisionRefusal, DecisionRequest, authorize_decision, content_hash,
+};
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::error::DomainError;
+use crate::domain::materiality::{ThresholdEntry, ThresholdVersion};
+use crate::domain::money::CurrencyCode;
+use crate::domain::plan_shape::PlanShape;
+use crate::domain::scope_key::{PlanId, Region};
+use crate::infra::storage::repo::approval_repo::{ApprovalRecord, NewApproval};
+use crate::infra::storage::repo::{
+    NewAuditEntry, approval_repo, audit_repo, plan_repo, price_repo, threshold_repo,
+};
+use crate::infra::storage::{RepoError, repo_failure};
+
+/// The `reason` a TOCTOU void writes on the record it closes.
+///
+/// A literal rather than an operator's words, because nobody typed it: the
+/// subject moved and the guard fired. It is stored so that a reviewer who comes
+/// back to a `voided` unit is told **why** it closed rather than being left to
+/// infer it from a null.
+pub const TOCTOU_VOID_REASON: &str =
+    "voided by a post-submit mutation of the pinned subject (inst-ap-pin)";
+
+/// The `reason` a publish writes on a unit it orphaned.
+///
+/// Its own literal rather than [`TOCTOU_VOID_REASON`], because it is a different
+/// event and a reviewer coming back to the record has to be able to tell them
+/// apart: nothing about the subject *moved* — it was frozen, under a decision
+/// this unit was not the one. Saying "a post-submit mutation" here would send an
+/// operator looking for an edit that never happened.
+pub const ORPHANED_BY_PUBLISH_REASON: &str =
+    "voided by the publish of the pinned revision under another approval (inst-as-void)";
+
+/// The deciding principal's pricing-region grant, **or the fact that nothing
+/// transports one**.
+///
+/// # Why this is a two-valued type and not a set
+///
+/// `inst-ap-scope` measures the approver's grant against the pricing regions the
+/// pinned change set touches, and `inst-rb-preview-scope` says a grant *"carries
+/// an explicit pricing-region set"* and stops there: **no document in the set
+/// says how that set is transported** — which claim, which PDP constraint, which
+/// resource property. So a surface today has nothing to read, and the only
+/// honest thing it can hand over is the statement that it has nothing.
+///
+/// It used to hand over a *set* anyway — the change set's own reach, read at the
+/// surface — and that shape had a defect no amount of documentation fixed. The
+/// read happened **outside** the judgement transaction while
+/// [`judge`] re-derives the change set **inside** it, so a mutation that added a
+/// row in a new region between the two made `is_subset` fail: a 403 **and**, via
+/// [`DecisionRefusal::is_an_audited_violation`], a `deny` record filed against a
+/// reviewer who had exceeded no authority. It failed closed, which is why it was
+/// not a hole; what it manufactured was a false attempted-violation record, and
+/// those are read by humans.
+///
+/// [`RegionGrant::Untransported`] moves that synthesis inside `judge`, off the
+/// same re-derivation the rule is judged against, so the two values cannot
+/// disagree because there is now only one read.
+///
+/// [`DecisionRefusal::is_an_audited_violation`]: crate::domain::approval::DecisionRefusal::is_an_audited_violation
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RegionGrant {
+    /// **Nothing transports a grant on this path.** The rule is then measured
+    /// against the change set's own reach, taken from the subject
+    /// [`judge`] re-derived, so `change_set_regions.is_subset(approver_regions)`
+    /// holds by construction and `REGION_SCOPE_DENIED` is unreachable.
+    ///
+    /// The consequence is stated rather than buried: **`inst-ap-scope` is not
+    /// enforced for a caller that passes this.** The alternative was
+    /// fail-closed, and it was rejected on what it does rather than on how it
+    /// reads — an empty grant refuses every change set carrying a single price
+    /// row, so no unit could ever be approved and no plan could ever publish, in
+    /// the name of a rule whose input nobody can supply.
+    ///
+    /// Whichever wave declares the transport reads it and passes
+    /// [`RegionGrant::Explicit`] instead; this variant is what makes that day a
+    /// visible change rather than a silent one.
+    Untransported,
+    /// An explicit grant, as a declared transport will supply it — and as the
+    /// service-level suites supply it to drive **both** directions of
+    /// `inst-ap-scope`, which is the coverage that would be lost if the field
+    /// collapsed into the synthesis above.
+    Explicit(BTreeSet<Region>),
+}
+
+/// What a decision was asked to do, as a surface will hand it over.
+#[derive(Clone, Debug)]
+pub struct DecideRequest {
+    /// The record being decided.
+    pub approval_id: Uuid,
+    /// Approve, reject or withdraw — **and by whom**, as one value.
+    ///
+    /// The identity is not a field beside this one, and
+    /// [`DecisionBy`]'s own doc says why: an approve that named nobody used to
+    /// slip both authority rules and land on a CHECK. A surface that has no
+    /// authenticated principal cannot construct an `Approve` here at all, which
+    /// is the obligation landing where the principal actually is.
+    pub decision: DecisionBy,
+    /// The reason, mandatory on a reject.
+    ///
+    /// Deliberately **not** folded into [`DecisionBy::Reject`], for the reason
+    /// `approval_repo`'s module doc gives for not folding it into the repo
+    /// signature either: a reason-less reject has to stay constructible, or the
+    /// only test that executes `chk_pricing_approval_reason` cannot be written.
+    /// The approver is a different case — nothing tests a CHECK by posing an
+    /// approve with no approver, because that request has no code to be
+    /// refused with.
+    pub reason: Option<String>,
+    /// The **pricing** regions the deciding principal's grant covers, or the
+    /// statement that the caller could not establish them.
+    ///
+    /// Never the authz-region claim; see
+    /// [`crate::domain::approval::decision`]'s module doc, which also records
+    /// that no document fixes how this grant is transported and that the
+    /// plumbing is owed by whichever surface mounts the route.
+    pub approver_regions: RegionGrant,
+    /// Who is deciding, when, and under which request.
+    ///
+    /// The instant is the decision's — `decided_at` on the record is
+    /// `stamp.recorded_at` and there is no second field for it, so the store and
+    /// the trail cannot disagree about when a unit was decided.
+    ///
+    /// **The actor is the stamp's, not [`DecisionBy::decider`]'s**, and the two
+    /// answer different questions: `decider` says whether the act exercises
+    /// *approver* authority (and is `None` on the guard's own void), while the
+    /// stamp says which principal the platform authenticated. Every surface that
+    /// reaches here has one.
+    pub stamp: AuditStamp,
+}
+
+/// One record, with the content its pin covers.
+///
+/// See [`ApprovalService::find`] for why the content is a re-derivation plus a
+/// flag rather than a stored document.
+///
+/// It carries **no** region accessor, and it used to. The surface read the
+/// change set's reach off one of these and handed it to `decide` as the
+/// approver's grant, which put the two halves of the scope rule on two reads of
+/// two different worlds; the synthesis now happens inside [`judge`] and this
+/// type is what a reviewer is *shown*, not an input to what they are allowed to
+/// decide.
+#[derive(Clone, Debug)]
+pub struct ApprovalDetail {
+    /// The record as the store holds it.
+    pub record: ApprovalRecord,
+    /// The pinned subject as it stands now, or `None` when it can no longer be
+    /// re-derived at all — the plan's draft published, or was abandoned.
+    pub subject: Option<PinnedSubject>,
+    /// Whether `subject`'s digest still equals `record.content_hash`. `false`
+    /// when there is no subject, which is the strongest form of "moved".
+    pub content_matches_pin: bool,
+}
+
+/// What an approval unit is *about*, re-derived.
+///
+/// # Why this is a sum type and not a second field
+///
+/// It was `Option<PlanShape>` while every unit on the plane reviewed a plan. G6
+/// opened the second kind — D-10's always-material threshold-policy unit, whose
+/// subject is a proposed [`ThresholdVersion`] and has no plan anywhere in it — and
+/// the two are genuinely disjoint rather than one being a special case of the
+/// other: they are re-derived from different stores, hashed under different domain
+/// separators, and rendered to a reviewer as different documents.
+///
+/// Two `Option` fields would have carried the same information and lost the one
+/// property that matters: **exactly one of them is present**. A record with both,
+/// or with neither and `content_matches_pin: true`, is a state the store cannot
+/// produce and the type should not be able to express, because the reader that
+/// gets it wrong is the reviewer's document (D-61) and the failure is silent.
+#[derive(Clone, Debug)]
+pub enum PinnedSubject {
+    /// A plan revision, a price unit or a window mutation — every unit whose
+    /// subject is a plan, whatever names it.
+    ///
+    /// Boxed because [`PlanShape`] is two orders of magnitude the other variant's
+    /// size and clippy's `large_enum_variant` is right about it: an
+    /// `Option<PinnedSubject>` is returned and moved on every approval read.
+    Plan(Box<PlanShape>),
+    /// One proposed version of the tenant's approval-threshold policy.
+    ThresholdPolicy(ThresholdVersion),
+}
+
+impl PinnedSubject {
+    /// The digest of this subject under **its own** frozen encoding.
+    ///
+    /// The dispatch is here and nowhere else, so that the three places that
+    /// compare a re-derivation against `record.content_hash` — the reviewer's read,
+    /// the decision, and the publish route's authorization lookup — cannot pick
+    /// different preimages for one subject. `content_pin`'s two functions take two
+    /// different types, so the compiler already refuses to cross them; what this
+    /// prevents is a *caller* handling only the variant it was written for.
+    #[must_use]
+    pub fn content_hash(&self) -> [u8; 32] {
+        match self {
+            Self::Plan(shape) => content_hash(shape),
+            Self::ThresholdPolicy(version) => threshold_content_hash(version),
+        }
+    }
+
+    /// The pricing regions this subject reaches, for the scope rule.
+    ///
+    /// **A policy version reaches none, and that is the existing rule rather than a
+    /// new exemption.** Regions live on a row's canonical scope key and a threshold
+    /// policy has no rows, so the set is empty — exactly as it already is for a pure
+    /// plan-shape revision, which is no less material for it (D-115's trial
+    /// stretched 7 → 90 days is one). An empty set is covered by every grant, so a
+    /// region-restricted `FinanceReviewer` may decide a policy unit; the reading
+    /// that makes that right is that the policy is tenant-wide, so there is no
+    /// region a restricted reviewer would be reaching outside of.
+    #[must_use]
+    pub fn regions(&self) -> BTreeSet<Region> {
+        match self {
+            Self::Plan(shape) => regions_of(shape),
+            Self::ThresholdPolicy(_) => BTreeSet::new(),
+        }
+    }
+
+    /// The plan shape, when this subject is one.
+    #[must_use]
+    pub const fn plan(&self) -> Option<&PlanShape> {
+        match self {
+            Self::Plan(shape) => Some(shape),
+            Self::ThresholdPolicy(_) => None,
+        }
+    }
+
+    /// The threshold-policy version, when this subject is one.
+    #[must_use]
+    pub const fn threshold_policy(&self) -> Option<&ThresholdVersion> {
+        match self {
+            Self::ThresholdPolicy(version) => Some(version),
+            Self::Plan(_) => None,
+        }
+    }
+}
+
+/// What the judgement transaction resolved to.
+///
+/// A value rather than a `Result`, because a refusal is **not** a failure of the
+/// transaction: it is its answer, and the transaction **commits** it — which is
+/// what lets the `deny` record be written inside [`judge`] rather than after it.
+/// See Ruling 1 in this module's doc for the reversal this encodes.
+///
+/// The refused arm carries the approval id and nothing else. It used to carry
+/// the whole record, for a caller that had to re-render the attempt outside the
+/// transaction; that caller is gone, and the only thing left to do with a
+/// refusal out here is name the unit in the error.
+enum Outcome {
+    Decided(Box<ApprovalRecord>),
+    Refused {
+        refusal: DecisionRefusal,
+        approval_id: Uuid,
+    },
+}
+
+/// The approval workflow over one database provider.
+#[derive(Clone)]
+pub struct ApprovalService {
+    db: DBProvider<DbError>,
+}
+
+impl ApprovalService {
+    /// Build the workflow over one database provider.
+    #[must_use]
+    pub const fn new(db: DBProvider<DbError>) -> Self {
+        Self { db }
+    }
+
+    /// Open a pending unit over a plan's open draft revision, **pinning its
+    /// content** (`inst-ap-open`, `inst-ap-pin`).
+    ///
+    /// The pin is taken from the subject re-derived inside this transaction, not
+    /// from anything the caller supplies: a submitter who could name the digest
+    /// could name one over content nobody is about to publish.
+    ///
+    /// # One pending unit per subject, and the withdraw that is its only escape
+    ///
+    /// A second submit over a plan that already holds a `submitted` unit is
+    /// refused [`DomainError::PendingChangeUnitExists`] (409), naming the unit
+    /// that holds it — `inst-co-single-pending`, and the reading
+    /// `inst-as-void` depends on. Without it §4's withdraw path frees nothing,
+    /// because nothing was ever held: "a `submitted` unit pins its scope key
+    /// indefinitely … without a withdraw path the only escape was mutating the
+    /// subject's content" is a sentence about a **pin**, and a store that
+    /// accepted a second unit would leave two reviewers deciding two records
+    /// over one revision, whose order of arrival then decides what publishes.
+    ///
+    /// The check runs **inside the transaction the insert runs in**, so it is
+    /// not a hint: two concurrent submits serialize on the same read, and the
+    /// loser sees the winner's row.
+    ///
+    /// **The residual race is closed by a constraint, and the argument that used to
+    /// stand here was false.** It read: "both reading before either writes, under an
+    /// isolation level that permits it — is decided by the primary key rather than
+    /// left open". The primary key is `approval_id`, which the *caller* mints
+    /// (`api::rest::publish` calls `Uuid::now_v7()` per request), so two concurrent
+    /// submits over one plan carry two different primary keys and collide on
+    /// nothing. Under `READ COMMITTED` both read a store with no pending unit, both
+    /// insert, and both commit. What the primary key decides is a **retry of one
+    /// submit** — a real property, and a different one.
+    ///
+    /// What closes it is `uq_pricing_approval_key_pending`, the partial unique index
+    /// on the key register this call now writes: one canonical scope key, one
+    /// `submitted` holder, enforced by the server. The loser is answered
+    /// [`DomainError::PendingChangeUnitExists`] — the same code the check produces,
+    /// deliberately, so a caller does not read two different refusals for one
+    /// condition depending on which transaction committed first.
+    /// `tests/postgres_approval_race.rs` settles it against two real writers;
+    /// `sqlite::memory:` serializes them and can neither confirm nor refute it.
+    ///
+    /// # Errors
+    /// [`DomainError::NotFound`] when the plan has no open draft revision;
+    /// [`DomainError::PendingChangeUnitExists`] when the plan already holds a
+    /// pending unit; [`DomainError::ConcurrentMutation`] when `approval_id` is
+    /// taken; [`DomainError::Internal`] on a storage failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every argument is a fact only the caller holds: the scope and the tenant the \
+                  gate compiled, the plan and the id the surface minted, the submitter's identity, \
+                  the materiality verdict and the caller's instant. Folding them into a struct \
+                  would name a request type no surface has yet - G5 mounts the route, and inventing \
+                  its DTO here would be the shape guessed rather than derived"
+    )]
+    pub async fn submit(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let scope = scope.clone();
+        // The submitter is the stamp's actor and the submission instant is its
+        // `recorded_at`; `NewApproval` says why neither is a second argument.
+        let now = stamp.recorded_at;
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<ApprovalRecord, DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    let shape =
+                        crate::infra::publish::assemble(txn, &scope, tenant_id, plan_id, now)
+                            .await?;
+                    if let Some(held) =
+                        approval_repo::find_pending_for_plan(txn, &scope, tenant_id, plan_id)
+                            .await
+                            .map_err(|e| repo_failure(&e))?
+                    {
+                        return Err(DomainError::PendingChangeUnitExists(format!(
+                            "plan {plan_id}: approval {} is still submitted over {}; decide it, \
+                             or withdraw it to free the subject",
+                            held.approval_id, held.subject_ref
+                        )));
+                    }
+                    // The keys this revision's change set touches — the per-key half
+                    // of `inst-co-single-pending`, which the plan prefix above cannot
+                    // see: a window unit of the same plan reviews no revision, so it
+                    // carries no plan-revision subject and only the register finds it.
+                    let held_keys = touched_keys(&shape);
+                    refuse_held_key(txn, &scope, tenant_id, &held_keys).await?;
+                    let new = NewApproval {
+                        approval_id,
+                        tenant_id,
+                        subject_ref: audit_repo::plan_revision_ref(plan_id, shape.revision),
+                        subject_kind: AuditSubjectKind::PlanRevision,
+                        content_hash: content_hash(&shape).to_vec(),
+                        materiality,
+                        held_keys,
+                    };
+                    approval_repo::open(txn, &scope, new, stamp)
+                        .await
+                        .map_err(|e| repo_failure(&e))
+                })
+            })
+            .await;
+        outcome.map_err(into_domain)
+    }
+
+    /// Open a pending unit over a **window mutation** of a published plan
+    /// (`inst-co-single-pending`'s D-62/D-99 window unit).
+    ///
+    /// # Why a second entry point rather than a parameter on [`Self::submit`]
+    ///
+    /// The two units differ in more than their `subject_kind`. A plan-revision unit
+    /// reviews an **open draft**, so its shape comes from `publish::assemble`, which
+    /// answers `NotFound` when there is none; a window unit's ordinary subject is a
+    /// *published* plan with no draft at all, so it resolves the plan's **current**
+    /// revision exactly as `infra::window` does and for
+    /// [`PlanPublishUnit::window_mutation`](crate::domain::publish::PlanPublishUnit::window_mutation)'s
+    /// stated reason. Folding them would put a branch on the shape resolution inside
+    /// one function and leave the caller naming which branch by passing a different
+    /// id — which is two functions with extra steps.
+    ///
+    /// # What it holds, and what that is not
+    ///
+    /// **One key**: the canonical scope key of the window's price row. A window
+    /// mutation can move only that key's interval set, so holding the plan's whole
+    /// key set would make every key of a plan hostage to a review of one of them —
+    /// the same argument `infra::window`'s module doc makes about refusing on a
+    /// sibling key's pre-existing gap.
+    ///
+    /// **This does not mutate the window.** It opens the unit that reviews the
+    /// mutation; `WindowService`'s three operations are what commit one, and they
+    /// refuse outright while a unit holds the key.
+    ///
+    /// **Which surfaces call it, corrected.** This paragraph used to say the route
+    /// was "not wired here" and that `infra::window`'s "opened by the route's submit
+    /// path" was a sentence about a route no group had mounted — and both halves
+    /// were already false when they were written: `api::rest::windows` mounts all
+    /// three window surfaces, and the G4 fix wave routed `DELETE` and a shortening
+    /// `PATCH` through this function because D-62 makes those two always-material
+    /// whatever the threshold says. What was genuinely outstanding was the other
+    /// two acts, and G6 closed that too: `POST` and a **lengthening** `PATCH` now
+    /// consult `materiality::evaluate` against
+    /// [`crate::infra::threshold::effective_policy`] and take this arm when the
+    /// verdict is material. All four acts reach it, and none of them through a
+    /// branch that was waiting to be enabled.
+    ///
+    /// # The subject is resolved through the **price row**, not the window
+    ///
+    /// It used to be `window_repo::find(window_id)`, and that read could not answer
+    /// for the act it was most needed by. A schedule's controlled arm opens its unit
+    /// before the window row exists at all — D-62's arm writes *nothing* — so the
+    /// lookup answered `NotFound` and the surface returned **404** for a window the
+    /// caller had just been handed the id of. The price row is what actually carries
+    /// the canonical scope key (and therefore the plan), it exists on all four acts,
+    /// and it is the same resolution `infra::window` performs on its own schedule
+    /// path.
+    ///
+    /// # Errors
+    /// [`DomainError::NotFound`] for an unknown price row, or a plan with no current
+    /// revision; [`DomainError::PendingChangeUnitExists`] when a pending unit
+    /// already holds the window's key or the window itself;
+    /// [`DomainError::ConcurrentMutation`] when `approval_id` is taken;
+    /// [`DomainError::Internal`] on a storage failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "`Self::submit`'s reason, and the same facts: the scope and the tenant the gate \
+                  compiled, the window and the price row the act is about, the approval id the \
+                  surface minted, the evaluator's verdict and the caller's stamp. The window and \
+                  the row are two ids because a schedule's window does not exist yet and its row \
+                  does - which is the whole content of the paragraph above"
+    )]
+    pub async fn submit_window_mutation(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        window_id: Uuid,
+        price_id: Uuid,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+        subject_ref: &str,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let scope = scope.clone();
+        let subject_ref = subject_ref.to_owned();
+        let now = stamp.recorded_at;
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<ApprovalRecord, DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    let key = price_repo::load_scope_key(txn, &scope, tenant_id, price_id)
+                        .await
+                        .map_err(|e| repo_failure(&e))?
+                        .ok_or_else(|| DomainError::NotFound {
+                            subject: "price row".to_owned(),
+                            id: price_id.to_string(),
+                        })?;
+                    let plan_id = key.plan_id();
+                    let revision = plan_repo::load_current(txn, &scope, tenant_id, plan_id)
+                        .await
+                        .map_err(|e| repo_failure(&e))?
+                        .ok_or_else(|| DomainError::NotFound {
+                            subject: "current plan revision".to_owned(),
+                            id: plan_id.to_string(),
+                        })?;
+                    let shape = crate::infra::publish::assemble_from(
+                        txn, &scope, tenant_id, plan_id, revision, now,
+                    )
+                    .await?;
+                    // Built by `infra::window::Planned::unit_subject_ref`, which is
+                    // also what `authorizing_unit` resolves against, so the subject a
+                    // unit opens under and the subject a retry looks for cannot drift.
+                    // It names the **act**: a subject naming only the window let an
+                    // approval taken for one act authorize any other on it, and for a
+                    // schedule it carries no window id at all, that id being minted
+                    // per request and therefore unreproducible by the retry.
+                    let subject_ref = subject_ref.clone();
+                    if let Some(held) = approval_repo::find_pending_for_subject(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &subject_ref,
+                    )
+                    .await
+                    .map_err(|e| repo_failure(&e))?
+                    {
+                        return Err(DomainError::PendingChangeUnitExists(format!(
+                            "window {window_id}: approval {} is still submitted over it; decide \
+                             it, or withdraw it to free the subject",
+                            held.approval_id
+                        )));
+                    }
+                    let held_keys = BTreeSet::from([key.to_string()]);
+                    refuse_held_key(txn, &scope, tenant_id, &held_keys).await?;
+                    let new = NewApproval {
+                        approval_id,
+                        tenant_id,
+                        subject_ref,
+                        subject_kind: AuditSubjectKind::Window,
+                        // The **plan shape**, exactly as a plan-revision unit pins
+                        // it. D-99 makes windows plan facts, so what a reviewer of a
+                        // window mutation is shown is the plan whose intervals move —
+                        // and `content_pin`'s preimage already frames the window
+                        // plane, since `v2`.
+                        content_hash: content_hash(&shape).to_vec(),
+                        materiality,
+                        held_keys,
+                    };
+                    approval_repo::open(txn, &scope, new, stamp)
+                        .await
+                        .map_err(|e| repo_failure(&e))
+                })
+            })
+            .await;
+        outcome.map_err(into_domain)
+    }
+
+    /// One page of the tenant's records, for the reviewer's queue.
+    ///
+    /// No subject is re-derived here, deliberately: a page of 100 would be 100
+    /// plan assemblies, and the queue's job is to say *which* units want a
+    /// decision. The pinned content rides [`ApprovalService::find`], which is
+    /// the surface a reviewer opens before deciding — see its doc for D-61.
+    ///
+    /// # Errors
+    /// [`DomainError::Internal`] on a storage failure.
+    pub async fn list(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        states: &[crate::domain::approval::ApprovalState],
+        after: Option<Uuid>,
+        limit: u64,
+    ) -> Result<Vec<ApprovalRecord>, DomainError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| DomainError::Internal(format!("bss-pricing: approval list: {e}")))?;
+        approval_repo::list_page(&conn, scope, tenant_id, states, after, limit)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
+    /// One record **and the content its pin covers** — D-61's reviewability
+    /// invariant.
+    ///
+    /// § 3's invariant is explicit that `GET /bss-pricing/v1/approvals/{id}`
+    /// *"MUST return the **pinned content** the approval's `content_hash`
+    /// covers (not the hash alone), so approval is never hash-blind even where
+    /// the subject resource is read-restricted"*. A reviewer handed 32 bytes is
+    /// signing a digest.
+    ///
+    /// **What the store cannot give, stated rather than implied.** §6's
+    /// `pricing_approval` carries a `content_hash` and **no content column**, so
+    /// there is no document to hand back: the only content this gear holds is
+    /// the subject itself. So the subject is re-derived and
+    /// [`ApprovalDetail::content_matches_pin`] says whether its digest still
+    /// equals the pin. On a `submitted` unit the two agree or the TOCTOU guard
+    /// has already voided the record, which is exactly the case a reviewer acts
+    /// in; on a decided or voided one the flag is the honest answer to "is this
+    /// still what was signed". Returning the re-derivation **without** the flag
+    /// would be the hash-blind failure with extra steps — a document that looks
+    /// like the pinned one and is not.
+    ///
+    /// # Errors
+    /// [`DomainError::Internal`] on a storage failure, and on a `subject_ref`
+    /// this crate cannot have written.
+    pub async fn find(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        approval_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ApprovalDetail>, DomainError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| DomainError::Internal(format!("bss-pricing: approval read: {e}")))?;
+        let Some(record) = approval_repo::read(&conn, scope, tenant_id, approval_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+        else {
+            return Ok(None);
+        };
+        let subject = re_derive(&conn, scope, tenant_id, &record, now).await?;
+        let content_matches_pin = subject
+            .as_ref()
+            .map(PinnedSubject::content_hash)
+            .is_some_and(|digest| digest.as_slice() == record.content_hash);
+        Ok(Some(ApprovalDetail {
+            record,
+            subject,
+            content_matches_pin,
+        }))
+    }
+
+    /// The **approved** unit over exactly this subject **and this content**, if
+    /// there is one.
+    ///
+    /// The publish route's question, and it is deliberately not "does this
+    /// revision carry an approval": an approval is a decision about a change
+    /// set, so one whose content has moved does not answer. See
+    /// [`approval_repo::find_approved_for_content`] for why matching the subject
+    /// alone would make a plan that was edited after its approval permanently
+    /// unpublishable.
+    ///
+    /// # Errors
+    /// [`DomainError::Internal`] on a storage failure.
+    pub async fn approved_unit(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        subject_ref: &str,
+        content_hash: &[u8],
+    ) -> Result<Option<ApprovalRecord>, DomainError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| DomainError::Internal(format!("bss-pricing: approved unit: {e}")))?;
+        approval_repo::find_approved_for_content(&conn, scope, tenant_id, subject_ref, content_hash)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
+    /// Decide a pending unit, or refuse and record the attempt.
+    ///
+    /// # Errors
+    /// [`DomainError::NotFound`] when no record in scope answers to the id.
+    /// One of [`DomainError::SelfApprovalForbidden`],
+    /// [`DomainError::RegionScopeDenied`],
+    /// [`DomainError::ApprovalContentMismatch`],
+    /// [`DomainError::ReasonRequired`] or [`DomainError::ApprovalNotPending`]
+    /// when [`authorize_decision`] refuses — the first two **after** the `deny`
+    /// record has been committed, by the same transaction that judged the
+    /// attempt. [`DomainError::Internal`] on a storage failure, including a
+    /// failure to write that record: the whole transaction rolls back with it,
+    /// because an attempted violation this gear could not record must not be
+    /// reported as a plain 403, or the operator believes the trail is complete.
+    pub async fn decide(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        request: DecideRequest,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let scope_for_tx = scope.clone();
+        let request_for_tx = request.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<Outcome, DomainError, _>(move |txn| {
+                Box::pin(async move { judge(txn, &scope_for_tx, tenant_id, &request_for_tx).await })
+            })
+            .await;
+
+        match outcome.map_err(into_domain)? {
+            Outcome::Decided(record) => Ok(*record),
+            Outcome::Refused {
+                refusal,
+                approval_id,
+            } => Err(refusal_to_domain(refusal, approval_id)),
+        }
+    }
+}
+
+/// Write the `deny` record of one refused attempt, **through the judgement's own
+/// runner**.
+///
+/// Not its own transaction, and the module doc's Ruling 1 is the reversal: the
+/// judgement transaction commits on a refusal, so the record commits with the
+/// judgement rather than after it, and there is no window in which the attempt
+/// has been refused and nothing says so.
+///
+/// # Errors
+/// [`DomainError::Internal`] on a storage failure. Returned rather than
+/// swallowed, and it now rolls the judgement back with it — see
+/// [`ApprovalService::decide`]'s error contract.
+async fn record_denial(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    record: &ApprovalRecord,
+    refusal: DecisionRefusal,
+    request: &DecideRequest,
+) -> Result<(), DomainError> {
+    let aggregate = approval_repo::subject_aggregate(record).map_err(|e| repo_failure(&e))?;
+    let entry = NewAuditEntry {
+        tenant_id,
+        // D-135: the attempt lands on the segment of the subject's **aggregate**, so
+        // it sits beside the mutations it was about. `subject_aggregate` resolves it
+        // per kind, and since G6 that is no longer always a plan: a `policy` unit's
+        // aggregate is the tenant's threshold policy and its segment is
+        // `audit_repo::policy_chain`.
+        chain_id: aggregate.chain_id(),
+        recorded_at: request.stamp.recorded_at,
+        // The principal who **attempted** it, off the stamp: the platform
+        // authenticated them, and unlike `decider()` the stamp is total. It
+        // is also the same actor the successful decisions record, so the
+        // trail names one principal one way across the whole plane.
+        actor_principal_id: request.stamp.actor_principal_id,
+        action: AuditAction::Deny,
+        subject_kind: record.subject_kind,
+        subject_ref: record.subject_ref.clone(),
+        before_state: Some(json!({
+            "approvalState": record.state.as_str(),
+            "subjectRef": record.subject_ref,
+            "submitterPrincipal": record.submitter_principal,
+        })),
+        after_state: Some(json!({
+            "refusedWith": refusal.code(),
+            "attemptedDecision": request.decision.decision().outcome().as_str(),
+            "attemptedBy": request.decision.decider(),
+        })),
+        approval_ref: Some(record.approval_id),
+        // D-178: the request's own, established at the gear's HTTP edge and
+        // shared with every other record this call writes. Never a fresh mint —
+        // this is the one record of the plane written on a path no other record
+        // shares, so a mint here would go unnoticed by every equality the
+        // authoring plane's tests can express.
+        correlation_id: request.stamp.correlation_id,
+    };
+    audit_repo::append(runner, scope, entry)
+        .await
+        .map(|_| ())
+        .map_err(|e| repo_failure(&e))
+}
+
+/// Read, re-derive, judge, and then either swap or record the refused attempt.
+///
+/// All inside one transaction, which is what makes the pin a pin: the digest is
+/// computed over the subject as this transaction sees it, and the decision lands
+/// against the record this transaction read. **Both** branches write through
+/// that transaction — the allowed one swaps the unit and appends its trail, the
+/// refused one appends the `deny` record — and both commit, because a refusal is
+/// returned as `Ok` (see [`Outcome`] and the module doc's Ruling 1).
+async fn judge(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    request: &DecideRequest,
+) -> Result<Outcome, DomainError> {
+    let record = approval_repo::read(runner, scope, tenant_id, request.approval_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "approval".to_owned(),
+            id: request.approval_id.to_string(),
+        })?;
+
+    // A withdraw judges nothing about the content and is exempt from both the
+    // pin and the scope rule, so the subject is not re-derived for it at all —
+    // which also means a withdraw still works when the subject is gone, and
+    // `inst-as-void`'s "free the pinned scope key" escape hatch is not itself
+    // blocked by the thing it exists to escape.
+    let subject = if matches!(request.decision, DecisionBy::Void(_)) {
+        None
+    } else {
+        re_derive(runner, scope, tenant_id, &record, request.stamp.recorded_at).await?
+    };
+
+    let change_set_regions = subject
+        .as_ref()
+        .map(PinnedSubject::regions)
+        .unwrap_or_default();
+    let current_content_hash = subject.as_ref().map(PinnedSubject::content_hash);
+    // **Both sides of the scope rule come from this transaction's one
+    // re-derivation.** Where the grant is untransported the synthesis happens
+    // here rather than at the surface, and that placement is the fix rather
+    // than tidiness: a surface that read the regions before calling was reading
+    // a world a concurrent mutation could move, and the disagreement rendered as
+    // `OutOfScope` — a 403 plus an attempted-authority-violation record against a
+    // reviewer who had done nothing.
+    let approver_regions = grant_against(&request.approver_regions, &change_set_regions);
+
+    let judgement = authorize_decision(&DecisionRequest {
+        record_state: record.state,
+        submitter_principal: record.submitter_principal,
+        decision: request.decision,
+        reason: request.reason.as_deref(),
+        pinned_content_hash: &record.content_hash,
+        current_content_hash,
+        approver_regions: &approver_regions,
+        change_set_regions: &change_set_regions,
+    });
+
+    if let Err(refusal) = judgement {
+        // The attempted-violation record, **here**, inside the transaction that
+        // judged it — which commits, because a refusal is this transaction's
+        // answer and not its failure (Ruling 1). The two audited refusals are the
+        // authority ones; the other three are races and malformed requests, and
+        // recording those would bury the two that matter.
+        if refusal.is_an_audited_violation() {
+            record_denial(runner, scope, tenant_id, &record, refusal, request).await?;
+        }
+        return Ok(Outcome::Refused {
+            refusal,
+            approval_id: record.approval_id,
+        });
+    }
+
+    // `approver()`, never `decider()`. The column is `approver_principal` and
+    // `chk_pricing_approval_distinct_principals` reads it as one: a value equal
+    // to `submitter_principal` is refused outright. A withdraw's decider **is**
+    // the submitter (`inst-as-void`: "the submitter (or a `CatalogAdmin`)
+    // explicitly withdraws it"), so writing the decider here made the one actor
+    // §4 names for that path fail the CHECK — a 500 on the escape hatch §4 added
+    // so a pending unit is not an indefinite lock. `approver()` is `None` on
+    // every void, which is what `chk_pricing_approval_approver` exempts a
+    // `voided` row for and what `void_pending_for_plan` has always written.
+    //
+    // **The identity is not lost, and it used to be.** The record still does not
+    // say who withdrew it — the column is named for a different role and the
+    // CHECK refuses the submitter in it — so the withdrawer lands on the **trail**
+    // instead: `approval_repo::decide` takes the stamp and writes a `withdraw`
+    // record under `stamp.actor_principal_id`. That is what `inst-as-void`'s
+    // "audited" asks for, and it is a place the distinctness rule has no opinion
+    // about, which is the whole reason the trail is the right home for it.
+    let decided = approval_repo::decide(
+        runner,
+        scope,
+        tenant_id,
+        request.approval_id,
+        request.decision.decision(),
+        request.decision.approver(),
+        request.reason.clone(),
+        request.stamp,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    Ok(Outcome::Decided(Box::new(decided)))
+}
+
+/// The canonical scope keys a plan-revision unit's change set touches.
+///
+/// Off the **assembled** shape, so the set is the publish check's own row set —
+/// `CANDIDATE_ROW_STATES`, the plan's `published` rows plus the `draft` rows a
+/// publish would produce. That is the right set rather than a convenient one: the
+/// unit under review *is* that publish, so what it holds is what it would freeze.
+///
+/// A `BTreeSet`, so two rows of one plan on one key (a supersession's predecessor
+/// and successor, which `refuse_overlap` reads for the same reason) hold that key
+/// once. Deduplicating in the store instead would make an ordinary shape collide
+/// with its own register rows.
+fn touched_keys(shape: &PlanShape) -> BTreeSet<String> {
+    shape
+        .rows
+        .iter()
+        .map(|record| record.scope_key.to_string())
+        .collect()
+}
+
+/// `inst-co-single-pending` over a set of keys: refuse if a pending unit holds one.
+///
+/// The **check**, whose value over `uq_pricing_approval_key_pending` is that it can
+/// name the unit holding the key and the key it holds — an index violation can name
+/// neither, and "something else is pending" without saying what is a 409 an operator
+/// cannot act on. The index is what closes the race the check cannot see; the
+/// migration's module doc has the pair.
+///
+/// **`pub(crate)` and the only place this sentence is written.** `infra::window`'s
+/// mutation path asks the same question about the one key it moves, and it used to
+/// build its own copy of the message — two spellings of one refusal, free to drift
+/// apart in exactly the field an operator reads. The closing instruction is also what
+/// `storage_tests` holds the *constraint* path's body to, so the sentence has one owner
+/// on both paths.
+///
+/// # Errors
+/// [`DomainError::PendingChangeUnitExists`] naming the holder and the key;
+/// [`DomainError::Internal`] on a storage failure.
+pub(crate) async fn refuse_held_key(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    keys: &BTreeSet<String>,
+) -> Result<(), DomainError> {
+    let held = approval_repo::find_pending_key_holder(runner, scope, tenant_id, keys)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    match held {
+        None => Ok(()),
+        Some((holder, key)) => Err(DomainError::PendingChangeUnitExists(format!(
+            "scope key {key}: approval {} is still submitted over {}; decide it, or withdraw it \
+             to free the key",
+            holder.approval_id, holder.subject_ref
+        ))),
+    }
+}
+
+/// Open the D-10 unit over a proposed threshold-policy version, **inside the
+/// caller's transaction**.
+///
+/// # Why a free function and not a third `ApprovalService` method
+///
+/// [`ApprovalService::submit`] and [`ApprovalService::submit_window_mutation`] each
+/// own their transaction, because each resolves its own subject out of the store
+/// before pinning it. A policy proposal cannot: the version it pins **does not
+/// exist yet** — `threshold_repo::open_version` writes it — so the write and the
+/// pin have to be in one transaction or the two halves of D-10 can commit apart. A
+/// version with no unit is a proposal nobody is reviewing that
+/// `infra::threshold::effective_policy` will never make effective; a unit whose
+/// version failed to commit is a signature over nothing. So the transaction belongs
+/// to `ThresholdService::propose` and this is the approval-plane half it calls, in
+/// the shape `threshold_repo`'s own "runner-taking, not provider-holding" doc
+/// anticipated.
+///
+/// # What it holds, and it is nothing
+///
+/// `held_keys` is empty, deliberately. A threshold policy touches no canonical
+/// scope key — it is tenant-wide and prices nothing — so a proposal must not freeze
+/// any of them. Holding the plan keys of a tenant while a reviewer thinks about a
+/// threshold would make every publish in that tenant wait on a governance edit,
+/// which is the opposite of what `inst-co-single-pending` protects. What serializes
+/// two proposals instead is [`approval_repo::find_pending_policy_unit`], the
+/// per-tenant reading of the same rule.
+///
+/// # Errors
+/// [`DomainError::PendingChangeUnitExists`] (409) when the tenant already holds a
+/// pending proposal; [`DomainError::Internal`] on a storage failure.
+pub(crate) async fn open_policy_unit(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: Uuid,
+    version: &ThresholdVersion,
+    materiality: JsonValue,
+    stamp: AuditStamp,
+) -> Result<ApprovalRecord, DomainError> {
+    if let Some(held) = approval_repo::find_pending_policy_unit(runner, scope, tenant_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+    {
+        return Err(DomainError::PendingChangeUnitExists(format!(
+            "approval-threshold policy: approval {} is still submitted over version {}; decide \
+             it, or withdraw it to propose another",
+            held.approval_id, held.subject_ref
+        )));
+    }
+    let new = NewApproval {
+        approval_id,
+        tenant_id,
+        subject_ref: audit_repo::policy_version_ref(version.version()),
+        subject_kind: AuditSubjectKind::Policy,
+        content_hash: threshold_content_hash(version).to_vec(),
+        materiality,
+        held_keys: BTreeSet::new(),
+    };
+    approval_repo::open(runner, scope, new, stamp)
+        .await
+        .map_err(|e| repo_failure(&e))
+}
+
+/// The pinned subject as it stands **now**, or `None` if it is gone.
+///
+/// `None` rather than an error: a subject that has vanished is what
+/// [`DecisionRefusal::ContentMismatch`] is for, and answering 404 would tell the
+/// reviewer their approval record was missing when it is sitting in front of
+/// them. Every other assembly failure is still an error — a storage fault is not
+/// a mismatch.
+async fn re_derive(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    record: &ApprovalRecord,
+    now: DateTime<Utc>,
+) -> Result<Option<PinnedSubject>, DomainError> {
+    // **The same assembly the pin was taken under, per subject kind**, and that is
+    // the whole of what makes a re-derivation comparable to a pin rather than to a
+    // different document. A plan-revision unit reviews an open draft, so
+    // `assemble` is right and its `NotFound` means the draft is gone. A window
+    // unit's subject is a *published* plan with no draft at all, so assembling that
+    // way would answer `NotFound` for every window unit in existence — a
+    // `content_matches_pin` of `false` on every read, and `APPROVAL_CONTENT_MISMATCH`
+    // on every decision, for a subject nobody touched.
+    //
+    // The plan is resolved **inside** the three plan-bearing arms and not before the
+    // match, which it used to be: a policy unit has no plan, so a resolution hoisted
+    // above the match would answer `CorruptRow` — a 500 — on every read of every
+    // D-10 unit, for a record that is perfectly well formed.
+    match record.subject_kind {
+        AuditSubjectKind::PlanRevision | AuditSubjectKind::PriceUnit => {
+            let plan_id = plan_of(record)?;
+            match crate::infra::publish::assemble(runner, scope, tenant_id, plan_id, now).await {
+                Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
+                Err(DomainError::NotFound { .. }) => Ok(None),
+                Err(other) => Err(other),
+            }
+        }
+        AuditSubjectKind::Window => {
+            let plan_id = plan_of(record)?;
+            let Some(revision) = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+                .await
+                .map_err(|e| repo_failure(&e))?
+            else {
+                return Ok(None);
+            };
+            match crate::infra::publish::assemble_from(
+                runner, scope, tenant_id, plan_id, revision, now,
+            )
+            .await
+            {
+                Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
+                Err(DomainError::NotFound { .. }) => Ok(None),
+                Err(other) => Err(other),
+            }
+        }
+        // The proposed version's own rows, read back from the store that holds
+        // them. It cannot move — `pricing_approval_threshold` refuses every UPDATE
+        // and every DELETE — so the digest a reviewer verifies against is the one
+        // taken at submit unless somebody **widened** the version by inserting a
+        // currency it did not have, which is the one mutation the primary key
+        // permits and the one this re-derivation is what catches.
+        AuditSubjectKind::Policy => policy_version_of(runner, scope, tenant_id, record).await,
+    }
+}
+
+/// Re-read the threshold version a `policy` unit pins.
+///
+/// `None` on a version whose rows are gone or which never existed, for
+/// [`re_derive`]'s stated reason: an absent subject is `ContentMismatch`'s
+/// business and not a 404 about the record the reviewer is looking at. An entry set
+/// the constructor refuses reads the same way — it is content this gear can no
+/// longer present as a version, which is exactly "no longer derivable".
+async fn policy_version_of(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    record: &ApprovalRecord,
+) -> Result<Option<PinnedSubject>, DomainError> {
+    let version = record.subject_ref.parse::<u64>().map_err(|_| {
+        DomainError::Internal(format!(
+            "bss-pricing: approval {} names the policy subject {:?}, which is not a version number",
+            record.approval_id, record.subject_ref
+        ))
+    })?;
+    read_threshold_version(runner, scope, tenant_id, version)
+        .await
+        .map(|held| held.map(PinnedSubject::ThresholdPolicy))
+}
+
+/// One stored threshold version as the domain holds it, or `None`.
+///
+/// Shared by the re-derivation above and by [`crate::infra::threshold`]'s effective
+/// -policy walk, because both have to build the **same** value out of the same rows
+/// or the pin they compare stops meaning anything.
+///
+/// # Errors
+/// [`DomainError::Internal`] on a storage failure, and on a stored row whose
+/// currency the domain refuses — the CHECK holds the shape, so a code that fails
+/// [`CurrencyCode::new`] means the table was written around.
+pub(crate) async fn read_threshold_version(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    version: u64,
+) -> Result<Option<ThresholdVersion>, DomainError> {
+    let stored = i64::try_from(version).map_err(|_| {
+        DomainError::Internal(format!(
+            "bss-pricing: threshold version {version} is not a value this store can hold"
+        ))
+    })?;
+    let read = threshold_repo::read_version(runner, scope, tenant_id, stored).await;
+    let Some(stored) = (match read {
+        Ok(held) => held,
+        // **An unreadable version is skipped, not raised.** `repo_failure` folds
+        // `CorruptRow` and `Db` into one arm, so the discrimination has to happen
+        // here, at the boundary that still has it.
+        //
+        // The store permits one mutation of an approved version — an `INSERT` of a
+        // currency it did not have, since the key is `(tenant, version, currency)` —
+        // and that widening can bring a second `effectiveFrom` with it, which is
+        // what `read_version` refuses as a corrupt row. Two proposals that both
+        // minted one version number leave exactly that state.
+        //
+        // Raising it was a fail-open dressed as a fault: `effective_version` walks
+        // greatest-first with `?`, so **one** unreadable version aborted the whole
+        // walk and every publish, every window mutation and the policy `GET`
+        // answered 500 for that tenant — permanently, because the table refuses
+        // `UPDATE` and `DELETE` and nothing could clear it. Skipping is the
+        // direction the module doc promises for every other step of this walk: the
+        // version is not what an approver signed, so it is not the policy, so the
+        // tenant falls back to an older approved version or to none at all — and
+        // none makes every change material.
+        Err(RepoError::CorruptRow(why)) => {
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                version = stored,
+                reason = %why,
+                "bss-pricing: threshold version is unreadable and is skipped; the tenant's \
+                 effective policy falls back to an older approved version, or to none"
+            );
+            None
+        }
+        Err(other) => return Err(repo_failure(&other)),
+    }) else {
+        return Ok(None);
+    };
+    let effective_from = stored.effective_from;
+    let mut entries = Vec::with_capacity(stored.entries.len());
+    for row in stored.entries {
+        let currency = CurrencyCode::new(&row.currency).map_err(|_| {
+            DomainError::Internal(format!(
+                "bss-pricing: threshold version {version} holds the currency {:?}, which is not a \
+                 code this gear can have written",
+                row.currency
+            ))
+        })?;
+        let basis = row.basis().ok_or_else(|| {
+            DomainError::Internal(format!(
+                "bss-pricing: threshold version {version} entry {currency} sets neither basis nor \
+                 both, which chk_pricing_approval_threshold_basis refuses"
+            ))
+        })?;
+        entries.push(ThresholdEntry { currency, basis });
+    }
+    // The version's own rows are ordered by currency in SQL, which is the order the
+    // pin was taken over; `ThresholdVersion::new` keeps the caller's order for
+    // exactly that reason.
+    Ok(ThresholdVersion::new(version, effective_from, entries).ok())
+}
+
+/// The set the scope rule measures the approver against.
+///
+/// A free function, and a pure one, so the choice it encodes is executable
+/// rather than a sentence: [`RegionGrant::Untransported`] resolves to the change
+/// set's **own** reach — the argument, not a second read — and
+/// [`RegionGrant::Explicit`] resolves to exactly what was handed over, so a
+/// narrower grant still refuses.
+fn grant_against(grant: &RegionGrant, change_set_regions: &BTreeSet<Region>) -> BTreeSet<Region> {
+    match grant {
+        RegionGrant::Untransported => change_set_regions.clone(),
+        RegionGrant::Explicit(regions) => regions.clone(),
+    }
+}
+
+/// The pricing regions the pinned change set touches.
+///
+/// Off the rows' canonical scope keys, which is the only place a pricing region
+/// lives. A pure plan-shape revision touches none, and the empty set is covered
+/// by every grant — see the scope rule's own tests.
+fn regions_of(shape: &PlanShape) -> BTreeSet<Region> {
+    shape
+        .rows
+        .iter()
+        .map(|row| row.scope_key.region().clone())
+        .collect()
+}
+
+/// The plan a `plan_revision` record's `subject_ref` names, in this module's
+/// error vocabulary.
+///
+/// The parse itself is [`approval_repo::subject_plan`]'s and is **not** repeated
+/// here: the store writes the trail against the same segment this module
+/// re-derives the subject from, and two parses of one ref are two answers to
+/// which plan a unit is about. Which plan that is stays the **record's** fact
+/// rather than the request's — a caller who could supply it could point a
+/// decision at another plan's subject.
+///
+/// **Only the plan-bearing kinds reach here**, and the caller is what guarantees
+/// it: [`re_derive`] matches on the subject kind first and calls this from its
+/// three plan arms. A `policy` unit resolves to
+/// [`SubjectAggregate::Policy`](crate::infra::storage::repo::approval_repo::SubjectAggregate::Policy),
+/// which has no plan, and the arm below turns that into a named `Internal` rather
+/// than a panic — the same reading `subject_plan` gives an unparseable ref: a
+/// record in a shape this crate cannot have written is an invariant breach, and it
+/// must not present as a caller's mistake.
+///
+/// # Errors
+/// [`DomainError::Internal`] on a ref this crate cannot have written — the
+/// CHECKs admit any text, so an unparseable one means the table was written
+/// around — and on a subject whose aggregate is not a plan.
+fn plan_of(record: &ApprovalRecord) -> Result<PlanId, DomainError> {
+    approval_repo::subject_aggregate(record)
+        .map_err(|e| repo_failure(&e))?
+        .plan()
+        .ok_or_else(|| {
+            DomainError::Internal(format!(
+                "bss-pricing: approval {} is a {} unit, whose aggregate is not a plan",
+                record.approval_id, record.subject_kind
+            ))
+        })
+}
+
+/// Void every pending unit pinned to `plan_id` — the TOCTOU guard,
+/// `inst-ap-pin` / `inst-as-void`.
+///
+/// # The enumeration this depends on, and where each surface lands
+///
+/// Its correctness is a property of a *set of surfaces*, so the set is written
+/// down here rather than left to be rediscovered by whoever adds the next one.
+/// The authoring mutations that exist today:
+///
+/// | Surface | Voids? | Why |
+/// |---|---|---|
+/// | `create_plan` (`POST /plans`) | **no** | It mints a plan and its revision `0`. No approval can be pinned to a subject that did not exist when every open unit was opened. |
+/// | `patch_plan` — the plan facet (`PATCH /plans/{id}`) | yes | Replaces content of the pinned draft revision. |
+/// | `patch_plan` — the phase graph | yes | The phase set is hashed into the pin; a trial 7 → 90 days is D-115's own example of a material change with no price delta. |
+/// | `patch_plan` — the add-on rule set | yes | Same: hashed, and a required-flip changes what the customer must buy. |
+/// | `patch_plan` — the descriptor set | yes | Same: GL code and invoice template are hashed. |
+/// | `abandon_plan_draft` (`POST /plans/{id}/abandon`) | yes | The subject ceases to exist. A unit left pending would hold the scope key open against a revision nobody can publish. |
+/// | `create_price` (`POST /plans/{id}/prices`) | yes | Adds a row to the candidate set the pin covers. |
+/// | `patch_price` (`PATCH …/prices/{id}`) | yes | Replaces a pinned row's content. |
+/// | `delete_price` (`DELETE …/prices/{id}`) | yes | Removes a pinned row. |
+/// | `open_revision` (`PATCH /plans/{id}` with no open draft, `api::rest::plans`) | **yes** | It inserts a revision row and copies three child tables, and it appends its own `Create` record rather than going through the rail — so it calls this directly. What it can find is only an *orphan*: a unit pinned to the draft that has since published. See its own doc. |
+///
+/// Two more paths write on a plan's audit segment. One is a void site with its
+/// **own**, narrower void; the other is not one at all:
+///
+/// - **the publish commit** — it voids, but through
+///   [`approval_repo::void_pending_for_subject`] rather than through this
+///   function, and the difference is the whole decision. This doc used to say
+///   the commit is not a void site because voiding there "would make every
+///   approved publish undo its own authorization", and **that argument is
+///   false**: the authorizing record is `approved`, and every void in this
+///   module selects `state = 'submitted'`. What the commit does void is the
+///   orphan the old text named as an accepted residue — a unit still `submitted`
+///   over the revision the commit just froze, which no approve can ever carry to
+///   a publish and which re-derives to `APPROVAL_CONTENT_MISMATCH` for the rest
+///   of its life. It matches the **exact** `<plan_id>/<revision>`, not this
+///   function's plan prefix, so it cannot reach a unit over another revision or
+///   another subject of the same plan;
+/// - **`plan_repo::create_draft` / `create_draft_on`** — the `create_plan`
+///   surface above. The reason is the table's, not the rail's: no unit can be
+///   pinned to a plan that did not exist.
+///
+/// # Why it is wired to the audit writers and to one call site, and what that
+/// does **not** buy
+///
+/// Every authoring mutation of a plan's shape or rows lands its audit record
+/// through exactly two functions — `plan_repo::record_revision_mutation` and
+/// `price_repo::record_price_mutation` — because the phase's Global Constraint
+/// is that there is **no unaudited mutating entry point**. Calling this from
+/// those two covers nine surfaces at two call sites, which is nine fewer chances
+/// to forget.
+///
+/// It does not follow, and this doc used to say it did, that a surface added
+/// later *cannot* mutate a pinned subject without passing through them.
+/// `open_revision` is the standing counter-example: it existed, it wrote its own
+/// record, and it was outside the rail — reached from
+/// `PATCH /bss-pricing/v1/plans/{planId}` whenever the plan has no open draft.
+/// The obligation is therefore on the reader and is stated as one: **a path that
+/// appends its own audit record is a void decision to be taken**, and it belongs
+/// in the table above with its answer either way.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure. It runs inside the
+/// mutation's own transaction, so a failure here rolls the mutation back with
+/// it — which is the answer: a mutation that could not void the approval it
+/// invalidated must not commit, or a reviewer approves content that moved.
+pub async fn void_pending_units_of(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    voided_at: DateTime<Utc>,
+) -> Result<u64, RepoError> {
+    approval_repo::void_pending_for_plan(runner, scope, tenant_id, plan_id, voided_at).await
+}
+
+/// Map a refusal onto the wire vocabulary.
+///
+/// One place, so the code a refusal carries and the status it renders as cannot
+/// be spelled twice.
+/// The principal whose signature makes `record` a **second** one — or why it is
+/// not one.
+///
+/// One spelling of `inst-tp-distinct` as a *reader* applies it. Three call sites
+/// read a stored approval and act on it — the publish commit, a window mutation,
+/// and the threshold policy's effective version — and the first two each carried
+/// their own copy of these two checks while the third carried **neither**, which is
+/// the asymmetry this function exists to remove. The path that had no checks was
+/// the one deciding whether every *other* change needs a reviewer at all.
+///
+/// **Neither breach is reachable through this crate's store, and the guard is
+/// written anyway** — for ownership rather than for defence in depth, which is the
+/// argument `api::rest::publish::authorization_of` already carried for its copy.
+/// `chk_pricing_approval_distinct_principals` and `chk_pricing_approval_approver`
+/// forbid both rows in either backend, so what is left is the case where those
+/// CHECKs did not run: a migration, a restore, a later slice's writer. Reading
+/// `approver_principal` without comparing it would mean these paths trust a column
+/// rather than the rule.
+///
+/// The two refusals are deliberately different: a self-approval is an authority
+/// violation and names the principal, an absent approver on an `approved` row is a
+/// broken invariant and names the constraint that should have refused it.
+///
+/// # Errors
+/// [`DomainError::SelfApprovalForbidden`] when the record names one principal as
+/// both submitter and approver; [`DomainError::Internal`] when an `approved`
+/// record carries no approver at all.
+pub(crate) fn independent_approver(
+    record: &crate::infra::storage::repo::approval_repo::ApprovalRecord,
+) -> Result<Uuid, DomainError> {
+    let approver = record.approver_principal.ok_or_else(|| {
+        DomainError::Internal(format!(
+            "approval {} is approved and names no approver; chk_pricing_approval_approver was \
+             written around",
+            record.approval_id
+        ))
+    })?;
+    if approver == record.submitter_principal {
+        return Err(DomainError::SelfApprovalForbidden(format!(
+            "approval {}: the record names {approver} as both submitter and approver, so it \
+             authorizes nothing",
+            record.approval_id
+        )));
+    }
+    Ok(approver)
+}
+
+fn refusal_to_domain(refusal: DecisionRefusal, approval_id: Uuid) -> DomainError {
+    let detail = format!("approval {approval_id}: {refusal}");
+    match refusal {
+        DecisionRefusal::SelfApproval => DomainError::SelfApprovalForbidden(detail),
+        DecisionRefusal::OutOfScope => DomainError::RegionScopeDenied(detail),
+        DecisionRefusal::ContentMismatch => DomainError::ApprovalContentMismatch(detail),
+        DecisionRefusal::NotPending => DomainError::ApprovalNotPending(detail),
+        DecisionRefusal::ReasonRequired => DomainError::ReasonRequired(detail),
+    }
+}
+
+fn into_domain(err: toolkit_db::secure::TxError<DomainError>) -> DomainError {
+    err.into_domain(|infra| DomainError::Internal(format!("bss-pricing: approval: {infra}")))
+}
+
+#[cfg(test)]
+#[path = "approval_tests.rs"]
+mod approval_tests;

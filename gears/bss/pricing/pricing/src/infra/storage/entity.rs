@@ -9,6 +9,9 @@
 //! `text`, `JsonValue` from `jsonb` and `text`, `Vec<u8>` from `bytea` and
 //! `blob`.
 
+pub mod approval;
+pub mod approval_key;
+pub mod approval_threshold;
 pub mod audit_log;
 pub mod catalog_version_ref;
 pub mod idempotency_dedup;
@@ -22,4 +25,5 @@ pub mod plan_phase;
 pub mod policy_object;
 pub mod price;
 pub mod price_tier_band;
+pub mod price_window;
 pub mod read_model;

@@ -144,6 +144,49 @@ pub struct JobsConfig {
     /// swept at all**, and the order is ascending tenant id rather than
     /// rotating, which needs a cursor no table in §3.7 carries.
     pub pending_tenants_per_pass: u64,
+    /// How long a `pricing_price_window` boundary may stand uncrossed before
+    /// `pricing.window.activation_overdue` raises Warn (`07-pricewindow-linkage.md`
+    /// §7). Default 300s.
+    ///
+    /// **The design set names no value for this one**, which is why the default
+    /// is stated with its reasoning rather than cited. §10 says the activation
+    /// job's SLO *"rides the ratified NFR set (2026-07-28, PRD §14)"* and that
+    /// set has no activation row at all — it ratifies publish propagation, read
+    /// latency, price-row validation, event delivery, the currency floor and
+    /// repricing throughput. So the value is the deployment's to state, and 300s
+    /// is the order of the ratified max batching delay (D-47) on the argument
+    /// that a window which has not flipped for five minutes is late by every
+    /// other clock in this gear.
+    ///
+    /// A separate knob from the tick cadence below, and not a multiple of it:
+    /// the cadence is how often the sweep looks, the threshold is how late a
+    /// flip has to be before an operator is told. Deriving one from the other
+    /// would mean an operator who slowed the sweep to save load silently also
+    /// raised the alarm bar.
+    ///
+    /// **Separate is not unrelated, and the relation is validated**
+    /// ([`ConfigError::CadenceNotInsideThreshold`]): the cadence must be strictly
+    /// less than this threshold. A window whose boundary arrives just after a pass
+    /// is found by the next pass a whole tick later, so at `tick >= threshold` the
+    /// first and entirely healthy attempt at every flip is already reported late.
+    /// Two independent values, one inequality between them — which is what this
+    /// paragraph used to leave out, and what made the alarm's meaning a function of
+    /// two knobs with only their zeroes refused.
+    pub window_activation_overdue_secs: u64,
+    /// How often the window activation/expiry sweep looks for a boundary that has
+    /// arrived. Default 60s.
+    ///
+    /// **The cadence is the resolution of the whole plane**, which is why it is
+    /// not the warm sweep's 5s and not a day: a window takes effect up to one tick
+    /// after the instant it was scheduled for, and D-144 quantizes those instants
+    /// to the millisecond. A minute is the value stated with its reasoning: the
+    /// authoring floors that bound a changeover are D-47's **5 minutes**
+    /// (`inst-gc-compose`, `inst-su-instant` — an instant must be at least the max
+    /// batching delay in the future at approval commit), so a sweep an order of
+    /// magnitude inside that floor cannot be what makes a changeover late, while a
+    /// 5s sweep would spend twelve passes a minute reading an index for rows that
+    /// are almost never there.
+    pub window_activation_tick_secs: u64,
 }
 
 impl Default for JobsConfig {
@@ -154,6 +197,8 @@ impl Default for JobsConfig {
             readmodel_degraded_after_secs: 5,
             pending_refs_per_tenant: 500,
             pending_tenants_per_pass: 250,
+            window_activation_overdue_secs: 300,
+            window_activation_tick_secs: 60,
         }
     }
 }
@@ -177,10 +222,26 @@ impl JobsConfig {
         Duration::from_secs(self.readmodel_degraded_after_secs)
     }
 
+    /// The window activation/expiry sweep cadence.
+    #[must_use]
+    pub const fn window_activation_interval(&self) -> Duration {
+        Duration::from_secs(self.window_activation_tick_secs)
+    }
+
+    /// The window activation/expiry overdue threshold — the Warn alarm's age
+    /// bound.
+    #[must_use]
+    pub const fn window_activation_overdue_after(&self) -> Duration {
+        Duration::from_secs(self.window_activation_overdue_secs)
+    }
+
     /// # Errors
     /// [`ConfigError::ZeroInterval`] for a zero cadence: `tokio`'s interval
     /// panics on a zero period, and a zero alarm threshold would fire on every
     /// publish before the registry could possibly have answered.
+    /// [`ConfigError::CadenceNotInsideThreshold`] when the window sweep's cadence
+    /// stands at or past its own overdue threshold — the one relation in this
+    /// section that no single field's value can be judged by.
     pub const fn validate(&self) -> Result<(), ConfigError> {
         if self.readmodel_warm_tick_secs == 0 {
             return Err(ConfigError::ZeroInterval {
@@ -208,6 +269,39 @@ impl JobsConfig {
         if self.pending_tenants_per_pass == 0 {
             return Err(ConfigError::ZeroInterval {
                 field: "jobs.pending_tenants_per_pass",
+            });
+        }
+        // `tokio::time::interval` panics on a zero period, so this one is the
+        // difference between a boot that fails with a field name and a lifecycle
+        // that dies on its first tick.
+        if self.window_activation_tick_secs == 0 {
+            return Err(ConfigError::ZeroInterval {
+                field: "jobs.window_activation_tick_secs",
+            });
+        }
+        // Zero here is not "alarm immediately", it is "alarm on every window the
+        // sweep ever flips" - the Warn that means a stalled singleton, raised
+        // once per window per healthy pass, which is how a real signal becomes
+        // one an operator filters out.
+        if self.window_activation_overdue_secs == 0 {
+            return Err(ConfigError::ZeroInterval {
+                field: "jobs.window_activation_overdue_secs",
+            });
+        }
+        // The same pathology as the line above, at every value rather than only at
+        // zero, and it is the reason this arm exists. The overdue condition is read
+        // off the due set, so a boundary arriving just after a pass is found by the
+        // next pass a whole tick later; with the cadence at or past the threshold
+        // that first, healthy attempt is already late, and the Warn that means a
+        // stalled singleton fires once per window on every ordinary flip. Refusing
+        // only the zero left every such pair accepted - 600s/300s among them.
+        //
+        // Last of the arms on purpose: a zero is reported as a zero, which names
+        // one field to fix instead of a relation between two.
+        if self.window_activation_tick_secs >= self.window_activation_overdue_secs {
+            return Err(ConfigError::CadenceNotInsideThreshold {
+                cadence: "jobs.window_activation_tick_secs",
+                threshold: "jobs.window_activation_overdue_secs",
             });
         }
         Ok(())
@@ -325,6 +419,22 @@ pub enum ConfigError {
     EmptyPath {
         /// Dotted path of the offending field.
         field: &'static str,
+    },
+    /// A sweep cadence stands at or past the alarm threshold it is measured
+    /// against.
+    ///
+    /// The only **cross-field** refusal in this section, and it carries both
+    /// names because neither alone tells an operator what to change: either knob
+    /// may move, and which one should is theirs to decide.
+    #[error(
+        "`{cadence}` must be strictly less than `{threshold}`, or a boundary crossed on the very \
+         first attempt is already reported late"
+    )]
+    CadenceNotInsideThreshold {
+        /// Dotted path of the cadence.
+        cadence: &'static str,
+        /// Dotted path of the threshold it must stay inside.
+        threshold: &'static str,
     },
 }
 

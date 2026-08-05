@@ -7,7 +7,10 @@ use chrono::{TimeZone, Utc};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::{NewOutboxEvent, PlanPublishedPayload, outbox_id, plan_published_dedup_key};
+use super::{
+    NewOutboxEvent, PlanPublishedPayload, PriceWindowTransitionPayload, outbox_id,
+    plan_published_dedup_key, price_window_transition_dedup_key,
+};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::events::CatalogEvent;
 use crate::domain::scope_key::PlanId;
@@ -15,6 +18,8 @@ use crate::domain::scope_key::PlanId;
 const PLAN: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_00a1);
 const TENANT: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_00b1);
 const CORRELATION: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_00c1);
+const WINDOW: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_00d1);
+const PRICE: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_00e1);
 
 fn payload() -> PlanPublishedPayload {
     PlanPublishedPayload {
@@ -22,6 +27,27 @@ fn payload() -> PlanPublishedPayload {
         revision: 2,
         pending_version_ref: "pend-7".to_owned(),
         price_ids: vec![Uuid::from_u128(1), Uuid::from_u128(2)],
+        correlation_id: CORRELATION,
+    }
+}
+
+/// The window interval this file renders. **2099**, so no assertion here can start
+/// answering differently on a date.
+fn from() -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 9, 10, 0, 0, 0).unwrap()
+}
+
+fn to() -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 9, 20, 0, 0, 0).unwrap()
+}
+
+fn window_payload() -> PriceWindowTransitionPayload {
+    PriceWindowTransitionPayload {
+        window_id: WINDOW,
+        plan_id: PlanId::new(PLAN),
+        price_id: PRICE,
+        effective_from: from(),
+        effective_to: Some(to()),
         correlation_id: CORRELATION,
     }
 }
@@ -132,6 +158,88 @@ fn the_payload_stamps_all_three_snapshot_segments() {
     // because no document declares a nesting for this event, and a wire
     // structure invented at a keyboard is what D-158 forbids one line over.
     assert!(!object.contains_key("pricingSnapshotRef"));
+}
+
+/// Both window events' bodies, whole, against a literal.
+///
+/// **Whole-value equality**, which is what asserts the key set **closed** — the
+/// idiom `the_payload_carries_the_pending_handle_and_the_published_rows` uses one
+/// event over. Before this, two of the payload's keys were asserted, on one of the
+/// two events, by `tests/sqlite_window_activation.rs`; the expiry's body was
+/// asserted nowhere at all, and rendering every `PriceWindowExpired` with
+/// `"state": "active"` left 1150 tests green.
+///
+/// The two bodies are now **equal**, and that is the fix to F10 rather than an
+/// omission: the state token was a second spelling of the event's own name, so it
+/// is gone and the name is the discriminator. Which is why this test asserts the
+/// name and the dedup key beside the body — those are what differ, and asserting
+/// only the body would leave two events that are two events by nothing this file
+/// checks.
+#[test]
+fn both_window_transition_events_carry_the_same_whole_body_under_different_names() {
+    let at = Utc.with_ymd_and_hms(2026, 8, 4, 9, 0, 0).unwrap();
+    let payload = window_payload();
+    let expected = json!({
+        "windowId": WINDOW,
+        "planId": PLAN,
+        "priceId": PRICE,
+        "effectiveFrom": from(),
+        "effectiveTo": to(),
+        "correlationId": CORRELATION,
+    });
+
+    let activated = NewOutboxEvent::price_window_activated(TENANT, &payload, at);
+    assert_eq!(activated.payload, expected);
+    assert_eq!(activated.event, CatalogEvent::PriceWindowActivated);
+    assert_eq!(
+        activated.dedup_key,
+        price_window_transition_dedup_key(CatalogEvent::PriceWindowActivated, WINDOW)
+    );
+    assert_eq!(activated.aggregate_id, PLAN, "ordering is per plan");
+
+    let expired = NewOutboxEvent::price_window_expired(TENANT, &payload, at);
+    assert_eq!(expired.payload, expected);
+    assert_eq!(expired.event, CatalogEvent::PriceWindowExpired);
+    assert_eq!(
+        expired.dedup_key,
+        price_window_transition_dedup_key(CatalogEvent::PriceWindowExpired, WINDOW)
+    );
+    assert_eq!(expired.aggregate_id, PLAN);
+
+    assert_ne!(
+        activated.dedup_key, expired.dedup_key,
+        "a window's expiry must not dedup against its own activation"
+    );
+}
+
+/// An open-ended window renders `effectiveTo` as **`null`**, not as an absent key.
+///
+/// The absence is a value (`inst-ws-expire`: an open-ended window never expires),
+/// and the closed key set above is what makes the distinction assertable: a
+/// renderer that dropped the key on `None` would produce a body six keys wide for
+/// one window and five for another, and a consumer reading "no `effectiveTo` key"
+/// cannot tell open-ended from a field the producer forgot.
+#[test]
+fn an_open_ended_windows_payload_says_null_rather_than_omitting_the_key() {
+    let at = Utc.with_ymd_and_hms(2026, 8, 4, 9, 0, 0).unwrap();
+    let payload = PriceWindowTransitionPayload {
+        effective_to: None,
+        ..window_payload()
+    };
+
+    let event = NewOutboxEvent::price_window_activated(TENANT, &payload, at);
+
+    assert_eq!(
+        event.payload,
+        json!({
+            "windowId": WINDOW,
+            "planId": PLAN,
+            "priceId": PRICE,
+            "effectiveFrom": from(),
+            "effectiveTo": null,
+            "correlationId": CORRELATION,
+        })
+    );
 }
 
 #[test]

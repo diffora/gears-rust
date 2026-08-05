@@ -1165,6 +1165,7 @@ dependencies = [
  "sea-orm-migration",
  "serde",
  "serde_json",
+ "testcontainers-modules",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

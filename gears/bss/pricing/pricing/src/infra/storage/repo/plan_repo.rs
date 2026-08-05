@@ -150,6 +150,14 @@ pub struct NewPlanDraft {
     pub available_from: Option<DateTime<Utc>>,
     /// End of the availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// The causing request's correlation id (D-178).
+    ///
+    /// The third field of the [`AuditStamp`](crate::domain::audit::AuditStamp)
+    /// this path writes its record under, and the only one the draft did not
+    /// already carry: `created_by` is the actor and `created_at_utc` is the
+    /// instant. Carried on the draft rather than as a second argument so the
+    /// create cannot be called with a correlation belonging to another request.
+    pub correlation_id: Uuid,
 }
 
 /// `SeaORM`-backed repository over the plan revision chain.
@@ -598,6 +606,41 @@ impl PlanRepo {
     /// what replaced the schema anchor that stood here while the tables were
     /// still landing.
     ///
+    /// # It voids the plan's pending approval units, and that is a **sixth**
+    /// write
+    ///
+    /// This path appends its audit record directly rather than through
+    /// `record_revision_mutation`, so it does not inherit the TOCTOU void the
+    /// way the five authoring mutations do — it has to call it, and it does,
+    /// inside this transaction.
+    ///
+    /// What it closes is narrow and worth stating exactly, because the wide
+    /// reading is wrong. A unit can only be pinned to a plan's **open draft**
+    /// (`infra::publish::assemble` reads that revision and no other), and this
+    /// method refuses outright when one exists — so no unit reachable here is
+    /// pinned to a subject this call touches. Every unit it can find is one that
+    /// survived the draft it pinned. It can never be approved again — the pin
+    /// re-derives against whatever draft is open next and `revision` is hashed —
+    /// but `inst-as-void` asks for `voided`, not for a record that refuses
+    /// forever, and a record that refuses forever is an indefinite lock on the
+    /// plan's subject under `PENDING_CHANGE_UNIT_EXISTS`.
+    ///
+    /// **The window this used to be the only closer of is now closed at its own
+    /// end.** The publish commit voids the units it did not consume, over the
+    /// exact revision it froze
+    /// ([`approval_repo::void_pending_for_subject`](super::approval_repo::void_pending_for_subject)),
+    /// and `abandon_draft` voids through the rail — so between them, every path
+    /// by which a draft stops being a draft now closes its own units, and the
+    /// set this call can still find is, on today's paths, **empty**.
+    ///
+    /// It stays anyway, and the reason is the one this module's TOCTOU doc gives
+    /// for not trusting an inheritance argument: "on today's paths" is a claim
+    /// about a set of surfaces, and the last time it was made — that a mutation
+    /// could not reach a pinned subject without passing through the two audit
+    /// writers — `open_revision` itself was already the counter-example. A sweep
+    /// that costs one `UPDATE` at the first authoring act after a publish is the
+    /// backstop for the next one.
+    ///
     /// # Errors
     /// [`RepoError::NotFound`] when the plan has no current revision — the
     /// same answer a plan outside `scope` gets;
@@ -620,9 +663,18 @@ impl PlanRepo {
         scope: &AccessScope,
         tenant_id: Uuid,
         plan_id: PlanId,
-        created_by: Uuid,
-        now: DateTime<Utc>,
+        stamp: AuditStamp,
     ) -> Result<PlanRevision, RepoError> {
+        // The successor's author and its authoring instant are the stamp's, and
+        // so is the correlation its record carries. **That last one is the point
+        // of the parameter** (D-178): this method is the first of *two* records a
+        // single `PATCH` writes on the arm that opens a successor — this `Create`
+        // and then the facet's `Update` — so a value minted here rather than
+        // handed in would leave the two halves of one operator call uncorrelated,
+        // which is the exact join D-135's per-aggregate segmentation makes the
+        // correlation responsible for.
+        let created_by = stamp.actor_principal_id;
+        let now = stamp.recorded_at;
         let Some(current) = self.find_current(scope, tenant_id, plan_id).await? else {
             return Err(RepoError::NotFound {
                 subject: "current plan revision".to_owned(),
@@ -703,6 +755,13 @@ impl PlanRepo {
                     // `before_state` is None because the revision did not exist:
                     // the same absence `create_draft_on` writes for revision 0,
                     // and the difference between minting a name and editing one.
+                    // And the void, called **directly** because this path does
+                    // not go through `record_revision_mutation`; see the method
+                    // doc's own paragraph on why it voids at all.
+                    crate::infra::approval::void_pending_units_of(
+                        txn, &scope, tenant_id, plan_id, now,
+                    )
+                    .await?;
                     audit_repo::append(
                         txn,
                         &scope,
@@ -721,7 +780,7 @@ impl PlanRepo {
                                 None,
                             )),
                             approval_ref: None,
-                            correlation_id: None,
+                            correlation_id: stamp.correlation_id,
                         },
                     )
                     .await?;
@@ -805,11 +864,34 @@ impl PlanRepo {
 /// the before/after pair needs no second read of a row the transaction has
 /// already moved.
 ///
+/// # This is also the TOCTOU void's rail (`inst-ap-pin`)
+///
+/// Every authoring mutation of a plan's **shape** lands here — the plan facet,
+/// the phase graph, the add-on rule set, the descriptor set and the draft
+/// abandon — so a pending approval unit pinned to that plan is voided here, in
+/// the mutation's own transaction. `price_repo::record_price_mutation` is the
+/// same rail for the row plane.
+///
+/// Placed on the audit writer rather than at each of those five call sites for
+/// the reason the whole rule exists: this phase permits **no unaudited mutating
+/// entry point**, so a surface a later slice adds cannot reach a pinned subject
+/// without passing through here, and it inherits the void instead of needing to
+/// remember it. The full surface enumeration, including the two paths that
+/// deliberately do **not** void, is in
+/// [`crate::infra::approval::void_pending_units_of`]'s doc.
+///
+/// The plan's **creation** paths ([`create_draft_on`] and
+/// [`PlanRepo::create_draft`]) append their record directly and not through this
+/// function, which is why `create_plan` does not void: no unit can be pinned to
+/// a plan that did not exist.
+///
 /// # Errors
 /// [`RepoError::Db`] or [`RepoError::CorruptRow`] from the chain append, both of
 /// which roll the mutation back with them. That is the point: a mutation whose
 /// record cannot be written must not commit, or the trail becomes silently
-/// incomplete.
+/// incomplete. [`RepoError::Db`] from the void, for the same reason one construct
+/// over: a mutation that could not close the approval it invalidated must not
+/// commit either.
 pub(super) async fn record_revision_mutation(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -819,6 +901,14 @@ pub(super) async fn record_revision_mutation(
     expected: RowVersion,
     stamp: AuditStamp,
 ) -> Result<(), RepoError> {
+    crate::infra::approval::void_pending_units_of(
+        runner,
+        scope,
+        tenant_id,
+        after.plan_id,
+        stamp.recorded_at,
+    )
+    .await?;
     audit_repo::append(
         runner,
         scope,
@@ -895,6 +985,7 @@ pub async fn create_draft_on(
     draft: NewPlanDraft,
 ) -> Result<PlanRevision, RepoError> {
     let tenant_id = draft.tenant_id;
+    let correlation_id = draft.correlation_id;
     check_authored_instant("availableFrom", draft.available_from)?;
     check_authored_instant("availableTo", draft.available_to)?;
     let opened = PlanRevision {
@@ -918,8 +1009,9 @@ pub async fn create_draft_on(
     let row = revision_model(tenant_id, &opened)?;
     insert_revision(runner, scope, row).await?;
     // The record, in the same transaction as the insert (D-135). The stamp is
-    // the draft's own: `created_by` is the actor and `created_at_utc` is the
-    // instant, so this path needs nothing threaded that it did not already have.
+    // the draft's own: `created_by` is the actor, `created_at_utc` is the instant
+    // and `correlation_id` is the request's (D-178), which the draft carries for
+    // exactly this line.
     // `before_state` is None because nothing existed - which is the difference
     // between a create and an edit, and it is expressible only as an absence.
     audit_repo::append(
@@ -940,7 +1032,7 @@ pub async fn create_draft_on(
                 None,
             )),
             approval_ref: None,
-            correlation_id: None,
+            correlation_id,
         },
     )
     .await?;

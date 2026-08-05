@@ -33,6 +33,16 @@ use crate::infra::storage::repo::PinFrontierRepo;
 /// tag and a summary on every registered operation).
 const TAG: &str = "BSS Pricing Catalog Version";
 
+/// The pin-eligibility frontier read (D-136).
+///
+/// The literal is repeated in the `OperationBuilder` call below because DE0801
+/// validates a **literal** argument and silently passes a `const` one, so the
+/// route-shape rule only binds where the literal is; the two spellings are
+/// pinned together by `tests/module_test.rs`'s route census. It exists as a
+/// `const` for the reason its siblings do: a route census that spelled one of
+/// its paths as a string literal is a census one rename can walk away from.
+pub const FRONTIER: &str = "/bss-pricing/v1/catalog-version/frontier";
+
 /// Shared per-request state for the catalog-version routes. Built once in
 /// `init()` and shared via `Extension<Arc<ApiState>>`.
 #[derive(Clone)]

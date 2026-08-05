@@ -31,11 +31,14 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bss_pricing::config::LimitsConfig;
+use bss_pricing::domain::approval::{ApprovalState, DecisionBy};
 use bss_pricing::domain::audit::{
     AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash, genesis_prev_hash,
 };
@@ -53,6 +56,7 @@ use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use bss_pricing::domain::snapshot::VersionRef;
+use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::entity::{
@@ -77,6 +81,12 @@ use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+
+/// One value for a whole test binary: these suites drive a repository or a
+/// service directly, where the value the HTTP edge would have established has
+/// no producer. What each suite asserts *about* it is stated where it asserts
+/// it.
+const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
 
 // ---------------------------------------------------------------------------
 // The registry double.
@@ -135,6 +145,10 @@ impl CatalogVersionRegistryV1 for RegistryDouble {
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const ACTOR: Uuid = Uuid::from_u128(0xac_10);
 const CORRELATION: Uuid = Uuid::from_u128(0xc0_11);
+/// The independent second principal. Distinct from [`ACTOR`], which is what
+/// `chk_pricing_approval_distinct_principals` and `inst-tp-distinct` both
+/// require of an approve.
+const APPROVER: Uuid = Uuid::from_u128(0xac_11);
 
 fn plan_id() -> PlanId {
     PlanId::new(Uuid::from_u128(0x9_1a4))
@@ -217,6 +231,7 @@ fn new_plan_draft() -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        correlation_id: TEST_CORRELATION,
     }
 }
 
@@ -306,10 +321,21 @@ async fn seed_publishable(h: &Harness) -> (u64, RowVersion, Uuid) {
                 content: flat_row(),
                 created_by: ACTOR,
                 created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
             },
         )
         .await
         .expect("author the price row");
+
+    // `inst-wc-required`: the row does not publish until its canonical scope key
+    // holds an active or scheduled window. Thirteen tests in this file reddened
+    // when the rule registered, every one of them because the plan they publish
+    // had no window at all.
+    //
+    // The interval is `common::schedule_coverage_window`'s, not this file's, so
+    // the seed cannot drift from the three other suites that owe the same thing.
+    let conn = h.provider.conn().expect("conn");
+    common::schedule_coverage_window(&conn, &h.scope, TENANT, price_id, stamp()).await;
 
     (created.revision, after_descriptors.row_version, price_id)
 }
@@ -420,7 +446,7 @@ async fn a_first_publish_leaves_exactly_the_five_artifacts_and_nothing_else() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -508,14 +534,20 @@ async fn an_approved_publish_puts_its_record_on_the_audit_trail() {
     let (revision, version, _) = seed_publishable(&h).await;
     let approval = Uuid::from_u128(0xa9_01);
 
+    // The authorization is minted from a **real** decided record rather than
+    // assembled by hand, and since 2026-08-04 it has to be: `Approved` carries
+    // the digest the decision was over, and the commit re-derives it inside its
+    // own transaction. A hand-built pin would be a pin over nothing.
+    let record = approve_unit(&h, approval).await;
+
     h.publish
         .commit(
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
-            PublishAuthorization::approved(approval, Uuid::from_u128(1), Uuid::from_u128(2)),
+            authorization_of(&record),
             ACTOR,
             CORRELATION,
             at(12),
@@ -527,6 +559,140 @@ async fn an_approved_publish_puts_its_record_on_the_audit_trail() {
     assert_eq!(records[0].approval_ref, Some(approval));
 }
 
+/// The publish commit refuses content the decision was not over
+/// (`inst-ap-pin`'s approve→commit window).
+///
+/// **Staged with the world held still and one byte of the pin moved**, which is
+/// what makes the digest the only variable: same plan, same revision, same rows,
+/// same `row_version` everywhere, and an authorization carrying a pin that no
+/// longer matches what the commit re-derives. Staging a *mutation* instead would
+/// move a `row_version`, and the compare-and-swap would answer `STALE_VERSION`
+/// whether or not the pin is bound to anything — which is the trap this staging
+/// exists to avoid.
+///
+/// **This doc used to describe a different staging** — a unit opened over one
+/// draft and a commit aimed at a second plan's identically-shaped draft — which
+/// the body never performed. The prose was left over from an abandoned attempt;
+/// the behaviour proved is the stronger of the two, because a corrupted pin
+/// isolates the check from every other guard in the commit.
+///
+/// # What this does **not** exercise, said plainly
+///
+/// The in-transaction re-derivation is driven here only against a **corrupted
+/// authorization**, never against a world that actually moved between the
+/// decision and the commit. There is no test anywhere that stages the latter,
+/// and the reason is structural rather than an omission of effort: the publish
+/// route looks an approval up by subject **and content**
+/// (`approval_repo::find_approved_for_content`), so a subject that moved after
+/// the approve has no approved unit and never reaches `commit` at all — that
+/// path is `rest_publish::a_row_edited_after_the_approve_does_not_publish_under_
+/// the_stale_decision`, and it ends in a fresh 202. The only way to reach the
+/// re-derivation with a genuinely moved world is the approve→commit race, where
+/// the mutation lands after the route's lookup and before the commit's
+/// transaction, and nothing in this crate stages it. What is proved here is that
+/// the check is bound to the digest; that it is bound to the *current* world is
+/// carried by `infra::publish`'s placement of the re-derivation inside the
+/// commit's own transaction, and by nothing executable.
+#[tokio::test]
+async fn a_commit_whose_content_is_not_what_was_approved_is_refused() {
+    let h = harness().await;
+    let (revision, version, _) = seed_publishable(&h).await;
+    let record = approve_unit(&h, Uuid::from_u128(0xa9_02)).await;
+
+    // The same authorization, with one byte of the pin moved. Nothing else in
+    // the world changes — same revision, same version, same rows.
+    let mut moved = record.content_hash.clone();
+    moved[0] ^= 0xff;
+    let stale = PublishAuthorization::approved(
+        record.approval_id,
+        record.submitter_principal,
+        record.approver_principal.expect("an approved record"),
+        moved.as_slice().try_into().expect("a 32-byte digest"),
+    );
+
+    let refused = h
+        .publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            stale,
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect_err("the content approved is not the content this would freeze");
+    assert!(
+        matches!(refused, DomainError::ApprovalContentMismatch(_)),
+        "got {refused:?}"
+    );
+
+    // And nothing was frozen: the refusal is ahead of every write.
+    assert_eq!(
+        h.plans
+            .find_revision(&h.scope, TENANT, plan_id(), revision)
+            .await
+            .expect("read the revision")
+            .expect("it is there")
+            .lifecycle_state,
+        LifecycleState::Draft
+    );
+}
+
+/// Open a unit over the seeded plan and approve it as an independent principal.
+async fn approve_unit(
+    h: &Harness,
+    approval_id: Uuid,
+) -> bss_pricing::infra::storage::repo::approval_repo::ApprovalRecord {
+    let approvals = ApprovalService::new(h.provider.clone());
+    approvals
+        .submit(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            approval_id,
+            serde_json::json!({ "material": true, "reason": "noConfiguredThreshold" }),
+            stamp_of(ACTOR, at(11)),
+        )
+        .await
+        .expect("open the pending unit");
+    approvals
+        .decide(
+            &h.scope,
+            TENANT,
+            DecideRequest {
+                approval_id,
+                decision: DecisionBy::Approve(APPROVER),
+                reason: None,
+                approver_regions: RegionGrant::Explicit(std::collections::BTreeSet::from([
+                    Region::new("eu").expect("a non-blank region"),
+                ])),
+                stamp: stamp_of(APPROVER, at(11)),
+            },
+        )
+        .await
+        .expect("an independent principal approves it")
+}
+
+/// The authorization a decided record yields, spelled once for this suite.
+fn authorization_of(
+    record: &bss_pricing::infra::storage::repo::approval_repo::ApprovalRecord,
+) -> PublishAuthorization {
+    PublishAuthorization::approved(
+        record.approval_id,
+        record.submitter_principal,
+        record.approver_principal.expect("an approved record"),
+        record
+            .content_hash
+            .as_slice()
+            .try_into()
+            .expect("a 32-byte digest"),
+    )
+}
+
 #[tokio::test]
 async fn a_second_publish_extends_every_counter_by_one() {
     let h = harness().await;
@@ -536,7 +702,7 @@ async fn a_second_publish_extends_every_counter_by_one() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -548,7 +714,7 @@ async fn a_second_publish_extends_every_counter_by_one() {
 
     let opened = h
         .plans
-        .open_revision(&h.scope, TENANT, plan_id(), ACTOR, at(13))
+        .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(13)))
         .await
         .expect("open the successor");
     h.publish
@@ -556,7 +722,7 @@ async fn a_second_publish_extends_every_counter_by_one() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), opened.revision),
+            PlanPublishUnit::plan_content(plan_id(), opened.revision),
             opened.row_version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -654,10 +820,24 @@ async fn a_commit_time_validation_failure_writes_nothing_at_all() {
                 },
                 created_by: ACTOR,
                 created_at_utc: at(11),
+                correlation_id: TEST_CORRELATION,
             },
         )
         .await
         .expect("author the second row");
+
+    // The late row gets its coverage window too, so the commit-time refusal is
+    // the **one** this test names. Without it the row is unpublishable for two
+    // reasons at once, and an `any(code == ...)` assertion would stay green with
+    // the rounding rule deleted — the second fault answering for the first.
+    common::schedule_coverage_window(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        Uuid::from_u128(0xb_0002),
+        stamp(),
+    )
+    .await;
 
     let refusal = h
         .publish
@@ -665,7 +845,7 @@ async fn a_commit_time_validation_failure_writes_nothing_at_all() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -677,12 +857,11 @@ async fn a_commit_time_validation_failure_writes_nothing_at_all() {
 
     match &refusal {
         DomainError::ValidationFailed(report) => {
-            assert!(
-                report
-                    .violations
-                    .iter()
-                    .any(|v| v.code == "ROUNDING_POLICY_UNRESOLVED"),
-                "got {report:?}"
+            let codes: Vec<&str> = report.violations.iter().map(|v| v.code.as_str()).collect();
+            assert_eq!(
+                codes,
+                ["ROUNDING_POLICY_UNRESOLVED"],
+                "exactly the fault this test staged, and nothing standing in for it"
             );
         }
         other => panic!("expected a validation report, got {other:?}"),
@@ -741,7 +920,7 @@ async fn registry_absence_stops_the_publish_and_writes_nothing() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -784,7 +963,7 @@ async fn a_stale_row_version_is_refused_and_writes_nothing() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             RowVersion::new(99),
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -832,7 +1011,7 @@ async fn a_retried_commit_re_requests_the_same_handle_rather_than_orphaning_one(
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             RowVersion::new(99),
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -848,7 +1027,7 @@ async fn a_retried_commit_re_requests_the_same_handle_rather_than_orphaning_one(
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -877,7 +1056,7 @@ async fn a_plan_with_no_open_draft_revision_has_nothing_to_publish() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), 0),
+            PlanPublishUnit::plan_content(plan_id(), 0),
             RowVersion::new(0),
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -905,7 +1084,7 @@ async fn the_unit_must_name_the_revision_the_plan_actually_holds_open() {
             &h.scope,
             TENANT,
             // A revision this plan does not hold open.
-            PlanPublishUnit::new(plan_id(), revision + 7),
+            PlanPublishUnit::plan_content(plan_id(), revision + 7),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -973,7 +1152,7 @@ async fn a_failure_at_the_last_write_takes_the_four_before_it_back() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -1062,10 +1241,24 @@ async fn a_row_authored_after_the_precheck_is_judged_by_the_second_run() {
                 content: flat_row(),
                 created_by: ACTOR,
                 created_at_utc: at(11),
+                correlation_id: TEST_CORRELATION,
             },
         )
         .await
         .expect("author the late row");
+
+    // The late row is on a **different** canonical scope key
+    // (`new_subscriptions_only`), so `inst-wc-perkey` gives it its own coverage
+    // obligation: covering the seed's key covers nothing else. This test is about
+    // the late row *publishing*, so it has to be publishable.
+    common::schedule_coverage_window(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        late,
+        stamp(),
+    )
+    .await;
 
     let receipt = h
         .publish
@@ -1073,7 +1266,7 @@ async fn a_row_authored_after_the_precheck_is_judged_by_the_second_run() {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -1113,7 +1306,20 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
         recorded_at: chrono::Utc::now(),
-        correlation_id: None,
+        correlation_id: TEST_CORRELATION,
+    }
+}
+
+/// The stamp a decision is taken under: who acted, when, and the request's
+/// correlation.
+fn stamp_of(
+    actor: uuid::Uuid,
+    when: chrono::DateTime<chrono::Utc>,
+) -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: actor,
+        recorded_at: when,
+        correlation_id: TEST_CORRELATION,
     }
 }
 
@@ -1127,6 +1333,247 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
 /// One plan on purpose: D-135 keys the segment on the audited subject's
 /// aggregate, so the whole sequence extends one chain and the walk below is the
 /// walk a verification job makes.
+/// The approval plane's five audited paths, on the plan the caller has already
+/// driven the authoring ones over.
+///
+/// Split out of [`drive_every_audited_path`] because the two planes are two
+/// stories and one function telling both is what `clippy::cognitive_complexity`
+/// is measuring; the segment is the same either way, which is the point of the
+/// caller.
+async fn drive_the_approval_plane(h: &Harness) {
+    // A self-approval attempt, refused: `deny`. It is the one audited path whose
+    // record is **not** a mutation - see `AuditAction::Deny` - and it is driven
+    // here rather than only in `tests/sqlite_approval_service.rs` because this
+    // is the test that holds the vocabulary and its writers to each other.
+    //
+    // The unit is opened over the plan's *current* draft revision, which the
+    // abandon above consumed, so a fresh one is opened first.
+    h.plans
+        .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(15)))
+        .await
+        .expect("open a revision to submit");
+    let approvals = ApprovalService::new(h.provider.clone());
+    let approval_id = Uuid::from_u128(0xa_0001);
+    approvals
+        .submit(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            approval_id,
+            serde_json::json!({ "reason": "noConfiguredThreshold" }),
+            stamp_of(ACTOR, at(15)),
+        )
+        .await
+        .expect("open the pending unit");
+    let refused = approvals
+        .decide(
+            &h.scope,
+            TENANT,
+            DecideRequest {
+                approval_id,
+                // The submitter, which is what makes it a violation.
+                decision: DecisionBy::Approve(ACTOR),
+                reason: None,
+                approver_regions: RegionGrant::Explicit(std::collections::BTreeSet::from([
+                    Region::new("eu").expect("a non-blank region"),
+                ])),
+                stamp: stamp_of(ACTOR, at(16)),
+            },
+        )
+        .await
+        .expect_err("the submitter may not approve their own unit");
+    assert!(
+        matches!(refused, DomainError::SelfApprovalForbidden(_)),
+        "got {refused:?}"
+    );
+
+    // The three decisions an independent reviewer can take, each on its own
+    // unit: `approve`, `reject`, `withdraw`. They are driven in sequence rather
+    // than in parallel because `inst-co-single-pending` allows a plan **one**
+    // pending unit at a time, so each has to be decided before the next opens -
+    // which is also why each `submit` below lands its own `submit` record.
+    let approved = decide_one(
+        h,
+        &approvals,
+        approval_id,
+        DecisionBy::Approve(APPROVER),
+        None,
+    )
+    .await;
+    assert_eq!(approved.state, ApprovalState::Approved);
+
+    let rejected_id = Uuid::from_u128(0xa_0002);
+    open_unit(h, &approvals, rejected_id).await;
+    let rejected = decide_one(
+        h,
+        &approvals,
+        rejected_id,
+        DecisionBy::Reject(APPROVER),
+        Some("margin below floor".to_owned()),
+    )
+    .await;
+    assert_eq!(rejected.state, ApprovalState::Rejected);
+
+    let withdrawn_id = Uuid::from_u128(0xa_0003);
+    open_unit(h, &approvals, withdrawn_id).await;
+    let withdrawn = decide_one(
+        h,
+        &approvals,
+        withdrawn_id,
+        // The **submitter's own** withdraw, which is the case `inst-as-void`
+        // names and the one whose actor `approver_principal` cannot hold.
+        DecisionBy::Void(Some(ACTOR)),
+        Some("superseded by a later change set".to_owned()),
+    )
+    .await;
+    assert_eq!(withdrawn.state, ApprovalState::Voided);
+}
+
+/// Open one pending unit over the plan's current draft revision.
+async fn open_unit(h: &Harness, approvals: &ApprovalService, approval_id: Uuid) {
+    approvals
+        .submit(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            approval_id,
+            serde_json::json!({ "reason": "noConfiguredThreshold" }),
+            stamp_of(ACTOR, at(15)),
+        )
+        .await
+        .expect("open the pending unit");
+}
+
+/// Schedule a window through the service, so the `window` subject kind has a writer.
+///
+/// The plan is already `published` by the time this runs, which is the ordinary
+/// subject of a window mutation and the reason the service resolves the plan's
+/// **current** revision rather than an open draft.
+/// The D-10 threshold-policy proposal — the writer of the `policy` subject kind.
+///
+/// It is here rather than in a suite of its own because this file owns the
+/// **vocabulary** property: `every_declared_action_has_a_production_writer` walks
+/// what driving the crate's own paths actually wrote, and a token whose writer is
+/// never driven is indistinguishable from a token with no writer. Adding
+/// `AuditSubjectKind::Policy` without this line fails that test, which is the
+/// direction D-158 asks the guard to fail in.
+///
+/// The proposal writes a `submit` record on the **policy** chain, not on any plan's
+/// — `audit_repo::policy_chain`, a per-tenant segment — so it also exercises the
+/// only subject kind whose aggregate is not a plan.
+async fn drive_the_threshold_policy_plane(h: &Harness) {
+    let thresholds = bss_pricing::infra::threshold::ThresholdService::new(h.provider.clone());
+    let unit = Uuid::now_v7();
+    thresholds
+        .propose(
+            &h.scope,
+            TENANT,
+            unit,
+            at(16),
+            vec![bss_pricing::domain::materiality::ThresholdEntry {
+                currency: bss_pricing::domain::money::CurrencyCode::new("EUR")
+                    .expect("a valid code"),
+                basis: bss_pricing::domain::materiality::ThresholdBasis::Absolute { minor: 500 },
+            }],
+            serde_json::json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
+            stamp_of(ACTOR, at(16)),
+        )
+        .await
+        .expect("the proposal opens its unit");
+    // **And an independent principal approves it**, which is what makes it the
+    // tenant's policy (D-10). Not decoration for this census: the window plane below
+    // needs a configured entry for `EUR` or its mutation is material and writes
+    // nothing. `approver_regions` is the explicit grant the scope rule measures
+    // against, and a policy unit's change set touches no region at all.
+    ApprovalService::new(h.provider.clone())
+        .decide(
+            &h.scope,
+            TENANT,
+            DecideRequest {
+                approval_id: unit,
+                decision: DecisionBy::Approve(APPROVER),
+                reason: None,
+                approver_regions: RegionGrant::Explicit(std::collections::BTreeSet::from([
+                    Region::new("eu").expect("a non-blank region"),
+                ])),
+                stamp: stamp_of(APPROVER, at(17)),
+            },
+        )
+        .await
+        .expect("an independent principal puts the policy in force");
+}
+
+async fn drive_the_window_plane(h: &Harness) {
+    let windows = bss_pricing::infra::window::WindowService::new(
+        h.provider.clone(),
+        Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>,
+    );
+    let price_id = h
+        .prices
+        .list_for_plan(&h.scope, TENANT, plan_id(), &[LifecycleState::Published])
+        .await
+        .expect("read the published rows")
+        .first()
+        .expect("the commit above published one")
+        .price_id;
+    windows
+        .schedule(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            price_id,
+            Uuid::now_v7(),
+            // **Exactly** where the plan's seeded window ends, which is legal and
+            // deliberate on two counts: the intervals are half-open, so
+            // `effectiveTo == next.effectiveFrom` is adjacency and not an overlap,
+            // and it therefore opens no interior gap for `inst-fg-detect` either.
+            // Scheduling anywhere earlier collides with that window; anywhere later
+            // opens a hole, and either would make this census fail for a reason
+            // that has nothing to do with the vocabulary it is about.
+            //
+            // 2099 is a fact rather than a date off the clock: a window dated today
+            // races the activation sweep, which is a defect this program has already
+            // paid for once.
+            Utc.with_ymd_and_hms(2099, 9, 1, 0, 0, 0)
+                .single()
+                .expect("a real instant"),
+            None,
+            "audited-window-writer".to_owned(),
+            stamp_of(ACTOR, at(18)),
+        )
+        .await
+        .expect("schedule a window as a publish unit");
+}
+
+/// Take one decision on a pending unit, as an in-scope reviewer.
+async fn decide_one(
+    h: &Harness,
+    approvals: &ApprovalService,
+    approval_id: Uuid,
+    decision: DecisionBy,
+    reason: Option<String>,
+) -> bss_pricing::infra::storage::repo::approval_repo::ApprovalRecord {
+    let actor = decision
+        .decider()
+        .expect("a human decision names its actor");
+    approvals
+        .decide(
+            &h.scope,
+            TENANT,
+            DecideRequest {
+                approval_id,
+                decision,
+                reason,
+                approver_regions: RegionGrant::Explicit(std::collections::BTreeSet::from([
+                    Region::new("eu").expect("a non-blank region"),
+                ])),
+                stamp: stamp_of(actor, at(17)),
+            },
+        )
+        .await
+        .expect("the decision is taken")
+}
+
 async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     // create (plan), update x2 (facets), create (price)
     let (revision, version, _) = seed_publishable(h).await;
@@ -1136,7 +1583,7 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -1158,6 +1605,7 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
                 content: flat_row(),
                 created_by: ACTOR,
                 created_at_utc: at(13),
+                correlation_id: TEST_CORRELATION,
             },
         )
         .await
@@ -1170,7 +1618,7 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     // A successor revision, opened and then discarded: `abandon`.
     let opened = h
         .plans
-        .open_revision(&h.scope, TENANT, plan_id(), ACTOR, at(14))
+        .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(14)))
         .await
         .expect("open a successor");
     h.plans
@@ -1184,6 +1632,28 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
         )
         .await
         .expect("discard it");
+
+    // The approval plane's five: `submit`, `deny`, `approve`, `reject`, `withdraw`.
+    drive_the_approval_plane(h).await;
+
+    // Slice 7's window plane, which writes the `window` subject kind. It is driven
+    // through `WindowService` and not through the repository, because the record is
+    // the *service's* — `window_repo` takes an `AuditStamp` and deliberately writes
+    // no row, and a driver that reached past the service would leave this census
+    // green with no window record in the store at all.
+    //
+    // The action it writes is `publish`, already covered by the plan commit above;
+    // what this adds to the census is the **subject kind**, which is the half that
+    // was failing. `inst-ws-publishunit` is the warrant: a window mutation runs the
+    // Foundation §4.2 engine path, and S5 §6 declares `publish` against §4.2.
+    // **The policy plane runs first, and the order is now load-bearing.** A window
+    // schedule is not on `inst-mat-registered`'s trigger list, so what decides it is
+    // the tenant's threshold policy: with none configured, `inst-mat-failsafe` answers,
+    // the mutation writes **nothing at all** and this census loses the `window` subject
+    // kind entirely. So the policy is proposed *and approved* before the window plane
+    // is driven — which is also the operator sequence D-10 forces.
+    drive_the_threshold_policy_plane(h).await;
+    drive_the_window_plane(h).await;
 
     let mut rows = audit_rows(h).await;
     rows.sort_by_key(|row| row.seq);
@@ -1235,8 +1705,43 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
     let rows = drive_every_audited_path(&h).await;
     assert!(rows.len() >= 7, "the sequence is mixed: {}", rows.len());
 
-    let mut prev = genesis_prev_hash(TENANT, plan_id().get());
+    // **Two segments, not one**, since the threshold-policy proposal and its approval
+    // joined the driven set. D-135 keys a segment on the audited subject's *aggregate* and a
+    // policy's is the tenant's policy rather than any plan, so its record opens a
+    // chain of its own at `seq 0` — which a single walk over every row reads as a
+    // gap in the plan's segment. Partitioning is not a workaround for that: the
+    // partition **is** the property, and its sizes are asserted so that a policy
+    // record silently filed on a plan's chain fails here rather than verifying
+    // perfectly on the wrong segment.
+    let (plan_rows, policy_rows): (Vec<_>, Vec<_>) = rows
+        .iter()
+        .cloned()
+        .partition(|row| row.chain_id == plan_id().get());
+    assert_eq!(
+        policy_rows.len(),
+        2,
+        "the proposal and its approval, both on the policy segment - the approve joined the \
+         driven set because the window plane below it needs a policy that is actually in force"
+    );
+    assert_eq!(
+        policy_rows[0].chain_id,
+        bss_pricing::infra::storage::repo::audit_repo::policy_chain(),
+        "and that segment is the policy chain, never a plan's"
+    );
+    verify_segment(&plan_rows, plan_id().get());
+    verify_segment(&policy_rows, policy_rows[0].chain_id);
+}
+
+/// Walk one segment link by link and recompute every row's digest.
+///
+/// Extracted when the driven set grew a second aggregate. It takes the `chain_id`
+/// rather than reading it off the first row on purpose: the genesis digest is a
+/// function of `(tenant, chain)`, so a helper that derived it from the rows it was
+/// checking would verify any segment against itself.
+fn verify_segment(rows: &[audit_log::Model], chain_id: Uuid) {
+    let mut prev = genesis_prev_hash(TENANT, chain_id);
     for (position, row) in rows.iter().enumerate() {
+        assert_eq!(row.chain_id, chain_id, "the segment holds one chain");
         assert_eq!(
             u64::try_from(position).expect("a small position"),
             u64::try_from(row.seq).expect("a non-negative seq"),
@@ -1281,6 +1786,141 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
         );
         prev = recomputed;
     }
+}
+
+/// **Two publish records on one segment, walked link by link.**
+///
+/// The combination Phase 2 recorded and could not close: it had a link-by-link
+/// walk over a segment holding **one** publish record
+/// (`the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_records`)
+/// and a two-publish test that asserted extension without walking
+/// (`a_second_publish_extends_every_counter_by_one`). Neither covers a chain
+/// that has to stay connected **across** two freezes of one plan, and the second
+/// publish is the first writer that appends to a segment a previous publish
+/// already extended.
+///
+/// # This is the connectedness half, and it is deliberately blind to content
+///
+/// It asserts one property — *the segment is a chain* — and nothing about what
+/// any row holds. It does **not** recompute a single digest, and that is the
+/// point rather than an omission: `audit_row_hash` over a preimage rebuilt from
+/// the stored columns is self-consistent by construction, so a writer that
+/// blanked `before_state` and `after_state` would store NULLs, hash NULLs, and
+/// agree with itself. The content half is owned by the test above (per-row
+/// recompute) and, from an expectation built outside the store,
+/// `postgres_audit_chain::every_row_holds_the_record_its_writer_was_handed_and_hashes_to_it`.
+/// Letting one test carry both is how a suite ends up unable to tell a broken
+/// link from a dropped field, because whichever assertion fires first hides the
+/// other.
+///
+/// The two independent facts it does bring from outside the segment are the
+/// genesis seed — computed from the tenant and the chain, never read from a
+/// column — and the distinctness of the digests, without which a writer storing
+/// one constant `row_hash` everywhere would satisfy an adjacency walk from row 1
+/// on.
+#[tokio::test]
+async fn a_segment_holding_two_publishes_is_one_unbroken_chain() {
+    let h = harness().await;
+
+    // The first freeze, under a real approval: the two-person rule is what makes
+    // a publish record's `approval_ref` non-null, and a segment whose publishes
+    // were both auto-publishable would not be the segment a governed deployment
+    // ever holds.
+    let (revision, version, _) = seed_publishable(&h).await;
+    let first_unit = approve_unit(&h, Uuid::from_u128(0xa_7001)).await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            authorization_of(&first_unit),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("the first publish commits");
+
+    // The successor, opened and frozen in turn. Opening it is itself an audited
+    // mutation, so the two publish records are **not** adjacent - which is
+    // exactly why the walk has to be a walk rather than a comparison of the two.
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(13)))
+        .await
+        .expect("open the successor");
+    let second_unit = approve_unit(&h, Uuid::from_u128(0xa_7002)).await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), opened.revision),
+            opened.row_version,
+            authorization_of(&second_unit),
+            ACTOR,
+            CORRELATION,
+            at(14),
+        )
+        .await
+        .expect("the second publish commits");
+
+    let mut rows = audit_rows(&h).await;
+    rows.sort_by_key(|row| row.seq);
+
+    // The world is the one this test claims: one segment, two freezes, and
+    // something between them. Without this the walk below could be green over a
+    // segment with one publish record, or none.
+    let publishes: Vec<i64> = rows
+        .iter()
+        .filter(|row| row.action == AuditAction::Publish.as_str())
+        .map(|row| row.seq)
+        .collect();
+    assert_eq!(
+        publishes.len(),
+        2,
+        "the segment must hold two publish records for this walk to be the one that was missing: \
+         {:?}",
+        rows.iter().map(|row| &row.action).collect::<Vec<_>>()
+    );
+    assert!(
+        publishes[1] > publishes[0] + 1,
+        "the successor's own `create` record sits between them: {publishes:?}"
+    );
+
+    // The walk. Every link, from the genesis seed to the head.
+    let genesis = genesis_prev_hash(TENANT, plan_id().get());
+    assert_eq!(
+        rows[0].prev_hash.as_deref(),
+        Some(genesis.as_slice()),
+        "the first link is the segment's own seed, computed from the tenant and the chain rather \
+         than read from the store"
+    );
+    for pair in rows.windows(2) {
+        assert_eq!(
+            pair[1].seq,
+            pair[0].seq + 1,
+            "the segment's positions are dense; a gap after {} is a link nobody can walk",
+            pair[0].seq
+        );
+        assert_eq!(
+            pair[1].prev_hash.as_deref(),
+            Some(pair[0].row_hash.as_slice()),
+            "row {} does not point at its predecessor's digest",
+            pair[1].seq
+        );
+    }
+
+    // A constant digest would satisfy every link above from row 1 on.
+    let distinct: std::collections::BTreeSet<&[u8]> =
+        rows.iter().map(|row| row.row_hash.as_slice()).collect();
+    assert_eq!(
+        distinct.len(),
+        rows.len(),
+        "two rows share a digest, so the adjacency above proves nothing"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1347,14 +1987,24 @@ async fn a_loser_at_the_outbox_sequence_is_a_concurrent_mutation_and_not_a_stora
     );
 
     // The wire answer: 409 with its own code, never a 500.
+    //
+    // The code is read off the **typed context** and compared by equality. This
+    // assertion used to be `format!("{canonical:?}").contains("CONCURRENT_MUTATION")`,
+    // which is the weak form this phase kept finding: a containment test over a
+    // rendered document is satisfied by the code with a character **appended**, and
+    // `WINDOW_OVERLAP` once passed as `WINDOW_OVERLAPX` under exactly that shape.
+    // Over `Debug` of the whole error it is looser still, since any field that
+    // happens to quote the reason satisfies it.
     let canonical = toolkit::api::canonical_prelude::CanonicalError::from(
         bss_pricing::infra::storage::repo_failure(&refusal),
     );
     assert_eq!(canonical.status_code(), 409, "{canonical:?}");
-    assert!(
-        format!("{canonical:?}").contains("CONCURRENT_MUTATION"),
-        "{canonical:?}"
-    );
+    match canonical {
+        toolkit::api::canonical_prelude::CanonicalError::Aborted { ctx, .. } => {
+            assert_eq!(ctx.reason, "CONCURRENT_MUTATION");
+        }
+        other => panic!("expected a 409 conflict, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -1377,7 +2027,7 @@ async fn the_publish_record_carries_the_before_and_after_state_its_transition_im
             &ctx(),
             &h.scope,
             TENANT,
-            PlanPublishUnit::new(plan_id(), revision),
+            PlanPublishUnit::plan_content(plan_id(), revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,

@@ -712,6 +712,155 @@ separately-justified commit — never a way to make a failing change look green.
     instrument near 0.6; recorded as a measurement-health signal for whoever tunes it. Per-id
     record beside `PINNED_TRIAGE_PRICING`.
 
+20. **2026-08-03, twentieth capture — after the phase-closing docs wave** (D-180, D-181, and two
+    id-less records of what the phase proved by execution). Document movement only, no checker
+    change. *(The D-179 wave between entry 19 and this one needed no capture: its edits landed in
+    `design/01-foundation.md` §3.3 and every known-debt finding's line number is a `DECISIONS.md`
+    line number.)*
+
+    **Only `live-show-known-debt.txt` moved, and only in line numbers.** Normalising
+    `DECISIONS.md:<n>` to a constant makes the two files byte-identical: 21 findings, the same 21
+    findings, each shifted by the four rows this wave adds to the status board (three new/backfilled
+    entries plus D-179's missing row). `live-text.txt` and `live-json.json` are byte-unchanged —
+    **2 live findings, 59 known-debt**, exactly the pre-wave numbers.
+
+    **The triage pin moved, and this is the largest move of any capture: `no-region` 4 → 3,
+    `suspicious:multi-region` 54 → 59, `suspicious:weak-coverage` 14 → 10, judged 68 → 69, total
+    unchanged at 77.** Six movers, each diffed per id against the pre-wave tree (`e7704c10`) in a
+    detached worktree. **Every one of them is one new `term-overlap` region scoring 0.600–0.667,
+    and every one of them lands in one of just two windows** — `DECISIONS.md:19-30`, which is the
+    register's TOC plus its single-line **67 KB** preamble, and `design/01-foundation.md:541-552`,
+    §3.7's bullet block at **29 KB**. Before the wave those six sat at 0.574–0.595 against the same
+    windows.
+
+    **The blank-line control is decisive, and it points the other way for the first time.** The
+    pre-wave tree with 26 / 19 / 72 blank lines at this wave's three insertion points and no content
+    at all reproduces the **old** histogram exactly. So this is not the grid re-slicing pre-existing
+    text, as entries 18–20 were: the added words are the cause. What the words are settles it
+    anyway. Term for term, the crossings are `primary` (`fr-bundle-composition`), `groups`/`many`
+    (`fr-customer-group-pricing`), `applies`/`implicit`/`matrix` (`fr-model-kind`),
+    `applies`/`execution`/`offered`/`void` (`fr-sellability-gate`), `events`
+    (`nfr-event-propagation`) and `rating` (`nfr-publish-propagation`) — ordinary English from a
+    wave about the audit `action` vocabulary and the correlation id, in windows that cite none of
+    the six ids and say nothing about bundles, customer groups, model kinds or sellability.
+
+    **One `DF_CUTOFF` crossing, the known oscillator, and it fully explains one mover.** Over the
+    5,141 terms both trees share exactly one crossed: `unit` 0.24426 → 0.25070, moving *outside* —
+    the same term entry 19 recorded moving *inside* at 0.25042 → 0.24661, oscillating on window
+    dilution alone (2,481 → 2,501 windows). It touches `fr-customer-group-pricing`, where on
+    `design/01-foundation.md:541-552` the matched count is **48 before and after** and the score
+    goes 48/81 = 0.593 → 48/80 = 0.600: the threshold crossed by a shrinking denominator and
+    nothing else. `catalog` 0.23700 → 0.23471 and `same` 0.25796 → 0.26190 did not cross.
+
+    **What this adds to the model, and it is the sharpest measurement-health signal so far.**
+    Entries 18–20 established that a 12-line window at step 6 is a coarse instrument near 0.6. This
+    capture shows *why it is getting worse*: two documents have grown a paragraph-per-line habit, so
+    two windows in the whole corpus each carry tens of thousands of characters and therefore a large
+    fraction of **any** requirement's vocabulary. Both sit permanently within a term or two of the
+    threshold for dozens of ids — four of the six moved on 1 term of 116, 3 of 39, 4 of 115 and 1 of
+    17, and at 17 terms the score's own granularity (0.059) exceeds the distance travelled. Any wave
+    that appends to the register preamble or to §3.7 will flip a handful of ids in whichever
+    direction it pushes, and the count will keep climbing as those two paragraphs grow. Whoever
+    tunes this should consider splitting a window on paragraph size rather than on line count.
+    Nothing was reworded to move a score back (rule 6) and no threshold was touched. Per-id record
+    beside `PINNED_TRIAGE_PRICING`.
+
+21. **2026-08-04, twenty-first capture — after the D-182 docs wave** (the window plane's single
+    register entry, and the first in that register written *before* the code it governs). Document
+    movement only, no checker change.
+
+    **Only `live-show-known-debt.txt` moved, and only in line numbers.** Normalising
+    `DECISIONS.md:<n>` to a constant makes the two files byte-identical: 21 findings, the same 21
+    findings, each shifted by **exactly +1** — the one status-board row this wave adds. Every
+    known-debt finding's line number is a `DECISIONS.md` line number *above* the entry's own
+    insertion point, so D-182's nine lines move nothing. `live-text.txt` and `live-json.json` are
+    byte-unchanged — **2 live findings, 59 known-debt**, exactly the pre-wave numbers.
+
+    **The triage pin did not move: 0 / 3 / 5 / 59 / 0 / 10 / 0, judged 69, total 77 — identical to
+    entry 20's pin.** This is the first append to the register preamble since entry 20 named that
+    window a permanent threshold-straddler, so the zero is worth as much as a move would be and was
+    measured the same way: three **region** movers, **zero** triage movers, zero judge movers, each
+    diffed per id against the pre-wave tree (`4d007405`) in a detached worktree.
+
+    **The blank-line control separates all three exactly.** The pre-wave tree with 1 / 9 blank lines
+    at this wave's two `DECISIONS.md` insertion points and **no content anywhere** reproduces two of
+    the three movers byte-for-byte:
+
+        id                        window before -> after                     control
+        fr-prepaid-credit-grant   DECISIONS.md:547-558 -> 553-564            reproduced
+        nfr-size-limits           DECISIONS.md:1357-1368 -> region dropped    reproduced
+        fr-future-gap-coverage    design/07:205-216 -> 199-210               NOT reproduced
+
+    So `fr-prepaid-credit-grant` and `nfr-size-limits` are the grid re-slicing pre-existing text on
+    a +10-line offset — entries 18–20's artifact, with **zero** content contribution — and neither
+    changes class: region count holds at 4 for the first, and the second's 3 → 2 stays
+    `suspicious:multi-region` with two regions still clearing the threshold.
+    `fr-future-gap-coverage` is this wave's **content**, and it is the honest one: the wave grows
+    `inst-fg-trailing` in place, *both* the losing and the winning window contain that rule's line,
+    the region count stays at 2 and the class stays `suspicious:weak-coverage` — the window
+    re-centres on the rule that grew, in the one document the requirement is about. `design/07`
+    gains no lines at all, which is why the control cannot reproduce it.
+
+    **Why an append to the straddling window moved nobody, measured rather than assumed.**
+    `DECISIONS.md:19-30` grew 66,743 → 68,440 bytes on its single-line preamble, and its region
+    membership is **44 ids before, 44 after, 44 in the control — the same 44, none gained, none
+    lost.** Entry 20's mechanism is unaffected and its warning stands; what this wave shows is the
+    other face of it, that a window already carrying a large fraction of every requirement's
+    vocabulary is also one that ordinary additions cannot push further. One thing was deliberately
+    **not** done, unlike entry 20: no term-level `DF_CUTOFF` sweep was computed, because with zero
+    triage movers there is no crossing to attribute. Nothing was reworded to hold a score (rule 6)
+    and no threshold was touched. Per-id record beside `PINNED_TRIAGE_PRICING`.
+
+22. **2026-08-05, twenty-second capture — after the D-183…D-193 phase-4 close docs wave.**
+    Document movement only, no checker change. Eleven register entries — the first wave taken
+    against the *implementation as built* rather than against the documents — plus a status-board
+    paragraph and one clause each in S3 `inst-ps-supersede`, S5 (`inst-tp-distinct`, §5's
+    threshold-policy row, §6's policy paragraph and the `materiality` column) and S7 (§5's window
+    rows, §7's event list).
+
+    **Only `live-show-known-debt.txt` moved, and only in line numbers.** Normalising
+    `DECISIONS.md:<n>` to a constant makes the two files byte-identical: 21 findings, the same 21,
+    each shifted by the eleven board rows this wave adds above them. `live-text.txt` and
+    `live-json.json` are byte-unchanged — **2 live findings, 59 known-debt**, exactly the pre-wave
+    numbers, and every one of the eleven new `**Propagated**` claims verifies against a real
+    citation on the first run.
+
+    **The triage pin moved, and this capture inverts entries 18–21's finding.** 3 / 5 / 59 / 10
+    (judged 69) → 3 / **6** / 59 / **9** (judged **68**), total unchanged at 77. Five triage
+    movers, each diffed per id against the pre-wave tree (`b65201b52`) in a detached worktree —
+    and **the blank-line control reproduces none of them.** 121 blank lines in `DECISIONS.md` and
+    2 each in S5/S7, no content anywhere, leaves the histogram byte-identical to pre-wave. Where
+    entries 18–21 found the window grid re-slicing pre-existing text, every mover here is content
+    or corpus statistics:
+
+        id                       region that moved                        direction
+        fr-future-gap-coverage   DECISIONS.md @ 0.625 gained              -> multi-region
+        fr-scheduled-migration   DECISIONS.md @ 0.603 gained              -> multi-region
+        fr-package-pricing       DECISIONS.md @ 0.600, DESIGN.md @ 0.600  -> weak-coverage
+        fr-price-history-export  DECISIONS.md @ 0.603 lost                -> weak-coverage
+        fr-supersession          design/01-foundation @ 0.600 lost        -> anchored:no-account
+
+    The two **gains** are honest: the new entries genuinely discuss window coverage and version
+    scheduling, so those requirements really do have a second account now.
+
+    The three **losses are threshold-straddlers, not document defects**, and the distinction is
+    load-bearing because only one of them changes the judged count. Every lost region scored within
+    0.003 of `SCORE_THRESHOLD`, and in each case the losing document **was never edited by this
+    wave** — `design/01-foundation.md`, `DESIGN.md`, and the pre-existing half of `DECISIONS.md`.
+    The mechanism is the corpus-wide document-frequency cutoff: ~121 lines of new content changes
+    which terms are ubiquitous enough to drop, which changes a requirement's discriminating-term
+    set, which changes the *recall* of an unchanged window. It is visible directly in
+    `fr-supersession`'s untouched id anchors, which moved by one thousandth in the same run
+    (`DESIGN.md` 0.118 → 0.119, `design/01-foundation.md` 0.164 → 0.165). Its design account still
+    exists in prose; the search stopped counting it as an account, which is a fact about the search
+    and is exactly what `anchored:no-account` is for.
+
+    Nothing was reworded to hold a score and no threshold was touched (rules 5 and 6). That the
+    metric can be moved at the third decimal by unrelated corpus growth is recorded here as a
+    property of `SCORE_THRESHOLD` being a hard cut — it belongs with SKILL.md's terse-prose note,
+    and a docs wave is the wrong place to change a scorer, least of all on the sample that exposed
+    it. Per-id record beside `PINNED_TRIAGE_PRICING` and `PINNED_JUDGE_CALLS`.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

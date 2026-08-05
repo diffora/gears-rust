@@ -19,6 +19,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -38,12 +40,15 @@ use bss_pricing::domain::read_model::SubjectRef;
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use bss_pricing::domain::window::{WindowInterval, WindowState};
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::jobs::readmodel_warm::{ReadModelWarmJob, SweepReport};
+use bss_pricing::infra::jobs::window_activation::WindowActivationJob;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::RepoError;
-use bss_pricing::infra::storage::entity::{catalog_version_ref, outbox, plan, read_model};
+use bss_pricing::infra::storage::entity::{catalog_version_ref, outbox, plan, price, read_model};
 use bss_pricing::infra::storage::migrations::Migrator;
+use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 use bss_pricing::infra::storage::repo::{
     NewPlanDraft, NewPriceDraft, PendingVersionRow, PinFrontierRepo, PlanRepo, PlanShapeRepo,
     PriceRepo, catalog_version_ref_repo, plan_repo,
@@ -53,14 +58,34 @@ use bss_pricing_sdk::catalog_version_registry::{
     CatalogVersionRegistryError, CatalogVersionRegistryV1, PendingVersionRef,
 };
 use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use sea_orm_migration::MigratorTrait;
 use std::path::{Path, PathBuf};
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureUpdateExt};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+
+/// One value for a whole test binary: these suites drive a repository or a
+/// service directly, where the value the HTTP edge would have established has
+/// no producer. What each suite asserts *about* it is stated where it asserts
+/// it.
+const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
+
+/// The stamp an audited repository call is made under: who acted, when, and the
+/// request's correlation.
+fn stamp_of(
+    actor: uuid::Uuid,
+    when: chrono::DateTime<chrono::Utc>,
+) -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: actor,
+        recorded_at: when,
+        correlation_id: TEST_CORRELATION,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The registry double, now with an answer for `committed_version`.
@@ -283,6 +308,7 @@ fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        correlation_id: TEST_CORRELATION,
     }
 }
 
@@ -369,20 +395,42 @@ async fn seed_publishable_of(
         .await
         .expect("attach the descriptor set");
 
+    let price_id = Uuid::new_v4();
     h.prices
         .create_draft(
             &scope,
             tenant,
             NewPriceDraft {
-                price_id: Uuid::new_v4(),
+                price_id,
                 scope_key: scope_key(plan_id, phase),
                 content: flat_row(),
                 created_by: ACTOR,
                 created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
             },
         )
         .await
         .expect("author the price row");
+
+    // `inst-wc-required`: the row does not publish until its key holds an active
+    // or scheduled window. Thirty tests in this file reddened when the rule
+    // registered.
+    //
+    // It is `common::schedule_coverage_window`'s interval and not this file's, and
+    // that interval ends exactly where [`window_at`]'s scale begins — so §8's
+    // window suites build their own chains **adjacent** to it rather than
+    // overlapping it, which `window_repo::schedule` would refuse. The consequence
+    // is visible and deliberate: every §8 delta carries this leading `scheduled`
+    // interval as well as the ones its own case authored, and each of those tests
+    // says so.
+    common::schedule_coverage_window(
+        &h.provider.conn().expect("conn"),
+        &scope,
+        tenant,
+        price_id,
+        stamp(),
+    )
+    .await;
 
     (created.revision, after_descriptors.row_version)
 }
@@ -421,7 +469,7 @@ async fn publish_of(
             &ctx_of(tenant),
             &AccessScope::for_tenant(tenant),
             tenant,
-            PlanPublishUnit::new(plan_id, revision),
+            PlanPublishUnit::plan_content(plan_id, revision),
             version,
             PublishAuthorization::auto_publishable(),
             ACTOR,
@@ -1285,7 +1333,7 @@ async fn a_delta_never_freezes_a_superseded_lifecycle_state() {
     // the truth table by the time the sweep arrives.
     let opened = h
         .plans
-        .open_revision(&h.scope, TENANT, plan_id, ACTOR, at_min(12, 1))
+        .open_revision(&h.scope, TENANT, plan_id, stamp_of(ACTOR, at_min(12, 1)))
         .await
         .expect("open a successor");
     let pending_v6 = publish(
@@ -1343,7 +1391,7 @@ async fn the_open_draft_revision_is_never_the_projection_source() {
     // does not have.
     let opened = h
         .plans
-        .open_revision(&h.scope, TENANT, plan_id, ACTOR, at(12))
+        .open_revision(&h.scope, TENANT, plan_id, stamp_of(ACTOR, at(12)))
         .await
         .expect("open a successor draft");
     h.plans
@@ -1397,7 +1445,7 @@ async fn a_version_freezes_the_revision_its_own_publish_judged() {
     // version's warm.
     let opened = h
         .plans
-        .open_revision(&h.scope, TENANT, plan_id, ACTOR, at_min(12, 1))
+        .open_revision(&h.scope, TENANT, plan_id, stamp_of(ACTOR, at_min(12, 1)))
         .await
         .expect("open a successor");
     let edited = h
@@ -1930,6 +1978,710 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
         recorded_at: chrono::Utc::now(),
-        correlation_id: None,
+        correlation_id: TEST_CORRELATION,
     }
+}
+
+// ---------------------------------------------------------------------------
+// 8. The window facts the projector freezes (D-99, D-121).
+// ---------------------------------------------------------------------------
+
+/// `2099-09-01T00:00:00Z` plus `day` days. Deliberately not [`at`]: window
+/// instants have to be orderable over a span longer than one day and legibly
+/// distinct from the publish instants around them.
+///
+/// **The year moves with `common::COVERAGE_TO_UTC` and has to.** `window_at(0)` is
+/// where the shared fixture window ends, which is what makes every window this
+/// suite schedules adjacent to it or later instead of overlapping it — and the pair
+/// is dated 2099 so that no real clock is ever inside it. Dating this scale in 2026
+/// while the fixture sat in 2099 would put the fixture *after* every window here,
+/// making it the far end of every key's coverage and swamping the `coverageEnd`
+/// assertions this section exists for.
+fn window_at(day: i64) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 9, 1, 0, 0, 0).unwrap() + chrono::Duration::days(day)
+}
+
+/// The inclusive start of the coverage window `seed_publishable_of` schedules.
+///
+/// Read off `common`'s constants rather than restated, so a fixture assertion
+/// cannot disagree with the fixture.
+fn coverage_window_from() -> DateTime<Utc> {
+    let (y, m, d) = common::COVERAGE_FROM_UTC;
+    Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()
+}
+
+/// Cancel the coverage window `seed_publishable_of` scheduled on `price_id`.
+///
+/// For the one case whose property is a key with **no** surviving window: the
+/// seed's window is content like any other and has to be removed the way the
+/// system removes one, through §4's `scheduled -> cancelled` edge.
+async fn cancel_coverage_window(h: &Harness, price_id: Uuid) {
+    let conn = h.provider.conn().expect("conn");
+    window_repo::transition(
+        &conn,
+        &h.scope,
+        TENANT,
+        common::coverage_window_id(price_id),
+        WindowState::Cancelled,
+        coverage_window_from(),
+        stamp(),
+    )
+    .await
+    .expect("cancel the seed's coverage window");
+}
+
+/// The one `published` price row a seeded plan has, as its stored row.
+///
+/// The whole row rather than its id, because the suites below copy its eight
+/// canonical axes to build a sibling on the same key, and read its `phase` to
+/// build one on a different key.
+async fn published_price(h: &Harness, plan_id: PlanId) -> price::Model {
+    let conn = h.provider.conn().expect("conn");
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(&h.scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(TENANT))
+                .add(price::Column::PlanId.eq(plan_id.get()))
+                .add(price::Column::LifecycleState.eq("published")),
+        )
+        .all(&conn)
+        .await
+        .expect("read the plan's price rows");
+    assert_eq!(rows.len(), 1, "the fixture publishes exactly one row");
+    rows[0].clone()
+}
+
+/// The one `published` price row a seeded plan has.
+async fn published_price_id(h: &Harness, plan_id: PlanId) -> Uuid {
+    published_price(h, plan_id).await.price_id
+}
+
+/// A never-published `draft` price row with **every canonical axis copied off
+/// `source`**, so the two rows share one canonical scope key.
+///
+/// Written through the entity rather than through `PriceRepo::create_draft`, for
+/// `tests/sqlite_window_repo.rs`'s reason one table over: `find_key_occupant`
+/// refuses a new draft on a key a `published` row already holds, so the authoring
+/// door in this crate cannot build this world — and it is nonetheless a **legal**
+/// world and a produced one. Foundation §3.7's two partial `UNIQUE` predicates
+/// are disjoint (only two *published* rows on a key collide), and
+/// `find_key_occupant`'s own doc says a key holds a draft and a published row at
+/// once with "the D-88 supersession unit reaching that state by another path".
+/// The insert still goes through the tenant gate, so the seeding cannot fabricate
+/// a row the scope would not admit.
+async fn draft_row_on_the_same_key(h: &Harness, source: &price::Model, draft_id: Uuid) {
+    let conn = h.provider.conn().expect("conn");
+    let row = price::ActiveModel {
+        price_id: Set(draft_id),
+        tenant_id: Set(source.tenant_id),
+        // The eight axes, copied rather than restated: a literal here that drifted
+        // from the fixture's key would put the draft on a key of its own and the
+        // test would pass against the defect.
+        plan_id: Set(source.plan_id),
+        currency: Set(source.currency.clone()),
+        region: Set(source.region.clone()),
+        price_overlay: Set(source.price_overlay.clone()),
+        phase: Set(source.phase),
+        price_eligibility: Set(source.price_eligibility.clone()),
+        charge_kind: Set(source.charge_kind.clone()),
+        cohort: Set(source.cohort.clone()),
+        amount_minor: Set(source.amount_minor),
+        model_kind: Set(source.model_kind.clone()),
+        lifecycle_state: Set(LifecycleState::Draft.as_str().to_owned()),
+        created_by: Set(source.created_by),
+        created_at_utc: Set(source.created_at_utc),
+        ..price::ActiveModel::default()
+    };
+    price::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&h.scope, &row)
+        .expect("scope the seeded draft row")
+        .exec(&conn)
+        .await
+        .unwrap_or_else(|e| panic!("seed draft price row {draft_id}: {e}"));
+}
+
+/// The `windows` groups of one delta.
+fn window_groups(delta: &read_model::Model) -> Vec<serde_json::Value> {
+    delta
+        .payload
+        .get("windows")
+        .expect("the delta carries the window facts")
+        .as_array()
+        .expect("array")
+        .clone()
+}
+
+/// The canonical keys `prices` enumerates and the ones `windows` does, rendered
+/// by the same axis-by-axis renderer and therefore directly comparable.
+fn key_sets(delta: &read_model::Model) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let keys = |field: &str| -> Vec<serde_json::Value> {
+        delta
+            .payload
+            .get(field)
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("the delta carries {field}"))
+            .iter()
+            .map(|entry| entry.get("scopeKey").expect("a scope key").clone())
+            .collect()
+    };
+    (keys("prices"), keys("windows"))
+}
+
+/// Schedule a window on `price_id` and walk it to `state`.
+async fn window(
+    h: &Harness,
+    price_id: Uuid,
+    id: u128,
+    from: DateTime<Utc>,
+    to: Option<DateTime<Utc>>,
+    state: WindowState,
+) {
+    let conn = h.provider.conn().expect("conn");
+    let window_id = Uuid::from_u128(id);
+    window_repo::schedule(
+        &conn,
+        &h.scope,
+        NewWindow {
+            window_id,
+            tenant_id: TENANT,
+            price_id,
+            effective_from: from,
+            effective_to: to,
+            reason_code: "priceIncrease".to_owned(),
+        },
+        stamp(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("schedule window {id}: {e}"));
+
+    // Walk §4's edges rather than writing the state: `scheduled -> expired` is
+    // not an edge, so an `expired` window in this fixture is one that genuinely
+    // activated first — which is the state a predecessor is in after a
+    // changeover, and the state this test is about.
+    //
+    // **Each flip is stamped at the instant §4 puts it at** — an activation at
+    // `effectiveFrom`, an expiry at `effectiveTo` — because the edges are
+    // conditional (`inst-ws-activate` WHEN `now >= effectiveFrom`,
+    // `inst-ws-expire` WHEN `now >= effectiveTo`) and the store carries those
+    // conditions into the statement. This fixture used to expire the window one
+    // second after activating it, ten days before its end: a window that stopped
+    // applying before the interval it was projected over had run, which is
+    // exactly what the read model here is asked to project.
+    let path: Vec<(WindowState, DateTime<Utc>)> = match state {
+        WindowState::Scheduled => vec![],
+        WindowState::Active => vec![(WindowState::Active, from)],
+        WindowState::Expired => vec![
+            (WindowState::Active, from),
+            (
+                WindowState::Expired,
+                to.expect("an expired window is one whose end arrived, so it has one"),
+            ),
+        ],
+        WindowState::Cancelled => vec![(WindowState::Cancelled, from)],
+    };
+    for (next, flip_at) in path {
+        window_repo::transition(&conn, &h.scope, TENANT, window_id, next, flip_at, stamp())
+            .await
+            .unwrap_or_else(|e| panic!("window {id} -> {next}: {e}"));
+    }
+}
+
+/// D-121's projected window states, through a real store: a **cancelled** window
+/// is not projected and an **expired** one is.
+///
+/// The world is what makes this the filter's test. All four states are present on
+/// one canonical scope key, so a projector that projected everything and a
+/// projector that projected only what is currently in force would both be
+/// distinguishable from the right one — and the `expired` window is reached by
+/// walking §4's edges rather than by writing the token, so it is genuinely a
+/// window that took effect and ended, which is the state a superseded
+/// predecessor's interval is in when an arrears period at a past instant resolves
+/// against it.
+#[tokio::test]
+async fn a_cancelled_window_is_not_projected_and_an_expired_one_is() {
+    let h = harness().await;
+    let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
+    let price_id = published_price_id(&h, plan_id).await;
+
+    window(
+        &h,
+        price_id,
+        0x_a1,
+        window_at(10),
+        Some(window_at(20)),
+        WindowState::Expired,
+    )
+    .await;
+    window(
+        &h,
+        price_id,
+        0x_a2,
+        window_at(20),
+        Some(window_at(30)),
+        WindowState::Active,
+    )
+    .await;
+    window(
+        &h,
+        price_id,
+        0x_a3,
+        window_at(30),
+        Some(window_at(40)),
+        WindowState::Scheduled,
+    )
+    .await;
+    window(
+        &h,
+        price_id,
+        0x_a4,
+        window_at(40),
+        Some(window_at(50)),
+        WindowState::Cancelled,
+    )
+    .await;
+
+    h.registry.commit(&pending, 1);
+    sweep(&h, at(13)).await;
+
+    let deltas = deltas(&h).await;
+    assert_eq!(deltas.len(), 1, "one subject, one delta");
+    let groups = deltas[0]
+        .payload
+        .get("windows")
+        .expect("the delta carries the window facts")
+        .as_array()
+        .expect("array")
+        .clone();
+    assert_eq!(groups.len(), 1, "one canonical scope key, one group");
+
+    let states: Vec<&str> = groups[0]
+        .get("intervals")
+        .expect("intervals")
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|i| i.get("state").and_then(|s| s.as_str()).expect("state"))
+        .collect();
+    assert_eq!(
+        states,
+        // The seed's coverage window leads: `inst-wc-required` means the row
+        // could not have published without one, and it is projected content like
+        // any other. The three this case authored follow it in time order, and
+        // the cancelled one is absent.
+        ["scheduled", "expired", "active", "scheduled"],
+        "the D-121 states, in time order, and the cancelled window absent"
+    );
+
+    // The derived coverage end is the far end of what is covered, and the
+    // cancelled window's interval — which runs five days past it — contributes
+    // nothing. Were it counted, the D-80 horizon would read this key as covered
+    // through an interval nothing was ever effective on.
+    assert_eq!(
+        groups[0].get("coverageEnd"),
+        Some(&serde_json::json!({ "kind": "ends", "at": window_at(40) }))
+    );
+}
+
+/// D-121's projected **row** set applies to the window facts too: a
+/// never-published draft's window is not projected, and it does not move the
+/// key's frozen coverage end.
+///
+/// # The world, and why nothing but the row filter can answer here
+///
+/// The draft carries every axis of the published row, so the two are on **one**
+/// canonical scope key — which is legal (Foundation §3.7's two partial `UNIQUE`
+/// predicates are disjoint) and is what a supersession authors. Its window is
+/// `scheduled`, so [`PROJECTED_WINDOW_STATES`](bss_pricing::domain::projection)
+/// admits it; it is on the same key, so the per-key grouping puts it in the
+/// published row's group; and it runs forty days past the published row's own
+/// coverage. The only fact that keeps it out is the lifecycle state of the **row**
+/// it hangs off, which is why the assertion is on the frozen `coverageEnd`
+/// **value** rather than on a count: a delta whose `prices` carries one row and
+/// whose `coverageEnd` reads day 60 is exactly the defect, and a count assertion
+/// passes against it.
+///
+/// What it costs when it is wrong: the pinned read model advertises coverage no
+/// published row backs, and sellability predicate (1) reads the key as sellable
+/// into an interval nothing published is effective over — the D-99 exposure,
+/// arriving from the projection side.
+#[tokio::test]
+async fn a_draft_rows_window_does_not_move_the_published_keys_coverage_end() {
+    let h = harness().await;
+    let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
+    let published = published_price(&h, plan_id).await;
+
+    // The published row's own coverage, and the whole of it.
+    window(
+        &h,
+        published.price_id,
+        0x_c1,
+        window_at(10),
+        Some(window_at(20)),
+        WindowState::Active,
+    )
+    .await;
+
+    // A never-published draft on the same key, carrying a window that runs forty
+    // days past it.
+    let draft_id = Uuid::from_u128(0x_d1);
+    draft_row_on_the_same_key(&h, &published, draft_id).await;
+    window(
+        &h,
+        draft_id,
+        0x_c2,
+        window_at(50),
+        Some(window_at(60)),
+        WindowState::Scheduled,
+    )
+    .await;
+
+    h.registry.commit(&pending, 1);
+    sweep(&h, at(13)).await;
+
+    let deltas = deltas(&h).await;
+    assert_eq!(deltas.len(), 1, "one subject, one delta");
+    let groups = window_groups(&deltas[0]);
+    assert_eq!(groups.len(), 1, "one projected key, one group");
+
+    // THE assertion. Day 20 is where the published row's coverage stops; day 60 is
+    // where the draft's window ends.
+    assert_eq!(
+        groups[0].get("coverageEnd"),
+        Some(&serde_json::json!({ "kind": "ends", "at": window_at(20) })),
+        "the key's coverage end is the published row's own"
+    );
+
+    let starts: Vec<serde_json::Value> = groups[0]
+        .get("intervals")
+        .and_then(|i| i.as_array())
+        .expect("intervals")
+        .iter()
+        .map(|i| i.get("effectiveFrom").expect("a start").clone())
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            // The seed's coverage window, without which the row could not have
+            // published at all.
+            serde_json::json!(coverage_window_from()),
+            serde_json::json!(window_at(10)),
+        ],
+        "the draft's interval is absent, not merely uncounted"
+    );
+
+    let (price_keys, window_keys) = key_sets(&deltas[0]);
+    assert_eq!(
+        price_keys.len(),
+        1,
+        "the draft row is not in `prices` either"
+    );
+    assert_eq!(
+        price_keys, window_keys,
+        "`windows` enumerates the keys `prices` does"
+    );
+}
+
+/// A projected key whose only window was **cancelled** renders
+/// `coverageEnd.kind == "uncovered"`.
+///
+/// This is the token's only writer. `group_by_key` creates a group only for a key
+/// that has at least one pair, so before the projected key set seeded the
+/// grouping, `CoverageEnd::Uncovered` and its `"uncovered"` token could not be
+/// reached from the projector at all: "this key is uncovered" was spelled as the
+/// *absence* of a group, and D-167 clause 1 requires one declared spelling per
+/// payload fact. A token with no writer is not declared; a writer with no token is
+/// a defect.
+///
+/// It is also the answer that must not round the other way: `Uncovered` fails the
+/// D-80 horizon on every predicate there is, and a missing group leaves a consumer
+/// to guess.
+#[tokio::test]
+async fn a_projected_key_whose_only_window_was_cancelled_reads_uncovered() {
+    let h = harness().await;
+    let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
+    let price_id = published_price_id(&h, plan_id).await;
+
+    window(
+        &h,
+        price_id,
+        0x_c3,
+        window_at(10),
+        Some(window_at(20)),
+        WindowState::Cancelled,
+    )
+    .await;
+    // **And the seed's coverage window too**, because the property under test is
+    // that a key with *no surviving window* reads `uncovered` — and the row could
+    // not have published without one (`inst-wc-required`). Cancelling only the
+    // case's own window would leave the key covered by the seed's and this test
+    // would be asserting about a different world than its name claims.
+    cancel_coverage_window(&h, price_id).await;
+
+    h.registry.commit(&pending, 1);
+    sweep(&h, at(13)).await;
+
+    let deltas = deltas(&h).await;
+    let groups = window_groups(&deltas[0]);
+    assert_eq!(
+        groups.len(),
+        1,
+        "the key `prices` carries has a group even with no surviving window"
+    );
+    assert_eq!(
+        groups[0]
+            .get("intervals")
+            .and_then(|i| i.as_array())
+            .map(Vec::len),
+        Some(0),
+        "the cancelled window is a schedule that never happened"
+    );
+    assert_eq!(
+        groups[0].get("coverageEnd"),
+        Some(&serde_json::json!({ "kind": "uncovered", "at": null })),
+        "and the key says so in the one spelling the payload declares"
+    );
+}
+
+/// A draft row on a key of its **own** produces no group at all — `windows`
+/// enumerates exactly the keys `prices` does.
+///
+/// The question G5 would otherwise have to invent an answer to. Before the fix
+/// this delta carried a `windows` group for a key that appears nowhere in
+/// `prices`, so a consumer walking the groups would resolve a key no projected row
+/// backs.
+///
+/// The draft here is authored through the **real** door: no published row holds
+/// its key, so `PriceRepo::create_draft` admits it, and the world is one an
+/// ordinary author can build today.
+#[tokio::test]
+async fn a_draft_row_on_a_new_key_gets_no_group_at_all() {
+    let h = harness().await;
+    let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
+    let published = published_price(&h, plan_id).await;
+    window(
+        &h,
+        published.price_id,
+        0x_c4,
+        window_at(10),
+        Some(window_at(20)),
+        WindowState::Active,
+    )
+    .await;
+
+    // One axis apart — a different eligibility class, so a different canonical
+    // key, and `cohort` stays `none` as the class requires.
+    let draft_id = Uuid::from_u128(0x_d2);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: draft_id,
+                scope_key: ScopeKey::new(
+                    plan_id,
+                    CurrencyCode::new(&published.currency).expect("three letters"),
+                    Region::new(&published.region).expect("a non-blank region"),
+                    PhaseId::new(published.phase),
+                    PriceEligibility::NewSubscriptionsOnly,
+                    ChargeKind::Recurring,
+                    Cohort::None,
+                )
+                .expect("the class pairs with cohort none"),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("a draft on an unheld key is ordinary authoring");
+    window(
+        &h,
+        draft_id,
+        0x_c5,
+        window_at(30),
+        Some(window_at(40)),
+        WindowState::Scheduled,
+    )
+    .await;
+
+    h.registry.commit(&pending, 1);
+    sweep(&h, at(13)).await;
+
+    let deltas = deltas(&h).await;
+    let (price_keys, window_keys) = key_sets(&deltas[0]);
+    assert_eq!(price_keys.len(), 1, "one published row, one projected key");
+    assert_eq!(
+        price_keys, window_keys,
+        "`windows` enumerates the keys `prices` does, and no others"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 9. Activation is NOT a publish unit (`inst-ws-publishunit`'s negative half).
+// ---------------------------------------------------------------------------
+
+/// The frozen window interval **starting at `from`**, read back the way a
+/// consumer reads it — off the payload, through the domain's own type.
+///
+/// Through [`WindowInterval`] rather than by comparing JSON numbers because the
+/// claim under test is a *consumer's*: the delta carries intervals, and
+/// "in force at `t`" is [`WindowInterval::covers`] applied to one. A test that
+/// re-implemented the containment here would be asserting its own arithmetic.
+///
+/// **The start is a parameter and not "the only one".** The key also carries the
+/// seed's coverage window, without which its row could not have published, so a
+/// helper that took "the one interval" would be asserting about whichever of the
+/// two the payload happened to list first. The payload carries no `window_id` — by
+/// `WindowInterval`'s own decision, a consumer resolving a price at `t` has no call
+/// to make with one — so the start is what names an interval here.
+fn frozen_interval(delta: &read_model::Model, from: DateTime<Utc>) -> WindowInterval {
+    let groups = delta
+        .payload
+        .get("windows")
+        .and_then(|w| w.as_array())
+        .expect("the delta carries the window facts");
+    assert_eq!(groups.len(), 1, "one canonical scope key, one group");
+    let intervals = groups[0]
+        .get("intervals")
+        .and_then(|i| i.as_array())
+        .expect("intervals");
+    let matching: Vec<&serde_json::Value> = intervals
+        .iter()
+        .filter(|i| i.get("effectiveFrom") == Some(&serde_json::json!(from)))
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "exactly one interval starts at {from}; got {intervals:?}"
+    );
+    let interval = matching[0];
+    let instant = |key: &str| {
+        interval
+            .get(key)
+            .filter(|v| !v.is_null())
+            .map(|v| serde_json::from_value::<DateTime<Utc>>(v.clone()).expect("an instant"))
+    };
+    WindowInterval::new(
+        instant("effectiveFrom").expect("a window has a start"),
+        instant("effectiveTo"),
+        interval
+            .get("state")
+            .and_then(|s| s.as_str())
+            .and_then(WindowState::from_token)
+            .expect("a projected state token"),
+    )
+}
+
+/// A window ACTIVATION requests no `CatalogVersion`, writes no
+/// `pricing_read_model` delta and re-projects nothing: the delta carries
+/// intervals, so "active at `t`" is derived at read time and a frozen version
+/// never needed to change. The same frozen delta reports the key active once
+/// `t` passes `effectiveFrom`.
+///
+/// # The world state is the whole of this test
+///
+/// The flip has to **genuinely happen** — the job must report one activation and
+/// the truth row must read `active` afterwards — or the invariance below is the
+/// invariance of a store nothing touched, which is what a job with a typo would
+/// also produce.
+///
+/// And the delta is compared as the **whole row**, not as a payload: a projector
+/// that re-projected and happened to produce equal content would pass a payload
+/// comparison and fail this one, because `projected_at` and `catalog_version`
+/// are what say *which* projection this row is. That is why the assertion is
+/// `read_model::Model` equality rather than `payload` equality.
+#[tokio::test]
+async fn an_activation_re_projects_nothing_and_the_frozen_delta_answers_anyway() {
+    let h = harness().await;
+    let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
+    let price_id = published_price_id(&h, plan_id).await;
+    let window_id = Uuid::from_u128(0x_b1);
+    window(
+        &h,
+        price_id,
+        0x_b1,
+        window_at(10),
+        Some(window_at(20)),
+        WindowState::Scheduled,
+    )
+    .await;
+    // The seed's coverage window is cancelled, because this test counts
+    // activations and its whole claim is that **one** window flipped. The seed's
+    // interval ends before the sweep instant below, so a sweep at `window_at(10)`
+    // finds it due to activate as well and answers `activated == 2` — a number
+    // that says nothing about the flip under test. Cancelled through §4's real
+    // edge, which is what removing a window means; the row published with its
+    // coverage first, as `inst-wc-required` requires.
+    cancel_coverage_window(&h, price_id).await;
+
+    h.registry.commit(&pending, 1);
+    sweep(&h, at(13)).await;
+
+    let before = deltas(&h).await;
+    assert_eq!(before.len(), 1, "one subject, one delta");
+    let refs_before = refs(&h).await;
+
+    // What the frozen delta answers, before anything flips. The two answers are
+    // the same row read at two instants, which is the whole of D-99's paired
+    // clarification: a point-in-time boolean would have had to be re-projected
+    // between them.
+    let frozen = frozen_interval(&before[0], window_at(10));
+    assert_eq!(
+        frozen.state,
+        WindowState::Scheduled,
+        "the version froze the window as it stood when it was projected"
+    );
+    assert!(
+        !frozen.covers(window_at(9)),
+        "before its start the key is not in force at t"
+    );
+    assert!(
+        frozen.covers(window_at(11)),
+        "and after it, it is - derived from the interval, not read off a flag"
+    );
+
+    // The flip, for real.
+    let report = WindowActivationJob::new(h.provider.clone(), JobsConfig::default())
+        .run(window_at(10))
+        .await
+        .expect("the activation sweep runs");
+    assert_eq!(report.activated, 1, "the window genuinely activated");
+
+    let truth = {
+        let conn = h.provider.conn().expect("conn");
+        window_repo::find(&conn, &h.scope, TENANT, window_id)
+            .await
+            .expect("read the window")
+            .expect("it is there")
+    };
+    assert_eq!(truth.state, WindowState::Active);
+    assert_eq!(truth.activated_at, Some(window_at(10)));
+
+    // Nothing on the read side moved: not the delta, not its instant, not its
+    // version - and no second `CatalogVersion` was ever asked for.
+    assert_eq!(
+        deltas(&h).await,
+        before,
+        "the frozen delta is the same row byte for byte across the flip"
+    );
+    assert_eq!(
+        refs(&h).await,
+        refs_before,
+        "an activation requests no CatalogVersion: it is not a publish unit"
+    );
+
+    // And it still answers, unchanged, including the state token it froze.
+    let after = frozen_interval(&deltas(&h).await[0], window_at(10));
+    assert_eq!(after, frozen);
+    assert_eq!(
+        after.state,
+        WindowState::Scheduled,
+        "the frozen token still says scheduled - a completed version never mutates, and the \
+         consumer's answer never depended on it"
+    );
+    assert!(after.covers(window_at(11)));
 }

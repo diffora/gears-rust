@@ -38,6 +38,7 @@
 //! provider could not join it, `Db::conn()` being refused outright inside an
 //! open transaction.
 
+pub mod approval_repo;
 pub mod audit_repo;
 pub mod catalog_version_ref_repo;
 pub mod idempotency_repo;
@@ -48,22 +49,29 @@ pub mod plan_shape_repo;
 pub mod policy_repo;
 pub mod price_repo;
 pub mod read_model_repo;
+pub mod threshold_repo;
+pub mod window_repo;
 
 use chrono::{DateTime, Utc};
 
 use crate::domain::instant;
 use crate::infra::storage::RepoError;
 
+pub use approval_repo::{ApprovalRecord, NewApproval};
 pub use audit_repo::NewAuditEntry;
 pub use catalog_version_ref_repo::PendingVersionRow;
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
-pub use outbox_repo::{NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload};
+pub use outbox_repo::{
+    NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload, PriceWindowTransitionPayload,
+};
 pub use pin_frontier_repo::PinFrontierRepo;
 pub use plan_repo::{NewPlanDraft, PlanRepo};
 pub use plan_shape_repo::PlanShapeRepo;
 pub use policy_repo::{AuthoringPolicy, PolicyObjectRepo};
 pub use price_repo::{NewPriceDraft, PriceRepo};
 pub use read_model_repo::NewDelta;
+pub use threshold_repo::{StoredVersion, ThresholdEntryRow};
+pub use window_repo::{NewWindow, WindowRecord};
 
 /// Refuse an authored instant finer than the millisecond quantum (D-144).
 ///

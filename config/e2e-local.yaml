@@ -279,6 +279,20 @@ gears:
             # not check it are unaffected.
             subject_type: "gts.cf.core.security.subject_user.v1~"
             token_scopes: ["*"]
+        # A SECOND principal inside tenant A. Same tenant, different subject —
+        # which is the only shape that can exercise a two-person rule, because
+        # bss-pricing's `chk_pricing_approval_distinct_principals` compares
+        # principal IDENTITIES and everything else in this file is either the
+        # same subject or a different tenant. Without it the approval workflow's
+        # positive arm is unreachable end to end: the submitter's own approve is
+        # refused SELF_APPROVAL_FORBIDDEN, and tenant B cannot see the record at
+        # all. Additive — no existing token or test reads it.
+        - token: "e2e-token-tenant-a-reviewer"
+          identity:
+            subject_id: "44444444-6a88-4768-9dfc-6bcd5187d9ed"
+            subject_tenant_id: "00000000-df51-5b42-9538-d2b56b7ee953"
+            subject_type: "gts.cf.core.security.subject_user.v1~"
+            token_scopes: ["*"]
         # Hierarchy tenant tokens — used by budget allocation e2e tests
         - token: "e2e-token-hierarchy-root"
           identity:
@@ -402,9 +416,16 @@ gears:
     # `oracle = true` and `publish = true`, so the gate is OPEN for every model
     # kind here — pricing's validator has earned the corpus's `publish` half.
     # (This comment said the opposite until 2026-08-03; it had been stale since
-    # the registry was regenerated.) The gate blocks nothing this gear serves
-    # either way: there is no publish endpoint, because it cannot construct a
-    # PublishAuthorization without Slice 5's approval store.
+    # the registry was regenerated.) Since Slice 5 the publish endpoint exists
+    # and the open gate is load-bearing here: the e2e walk's pre-check passes
+    # rather than refusing FIXTURE_MISSING per model kind.
+    #
+    # The publish still cannot COMPLETE in this deployment, and the reason is a
+    # different one: there is no CatalogVersion registry gear in this
+    # repository, so the module boots with UnconfiguredCatalogVersionRegistryV1
+    # and the commit's version request fails closed (503). There is deliberately
+    # no config key that would supply a registry — a locally invented version
+    # would make this gear a second incrementer.
     database:
       server: "sqlite_users"
       file: "bss_pricing.db"

@@ -43,6 +43,12 @@ mod common;
 
 use common::{exec, migrated_db, must_succeed, scalar};
 
+/// One value for a whole test binary: these suites drive a repository or a
+/// service directly, where the value the HTTP edge would have established has
+/// no producer. What each suite asserts *about* it is stated where it asserts
+/// it.
+const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
+
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
@@ -431,6 +437,7 @@ fn draft_of(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        correlation_id: TEST_CORRELATION,
     }
 }
 
@@ -754,6 +761,6 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
         recorded_at: chrono::Utc::now(),
-        correlation_id: None,
+        correlation_id: TEST_CORRELATION,
     }
 }

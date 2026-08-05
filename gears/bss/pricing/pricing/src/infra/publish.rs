@@ -88,15 +88,18 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanRevision;
 use crate::domain::plan_shape::{PhaseGraph, PlanShape, PublishedBaseline};
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
+use crate::domain::price_record::PriceRecord;
 use crate::domain::publish::rules::{PublishRuleParams, SoftSizeCaps, run_publish_rules};
 use crate::domain::publish::{PlanPublishUnit, PublishAuthorization, PublishReceipt};
 use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::{PhaseId, PlanId};
 use crate::domain::validation::ValidationReport;
+use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::fixture_gate::{FixtureGate, Reservation};
 use crate::infra::storage::repo::{
     NewAuditEntry, NewOutboxEvent, PendingVersionRow, PlanPublishedPayload, PolicyObjectRepo,
-    audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, plan_shape_repo, price_repo,
+    approval_repo, audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, plan_shape_repo,
+    price_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -105,7 +108,13 @@ use crate::infra::storage::repo_failure;
 /// Written down once, here, because it is the single most consequential line in
 /// the assembler — see the module doc. `superseded` and `abandoned` are absent
 /// deliberately and their absence is the rule.
-const CANDIDATE_ROW_STATES: &[LifecycleState] = &[LifecycleState::Published, LifecycleState::Draft];
+///
+/// `pub(crate)` for one reader: `api::rest::windows`' coverage report ranges over
+/// the same set, because a remediation surface that answered about a different row
+/// set from the check whose failure sent the operator there would tell them to fix
+/// something else.
+pub(crate) const CANDIDATE_ROW_STATES: &[LifecycleState] =
+    &[LifecycleState::Published, LifecycleState::Draft];
 
 /// The publish engine, as the surfaces and the commit path see it.
 ///
@@ -290,9 +299,19 @@ impl PublishService {
     /// change what the rule set judged. What holds it today is that **this gear
     /// has no producer for that flip at all**: its two sanctioned producers are
     /// the D-88 supersession unit and the D-100 grandfathering cutover, both
-    /// Slice 7's, and neither exists — the `PriceWindow` store is unbuilt.
+    /// Slice 7's, and neither exists.
     ///
-    /// **That premise is deleted by the group that builds either of them.** When
+    /// **The premise still holds, and one clause of its reasoning has expired.**
+    /// This paragraph used to close with "the `PriceWindow` store is unbuilt",
+    /// offered as why the two units could not exist. The store exists as of
+    /// 2026-08-04 and so does the window state machine — and **neither the
+    /// supersession unit nor the cutover was built on them**, so no producer of
+    /// `published -> superseded` was added and nothing about the predicate
+    /// invariant moved. The clause is corrected rather than dropped, because a
+    /// premise resting on a fact that has changed is a premise a later reader will
+    /// believe for the wrong reason.
+    ///
+    /// **The premise is deleted by the group that builds either unit.** When
     /// it goes, the published half of the candidate set needs a guard of its own:
     /// its rows carry `row_version`, frozen with their content, so the same
     /// `(price_id, row_version)` shape extends to them — or the membership has to
@@ -420,6 +439,35 @@ impl PublishService {
                             id: format!("{}/{}", unit.plan_id, unit.revision),
                         });
                     }
+
+                    // 1a. The approve→commit window, closed **here** and not at
+                    // the surface. `inst-ap-pin` scopes the TOCTOU void to a
+                    // `submitted` record, so an approved unit is not voided when
+                    // its subject moves, and a check made before this
+                    // transaction opened would be a check the world can move
+                    // behind. The row-version swap below does not cover it: it
+                    // swaps on the *revision's* version, and a price row edited
+                    // after the approve moves the row's version and not the
+                    // revision's.
+                    //
+                    // Ahead of the rules, because the answer is about the
+                    // reviewer's decision rather than about the plan: telling an
+                    // operator to fix a violation in content the second person
+                    // never agreed to is the wrong next action.
+                    if let Some(pinned) = authorization.pinned_content_hash()
+                        && crate::domain::approval::content_hash(&shape) != pinned
+                    {
+                        return Err(DomainError::ApprovalContentMismatch(format!(
+                            "plan {}/{}: the content approved under {} is not the content this \
+                             commit would freeze; re-submit and have the change reviewed again",
+                            unit.plan_id,
+                            unit.revision,
+                            authorization
+                                .approval_ref()
+                                .map_or_else(|| "-".to_owned(), |id| id.to_string()),
+                        )));
+                    }
+
                     let report = run_publish_rules(&shape, &params);
                     if !report.is_publishable() {
                         return Err(DomainError::ValidationFailed(report));
@@ -531,8 +579,38 @@ impl PublishService {
                                 Some(&pending.pending_ref),
                             )),
                             approval_ref: authorization.approval_ref(),
-                            correlation_id: Some(correlation_id),
+                            correlation_id,
                         },
+                    )
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+
+                    // 7. The units this publish did **not** consume.
+                    //
+                    // A unit still `submitted` over the revision this
+                    // transaction just froze is an orphan: its subject is now
+                    // immutable, so no approve of it can ever lead to a publish,
+                    // and re-deriving it answers `APPROVAL_CONTENT_MISMATCH`
+                    // forever. Left standing it sits in the reviewer's queue
+                    // asking for a decision that cannot mean anything.
+                    //
+                    // Only `submitted` rows match, so this does **not** touch
+                    // the `approved` record that authorized this very commit —
+                    // which is the correction this line carries: the argument
+                    // for not voiding here used to be that a publish would "undo
+                    // its own authorization", and the authorizing unit is not
+                    // pending. And it matches the **exact** subject rather than
+                    // the plan prefix the TOCTOU guard uses, so a later slice's
+                    // unit over another revision, a window or an overlay of the
+                    // same plan is not swept up by a publish that had nothing to
+                    // do with it.
+                    approval_repo::void_pending_for_subject(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &audit_repo::plan_revision_ref(unit.plan_id, unit.revision),
+                        crate::infra::approval::ORPHANED_BY_PUBLISH_REASON,
+                        now,
                     )
                     .await
                     .map_err(|e| repo_failure(&e))?;
@@ -664,11 +742,28 @@ async fn rule_params(
 /// The tenant is in it, unlike the outbox dedup key: that key is unique **per
 /// tenant** by its index, while the registry is a cross-tenant service and has
 /// no such scope to lean on.
+///
+/// **The unit's kind is in the preimage (D-99).** A revision publishes exactly
+/// once, but a revision is not the whole of what identifies a unit any more: a
+/// window mutation is a publish unit over the plan's *current* revision, so a
+/// content publish and a window mutation of one revision are two units that would
+/// otherwise present the same id. The registry is idempotent on that id, so the
+/// second would be answered with the first's pending ref — and the window mutation
+/// would ride a version that never re-projected it, which is precisely the
+/// last-warmed-delta-disagrees-with-the-truth-side exposure D-99 exists to close.
+/// Two window mutations of one revision are likewise two units, which is why the
+/// window's own id is in the token rather than a bare `window-mutation` marker.
+///
+/// The plan-content token is unchanged from before there was a kind, for
+/// [`PublishUnitKind::request_token`](crate::domain::publish::PublishUnitKind::request_token)'s reason: re-spelling it would orphan every
+/// pending ref a retry is meant to find.
 #[must_use]
 fn publish_request_id(tenant_id: Uuid, unit: PlanPublishUnit) -> String {
     format!(
-        "plan-publish/{tenant_id}/{}/{}",
-        unit.plan_id, unit.revision
+        "{}/{tenant_id}/{}/{}",
+        unit.kind.request_token(),
+        unit.plan_id,
+        unit.revision
     )
 }
 
@@ -684,7 +779,7 @@ fn publish_request_id(tenant_id: Uuid, unit: PlanPublishUnit) -> String {
 /// [`DomainError::NotFound`] when the plan has no open draft revision;
 /// [`DomainError::Internal`] on a storage failure or a current revision with
 /// no unique terminal phase.
-async fn assemble(
+pub(crate) async fn assemble(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
@@ -698,8 +793,33 @@ async fn assemble(
             subject: "open plan draft revision".to_owned(),
             id: plan_id.to_string(),
         })?;
+    assemble_from(runner, scope, tenant_id, plan_id, draft, now).await
+}
 
+/// The assembly itself, over a revision the caller has already resolved.
+///
+/// **One body, two entry points**, which is the reason [`assemble`]'s own doc
+/// gives for being generic over the runner, applied one level up: two assemblies
+/// would be two answers to "what is this plan", and the window path validates
+/// against the same subject the publish path judges.
+///
+/// [`assemble`] resolves the plan's **open draft**; `infra::window` resolves its
+/// **current** revision and calls this directly, because
+/// [`PlanPublishUnit::window_mutation`] names the current revision by decision —
+/// a window mutation authors no plan content and opens none. Passing the record in
+/// rather than resolving it here is what lets that caller take the revision's
+/// `lifecycle_state` off the same read it assembles from, instead of reading the
+/// plan row twice and risking two answers about which revision is current.
+pub(crate) async fn assemble_from(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    draft: crate::domain::plan::PlanRevision,
+    now: DateTime<Utc>,
+) -> Result<PlanShape, DomainError> {
     let mut shape = PlanShape::new(plan_id, draft.revision, now);
+    shape.sku_id = draft.sku_id;
     shape.billing_cycle = draft.billing_cycle;
     shape.frequency = draft.frequency;
     shape.plan_tier = draft.plan_tier.clone();
@@ -726,8 +846,65 @@ async fn assemble(
     shape.rows = price_repo::load_for_plan(runner, scope, tenant_id, plan_id, CANDIDATE_ROW_STATES)
         .await
         .map_err(|e| repo_failure(&e))?;
+    shape.windows = window_plane(runner, scope, tenant_id, plan_id, &shape.rows).await?;
     shape.baseline = published_baseline(runner, scope, tenant_id, plan_id).await?;
     Ok(shape)
+}
+
+/// The plan's window plane, grouped per canonical scope key, seeded with the
+/// candidate rows' keys.
+///
+/// **Read here rather than only at `GET …/coverage`** so the coverage report
+/// appears in [`PublishService::precheck`] too. The pre-check is the operator's
+/// remediation path: a plan that cannot publish for want of a window has to say
+/// so before the two-person unit opens, or the first news of it is a refused
+/// commit.
+///
+/// # Two filters this deliberately does not apply
+///
+/// `window_repo::list_for_plan` is taken whole — every window state, over every
+/// price row of the plan whatever its lifecycle state — because the coverage
+/// rules are **validation over a hypothetical**: "if this row were current on
+/// this key, would the interval set be sound?", asked of a change set made of
+/// `draft` rows about to publish. That is the same posture
+/// `price_repo::load_scope_keys_for_plan` states for itself and the same posture
+/// `window_repo::refuse_overlap` runs under.
+///
+/// The two readers that *assert facts to a consumer* — `read_model::project_windows`
+/// and the activation sweep — restrict to
+/// [`PROJECTED_ROW_STATES`](crate::domain::projection::PROJECTED_ROW_STATES)
+/// instead, and that asymmetry is the point rather than an inconsistency to
+/// resolve. A later group narrowing this read to match theirs would move the
+/// publish check across that line, and a `draft` row's own window would stop
+/// counting as the coverage of the key it is about to publish onto.
+///
+/// Which of the intervals then *contribute* coverage is each reader's own
+/// statement: [`KeyWindows::coverage_end`] drops `cancelled`, and
+/// [`crate::domain::coverage`] names the state set `inst-wc-required` and
+/// `inst-fg-detect` read.
+///
+/// # Errors
+/// [`DomainError::Internal`] on a storage failure, or when a window names a price
+/// row that is not on the plan.
+async fn window_plane(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    candidates: &[PriceRecord],
+) -> Result<Vec<KeyWindows>, DomainError> {
+    let records = window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    Ok(window::group_by_key_seeded(
+        candidates.iter().map(|record| record.scope_key.clone()),
+        records.into_iter().map(|w| {
+            (
+                w.scope_key,
+                WindowInterval::new(w.effective_from, w.effective_to, w.state),
+            )
+        }),
+    ))
 }
 
 /// What the plan's current revision holds, for the rules that compare

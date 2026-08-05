@@ -36,6 +36,25 @@ use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUp
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
+/// One value for a whole test binary: these suites drive a repository or a
+/// service directly, where the value the HTTP edge would have established has
+/// no producer. What each suite asserts *about* it is stated where it asserts
+/// it.
+const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
+
+/// The stamp an audited repository call is made under: who acted, when, and the
+/// request's correlation.
+fn stamp_of(
+    actor: uuid::Uuid,
+    when: chrono::DateTime<chrono::Utc>,
+) -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: actor,
+        recorded_at: when,
+        correlation_id: TEST_CORRELATION,
+    }
+}
+
 mod common;
 
 /// The repository, plus the provider the seeding helper needs to put a row into
@@ -82,6 +101,7 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         invoice_grouping_key: Some("emea-bundle".to_owned()),
         available_from: Some(at(11)),
         available_to: Some(at(23)),
+        correlation_id: TEST_CORRELATION,
     }
 }
 
@@ -629,7 +649,12 @@ async fn an_abandoned_revisions_number_is_never_minted_again() {
     // caller holding the tombstone's tag would `PATCH` the new row of that name
     // with a precondition that passes at its initial version.
     let first = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(12)),
+        )
         .await
         .expect("the first successor opens");
     assert_eq!(first.revision, 1);
@@ -638,7 +663,12 @@ async fn an_abandoned_revisions_number_is_never_minted_again() {
         .expect("discard it");
 
     let second = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(13))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(13)),
+        )
         .await
         .expect("the replacement opens straight away");
     assert_ne!(
@@ -654,7 +684,12 @@ async fn an_abandoned_revisions_number_is_never_minted_again() {
         .await
         .expect("discard the replacement too");
     let third = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(14))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(14)),
+        )
         .await
         .expect("and again");
     assert_eq!(third.revision, 3);
@@ -705,7 +740,12 @@ async fn a_new_revision_copies_the_current_shape_forward() {
     flip_state(&provider, &scope, plan_id, 0, LifecycleState::Published).await;
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(12)),
+        )
         .await
         .expect("a published plan may open its next revision");
 
@@ -774,16 +814,26 @@ async fn a_plan_gets_one_editable_shape_and_no_more() {
         .await
         .expect("create");
     flip_state(&provider, &scope, plan_id, 0, LifecycleState::Published).await;
-    repo.open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(12))
-        .await
-        .expect("the first successor opens");
+    repo.open_revision(
+        &scope,
+        tenant,
+        plan_id,
+        stamp_of(Uuid::from_u128(0xac_20), at(12)),
+    )
+    .await
+    .expect("the first successor opens");
 
     // Two concurrently editable shapes on one plan is the state
     // `uq_pricing_plan_open_draft` exists to forbid. The refusal names the
     // revision holding the slot so the caller edits it instead of guessing
     // which of its own requests won.
     let err = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(13))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(13)),
+        )
         .await
         .expect_err("a second open draft must be refused");
     assert_eq!(
@@ -819,7 +869,12 @@ async fn a_retired_plan_can_never_open_another_revision() {
     // that sentence implies is to open the next revision: exactly the call
     // being refused, so a caller following the diagnosis would loop.
     let err = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(12)),
+        )
         .await
         .expect_err("a retired plan takes no further revision");
     assert_eq!(
@@ -872,8 +927,7 @@ async fn the_two_refusals_reach_a_consumer_as_two_codes_not_one() {
         &scope,
         tenant,
         occupied_plan,
-        Uuid::from_u128(0xac_20),
-        at(12),
+        stamp_of(Uuid::from_u128(0xac_20), at(12)),
     )
     .await
     .expect("the first successor opens");
@@ -883,8 +937,7 @@ async fn the_two_refusals_reach_a_consumer_as_two_codes_not_one() {
             &scope,
             tenant,
             retired_plan,
-            Uuid::from_u128(0xac_20),
-            at(12),
+            stamp_of(Uuid::from_u128(0xac_20), at(12)),
         )
         .await
         .expect_err("a retired plan takes no further revision");
@@ -893,8 +946,7 @@ async fn the_two_refusals_reach_a_consumer_as_two_codes_not_one() {
             &scope,
             tenant,
             occupied_plan,
-            Uuid::from_u128(0xac_20),
-            at(13),
+            stamp_of(Uuid::from_u128(0xac_20), at(13)),
         )
         .await
         .expect_err("a second open draft must be refused");
@@ -1016,7 +1068,12 @@ async fn a_plan_with_nothing_published_has_no_revision_to_open_from() {
     // not found" would be false and would send the caller looking for the
     // wrong thing.
     let err = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(12)),
+        )
         .await
         .expect_err("there is no current revision to succeed");
     assert_eq!(
@@ -1088,7 +1145,12 @@ async fn another_tenants_plan_is_invisible_and_unwritable() {
     assert!(matches!(err, RepoError::NotFound { .. }));
 
     let err = repo
-        .open_revision(&scope, theirs, plan_id, Uuid::from_u128(0xac_20), at(12))
+        .open_revision(
+            &scope,
+            theirs,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(12)),
+        )
         .await
         .expect_err("a foreign plan takes no revision");
     assert!(matches!(err, RepoError::NotFound { .. }));
@@ -1388,7 +1450,12 @@ async fn a_new_revision_carries_its_predecessors_phases_with_the_same_ids_d83() 
     let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor revision");
     assert_eq!(opened.revision, 1);
@@ -1430,7 +1497,12 @@ async fn an_abandoned_revision_keeps_none_of_its_phase_copies_d145() {
     let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor revision");
     assert_eq!(
@@ -1493,7 +1565,12 @@ async fn a_new_revision_carries_all_three_add_on_rules_d105() {
     assert_eq!(published.len(), 3, "all three persist under the revision");
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor revision");
     assert_eq!(opened.revision, 1);
@@ -1539,7 +1616,12 @@ async fn an_abandoned_revision_keeps_none_of_its_add_on_rules_d145() {
     let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor revision");
     assert_eq!(
@@ -1610,7 +1692,12 @@ async fn a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83() {
     let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor revision");
     assert_eq!(opened.revision, 1);
@@ -1709,7 +1796,12 @@ async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
     let shapes = published_plan_with_shape(&repo, &provider, &scope, tenant, plan_id).await;
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor revision");
     let tombstone = repo
@@ -1964,7 +2056,12 @@ async fn a_second_publish_demotes_the_first_and_still_leaves_exactly_one() {
     .expect("publish revision 0");
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor");
     publish_revision(
@@ -2276,7 +2373,12 @@ async fn two_current_revisions_of_one_plan_are_rejected_by_the_index() {
     .expect("publish revision 0");
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor");
     // The successor's flip, taken alone and with the predecessor left standing:
@@ -2378,7 +2480,7 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
         recorded_at: chrono::Utc::now(),
-        correlation_id: None,
+        correlation_id: TEST_CORRELATION,
     }
 }
 
@@ -2609,7 +2711,12 @@ async fn opening_a_successor_whose_record_cannot_be_written_mints_no_revision_nu
         .expect("seed a head the writer cannot link to");
 
     let refusal = plans
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_20), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(12)),
+        )
         .await
         .expect_err("the audit append must refuse");
     assert!(

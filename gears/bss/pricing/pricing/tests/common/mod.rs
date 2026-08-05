@@ -1,13 +1,22 @@
-//! The database-under-test, and the three verbs the schema suites drive it with.
+//! The database-under-test, the three verbs the schema suites drive it with, and
+//! the one window every publishable fixture owes its rows.
 //!
 //! Everything here is shared because it has **no per-suite content at all**: a
 //! migrated `SQLite` database, a statement that must land, a statement whose
-//! result is read back. Each of the schema suites once carried its own copy,
-//! and the copies had already stopped agreeing — not about what the helpers do,
-//! but about the schema they were describing, so one file said `pricing_price`
-//! carried nine `CHECK` constraints while the migration that had grown six more
-//! sat two tasks away in the same branch. A helper each suite re-types is a
-//! sentence each suite has to keep true on its own.
+//! result is read back, and the coverage window `inst-wc-required` demands of
+//! any fixture that publishes. Each of the schema suites once carried its own
+//! copy of the first three, and the copies had already stopped agreeing — not
+//! about what the helpers do, but about the schema they were describing, so one
+//! file said `pricing_price` carried nine `CHECK` constraints while the migration
+//! that had grown six more sat two tasks away in the same branch. A helper each
+//! suite re-types is a sentence each suite has to keep true on its own.
+//!
+//! [`schedule_coverage_window`] is here for the sharper version of that reason.
+//! Four seeds across four suites publish a plan, and each of them now owes its
+//! rows a window. Four copies of that decision would be four places to change the
+//! day the rule moves, and four chances for one of them to schedule a window that
+//! satisfies the letter of the rule while asserting about a world the system
+//! would not hold.
 //!
 //! What is deliberately **not** here is `must_be_rejected`. Every suite asserts
 //! that a refusal is *the one under test* — a raw "some error happened" would
@@ -29,10 +38,15 @@
 )]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
+use toolkit_db::secure::{AccessScope, DBRunner};
+use uuid::Uuid;
 
+use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::infra::storage::migrations::Migrator;
+use bss_pricing::infra::storage::repo::window_repo::{NewWindow, WindowRecord, schedule};
 
 /// An in-memory `SQLite` database carrying the whole migration chain.
 pub async fn migrated_db() -> DatabaseConnection {
@@ -93,4 +107,142 @@ pub async fn scalar(conn: &DatabaseConnection, sql: &str) -> String {
         .expect("query")
         .expect("one row");
     row.try_get::<String>("", "v").expect("read value")
+}
+
+// ---------------------------------------------------------------------------
+// The coverage every publishable fixture owes (`inst-wc-required`)
+// ---------------------------------------------------------------------------
+
+/// Inclusive start of the fixture coverage window: **2099-08-04T00:00:00Z**.
+///
+/// The window this schedules must be legitimately `scheduled` — created, not yet
+/// in force — because a fixture in a state the system would immediately leave is a
+/// fixture that asserts about a world the system does not have. **The year is what
+/// makes that a fact instead of an expiry date.** It was `2026-08-04` and the
+/// argument for it was that this is one day after the instant the publish suites
+/// author their plans at (`2026-08-03`) — true inside the suites' own clock, and
+/// false against the real one from the very afternoon it was written: the start had
+/// already passed, and four weeks later the whole interval would have been in the
+/// past, where a sweep against a real clock reads `expired`, `COVERING_STATES`
+/// excludes it, and every publishable fixture in the crate fails
+/// `inst-wc-required` on a Tuesday somebody has to bisect. `sqlite_window_repo.rs`
+/// is the same lesson already learned: it was dated `2026-09` and would have begun
+/// failing on `2026-09-15`, which is why its own scale says the year is
+/// load-bearing.
+///
+/// Still a **fixed** date and not an offset from `now`, which was the right call
+/// and is unchanged: a fixture computed from the clock asserts something different
+/// every day it runs. What changes is that "the future" is now a fact rather than a
+/// date that ages.
+pub const COVERAGE_FROM_UTC: (i32, u32, u32) = (2099, 8, 4);
+
+/// Exclusive end of the fixture coverage window: **2099-09-01T00:00:00Z**.
+///
+/// It stops exactly where the window suites' own instant scale starts —
+/// `sqlite_read_model.rs`'s `window_at(0)` is `2099-09-01T00:00:00Z` — so **every**
+/// window a suite builds on that scale is adjacent to this one or later, and never
+/// overlaps it. `window_repo::schedule` refuses an overlap on the key
+/// (`WINDOW_OVERLAP`), so an open-ended fixture window would have made the window
+/// suites unable to schedule anything at all; adjacency is legal (§9, half-open
+/// `[from, to)`) and is the shape a supersession and a cutover both produce.
+///
+/// **The residue, named rather than left to be hit.** Because this interval sits
+/// *before* the window scale, a sweep run at any instant on that scale finds this
+/// window due to activate too — so a test that counts activations sees one more
+/// than its own case produced. Two tests in `sqlite_read_model.rs` §8/§9 cancel
+/// this window for that reason and say so. Dating it *after* the scale instead
+/// was rejected: it would then be the far end of every key's coverage and would
+/// swamp the `coverageEnd` assertions that are the whole point of those tests.
+pub const COVERAGE_TO_UTC: (i32, u32, u32) = (2099, 9, 1);
+
+/// The fixture window's inclusive start, as an instant.
+///
+/// Public because a suite asserting what a **frozen version** says about this window
+/// has to name an instant inside it, and rebuilding the date from
+/// [`COVERAGE_FROM_UTC`] at the call site would be a second spelling of the one fact
+/// this module exists to keep single.
+#[must_use]
+pub fn coverage_from() -> DateTime<Utc> {
+    midnight(COVERAGE_FROM_UTC)
+}
+
+/// The two instants above, as instants.
+fn midnight(date: (i32, u32, u32)) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(date.0, date.1, date.2, 0, 0, 0)
+        .single()
+        .expect("a fixed UTC midnight is unambiguous")
+}
+
+/// The window id this fixture gives `price_id`'s coverage.
+///
+/// Derived from the row rather than passed in, so a seed cannot mint two windows
+/// on one row by accident and two seeds in one test cannot collide on an id. The
+/// salt keeps it out of the `Uuid::from_u128(small)` space every fixture in this
+/// crate hand-picks ids from.
+#[must_use]
+pub fn coverage_window_id(price_id: Uuid) -> Uuid {
+    /// Arbitrary and fixed; only its distance from the hand-picked ids matters.
+    const SALT: u128 = 0x_c0de_face_0000_0000_0000_0000_0000_0000;
+    Uuid::from_u128(price_id.as_u128() ^ SALT)
+}
+
+/// Schedule the window `inst-wc-required` demands of a billable row's key.
+///
+/// **Why every publishable fixture in this crate calls this.** `inst-wc-required`
+/// (S7 §3) makes publish fail for a billable row whose canonical scope key holds
+/// no active or scheduled `PriceWindow`, and before 2026-08-04 every fixture in
+/// every suite published with **zero** windows. Seventy-four tests reddened the
+/// day the rule registered. The fix is the fixtures: a published row lives in
+/// time, so a fixture that publishes one has to say when it is effective.
+///
+/// **There is deliberately no way to opt out.** No flag, no "skip coverage"
+/// parameter, no test-only bypass — a rule a fixture can opt out of is a rule the
+/// next fixture opts out of, and the refusal is the whole content of the definition of done this
+/// slice is built for. A suite for which windows are noise calls this and moves
+/// on; it does not get an exemption.
+///
+/// **`window_repo::schedule` and not `POST …/prices/{priceId}/windows`, for
+/// isolation and speed.** The route is mounted and works — `rest_windows.rs` drives
+/// it, including the sequence that authors a plan's first window through it — so
+/// this is a choice rather than a workaround, and it is stated as one because a
+/// fixture whose recorded reason is false is worse than one with none. Two grounds:
+/// a mutation through the service resolves the plan's *current* revision, and this
+/// window has to exist **before** the plan publishes; and every publishing fixture
+/// in the crate goes through here, so routing them through the schedule path would
+/// make one defect in it redden four suites at once, none of them naming the rule
+/// that broke.
+///
+/// The window is `scheduled` — the only state `window_repo::schedule` creates,
+/// §4's initial one — over `[COVERAGE_FROM_UTC, COVERAGE_TO_UTC)`. Both instants
+/// are **fixed dates and not offsets from `now`**: a fixture computed from the
+/// clock is one that changes what it asserts every day it runs, and a fixture
+/// dated far enough ahead to look safe is one that starts failing on a Tuesday
+/// somebody has to bisect.
+///
+/// # Panics
+/// When the schedule is refused — an overlap on the key, a row that is not there,
+/// or a scope that cannot see it. Each of those is the fixture being wrong about
+/// the world rather than the store misbehaving.
+pub async fn schedule_coverage_window(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+    stamp: AuditStamp,
+) -> WindowRecord {
+    schedule(
+        runner,
+        scope,
+        NewWindow {
+            window_id: coverage_window_id(price_id),
+            tenant_id,
+            price_id,
+            effective_from: midnight(COVERAGE_FROM_UTC),
+            effective_to: Some(midnight(COVERAGE_TO_UTC)),
+            reason_code: "fixtureCoverage".to_owned(),
+        },
+        stamp,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("schedule the coverage window of price row {price_id}: {e}"))
 }

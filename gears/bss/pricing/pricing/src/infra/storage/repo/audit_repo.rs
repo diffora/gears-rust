@@ -52,29 +52,40 @@
 //!
 //! # What is owed here, and of what kind
 //!
-//! This crate has **no testcontainers suite**, and `sqlite::memory:` serializes
-//! writers by construction. The `SQLite` suite proves that the chain *links*,
+//! **Three of the four items below were paid on 2026-08-04** by
+//! `tests/postgres_audit_chain.rs`, and the paragraph that opened this section —
+//! "this crate has **no** testcontainers suite" — stopped being true when that
+//! suite landed. `sqlite::memory:` still serializes writers by construction, so
+//! what follows remains an accurate account of what the *mirror* can and cannot
+//! say; it is no longer an account of what is unproven.
+//!
+//! The `SQLite` suite proves that the chain *links*,
 //! that `seq` starts at 0 per segment, that segments of one tenant are
 //! independent in content, that the append-only trigger rejects UPDATE and
 //! DELETE, and that a record whose content moved no longer reproduces its
 //! digest. Beyond that:
 //!
-//! 1. **Unprovable here.** Two concurrent mutations of **different**
-//!    `chain_id`s of one tenant do not contend — the entire benefit D-135
-//!    bought, and an `05-governance.md` §9 integration acceptance criterion.
-//!    Fairly owed to a Postgres suite, whose template is
-//!    `gears/bss/ledger/ledger/tests/postgres_chain.rs`
-//!    (`concurrent_posts_form_linear_chain`).
-//! 2. **Undemonstrated, not unproven.** Two mutations of the **same** aggregate
-//!    serialize rather than fork. The key half is proved by
-//!    `tests/sqlite_audit_chain.rs` and the rollback half is `in_transaction`'s
-//!    contract; what Postgres adds is the concurrent demonstration.
-//! 3. **Implemented, and half of it unproven here.** The loser of a same-segment
-//!    race surfaces as a retriable contention (D-159). The recognition is written
-//!    for both backends off one driver class; what `sqlite::memory:` cannot do is
-//!    schedule the concurrent losers, so the `SQLite` suite provokes the violation
-//!    by writing the position directly. A Postgres suite would add the concurrent
-//!    demonstration and the constraint **names** the class does not carry.
+//! 1. ~~**Unprovable here.**~~ **PAID 2026-08-04.** Two concurrent mutations of
+//!    **different** `chain_id`s of one tenant do not contend — the entire
+//!    benefit D-135 bought, and an `05-governance.md` §9 integration acceptance
+//!    criterion. `postgres_audit_chain.rs::two_aggregates_of_one_tenant_do_not_contend_on_a_chain_head`
+//!    parks one transaction open on chain A and requires the other to complete
+//!    on chain B while it is parked. Collapsing the key to `(tenant_id, seq)` —
+//!    the pre-segmentation shape — makes it time out, so it is a fact about
+//!    segmentation rather than a harness too gentle to provoke anything.
+//! 2. ~~**Undemonstrated, not unproven.**~~ **PAID 2026-08-04.** Two mutations of
+//!    the **same** aggregate serialize rather than fork, demonstrated
+//!    concurrently and deterministically: a third connection polls
+//!    `pg_locks WHERE NOT granted` until the loser is provably in a lock wait —
+//!    which is what proves its head read already happened — and only then is the
+//!    winner released.
+//! 3. ~~**Implemented, and half of it unproven here.**~~ **PAID 2026-08-04.** The
+//!    loser of a same-segment race surfaces as a retriable contention (D-159):
+//!    `RepoError::ConcurrentMutation` → `DomainError::ConcurrentMutation` → 409
+//!    `CONCURRENT_MUTATION`, the whole ladder asserted in one test. The
+//!    whole-transaction rollback is proved by a **witness** rather than by
+//!    inference — the loser writes to a second, uncontended segment before it
+//!    collides, and that segment holds zero rows afterwards.
 //!
 //! A property that genuinely cannot be checked here is recorded as such; one
 //! that *can* be checked and has not been is recorded as undemonstrated, and one
@@ -147,8 +158,13 @@ pub struct NewAuditEntry {
     pub after_state: Option<JsonValue>,
     /// The approval record the mutation ran under, when it had one.
     pub approval_ref: Option<Uuid>,
-    /// The correlation id of the causing request.
-    pub correlation_id: Option<Uuid>,
+    /// The correlation id of the causing request (D-178).
+    ///
+    /// Not an `Option`: the column is nullable so a verifier can re-walk a row
+    /// written before D-178, and **this writer cannot produce one**. See
+    /// [`AuditStamp`](crate::domain::audit::AuditStamp)'s own field for the
+    /// argument.
+    pub correlation_id: Uuid,
 }
 
 /// The segment every audited mutation **of one plan** extends.
@@ -166,6 +182,39 @@ pub struct NewAuditEntry {
 #[must_use]
 pub const fn plan_chain(plan_id: PlanId) -> Uuid {
     plan_id.get()
+}
+
+/// The segment every audited act on the tenant's **approval-threshold policy**
+/// extends.
+///
+/// A constant, and the constant is the whole design. D-135 keys a chain on the
+/// audited subject's *aggregate*; S5 §6's aggregate list names `policy` as one in
+/// its own right, and a tenant has exactly one threshold policy, so the aggregate
+/// id would be a value with a single inhabitant. The chain key is
+/// `(tenant_id, chain_id)` — the tenant axis is already there — which makes a
+/// per-tenant singleton segment exactly "one constant `chain_id`".
+///
+/// **It cannot collide with a [`plan_chain`].** That one is `plan_id.get()`, and
+/// every plan id this gear mints is a `UUIDv7` — `api::rest::plans`' create handler
+/// is the only minter, at `PlanId::new(Uuid::now_v7())`. This constant is
+/// `00000000-0000-8000-8000-70726963696e`, version nibble `8`, which no v7 value
+/// holds, so the two chain spaces are disjoint by construction rather than by
+/// improbability — and a collision would be the one defect that is invisible: two
+/// aggregates interleaved on one hash chain verify perfectly.
+#[must_use]
+pub const fn policy_chain() -> Uuid {
+    Uuid::from_u128(0x0000_0000_0000_8000_8000_7072_6963_696e_u128)
+}
+
+/// A threshold-policy version's durable audit name — its version number.
+///
+/// The tenant is not repeated in it, for [`price_unit_ref`]'s reason: the record's
+/// `tenant_id` column carries it and a reference that restated it would be a second
+/// place the two could disagree. What the number has to do is name the row set the
+/// pin was taken over, and `(tenant_id, version)` is exactly the store's key prefix.
+#[must_use]
+pub fn policy_version_ref(version: u64) -> String {
+    version.to_string()
 }
 
 /// A plan revision's durable audit name — `<plan_id>/<revision>`.
@@ -187,6 +236,41 @@ pub fn price_unit_ref(price_id: Uuid) -> String {
     price_id.to_string()
 }
 
+/// A window's audit name — `<plan_id>/<window_id>`.
+///
+/// [`plan_revision_ref`]'s shape, and the plan **is** repeated in it. That is a
+/// correction rather than a preference: this used to be the bare `window_id`, on
+/// [`price_unit_ref`]'s argument that [`plan_chain`] already carries the aggregate —
+/// and the argument does not survive the one thing the two stores are for. An
+/// approval unit over a window mutation carries this ref and **nothing else** that
+/// names its subject, so resolving the aggregate meant reading the window row back;
+/// and a controlled mutation writes *nothing*, which is the whole content of D-62's
+/// refusal arm. So the unit over a window that was refused before it was written
+/// named a row that did not exist: `approval_repo::subject_aggregate` answered
+/// `CorruptRow` — a 500 — on every read of it, and `infra::approval::re_derive`
+/// reached the same read through `plan_of`.
+///
+/// Encoding the plan makes the aggregate a **parse** rather than a lookup, which is
+/// what `plan_revision_ref` has always given the plan-revision units and the reason
+/// `subject_plan` exists. It also keeps both stores on one spelling: the audit record
+/// and the approval record of one act name it identically, which is the alignment
+/// D-158 is about, and it is why the helper moved rather than its three call sites.
+///
+/// **It does not widen the plan-prefix reads**, and that is checked rather than
+/// hoped: `find_pending_for_plan` and `void_pending_for_plan` both filter
+/// `subject_kind = 'plan_revision'` **as well as** the `<plan_id>/` prefix, so a
+/// window unit is still invisible to them. That filter used to be belt-and-braces
+/// and is now load-bearing — stated in both their docs.
+///
+/// This is a **name**, not vocabulary: what the design set declares is the
+/// `subject_kind` token (S5 §6's enumeration, which carries `window`), and how a
+/// subject of that kind is spelled is the store's own business — `subject_ref` is
+/// free text on both backends.
+#[must_use]
+pub fn window_ref(plan_id: PlanId, window_id: Uuid) -> String {
+    format!("{plan_id}/{window_id}")
+}
+
 /// Append one record to its segment, inside `runner`'s transaction.
 ///
 /// Reads the segment's greatest `seq` and its `row_hash`, links the new record
@@ -206,9 +290,16 @@ pub fn price_unit_ref(price_id: Uuid) -> String {
 /// above forbids.
 ///
 /// # Errors
-/// [`RepoError::Db`] on a scope or storage failure — which **includes losing a
-/// same-segment race**, since the primary key is what decides it and no wire
-/// code exists for that outcome (see the module CONTRACT).
+/// [`RepoError::ConcurrentMutation`] when this write lost a **same-segment
+/// race**: the primary key `(tenant_id, chain_id, seq)` decides it, the loser's
+/// whole transaction rolls back, and the refusal is retriable rather than a
+/// fault — `CONCURRENT_MUTATION`, 409 (D-159). Corrected 2026-08-04: this
+/// section said the outcome was [`RepoError::Db`] "since … no wire code exists",
+/// which the module CONTRACT above and [`contention_or_db`] at the insert had
+/// both already contradicted. Proved concurrently by
+/// `tests/postgres_audit_chain.rs::the_loser_of_a_same_segment_race_is_a_retriable_contention`.
+///
+/// [`RepoError::Db`] on any other scope or storage failure.
 /// [`RepoError::CorruptRow`] when the segment head's `row_hash` is not 32 bytes,
 /// when its `seq` is not a position this chain can count in or has no
 /// successor, or when the record's before/after state cannot be canonicalized —
@@ -238,7 +329,7 @@ pub async fn append(
         before_state: entry.before_state.as_ref(),
         after_state: entry.after_state.as_ref(),
         approval_ref: entry.approval_ref,
-        correlation_id: entry.correlation_id,
+        correlation_id: Some(entry.correlation_id),
     };
     let row_hash = audit_row_hash(&record, &prev_hash).map_err(|e| {
         RepoError::CorruptRow(format!(
@@ -266,7 +357,7 @@ pub async fn append(
         before_state: Set(entry.before_state.clone()),
         after_state: Set(entry.after_state.clone()),
         approval_ref: Set(entry.approval_ref),
-        correlation_id: Set(entry.correlation_id),
+        correlation_id: Set(Some(entry.correlation_id)),
         // NULL, and the CHECK requires it of a mutation row: a roll-up is the
         // only row that chains segment heads, and it is not written here.
         segment_heads: Set(None),

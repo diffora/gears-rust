@@ -283,6 +283,164 @@ pub enum RepoError {
         /// The client-supplied key that is held.
         client_key: String,
     },
+    /// A decision was asked of an approval record that has already been decided
+    /// or voided (`inst-as-immutable`).
+    ///
+    /// **A conflict rather than a precondition failure**, and the classification
+    /// is the useful part: the caller's request was well-formed and their
+    /// authority was sufficient — somebody simply got there first, or the list
+    /// they were acting on is stale. The remedy is to re-read the record, which
+    /// is what a 409 asks for; told `LIFECYCLE_FORBIDDEN` (400) instead, a
+    /// reviewer would read it as their own request being malformed.
+    ///
+    /// It carries the code `design/05-governance.md` §5 declares —
+    /// `APPROVAL_NOT_PENDING` — and the state the record is actually in, because
+    /// "somebody approved it" and "the submitter withdrew it" are different
+    /// things to be told.
+    #[error(
+        "pricing repo: approval {approval_id} is {state}; only a submitted record is decidable"
+    )]
+    ApprovalNotPending {
+        /// The record that was decided.
+        approval_id: String,
+        /// The state it is actually in.
+        state: String,
+    },
+    /// The canonical scope key a unit tried to hold is already held by a
+    /// `submitted` unit (`inst-co-single-pending`, `PENDING_CHANGE_UNIT_EXISTS`).
+    ///
+    /// **Raised by `uq_pricing_approval_key_pending`, not by a comparison**, and
+    /// that is the whole reason the register is a table. `ApprovalService::submit`
+    /// also *checks* for a holder inside its transaction and produces the ordinary
+    /// 409 — one that can name the unit holding the key, which an index violation
+    /// cannot. This variant is the other half: the loser of two concurrent submits,
+    /// both of which read a free key before either wrote. Under `READ COMMITTED`
+    /// the check cannot see that, so without the index both would commit and one
+    /// key would be held by two approvable units.
+    ///
+    /// It carries the key and **not** the holding unit, deliberately: at the moment
+    /// the index fires, the transaction that inserted the winning row may not have
+    /// committed, so there is no unit this transaction is entitled to read. The
+    /// caller's remedy is identical either way — re-read the register and find the
+    /// holder — and naming a unit that a rollback might unmake would be worse than
+    /// naming none.
+    #[error(
+        "pricing repo: scope key {key} is already held by a submitted approval unit; decide it, or \
+         withdraw it to free the key"
+    )]
+    PendingKeyHeld {
+        /// The canonical scope key the register refused a second hold on.
+        key: String,
+    },
+    /// A window interval intersects one already on the same canonical scope key
+    /// (`07-pricewindow-linkage.md` §6, `WINDOW_OVERLAP`).
+    ///
+    /// **The only guarantee of this store that no constraint carries**, and the
+    /// only one this crate could not have written as one: the canonical scope key
+    /// is eight columns of `pricing_price` and none of them is on the window row,
+    /// so no unique index reaches it, a partial-index predicate sees only its own
+    /// row, and an exclusion constraint would need `btree_gist` on Postgres and
+    /// has no `SQLite` expression at all. §6 says "enforced inside every
+    /// mutation" for that reason, and this refusal is what that enforcement
+    /// answers with.
+    ///
+    /// It names the key, the interval that was asked for and the window it
+    /// collided with — three things because each answers a different question an
+    /// operator has, and the collided window's id is the one they can act on. The
+    /// two intervals are **rendered** rather than carried as four instants, for a
+    /// mechanical reason worth stating: six `String`s put this variant past
+    /// `clippy::result_large_err`'s 128-byte threshold, which every `Result` in
+    /// this crate's storage layer would then pay for.
+    #[error("pricing repo: the interval {requested} on scope key {key} overlaps {conflicting}")]
+    WindowOverlap {
+        /// The canonical scope key both intervals are filed under.
+        key: String,
+        /// The interval the caller asked for, `[from, to)`.
+        requested: String,
+        /// The window already there and the interval it holds.
+        conflicting: String,
+    },
+    /// A mutation was asked of a window whose state does not admit it
+    /// (`inst-ws-immutable`, `inst-ws-cancel`, and §4's three edges).
+    ///
+    /// **It mints no wire code, deliberately**, and after 2026-08-04 its ground is
+    /// narrower than it was. §5 names three refusals that live near here —
+    /// `WINDOW_HISTORICAL_IMMUTABLE`, `WINDOW_NOT_CANCELLABLE` and, one plane
+    /// over, `WINDOW_TRAILING_VOID`. The first of them **has moved out** to
+    /// [`RepoError::WindowHistorical`], because the store enforces it physically
+    /// (`trg_pricing_price_window_append_only`'s history and future-`effective_to`
+    /// arms) and a rule the store already holds is a rule the store may answer.
+    /// The other two are about a *request an operator made*, which a surface
+    /// judges before a repository is reached.
+    ///
+    /// What is left here is the residue that was always the honest content of this
+    /// variant: an **unsanctioned edge**. A background sweep whose ordering
+    /// assumption has broken — asked to expire a window somebody cancelled between
+    /// the scan and the flip — or a caller that went round the surface. That is
+    /// [`RepoError::FrontierRegression`]'s shape, an internal ordering fault on a
+    /// path no client can provoke, so it renders as the refused lifecycle edge it
+    /// is and no code is invented for it.
+    ///
+    /// The state is carried because "the window was cancelled" and "the window
+    /// already expired" are different things for an operator reading a job's log.
+    #[error("pricing repo: window {window_id} is {state}; {attempted} is not permitted")]
+    WindowStateForbidden {
+        /// The window the mutation addressed.
+        window_id: String,
+        /// The state it is actually in.
+        state: String,
+        /// What was attempted, as a phrase — `the transition to expired`.
+        attempted: String,
+    },
+    /// A mutation reached for a window fact §4 froze (`inst-ws-immutable`,
+    /// `WINDOW_HISTORICAL_IMMUTABLE`).
+    ///
+    /// **This one the store may answer, and the criterion is that it also enforces
+    /// it physically.** Two arms of
+    /// `trg_pricing_price_window_append_only` are this rule — the immutable-history
+    /// arm, which refuses any `UPDATE` of an `expired`/`cancelled` row, and the
+    /// fifth arm, which refuses an `effective_to` moved into or out of the past —
+    /// so a repository that did not pre-check handed the caller a **trigger**, i.e.
+    /// a 500, for a request whose whole remedy is a later instant. The pre-check
+    /// exists to make that a 409 carrying the code §5 declares.
+    ///
+    /// It is deliberately **not** [`RepoError::WindowStateForbidden`], which it
+    /// used to be for one of its two grounds. That variant renders
+    /// `LIFECYCLE_FORBIDDEN` (400, "no alternative action"), and this refusal
+    /// describes a very specific alternative on both grounds: schedule a new
+    /// window, or shorten to an instant that is still ahead.
+    ///
+    /// The `frozen` phrase names *what* is history rather than only that something
+    /// is, because "the window is expired" and "the end you are moving passed nine
+    /// minutes ago" send an operator to different places.
+    #[error("pricing repo: window {window_id} may not be mutated: {frozen}")]
+    WindowHistorical {
+        /// The window the mutation addressed.
+        window_id: String,
+        /// What about it is frozen, as a phrase.
+        frozen: String,
+    },
+    /// A window interval whose end is not strictly after its start.
+    ///
+    /// The application half of `chk_pricing_price_window_interval`, and it exists
+    /// for [`RepoError::ValueOutOfRange`]'s reason: a value arriving *on a request*
+    /// that a column refuses is a caller mistake the request can be reshaped
+    /// around, and reaching the CHECK made it an internal fault. `effective_to =
+    /// effective_from` is not a zero-length window — nothing is effective over it
+    /// and no consumer can resolve a price at any instant of it.
+    ///
+    /// **It carries no window code, and that is a reported divergence rather than
+    /// an omission**: §5 declares eight window codes and none of them covers an
+    /// empty interval. It renders `INVALID_REQUEST`, which is what the ladder
+    /// already answers for a value the gear cannot interpret.
+    #[error(
+        "pricing repo: the window interval {requested} is empty; effective_to must be \
+         strictly after effective_from"
+    )]
+    WindowIntervalEmpty {
+        /// The interval as the caller asked for it, `[from, to)`.
+        requested: String,
+    },
 }
 
 /// A per-aggregate serialization point's refusal, told apart from a storage
@@ -296,11 +454,24 @@ pub enum RepoError {
 /// is the difference between a shared predicate and a substring this crate
 /// invented.
 ///
-/// Called at exactly the three points D-159 names — the audit chain head, the
-/// outbox's per-aggregate sequence, and the current-revision partial `UNIQUE` —
-/// and nowhere else. Every other unique violation in this crate means something
-/// different (`DUPLICATE_SCOPE_KEY` on a canonical key, the idempotency claim's
-/// own CAS) and is answered by the check that owns it.
+/// Called at the three per-aggregate serialization points D-159 names — the audit
+/// chain head, the outbox's per-aggregate sequence, and the current-revision
+/// partial `UNIQUE` — **and at two primary keys besides**: a caller-minted
+/// `approval_id` and a caller-minted `window_id` already taken. It is not called on
+/// every unique violation in this crate, which is the part that matters: a
+/// canonical-key collision is `DUPLICATE_SCOPE_KEY` and an idempotency claim has
+/// its own CAS, and each is answered by the check that owns it.
+///
+/// **The two primary-key sites are a divergence from D-159's own semantics and are
+/// reported rather than quietly counted in.** D-159's code says *another mutation of
+/// this aggregate committed first, and a retry is expected to succeed*. On a
+/// duplicate caller-minted id the second half is false: the realistic reader of that
+/// refusal is a client resubmitting the id it already used, and replaying the
+/// request as sent collides identically, forever. A genuine race — two callers
+/// minting one uuid — is what the sites were written for and is not what they will
+/// mostly see. Naming the right refusal needs a decision and probably a code the
+/// design set does not have, so this sentence is the report and the behaviour is
+/// left as it stands.
 ///
 /// **What it does not distinguish, stated because it is the residue.** The class
 /// says *a* unique index refused and not *which*: `pricing_outbox` carries two,
@@ -414,12 +585,50 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
             DomainError::IdempotencyKeyInFlight(err.to_string())
         }
         RepoError::ConcurrentMutation { .. } => DomainError::ConcurrentMutation(err.to_string()),
-        RepoError::ValueOutOfRange { .. } => DomainError::InvalidRequest(err.to_string()),
+        // Two shapes of one answer: a value arriving on a request that no column
+        // will hold, which the author can reshape. `WindowIntervalEmpty` is the
+        // window plane's — section 5 declares no window code for an empty
+        // interval — and the arms are merged because inventing a difference
+        // between them would be inventing a distinction no consumer can act on.
+        RepoError::ValueOutOfRange { .. } | RepoError::WindowIntervalEmpty { .. } => {
+            DomainError::InvalidRequest(err.to_string())
+        }
         RepoError::GrandfatherHorizonOffClass { .. } => {
             DomainError::GrandfatherUntilForbidden(err.to_string())
         }
         RepoError::TimestampPrecisionExceeded { .. } => {
             DomainError::TimestampPrecisionExceeded(err.to_string())
+        }
+        RepoError::ApprovalNotPending { .. } => DomainError::ApprovalNotPending(err.to_string()),
+        // The register's constraint and the register's check answer the **same code
+        // and the same remedy**, which is what a caller branches on and acts on: the
+        // condition is one condition, and which of two transactions committed first
+        // must not change what the caller is told to do about it.
+        //
+        // **The claim is narrowed to that, deliberately.** It used to read that a
+        // caller "must not read two different refusals", which is false of the
+        // *message*: the constraint path cannot name the holding unit — at the moment
+        // the index fires, the transaction that inserted the winning row may not have
+        // committed — so one body names a unit and the other does not. Both name the
+        // key and both end in the same instruction; `storage_tests` asserts that
+        // rather than this comment claiming it.
+        RepoError::PendingKeyHeld { .. } => DomainError::PendingChangeUnitExists(err.to_string()),
+        // Asserted end to end by
+        // `rest_windows::an_overlapping_schedule_is_refused_by_its_code_and_writes_nothing`,
+        // which was the seventh arm of this fold found with no observation of what it
+        // maps to: the store's own suite asserted the `RepoError` and stopped, so
+        // corrupting this line to `Internal` left the whole crate green while a
+        // colliding interval answered 500.
+        RepoError::WindowOverlap { .. } => DomainError::WindowOverlap(err.to_string()),
+        // A refused state-machine edge, with the other refused edges. It mints no
+        // code of its own; the variant's own doc says why the two §5 window
+        // refusals that remain a surface's are not it.
+        RepoError::WindowStateForbidden { .. } => DomainError::LifecycleForbidden(err.to_string()),
+        // The one window refusal the store both enforces physically and now
+        // answers itself, so a caller who asked to move a window's end into the
+        // past reads the 409 §5 declares instead of the trigger's 500.
+        RepoError::WindowHistorical { .. } => {
+            DomainError::WindowHistoricalImmutable(err.to_string())
         }
     }
 }

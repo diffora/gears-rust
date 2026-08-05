@@ -52,7 +52,7 @@ use bss_pricing::domain::price_row::{
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::storage::entity::{price, price_tier_band};
+use bss_pricing::infra::storage::entity::{audit_log, price, price_tier_band};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, PriceRepo};
 use bss_pricing::infra::storage::{RepoError, repo_failure};
@@ -66,6 +66,12 @@ use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
+
+/// One value for a whole test binary: these suites drive a repository or a
+/// service directly, where the value the HTTP edge would have established has
+/// no producer. What each suite asserts *about* it is stated where it asserts
+/// it.
+const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
 
 /// The repository, plus the provider the seeding helper needs to put a row into
 /// a state `price_repo::publish_rows` now reaches, and one - `superseded` - that
@@ -199,6 +205,7 @@ fn draft(price_id: Uuid, scope_key: ScopeKey, content: PriceContent) -> NewPrice
         content,
         created_by: Uuid::from_u128(0xac_10),
         created_at_utc: at(10),
+        correlation_id: TEST_CORRELATION,
     }
 }
 
@@ -2430,6 +2437,96 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
         recorded_at: chrono::Utc::now(),
-        correlation_id: None,
+        correlation_id: TEST_CORRELATION,
     }
+}
+
+/// The same stamp under a named correlation.
+fn stamp_correlated(correlation_id: Uuid) -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        correlation_id,
+        ..stamp()
+    }
+}
+
+/// **Every price-plane record carries the correlation its caller supplied**
+/// (D-178).
+///
+/// The whole authoring plane's correlation was unconstrained: replacing both
+/// `draft.correlation_id` and `stamp.correlation_id` with a fresh
+/// `Uuid::now_v7()` at all four sites in `price_repo` left the suite green.
+/// Clause (1) - never NULL - is type-enforced by `NewPriceDraft` and
+/// `AuditStamp` taking a bare `Uuid`, so it survives any mint; clause (2) has no
+/// equality to break on this plane, because no price route writes two records in
+/// one call. `rest_plans.rs::two_records_of_one_patch_carry_one_correlation_id`
+/// covers the plan plane exactly that way and cannot be repeated here.
+///
+/// So the binding is taken where the correlation is an **input** rather than an
+/// edge-established value: the repository is what answers, and the three
+/// mutations are driven under three **distinct** correlations. A per-record mint
+/// fails on all three; a record that borrowed a neighbouring call's value fails
+/// on the pair it confused. Blanking to `None` fails at the type level and never
+/// reaches here.
+///
+/// The bulk-import arm (D-118 / D-177) is the reason this matters beyond
+/// tidiness: it is one call authoring many rows, and it is the first place a
+/// per-record mint becomes an untraceable provenance instead of a redundancy.
+#[tokio::test]
+async fn every_price_record_carries_the_correlation_its_caller_supplied() {
+    const CREATED_BY_CALL: Uuid = Uuid::from_u128(0x_c0_11_00_01);
+    const EDITED_BY_CALL: Uuid = Uuid::from_u128(0x_c0_11_00_02);
+    const DELETED_BY_CALL: Uuid = Uuid::from_u128(0x_c0_11_00_03);
+
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_c0);
+
+    let mut created = draft(price_id, base_key(ChargeKind::Recurring), flat_content());
+    created.correlation_id = CREATED_BY_CALL;
+    repo.create_draft(&scope, tenant(), created)
+        .await
+        .expect("create the draft row");
+
+    repo.update_draft(
+        &scope,
+        tenant(),
+        price_id,
+        RowVersion::new(0),
+        flat_content(),
+        stamp_correlated(EDITED_BY_CALL),
+    )
+    .await
+    .expect("edit it");
+
+    repo.delete_draft(
+        &scope,
+        tenant(),
+        price_id,
+        RowVersion::new(1),
+        stamp_correlated(DELETED_BY_CALL),
+    )
+    .await
+    .expect("take it away");
+
+    let conn = provider.conn().expect("conn");
+    let written: Vec<(String, Option<Uuid>)> = audit_log::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .order_by(audit_log::Column::Seq, sea_orm::Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the trail")
+        .into_iter()
+        .map(|row| (row.action, row.correlation_id))
+        .collect();
+
+    assert_eq!(
+        written,
+        vec![
+            ("create".to_owned(), Some(CREATED_BY_CALL)),
+            ("update".to_owned(), Some(EDITED_BY_CALL)),
+            ("delete".to_owned(), Some(DELETED_BY_CALL)),
+        ],
+        "three calls, three records, and each names the call that wrote it"
+    );
 }

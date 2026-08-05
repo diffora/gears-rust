@@ -56,8 +56,15 @@ fn the_persisted_tokens_are_asserted_against_literals() {
     assert_eq!(AuditAction::Delete.as_str(), "delete");
     assert_eq!(AuditAction::Abandon.as_str(), "abandon");
     assert_eq!(AuditAction::Publish.as_str(), "publish");
+    assert_eq!(AuditAction::Submit.as_str(), "submit");
+    assert_eq!(AuditAction::Approve.as_str(), "approve");
+    assert_eq!(AuditAction::Reject.as_str(), "reject");
+    assert_eq!(AuditAction::Withdraw.as_str(), "withdraw");
+    assert_eq!(AuditAction::Deny.as_str(), "deny");
     assert_eq!(AuditSubjectKind::PlanRevision.as_str(), "plan_revision");
     assert_eq!(AuditSubjectKind::PriceUnit.as_str(), "price_unit");
+    assert_eq!(AuditSubjectKind::Window.as_str(), "window");
+    assert_eq!(AuditSubjectKind::Policy.as_str(), "policy");
     assert_eq!(
         AuditAction::ALL,
         &[
@@ -66,12 +73,51 @@ fn the_persisted_tokens_are_asserted_against_literals() {
             AuditAction::Delete,
             AuditAction::Abandon,
             AuditAction::Publish,
+            AuditAction::Submit,
+            AuditAction::Approve,
+            AuditAction::Reject,
+            AuditAction::Withdraw,
+            AuditAction::Deny,
         ]
     );
     assert_eq!(
         AuditSubjectKind::ALL,
-        &[AuditSubjectKind::PlanRevision, AuditSubjectKind::PriceUnit]
+        &[
+            AuditSubjectKind::PlanRevision,
+            AuditSubjectKind::PriceUnit,
+            AuditSubjectKind::Window,
+            AuditSubjectKind::Policy,
+        ]
     );
+}
+
+#[test]
+fn every_token_is_its_own_and_the_slice_names_each_once() {
+    // The vocabulary is a set of *discriminators*: two variants sharing a token
+    // would make an Auditor unable to tell two acts apart, and the stored string
+    // is all a reader of `pricing_audit_log` has — the column holds `as_str`'s
+    // output and this crate has no reverse map, so a duplicate is not resolved to
+    // the wrong variant, it is unresolvable. (An earlier version of this comment
+    // blamed "`read_token`'s linear search over `ALL`"; no such function exists
+    // here or anywhere in the crate.) Asserted over the whole slice rather than
+    // pairwise, so a token added without a fresh spelling is caught by the roster
+    // rather than by whoever remembers.
+    let tokens: std::collections::BTreeSet<&str> =
+        AuditAction::ALL.iter().map(|a| a.as_str()).collect();
+    assert_eq!(
+        tokens.len(),
+        AuditAction::ALL.len(),
+        "two actions share a stored token"
+    );
+    // Both halves of D-158's `snake_case` rule, which is what keeps a token from
+    // ever colliding with a frozen `CatalogEvent` name like `PlanPublished`.
+    for action in AuditAction::ALL {
+        let token = action.as_str();
+        assert!(
+            token.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+            "{token} is not snake_case"
+        );
+    }
 }
 
 #[test]

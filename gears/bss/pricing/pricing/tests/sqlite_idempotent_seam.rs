@@ -34,6 +34,12 @@ use toolkit_db::secure::{AccessScope, DbTx, SecureEntityExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
+/// One value for a whole test binary: these suites drive a repository or a
+/// service directly, where the value the HTTP edge would have established has
+/// no producer. What each suite asserts *about* it is stated where it asserts
+/// it.
+const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
+
 /// The operation name the two guarded creates are scoped under; a second one
 /// below proves the scoping is real.
 const CREATE_PLAN: &str = "bss_pricing.create_plan";
@@ -69,6 +75,7 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        correlation_id: TEST_CORRELATION,
     }
 }
 

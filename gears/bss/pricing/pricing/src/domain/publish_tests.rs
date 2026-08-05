@@ -9,7 +9,14 @@ use crate::domain::snapshot::VersionRef;
 use uuid::Uuid;
 
 fn unit() -> PlanPublishUnit {
-    PlanPublishUnit::new(PlanId::new(Uuid::from_u128(7)), 3)
+    PlanPublishUnit::plan_content(PlanId::new(Uuid::from_u128(7)), 3)
+}
+
+/// A digest, for the arm that carries one. Its value is arbitrary here: what
+/// this module tests is what the authorization *carries*, and the re-derivation
+/// that gives the digest meaning is `infra::publish::commit`'s.
+const fn pin() -> [u8; 32] {
+    [0x5a; 32]
 }
 
 #[test]
@@ -18,10 +25,13 @@ fn an_approved_publish_carries_its_record_and_both_principals() {
     let submitter = Uuid::from_u128(12);
     let approver = Uuid::from_u128(13);
 
-    let auth = PublishAuthorization::approved(approval, submitter, approver);
+    let auth = PublishAuthorization::approved(approval, submitter, approver, pin());
 
     assert_eq!(auth.approval_ref(), Some(approval));
     assert_eq!(auth.principals(), Some((submitter, approver)));
+    // The content the decision was over rides with it, which is what lets the
+    // commit re-derive it inside the transaction that freezes the plan.
+    assert_eq!(auth.pinned_content_hash(), Some(pin()));
 }
 
 #[test]
@@ -32,6 +42,9 @@ fn an_auto_publishable_change_carries_neither() {
     // Not "the actor approved itself": there is no second principal, and
     // saying so is what keeps the trail honest about which publishes had one.
     assert_eq!(auth.principals(), None);
+    // And no pin, for the same reason: nobody was shown anything, so there is
+    // no content a re-derivation could disagree with.
+    assert_eq!(auth.pinned_content_hash(), None);
 }
 
 #[test]
@@ -40,7 +53,7 @@ fn the_two_person_check_is_deliberately_not_enforced_here() {
     // `inst-tp-selfaudit` binds its refusal to an audit record this group
     // cannot write. Half the rule enforced here would give it two owners.
     let principal = Uuid::from_u128(21);
-    let auth = PublishAuthorization::approved(Uuid::from_u128(20), principal, principal);
+    let auth = PublishAuthorization::approved(Uuid::from_u128(20), principal, principal, pin());
 
     assert_eq!(auth.principals(), Some((principal, principal)));
 }

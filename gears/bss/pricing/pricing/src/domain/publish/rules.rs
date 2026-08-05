@@ -20,6 +20,14 @@
 //! *about a set of rows* and reads oddly ahead of the news that one of them is
 //! not a row at all.
 //!
+//! The **slice-7 coverage set runs last**, after both plan-level sets, for the
+//! same reason: `inst-wc-required` is a statement about a key's window plane, and
+//! a report that named an uncovered key before it named the row that is not a row
+//! reads back to front. [`window_coverage_rules`] is registered here as its own
+//! pipeline — not appended to `foundation_plan_rules`, whose doc reserves that
+//! place for the next *Foundation* rule, and not to Slice 2's set, which
+//! `GrandfatherHorizonOnItsClass` already argues a slice-7 rule cannot join.
+//!
 //! Within the row half the Foundation's own rule runs after Slice 3's, because
 //! Slice 3 answers "is this a row" and the rounding rule answers "does this row
 //! resolve the policy every charge's last minor unit depends on" — the second
@@ -92,6 +100,7 @@
 
 use toolkit_macros::domain_model;
 
+use crate::domain::coverage::window_coverage_rules;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::rules::price_row_rules;
@@ -142,6 +151,37 @@ pub const PLAN_SIZE_SOFT_CAP_EXCEEDED: &str = "PLAN_SIZE_SOFT_CAP_EXCEEDED";
 /// reaching the store by another path — and this rule is the report line an author
 /// acts on. Deleting either leaves a hole the other does not cover.
 pub const GRANDFATHER_UNTIL_FORBIDDEN: &str = "GRANDFATHER_UNTIL_FORBIDDEN";
+
+/// A row carries a value in a field that is **declared and not yet authorable**
+/// (`01-foundation.md` §3.3, D-179; the hazard is D-177's).
+///
+/// Today that is `includedAllowance` (D-45) and `tierQualificationWindow`
+/// (D-40). Both are refused at authoring by D-177 clause (1) as malformed
+/// requests carrying **no code** — the class D-141 settled — and this is
+/// deliberately a *different* refusal rather than the same one moved:
+///
+/// - The acts differ. A stored row's publish request is well-formed and its
+///   preconditions hold; the operator's remedy is to clear the field, not to
+///   reshape a payload.
+/// - The authoring refusal *can* be codeless because the validation envelope has
+///   a no-code arm. This path has none — a publish refusal travels as a
+///   [`Violation`](crate::domain::validation::Violation) in the report, which
+///   carries a code by construction, and an empty report short-circuits to an
+///   internal fault. A codeless refusal here would reach the operator as a 500.
+/// - D-177 clause (3) makes the authoring refusal load-bearing and leaves the
+///   freezing act itself ungated, which is safe only while **every** authoring
+///   path refuses — a condition the design set cannot assert while the
+///   bulk-import arm is unbuilt and rows authored before the refusal may exist.
+///
+/// It names the **reason** rather than the field, so a third
+/// rostered-but-unauthorable field needs no second code and the operator's action
+/// does not change — D-146's line.
+///
+/// **Its removal has an order** (D-177 clause 3, restated by D-179 clause 3): it
+/// is deleted in the same change that lands the ten Slice-10 refusals *and* the
+/// allowance compile. Not before, and not by a group tidying what looks like an
+/// unreachable branch.
+pub const PRIMITIVE_RULES_UNBUILT: &str = "PRIMITIVE_RULES_UNBUILT";
 
 /// The per-tenant configuration the publish rule set is run under.
 ///
@@ -247,6 +287,7 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
     }
     report.absorb(foundation_plan_rules(params).run(shape));
     report.absorb(plan_shape_rules(params.interval_bounds, params.descriptors.clone()).run(shape));
+    report.absorb(window_coverage_rules().run(shape));
     report
 }
 
@@ -266,6 +307,59 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
             caps: params.size_caps,
         }))
         .with_rule(Box::new(GrandfatherHorizonOnItsClass))
+        .with_rule(Box::new(NoUnjudgedPrimitive))
+}
+
+/// No published row may carry a Slice-10 primitive whose rules are unbuilt
+/// (D-179; the hazard is D-177's).
+///
+/// **This is the gate that makes mounting the publish route safe.** Publish is
+/// the freezing act: a stored value becomes an immutable version on a ≥ 7-year
+/// horizon, with no further code change and no other gate that would notice.
+/// D-177 refuses these two fields on every *authoring* path, which is the right
+/// posture and an insufficient one — it holds only while every authoring path
+/// exists and refuses, and the bulk-import arm it binds is owed by Slice 12 and
+/// unbuilt, while a row authored before that refusal landed was never offered to
+/// it at all. This rule does not ask how the value got there.
+///
+/// Reported **once per row**, naming the row and the field, because that is the
+/// edit.
+///
+/// See [`PRIMITIVE_RULES_UNBUILT`] for why the code is separate from the
+/// authoring refusal's, and for the order its removal takes.
+#[domain_model]
+#[derive(Clone, Copy, Debug)]
+struct NoUnjudgedPrimitive;
+
+impl ValidationRule<PlanShape> for NoUnjudgedPrimitive {
+    fn name(&self) -> &'static str {
+        "foundation.no_unjudged_primitive"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        for record in &subject.rows {
+            if record.row.included_allowance.is_some() {
+                report.violate(
+                    PRIMITIVE_RULES_UNBUILT,
+                    record.price_id.to_string(),
+                    "this row carries an includedAllowance and the Slice-10 rules that would \
+                     judge it are unbuilt, as is the compile that gives the value meaning; \
+                     publish stops rather than freezing an unjudged value into an immutable \
+                     version",
+                );
+            }
+            if record.row.tier_qualification_window.is_some() {
+                report.violate(
+                    PRIMITIVE_RULES_UNBUILT,
+                    record.price_id.to_string(),
+                    "this row carries a tierQualificationWindow and the Slice-10 rules that \
+                     would judge it are unbuilt, as is the rate lock that gives the value \
+                     meaning; publish stops rather than freezing an unjudged value into an \
+                     immutable version",
+                );
+            }
+        }
+    }
 }
 
 /// Every published row must resolve a rounding policy — its own, or the

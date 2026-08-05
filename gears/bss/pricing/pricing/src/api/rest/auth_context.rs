@@ -9,6 +9,7 @@ use axum::extract::Extension;
 use chrono::{DateTime, Utc};
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_security::SecurityContext;
+use uuid::Uuid;
 
 use crate::api::rest::error::unauthenticated;
 use crate::domain::audit::AuditStamp;
@@ -50,15 +51,20 @@ mod auth_context_tests;
 /// name or an email, so the ≥ 7-year retention holds no directly-identifying
 /// operator PII.
 ///
-/// **`correlation_id` is `None`, and that is a gap rather than a decision.**
-/// `inst-au-complete` lists the correlation id among a record's required fields,
-/// and nothing plumbs one into an Axum handler in this gear — the publish path
-/// takes one as a parameter because its caller is in-process. **Reported.**
+/// **`correlation` is the request's, not the record's** (D-178). It is
+/// established once per request by
+/// [`correlation::establish`](crate::api::rest::correlation::establish) and taken
+/// here as an argument rather than minted, which is the whole of D-178 clause
+/// (2): every record and every outbox row one operator call produces carries one
+/// value, and a `Uuid::now_v7()` on this line would give each of them a different
+/// one while satisfying "never NULL". The parameter is what makes that a property
+/// of the type rather than of a convention — a handler cannot build a stamp
+/// without having asked the edge for the value.
 #[must_use]
-pub fn audit_stamp(ctx: &SecurityContext, now: DateTime<Utc>) -> AuditStamp {
+pub fn audit_stamp(ctx: &SecurityContext, now: DateTime<Utc>, correlation: Uuid) -> AuditStamp {
     AuditStamp {
         actor_principal_id: ctx.subject_id(),
         recorded_at: now,
-        correlation_id: None,
+        correlation_id: correlation,
     }
 }

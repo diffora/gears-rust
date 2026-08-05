@@ -12,8 +12,24 @@
 //! `ROUNDING_POLICY_UNRESOLVED`, `PRECISION_EXCEEDED`,
 //! `TIMESTAMP_PRECISION_EXCEEDED`, `AMOUNT_NEGATIVE`, `CURRENCY_INVALID`,
 //! `FIXTURE_MISSING`, `PLAN_RETIRED_NO_SUCCESSOR`,
-//! `GRANDFATHER_UNTIL_FORBIDDEN`, `CONCURRENT_MUTATION`); a consumer matches the
-//! category coarsely and the code exactly.
+//! `GRANDFATHER_UNTIL_FORBIDDEN`, `CONCURRENT_MUTATION`, the five
+//! `05-governance.md` §5 declares — `APPROVAL_NOT_PENDING`,
+//! `APPROVAL_CONTENT_MISMATCH`, `SELF_APPROVAL_FORBIDDEN`,
+//! `REGION_SCOPE_DENIED`, `REASON_REQUIRED` — and
+//! `PENDING_CHANGE_UNIT_EXISTS`, which `07-pricewindow-linkage.md` §5 declares
+//! and this gear's submit path is the first writer of); a consumer matches the
+//! category coarsely and the code **exactly**.
+//!
+//! *Exactly* is why the two 403 arms carry a **bare code** in `reason` and drop
+//! their detail. `permission_denied()` has no detail slot — its detail is the
+//! fixed platform sentence and `reason` is the only free field — so a detail
+//! carried there would have to ride the code as `"CODE: detail"`, and a consumer
+//! comparing `reason` to `SELF_APPROVAL_FORBIDDEN` would never match. What is
+//! given up is nothing the caller lacks and nothing an operator loses: the
+//! detail names the approval record, which is the id the caller addressed the
+//! request to, and the attempt itself is already on `pricing_audit_log` as a
+//! `deny` record carrying that id (`inst-tp-selfaudit`, `inst-rb-audit`) —
+//! a durable trail rather than a log line.
 //!
 //! **The design set's 422s are architectural, not wire** (normative:
 //! `design/01-foundation.md` §3.3). They say *unprocessable content*; the
@@ -100,6 +116,41 @@ impl From<DomainError> for CanonicalError {
                     "GRANDFATHER_UNTIL_FORBIDDEN",
                 )
                 .create(),
+            // D-63's future-only start. An architectural 422 (§5) rendered 400,
+            // and a precondition failure rather than a malformed argument for
+            // `TIMESTAMP_PRECISION_EXCEEDED`'s reason: the instant parses and is a
+            // perfectly good instant, it is simply behind a clock the request
+            // cannot see. It is the one of the four window refusals that is **not**
+            // a conflict — a retry unchanged only puts the start further into the
+            // past.
+            D::WindowStartInPast(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation("effective_from", detail, "WINDOW_START_IN_PAST")
+                .create(),
+            // `inst-fg-trailing`, fail-closed under D-182. An architectural 422 (§5)
+            // rendered 400, and a precondition failure rather than a conflict for
+            // the reason its sibling above is one, with the sign reversed: nothing
+            // moved under the caller. The coverage this refuses to remove is the
+            // coverage they composed the request against, so a retry unchanged is
+            // refused identically — which is exactly what a 409 would falsely
+            // promise a remedy for.
+            //
+            // The subject is `effective_to` on both producing paths, including the
+            // cancel: a cancellation *is* the removal of an interval's coverage, and
+            // naming the field the operator can still move — shorten to an instant
+            // inside the floor, or schedule a successor — is D-146's line.
+            D::WindowTrailingVoid(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation("effective_to", detail, "WINDOW_TRAILING_VOID")
+                .create(),
+            // §5's `THRESHOLD_INVALID`, an architectural 422 rendered 400 with the
+            // code as the discriminator. The subject is `entries` on every producing
+            // path: all five shape rules are about the entry set - its size, its
+            // keys, and the basis inside each - and there is no second field on the
+            // request an operator could move instead. `effective_from` has its own
+            // refusal one layer down (`TIMESTAMP_PRECISION_EXCEEDED`), so folding it
+            // in here would give one field two codes.
+            D::ThresholdInvalid(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation("entries", detail, "THRESHOLD_INVALID")
+                .create(),
 
             // -- Aborted (409) -- conflicts the caller can resolve and retry.
             D::DuplicateScopeKey(detail) => PlanResource::aborted(detail)
@@ -131,6 +182,82 @@ impl From<DomainError> for CanonicalError {
             // which is why it is here and not beside `LIFECYCLE_FORBIDDEN`.
             D::OpenDraftRevisionExists(detail) => PlanResource::aborted(detail)
                 .with_reason("OPEN_DRAFT_REVISION_EXISTS")
+                .create(),
+            // A decision that lost a race with another decision
+            // (`design/05-governance.md` §5, which types it 409 outright rather
+            // than as one of the section's architectural 422s). It joins the
+            // conflict class and not the precondition one: re-reading the record
+            // is the remedy, and the caller's own request was never wrong.
+            D::ApprovalNotPending(detail) => PlanResource::aborted(detail)
+                .with_reason("APPROVAL_NOT_PENDING")
+                .create(),
+            // The one-pending-unit-per-subject conflict
+            // (`07-pricewindow-linkage.md` `inst-co-single-pending`). It sits in
+            // the conflict class with `OPEN_DRAFT_REVISION_EXISTS`, which is the
+            // same shape one construct over: a slot the subject has exactly one
+            // of is taken, the caller's request was never malformed, and the
+            // remedy is to act on the unit the detail names.
+            D::PendingChangeUnitExists(detail) => PlanResource::aborted(detail)
+                .with_reason("PENDING_CHANGE_UNIT_EXISTS")
+                .create(),
+            // The TOCTOU pin's own refusal (`inst-ap-pin`). It joins the
+            // conflict class rather than the precondition one for the reason
+            // `APPROVAL_NOT_PENDING` does: the reviewer's request was right
+            // about the world they were shown, and somebody else moved it.
+            D::ApprovalContentMismatch(detail) => PlanResource::aborted(detail)
+                .with_reason("APPROVAL_CONTENT_MISMATCH")
+                .create(),
+            // Two intervals on one canonical scope key claim one instant
+            // (`07-pricewindow-linkage.md` §5, which types this 409 outright
+            // rather than as one of the section's architectural 422s). It joins
+            // the conflict class for `APPROVAL_NOT_PENDING`'s reason: the
+            // request was right about what the caller could see, and what
+            // refused it is a sibling window on a key their own request never
+            // named.
+            D::WindowOverlap(detail) => PlanResource::aborted(detail)
+                .with_reason("WINDOW_OVERLAP")
+                .create(),
+            // A mutation of what §4 froze (`inst-ws-immutable`), 409 in §5's own
+            // words. It joins the conflict class rather than the precondition one
+            // because what refused it is where the clock stands: a `PATCH`
+            // composed against a window whose end was five minutes away was right
+            // when it was written, and re-reading the window is the remedy.
+            D::WindowHistoricalImmutable(detail) => PlanResource::aborted(detail)
+                .with_reason("WINDOW_HISTORICAL_IMMUTABLE")
+                .create(),
+            // The cancel path's own refusal (`inst-ws-cancel`), 409 in §5's own
+            // words and kept apart from the line above deliberately: an operator
+            // told the window is immutable stops, and one told it is not
+            // *cancellable* shortens it through `effectiveTo` instead, which is
+            // the operation §4 leaves them.
+            D::WindowNotCancellable(detail) => PlanResource::aborted(detail)
+                .with_reason("WINDOW_NOT_CANCELLABLE")
+                .create(),
+
+            // -- PermissionDenied (403) -- the two audited authority refusals.
+            //
+            // Both are **403 in the design set's own words** (§5), and both are
+            // written to `pricing_audit_log` as a `deny` record before they
+            // reach here. Neither is retriable and neither names a field to fix,
+            // which is why they are not in the 400 bucket with the malformed
+            // requests: there is nothing about the request to correct, only
+            // somebody else to ask.
+            //
+            // The detail is **dropped** rather than folded into `reason`; see
+            // the module note on why the code has to stand alone there.
+            D::SelfApprovalForbidden(_detail) => PlanResource::permission_denied()
+                .with_reason("SELF_APPROVAL_FORBIDDEN")
+                .create(),
+            D::RegionScopeDenied(_detail) => PlanResource::permission_denied()
+                .with_reason("REGION_SCOPE_DENIED")
+                .create(),
+
+            // An architectural 422 (§5) rendered 400, with the code as the
+            // discriminator; see the module note. It is a precondition failure
+            // and not a malformed argument because the body parsed — the field
+            // is simply absent, and `reason` is the field an author fills in.
+            D::ReasonRequired(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation("reason", detail, "REASON_REQUIRED")
                 .create(),
 
             // -- The aggregate validation envelope (architectural 422, rendered 400) --

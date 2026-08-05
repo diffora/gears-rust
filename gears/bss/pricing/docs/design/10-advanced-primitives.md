@@ -289,12 +289,27 @@ give the value meaning. Four clauses.
    change that lands the rules and the compile together — not before, and not by a group tidying an
    unreachable branch. The group that mounts `POST /bss-pricing/v1/plans/{planId}/publish` (Slice 5)
    inherits this as a precondition to check rather than a detail: at that point publish becomes the
-   freezing act, and it is safe only while every authoring path still refuses.
+   freezing act, and it is safe only while every authoring path still refuses. **That condition is
+   not one this set can currently assert, which is why clause 5 exists**: the bulk-import arm
+   clause 1 binds does not exist yet, and a row authored before this refusal landed was never
+   offered to it at all.
 4. **One of the ten cannot be built even with this slice, and by design.** `FIXTURE_MISSING` on the
    `trailing_tier` variant (`inst-tt-fixture`) needs that variant **registered in the joint
    conformance registry**, which is a counterparty act with Rating (D-60) and not pricing's to mint
    alone — rating SEAMS M12 carries it as open on their side. Until it is registered the block
    cannot fire, which is why it is named here rather than left to read as coverage.
+5. **Publish refuses a stored value on its own authority (normative, D-179, 2026-08-03).** Clause 3
+   made the authoring refusal load-bearing and left the freezing act itself ungated, which is safe
+   only under a condition clause 3 cannot assert. Publish therefore carries its own fail-closed
+   rule, `PRIMITIVE_RULES_UNBUILT` ([`01-foundation.md`](./01-foundation.md) §3.3), registered into
+   the Foundation publish set: a row carrying either field is refused at publish, whatever put the
+   value there. It is a **separate code** rather than clause 1's codeless malformed request because
+   the two acts differ — a stored row's publish request is well-formed, and the operator's remedy is
+   to clear the field rather than reshape a payload — and because a publish refusal travels as a
+   `Violation` in the validation report, which carries a code by construction. The code names the
+   **reason**, not the field, so a third rostered-but-unauthorable field needs no second code. Its
+   removal takes clause 3's order unchanged: deleted in the change that lands the ten rules and the
+   compile.
 
 Rejected: **building the ten gates now, without the compile.** A `graduated` row with
 `includedAllowance {100, none}` would pass all six `inst-ac-gate` rules and publish with no `$0`

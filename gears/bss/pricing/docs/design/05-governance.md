@@ -211,7 +211,7 @@ audit trail every other slice's mutations flow through; the preview/backdating g
 **Steps**:
 1. [ ] - `p1` - No explicitly configured threshold → **material** (G1, fail-safe) - `inst-mat-failsafe`
 2. [ ] - `p1` - First publish (no prior baseline — no delta computable) → **material** (G1) - `inst-mat-first`
-3. [ ] - `p1` - Otherwise compute per-row deltas **in each row's own currency** (absolute or percent per policy); **any** row over its threshold trips the whole change (G3); a row whose currency has **no threshold entry** in the configured policy is **material** (the G1 fail-safe applies per currency, not per policy object). **The delta domain (normative, D-115, 2026-07-31 review fix — "the row's delta" previously had no defined operand for the rows that carry tiered revenue):** `flat`/`per_unit` → the `amount_minor` delta; `graduated`/`volume` → the band-wise `unit_price_minor` vector, compared per band **iff the band geometry (bounds and count) is unchanged**; `package` → the `package_price_minor` delta **iff `package_size` is unchanged**. Any change to a **quantity-determining/geometry field** — band bounds or count, `package_size`, `manual_quantity`, `includedAllowance.quantity` — is **material** regardless of thresholds: no effective-price delta is computable catalog-side (the no-charge-computation principle forbids computing one), so the G1 fail-safe applies — a `manual_quantity` 10 → 1000 or a `[0,1000)` → `[0,10)` band move multiplies the charge at zero amount delta. A **percent-only** policy against a zero (or NULL) baseline is likewise material — no percentage is computable. Materiality is evaluated **once at submit**; a later threshold-policy change neither re-evaluates nor voids a pending approval - `inst-mat-percurrency`
+3. [ ] - `p1` - Otherwise compute per-row deltas **in each row's own currency** (absolute or percent per policy); **any** row over its threshold trips the whole change (G3); a row whose currency has **no threshold entry** in the configured policy is **material** (the G1 fail-safe applies per currency, not per policy object). **The delta domain (normative, D-115, 2026-07-31 review fix — "the row's delta" previously had no defined operand for the rows that carry tiered revenue):** `flat`/`per_unit` → the `amount_minor` delta; `graduated`/`volume` → the band-wise `unit_price_minor` vector, compared per band **iff the band geometry (bounds and count) is unchanged**; `package` → the `package_price_minor` delta **iff `package_size` is unchanged**. Any change to a **quantity-determining/geometry field** — band bounds or count, `package_size`, `manual_quantity`, `includedAllowance.quantity` — is **material** regardless of thresholds: no effective-price delta is computable catalog-side (the no-charge-computation principle forbids computing one), so the G1 fail-safe applies — a `manual_quantity` 10 → 1000 or a `[0,1000)` → `[0,10)` band move multiplies the charge at zero amount delta. A **percent-only** policy against a zero (or NULL) baseline is likewise material — no percentage is computable. Materiality is evaluated **once at submit**; a later threshold-policy change neither re-evaluates nor voids a pending approval. **This step has no authorable subject on a plan revision until D-88 lands (D-183, 2026-08-05):** every revision the authoring door admits answers an earlier arm — no baseline, no moved row, or first publish — because the store refuses a draft row on a key a published row occupies, so `thresholdReached` has no production producer here. The comparison *is* reached from the window plane, where the change set is the published rows unchanged and the delta is therefore always zero - `inst-mat-percurrency`
 3a. [ ] - `p1` - **A row without its own baseline is material:** adding a new row to a published plan (a new currency/region/phase/chargeKind key) has no prior row to delta against — per the G1 fail-safe it is **always material**, regardless of thresholds - `inst-mat-newrow`
 4. [ ] - `p1` - Registered material-change sources beyond price deltas — **always-material triggers**: `grandfatherUntil` tightening (Foundation §4.3), grandfathering cutovers (Slice 7), **plan retirement while a cutover unit is pending/approved-not-yet-effective** (Slice 11 — the retirement unwinds the approved unit, D-05), **immediate** membership re-resolutions and bulk group discounts/moves (Slice 9 — renewal-aligned single-membership changes are audit-only, not material), **historical imports** (this slice, D-13 — every import, since backdated rows shape `migrated-origin` snapshots), and **approval-threshold-policy mutations themselves** (this slice, D-10 — direction-agnostic: any policy diff needs an independent second FinanceReviewer; the two-person rule's foundation must not be single-person-editable. Bootstrap is fail-safe: a single-reviewer tenant simply leaves the policy unset ⇒ everything material), and **GA-gate-clearing re-publishes** (Slice 4 `inst-td-clear`; the Slice 10 prepaid analogue, D-29): the clearing re-publish can be content-identical — zero per-row delta ⇒ auto-publishable under a configured threshold — which would break S4's with-approval promise, so it is a registered always-material trigger (2026-07-28 review fix, confirmed 2026-07-31). Grant-price changes (Slice 10) are **not** always-material: they are evaluated as ordinary price deltas under the per-currency threshold policy. The grant's **non-price** fields (`category`, `applicability`, `drawdownPriority`) carry no numeric delta — per the G1 fail-safe (no delta computable ⇒ material) their changes are **always material** (registered trigger, Slice 10 `inst-pg-material`). **`PriceOverlay` adjustments (D-50, 2026-07-28 review fix — the evaluator previously saw only price rows, so an overlay edit from −10% to −90% reached consumers approver-less):** creating a `PriceOverlay`, adding/removing an adjustment line, and **any line-magnitude or kind change** are **always material** — an overlay line is not a price row (no per-currency baseline delta to threshold; percent lines carry no currency at all), so the G1 no-delta rule applies wholesale; scope/precedence/dating/disclosure edits ride the same rule (they change who receives the adjustment). This closes the authz gap too: `price_overlay × write` still authors, but the commit routes through the material approval workflow before its D-06 publish unit fires. **Window cancellation and `effectiveTo` shortening on a key with in-flight subscribers (Slice 7, D-62, 2026-07-29 review fix):** D-05 and D-51 guarded the *retirement* path into the trailing void, but `DELETE /bss-pricing/v1/price-windows/{id}` and the shortening `PATCH` carry the identical hazard under plain `plan × write` — cancelling an approved scheduled successor silently reverts a two-person-approved price change and leaves the key failing closed once the active window expires. Both are therefore **always-material** triggers, and both are additionally gap-checked by S7 `inst-fg-trailing`; the D-51 exemption — **narrowed by D-80 (2026-07-30): no in-flight subscribers *and* not currently sellable, where "sellable" is evaluated as the plan's sellability on the key's `(currency, region)` market over the full key conjunction (D-94, 2026-07-31 — cancelling any component key's window of a sellable plan-market is never exempt)**, the subscriber predicate resolving through the D-79 Subscriptions lane (fail-closed on outage) — applies to the materiality trigger as well as to the gap check. **Bundle composition and rev-share (Slice 8, D-104, 2026-07-31 review fix):** bundle creation, component add/remove/replace, any rev-share change (`share_bp`, `platform_cut_bp`, `residual_absorber_party`), a `price_basis` change and an `invoiceItemization` change are **always material** — this evaluator computes per-row deltas over **price rows** and a `sum_of_parts` recomposition touches none, so a component swap or a re-split evaluated `auto_publishable` under any configured threshold and reached consumers approver-free (the D-50 hole one slice over: a rev-share split *is* vendor payout, and a component swap changes what the customer receives at an unchanged price). It also restores D-11's own premise — that decision dropped `bundle × write` from the publish endpoint because "the composition is protected at publish time by the approval content pin", which a non-material publish never creates. **Plan retirement, unconditionally (Slice 11, D-109, 2026-07-31 review fix):** retirement was registered here only for the D-05 case (a live cutover unit to unwind), yet it cancels **every** not-yet-active window of its zero-subscriber keys in one call — the act D-62 made two-person for a *single* window — stops all new sales for the plan, and is **irreversible** (the plan state machine has no `retired → published` edge and the open draft revision is deleted with it). It is therefore an always-material trigger in every case; a dry-run confirm screen is not a second principal. **Mutations with no computable price delta (D-115, 2026-07-31 review fix — the grant-field G1 treatment applied to its siblings):** a change set whose consumer-visible content carries **no computable price delta** is **always material**. Enumerated: the row **contract fields** — `billingTiming` (Billing's sole deferral input), `prorationBasis`, `billing_anchor_policy`, `credit_on_downgrade`, `tax_inclusive`/`tax_category_ref`, `quantity_source` — and **plan-shape revision content**: the descriptor set (GL code, invoice line template, itemization rule), the phase graph/durations (a trial 7 → 90 days is a commercial giveaway with zero price-row delta), the add-on rule set (required flips, `depends_on`/`conflicts_with`, qty bounds, `price_override_ref`), `billing_cycle`/`frequency`, `available_from`/`available_to`, the `PlanTier` override, `invoice_grouping_key`, and the **plan-change contract content** — `usage_counter_on_plan_change` (flipping `reset → carry` on a graduated target plan changes which band the continued `Q` lands in, at zero price-row delta — D-113's lever), `allowed_change_targets` edges and `comparability_rank` (enumeration completed 2026-08-01, billing-domain review C-7: the blanket no-computable-delta clause covers these on a plain reading, but this list is the concrete registered set an implementer codes from). A pure-shape revision contains zero price rows, so the per-row evaluation had nothing to trip on — while D-50 (overlays), D-104 (bundle composition), D-62 (windows) and D-109 (retirement) had each already closed this hole on their own surface. Auto-publish therefore remains exactly: a pure amount change on unchanged geometry, below an explicitly configured threshold, not a first publish - `inst-mat-registered`
 
@@ -223,7 +223,7 @@ audit trail every other slice's mutations flow through; the preview/backdating g
 **Output**: accepted decision, or a rejected + audited violation
 
 **Steps**:
-1. [ ] - `p1` - Approver principal MUST differ from the submitter principal (G2 — identity comparison, not role) - `inst-tp-distinct`
+1. [ ] - `p1` - Approver principal MUST differ from the submitter principal (G2 — identity comparison, not role). **Three surfaces read a stored approval and act on it — the publish commit, a window mutation and the threshold policy's effective version — and the rule has one spelling across all three since D-193 (2026-08-05);** the third applied neither half of it until then - `inst-tp-distinct`
 2. [ ] - `p1` - A self-approval attempt is rejected **and** written to `pricing_audit_log` (attempted-violation record) - `inst-tp-selfaudit`
 3. [ ] - `p1` - Submitter and approver identities + timestamps land on the approval record and in the audit trail; a rejection carries its mandatory reason - `inst-tp-record`
 
@@ -316,6 +316,8 @@ matrix at the *principal* level — the two-person rule additionally enforces
 deliberately lacks `approval_policy × write` (it cannot weaken thresholds it operates
 under) and `approval × approve` (it publishes, it does not approve itself).
 
+**A window unit's detail renders the act as well as the plan (D-184, 2026-08-05):** the pinned subject of a window mutation's unit is the plan shape as it already stands, which is the same document for a cancel and for a lengthening, so the detail additionally carries the **act** read off the record's own subject ref — the operation, the window or the price row, the interval proposed and the end it would move. The act is authenticated by that subject on an append-only store and is deliberately **not** part of the content digest, which keeps answering whether the plan's content has moved since the reviewer looked.
+
 **Reviewability invariant (normative, D-61, 2026-07-29 review fix)** — for **every** registered
 always-material trigger (`inst-mat-registered`), the approving role MUST hold `read` on the
 trigger's subject resource. Deny-by-default otherwise turns the two-person rule into a
@@ -335,7 +337,7 @@ hash-blind even where the subject resource is read-restricted.
 **Output**: an immutable, tamper-evident audit record
 
 **Steps**:
-1. [ ] - `p1` - Record completeness: actor, timestamp, **before/after version refs**, approval trail (submitter/approver/decision/reason), correlation id. **The correlation id has one producer for the whole gear and it is the request's, not the record's (normative, D-178, 2026-08-03):** it is the request-scoped correlation the gear's HTTP edge establishes — the value the platform propagates inbound when there is one, minted at the edge when there is not — so every audit record and every `pricing_outbox` row a single operator call produces carries **one** value, which is what lets an auditor pull a plan revision's record and its price rows' records (different `chain_id`s, by D-135) as one action. An in-process producer supplies its own: that is why the publish commit takes one as a parameter. It is **never** the `Idempotency-Key` (client-minted, per-operation, and the subject of a *different* comparison — Foundation §3.7) and never derived from the payload; and because it is minted when absent, the field is always satisfiable and never NULL - `inst-au-complete`
+1. [ ] - `p1` - Record completeness: actor, timestamp, **before/after version refs**, approval trail (submitter/approver/decision/reason), correlation id. **The correlation id has one producer for the whole gear and it is the request's, not the record's (normative, D-178, 2026-08-03):** it is the request-scoped correlation the gear's HTTP edge establishes — the value the platform propagates inbound when there is one, minted at the edge when there is not — so every audit record and every `pricing_outbox` row a single operator call produces carries **one** value, which is what lets an auditor pull a plan revision's record and its price rows' records (different `chain_id`s, by D-135) as one action. An in-process producer supplies its own: that is why the publish commit takes one as a parameter. It is **never** the `Idempotency-Key` (client-minted, per-operation, and the subject of a *different* comparison — Foundation §3.7) and never derived from the payload; and because it is minted when absent, the field is always satisfiable and never NULL. **It is a UUID this gear mints, and an inbound W3C trace id is not adopted as one (normative, D-181, 2026-08-03):** the platform *does* carry an inbound convention the edge could read — `traceparent`, then `x-trace-id`, then `x-request-id` — and a W3C trace id is 128 bits that parse as a UUID, but it names a whole distributed trace rather than one operator call, only the first of the three spellings fits the column at all, and a parsed trace id lands with an arbitrary version and variant in a column minted v7 and read as time-ordered. So the edge mints unconditionally and records the option rather than taking it; what would close the propagation half is a platform-side change, not a gear-side one - `inst-au-complete`
 1a. [ ] - `p1` - **PII minimization:** the audit trail stores **pseudonymous principal ids**, never display names/emails — the 7-year retention then holds no directly-identifying operator PII and GDPR erasure of a departed operator stays an IdP concern, not an audit rewrite - `inst-au-pii`
 2. [ ] - `p1` - Tamper evidence per G4 (D-14): append-only role + triggers (as the Foundation tables) **plus** in-DB hash-chained rows committed in the mutation transaction; **chains are per tenant** (2026-07-31 review fix — residency-bound tenants live on different cells' databases, so a cross-tenant chain is physically impossible; per-tenant chains also keep verification and WORM anchoring residency-local) **and segmented within a tenant by `chain_id` = the audited subject's aggregate** — plan, overlay, payer, policy, bulk operation (**D-135**, 2026-08-01 review fix). A chain is a strict sequence: writing row *N* needs row *N−1*'s hash, so one chain per tenant meant every audited mutation of that tenant contended on a single head **inside** its mutation transaction — all authoring serialized by construction, against a ≥ 50 rows/s repricing SLO whose per-row cost model did not even list the audit write (S12 §10). Segmented, concurrent mutations of different aggregates proceed independently while a bulk run's rows — one plan, one `chain_id` — extend sequentially inside that plan's own transaction anyway (D-134). Tamper-evidence is preserved by a periodic per-tenant **roll-up** row chaining the current segment heads: deleting a row breaks its segment, deleting a segment breaks the roll-up. The verification job (`pricing_audit_chain_verified`) walks segments and roll-up alike, and the roll-up head MAY be async-anchored to external WORM/object-lock storage — prior versions cannot be mutated or deleted within retention - `inst-au-tamper`
 3. [ ] - `p1` - Retention ≥ 7 years, tenant/jurisdiction-configurable as the **maximum applicable minimum** (G5); the storage-limitation-maximum question is an open Legal item — the retention engine takes a per-jurisdiction config, not a hardcoded value - `inst-au-retention`
@@ -364,7 +366,7 @@ hash-blind even where the subject resource is read-restricted.
 | `POST` | `/bss-pricing/v1/approvals/{id}/approve` | Approve (independent principal only) | per decision |
 | `POST` | `/bss-pricing/v1/approvals/{id}/reject` | Reject with mandatory reason | per decision |
 | `POST` | `/bss-pricing/v1/approvals/{id}/withdraw` | Submitter/CatalogAdmin voids a pending record without mutating the subject (audited; frees the pinned scope key — 2026-07-31 review fix) | per decision |
-| `GET/PUT` | `/bss-pricing/v1/config/approval-threshold-policy` | Tenant threshold policy (per-currency; unset ⇒ two-person always). The PUT opens an **always-material approval unit** — the diff applies only after an independent FinanceReviewer approves (D-10) | ETag + approval unit |
+| `GET/PUT` | `/bss-pricing/v1/config/approval-threshold-policy` | Tenant threshold policy (per-currency; unset ⇒ two-person always). The PUT opens an **always-material approval unit** — the diff applies only after an independent FinanceReviewer approves (D-10). **The ETag half is owed by the implementation (D-186, 2026-08-05):** `If-Match` is required per D-171, and the bootstrap needs no exemption because the `GET` answers 200 with `effective: null`, so a tag always exists | ETag + approval unit |
 | `POST` | `/bss-pricing/v1/historical-imports` | Governed backdated reference import (`BackdateGrant` + reason) | client idempotency key |
 | `GET` | `/bss-pricing/v1/audit` | Auditor read (filters; export; cursor-paginated per D-125) | — |
 
@@ -391,11 +393,11 @@ Slice-owned tables (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S
 | `submitter_principal` | `string` | identity, not role |
 | `approver_principal` | `string` | NULL until decided; `CHECK (approver_principal <> submitter_principal)` |
 | `reason` | `text` | mandatory on reject |
-| `materiality` | `jsonb` | evaluator output: per-currency deltas, tripped rows, trigger source |
+| `materiality` | `jsonb` | evaluator output: per-currency deltas, tripped rows, trigger source. **The implementation stores the verdict token alone (D-187, 2026-08-05)** — the deltas and the tripped row are owed; carrying them costs the verdict its `Copy` |
 | `submitted_at` / `decided_at` | `timestamptz` | UTC |
 
 **Approval-threshold policy** — a `pricing_policy_object` entry (Foundation-owned):
-per-currency `{absolute_minor | percent}` thresholds; **unset ⇒ two-person rule always** (G1).
+per-currency `{absolute_minor | percent}` thresholds; **unset ⇒ two-person rule always** (G1). **"Unset" is reachable only as the bootstrap (D-185, 2026-08-05):** the policy is stored as per-currency rows, so a return to unset would need a *tombstone* version positively saying the tenant has no thresholds — an empty entry set is refused, and could not be pinned or seen by the version walk if it were not. **`effective_from` is not yet compared against anything (D-188, 2026-08-05)** — it is stored, validated, pinned and signed for, so an approved version dated in the future governs today's publishes; the walk owes the comparison. **The version mint is unguarded, and an unreadable version is skipped rather than raised (D-192, 2026-08-05)**: two proposals with disjoint currency sets can burn one version number, which is fail-closed, and the walk no longer aborts on the corrupt version that results.
 Shape rules (violations → `THRESHOLD_INVALID`, 422): keys MUST be ISO 4217 currency codes;
 `absolute_minor` ≥ 0 in minor units at the currency's ISO 4217 precision; `percent` > 0.
 
@@ -422,7 +424,8 @@ addressability. Its only reader is Slice 11's `SnapshotSynthesizer` (`inst-sy-se
 
 **`pricing_audit_log` (Foundation-owned; this slice is the writer contract)** — actor,
 timestamp, before/after version refs, approval trail, correlation id (the request's own, one
-producer for the gear — **D-178**, `inst-au-complete`), denied-attempt records,
+producer for the gear — **D-178**, `inst-au-complete`; a v7 UUID this gear mints, never an
+adopted trace id — **D-181**), denied-attempt records,
 backdate provenance; append-only + tamper evidence (G4); per-jurisdiction retention config (G5).
 Hash-chained and segmented per `(tenant_id, chain_id)`, `chain_id` being the audited subject's
 aggregate (D-135, Foundation §3.7).
@@ -444,7 +447,9 @@ seven years and is the one D-12 confines to the Auditor.
 - **`action`** — a declared, **additive** `snake_case` verb set: `create` / `update` / `delete`
   (the draft-authoring mutations — **D-175**, below), `publish` (Foundation §4.2), `abandon`
   (the audited discard flip, D-145), `retire` ([`11-lifecycle.md`](./11-lifecycle.md)),
-  `approve` / `reject` (`inst-tp-record`), `deny` (`inst-rb-audit`, and `inst-tp-selfaudit`'s
+  `submit` (§4's initial state — a material change unit opened over the subject, **D-180**,
+  below), `approve` / `reject` (`inst-tp-record`), `withdraw` (`inst-as-void`'s human void —
+  **D-180**), `deny` (`inst-rb-audit`, and `inst-tp-selfaudit`'s
   attempted-violation record), `backdate_import` (`inst-bd-store`), `policy_update` (D-10's
   threshold-policy mutations). Two constraints hold the set: an action token is **never a frozen
   event name** — `PlanPublished` is a `CatalogEvent` with one home, and the audit action for the
@@ -468,9 +473,70 @@ actor/timestamp/before-after/approval trail") require more than that list enumer
 six authoring mutations had a normative record and no token. So the set's closure rule is stated with it, as the companion of "no token
 without a writer": **no writer without a token** — every mutating surface this design set
 specifies carries an `action` here, and the roster is audited against that set rather than
-appended to as records happen to land. The `denied attempt` record is the other rule still
-holding: it has no token because this gear has no writer for it (no approval record, no approval
-`chain_id`), and one declared here would read as coverage.
+appended to as records happen to land.
+
+**Both halves of that rule measure the design set, not the implementation (clarified 2026-08-03,
+D-179's wave, found while reading this section against the code it governs).** As written, this
+paragraph closed by exempting the `denied attempt` record — "it has no token because this gear has
+no writer for it (no approval record, no approval `chain_id`)" — while the roster above declares
+**`deny`** and names that record as one of its two writers. The two statements were not in
+disagreement about the record; they were measuring different things. "No writer without a token"
+ranges over the surfaces **this design set specifies**, and `inst-rb-audit` and `inst-tp-selfaudit`
+specify these writers normatively; "this gear has no writer" is a statement about which code
+exists, which is the implementation's business and moves without any decision being taken. Read
+consistently, `deny` belongs in the roster and the roster is right. The companion rule — **no token
+without a writer** — likewise bars a token no *specified* surface writes, not one whose code is
+merely unbuilt; `backdate_import` and `policy_update` are declared on the same footing. What the
+implementation's state governs is not the vocabulary but the **audit of it**: a token whose writers
+are all still unbuilt is owed, and Slice 5 is where `approve`, `reject` and `deny` stop being owed.
+
+**The approval plane's own two verbs, `submit` and `withdraw` (normative, D-180, 2026-08-03,
+found while building this slice's approval surfaces).** D-175's closure rule ranges over the
+mutating surfaces this design set specifies, and applying it to the *approval* store — rather
+than to the authoring plane it was written against — leaves two uncovered.
+
+- **`submit`** — the record of the change unit §4's initial state opens: *"submitted (opened by
+  a material change unit … submitter recorded)"*. Its writer is the **non-committing arm** of
+  `POST /bss-pricing/v1/plans/{planId}/publish` (§5 of
+  [`02-plan-definition.md`](./02-plan-definition.md)), which evaluates materiality, inserts the
+  pinned `pricing_approval` row and answers `202` without publishing anything. Its warrant is
+  §8's `dod-audit` — *"every mutation MUST record actor/timestamp/before-after/approval trail"* —
+  and **nothing wider**: an insert into `pricing_approval` is a mutation, which is exactly
+  D-175's ground. It is **not** warranted by `inst-tp-record`: §6 assigns that instruction to
+  `approve`/`reject`, and its requirement — submitter and approver identities in the trail — is
+  met by the submitter principal standing on those two records whether or not a `submit` token
+  exists. Nor is the surface one the endpoint map overlooked: the route is already `plan ×
+  publish`, and the roster already names it through `publish`. What the roster lacked was a verb
+  for the *other* thing that route does.
+- **`withdraw`** — the record of `POST /bss-pricing/v1/approvals/{approvalId}/withdraw`, which
+  `inst-as-void` specifies and calls **audited** in as many words, on its own mounted route (§5).
+  It is not `reject` (a different edge, a different authority, a mandatory reason) and not
+  `abandon` (D-145's plan-draft flip, on the other plane).
+
+**The machine-driven void is the boundary, and it deliberately writes nothing.** `inst-ap-pin`'s
+TOCTOU guard also lands a unit in `voided`, from inside the transaction of the mutation that
+invalidated it — and that mutation has already written its own record, on the **same** segment
+(D-135 keys both on the plan) at the same instant, under the actor who caused it. A second record
+there would need an actor the act does not have, and `inst-au-pii` makes the actor a fact rather
+than a nicety. So `withdraw` means *a principal withdrew this*, and the absence of a record
+against a `voided` unit means *the guard closed it* — which is a distinction an auditor can read
+and a synthetic principal would destroy.
+
+**Both closure rules still hold, in both directions.** *No writer without a token*: with these
+two the six authoring mutations, the publish, the discard, the submit, the two decisions, the
+withdraw and the denied attempt are the mutating and attempted-mutating surfaces this set
+specifies, and each carries a verb. *No token without a writer*: `retire`, `backdate_import` and
+`policy_update` remain declared because `inst-rt-cancel`, `inst-bd-store` and D-10 **specify**
+those writers — the rule bars a token no specified surface writes, never one whose code is merely
+unbuilt (the paragraph above). What is owed is the audit of them, and Slice 5 is where `submit`
+and `withdraw` stop being owed. **The second run of each writes a second record, by design:**
+`inst-as-immutable` makes a decided or voided record immutable and a re-submit open a **new**
+one, so a withdraw followed by a fresh submit leaves three records — `submit`, `withdraw`,
+`submit` — on one plan's segment, which is the sequence an auditor needs and not a duplicate to
+be collapsed. Neither verb is consumer-visible: an `action` is a stored discriminator whose only
+reading surface is `inst-au-read`'s Auditor-only trail, which no publish unit carries and which
+this gear has not built. The sibling surface is Foundation §3.7's `pricing_audit_log` bullet,
+where the roster is summarized and both verbs are named.
 
 **Contention on a segment is a retriable refusal (D-159, 2026-08-03).** The segment head is
 `MAX(seq)` under the primary key `(tenant_id, chain_id, seq)`, so two mutations of one aggregate
@@ -479,6 +545,27 @@ that read the same head cannot both insert after it: the loser takes a unique vi
 not of an isolation level, so what is at risk is liveness rather than integrity. That refusal is
 `CONCURRENT_MUTATION` (409, Foundation §3.3), not an internal fault: the caller's request was
 well-formed, its preconditions held, and a retry is expected to succeed.
+
+**This paragraph and D-135's benefit now hold by execution rather than by argument (recorded
+2026-08-03, no D-number — a fact about the evidence, not a change to the rule).** Both claims are
+statements about two writers running at once, which the `SQLite` mirror cannot answer in either
+direction because it serializes writers; the gear's Postgres suite drives them as **real**
+concurrent transactions rather than by writing a colliding row by hand. The race is choreographed
+on observable events only: the winner appends and parks uncommitted, the loser appends and blocks
+on the key, a **third** connection polls `pg_locks` until the loser is provably in a lock wait —
+which is what proves its head read already happened — and only then is the winner released. The
+409 and the retriable class are asserted at the caller's boundary, and the **whole-transaction**
+rollback is proved by a witness row the loser wrote on a *different* segment before it collided:
+that segment holds zero rows afterwards, so a failed mutation left no partial trail. D-135's half
+is the same choreography with the assertion inverted — two aggregates of one tenant must both
+complete **while the first transaction is still open**, enforced by a timeout, so a mutation that
+contended would hang and redden rather than quietly wait its turn, and the same observer then
+asserts that **nothing ever waited on a lock**, so finishing quickly is not mistaken for not
+contending. The **pre-segmentation** single-chain key shape is what that timeout is guarding
+against: under it the second aggregate's append targets the same head and the test expires. The
+pairing is what makes either half evidence rather than a tautology — the same choreography on the
+same segment demonstrably *does* block. §9's integration criterion for this pair is therefore met
+by execution.
 
 **Grants** — the catalog-preview read grant and the `BackdateGrant` are IdP/gateway-managed
 claims; this slice defines their semantics and enforcement points, not their administration.

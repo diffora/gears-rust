@@ -80,6 +80,7 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
+use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
@@ -545,7 +546,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(router, openapi);
 
-    router.layer(Extension(state))
+    // D-178's edge, applied here rather than where the routers are merged so it
+    // travels with the routes: a surface reachable without it cannot build an
+    // `AuditStamp`, and `correlation::require_correlation` answers 500 rather
+    // than minting a second value per record.
+    router
+        .layer(Extension(state))
+        .layer(axum::middleware::from_fn(
+            crate::api::rest::correlation::establish,
+        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -557,11 +566,13 @@ async fn create_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
     Path(plan_id): Path<Uuid>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let plan_id = PlanId::new(plan_id);
     let scope = write_scope(&enforcer, &ctx, plan_id.get(), tenant).await?;
@@ -598,6 +609,7 @@ async fn create_price(
                     content,
                     created_by: actor,
                     created_at_utc: now,
+                    correlation_id: correlation,
                 };
                 price_repo::create_draft_on(txn, &scope_for_body, tenant, draft).await
             })
@@ -622,11 +634,13 @@ async fn patch_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
     Path((plan_id, price_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<([(axum::http::HeaderName, String); 1], Json<PriceRowView>), CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let plan_id = PlanId::new(plan_id);
     let scope = write_scope(&enforcer, &ctx, price_id, tenant).await?;
@@ -655,7 +669,7 @@ async fn patch_price(
             price_id,
             expected,
             content,
-            audit_stamp(&ctx, Utc::now()),
+            audit_stamp(&ctx, Utc::now(), correlation),
         )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
@@ -668,10 +682,12 @@ async fn delete_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
     Path((plan_id, price_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let plan_id = PlanId::new(plan_id);
     let scope = write_scope(&enforcer, &ctx, price_id, tenant).await?;
@@ -686,7 +702,7 @@ async fn delete_price(
             tenant,
             price_id,
             expected,
-            audit_stamp(&ctx, Utc::now()),
+            audit_stamp(&ctx, Utc::now(), correlation),
         )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;

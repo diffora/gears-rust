@@ -7,6 +7,19 @@
 //! `row_hash`. A test that only asserted "a hash was written" would keep passing
 //! after the encoding and the store had stopped agreeing.
 //!
+//! **And here is the limit of that, stated because it is easy to misread
+//! (measured 2026-08-04, while building the Postgres suite).** The re-walk
+//! rebuilds each preimage **from the stored columns**, so it is evidence about
+//! *connectedness* and about the encoding — never about *content*. Blank
+//! `before_state` and `after_state` in both the hashed record and the stored row
+//! and this suite stays **fully green**: it is self-consistent by construction,
+//! because the data it checks is the data it derives its expectation from. That
+//! is the Phase-2 G8 defect exactly, still live here, and the reason
+//! `tests/postgres_audit_chain.rs::every_row_holds_the_record_its_writer_was_handed_and_hashes_to_it`
+//! exists — it asserts the content against an independently constructed
+//! expectation and names the field. **Connectedness and content need different
+//! tests, and the second never substitutes for the first.**
+//!
 //! # What is owed, and what **kind** of thing each item is
 //!
 //! An earlier version of this list said "unproven and owed to a Postgres suite"
@@ -33,11 +46,17 @@
 //!    the rollback half by `in_transaction`'s own contract. What Postgres would
 //!    add is the concurrent *demonstration*, not the guarantee — so listing the
 //!    whole property as unproven overstates the gap.
-//! 3. **Unimplemented, and owed to a decision rather than to a suite.** The
-//!    loser of a same-segment race surfacing as a retriable contention. It does
-//!    not today: no wire code names audit-chain contention, so the refusal stays
-//!    `RepoError::Db` (see `audit_repo`'s CONTRACT). A Postgres suite would
-//!    change nothing about that; a code would.
+//! 3. ~~**Unimplemented, and owed to a decision rather than to a suite.**~~
+//!    **Both halves paid, and this entry had gone stale in two directions**
+//!    (corrected 2026-08-04). The decision arrived first — D-159 named the class
+//!    `CONCURRENT_MUTATION`, and the insert has routed through
+//!    `contention_or_db` since, so "the refusal stays `RepoError::Db`" was
+//!    already false when written; this file's own comment block further down was
+//!    up to date while this one was not, so the file disagreed with itself. The
+//!    suite arrived on 2026-08-04:
+//!    `tests/postgres_audit_chain.rs::the_loser_of_a_same_segment_race_is_a_retriable_contention`
+//!    drives two real transactions to the collision and asserts the whole ladder
+//!    through to the 409.
 //! 4. **Was false, and is now corrected.** "The isolation level the publish
 //!    transaction is opened with behaves as its CONTRACT claims" used to sit
 //!    here. The CONTRACT's key argument was sound and its predicate conclusion
@@ -120,7 +139,7 @@ fn entry(tenant_id: Uuid, chain_id: Uuid, subject: &str, hour: u32) -> NewAuditE
         before_state: Some(json!({"lifecycleState": "draft", "rowVersion": 0})),
         after_state: Some(json!({"lifecycleState": "published", "rowVersion": 1})),
         approval_ref: None,
-        correlation_id: Some(Uuid::from_u128(0xc0_11)),
+        correlation_id: Uuid::from_u128(0xc0_11),
     }
 }
 

@@ -46,6 +46,25 @@ mod common;
 
 use common::{exec, migrated_db, must_succeed, scalar};
 
+/// One value for a whole test binary: these suites drive a repository or a
+/// service directly, where the value the HTTP edge would have established has
+/// no producer. What each suite asserts *about* it is stated where it asserts
+/// it.
+const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
+
+/// The stamp an audited repository call is made under: who acted, when, and the
+/// request's correlation.
+fn stamp_of(
+    actor: uuid::Uuid,
+    when: chrono::DateTime<chrono::Utc>,
+) -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: actor,
+        recorded_at: when,
+        correlation_id: TEST_CORRELATION,
+    }
+}
+
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
@@ -580,6 +599,7 @@ fn draft_of(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        correlation_id: TEST_CORRELATION,
     }
 }
 
@@ -814,7 +834,12 @@ async fn a_new_revision_carries_every_add_on_rule_and_its_symmetry_d83() {
     publish(&provider, &scope, plan_id).await;
 
     let opened = repo
-        .open_revision(&scope, tenant, plan_id, Uuid::from_u128(0xac_11), at(12))
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_11), at(12)),
+        )
         .await
         .expect("open the successor revision");
     assert_eq!(opened.revision, 1);
@@ -1023,6 +1048,6 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
         recorded_at: chrono::Utc::now(),
-        correlation_id: None,
+        correlation_id: TEST_CORRELATION,
     }
 }

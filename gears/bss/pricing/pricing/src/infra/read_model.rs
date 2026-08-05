@@ -50,32 +50,76 @@
 //!
 //! D-121 projects "every price row of the plan whose window set intersects
 //! `[projection_time - H, ...)`", `H = 2 x` the longest billing cycle sold on
-//! the plan. There is **no window store in this gear** — Slice 7's, unbuilt —
-//! so `pricing_price` carries no interval columns and the predicate cannot be
-//! evaluated at all. Taken literally it would project *nothing*: no row has a
-//! window set, so no row intersects the horizon.
+//! the plan.
 //!
-//! What the bound buys is stated in D-121's own words: "a delta is O(live keys
-//! x windows within `H`), never O(the plan's accumulated history)". A plan's
-//! accumulated history is its `superseded` price rows — and
-//! `published -> superseded` has exactly two sanctioned producers, the D-88
-//! supersession unit and the D-100 cutover, **neither of which exists**.
-//! [`crate::infra::publish`] already carries that premise in its CONTRACT
-//! paragraph and names the group that deletes it. So the set D-121 filters is,
-//! today, exactly the plan's `published` rows, capped at 500 by §14.
+//! **What changed on 2026-08-04, precisely.** The window store now exists and
+//! [`project_windows`] reads it, so the *predicate has an operand*: this paragraph
+//! used to say the predicate "cannot be evaluated at all" and that a literal
+//! reading would project nothing, because no row had a window set. That half is
+//! **false now** and is struck. A version this projector writes carries the
+//! intervals, states and derived coverage end `inst-sg-surface` requires — which is
+//! what predicate (1) needs *from the pin*, and is not the same thing as predicate
+//! (1) being evaluable.
 //!
-//! **The group that builds the supersession unit or the cutover deletes this
+//! **W6 is an input to sellability predicate (1), not the predicate.** §1.6's W6 is
+//! a **term** — "the longest billing cycle sold on the key" — and predicate (1) is
+//! "an **active** window covers `t` **with the D-80 coverage horizon**", a
+//! conjunction over the frozen intervals, the reader's `t` and that term. Carrying
+//! intervals, states and a coverage end supplies the first two operands and **not**
+//! the term, so nothing here makes W6 evaluable and an earlier draft of this
+//! paragraph claiming otherwise by apposition was wrong rather than loose.
+//!
+//! **Nothing in this tree produces the term**, and the ownership chain for it is one
+//! chain rather than two. It is stated here because two documents in this group's own
+//! diff used to name two different owners for one owed input — this paragraph named
+//! `SellabilitySurface`'s group, `window_repo`'s deferred entry named G3:
+//!
+//! * **G3 builds the cycle set.** It owns `CoverageChecker` and the D-80 horizon,
+//!   which is the same term under a different margin.
+//! * **G4 wires it into `window_repo::adjust_effective_to`.** §6 requires the D-04
+//!   bound enforced "at cutover and on every `effectiveTo` adjustment", and G4 owns
+//!   that path and the routes that reach it.
+//! * **G5 consumes it in predicate (1)**, which is where the D-80 margin is read.
+//!
+//! **The trap, recorded because the name is the trap.** W6 is *named* "the longest
+//! billing cycle sold on the **key**" and is *defined* per **plan**: the longest
+//! `frequency` among the plan's **recurring** rows on the key's
+//! `(currency, region)`. §1.6 says so in as many words and gives the reason — a
+//! `usage`, `one_time` or `one_time_setup` key carries no `frequency` at all, so the
+//! literal per-key reading is undefined on most keys of a hybrid — and matches it to
+//! D-121's own `H`. It is **zero** on a plan with no recurring part, where the
+//! horizon predicate reduces to "an active window covers `t`". Whoever builds it
+//! from the name alone builds the per-key reading and gets `None` where the answer
+//! is a number, or a number where the answer is zero.
+//!
+//! **The horizon itself is still absent, and the premise that makes projecting
+//! without it safe is untouched.** What the bound buys is stated in D-121's own
+//! words: "a delta is O(live keys x windows within `H`), never O(the plan's
+//! accumulated history)". A plan's accumulated history is its `superseded` price
+//! rows — and `published -> superseded` still has exactly two sanctioned
+//! producers, the D-88 supersession unit and the D-100 cutover, **and this phase
+//! built neither**. [`crate::infra::publish`] carries the same premise in its
+//! CONTRACT paragraph and names the group that deletes it. So the set D-121
+//! filters is still exactly the plan's `published` rows, capped at 500 by §14 —
+//! and the window set beside them is the live keys' own, not an accumulation,
+//! because a key's history is made of the `superseded` rows nothing produces.
+//!
+//! **The group that builds the supersession unit or the cutover deletes that
 //! premise and owes the horizon** — and, with it, `H`'s own input, "the longest
-//! billing cycle sold on the plan". This paragraph is where they will find out
-//! that they do.
+//! billing cycle sold on the plan", which is W6's term under a third margin. Whether
+//! it exists by then depends on G3 having landed it; nothing in this tree produces it
+//! today, and this paragraph does not promise that anything will. This is where they
+//! will find out that they owe it.
 //!
-//! The cost of projecting anyway is real and is declared per fact in
-//! [`crate::domain::projection`]: a version produced before Slice 7 cannot
-//! answer sellability predicate (1) or the D-80 coverage horizon. What makes it
-//! bearable rather than reckless is that **nothing reads a delta payload
-//! today and nothing can** — `bss_pricing_sdk::api` says resolution "arrives
-//! with the slices that own those payloads", there is no resolution route, no
-//! in-process resolve method and no consumer gear here.
+//! The cost of projecting anyway is still real, and it is smaller by one fact than
+//! it was: the per-fact list in [`crate::domain::projection`] now records the
+//! window facts as **present**, and predicate (5)'s GA-gate flags and predicate
+//! (6)'s registry `sellable` flag as the two that remain absent — so a version
+//! this projector writes answers four of six rather than three. What makes the
+//! remainder bearable rather than reckless is unchanged: **nothing reads a delta
+//! payload today and nothing can** — `bss_pricing_sdk::api` says resolution
+//! "arrives with the slices that own those payloads", there is no resolution
+//! route, no in-process resolve method and no consumer gear here.
 //!
 //! ## 2. D-136's advance strands a version that completes out of order
 //!
@@ -146,12 +190,14 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::projection::{PROJECTED_ROW_STATES, PlanSubjectDelta};
+use crate::domain::price_record::PriceRecord;
+use crate::domain::projection::{PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta};
 use crate::domain::read_model::{SubjectKind, SubjectRef};
 use crate::domain::scope_key::PlanId;
+use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::storage::repo::{
     NewDelta, PendingVersionRow, catalog_version_ref_repo, pin_frontier_repo, plan_repo,
-    plan_shape_repo, price_repo, read_model_repo,
+    plan_shape_repo, price_repo, read_model_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -663,6 +709,16 @@ async fn project_plan_subject(
             ))
         })?;
 
+    // D-121's projected row set, minus its horizon; the module doc carries the
+    // premise and names the group that deletes it. Read into a local because the
+    // **window** facts are drawn from the same set: they are D-121's one rule over
+    // two planes, and a second read taken inside `project_windows` could disagree
+    // with this one about which rows the version froze.
+    let prices = price_repo::load_for_plan(runner, scope, tenant_id, plan_id, PROJECTED_ROW_STATES)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    let windows = project_windows(runner, scope, tenant_id, plan_id, &prices).await?;
+
     Ok(PlanSubjectDelta {
         plan_id,
         revision,
@@ -690,12 +746,75 @@ async fn project_plan_subject(
         )
         .await
         .map_err(|e| repo_failure(&e))?,
-        // D-121's projected row set, minus its horizon; the module doc carries
-        // the premise and names the group that deletes it.
-        prices: price_repo::load_for_plan(runner, scope, tenant_id, plan_id, PROJECTED_ROW_STATES)
-            .await
-            .map_err(|e| repo_failure(&e))?,
+        prices,
+        windows,
     })
+}
+
+/// The plan's window facts as the delta freezes them (D-99, D-121).
+///
+/// Four steps and each is somebody else's statement rather than this function's:
+/// the store's plan-wide read, D-121's **row** set (via `projected`, already
+/// filtered by [`PROJECTED_ROW_STATES`]), [`PROJECTED_WINDOW_STATES`]'s window
+/// filter, and [`window::group_by_key_seeded`]'s grouping and ordering.
+///
+/// **The filters are why this is not just the repository read.**
+/// `window_repo::list_for_plan` deliberately returns cancelled windows and the
+/// windows of **every** price row of the plan, drafts included — the operator's
+/// coverage report has to be able to say a key lost its successor to a
+/// cancellation, and `inst-wc-required` makes a publish fail without coverage, so
+/// a window must be schedulable on a draft row. D-121 keeps both out of the read
+/// model just as deliberately: it projects "every price row of the plan — any
+/// lifecycle state **except never-published drafts** — whose window set intersects
+/// the horizon". Two different questions, one store read, and the difference is
+/// exactly the two filters here.
+///
+/// **The row filter is by `price_id`, never by `scope_key`**, and that is
+/// load-bearing rather than incidental. A draft row and a published row
+/// legitimately share one canonical scope key — Foundation §3.7's two partial
+/// `UNIQUE` predicates are disjoint, and a draft successor coexists with the row
+/// it will supersede — so a key-based filter would either drop the published row's
+/// own windows or keep the draft's. Before the filter existed, a draft's window on
+/// a published row's key moved the frozen `coverageEnd` forward, and the pinned
+/// read model then advertised coverage no published row backed: sellability
+/// predicate (1) reads such a key as sellable into an interval nothing published is
+/// effective over, which is the D-99 exposure arriving from the projection side.
+///
+/// **The group set is seeded from the projected keys**, so `windows` enumerates
+/// exactly the keys `prices` does. That answers two things at once: a key whose
+/// only window was cancelled renders `Uncovered` instead of vanishing — the
+/// declared spelling of a payload fact rather than the absence of a group — and a
+/// draft row on a key of its own contributes no group, where before it produced one
+/// for a key no projected row backs.
+///
+/// # Errors
+/// [`DomainError::Internal`] on a storage failure, or on a window whose price row
+/// is not on the plan — which the foreign key makes an invariant breach.
+async fn project_windows(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    projected: &[PriceRecord],
+) -> Result<Vec<KeyWindows>, DomainError> {
+    let records = window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    Ok(window::group_by_key_seeded(
+        projected.iter().map(|row| row.scope_key.clone()),
+        records
+            .into_iter()
+            .filter(|w| {
+                PROJECTED_WINDOW_STATES.contains(&w.state)
+                    && projected.iter().any(|row| row.price_id == w.price_id)
+            })
+            .map(|w| {
+                (
+                    w.scope_key,
+                    WindowInterval::new(w.effective_from, w.effective_to, w.state),
+                )
+            }),
+    ))
 }
 
 /// Is every subject of `catalog_version` warm?

@@ -215,6 +215,136 @@ impl NewOutboxEvent {
             enqueued_at,
         }
     }
+
+    /// The `PriceWindowActivated` of one window taking effect
+    /// (`inst-ws-activate`).
+    ///
+    /// A named constructor for [`NewOutboxEvent::plan_published`]'s reason. What
+    /// distinguishes this event from its sibling is entirely the **name and the
+    /// dedup key**: the body is one rendering of one window's facts, and which
+    /// boundary was crossed is what the name says (see
+    /// [`PriceWindowTransitionPayload::to_value`] for why it is not also a field).
+    ///
+    /// The aggregate is the **plan** — §7 orders `PriceWindow*` events per
+    /// `(tenant, plan)`, and the window's own id would give every window a
+    /// stream of two events on which nothing is ordered against anything.
+    #[must_use]
+    pub fn price_window_activated(
+        tenant_id: Uuid,
+        payload: &PriceWindowTransitionPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::PriceWindowActivated,
+            payload: payload.to_value(),
+            dedup_key: price_window_transition_dedup_key(
+                CatalogEvent::PriceWindowActivated,
+                payload.window_id,
+            ),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
+    /// The `PriceWindowExpired` of one window reaching its end
+    /// (`inst-ws-expire`).
+    ///
+    /// [`NewOutboxEvent::price_window_activated`]'s sibling, and the reason the
+    /// dedup key names the transition: this event and that one are about one
+    /// window, so a key that named only the window would let the activation
+    /// swallow the expiry.
+    #[must_use]
+    pub fn price_window_expired(
+        tenant_id: Uuid,
+        payload: &PriceWindowTransitionPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::PriceWindowExpired,
+            payload: payload.to_value(),
+            dedup_key: price_window_transition_dedup_key(
+                CatalogEvent::PriceWindowExpired,
+                payload.window_id,
+            ),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
+    /// A window **mutation**'s event — `PriceWindowScheduled` or
+    /// `PriceWindowCancelled` (D-99, `inst-ws-publishunit`).
+    ///
+    /// The other two of §7's four frozen names, and the last of the four to get a
+    /// producer. Unlike its two siblings above it takes the event as an argument
+    /// rather than being two constructors, and the reason is the inverse of theirs:
+    /// there the event was a total function of *which sweep boundary* was crossed
+    /// and a caller choosing it could have produced an `active` body under the
+    /// expired name; here the event is a total function of **which of §5's three
+    /// surfaces** was called, which is a fact only the caller has. `infra::window`'s
+    /// `Op::event` is the single place that decides it, and it is a `const fn` over a
+    /// closed enumeration — so the pairing is still held in one place, just one
+    /// layer up.
+    ///
+    /// **It refuses the other two names by assertion rather than by type**, because
+    /// [`CatalogEvent`] is the gear's whole event vocabulary and narrowing it to a
+    /// two-member subset here would mint a type for one call site.
+    ///
+    /// # Panics
+    /// When handed anything but the two mutation events — a caller passing
+    /// `PriceWindowActivated` here would emit a sweep's event from an operator's
+    /// transaction, which is `inst-ws-publishunit`'s negative half inverted: the
+    /// time-driven flips are **not** publish units and must never carry a pending
+    /// ref. This is a programming error in one crate, so it fails loudly rather than
+    /// widening the signature with an error a route would have to render.
+    #[must_use]
+    pub fn price_window_mutation(
+        tenant_id: Uuid,
+        event: CatalogEvent,
+        payload: &PriceWindowTransitionPayload,
+        enqueued_at: DateTime<Utc>,
+        act: &str,
+    ) -> Self {
+        assert!(
+            matches!(
+                event,
+                CatalogEvent::PriceWindowScheduled | CatalogEvent::PriceWindowCancelled
+            ),
+            "a window mutation emits PriceWindowScheduled or PriceWindowCancelled, never {}",
+            event.as_str()
+        );
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event,
+            payload: payload.to_value(),
+            // The **act**, not the transition. `price_window_transition_dedup_key`
+            // is the sweep's shape and says "one activation and one expiry per
+            // window, by §4's edge set" — true of the two time-driven flips and
+            // false of the operator's acts, because `Op::event` maps a schedule
+            // **and** an adjustment to `PriceWindowScheduled`. So an adjustment of
+            // a window that was scheduled through the route deduped against its
+            // own schedule and was refused by `uq_pricing_outbox_dedup_key` — a
+            // 409 on a legal act, and the reason no window could be adjusted twice.
+            //
+            // Widening the key rather than minting `PriceWindowAdjusted`: a fifth
+            // event name is a wire fact §7 does not declare and
+            // `chk_pricing_outbox_event_name` does not carry, so it owes a decision
+            // and a migration. The dedup key is internal to this table, so naming
+            // the act in it settles the defect without deciding the naming
+            // question — which stays owed, and is now a naming gap rather than a
+            // correctness one.
+            dedup_key: format!(
+                "{}/{act}",
+                price_window_transition_dedup_key(event, payload.window_id)
+            ),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
 }
 
 /// The dedup key of a plan publish: `PlanPublished/<plan_id>/<revision>`.
@@ -304,6 +434,126 @@ pub fn plan_publish_degraded_dedup_key(plan_id: PlanId, catalog_version: Catalog
         plan_id,
         catalog_version.get()
     )
+}
+
+/// The `PriceWindowActivated` / `PriceWindowExpired` payload — one type for both,
+/// and now **one rendering** for both: they are one fact about one window, and
+/// which boundary it crossed is the event's name.
+///
+/// **The third payload whose field list no document declares.** §7 names the
+/// four `PriceWindow*` events, says they are ordered per `(tenant, plan)`,
+/// idempotency-keyed and at-least-once, and says nothing about their content.
+/// The keys below are therefore this module's, in the `camelCase` the design set
+/// spells consumer-visible fields in, written here once so a later document has
+/// something concrete to contradict — the posture this file already took twice.
+///
+/// It carries the window's **interval** rather than the instant of the flip, and
+/// that is the same choice D-99 makes one plane over: the interval is the fact,
+/// and "active at `t`" is derived from it. The flip instant is not dropped — it
+/// is `effectiveFrom` for an activation and `effectiveTo` for an expiry by
+/// construction of §4's conditions, so a field for it would be a second
+/// spelling of a value already here, free to disagree with it. When the flip was
+/// *recorded* is the row's own `enqueued_at`, which is where the sweep's lag is
+/// visible.
+///
+/// # `state` is gone, because that rule was applied to one of two candidates
+///
+/// The payload used to carry `"state": "active" | "expired"`, and the paragraph
+/// above refuses the flip instant on a ground that covers it exactly: a second
+/// spelling of a value already carried, free to disagree with it. `state` was a
+/// **total function of the event name** — the two constructors are the only
+/// callers and there is one activation and one expiry per window by §4's edge set
+/// — so the rule is applied consistently and the field is dropped rather than
+/// kept and tested.
+///
+/// The counter-argument, and why it does not save the field: the flip instant
+/// would have duplicated a value *inside* the payload, while `state` duplicated
+/// the **envelope** — `pricing_outbox.event_name`, which is not in this JSON. That
+/// is a real difference and it makes the duplication *worse*, not admissible. The
+/// event name is `NOT NULL`, pinned to thirteen values by
+/// `chk_pricing_outbox_event_name`, and is what any consumer dispatches on; a body
+/// contradicting its own envelope has no resolution rule at all, whereas two
+/// disagreeing payload keys at least both live in one document. A test asserting
+/// the pairing was the other option and is not equivalent: the rule as this doc
+/// block states it refuses a second spelling because it *can* disagree, not
+/// because nothing checks it.
+///
+/// **The design set constrains neither choice**: §7 names the four `PriceWindow*`
+/// events, their `(tenant, plan)` ordering, their idempotency keys and their
+/// at-least-once delivery, and declares no payload field — no `state`, no
+/// `windowId`. Nothing is owed to a consumer either way, no relay existing. So
+/// dropping the field mints nothing and removes nothing anything agreed to; it is
+/// decided by the rule this file already wrote down.
+///
+/// It carries **no canonical scope key**. The key is eight axes of
+/// `pricing_price` and resolving one per event would put a query per flip on a
+/// sweep's path; a consumer that needs the key has the `priceId` and the pinned
+/// delta, which carries the window facts grouped by key already (D-121).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PriceWindowTransitionPayload {
+    /// The window that moved.
+    pub window_id: Uuid,
+    /// The plan the window's row is on — the aggregate the event is ordered
+    /// within.
+    pub plan_id: PlanId,
+    /// The price row the window is bound to.
+    pub price_id: Uuid,
+    /// Inclusive start of the half-open interval, UTC.
+    pub effective_from: DateTime<Utc>,
+    /// Exclusive end, UTC; `None` is open-ended.
+    pub effective_to: Option<DateTime<Utc>>,
+    /// The correlation id of the sweep pass that observed the boundary.
+    pub correlation_id: Uuid,
+}
+
+impl PriceWindowTransitionPayload {
+    /// Render the payload for its `jsonb` column, `camelCase` as its two siblings'.
+    ///
+    /// A `to_value(&self)` like theirs, which it could not be while the renderer
+    /// took a `state`: a public renderer the caller chose a state for could have
+    /// produced an `active` body under the `PriceWindowExpired` name, so the
+    /// pairing had to be held by a private free function and its two callers. With
+    /// the field gone there is no pairing left to get wrong, and the guard is a
+    /// value that does not exist rather than a shape a reader has to notice.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "windowId": self.window_id,
+            "planId": self.plan_id.get(),
+            "priceId": self.price_id,
+            "effectiveFrom": self.effective_from,
+            "effectiveTo": self.effective_to,
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// The dedup key of one window transition:
+/// `PriceWindowActivated/<window_id>`.
+///
+/// **The window *and* the transition**, which is what makes the coordination
+/// lease over the activation sweep a performance measure rather than the only
+/// thing standing between two replicas and two events for one flip. The event
+/// name *is* the transition — there is exactly one activation and one expiry per
+/// window, by §4's edge set — so naming it plus the window id covers the pair
+/// with no third segment.
+///
+/// Both halves are load-bearing and each fails a different way:
+///
+/// * without the **window**, one plan's second activation would dedup against
+///   its first;
+/// * without the **transition**, a window's expiry would dedup against its own
+///   activation and never be emitted at all — the event a consumer needs in
+///   order to stop resolving a price.
+///
+/// Two sweeps flipping one window therefore write **one** row, refused by either
+/// member of the pair this key reaches: `uq_pricing_outbox_dedup_key
+/// (tenant_id, dedup_key)` and the `outbox_id` primary key, which [`outbox_id`]
+/// derives from the same pair for exactly this reason. Naming only the index would
+/// name the one the driver cannot confirm answered.
+#[must_use]
+pub fn price_window_transition_dedup_key(event: CatalogEvent, window_id: Uuid) -> String {
+    format!("{}/{}", event.as_str(), window_id)
 }
 
 /// Enqueue one event inside `runner`'s transaction, returning the `seq` it

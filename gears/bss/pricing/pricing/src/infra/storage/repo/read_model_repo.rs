@@ -40,38 +40,51 @@
 //! code the design set names (D-146's line about the pin frontier, one table
 //! over).
 //!
-//! # What is deliberately absent, and whose it is
+//! # The resolution query is here now, and this paragraph is its answer
 //!
-//! **The resolution query.** §4.4's own rule — "resolving `(pin, subject)`
-//! reads the subject's row with the greatest `catalog_version <= V` whose
-//! `warm_completed` is set" — is **not** built here.
-//! `idx_pricing_read_model_resolve` exists for exactly that read and is covered
-//! by no query anywhere in this crate.
+//! **§4.4's rule** — "resolving `(pin, subject)` reads the subject's row with
+//! the greatest `catalog_version <= V` whose `warm_completed` is set" — is
+//! [`delta_at`], and `idx_pricing_read_model_resolve` finally has the query it
+//! was created for.
 //!
-//! It is absent for the crate's standing reason rather than by oversight: there
-//! is no read surface to call it. `bss_pricing_sdk::api` says so in as many
-//! words — read-model resolution "arrives with the slices that own those
-//! payloads; the Foundation-owned entry point is the frontier a consumer pins
-//! **before** resolving anything" — and the payloads such a query would return
-//! are Slice 6's and Slice 7's, two of whose facts this gear cannot yet
-//! project at all ([`crate::domain::projection`] names them one by one). A
-//! method shaped before its reader is a shape nobody agreed to, and a
-//! repository method with no call site is dead code, which this crate's
-//! repository rule already forbids. **Owed**, with the index that is waiting
-//! for it.
+//! Until 2026-08-05 this section said the query was **owed**, for a reason that
+//! was true when it was written and is not any more: *"there is no read surface
+//! to call it"*. There is one — `GET /bss-pricing/v1/plans/{planId}/sellability`,
+//! whose four answerable predicates are read off one plan subject's frozen delta
+//! — so the shape is no longer one nobody agreed to and the method is no longer
+//! dead code. What has **not** changed is the other half of the old paragraph,
+//! and it is now stated where it belongs rather than as a reason for an absence:
+//! two of the six sellability predicates read facts this gear cannot project at
+//! all (D-167 clause 3), and [`crate::domain::sellability`] answers those
+//! `NotEvaluable` with the slice that owes each.
+//!
+//! It is a **read of one subject**, not of a version: the completeness question
+//! stays [`warm_subjects_at`]'s, and a caller that wanted a version's whole
+//! content would be asking for the payload of every subject in a batch, which no
+//! surface asks for.
 
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use serde_json::Value as JsonValue;
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureInsertExt};
 use uuid::Uuid;
 
+use crate::domain::lifecycle::LifecycleState;
+use crate::domain::money::CurrencyCode;
+use crate::domain::plan_shape::{CustomIntervalUnit, Frequency};
+use crate::domain::projection::PROJECTED_WINDOW_STATES;
 use crate::domain::read_model::{SubjectKind, SubjectRef};
+use crate::domain::scope_key::{
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region, ScopeKey,
+};
+use crate::domain::sellability::{PinnedFacts, SellabilityFacts};
+use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::read_model;
 use crate::infra::storage::repo::plan_repo::read_token;
+use crate::infra::storage::repo::price_repo::{CHARGE_KINDS, PRICE_ELIGIBILITIES, PRICE_OVERLAYS};
 
 /// One projected delta, as its writer is handed it.
 ///
@@ -131,6 +144,105 @@ pub async fn project_subject(
     Ok(())
 }
 
+/// One subject's frozen delta as of `catalog_version`, with the version it was
+/// actually found at.
+///
+/// The version is carried rather than assumed equal to the one asked for, which
+/// is the whole of §4.4's resolution rule: a pin names a version of the
+/// *tenant's* catalog, and a plan re-projects only when a publish unit touches
+/// it, so the row that answers a pin at `V` is almost always stamped with some
+/// earlier version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredDelta {
+    /// The version the answering row was projected under — `<=` the version
+    /// asked for.
+    pub catalog_version: CatalogVersion,
+    /// When that projection happened.
+    pub projected_at: DateTime<Utc>,
+    /// The frozen payload, exactly as [`crate::domain::projection`] rendered it.
+    pub payload: JsonValue,
+}
+
+/// Resolve one subject's delta at a pinned version — §4.4's own rule.
+///
+/// The greatest `catalog_version <= catalog_version` whose `warm_completed` is
+/// set, or `None` when the subject has no warm row at or below it.
+///
+/// # `None` is "not addressable at this pin", and the caller must fail closed
+///
+/// It covers two states a reader cannot tell apart from here and does not need
+/// to: a plan that has never been projected into a committed version at all, and
+/// one whose only projections are *later* than the pin. Both mean the same thing
+/// to a consumer — **this pin does not carry this plan's content** — and the
+/// sellability surface answers predicate (2) `Failed` for it rather than
+/// synthesising a plan with no rows, which would read as a plan that publishes
+/// nothing on every market.
+///
+/// # Ordering, not `max`
+///
+/// `ORDER BY catalog_version DESC LIMIT 1` under the `warm_completed` filter, so
+/// the index does the work and no row-set is materialized to be folded in
+/// process. The filter is not vacuous the way [`warm_subjects_at`]'s is today: a
+/// row is written warm, but this query is the one whose answer would be *wrong*
+/// rather than merely larger if a slice ever wrote a row that is not — it would
+/// hand a consumer the payload of a subject that is not resolvable.
+///
+/// # One predicate here has a removal proof of **zero**, and it is said rather
+/// than left to be found
+///
+/// `tenant_id` is already the compiled scope's own filter, so deleting the
+/// `TenantId.eq` term reddens **nothing**:
+/// `an_unprojected_subject_and_a_foreign_tenants_subject_read_alike` keeps
+/// passing, because SQL-level BOLA is what refuses the foreign row. It is kept for
+/// [`warm_subjects_at`]'s shape — the two reads of this table name the predicate
+/// they depend on rather than relying on a scope compiled elsewhere — and it is
+/// recorded as redundant so nobody reads it as the guard that holds the boundary.
+/// The guard is the scope; this is a restatement of it.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when the version asked for, or the version stored
+/// on the answering row, lies outside the range the column holds.
+pub async fn delta_at(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    subject: &SubjectRef,
+    catalog_version: CatalogVersion,
+) -> Result<Option<StoredDelta>, RepoError> {
+    let stored_version = stored_version(catalog_version)?;
+    let row = read_model::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(read_model::Column::TenantId.eq(tenant_id))
+                .add(read_model::Column::SubjectKind.eq(subject.kind().as_str()))
+                .add(read_model::Column::SubjectRef.eq(subject.to_string()))
+                .add(read_model::Column::CatalogVersion.lte(stored_version))
+                .add(read_model::Column::WarmCompleted.eq(true)),
+        )
+        .order_by(read_model::Column::CatalogVersion, Order::Desc)
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("resolve read-model subject: {e}")))?;
+
+    row.map(|row| {
+        let version = u64::try_from(row.catalog_version).map_err(|e| {
+            RepoError::CorruptRow(format!(
+                "pricing_read_model.catalog_version holds {}: {e}",
+                row.catalog_version
+            ))
+        })?;
+        Ok(StoredDelta {
+            catalog_version: CatalogVersion::new(version),
+            projected_at: row.projected_at,
+            payload: row.payload,
+        })
+    })
+    .transpose()
+}
+
 /// The `(subject_kind, subject_ref)` pairs already warm at `catalog_version`.
 ///
 /// Two callers, both in the projector: the re-drive subtracts this from the
@@ -186,6 +298,241 @@ pub async fn warm_subjects_at(
         .collect()
 }
 
+/// Read the facts the six sellability predicates need out of one frozen delta.
+///
+/// # Why the reader is here and not beside [`SellabilityFacts`]
+///
+/// Reading a stored token means matching it against the roster the store's
+/// `CorruptRow` path already depends on — [`PRICE_ELIGIBILITIES`],
+/// [`CHARGE_KINDS`], [`PRICE_OVERLAYS`] and [`read_token`] — and those lists are
+/// deliberately single-copy: their own comment refuses a second set "free to
+/// disagree the day a variant lands in one of them". They live in `infra`, which
+/// dylint DE0301 keeps out of the domain layer, so a domain-side parser would have
+/// needed exactly that second copy. The phase plan sketched this reader into
+/// `domain::sellability`; the placement moved for that reason and is reported.
+///
+/// # A payload this cannot read is [`RepoError::CorruptRow`], not a bad request
+///
+/// This gear wrote the payload. A member that is absent, of the wrong JSON type or
+/// carrying a token outside its enumeration therefore means the reader and the
+/// writer disagree about the vocabulary — the same class as a stored
+/// `charge_kind` outside its `CHECK`, and the same answer `price_repo::to_scope_key`
+/// gives it. No caller can reshape the request to fix it, so there is nothing to
+/// report on the wire beyond a 500.
+///
+/// # What is deliberately not read
+///
+/// The payload's own `coverageEnd` object. Each key's [`KeyWindows`] is rebuilt
+/// from its intervals and the end comes from
+/// [`KeyWindows::coverage_end`](crate::domain::window::KeyWindows::coverage_end),
+/// the crate's single implementation of that arithmetic — so the surface has one
+/// source for the fact rather than a parser beside the function that derives it.
+/// The two cannot disagree today: the renderer writes exactly what that function
+/// returns. **If a later change moves what `coverage_end` means, the frozen token
+/// becomes the authority and this reader owes the parse** — recorded because that
+/// is the day the choice matters.
+///
+/// # Errors
+/// [`RepoError::CorruptRow`] for any of the above.
+pub fn sellability_facts(delta: &StoredDelta) -> Result<SellabilityFacts, RepoError> {
+    let payload = &delta.payload;
+    let mut price_keys = Vec::new();
+    for row in array(payload, "prices")? {
+        price_keys.push(read_scope_key(member(row, "scopeKey")?)?);
+    }
+    let mut windows = Vec::new();
+    for group in array(payload, "windows")? {
+        windows.push(KeyWindows {
+            scope_key: read_scope_key(member(group, "scopeKey")?)?,
+            intervals: read_intervals(group)?,
+        });
+    }
+    Ok(SellabilityFacts::Pinned(PinnedFacts {
+        plan_id: PlanId::new(uuid(payload, "planId")?),
+        catalog_version: delta.catalog_version,
+        lifecycle_state: read_token(
+            "pricing_read_model.payload.lifecycleState",
+            string(payload, "lifecycleState")?,
+            LifecycleState::ALL,
+            LifecycleState::as_str,
+        )?,
+        available_from: optional_instant(payload, "availableFrom")?,
+        available_to: optional_instant(payload, "availableTo")?,
+        frequency: read_frequency(payload)?,
+        price_keys,
+        windows,
+    }))
+}
+
+/// One member of an object, present or a refusal naming it.
+fn member<'a>(value: &'a JsonValue, key: &str) -> Result<&'a JsonValue, RepoError> {
+    value.get(key).ok_or_else(|| malformed(key, "is absent"))
+}
+
+/// One array member of an object.
+fn array<'a>(value: &'a JsonValue, key: &str) -> Result<&'a Vec<JsonValue>, RepoError> {
+    member(value, key)?
+        .as_array()
+        .ok_or_else(|| malformed(key, "is not an array"))
+}
+
+/// One string member of an object.
+fn string<'a>(value: &'a JsonValue, key: &str) -> Result<&'a str, RepoError> {
+    member(value, key)?
+        .as_str()
+        .ok_or_else(|| malformed(key, "is not a string"))
+}
+
+/// One `Uuid` member of an object.
+fn uuid(value: &JsonValue, key: &str) -> Result<Uuid, RepoError> {
+    string(value, key)?
+        .parse()
+        .map_err(|e| malformed(key, &format!("is not a uuid: {e}")))
+}
+
+/// One required instant.
+///
+/// `serde_json` renders a `DateTime<Utc>` as RFC 3339, so this is the inverse of
+/// what [`crate::domain::projection`] wrote and not a second format.
+fn instant(value: &JsonValue, key: &str) -> Result<DateTime<Utc>, RepoError> {
+    DateTime::parse_from_rfc3339(string(value, key)?)
+        .map(|parsed| parsed.with_timezone(&Utc))
+        .map_err(|e| malformed(key, &format!("is not an RFC 3339 instant: {e}")))
+}
+
+/// One nullable instant.
+///
+/// An absent member and a `null` one read alike: `serde_json` renders `None` as
+/// `null`, so a reader that distinguished them would be reading the serializer
+/// rather than the fact.
+fn optional_instant(value: &JsonValue, key: &str) -> Result<Option<DateTime<Utc>>, RepoError> {
+    match value.get(key) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(_) => instant(value, key).map(Some),
+    }
+}
+
+/// The plan's frequency, token **and** interval.
+///
+/// A `custom_every_n` member of [`Frequency::ALL`] carries
+/// `Frequency::CUSTOM_INTERVAL_PLACEHOLDER` rather than an interval, so the
+/// variant found by token is rebuilt from the payload's own `n` and `unit` — that
+/// constant's own instruction, and without it every custom frequency would
+/// contribute a one-day margin whatever the plan authored. It is the same
+/// reconstruction `plan_repo` performs off `custom_interval_n` /
+/// `custom_interval_unit`, one carrier over.
+fn read_frequency(payload: &JsonValue) -> Result<Option<Frequency>, RepoError> {
+    let Some(value) = payload.get("frequency").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let found = read_token(
+        "pricing_read_model.payload.frequency.token",
+        string(value, "token")?,
+        Frequency::ALL,
+        Frequency::as_str,
+    )?;
+    if !matches!(found, Frequency::CustomEveryN { .. }) {
+        return Ok(Some(found));
+    }
+    let n = member(value, "n")?
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| malformed("frequency.n", "is not a u32"))?;
+    Ok(Some(Frequency::CustomEveryN {
+        n,
+        unit: read_token(
+            "pricing_read_model.payload.frequency.unit",
+            string(value, "unit")?,
+            CustomIntervalUnit::ALL,
+            CustomIntervalUnit::as_str,
+        )?,
+    }))
+}
+
+/// One canonical scope key, axis by axis.
+///
+/// Through [`ScopeKey::new`], the crate's only constructor, so the cohort /
+/// eligibility biconditional and the D-144 quantum are re-established on this
+/// rehydration exactly as `price_repo::to_scope_key` re-establishes them on its
+/// own. `priceOverlay` is read and **checked** rather than passed: the constructor
+/// answers `base` for everything, so a payload naming another plane must be
+/// refused rather than silently flattened — `to_scope_key`'s own comment, one
+/// carrier over.
+fn read_scope_key(value: &JsonValue) -> Result<ScopeKey, RepoError> {
+    read_token(
+        "pricing_read_model.payload.scopeKey.priceOverlay",
+        string(value, "priceOverlay")?,
+        PRICE_OVERLAYS,
+        PriceOverlay::as_str,
+    )?;
+    let cohort = match value.get("cohort").filter(|v| !v.is_null()) {
+        None => Cohort::None,
+        Some(_) => Cohort::Generation(instant(value, "cohort")?),
+    };
+    ScopeKey::new(
+        PlanId::new(uuid(value, "planId")?),
+        CurrencyCode::new(string(value, "currency")?)
+            .map_err(|e| malformed("scopeKey.currency", &e.to_string()))?,
+        Region::new(string(value, "region")?)
+            .map_err(|e| malformed("scopeKey.region", &e.to_string()))?,
+        PhaseId::new(uuid(value, "phase")?),
+        read_token(
+            "pricing_read_model.payload.scopeKey.priceEligibility",
+            string(value, "priceEligibility")?,
+            PRICE_ELIGIBILITIES,
+            PriceEligibility::as_str,
+        )?,
+        read_token(
+            "pricing_read_model.payload.scopeKey.chargeKind",
+            string(value, "chargeKind")?,
+            CHARGE_KINDS,
+            ChargeKind::as_str,
+        )?,
+        cohort,
+    )
+    .map_err(|e| malformed("scopeKey", &e.to_string()))
+}
+
+/// One key group's intervals.
+///
+/// # The roster is what the projector **writes**, not what the column admits
+///
+/// [`PROJECTED_WINDOW_STATES`] and not [`WindowState::ALL`]. The renderer filters
+/// `cancelled` out — it is a schedule that never happened, not history a consumer
+/// resolves against — so a frozen payload carrying one is a payload **this gear
+/// could not have written**, which is the [`RepoError::CorruptRow`] class exactly
+/// as an alien `charge_kind` is.
+///
+/// Validated against the wider roster it was *accepted*, and invisibly: both
+/// [`KeyWindows::covers_at`](crate::domain::window::KeyWindows::covers_at) and
+/// [`KeyWindows::coverage_end`](crate::domain::window::KeyWindows::coverage_end)
+/// drop `cancelled` again, so the answer stayed fail-closed and nothing ever
+/// reported the disagreement — while `covers_at`'s own doc leans on
+/// `PROJECTED_WINDOW_STATES` having kept it out one layer up. A reader that admits
+/// more than its writer emits is a reader that cannot say the two agree.
+fn read_intervals(group: &JsonValue) -> Result<Vec<WindowInterval>, RepoError> {
+    array(group, "intervals")?
+        .iter()
+        .map(|interval| {
+            Ok(WindowInterval::new(
+                instant(interval, "effectiveFrom")?,
+                optional_instant(interval, "effectiveTo")?,
+                read_token(
+                    "pricing_read_model.payload.windows[].intervals[].state",
+                    string(interval, "state")?,
+                    PROJECTED_WINDOW_STATES,
+                    WindowState::as_str,
+                )?,
+            ))
+        })
+        .collect()
+}
+
+/// A frozen payload this gear cannot read back.
+fn malformed(key: &str, complaint: &str) -> RepoError {
+    RepoError::CorruptRow(format!("pricing_read_model.payload: `{key}` {complaint}"))
+}
+
 /// The version as its `bigint` column holds it.
 ///
 /// A value outside the signed range is [`RepoError::CorruptRow`] rather than a
@@ -200,3 +547,7 @@ fn stored_version(version: CatalogVersion) -> Result<i64, RepoError> {
         ))
     })
 }
+
+#[cfg(test)]
+#[path = "read_model_repo_tests.rs"]
+mod read_model_repo_tests;
