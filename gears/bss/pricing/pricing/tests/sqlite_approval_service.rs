@@ -61,7 +61,7 @@ use std::path::{Path, PathBuf};
 
 use bss_pricing::config::LimitsConfig;
 use bss_pricing::domain::approval::{ApprovalState, DecisionBy};
-use bss_pricing::domain::audit::{AuditAction, AuditStamp};
+use bss_pricing::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
@@ -1857,4 +1857,234 @@ async fn a_second_unit_over_a_rowless_revision_is_refused_by_the_plan_prefix() {
         }
         other => panic!("expected PENDING_CHANGE_UNIT_EXISTS, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The supersession unit (D-88's `inst-su-commit`).
+// ---------------------------------------------------------------------------
+
+/// The changeover every case below opens a unit at — well clear of both of
+/// `inst-su-instant`'s floors against this suite's fixed clock.
+fn changeover() -> DateTime<Utc> {
+    at(10) + chrono::Duration::days(30)
+}
+
+/// The world a supersession is composed against: a plan whose revision is **current**.
+///
+/// `seed` leaves the revision `draft`, which is right for every other case in this
+/// suite and wrong for this one by definition: a supersession supersedes a *published*
+/// row, so its plan has published at least once and `plan_repo::load_current` — which
+/// `submit_supersession_on` and `submit_window_mutation_on` both resolve their subject
+/// through — has something to answer with. The flip uses this suite's own stand-in for
+/// the publish commit, for that helper's stated reason.
+async fn seed_published(h: &Harness) -> Seeded {
+    let seeded = seed(h).await;
+    publish_revision_at_the_table(h, seeded.revision).await;
+    seeded
+}
+
+/// The subject string a record was opened under, read back from the store.
+async fn record_subject(h: &Harness, approval_id: Uuid) -> String {
+    let conn = h.provider.conn().expect("conn");
+    bss_pricing::infra::storage::repo::approval_repo::read(&conn, &h.scope, TENANT, approval_id)
+        .await
+        .expect("read the unit")
+        .expect("the unit is there")
+        .subject_ref
+}
+
+async fn submit_supersession(
+    h: &Harness,
+    approval_id: Uuid,
+    market: &str,
+    at_instant: DateTime<Utc>,
+) -> Result<ApprovalRecord, DomainError> {
+    let conn = h.provider.conn().expect("conn");
+    ApprovalService::submit_supersession_on(
+        &conn,
+        &h.scope,
+        TENANT,
+        &scope_key(market),
+        at_instant,
+        approval_id,
+        json!({ "reason": "thresholdReached" }),
+        stamp(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_supersession_opens_under_price_unit_and_holds_its_key() {
+    // `price_unit` and not a token of its own: S5 §6's enumeration has no
+    // `supersession` member, and this gear does not mint tokens the design set has not
+    // declared. The change set is one price row on one canonical scope key, which is
+    // what `price_unit` names — so the *subject string* is what carries the act.
+    let h = harness().await;
+    seed_published(&h).await;
+
+    let record = submit_supersession(&h, Uuid::from_u128(0xa_5001), "eu", changeover())
+        .await
+        .expect("a supersession opens a unit");
+
+    assert_eq!(record.subject_kind, AuditSubjectKind::PriceUnit);
+    assert!(
+        record.subject_ref.contains("supersession"),
+        "the act is in the subject, since the token cannot carry it: {}",
+        record.subject_ref
+    );
+    assert_eq!(record.state, ApprovalState::Submitted);
+    // That it **pends the key** (`inst-co-single-pending`) is asserted behaviourally by
+    // the two cases below rather than by reading a field: `ApprovalRecord` carries no
+    // held-key list, and the rule is about what the next submit is told, not about a row.
+}
+
+#[tokio::test]
+async fn a_second_submit_of_one_supersession_is_refused_by_the_subject_guard_specifically() {
+    // The caller's own duplicate submit, answered before anybody else's work on the key.
+    //
+    // **Three guards answer this condition with one code, and a probe caught the first
+    // version of this case not telling them apart** (2026-08-05). A duplicate *subject*
+    // implies a duplicate *key*, so with the subject check disabled `refuse_held_key`
+    // answers, and with that disabled too the held-key index answers — all three
+    // `PENDING_CHANGE_UNIT_EXISTS`. So the assertion is on the **wording**, which is the
+    // only thing that differs: only the subject guard says "this supersession of … at
+    // <changeover>", because only it knows which act was duplicated. That is the same
+    // arrangement D-192 records for its own guard-above-index pair: the check's proof is
+    // the sentence it names the holder with, and the index's proof is one layer down.
+    let h = harness().await;
+    seed_published(&h).await;
+    let first = Uuid::from_u128(0xa_5001);
+    submit_supersession(&h, first, "eu", changeover())
+        .await
+        .expect("the first submit");
+
+    let err = submit_supersession(&h, Uuid::from_u128(0xa_5002), "eu", changeover())
+        .await
+        .expect_err("one act, one pending unit");
+
+    let DomainError::PendingChangeUnitExists(detail) = err else {
+        panic!("got: {err:?}");
+    };
+    assert!(
+        detail.starts_with("this supersession of"),
+        "the subject guard's own sentence, which neither sibling produces: {detail}"
+    );
+    assert!(
+        detail.contains(&changeover().to_rfc3339()),
+        "and it names the act, not just the key: {detail}"
+    );
+    assert!(
+        detail.contains(&first.to_string()),
+        "the record holding it: {detail}"
+    );
+    assert!(detail.contains("withdraw"), "and the remedy: {detail}");
+}
+
+#[tokio::test]
+async fn two_changeovers_on_one_key_are_two_acts_but_the_key_admits_only_one_unit() {
+    // Two things at once, and they pull in opposite directions. The **subject** differs,
+    // so the second submit is not the first one's duplicate — `supersession_unit_ref`
+    // carries the changeover precisely so an approval of one cannot authorize the other.
+    // But `inst-co-single-pending` is about the **key**, not the act: at most one pending
+    // unit of any kind may hold it. So the second is still refused, by the *key* holder
+    // rather than by the subject holder — a different sentence for a different reason,
+    // and the sentence is what this asserts.
+    //
+    // It does **not** distinguish `refuse_held_key`'s check from the held-key index
+    // beneath it: a probe showed both answer here with the same code and near-identical
+    // wording, which is D-192's guard-above-index shape again. Telling those two apart is
+    // `refuse_held_key`'s own business and is pinned in `storage_tests`; what this case
+    // owns is that the **key** rule answers rather than the subject rule.
+    let h = harness().await;
+    seed_published(&h).await;
+    submit_supersession(&h, Uuid::from_u128(0xa_5001), "eu", changeover())
+        .await
+        .expect("the first act");
+
+    let err = submit_supersession(
+        &h,
+        Uuid::from_u128(0xa_5002),
+        "eu",
+        changeover() + chrono::Duration::days(1),
+    )
+    .await
+    .expect_err("the key already has a pending unit");
+
+    let DomainError::PendingChangeUnitExists(detail) = err else {
+        panic!("got: {err:?}");
+    };
+    assert!(
+        detail.starts_with("scope key"),
+        "the key rule answered, not the subject rule: {detail}"
+    );
+    assert!(
+        !detail.starts_with("this supersession of"),
+        "and specifically not the subject guard, whose subject differs here: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn a_supersession_on_another_key_of_one_plan_opens_its_own_unit() {
+    // The other side of the rule: `inst-co-single-pending` holds a *key*, so two
+    // supersessions on two keys of one plan are two units. Without this the previous
+    // case's refusal would be indistinguishable from a per-plan lock, which is not what
+    // the instruction says.
+    let h = harness().await;
+    seed_published(&h).await;
+    submit_supersession(&h, Uuid::from_u128(0xa_5001), "eu", changeover())
+        .await
+        .expect("the first key");
+
+    let second = submit_supersession(&h, Uuid::from_u128(0xa_5002), "us", changeover())
+        .await
+        .expect("a second key of the same plan is a second unit");
+
+    assert_eq!(second.state, ApprovalState::Submitted);
+    assert_ne!(
+        second.subject_ref,
+        record_subject(&h, Uuid::from_u128(0xa_5001)).await,
+        "two keys, two acts, two subjects"
+    );
+}
+
+#[tokio::test]
+async fn the_supersession_unit_pins_the_plan_shape_a_reviewer_is_shown() {
+    // The content pin is the plan shape, exactly as a window unit's is and for D-99's
+    // reason applied one plane over: what a reviewer of a supersession is shown is the
+    // plan whose row and intervals move, and `authorizing_unit` re-derives that shape at
+    // commit — so an edit to any of the plan's rows between the approve and the commit
+    // re-opens the review rather than riding the old signature.
+    let h = harness().await;
+    let seeded = seed_published(&h).await;
+    let record = submit_supersession(&h, Uuid::from_u128(0xa_5001), "eu", changeover())
+        .await
+        .expect("open");
+
+    assert!(
+        !record.content_hash.is_empty(),
+        "a unit with no pin would authorize any later content"
+    );
+
+    // Move a row of the plan and the pin no longer matches what the world says.
+    let mut moved = flat_row();
+    moved.row.amount_minor = Some(MinorAmount::new(2_500).expect("non-negative"));
+    h.prices
+        .update_draft(
+            &h.scope,
+            TENANT,
+            seeded.price_id,
+            seeded.price_version,
+            moved,
+            stamp(),
+        )
+        .await
+        .expect("edit the plan's row");
+
+    let after = submit_supersession(&h, Uuid::from_u128(0xa_5002), "us", changeover())
+        .await
+        .expect("a unit on another key, opened against the moved shape");
+    assert_ne!(
+        after.content_hash, record.content_hash,
+        "the pin follows the plan's content, so an edit between two submits is visible"
+    );
 }

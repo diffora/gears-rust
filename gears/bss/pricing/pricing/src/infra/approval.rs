@@ -642,6 +642,107 @@ impl ApprovalService {
             .map_err(|e| repo_failure(&e))
     }
 
+    /// Open the **supersession** unit (`inst-su-commit`, D-88).
+    ///
+    /// The sibling of [`Self::submit_window_mutation_on`] and deliberately its shape:
+    /// same held-key refusal, same plan-shape content pin, same subject-then-key order.
+    /// What differs is what the subject names and which token the record carries.
+    ///
+    /// # `price_unit`, not a token of its own
+    ///
+    /// S5 §6's `subject_kind` enumeration is `plan_revision | price_unit | window |
+    /// overlay | membership | bundle | retirement | policy | historical_import |
+    /// bulk_batch` — there is **no `supersession` member**, and this gear does not mint
+    /// tokens the design set has not declared. (`m20260802_000019` is the shape when one
+    /// *is* declared: a widening migration, and only once a writer exists.) A
+    /// supersession's change set is one price row on one canonical scope key, which is
+    /// exactly what `price_unit` names, so the record carries that and the **subject
+    /// string** carries `supersession` — see
+    /// [`supersession_unit_ref`](crate::infra::supersession::supersession_unit_ref) for
+    /// why it also carries the changeover.
+    ///
+    /// # The pin is the plan shape, for the window unit's reason
+    ///
+    /// A reviewer of a supersession is shown the plan whose row and intervals move, and
+    /// the shape is what `authorizing_unit` re-derives at commit — so an edit to any of
+    /// the plan's rows between the approve and the commit re-opens the review rather
+    /// than riding the old signature. It is taken over the shape **this transaction
+    /// assembled**, never a second read.
+    ///
+    /// # Both refusals, and why the subject one comes first
+    ///
+    /// A pending unit over *this very act* is answered before a pending unit over the
+    /// *key*, because the first is the caller's own duplicate submit and names the record
+    /// to decide or withdraw, while the second is somebody else's work on the key. Same
+    /// order, same reason, as the window unit's.
+    ///
+    /// # Errors
+    /// [`DomainError::NotFound`] when the plan has no current revision;
+    /// [`DomainError::PendingChangeUnitExists`] when a unit already holds this act or
+    /// this key; [`DomainError::ConcurrentMutation`] when `approval_id` is taken;
+    /// [`DomainError::Internal`] on a storage failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "`Self::submit_window_mutation_on`'s reason and the same facts: the compiled \
+                  scope and tenant, the key and the changeover that together name the act, the \
+                  approval id the surface minted, the evaluator's verdict and the caller's stamp. \
+                  The key and the changeover are two arguments because the subject is built from \
+                  both and neither is derivable from the other"
+    )]
+    pub async fn submit_supersession_on(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        key: &crate::domain::scope_key::ScopeKey,
+        changeover: DateTime<Utc>,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let now = stamp.recorded_at;
+        let plan_id = key.plan_id();
+        let revision = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "current plan revision".to_owned(),
+                id: plan_id.to_string(),
+            })?;
+        let shape =
+            crate::infra::publish::assemble_from(runner, scope, tenant_id, plan_id, revision, now)
+                .await?;
+        let subject_ref =
+            crate::infra::supersession::supersession_unit_ref(plan_id, key, changeover);
+
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, &subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "this supersession of {key} at {}: approval {} is still submitted over it; decide \
+                 it, or withdraw it to free the subject",
+                changeover.to_rfc3339(),
+                held.approval_id
+            )));
+        }
+        let held_keys = BTreeSet::from([key.to_string()]);
+        refuse_held_key(runner, scope, tenant_id, &held_keys).await?;
+
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref,
+            subject_kind: AuditSubjectKind::PriceUnit,
+            content_hash: content_hash(&shape).to_vec(),
+            materiality,
+            held_keys,
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
     /// One page of the tenant's records, for the reviewer's queue.
     ///
     /// No subject is re-derived here, deliberately: a page of 100 would be 100
