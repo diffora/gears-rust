@@ -1076,6 +1076,60 @@ fn touched_keys(shape: &PlanShape) -> BTreeSet<String> {
         .collect()
 }
 
+/// The **approved** unit that authorizes an act, if one exists (D-62, D-88).
+///
+/// Subject **and** content, which is `approval_repo::find_approved_for_content`'s own
+/// rule and the reason it takes both: an approval is a decision about a change set, so
+/// a unit whose pinned content has since moved authorizes nothing. For both callers the
+/// pinned content is the **plan shape** — D-99 makes windows plan facts and a
+/// supersession's change set is one row of one plan — so an edit to the plan's rows
+/// between the approve and the act re-opens the review rather than riding the old
+/// signature.
+///
+/// The digest is taken over the shape **the caller's transaction assembled**, never a
+/// second read.
+///
+/// # `pub(crate)` here rather than private to `infra::window`
+///
+/// It lived in `infra::window` while there was one caller. D-88's unit is the second and
+/// asks the identical question, so it moved to the module that owns approvals rather
+/// than being copied — the same argument [`refuse_held_key`] carries one function down,
+/// and the one this whole file makes about a refusal with two authors. Nothing about the
+/// body was window-specific: the subject is a string and the pin is a shape.
+///
+/// # A record naming one principal twice authorizes nothing
+///
+/// The same check `api::rest::publish::authorization_of` makes, for the reason its doc
+/// gives: reading a stored `approver_principal` without comparing it would mean this
+/// path trusts a column rather than the rule, and a row written around the store — a
+/// migration, a restore, a later slice's writer — is exactly the case where the CHECK
+/// did not run. It is spelled here rather than reused because that function lives in
+/// `api::rest`, and an `infra` module reaching into a route module is a layer
+/// inversion; three lines duplicated is the cheaper of the two.
+///
+/// # Errors
+/// [`DomainError::SelfApprovalForbidden`] when the record names one principal as both
+/// submitter and approver; [`DomainError::Internal`] on a storage failure or on an
+/// `approved` record with no approver at all.
+pub(crate) async fn authorizing_unit(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    shape: &PlanShape,
+    subject_ref: &str,
+) -> Result<Option<ApprovalRecord>, DomainError> {
+    let pin = content_hash(shape);
+    let found =
+        approval_repo::find_approved_for_content(runner, scope, tenant_id, subject_ref, &pin)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+    let Some(record) = found else {
+        return Ok(None);
+    };
+    independent_approver(&record)?;
+    Ok(Some(record))
+}
+
 /// `inst-co-single-pending` over a set of keys: refuse if a pending unit holds one.
 ///
 /// The **check**, whose value over `uq_pricing_approval_key_pending` is that it can
@@ -1225,7 +1279,7 @@ async fn re_derive(
     // above the match would answer `CorruptRow` — a 500 — on every read of every
     // D-10 unit, for a record that is perfectly well formed.
     match record.subject_kind {
-        AuditSubjectKind::PlanRevision | AuditSubjectKind::PriceUnit => {
+        AuditSubjectKind::PlanRevision => {
             let plan_id = plan_of(record)?;
             match crate::infra::publish::assemble(runner, scope, tenant_id, plan_id, now).await {
                 Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
@@ -1233,7 +1287,25 @@ async fn re_derive(
                 Err(other) => Err(other),
             }
         }
-        AuditSubjectKind::Window => {
+        // **`price_unit` resolves the *current* revision, not the open draft**, and
+        // that grouping was a defect rather than a shortcut. It sat with
+        // `plan_revision` above, on the reading that both are plan-content subjects —
+        // and the only writer of a `price_unit` approval is
+        // [`ApprovalService::submit_supersession_on`], whose subject is a **published**
+        // plan's canonical scope key. A published plan nobody has revised has no open
+        // draft, so `assemble` answered `NotFound`, this function answered `None`,
+        // `content_matches_pin` answered `false`, and **every** supersession unit was
+        // `APPROVAL_CONTENT_MISMATCH` on the first attempt to decide it — a unit that
+        // could be opened and never approved, for a subject nobody had touched. That
+        // is the exact failure the paragraph above describes for a window unit, reached
+        // by the same route one arm along, and nothing caught it because no test
+        // decided a supersession unit until D-88's orchestrator had one to decide
+        // (found 2026-08-06 while building it).
+        //
+        // So it joins the window arm, and the two are one arm rather than two copies:
+        // what they share is not the *kind* but the resolution — a subject that is a
+        // fact about a plan as it currently stands.
+        AuditSubjectKind::PriceUnit | AuditSubjectKind::Window => {
             let plan_id = plan_of(record)?;
             let Some(revision) = plan_repo::load_current(runner, scope, tenant_id, plan_id)
                 .await

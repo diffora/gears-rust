@@ -345,6 +345,30 @@ impl NewOutboxEvent {
             enqueued_at,
         }
     }
+
+    /// The `PriceUpdated` of one row superseding another on its key
+    /// (`inst-su-return`, D-88).
+    ///
+    /// A named constructor for [`NewOutboxEvent::plan_published`]'s reason, and the
+    /// aggregate is the **plan** — Foundation §1.2 orders the frozen set per
+    /// `(tenantId, aggregateId)`, and a price row's aggregate is the plan it prices,
+    /// which is the same answer `audit_repo::plan_chain` gives one store over.
+    #[must_use]
+    pub fn price_updated(
+        tenant_id: Uuid,
+        payload: &PriceUpdatedPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::PriceUpdated,
+            payload: payload.to_value(),
+            dedup_key: price_updated_dedup_key(payload.price_id),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
 }
 
 /// The dedup key of a plan publish: `PlanPublished/<plan_id>/<revision>`.
@@ -554,6 +578,91 @@ impl PriceWindowTransitionPayload {
 #[must_use]
 pub fn price_window_transition_dedup_key(event: CatalogEvent, window_id: Uuid) -> String {
     format!("{}/{}", event.as_str(), window_id)
+}
+
+/// The `PriceUpdated` payload — the **fourth** whose field list no document
+/// declares, and the first of the two `Price*` names to get a producer.
+///
+/// `03-price-structure.md` §17.5 says only *"`PriceCreated` on row authoring,
+/// `PriceUpdated` on supersession"*, and Foundation §1.2 puts both in the frozen
+/// name set ordered per `(tenantId, aggregateId)`. So what the event *means* is
+/// declared and its content is not; the keys below are this module's, in the same
+/// `camelCase` its three siblings use.
+///
+/// **`PriceCreated` still has no producer anywhere in this gear** — row authoring
+/// enqueues nothing — and that gap is recorded rather than closed here: it belongs
+/// to the authoring plane, and minting it from the supersession door would emit a
+/// `PriceCreated` for the one authored row that is *not* an ordinary authoring act.
+///
+/// # It names the predecessor, and the field is not optional
+///
+/// A `PriceUpdated` is *by definition* a row landing on an occupied canonical scope
+/// key: both sanctioned producers of `published → superseded` set
+/// `supersedes_price_id` on the successor (D-127), and there is no third. A
+/// `Option<Uuid>` here would be a shape saying a price can be "updated" with nothing
+/// updated — and a consumer's whole reason to read this event is to stop resolving
+/// the row it replaces.
+///
+/// # It carries the **canonical scope key**, unlike its window sibling
+///
+/// [`PriceWindowTransitionPayload`] deliberately does not, on the ground that
+/// resolving eight axes per event would put a query on a *sweep's* path. This event
+/// is emitted from the operator transaction that already holds the key, so the
+/// argument does not transfer: the cost is zero and the key is the only field that
+/// tells a consumer *which price* moved without a second lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PriceUpdatedPayload {
+    /// The plan the row belongs to — the aggregate the event is ordered within.
+    pub plan_id: PlanId,
+    /// The row that became current on the key.
+    pub price_id: Uuid,
+    /// The eight axes, canonically rendered.
+    pub scope_key: String,
+    /// The row it replaced, which every producer of this event has.
+    pub supersedes_price_id: Uuid,
+    /// The instant coverage hands over from the predecessor to this row.
+    pub changeover: DateTime<Utc>,
+    /// The registry's **pending** handle, for [`PlanPublishedPayload`]'s reason: the
+    /// version does not exist yet and will not until the registry batches (D-47).
+    pub pending_version_ref: String,
+    /// The correlation id of the causing request.
+    pub correlation_id: Uuid,
+}
+
+impl PriceUpdatedPayload {
+    /// Render the payload for its `jsonb` column, `camelCase` as its siblings'.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "planId": self.plan_id.get(),
+            "priceId": self.price_id,
+            "scopeKey": self.scope_key,
+            "supersedesPriceId": self.supersedes_price_id,
+            "changeover": self.changeover,
+            "pendingVersionRef": self.pending_version_ref,
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// The dedup key of one row's supersession: `PriceUpdated/<price_id>`.
+///
+/// **The successor's id, and nothing else.** `draft → published` is a row's only
+/// edge out of `draft` and the supersession commit's compare-and-swap refuses the
+/// second attempt, so a row is superseded-onto exactly once and its id is the
+/// natural key — the same argument [`plan_published_dedup_key`] makes about a
+/// revision.
+///
+/// It is stable across a **retry** of one act for a reason worth stating, because
+/// the analogous window key was not: the successor row is staged at compose and its
+/// id is read back from the store by every later attempt, so a retry after an
+/// approval renders this key from the same id rather than from one minted per
+/// request. That is the property `window_unit_ref`'s schedule arm could not have,
+/// and it is why this key needs no act segment the way
+/// [`NewOutboxEvent::price_window_mutation`]'s does.
+#[must_use]
+pub fn price_updated_dedup_key(price_id: Uuid) -> String {
+    format!("{}/{}", CatalogEvent::PriceUpdated.as_str(), price_id)
 }
 
 /// Enqueue one event inside `runner`'s transaction, returning the `seq` it

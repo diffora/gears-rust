@@ -860,8 +860,9 @@ pub async fn publish_rows(
 /// The publish commit writes one record for the whole act at the subject's level
 /// rather than one per row moved — see
 /// [`PublishService::commit`](crate::infra::publish::PublishService::commit) step 6,
-/// where [`publish_rows`] is likewise silent. The supersession unit's record is its
-/// own, and belongs to whichever layer holds its approval reference.
+/// where [`publish_rows`] is likewise silent. The supersession unit's record is
+/// [`crate::infra::supersession::SupersessionService`]'s, which is the layer holding
+/// its approval reference.
 ///
 /// # The pair is checked, and the key is the load-bearing half
 ///
@@ -889,14 +890,6 @@ pub async fn publish_rows(
 ///
 /// One extra read for the pair, which buys a refusal in place of a silently
 /// uncovered key.
-///
-/// # No audit record here
-///
-/// The publish commit writes one record for the whole act at the subject's level
-/// rather than one per row moved — see
-/// [`PublishService::commit`](crate::infra::publish::PublishService::commit) step 6,
-/// where [`publish_rows`] is likewise silent. The supersession unit's record is its
-/// own, and belongs to whichever layer holds its approval reference.
 ///
 /// # Errors
 /// [`RepoError::NotSupersedable`] when the predecessor is not the key's current row
@@ -1486,6 +1479,52 @@ async fn read_key_occupants(
     Ok(occupants)
 }
 
+/// Refuse a canonical scope key whose eligibility class may not be superseded at
+/// all (Foundation §4.3).
+///
+/// An `existing_grandfathered` row is **immutable in price and MUST NOT be
+/// superseded**, and S7 §1.7's UC table says the same ("only tightening
+/// `grandfatherUntil` is allowed").
+///
+/// Its absence was money, not tidiness, and compounded: the successor would rewrite
+/// the retained cohort's price, and the shorten would walk that generation's coverage
+/// inward while [`window_repo::adjust_effective_to`](super::window_repo::adjust_effective_to)
+/// still does not enforce D-04's `inst-co-bounds` (its own doc records that gap),
+/// stranding bound subscribers mid-cycle with no guard on either side (found missing by
+/// review, 2026-08-05).
+///
+/// # Why it is a function of the key alone, and has two callers
+///
+/// It was inline in [`insert_successor_draft_on`] under the note *"here because this is
+/// the only layer that can ask"* — true of the unit guard, which compares `PriceRow`
+/// fields and sees no eligibility class, and of `compose_windows`, which sees intervals
+/// and states, and **false of the orchestrator**, which holds the whole canonical scope
+/// key exactly as the door does. So the note was withdrawn rather than kept: what the
+/// door is, is the *floor* — every caller of it is refused — and
+/// `infra::supersession`'s unit asks the same question one step earlier because D-156
+/// puts the `CatalogVersion` request before the writes and this refusal is
+/// **permanent**. A handle requested for an act no retry can ever complete stands
+/// pending forever, which is the class `PublishService::commit` hoists
+/// `refuse_unpublishable_predecessor` for.
+///
+/// One spelling, two callers, so the two cannot disagree about which classes are
+/// immutable.
+///
+/// # Errors
+/// [`RepoError::NotSupersedable`] naming the key and the class.
+pub fn refuse_unsupersedable_class(key: &ScopeKey) -> Result<(), RepoError> {
+    if key.price_eligibility() == PriceEligibility::ExistingGrandfathered {
+        return Err(RepoError::NotSupersedable {
+            subject: SUBJECT.to_owned(),
+            id: key.to_string(),
+            state: "an existing_grandfathered generation, which is immutable in price and may not \
+                    be superseded; only its grandfatherUntil may be tightened"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// Author the supersession unit's successor **draft** beside the published row it
 /// will supersede, inside the caller's transaction, and answer the predecessor it
 /// found.
@@ -1553,15 +1592,25 @@ async fn read_key_occupants(
 ///
 /// **What it does do beyond the three writes, which this section used to omit**
 /// (review, 2026-08-05): it reaches [`record_price_mutation`] through
-/// [`write_prepared`], so it appends the row's audit entry **and voids every
-/// `submitted` approval unit of the plan** ([`crate::infra::approval::void_pending_units_of`],
-/// keyed on the plan rather than the key). Two consequences the orchestrator owns:
-/// staging the successor must happen **before** its own unit is opened, or the door
-/// voids the unit it is composing — this is the first act in the gear where the row
-/// insert and the approval unit belong to one act — and composing on one key voids a
-/// pending unit on *another* key of the same plan, which is wider than
-/// `inst-co-single-pending`'s per-key rule and is pre-existing `void_pending_units_of`
-/// semantics rather than this door's invention.
+/// [`write_prepared`], so it appends the row's audit entry **and voids the plan's
+/// pending `plan_revision` units** ([`crate::infra::approval::void_pending_units_of`],
+/// keyed on the plan rather than the key). Composing on one key therefore voids a
+/// pending plan-revision unit whose change set is about *another* key, which is wider
+/// than `inst-co-single-pending`'s per-key rule and is pre-existing
+/// `void_pending_units_of` semantics rather than this door's invention.
+///
+/// **"Every `submitted` unit of the plan" stood here and was measured false**
+/// (2026-08-06): `approval_repo::void_pending_for_plan` filters
+/// `subject_kind = 'plan_revision'`, so it reaches neither a `window` unit nor a
+/// `price_unit` one — and a supersession's own unit is a `price_unit`. The consequence
+/// the sentence was warning about therefore does not exist: this door **cannot** void
+/// the unit composing it, so the ordering the orchestrator keeps (stage, then open) is
+/// not a defence against that. It is kept for the reason a probe measured instead —
+/// the unit's content pin has to cover the staged successor, or every attempt to
+/// approve it answers `APPROVAL_CONTENT_MISMATCH` — and
+/// [`crate::infra::supersession::submitted_for_approval`] carries that argument. What the
+/// narrow filter leaves owed is recorded in the register: a row edit **orphans** a
+/// pending window or supersession unit rather than voiding it.
 ///
 /// # Errors
 /// [`RepoError::NotFound`] when the key has no current row to supersede;
@@ -1579,30 +1628,10 @@ pub async fn insert_successor_draft_on(
     let mut prepared = prepare_draft(tenant_id, draft)?;
     let key = prepared.record.scope_key.clone();
 
-    // Foundation §4.3, refused before the key is even read: an
-    // `existing_grandfathered` row is **immutable in price and MUST NOT be
-    // superseded**, and S7 §1.7's UC table says the same ("only tightening
-    // `grandfatherUntil` is allowed").
-    //
-    // **Here because this is the only layer that can ask.** The unit guard compares
-    // `PriceRow` fields and a `PriceRow` carries no eligibility class; `compose_windows`
-    // reads intervals and states. This door holds the whole canonical scope key, so it
-    // is where the class is knowable — found missing by review, 2026-08-05.
-    //
-    // Its absence was money, not tidiness, and compounded: the successor would rewrite
-    // the retained cohort's price, and the shorten would walk that generation's coverage
-    // inward while `window_repo::adjust_effective_to` still does not enforce D-04's
-    // `inst-co-bounds` (its own doc records that gap), stranding bound subscribers
-    // mid-cycle with no guard on either side.
-    if key.price_eligibility() == PriceEligibility::ExistingGrandfathered {
-        return Err(RepoError::NotSupersedable {
-            subject: SUBJECT.to_owned(),
-            id: key.to_string(),
-            state: "an existing_grandfathered generation, which is immutable in price and may not \
-                    be superseded; only its grandfatherUntil may be tightened"
-                .to_owned(),
-        });
-    }
+    // Foundation §4.3, refused before the key is even read. See
+    // [`refuse_unsupersedable_class`] — the floor beneath every caller, and the
+    // orchestrator asks it earlier for D-156's reason.
+    refuse_unsupersedable_class(&key)?;
 
     let occupants = read_key_occupants(runner, scope, tenant_id, &key).await?;
 

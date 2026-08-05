@@ -209,7 +209,6 @@ use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::domain::approval::content_hash;
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::coverage::{self, WINDOW_TRAILING_VOID};
 use crate::domain::error::DomainError;
@@ -230,8 +229,8 @@ use crate::infra::storage::repo::audit_repo::NewAuditEntry;
 use crate::infra::storage::repo::outbox_repo::{NewOutboxEvent, PriceWindowTransitionPayload};
 use crate::infra::storage::repo::window_repo::{NewWindow, WindowRecord};
 use crate::infra::storage::repo::{
-    PendingVersionRow, approval_repo, audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo,
-    price_repo, window_repo,
+    PendingVersionRow, audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, price_repo,
+    window_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -1174,7 +1173,7 @@ where
             .as_ref(),
     );
     let authorization = if verdict.is_material() {
-        let authorized = authorizing_unit(
+        let authorized = crate::infra::approval::authorizing_unit(
             runner,
             scope,
             tenant_id,
@@ -1414,52 +1413,6 @@ async fn refuse_pending_key_holder(
     crate::infra::approval::refuse_held_key(runner, scope, tenant_id, &keys).await
 }
 
-/// The **approved** unit that authorizes this act, if one exists (D-62).
-///
-/// Subject **and** content, which is `approval_repo::find_approved_for_content`'s own
-/// rule and the reason it takes both: an approval is a decision about a change set, so
-/// a unit whose pinned content has since moved authorizes nothing. For a window unit
-/// the pinned content is the **plan shape** — D-99 makes windows plan facts, and
-/// `submit_window_mutation` pins exactly this digest — so an edit to the plan's rows
-/// between the approve and the mutation re-opens the review rather than riding the old
-/// signature.
-///
-/// The digest is taken over the shape **this transaction assembled**, never a second
-/// read (`PlanContext::shape`).
-///
-/// # A record naming one principal twice authorizes nothing
-///
-/// The same check `api::rest::publish::authorization_of` makes, for the reason its doc
-/// gives: reading a stored `approver_principal` without comparing it would mean this
-/// path trusts a column rather than the rule, and a row written around the store — a
-/// migration, a restore, a later slice's writer — is exactly the case where the CHECK
-/// did not run. It is spelled here rather than reused because that function lives in
-/// `api::rest`, and an `infra` module reaching into a route module is a layer
-/// inversion; three lines duplicated is the cheaper of the two.
-///
-/// # Errors
-/// [`DomainError::SelfApprovalForbidden`] when the record names one principal as both
-/// submitter and approver; [`DomainError::Internal`] on a storage failure or on an
-/// `approved` record with no approver at all.
-async fn authorizing_unit(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    shape: &PlanShape,
-    subject_ref: &str,
-) -> Result<Option<ApprovalRecord>, DomainError> {
-    let pin = content_hash(shape);
-    let found =
-        approval_repo::find_approved_for_content(runner, scope, tenant_id, subject_ref, &pin)
-            .await
-            .map_err(|e| repo_failure(&e))?;
-    let Some(record) = found else {
-        return Ok(None);
-    };
-    crate::infra::approval::independent_approver(&record)?;
-    Ok(Some(record))
-}
-
 /// The facts the route needs to open the unit a controlled act requires.
 ///
 /// The interval and the state are the **stored** ones, deliberately: this is the
@@ -1506,7 +1459,8 @@ fn pending_approval(
 /// is D-62's whole content. The unit used to be subject to `window_ref` alone and
 /// pinned to the plan shape *before* the mutation — which is identical for every
 /// act on one window while nothing has committed — so
-/// [`authorizing_unit`]'s lookup answered an approval taken for a different act:
+/// [`crate::infra::approval::authorizing_unit`]'s lookup answered an approval taken for
+/// a different act:
 /// a reviewer signed a lengthening and the submitter cancelled the window under
 /// it, asking nobody.
 ///

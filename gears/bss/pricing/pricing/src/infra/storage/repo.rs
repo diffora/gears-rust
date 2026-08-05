@@ -62,7 +62,8 @@ pub use audit_repo::NewAuditEntry;
 pub use catalog_version_ref_repo::PendingVersionRow;
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
 pub use outbox_repo::{
-    NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload, PriceWindowTransitionPayload,
+    NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload, PriceUpdatedPayload,
+    PriceWindowTransitionPayload,
 };
 pub use pin_frontier_repo::PinFrontierRepo;
 pub use plan_repo::{NewPlanDraft, PlanRepo};

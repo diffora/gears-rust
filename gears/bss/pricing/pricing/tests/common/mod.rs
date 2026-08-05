@@ -166,6 +166,18 @@ pub fn coverage_from() -> DateTime<Utc> {
     midnight(COVERAGE_FROM_UTC)
 }
 
+/// The end of that coverage, as an instant.
+///
+/// [`coverage_from`]'s sibling, and it exists for the sharper half of that reason: a
+/// suite naming an instant **outside** the fixture's coverage — a dormant key, a
+/// changeover past the end — would otherwise rebuild the date from
+/// [`COVERAGE_TO_UTC`] at the call site, which is a second spelling of the one fact
+/// this module keeps single.
+#[must_use]
+pub fn coverage_to() -> DateTime<Utc> {
+    midnight(COVERAGE_TO_UTC)
+}
+
 /// The two instants above, as instants.
 fn midnight(date: (i32, u32, u32)) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(date.0, date.1, date.2, 0, 0, 0)
