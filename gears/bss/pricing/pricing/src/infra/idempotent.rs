@@ -66,15 +66,23 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::infra::storage::repo::{ClaimOutcome, IdempotencyGate};
-use crate::infra::storage::{RepoError, repo_failure};
+use crate::infra::storage::repo_failure;
 
 /// What a guarded mutation returns when it runs inside the caller's transaction.
+///
+/// **The error is a [`DomainError`] and it used to be a [`RepoError`].** The two
+/// original callers each hand this a single repository call, for which the narrower type
+/// was the honest one; a window mutation is a whole domain pipeline whose refusals —
+/// `WINDOW_GAP`, `WINDOW_OVERLAP`, a materiality refusal — have no `RepoError` to be
+/// spelled as. So each caller now maps what *it* produces, through the same
+/// [`repo_failure`] ladder this module used to apply on their behalf, and nothing about
+/// which refusal reaches the wire changes.
 ///
 /// A `Pin<Box<dyn Future>>` rather than an `impl Future` because
 /// `Db::in_transaction` takes a higher-ranked closure over the transaction
 /// handle's lifetime, and a boxed future is the shape that bound accepts —
 /// `infra::publish` writes the same thing at its own call site.
-pub type TxFuture<'t, T> = Pin<Box<dyn Future<Output = Result<T, RepoError>> + Send + 't>>;
+pub type TxFuture<'t, T> = Pin<Box<dyn Future<Output = Result<T, DomainError>> + Send + 't>>;
 
 /// The outcome of a guarded request.
 ///
@@ -182,7 +190,7 @@ where
                     ClaimOutcome::Claimed => {}
                 }
 
-                let performed = mutation(txn).await.map_err(|e| repo_failure(&e))?;
+                let performed = mutation(txn).await?;
                 let body = render(&performed)?;
                 IdempotencyGate::record_response(
                     txn,

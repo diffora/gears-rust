@@ -610,6 +610,11 @@ impl Gear for BssPricingGear {
             // registry, never two incrementers — `api::rest::state`'s module doc
             // carries the argument and the correction it replaces.
             windows: WindowService::new(db.clone(), Arc::clone(&catalog_version_registry)),
+            // The window `POST`'s at-most-once gate (D-191), under the **same** TTL the
+            // authoring plane's claims expire on: the expiry is a deployment knob about
+            // how long a client key is honoured, and two windows for it would mean one
+            // caller's retry is protected on one surface and not on another.
+            idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
             thresholds: crate::infra::threshold::ThresholdService::new(db.clone()),
         });
 

@@ -611,7 +611,11 @@ async fn create_price(
                     created_at_utc: now,
                     correlation_id: correlation,
                 };
-                price_repo::create_draft_on(txn, &scope_for_body, tenant, draft).await
+                // `guarded`'s mutation speaks `DomainError`; the ladder is the
+                // same one it used to apply here. See `plans.rs`'s note.
+                price_repo::create_draft_on(txn, &scope_for_body, tenant, draft)
+                    .await
+                    .map_err(|e| repo_failure(&e))
             })
         },
         |record: &PriceRecord| {

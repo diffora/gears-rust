@@ -1539,6 +1539,7 @@ async fn drive_the_window_plane(h: &Harness) {
                 .expect("a real instant"),
             None,
             "audited-window-writer".to_owned(),
+            bss_pricing::api::rest::windows::verdict_json,
             stamp_of(ACTOR, at(18)),
         )
         .await

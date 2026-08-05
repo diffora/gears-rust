@@ -378,6 +378,12 @@ impl Harness {
                 Arc::clone(&registry) as Arc<_>,
             ),
             thresholds: bss_pricing::infra::threshold::ThresholdService::new(db.clone()),
+            // The window `POST`'s gate (D-191), under the production default TTL: a
+            // harness with a different expiry would make the replay tests pass or fail
+            // on a knob rather than on the guarantee.
+            idempotency: bss_pricing::infra::storage::repo::IdempotencyGate::new(
+                LimitsConfig::default().idempotency_key_ttl(),
+            ),
         });
         let frontier = Arc::new(FrontierState {
             pin_frontier: PinFrontierRepo::new(db.clone()),

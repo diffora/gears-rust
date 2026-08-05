@@ -766,7 +766,14 @@ async fn create_plan(
                     now,
                     correlation,
                 );
-                plan_repo::create_draft_on(txn, &scope_for_body, draft).await
+                // Mapped here rather than by the gate: `guarded` now takes a
+                // mutation that speaks the gear's rejection vocabulary, because a
+                // pipeline richer than one repository call has refusals no `RepoError`
+                // can carry. The ladder is the same one, at the call site that knows
+                // what it produced.
+                plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                    .await
+                    .map_err(|e| repo_failure(&e))
             })
         },
         |revision: &PlanRevision| {

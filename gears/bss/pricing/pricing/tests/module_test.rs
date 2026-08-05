@@ -158,6 +158,9 @@ async fn registered_operations() -> OpenApiRegistryImpl {
     // not perform.
     let governance = Arc::new(GovernanceState {
         db: db.clone(),
+        idempotency: bss_pricing::infra::storage::repo::IdempotencyGate::new(
+            LimitsConfig::default().idempotency_key_ttl(),
+        ),
         thresholds: bss_pricing::infra::threshold::ThresholdService::new(db.clone()),
         plans: PlanRepo::new(db.clone()),
         prices: PriceRepo::new(db.clone()),

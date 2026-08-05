@@ -477,23 +477,26 @@ async fn an_activation_under_a_pending_unit_does_not_void_the_approval() {
 
     let window_id = common::coverage_window_id(seeded.price_id);
     let approval_id = Uuid::from_u128(0x_a1_d0);
-    h.governance
-        .approvals
-        .submit_window_mutation(
-            &h.scope(),
-            h.tenant,
-            window_id,
-            seeded.price_id,
-            approval_id,
-            serde_json::json!({ "reason": "noConfiguredThreshold" }),
-            rest_support::stamp_of(SUBMITTER, rest_support::at(12)),
-            // A fixed subject in the shape the service builds for a cancel; this
-            // case asserts on the record that opens, not on a later mutation
-            // resolving against it.
-            &format!("{plan_id}/{window_id}/cancel/open/open"),
-        )
-        .await
-        .expect("a window of a published plan opens a pending unit");
+    // Runner-taking since D-191: the unit is opened inside the transaction that
+    // refuses the act, so that the `POST`'s gate records a body naming it. A suite
+    // driving it directly supplies the runner the route's gate would have supplied.
+    let conn = h.governance.db.conn().expect("scoped connection");
+    bss_pricing::infra::approval::ApprovalService::submit_window_mutation_on(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        window_id,
+        seeded.price_id,
+        approval_id,
+        serde_json::json!({ "reason": "noConfiguredThreshold" }),
+        rest_support::stamp_of(SUBMITTER, rest_support::at(12)),
+        // A fixed subject in the shape the service builds for a cancel, act sequence
+        // and all (D-190); this case asserts on the record that opens, not on a later
+        // mutation resolving against it.
+        &format!("{plan_id}/{window_id}/cancel/0/open/open"),
+    )
+    .await
+    .expect("a window of a published plan opens a pending unit");
     assert_eq!(
         approval_row(&h, approval_id).await.state,
         ApprovalState::Submitted,

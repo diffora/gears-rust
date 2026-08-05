@@ -628,11 +628,6 @@ async fn a_cancelled_window_is_reported_and_is_not_coverage() {
 // surface at all and every case below would be a 404 about staging rather than a
 // refusal about a rule.
 
-/// The `Idempotency-Key` the POST requires (D-171 and §5's own column). One value
-/// per binary; nothing asserts on it, and the dedup store is not this file's
-/// subject.
-const IDEMPOTENCY: &str = "5c4e-d0-1e-window";
-
 /// The `If-Match` the PATCH requires. The route parses it and the **store** does the
 /// comparing inside the writing transaction (D-176), so a well-formed tag is all a
 /// case about a window rule needs.
@@ -722,12 +717,27 @@ async fn published(h: &Harness, plan_id: Uuid) -> rest_support::Publishable {
     seeded
 }
 
-/// `POST` a window on `price_id`.
+/// `POST` a window on `price_id`, under a **fresh** client key.
+///
+/// One key per call, because the `POST` is guarded at-most-once (D-191): a shared
+/// constant would make the second schedule in any case a *replay* of the first rather
+/// than the act the case is about. The cases that are about the gate name their key.
 async fn post_window(
     h: &Harness,
     price_id: Uuid,
     from: DateTime<Utc>,
     to: Option<DateTime<Utc>>,
+) -> axum::http::Response<axum::body::Body> {
+    post_window_under(h, price_id, from, to, &Uuid::now_v7().to_string()).await
+}
+
+/// `POST` a window under a caller-chosen client key — the cases about the gate.
+async fn post_window_under(
+    h: &Harness,
+    price_id: Uuid,
+    from: DateTime<Utc>,
+    to: Option<DateTime<Utc>>,
+    key: &str,
 ) -> axum::http::Response<axum::body::Body> {
     h.allowed()
         .send(with_headers(
@@ -738,7 +748,7 @@ async fn post_window(
                 "effective_to": to,
                 "reason_code": "priceIncrease",
             })),
-            &[("idempotency-key", IDEMPOTENCY)],
+            &[("idempotency-key", key)],
         ))
         .await
 }
@@ -3199,5 +3209,124 @@ async fn a_committed_window_mutation_hands_back_the_tag_the_next_act_must_assert
         etag_of(&adjusted).as_deref(),
         Some("\"1\""),
         "and the act that consumed act zero hands back the next tag"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The POST's at-most-once guarantee (D-191), and what a key identifies
+// ---------------------------------------------------------------------------
+
+/// **A retried schedule replays the first answer and mints no second window.**
+///
+/// The `Idempotency-Key` was required on this route from the day it was mounted and
+/// **discarded**, which is worse than not requiring it: a caller who sent it believed
+/// they were protected, and what they actually got was a second window id per attempt —
+/// so a retry either scheduled a second window, was refused as an overlap, or opened a
+/// second approval unit. There was no gate on this surface at all, unlike the plan and
+/// price authoring routes.
+///
+/// The assertion that carries it is the **window id**: a replay hands back the stored
+/// body verbatim, so the second answer names the window the first one minted. A build
+/// that ran the mutation again would answer 202 as well, which is why the id and the
+/// row count are both here.
+#[tokio::test]
+async fn a_retried_schedule_replays_the_first_answer_and_mints_no_second_window() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published(&h, plan_id).await;
+    let key = "one-attempt-at-scheduling";
+
+    let first = post_window_under(&h, seeded.price_id, common_to(), Some(at(0)), key).await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first = body_json(first).await;
+    assert_eq!(first["outcome"], "mutated", "{first}");
+
+    let replay = post_window_under(&h, seeded.price_id, common_to(), Some(at(0)), key).await;
+    assert_eq!(
+        replay.status(),
+        StatusCode::ACCEPTED,
+        "a replay answers what the first attempt was told"
+    );
+    let replay = body_json(replay).await;
+    assert_eq!(
+        replay, first,
+        "the stored body comes back verbatim, window id and all"
+    );
+
+    let conn = h.state.db.conn().expect("conn");
+    let windows = bss_pricing::infra::storage::repo::window_repo::list_for_plan(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        PlanId::new(plan_id),
+    )
+    .await
+    .expect("list the plan's windows");
+    assert_eq!(
+        windows.len(),
+        2,
+        "the fixture's window and exactly one scheduled by these two attempts: {windows:#?}"
+    );
+}
+
+/// One key, two different intents — the refusal the gate exists to make visible.
+///
+/// Reached through the same ladder every other guarded route reaches it through, so
+/// this route mints no status and no code of its own.
+#[tokio::test]
+async fn a_key_reused_for_a_different_schedule_is_refused_as_a_payload_mismatch() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published(&h, plan_id).await;
+    let key = "one-key-two-intents";
+
+    let first = post_window_under(&h, seeded.price_id, common_to(), Some(at(0)), key).await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+    let mismatch = post_window_under(&h, seeded.price_id, common_to(), Some(at(30)), key).await;
+    assert_eq!(mismatch.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        conflict_reason(mismatch).await,
+        "IDEMPOTENCY_PAYLOAD_MISMATCH",
+        "the key is held by a different request, which is the caller's mistake and not \
+         a moved premise"
+    );
+}
+
+/// **A retried *refused* schedule replays its unit rather than opening a second.**
+///
+/// The arm that matters most, and the reason the unit is opened **inside** the guarded
+/// transaction: the recorded body has to be the body that was actually sent, and on the
+/// refused arm that body names the approval. Without the gate the second attempt met
+/// `PENDING_CHANGE_UNIT_EXISTS` — the first attempt's own unit holding the key — so a
+/// caller retrying a request they had no confirmation of was told their act conflicted
+/// with itself.
+#[tokio::test]
+async fn a_retried_refused_schedule_replays_its_unit_rather_than_opening_a_second() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published_unconfigured(&h, plan_id).await;
+    let key = "one-attempt-at-a-controlled-act";
+
+    let refused = post_window_under(&h, seeded.price_id, common_to(), None, key).await;
+    assert_eq!(refused.status(), StatusCode::ACCEPTED);
+    let refused = body_json(refused).await;
+    assert_eq!(refused["outcome"], "submitted_for_approval", "{refused}");
+
+    let replay = post_window_under(&h, seeded.price_id, common_to(), None, key).await;
+    assert_eq!(
+        replay.status(),
+        StatusCode::ACCEPTED,
+        "the retry is the same attempt, so it is answered rather than re-run"
+    );
+    let replay = body_json(replay).await;
+    assert_eq!(
+        replay, refused,
+        "including the unit: a second attempt must not put a second reviewer to work"
+    );
+    assert_eq!(
+        units_of(&h, AuditSubjectKind::Window).await.len(),
+        1,
+        "exactly one unit, and no PENDING_CHANGE_UNIT_EXISTS about the caller's own act"
     );
 }

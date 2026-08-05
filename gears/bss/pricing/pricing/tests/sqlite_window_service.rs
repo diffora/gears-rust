@@ -155,7 +155,7 @@ async fn still_held(h: &Harness, approval_id: Uuid) -> Vec<String> {
 /// `<plan_id>/<window_id>/<op>/<prior end>/<new end>`. The plan and window ids are
 /// this suite's fixtures; what matters to its callers is only that the ref parses.
 fn a_subject_ref(plan_id: Uuid, window_id: Uuid) -> String {
-    format!("{plan_id}/{window_id}/cancel/open/open")
+    format!("{plan_id}/{window_id}/cancel/0/open/open")
 }
 
 async fn submit_window(h: &Harness, window_id: Uuid, approval_id: Uuid) -> Result<(), DomainError> {
@@ -176,24 +176,28 @@ async fn submit_window(h: &Harness, window_id: Uuid, approval_id: Uuid) -> Resul
     .expect("the suite's rows are stored")
     .plan_id()
     .get();
-    h.governance
-        .approvals
-        .submit_window_mutation(
-            &h.scope(),
-            h.tenant,
-            window_id,
-            price_id,
-            approval_id,
-            materiality(),
-            rest_support::seed_stamp(),
-            // A fixed subject in the shape the service builds for a cancel. This
-            // helper's callers assert on the record it opens — its state, its held
-            // key, its subject — and never re-issue a mutation that would have to
-            // resolve against it, so only the shape matters.
-            &a_subject_ref(plan_id, window_id),
-        )
-        .await
-        .map(|_| ())
+    // Runner-taking since D-191, so that a route's gate can own the transaction. A
+    // suite driving it directly supplies the runner itself.
+    let conn =
+        h.db.conn()
+            .map_err(|e| DomainError::Internal(format!("scoped connection: {e}")))?;
+    bss_pricing::infra::approval::ApprovalService::submit_window_mutation_on(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        window_id,
+        price_id,
+        approval_id,
+        materiality(),
+        rest_support::seed_stamp(),
+        // A fixed subject in the shape the service builds for a cancel. This helper's
+        // callers assert on the record it opens — its state, its held key, its subject —
+        // and never re-issue a mutation that would have to resolve against it, so only
+        // the shape matters.
+        &a_subject_ref(plan_id, window_id),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Open a plan-revision unit over the plan's open draft.
@@ -529,6 +533,7 @@ async fn a_window_mutation_on_a_held_key_is_refused_before_it_touches_anything()
             &h.scope(),
             h.tenant,
             keys.eu_window,
+            bss_pricing::api::rest::windows::verdict_json,
             rest_support::seed_stamp(),
         )
         .await
@@ -593,6 +598,7 @@ async fn a_window_mutation_on_a_held_key_is_refused_before_it_touches_anything()
             far_future(),
             None,
             "priceIncrease".to_owned(),
+            bss_pricing::api::rest::windows::verdict_json,
             rest_support::seed_stamp(),
         )
         .await
@@ -810,6 +816,7 @@ async fn schedule(
             from,
             to,
             "priceIncrease".to_owned(),
+            bss_pricing::api::rest::windows::verdict_json,
             rest_support::seed_stamp(),
         )
         .await?;
@@ -1030,40 +1037,23 @@ async fn cancel_under_approval(
             &h.scope(),
             h.tenant,
             window_id,
+            bss_pricing::api::rest::windows::verdict_json,
             rest_support::stamp_of(SUBMITTER, rest_support::at(12)),
         )
         .await
         .expect("the controlled arm answers rather than refusing");
-    // The service **answers** that a unit is needed and does not open one: the
-    // opening is a second transaction, because `submit_window_mutation` takes its
-    // content pin inside its own. `api::rest::windows::answer` is what does it in
-    // production, and a service-level caller that skipped this step would simply
-    // never mutate — the control fails safe rather than open.
-    let unit = Uuid::now_v7();
-    match opened {
-        WindowMutationOutcome::SubmittedForApproval(pending) => {
-            h.governance
-                .approvals
-                .submit_window_mutation(
-                    &h.scope(),
-                    h.tenant,
-                    pending.window_id,
-                    pending.price_id,
-                    unit,
-                    json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
-                    rest_support::stamp_of(SUBMITTER, rest_support::at(12)),
-                    // The subject the service resolved, exactly as
-                    // `api::rest::windows` hands it on: a subject invented here
-                    // would open a unit the retry cannot find.
-                    &pending.subject_ref,
-                )
-                .await
-                .expect("the unit opens over the window the mutation named");
-        }
+    // **The unit is opened by the service, inside the transaction that refused the
+    // act** (D-191). It used to be a second transaction driven by the route, which is
+    // why this helper used to open one itself; the record now travels on the refused
+    // arm, so a service-level caller reads the unit rather than minting it. What is
+    // still true is the sequence: this call changed nothing, and the act commits only
+    // on the call that follows an independent approve.
+    let unit = match opened {
+        WindowMutationOutcome::SubmittedForApproval(pending) => pending.approval.approval_id,
         WindowMutationOutcome::Committed(_) => {
             panic!("a cancel is always-material (D-62) and must not commit on one principal")
         }
-    }
+    };
     h.governance
         .approvals
         .decide(
@@ -1087,6 +1077,7 @@ async fn cancel_under_approval(
             &h.scope(),
             h.tenant,
             window_id,
+            bss_pricing::api::rest::windows::verdict_json,
             rest_support::stamp_of(SUBMITTER, rest_support::at(12)),
         )
         .await

@@ -305,16 +305,27 @@ pub struct PendingApproval {
     /// [`MaterialityReason::AlwaysMaterialTrigger`] here, and carried as a value so
     /// the unit's stored verdict and this answer cannot disagree.
     pub verdict: MaterialityVerdict,
-    /// **The subject** the unit is to be opened under, as
-    /// [`Planned::unit_subject_ref`] builds it.
+    /// **The unit that is now reviewing the act**, opened inside the same transaction
+    /// that refused it.
     ///
-    /// Carried out of the mutation rather than re-derived at the route: the prior
-    /// end is part of it and only the transaction that read the row knows that, and
-    /// for a schedule the subject is the act itself rather than anything the route
-    /// holds. One builder, so the subject a unit is opened under and the subject a
-    /// retry resolves against cannot drift apart. Not rendered on the wire.
-    pub subject_ref: String,
+    /// It used to be the *subject* that travelled here, so that the route could open
+    /// the unit in a second transaction. The record travels instead, because the
+    /// `POST`'s idempotency gate records the response body it is handed and that body
+    /// names the approval: a unit opened after the guarded transaction committed would
+    /// be missing from the recorded answer, and a replay would hand the second caller
+    /// something the first never received. See [`mutate_in`].
+    pub approval: ApprovalRecord,
 }
+
+/// How a window unit's stored `materiality` payload is rendered.
+///
+/// A function travelling in rather than a type this module names, for the reason
+/// `infra::idempotent`'s renderer closure gives: DE0202 forbids `infra` from importing a
+/// `*View` type, and the stored jsonb is the **same document** the approvals surface
+/// renders back out. So the one producer of that shape stays in `api::rest` and arrives
+/// here as a function pointer — which is also what keeps a unit opened on this path and
+/// one opened on the publish path from storing two different documents.
+pub type VerdictJson = fn(MaterialityVerdict) -> Result<JsonValue, DomainError>;
 
 /// The window mutation workflow over one database provider.
 #[derive(Clone)]
@@ -379,16 +390,16 @@ impl WindowService {
         effective_from: DateTime<Utc>,
         effective_to: Option<DateTime<Utc>>,
         reason_code: String,
+        verdict_json: VerdictJson,
         stamp: AuditStamp,
     ) -> Result<WindowMutationOutcome, DomainError> {
-        let now = stamp.recorded_at;
         // `inst-ws-future-start` ahead of the store, which is the whole of what
         // debt 2 was: `check_creation` and `check_cancellation` had no non-test
         // caller, so `WINDOW_START_IN_PAST` and `WINDOW_NOT_CANCELLABLE` were
         // unreachable over HTTP. It is **not** a check the store lacks - the
         // trigger refuses a past start too - it is the difference between a 400
         // naming the field and a 500 out of a trigger.
-        window::check_creation(effective_from, effective_to, now)?;
+        window::check_creation(effective_from, effective_to, stamp.recorded_at)?;
 
         self.mutate(
             ctx,
@@ -397,16 +408,56 @@ impl WindowService {
             window_id,
             Subject::NewOn { price_id },
             stamp,
-            move |plan| {
-                Ok(Planned {
-                    price_id,
-                    effective_from,
-                    effective_to,
-                    reason_code,
-                    op: Op::Schedule,
-                    plan,
-                })
-            },
+            verdict_json,
+            schedule_plan(price_id, effective_from, effective_to, reason_code),
+        )
+        .await
+    }
+
+    /// [`Self::schedule`] **inside a transaction the caller owns** — the `POST`'s
+    /// guarded form (D-191).
+    ///
+    /// The same domain pre-check and the same plan closure; the only difference is who
+    /// opened the transaction. `infra::idempotent::guarded` owns it on this path, so the
+    /// claim that makes the act at-most-once and the act itself commit together or not
+    /// at all — which is the property `idempotency_repo`'s doc says the guarantee
+    /// inverts without: "the claim commits while the mutation does not, and every retry
+    /// of a request that never happened is answered 'already done', forever."
+    ///
+    /// # Errors
+    /// [`Self::schedule`]'s, exactly.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "`Self::schedule`'s reason and its arguments, plus the transaction the \
+                  gate owns. The alternative is a request struct named in `infra` that \
+                  no surface has, which DE0301 refuses"
+    )]
+    pub async fn schedule_in(
+        &self,
+        runner: &impl DBRunner,
+        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        price_id: Uuid,
+        window_id: Uuid,
+        effective_from: DateTime<Utc>,
+        effective_to: Option<DateTime<Utc>>,
+        reason_code: String,
+        verdict_json: VerdictJson,
+        stamp: AuditStamp,
+    ) -> Result<WindowMutationOutcome, DomainError> {
+        window::check_creation(effective_from, effective_to, stamp.recorded_at)?;
+        mutate_in(
+            runner,
+            &self.registry,
+            ctx,
+            scope,
+            tenant_id,
+            window_id,
+            Subject::NewOn { price_id },
+            stamp,
+            verdict_json,
+            schedule_plan(price_id, effective_from, effective_to, reason_code),
         )
         .await
     }
@@ -460,6 +511,7 @@ impl WindowService {
         window_id: Uuid,
         effective_to: Option<DateTime<Utc>>,
         expected_seq: u64,
+        verdict_json: VerdictJson,
         stamp: AuditStamp,
     ) -> Result<WindowMutationOutcome, DomainError> {
         let now = stamp.recorded_at;
@@ -470,6 +522,7 @@ impl WindowService {
             window_id,
             Subject::Existing,
             stamp,
+            verdict_json,
             move |plan| {
                 let current = plan.current.as_ref().ok_or_else(|| DomainError::NotFound {
                     subject: "price window".to_owned(),
@@ -525,6 +578,7 @@ impl WindowService {
         scope: &AccessScope,
         tenant_id: Uuid,
         window_id: Uuid,
+        verdict_json: VerdictJson,
         stamp: AuditStamp,
     ) -> Result<WindowMutationOutcome, DomainError> {
         self.mutate(
@@ -534,6 +588,7 @@ impl WindowService {
             window_id,
             Subject::Existing,
             stamp,
+            verdict_json,
             move |plan| {
                 let current = plan.current.as_ref().ok_or_else(|| DomainError::NotFound {
                     subject: "price window".to_owned(),
@@ -941,6 +996,7 @@ impl WindowService {
         window_id: Uuid,
         subject: Subject,
         stamp: AuditStamp,
+        verdict_json: VerdictJson,
         plan_mutation: F,
     ) -> Result<WindowMutationOutcome, DomainError>
     where
@@ -949,225 +1005,24 @@ impl WindowService {
         let ctx = ctx.clone();
         let scope = scope.clone();
         let registry = Arc::clone(&self.registry);
-        let now = stamp.recorded_at;
-
         let (_, outcome) = self
             .db
             .db()
             .in_transaction::<WindowMutationOutcome, DomainError, _>(move |txn| {
                 Box::pin(async move {
-                    // 1. Every fact the validation needs, read inside the
-                    // transaction that writes: a comparison made before it opened
-                    // is a hint and not a precondition (D-176).
-                    let context =
-                        read_plan_context(txn, &scope, tenant_id, window_id, subject, now).await?;
-                    let planned = plan_mutation(context)?;
-                    let unit = PlanPublishUnit::window_mutation(
-                        planned.plan.plan_id,
-                        planned.plan.revision,
+                    mutate_in(
+                        txn,
+                        &registry,
+                        &ctx,
+                        &scope,
+                        tenant_id,
                         window_id,
-                    );
-
-                    // 2. `inst-co-single-pending`, **before** anything is touched.
-                    // A pending unit of any kind holding this key is a review in
-                    // progress over the interval set this mutation would move, and
-                    // committing under it would leave a reviewer approving content
-                    // that had already changed — with no void to catch it, since
-                    // `inst-ap-pin`'s rail hangs off the *authoring* audit writers
-                    // and a window mutation is not one of them.
-                    refuse_pending_key_holder(txn, &scope, tenant_id, &planned.plan.key).await?;
-
-                    // 3. The two rules `inst-fg-when` puts inside every window
-                    // mutation, over the key this one touches.
-                    let after = project(&planned, window_id);
-                    refuse_interior_gap(&planned.plan.key, &after)?;
-                    if planned.op.may_remove_coverage() {
-                        refuse_trailing_void(&planned, &after, now)?;
-                    }
-
-                    // 3a. The two-person control, **after** every check above and
-                    // before anything at all is written. The order is the publish
-                    // route's own: a mutation that cannot commit must not be put in
-                    // front of a reviewer, who would then approve an act the commit
-                    // refuses.
-                    //
-                    // **All four acts consult the evaluator**, and only the fact each
-                    // one *is* comes from here (D-176). D-62's two arrive carrying
-                    // their trigger and are material whatever a threshold says; a
-                    // schedule and a lengthening arrive carrying none, and what
-                    // decides them is the per-currency comparison against the
-                    // tenant's configured policy — read through the **same**
-                    // transaction that is about to write, so the verdict and the unit
-                    // it opens are about one policy.
-                    let verdict = materiality::evaluate(
-                        &ChangeSet::of_window_mutation(
-                            window_id,
-                            planned.op.registered_trigger(&planned),
-                            planned.plan.published.iter().cloned(),
-                        ),
-                        crate::infra::threshold::effective_policy(txn, &scope, tenant_id)
-                            .await?
-                            .as_ref(),
-                        // `Some` for every plan this path can reach — `load_current`
-                        // resolved above, which is the same condition
-                        // `publish::published_baseline` answers `Some` on. Spelled off
-                        // the shape rather than assumed, so the two readings of "has
-                        // this plan published" stay one reading.
-                        planned
-                            .plan
-                            .shape
-                            .baseline
-                            .is_some()
-                            .then(|| {
-                                PublishedPriceBaseline::of_records(
-                                    planned.plan.published.iter().cloned(),
-                                )
-                            })
-                            .as_ref(),
-                    );
-                    let authorization = if verdict.is_material() {
-                        match authorizing_unit(
-                            txn,
-                            &scope,
-                            tenant_id,
-                            &planned.plan.shape,
-                            &planned.unit_subject_ref(window_id),
-                        )
-                        .await?
-                        {
-                            Some(record) => Some(record),
-                            // Nothing is written on this branch, and the tests assert
-                            // that on all four things a mutation touches: the window
-                            // plane, the pending-ref table, the outbox and the audit
-                            // log.
-                            None => {
-                                return Ok(WindowMutationOutcome::SubmittedForApproval(Box::new(
-                                    pending_approval(&planned, window_id, verdict),
-                                )));
-                            }
-                        }
-                    } else {
-                        None
-                    };
-
-                    // 4. Addressability, fail closed, after re-validation and
-                    // before the writes (D-156).
-                    let pending = registry
-                        .request_version(&ctx, &unit_request_id(tenant_id, unit, &planned))
-                        .await
-                        .map_err(|e| registry_failure(&e))?;
-
-                    // 5. The row change. Its own guards run beneath the domain
-                    // checks above and are not replaced by them.
-                    let written = write(txn, &scope, tenant_id, window_id, &planned, stamp).await?;
-
-                    // 6. The plan subject the projector re-freezes.
-                    // `SubjectRef::Plan` and not a window subject of its own: D-99
-                    // makes windows plan facts, so a window mutation is a different
-                    // *reason* to re-project one subject rather than a second
-                    // subject to project.
-                    catalog_version_ref_repo::record_pending(
-                        txn,
-                        &scope,
-                        PendingVersionRow::for_subject(
-                            tenant_id,
-                            pending.pending_ref.clone(),
-                            &SubjectRef::Plan(planned.plan.plan_id.get()),
-                            Some(planned.plan.revision),
-                            Some(planned.plan.lifecycle_state),
-                            now,
-                        ),
+                        subject,
+                        stamp,
+                        verdict_json,
+                        plan_mutation,
                     )
                     .await
-                    .map_err(|e| repo_failure(&e))?;
-
-                    // 7. The event.
-                    let payload = PriceWindowTransitionPayload {
-                        window_id,
-                        plan_id: planned.plan.plan_id,
-                        price_id: planned.price_id,
-                        effective_from: written.effective_from,
-                        effective_to: written.effective_to,
-                        correlation_id: stamp.correlation_id,
-                    };
-                    outbox_repo::enqueue(
-                        txn,
-                        &scope,
-                        NewOutboxEvent::price_window_mutation(
-                            tenant_id,
-                            planned.op.event(),
-                            &payload,
-                            now,
-                            &planned.act_token(),
-                        ),
-                    )
-                    .await
-                    .map_err(|e| repo_failure(&e))?;
-
-                    // 8. The record of who did it — the debt `window_repo`'s module
-                    // doc filed as "the store holds who *scheduled* a window and
-                    // cannot answer who *shortened* it". It is answered by a record
-                    // rather than by an `updated_by` column, which is what makes it
-                    // payable without minting: a column no decision names would be
-                    // this group inventing storage, while `pricing_audit_log` is the
-                    // store D-135 already keys on the audited subject's aggregate.
-                    audit_repo::append(
-                        txn,
-                        &scope,
-                        NewAuditEntry {
-                            tenant_id,
-                            // The **plan's** segment. D-135 keys a chain on the
-                            // audited subject's *aggregate*, and a window's
-                            // aggregate is the plan its row prices — exactly what
-                            // `AuditSubjectKind::PriceUnit`'s doc says of a price
-                            // row. So the aggregate list naming
-                            // plan/overlay/payer/policy/bulk and **not** `window` is
-                            // correct rather than a gap: `window` is a subject kind,
-                            // not an aggregate. That list is **S5 §3's
-                            // `inst-au-tamper`** — the chain-segmentation rule — and
-                            // not §6's writer contract, which this comment used to
-                            // cite; §6 declares the record's columns and says nothing
-                            // about which aggregates segment a chain.
-                            chain_id: audit_repo::plan_chain(planned.plan.plan_id),
-                            recorded_at: now,
-                            actor_principal_id: stamp.actor_principal_id,
-                            action: Op::AUDIT_ACTION,
-                            subject_kind: AuditSubjectKind::Window,
-                            subject_ref: audit_repo::window_ref(planned.plan.plan_id, window_id),
-                            before_state: planned.plan.current.as_ref().map(window_state_value),
-                            after_state: Some(window_state_value(&written)),
-                            // The unit that authorized it, on the two acts D-62
-                            // controls, and `None` on the two it does not.
-                            //
-                            // This comment used to say the field is always `None`
-                            // because "what decides whether a given window mutation
-                            // needs a unit at all is the threshold policy, so the
-                            // surface that opens one is G6's". That is true of a
-                            // schedule and of a lengthening `PATCH` and false of the
-                            // other two: `inst-mat-registered` makes a cancel and a
-                            // shortening always-material independent of any
-                            // threshold, so their unit does not wait for a policy —
-                            // it is step 3a above, and this is where it is recorded.
-                            approval_ref: authorization.as_ref().map(|r| r.approval_id),
-                            correlation_id: stamp.correlation_id,
-                        },
-                    )
-                    .await
-                    .map_err(|e| repo_failure(&e))?;
-
-                    Ok(WindowMutationOutcome::Committed(Box::new(
-                        WindowMutationReceipt {
-                            window_id,
-                            plan_id: planned.plan.plan_id,
-                            price_id: planned.price_id,
-                            revision: planned.plan.revision,
-                            pending_version_ref: pending.pending_ref,
-                            effective_from: written.effective_from,
-                            effective_to: written.effective_to,
-                            state: written.state,
-                            mutation_seq: written.mutation_seq,
-                        },
-                    )))
                 })
             })
             .await;
@@ -1177,6 +1032,301 @@ impl WindowService {
             })
         })
     }
+}
+
+/// A schedule's plan closure, shared by [`WindowService::schedule`] and
+/// [`WindowService::schedule_in`].
+///
+/// Extracted rather than written twice: the two differ only in who owns the
+/// transaction, and two copies of the `Planned` it builds would be two places for a
+/// schedule's shape to drift — which is the same argument `plan_repo::create_draft_on`
+/// carries for being extracted from `create_draft` rather than copied out of it.
+fn schedule_plan(
+    price_id: Uuid,
+    effective_from: DateTime<Utc>,
+    effective_to: Option<DateTime<Utc>>,
+    reason_code: String,
+) -> impl FnOnce(PlanContext) -> Result<Planned, DomainError> + Send {
+    move |plan| {
+        Ok(Planned {
+            price_id,
+            effective_from,
+            effective_to,
+            reason_code,
+            op: Op::Schedule,
+            plan,
+        })
+    }
+}
+
+/// The mutation itself, **inside a transaction somebody else owns**.
+///
+/// Split out of [`WindowService::mutate`] for D-191's `POST` replay, and the split is
+/// the whole of that item's work: `infra::idempotent::guarded` runs the caller's
+/// mutation *inside the gate's* transaction and has no two-phase form, so the gate and
+/// this service each used to insist on owning one. Now the service can be handed a
+/// transaction, and the three surfaces wrap it — the `POST` through the gate, the other
+/// two through [`WindowService::mutate`], which opens one of its own.
+///
+/// **The unit a controlled act needs is opened here, and that moved.** It used to be
+/// opened by the route, in a second transaction, on the argument that
+/// `submit_window_mutation` takes the pin inside its own — which is true and was not the
+/// whole story. Under the gate the *recorded response body* has to be the body the first
+/// caller was actually sent, and on the refused arm that body names the approval; a unit
+/// opened after the guarded transaction committed would be absent from the recorded
+/// answer, so a replay would hand the second caller something the first never received —
+/// the exact failure `infra::idempotent`'s own doc names. It also strengthens the pin
+/// rather than weakening it: the digest is now taken over the world the refusal was
+/// decided on, where before it was taken over a second read that could have moved in
+/// between.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "`WindowService::mutate`'s reason, plus the two things it no longer owns - \
+              the transaction and the registry handle. Every one is a fact only the \
+              caller holds, and the last is the closure that is the *only* difference \
+              between the three mutations"
+)]
+async fn mutate_in<F>(
+    runner: &impl DBRunner,
+    registry: &Arc<dyn CatalogVersionRegistryV1>,
+    ctx: &SecurityContext,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    window_id: Uuid,
+    subject: Subject,
+    stamp: AuditStamp,
+    verdict_json: VerdictJson,
+    plan_mutation: F,
+) -> Result<WindowMutationOutcome, DomainError>
+where
+    F: FnOnce(PlanContext) -> Result<Planned, DomainError> + Send,
+{
+    let now = stamp.recorded_at;
+    // 1. Every fact the validation needs, read inside the
+    // transaction that writes: a comparison made before it opened
+    // is a hint and not a precondition (D-176).
+    let context = read_plan_context(runner, scope, tenant_id, window_id, subject, now).await?;
+    let planned = plan_mutation(context)?;
+    let unit =
+        PlanPublishUnit::window_mutation(planned.plan.plan_id, planned.plan.revision, window_id);
+
+    // 2. `inst-co-single-pending`, **before** anything is touched.
+    // A pending unit of any kind holding this key is a review in
+    // progress over the interval set this mutation would move, and
+    // committing under it would leave a reviewer approving content
+    // that had already changed — with no void to catch it, since
+    // `inst-ap-pin`'s rail hangs off the *authoring* audit writers
+    // and a window mutation is not one of them.
+    refuse_pending_key_holder(runner, scope, tenant_id, &planned.plan.key).await?;
+
+    // 3. The two rules `inst-fg-when` puts inside every window
+    // mutation, over the key this one touches.
+    let after = project(&planned, window_id);
+    refuse_interior_gap(&planned.plan.key, &after)?;
+    if planned.op.may_remove_coverage() {
+        refuse_trailing_void(&planned, &after, now)?;
+    }
+
+    // 3a. The two-person control, **after** every check above and
+    // before anything at all is written. The order is the publish
+    // route's own: a mutation that cannot commit must not be put in
+    // front of a reviewer, who would then approve an act the commit
+    // refuses.
+    //
+    // **All four acts consult the evaluator**, and only the fact each
+    // one *is* comes from here (D-176). D-62's two arrive carrying
+    // their trigger and are material whatever a threshold says; a
+    // schedule and a lengthening arrive carrying none, and what
+    // decides them is the per-currency comparison against the
+    // tenant's configured policy — read through the **same**
+    // transaction that is about to write, so the verdict and the unit
+    // it opens are about one policy.
+    let verdict = materiality::evaluate(
+        &ChangeSet::of_window_mutation(
+            window_id,
+            planned.op.registered_trigger(&planned),
+            planned.plan.published.iter().cloned(),
+        ),
+        crate::infra::threshold::effective_policy(runner, scope, tenant_id)
+            .await?
+            .as_ref(),
+        // `Some` for every plan this path can reach — `load_current`
+        // resolved above, which is the same condition
+        // `publish::published_baseline` answers `Some` on. Spelled off
+        // the shape rather than assumed, so the two readings of "has
+        // this plan published" stay one reading.
+        planned
+            .plan
+            .shape
+            .baseline
+            .is_some()
+            .then(|| PublishedPriceBaseline::of_records(planned.plan.published.iter().cloned()))
+            .as_ref(),
+    );
+    let authorization = if verdict.is_material() {
+        let authorized = authorizing_unit(
+            runner,
+            scope,
+            tenant_id,
+            &planned.plan.shape,
+            &planned.unit_subject_ref(window_id),
+        )
+        .await?;
+        // Nothing is written on the `None` branch, and the tests assert that on all four
+        // things a mutation touches: the window plane, the pending-ref table, the outbox
+        // and the audit log.
+        let Some(record) = authorized else {
+            // **The unit, opened here and not by the route.** `mutate_in`'s doc
+            // carries the argument; the short form is that the gate records the
+            // body it is handed, and on this arm that body names the approval.
+            //
+            // The id is minted here for the reason the route's comment already
+            // gave — "the caller names the window, never the unit" — so it is an
+            // outcome of the act rather than an input to the request, exactly as
+            // a schedule's window id became one under D-184. Under the gate a
+            // replay hands back the first attempt's id, so nothing observable
+            // churns.
+            let record = crate::infra::approval::ApprovalService::submit_window_mutation_on(
+                runner,
+                scope,
+                tenant_id,
+                window_id,
+                // The **price row**: a schedule's window does not exist yet, so
+                // the window id names nothing readable at this point.
+                planned.price_id,
+                Uuid::now_v7(),
+                verdict_json(verdict)?,
+                stamp,
+                &planned.unit_subject_ref(window_id),
+            )
+            .await?;
+            return Ok(WindowMutationOutcome::SubmittedForApproval(Box::new(
+                pending_approval(&planned, window_id, verdict, record),
+            )));
+        };
+        Some(record)
+    } else {
+        None
+    };
+
+    // 4. Addressability, fail closed, after re-validation and
+    // before the writes (D-156).
+    let pending = registry
+        .request_version(ctx, &unit_request_id(tenant_id, unit, &planned))
+        .await
+        .map_err(|e| registry_failure(&e))?;
+
+    // 5. The row change. Its own guards run beneath the domain
+    // checks above and are not replaced by them.
+    let written = write(runner, scope, tenant_id, window_id, &planned, stamp).await?;
+
+    // 6. The plan subject the projector re-freezes.
+    // `SubjectRef::Plan` and not a window subject of its own: D-99
+    // makes windows plan facts, so a window mutation is a different
+    // *reason* to re-project one subject rather than a second
+    // subject to project.
+    catalog_version_ref_repo::record_pending(
+        runner,
+        scope,
+        PendingVersionRow::for_subject(
+            tenant_id,
+            pending.pending_ref.clone(),
+            &SubjectRef::Plan(planned.plan.plan_id.get()),
+            Some(planned.plan.revision),
+            Some(planned.plan.lifecycle_state),
+            now,
+        ),
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    // 7. The event.
+    let payload = PriceWindowTransitionPayload {
+        window_id,
+        plan_id: planned.plan.plan_id,
+        price_id: planned.price_id,
+        effective_from: written.effective_from,
+        effective_to: written.effective_to,
+        correlation_id: stamp.correlation_id,
+    };
+    outbox_repo::enqueue(
+        runner,
+        scope,
+        NewOutboxEvent::price_window_mutation(
+            tenant_id,
+            planned.op.event(),
+            &payload,
+            now,
+            &planned.act_token(),
+        ),
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    // 8. The record of who did it — the debt `window_repo`'s module
+    // doc filed as "the store holds who *scheduled* a window and
+    // cannot answer who *shortened* it". It is answered by a record
+    // rather than by an `updated_by` column, which is what makes it
+    // payable without minting: a column no decision names would be
+    // this group inventing storage, while `pricing_audit_log` is the
+    // store D-135 already keys on the audited subject's aggregate.
+    audit_repo::append(
+        runner,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            // The **plan's** segment. D-135 keys a chain on the
+            // audited subject's *aggregate*, and a window's
+            // aggregate is the plan its row prices — exactly what
+            // `AuditSubjectKind::PriceUnit`'s doc says of a price
+            // row. So the aggregate list naming
+            // plan/overlay/payer/policy/bulk and **not** `window` is
+            // correct rather than a gap: `window` is a subject kind,
+            // not an aggregate. That list is **S5 §3's
+            // `inst-au-tamper`** — the chain-segmentation rule — and
+            // not §6's writer contract, which this comment used to
+            // cite; §6 declares the record's columns and says nothing
+            // about which aggregates segment a chain.
+            chain_id: audit_repo::plan_chain(planned.plan.plan_id),
+            recorded_at: now,
+            actor_principal_id: stamp.actor_principal_id,
+            action: Op::AUDIT_ACTION,
+            subject_kind: AuditSubjectKind::Window,
+            subject_ref: audit_repo::window_ref(planned.plan.plan_id, window_id),
+            before_state: planned.plan.current.as_ref().map(window_state_value),
+            after_state: Some(window_state_value(&written)),
+            // The unit that authorized it, on the two acts D-62
+            // controls, and `None` on the two it does not.
+            //
+            // This comment used to say the field is always `None`
+            // because "what decides whether a given window mutation
+            // needs a unit at all is the threshold policy, so the
+            // surface that opens one is G6's". That is true of a
+            // schedule and of a lengthening `PATCH` and false of the
+            // other two: `inst-mat-registered` makes a cancel and a
+            // shortening always-material independent of any
+            // threshold, so their unit does not wait for a policy —
+            // it is step 3a above, and this is where it is recorded.
+            approval_ref: authorization.as_ref().map(|r| r.approval_id),
+            correlation_id: stamp.correlation_id,
+        },
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    Ok(WindowMutationOutcome::Committed(Box::new(
+        WindowMutationReceipt {
+            window_id,
+            plan_id: planned.plan.plan_id,
+            price_id: planned.price_id,
+            revision: planned.plan.revision,
+            pending_version_ref: pending.pending_ref,
+            effective_from: written.effective_from,
+            effective_to: written.effective_to,
+            state: written.state,
+            mutation_seq: written.mutation_seq,
+        },
+    )))
 }
 
 /// The key's interval set **as the mutation would leave it**.
@@ -1311,6 +1461,7 @@ fn pending_approval(
     planned: &Planned,
     window_id: Uuid,
     verdict: MaterialityVerdict,
+    approval: ApprovalRecord,
 ) -> PendingApproval {
     let (effective_from, effective_to, state) = planned.plan.current.as_ref().map_or(
         (
@@ -1335,7 +1486,7 @@ fn pending_approval(
         // A constant here would have told an operator "alwaysMaterialTrigger" about a
         // currency with no entry, which is the one thing they could have acted on.
         verdict,
-        subject_ref: planned.unit_subject_ref(window_id),
+        approval,
     }
 }
 

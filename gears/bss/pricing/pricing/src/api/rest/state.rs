@@ -90,6 +90,15 @@ pub struct GovernanceState {
     /// shares the registry `Arc` with [`GovernanceState::publish`]; the module doc
     /// says why that is one incrementer and not two.
     pub windows: crate::infra::window::WindowService,
+    /// The at-most-once gate the `POST …/windows` claims under (D-191).
+    ///
+    /// Here as well as on [`AuthoringState`] rather than instead of it: the two planes
+    /// claim under different `operation` tokens over the same table, so one gate value
+    /// shared by both would still key them apart, and a second field is what keeps each
+    /// state carrying the collaborators its own routes reach for. The window `POST` was
+    /// the last mutating create in this gear with **no** gate — it parsed the required
+    /// `Idempotency-Key` and dropped it.
+    pub idempotency: IdempotencyGate,
     /// The approval-threshold policy: the effective version, and the proposal that
     /// opens a D-10 unit.
     ///

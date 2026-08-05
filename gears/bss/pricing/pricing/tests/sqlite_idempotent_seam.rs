@@ -148,7 +148,9 @@ async fn a_second_identical_request_replays_the_stored_answer_and_runs_nothing()
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
                 Box::pin(async move {
                     runs.fetch_add(1, Ordering::SeqCst);
-                    plan_repo::create_draft_on(txn, &scope_for_body, draft).await
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
                 })
             },
             render,
@@ -177,7 +179,9 @@ async fn a_second_identical_request_replays_the_stored_answer_and_runs_nothing()
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
                 Box::pin(async move {
                     runs.fetch_add(1, Ordering::SeqCst);
-                    plan_repo::create_draft_on(txn, &scope_for_body, draft).await
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
                 })
             },
             render,
@@ -223,9 +227,11 @@ async fn the_same_key_with_a_different_payload_is_refused_and_changes_nothing() 
             &scope,
             request(CREATE_PLAN, "key-2", b"digest-a", tenant),
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
-                Box::pin(
-                    async move { plan_repo::create_draft_on(txn, &scope_for_body, draft).await },
-                )
+                Box::pin(async move {
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
+                })
             },
             render,
         )
@@ -243,9 +249,11 @@ async fn the_same_key_with_a_different_payload_is_refused_and_changes_nothing() 
             &scope,
             request(CREATE_PLAN, "key-2", b"digest-b", tenant),
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
-                Box::pin(
-                    async move { plan_repo::create_draft_on(txn, &scope_for_body, draft).await },
-                )
+                Box::pin(async move {
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
+                })
             },
             render,
         )
@@ -288,9 +296,11 @@ async fn a_failed_mutation_leaves_no_claim_behind_so_the_retry_claims_afresh() {
             &scope,
             request(CREATE_PLAN, "key-3", b"digest-3", tenant),
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
-                Box::pin(
-                    async move { plan_repo::create_draft_on(txn, &scope_for_body, draft).await },
-                )
+                Box::pin(async move {
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
+                })
             },
             render,
         )
@@ -318,9 +328,11 @@ async fn a_failed_mutation_leaves_no_claim_behind_so_the_retry_claims_afresh() {
             &scope,
             request(CREATE_PLAN, "key-3", b"digest-3", tenant),
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
-                Box::pin(
-                    async move { plan_repo::create_draft_on(txn, &scope_for_body, draft).await },
-                )
+                Box::pin(async move {
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
+                })
             },
             render,
         )
@@ -353,9 +365,11 @@ async fn one_client_key_on_two_operations_does_not_collide() {
             &scope,
             request(operation, "shared-key", b"digest-4", tenant),
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
-                Box::pin(
-                    async move { plan_repo::create_draft_on(txn, &scope_for_body, draft).await },
-                )
+                Box::pin(async move {
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
+                })
             },
             render,
         )
@@ -392,9 +406,11 @@ async fn a_replay_is_answered_from_the_store_and_not_from_a_second_render() {
             &scope,
             request(CREATE_PLAN, "key-5", b"digest-5", tenant),
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
-                Box::pin(
-                    async move { plan_repo::create_draft_on(txn, &scope_for_body, draft).await },
-                )
+                Box::pin(async move {
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
+                })
             },
             render,
         )
@@ -411,9 +427,11 @@ async fn a_replay_is_answered_from_the_store_and_not_from_a_second_render() {
             &scope,
             request(CREATE_PLAN, "key-5", b"digest-5", tenant),
             move |txn: &DbTx<'_>| -> TxFuture<'_, PlanRevision> {
-                Box::pin(
-                    async move { plan_repo::create_draft_on(txn, &scope_for_body, draft).await },
-                )
+                Box::pin(async move {
+                    plan_repo::create_draft_on(txn, &scope_for_body, draft)
+                        .await
+                        .map_err(|e| bss_pricing::infra::storage::repo_failure(&e))
+                })
             },
             // A renderer that would answer something else entirely, to prove it
             // is never reached on the replay path.

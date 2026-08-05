@@ -27,6 +27,7 @@ use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use crate::domain::window::KeyWindows;
+use crate::infra::storage::repo::approval_repo::ApprovalRecord;
 use crate::infra::storage::repo::window_repo::WindowRecord;
 
 /// The window scale, fixed at 2099 for `common::COVERAGE_FROM_UTC`'s reason: an
@@ -74,6 +75,29 @@ fn stored(from: i64, to: Option<i64>) -> WindowRecord {
         cancelled_at: None,
         // Freshly scheduled: no operator act beyond the schedule itself.
         mutation_seq: 0,
+    }
+}
+
+/// A `submitted` window unit, as the refusing transaction opens one.
+///
+/// The record travels on [`PendingApproval`] since the unit moved inside the mutation
+/// (D-191): the gate records the body it is handed, and on the refused arm that body
+/// names the approval. Only the fields these cases read are meaningful; the rest are the
+/// store's shape.
+fn submitted_unit(verdict: MaterialityVerdict) -> ApprovalRecord {
+    ApprovalRecord {
+        approval_id: uuid::Uuid::from_u128(0x_a1),
+        tenant_id: uuid::Uuid::from_u128(0x_7e),
+        subject_ref: "fixture".to_owned(),
+        subject_kind: crate::domain::audit::AuditSubjectKind::Window,
+        content_hash: Vec::new(),
+        state: crate::domain::approval::ApprovalState::Submitted,
+        submitter_principal: uuid::Uuid::from_u128(0x_ac70),
+        approver_principal: None,
+        reason: None,
+        materiality: serde_json::json!({ "material": verdict.is_material() }),
+        submitted_at: at(-1),
+        decided_at: None,
     }
 }
 
@@ -238,11 +262,8 @@ fn the_controlled_arm_echoes_the_stored_interval_and_not_the_request() {
         Some(20),
     );
 
-    let pending = pending_approval(
-        &planned,
-        window_id,
-        MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger),
-    );
+    let verdict = MaterialityVerdict::material(MaterialityReason::AlwaysMaterialTrigger);
+    let pending = pending_approval(&planned, window_id, verdict, submitted_unit(verdict));
 
     assert_eq!(pending.window_id, window_id);
     assert_eq!(pending.plan_id, plan());
@@ -273,11 +294,8 @@ fn the_controlled_arm_carries_a_threshold_reason_when_that_is_what_answered() {
     let window_id = uuid::Uuid::from_u128(0x_d1);
     let planned = planned(Op::Schedule, None, Some(30));
 
-    let pending = pending_approval(
-        &planned,
-        window_id,
-        MaterialityVerdict::material(MaterialityReason::NoConfiguredThreshold),
-    );
+    let verdict = MaterialityVerdict::material(MaterialityReason::NoConfiguredThreshold);
+    let pending = pending_approval(&planned, window_id, verdict, submitted_unit(verdict));
 
     assert_eq!(
         pending.verdict,

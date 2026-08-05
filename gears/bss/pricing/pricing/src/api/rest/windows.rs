@@ -146,6 +146,7 @@ use crate::domain::sellability::{
     PredicateAnswer, PredicateOutcome, SellabilityFacts, SellabilitySurface,
 };
 use crate::domain::window::{CoverageEnd, WindowInterval};
+use crate::infra::idempotent::{self, Guarded, GuardedRequest};
 use crate::infra::publish::CANDIDATE_ROW_STATES;
 use crate::infra::storage::repo::{pin_frontier_repo, price_repo, read_model_repo, window_repo};
 use crate::infra::storage::repo_failure;
@@ -300,8 +301,12 @@ pub struct CoverageGapView {
 /// It is deliberately not a required field with a sentinel — an open-ended window
 /// is the ordinary case for a plan's first window, and a sentinel instant would be
 /// an instant somebody eventually compares against.
+// `(request, response)` and not `(request)` alone: the guarded `POST` digests the
+// **parsed** request (`preconditions::request_digest`, so member order and whitespace
+// cannot make an honest retry look like a different intent), and that needs the type to
+// serialize. Every guarded create in this gear is declared the same way.
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
+#[toolkit_macros::api_dto(request, response)]
 pub struct ScheduleWindowRequest {
     /// Inclusive start, UTC, strictly in the future (`inst-ws-future-start`,
     /// D-63).
@@ -632,9 +637,17 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              sibling on the same key (`WINDOW_OVERLAP`, 409 - siblings include every price row of \
              the plan on that key, not just this one), and the resulting interval set must open no \
              hole between two of the key's windows (`WINDOW_GAP`). Adjacency is legal: \
-             `effectiveTo = next.effectiveFrom` is not a gap, the intervals being half-open. An \
-             `Idempotency-Key` header is required (D-171, and S5's own idempotency column for this \
-             surface). \
+             `effectiveTo = next.effectiveFrom` is not a gap, the intervals being half-open. \
+             \
+             **An `Idempotency-Key` header is required and is honoured** (D-171, and S5's own \
+             idempotency column for this surface): the same key with the same body returns the \
+             first answer verbatim and mints no second window, and the same key with a different \
+             body is `IDEMPOTENCY_PAYLOAD_MISMATCH` (409). What a key identifies is an **attempt**, \
+             not an act - so retrying a request you never got an answer to is safe, and \
+             **completing an act a reviewer has since approved is a new attempt and needs a new \
+             key**. Re-issuing the refused request under its original key replays the refusal, \
+             which is what a retry is for; the approved act commits when the same request arrives \
+             under a fresh one. \
              \
              **A schedule is not on `inst-mat-registered`'s trigger list, so what decides whether \
              it needs a second principal is the tenant's approval-threshold policy.** It moves an \
@@ -767,7 +780,12 @@ fn mounted_window_mutations(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
              entry for the row's currency it commits on the first call (`outcome = mutated`), and \
              with none `inst-mat-failsafe` answers and it opens a unit like a shorten. The \
              sentence here used to say an extension commits on the first call full stop, which was \
-             true only while no policy could exist. Gates on `plan` x `write`.",
+             true only while no policy could exist. \
+             \
+             **The `If-Match` is compared** (D-191). It used to be required and discarded, which is \
+             worse than not requiring it - a caller who sent it believed they were protected. Every \
+             committed act answers with the `ETag` its successor must assert, so the tag a caller \
+             needs is always the one they were last handed. Gates on `plan` x `write`.",
         )
         .tag(TAG)
         .authenticated()
@@ -776,7 +794,12 @@ fn mounted_window_mutations(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .param(if_match_param(
             "On a window route the tag is the window row's **own** version and nothing else, \
              because the path addresses one window by id - the same rule D-141 states for a price \
-             row, and never the plan's tag.",
+             row, and never the plan's tag. Here that version is the window's **act sequence** \
+             (D-190): the number of operator acts it has been the subject of, which the activation \
+             and expiry sweeps deliberately do not move. Copy it verbatim out of the `ETag` of the \
+             answer to the act that scheduled or last moved this window - there is no `GET` on a \
+             window, so those responses are where the tag comes from. A tag naming a sequence some \
+             other act has consumed is `STALE_VERSION` (409), naming both.",
         ))
         .json_request::<AdjustWindowRequest>(openapi, "The new end, or nothing for open-ended.")
         .handler(adjust_window)
@@ -964,32 +987,72 @@ async fn schedule_window(
     // The key is required (D-171) and is read before anything is resolved, so a
     // caller who omitted it is told that rather than being told a price id does
     // not exist.
-    let _key = preconditions::idempotency_key(&headers)?;
+    let key = preconditions::idempotency_key(&headers)?;
     let request: ScheduleWindowRequest = preconditions::parse_body(&body)?;
+    let digest = preconditions::request_digest(&request)?;
     let tenant = ctx.subject_tenant_id();
     let coarse = tenant_write_scope(&enforcer, &ctx, tenant).await?;
     let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Price(price_id)).await?;
     let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
 
-    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, Utc::now(), correlation);
-    let outcome = state
-        .windows
-        .schedule(
-            &ctx,
-            &scope,
-            tenant,
-            price_id,
-            // Server-minted, like a price row's id and for the same reason: the
-            // surface has to be able to name the window in its answer before the
-            // row is durable.
-            Uuid::now_v7(),
-            request.effective_from,
-            request.effective_to,
-            request.reason_code,
-            stamp,
-        )
-        .await?;
-    answer(&state, &scope, tenant, outcome, stamp).await
+    let now = Utc::now();
+    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
+    // Server-minted, like a price row's id and for the same reason: the surface has to
+    // be able to name the window in its answer before the row is durable. Minted
+    // **outside** the gate's closure on purpose — a replay never reaches the closure, so
+    // this id belongs to this attempt and the replay answers with the recorded one.
+    let window_id = Uuid::now_v7();
+    let windows = state.windows.clone();
+    let mutation_ctx = ctx.clone();
+    let mutation_scope = scope.clone();
+    let effective_from = request.effective_from;
+    let effective_to = request.effective_to;
+    let reason_code = request.reason_code.clone();
+
+    let guarded = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: SCHEDULE_WINDOW_OPERATION,
+            client_key: key,
+            request_hash: digest,
+            tenant_id: tenant,
+            status: StatusCode::ACCEPTED.as_u16().into(),
+            now,
+        },
+        move |txn| {
+            Box::pin(async move {
+                windows
+                    .schedule_in(
+                        txn,
+                        &mutation_ctx,
+                        &mutation_scope,
+                        tenant,
+                        price_id,
+                        window_id,
+                        effective_from,
+                        effective_to,
+                        reason_code,
+                        verdict_json,
+                        stamp,
+                    )
+                    .await
+            })
+        },
+        |outcome| body_of(&view_of(outcome)),
+    )
+    .await?;
+
+    match guarded {
+        Guarded::Performed(outcome) => Ok(answer(outcome)),
+        // The stored status and body, verbatim. **No `ETag`**, for
+        // `api::rest::prices::replayed`'s reason: the dedup row holds a status and a
+        // body and no headers, and the window's act sequence may have moved since — a
+        // tag rebuilt from a stored body would be a precondition token that looks valid
+        // and is not.
+        Guarded::Replayed { status, body } => Ok(replayed(status, &body)),
+    }
 }
 
 /// `PATCH /price-windows/{windowId}`: move a future end, answering 202.
@@ -1024,10 +1087,11 @@ async fn adjust_window(
             window_id,
             request.effective_to,
             expected.get(),
+            verdict_json,
             stamp,
         )
         .await?;
-    answer(&state, &scope, tenant, outcome, stamp).await
+    Ok(answer(outcome))
 }
 
 /// `DELETE /price-windows/{windowId}`: cancel a scheduled window, answering 202.
@@ -1052,9 +1116,9 @@ async fn cancel_window(
     let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, Utc::now(), correlation);
     let outcome = state
         .windows
-        .cancel(&ctx, &scope, tenant, window_id, stamp)
+        .cancel(&ctx, &scope, tenant, window_id, verdict_json, stamp)
         .await?;
-    answer(&state, &scope, tenant, outcome, stamp).await
+    Ok(answer(outcome))
 }
 
 /// Render a window mutation's outcome, opening the unit the controlled arm needs.
@@ -1072,76 +1136,104 @@ async fn cancel_window(
 /// pair here would make the gate depend on which arm the caller happened to get.
 ///
 /// Both arms answer **202**; [`WindowMutationOutcomeView`] says why.
-async fn answer(
-    state: &GovernanceState,
-    scope: &AccessScope,
-    tenant: Uuid,
-    outcome: WindowMutationOutcome,
-    stamp: crate::domain::audit::AuditStamp,
-) -> Result<Response, CanonicalError> {
+fn answer(outcome: WindowMutationOutcome) -> Response {
+    let view = view_of(&outcome);
     match outcome {
-        WindowMutationOutcome::Committed(receipt) => {
-            // **The tag, and this is its only producer.** There is no `GET` on a
-            // window (D-191 clause (2)), so a `PATCH` that demanded a precondition no
-            // response ever emitted would be requiring a header its own caller cannot
-            // obtain. Every committed act therefore hands back the sequence the window
-            // now stands at, which is the tag the next act asserts.
-            let tag = preconditions::etag(RowVersion::new(receipt.mutation_seq));
-            Ok((
-                StatusCode::ACCEPTED,
-                [(ETAG, tag)],
-                Json(WindowMutationOutcomeView {
-                    outcome: OUTCOME_MUTATED.to_owned(),
-                    window: WindowMutationView::from(*receipt),
-                    materiality: None,
-                    approval: None,
-                }),
-            )
-                .into_response())
-        }
-        WindowMutationOutcome::SubmittedForApproval(pending) => {
-            let view = MaterialityView::from(pending.verdict);
-            let record = state
-                .approvals
-                .submit_window_mutation(
-                    scope,
-                    tenant,
-                    pending.window_id,
-                    // The **price row**, which is how the unit resolves its plan and
-                    // its held key: a schedule's window does not exist yet, so the
-                    // window id names nothing readable at this point.
-                    pending.price_id,
-                    // Server-minted per request, exactly as the publish route mints
-                    // it: the caller names the window, never the unit.
-                    Uuid::now_v7(),
-                    serde_json::to_value(&view).map_err(|e| {
-                        CanonicalError::from(DomainError::Internal(format!(
-                            "cannot render the materiality verdict: {e}"
-                        )))
-                    })?,
-                    stamp,
-                    // The subject the mutation resolved. For a schedule it is the
-                    // act itself and carries no window id, so the call made after
-                    // the approve reproduces it (D-184 clause (2)).
-                    &pending.subject_ref,
-                )
-                .await?;
-            // **No `ETag` on this arm, deliberately.** Nothing was written, so the
-            // window stands at the sequence the caller already asserted; emitting it
-            // again would suggest an act had advanced it. On a refused *schedule*
-            // there is no window at all and so no sequence to name.
-            Ok((
-                StatusCode::ACCEPTED,
-                Json(WindowMutationOutcomeView {
-                    outcome: crate::api::rest::publish::OUTCOME_SUBMITTED.to_owned(),
-                    window: WindowMutationView::from(pending.as_ref()),
-                    materiality: Some(view),
-                    approval: Some(ApprovalView::from(&record)),
-                }),
-            )
-                .into_response())
+        // **The tag, and this is its only producer.** There is no `GET` on a window
+        // (D-191 clause (2)), so a `PATCH` that demanded a precondition no response ever
+        // emitted would be requiring a header its own caller cannot obtain. Every
+        // committed act therefore hands back the sequence the window now stands at,
+        // which is the tag the next act asserts.
+        WindowMutationOutcome::Committed(receipt) => (
+            StatusCode::ACCEPTED,
+            [(
+                ETAG,
+                preconditions::etag(RowVersion::new(receipt.mutation_seq)),
+            )],
+            Json(view),
+        )
+            .into_response(),
+        // **No `ETag` on this arm, deliberately.** Nothing was written, so the window
+        // stands at the sequence the caller already asserted; emitting it again would
+        // suggest an act had advanced it. On a refused *schedule* there is no window at
+        // all and so no sequence to name.
+        WindowMutationOutcome::SubmittedForApproval(_) => {
+            (StatusCode::ACCEPTED, Json(view)).into_response()
         }
     }
+}
+
+/// The operation this route's client keys are scoped to.
+///
+/// A per-route constant, so one client key used on two different verbs does not
+/// collide — `pricing_idempotency_dedup`'s key is `(tenant, operation, client_key)`.
+const SCHEDULE_WINDOW_OPERATION: &str = "bss_pricing.schedule_price_window";
+
+/// The outcome as the wire renders it.
+///
+/// One producer, shared by the answer this attempt sends and the body the gate
+/// **records**, because those two must be the same document: a replay hands back the
+/// stored body verbatim, so anything the recorded body lacked the second caller would
+/// never be told. `infra::idempotent`'s module doc makes that the reason the renderer
+/// is the caller's at all.
+fn view_of(outcome: &WindowMutationOutcome) -> WindowMutationOutcomeView {
+    match outcome {
+        WindowMutationOutcome::Committed(receipt) => WindowMutationOutcomeView {
+            outcome: OUTCOME_MUTATED.to_owned(),
+            window: WindowMutationView::from(receipt.as_ref().clone()),
+            materiality: None,
+            approval: None,
+        },
+        WindowMutationOutcome::SubmittedForApproval(pending) => WindowMutationOutcomeView {
+            outcome: crate::api::rest::publish::OUTCOME_SUBMITTED.to_owned(),
+            window: WindowMutationView::from(pending.as_ref()),
+            materiality: Some(MaterialityView::from(pending.verdict)),
+            approval: Some(ApprovalView::from(&pending.approval)),
+        },
+    }
+}
+
+/// The recorded body: [`view_of`]'s document as JSON.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the view will not serialize — unreachable, and
+/// reported rather than unwrapped, because it would otherwise abort a transaction that
+/// has already written.
+fn body_of(view: &WindowMutationOutcomeView) -> Result<serde_json::Value, DomainError> {
+    serde_json::to_value(view)
+        .map_err(|e| DomainError::Internal(format!("cannot render the window outcome: {e}")))
+}
+
+/// The answer a replay is handed back — the stored status and body, verbatim.
+fn replayed(status: i32, body: &serde_json::Value) -> Response {
+    let status = u16::try_from(status)
+        .ok()
+        .and_then(|code| StatusCode::from_u16(code).ok())
+        .unwrap_or(StatusCode::ACCEPTED);
+    (status, Json(body.clone())).into_response()
+}
+
+/// The stored `materiality` document a window unit carries.
+///
+/// Handed to `infra::window` as a function pointer rather than called from here,
+/// because the verdict is minted **inside** the mutating transaction and the unit is
+/// opened there too (D-191). DE0202 forbids `infra` from naming [`MaterialityView`],
+/// so the rendering stays here — one producer of the document, whichever path opens
+/// the unit.
+///
+/// **Public because the service is reachable without a route.** The suites that drive
+/// `WindowService` directly need the same rendering the routes use; a second one written
+/// in a test would let the stored document drift from the one a reviewer reads, which is
+/// the drift this function exists to prevent.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the view will not serialize, which is unreachable
+/// and reported rather than unwrapped.
+pub fn verdict_json(
+    verdict: crate::domain::materiality::MaterialityVerdict,
+) -> Result<serde_json::Value, DomainError> {
+    serde_json::to_value(MaterialityView::from(verdict))
+        .map_err(|e| DomainError::Internal(format!("cannot render the materiality verdict: {e}")))
 }
 
 /// `GET /plans/{planId}/coverage`: the per-key coverage report.

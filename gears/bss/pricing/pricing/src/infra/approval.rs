@@ -575,8 +575,8 @@ impl ApprovalService {
                   the row are two ids because a schedule's window does not exist yet and its row \
                   does - which is the whole content of the paragraph above"
     )]
-    pub async fn submit_window_mutation(
-        &self,
+    pub async fn submit_window_mutation_on(
+        runner: &impl DBRunner,
         scope: &AccessScope,
         tenant_id: Uuid,
         window_id: Uuid,
@@ -586,79 +586,60 @@ impl ApprovalService {
         stamp: AuditStamp,
         subject_ref: &str,
     ) -> Result<ApprovalRecord, DomainError> {
-        let scope = scope.clone();
-        let subject_ref = subject_ref.to_owned();
         let now = stamp.recorded_at;
-        let (_, outcome) = self
-            .db
-            .db()
-            .in_transaction::<ApprovalRecord, DomainError, _>(move |txn| {
-                Box::pin(async move {
-                    let key = price_repo::load_scope_key(txn, &scope, tenant_id, price_id)
-                        .await
-                        .map_err(|e| repo_failure(&e))?
-                        .ok_or_else(|| DomainError::NotFound {
-                            subject: "price row".to_owned(),
-                            id: price_id.to_string(),
-                        })?;
-                    let plan_id = key.plan_id();
-                    let revision = plan_repo::load_current(txn, &scope, tenant_id, plan_id)
-                        .await
-                        .map_err(|e| repo_failure(&e))?
-                        .ok_or_else(|| DomainError::NotFound {
-                            subject: "current plan revision".to_owned(),
-                            id: plan_id.to_string(),
-                        })?;
-                    let shape = crate::infra::publish::assemble_from(
-                        txn, &scope, tenant_id, plan_id, revision, now,
-                    )
-                    .await?;
-                    // Built by `infra::window::Planned::unit_subject_ref`, which is
-                    // also what `authorizing_unit` resolves against, so the subject a
-                    // unit opens under and the subject a retry looks for cannot drift.
-                    // It names the **act**: a subject naming only the window let an
-                    // approval taken for one act authorize any other on it, and for a
-                    // schedule it carries no window id at all, that id being minted
-                    // per request and therefore unreproducible by the retry.
-                    let subject_ref = subject_ref.clone();
-                    if let Some(held) = approval_repo::find_pending_for_subject(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        &subject_ref,
-                    )
-                    .await
-                    .map_err(|e| repo_failure(&e))?
-                    {
-                        return Err(DomainError::PendingChangeUnitExists(format!(
-                            "window {window_id}: approval {} is still submitted over it; decide \
-                             it, or withdraw it to free the subject",
-                            held.approval_id
-                        )));
-                    }
-                    let held_keys = BTreeSet::from([key.to_string()]);
-                    refuse_held_key(txn, &scope, tenant_id, &held_keys).await?;
-                    let new = NewApproval {
-                        approval_id,
-                        tenant_id,
-                        subject_ref,
-                        subject_kind: AuditSubjectKind::Window,
-                        // The **plan shape**, exactly as a plan-revision unit pins
-                        // it. D-99 makes windows plan facts, so what a reviewer of a
-                        // window mutation is shown is the plan whose intervals move —
-                        // and `content_pin`'s preimage already frames the window
-                        // plane, since `v2`.
-                        content_hash: content_hash(&shape).to_vec(),
-                        materiality,
-                        held_keys,
-                    };
-                    approval_repo::open(txn, &scope, new, stamp)
-                        .await
-                        .map_err(|e| repo_failure(&e))
-                })
-            })
-            .await;
-        outcome.map_err(into_domain)
+        let key = price_repo::load_scope_key(runner, scope, tenant_id, price_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "price row".to_owned(),
+                id: price_id.to_string(),
+            })?;
+        let plan_id = key.plan_id();
+        let revision = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "current plan revision".to_owned(),
+                id: plan_id.to_string(),
+            })?;
+        let shape =
+            crate::infra::publish::assemble_from(runner, scope, tenant_id, plan_id, revision, now)
+                .await?;
+        // Built by `infra::window::Planned::unit_subject_ref`, which is also what
+        // `authorizing_unit` resolves against, so the subject a unit opens under and
+        // the subject a retry looks for cannot drift. It names the **act**: a subject
+        // naming only the window let an approval taken for one act authorize any other
+        // on it, and for a schedule it carries no window id at all, that id being
+        // minted per request and therefore unreproducible by the retry.
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "window {window_id}: approval {} is still submitted over it; decide it, or \
+                 withdraw it to free the subject",
+                held.approval_id
+            )));
+        }
+        let held_keys = BTreeSet::from([key.to_string()]);
+        refuse_held_key(runner, scope, tenant_id, &held_keys).await?;
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref: subject_ref.to_owned(),
+            subject_kind: AuditSubjectKind::Window,
+            // The **plan shape**, exactly as a plan-revision unit pins it. D-99 makes
+            // windows plan facts, so what a reviewer of a window mutation is shown is
+            // the plan whose intervals move — and `content_pin`'s preimage already
+            // frames the window plane, since `v2`.
+            content_hash: content_hash(&shape).to_vec(),
+            materiality,
+            held_keys,
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
     }
 
     /// One page of the tenant's records, for the reviewer's queue.
