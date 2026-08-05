@@ -3330,3 +3330,52 @@ async fn a_retried_refused_schedule_replays_its_unit_rather_than_opening_a_secon
         "exactly one unit, and no PENDING_CHANGE_UNIT_EXISTS about the caller's own act"
     );
 }
+
+/// **A schedule with no `Idempotency-Key` is refused and writes nothing.**
+///
+/// `tests/rest_plans.rs` has carried this case for the plan create since that route was
+/// guarded; the window schedule had no equivalent while its key was parsed and dropped,
+/// which is the state D-191 closed. Now that the header actually buys the at-most-once
+/// guarantee its own description promises, the refusal is worth pinning at the route:
+/// executing unguarded when the header is absent would mean the promise held only for
+/// callers who happened to opt in — and the caller who most needs it is the one whose
+/// retry logic sent the request twice without thinking about it.
+///
+/// It is a **400** and no new code, which is `preconditions`' own reading of D-141: an
+/// absent precondition is a malformed request under the Foundation validation envelope.
+#[tokio::test]
+async fn a_schedule_without_an_idempotency_key_is_refused_and_writes_nothing() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published(&h, plan_id).await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "POST",
+            &windows_path(seeded.price_id),
+            Some(serde_json::json!({
+                "effective_from": common_to(),
+                "effective_to": at(0),
+                "reason_code": "priceIncrease",
+            })),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let conn = h.state.db.conn().expect("conn");
+    let windows = bss_pricing::infra::storage::repo::window_repo::list_for_plan(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        PlanId::new(plan_id),
+    )
+    .await
+    .expect("list the plan's windows");
+    assert_eq!(
+        windows.len(),
+        1,
+        "the fixture's window and nothing this request wrote: {windows:#?}"
+    );
+}
