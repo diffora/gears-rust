@@ -1247,3 +1247,208 @@ async fn a_cancel_can_move_a_published_plan_outside_its_own_coverage() {
         "the gate refuses at the uncovered instant, whatever the plan's dates say"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D-188 at the window path: the policy a mutation reads is the one in force at
+// **the act's own instant**, and not the one in force when the read happens
+// ---------------------------------------------------------------------------
+
+/// The instant the policy the two cases below stage starts being in force.
+///
+/// **Fixed and in the past, which is the opposite of this suite's other date
+/// discipline, and deliberately so.** [`window_at`] is dated 2099 because those cases
+/// need "this interval is in the future" to stay a fact as the wall clock advances.
+/// These two need the *reverse* fact — "the wall clock is already past the policy's
+/// start, while the act's stamp is not" — and that is a fact for exactly the same
+/// reason: `2026-08-04T00:00:00Z` and `rest_support::at(12)`'s `2026-08-03T12:00Z` are
+/// both in the past, the clock only moves further from them, and it moves away from
+/// both in the same direction. So the asymmetry cannot age out either.
+///
+/// A reader who applies the 2099 rule here mechanically deletes the case's whole
+/// premise: move this to 2099 and the policy is in force at neither reading of "now",
+/// both arms answer the fail-safe, and the test passes against the defect it exists to
+/// catch.
+const POLICY_START_AFTER_THE_ACT: &str = "2026-08-04T00:00:00Z";
+
+/// An instant **after** [`POLICY_START_AFTER_THE_ACT`], for the control.
+///
+/// `rest_support::at` only ranges over hours of 2026-08-03, so the one stamp that has
+/// to sit on the far side of the policy's start is spelled here.
+fn after_the_policy_starts() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 8, 4, 12, 0, 0)
+        .single()
+        .expect("the fixed instant is unambiguous")
+}
+
+/// A published plan with one billable key and its fixture window, plus an approved
+/// threshold policy on `EUR` whose start is `from`.
+///
+/// [`published`] with the start opened up: its policy begins in 2020, which is before
+/// every reading of "now" any suite can produce, so it cannot separate the two
+/// readings.
+async fn published_with_policy_from(h: &Harness, plan_id: Uuid, from: &str) -> Publishable {
+    let seeded = seed_publishable_plan(h, plan_id).await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+    rest_support::approve_threshold_policy_from(h, from, &[("EUR", 100_000)]).await;
+    seeded
+}
+
+/// Schedule through the service under a **caller-supplied stamp**, and hand back the
+/// raw outcome.
+///
+/// [`schedule`] cannot serve the two cases below for two reasons, and both are the
+/// point: it stamps with `rest_support::seed_stamp()`, whose `recorded_at` *is*
+/// `Utc::now()` — the very reading these cases have to hold apart from the act's
+/// instant — and it collapses the two outcome arms with a `panic!`, where here which
+/// arm answers is the assertion.
+async fn schedule_stamped(
+    h: &Harness,
+    price_id: Uuid,
+    from: DateTime<Utc>,
+    to: Option<DateTime<Utc>>,
+    stamp: bss_pricing::domain::audit::AuditStamp,
+) -> Result<WindowMutationOutcome, DomainError> {
+    h.governance
+        .windows
+        .schedule(
+            &rest_support::security_context(rest_support::SEED_ACTOR, h.tenant),
+            &h.scope(),
+            h.tenant,
+            price_id,
+            Uuid::now_v7(),
+            from,
+            to,
+            "priceIncrease".to_owned(),
+            bss_pricing::api::rest::windows::verdict_json,
+            stamp,
+        )
+        .await
+}
+
+/// **A window act must not straddle two readings of "now".**
+///
+/// `infra::threshold`'s own module doc states the rule: *"A caller that already holds
+/// the instant its act is about … should call `effective_policy_at`, so that one act
+/// does not straddle two readings of 'now'."* `infra::window::mutate_in` holds that
+/// instant — `let now = stamp.recorded_at;`, used for the plan-context read and for the
+/// trailing-void floor — and called the `Utc::now()` wrapper anyway. So a schedule's
+/// **verdict** was decided against the policy in force at the wall clock while its
+/// **stamp** said the act happened somewhere else, and under D-188 those two instants
+/// can sit on opposite sides of a policy's `effective_from`.
+///
+/// The staging puts them there: the policy starts
+/// [`POLICY_START_AFTER_THE_ACT`] and the act is stamped `at(12)`, twelve hours
+/// earlier. At the act's own instant the tenant has **no** policy in force, so
+/// `inst-mat-failsafe` answers — material, a unit, and nothing written. Against the
+/// unfixed code the wall clock finds the policy in force, `EUR` has an entry, a
+/// zero-delta change set is below its bar, and the schedule commits on one principal.
+///
+/// # Scope, stated so nobody widens it
+///
+/// This is **not reachable through the routes**: `api::rest::windows` builds its stamp
+/// from `Utc::now()`, so there the stamp *is* the wall clock and the two readings agree
+/// to within the call. It is reachable for an in-process caller holding a fixed stamp —
+/// which every service-level suite is, and which a scheduled or replayed act would be.
+/// That is why the case is here and not in `tests/rest_windows.rs`.
+///
+/// The bar is deliberately far above anything the act moves (a window mutation moves an
+/// interval and no money, so every row's delta is zero), which leaves *whether the
+/// policy is in force at all* as the only thing that can decide the act — and
+/// [`a_schedule_stamped_after_the_policy_start_commits`] is the control that turns that
+/// from an assumption into evidence.
+#[tokio::test]
+async fn a_schedule_reads_the_policy_in_force_at_its_own_stamp_not_at_the_wall_clock() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published_with_policy_from(&h, plan_id, POLICY_START_AFTER_THE_ACT).await;
+    let before_refs = rest_support::pending_version_refs(&h).await.len();
+
+    let outcome = schedule_stamped(
+        &h,
+        seeded.price_id,
+        window_at(0),
+        None,
+        rest_support::stamp_of(SUBMITTER, rest_support::at(12)),
+    )
+    .await
+    .expect("the act answers rather than refusing - the question is which arm");
+
+    match outcome {
+        WindowMutationOutcome::SubmittedForApproval(pending) => {
+            assert_eq!(
+                pending.verdict.reason(),
+                Some(bss_pricing::domain::materiality::MaterialityReason::NoConfiguredThreshold),
+                "at 2026-08-03T12:00Z the tenant has no policy in force, so the fail-safe is \
+                 what decides the act"
+            );
+        }
+        WindowMutationOutcome::Committed(receipt) => panic!(
+            "the schedule committed on one principal against a policy that had not started at \
+             its own stamp: window {} froze {} - the verdict was read on the wall clock while \
+             the record says 2026-08-03T12:00Z",
+            receipt.window_id, receipt.pending_version_ref
+        ),
+    }
+
+    // And the refused arm wrote nothing, on both planes a commit would have touched.
+    assert_eq!(
+        rest_support::pending_version_refs(&h).await.len(),
+        before_refs,
+        "a materially-refused schedule records no pending ref"
+    );
+    assert_eq!(
+        window_repo::list_for_plan(
+            &h.db.conn().expect("conn"),
+            &h.scope(),
+            h.tenant,
+            PlanId::new(plan_id)
+        )
+        .await
+        .expect("read the plane")
+        .len(),
+        1,
+        "and no window: the plane still holds the fixture's and nothing else"
+    );
+}
+
+/// **The control that makes the case above about the clock rather than about the
+/// bar.**
+///
+/// Same plan, same policy, same `EUR` entry, same zero-delta schedule — the only thing
+/// that moves is the act's stamp, from twelve hours *before*
+/// [`POLICY_START_AFTER_THE_ACT`] to twelve hours *after* it. Now the policy is in
+/// force at the act's own instant, the currency has an entry, and the schedule commits
+/// on one principal.
+///
+/// Without this, the first case is satisfied by any code that refuses every schedule —
+/// a bar the act could never clear, an entry on the wrong currency, a policy the
+/// evaluator never sees — and none of those has anything to do with the clock.
+#[tokio::test]
+async fn a_schedule_stamped_after_the_policy_start_commits() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published_with_policy_from(&h, plan_id, POLICY_START_AFTER_THE_ACT).await;
+
+    let outcome = schedule_stamped(
+        &h,
+        seeded.price_id,
+        window_at(0),
+        None,
+        rest_support::stamp_of(SUBMITTER, after_the_policy_starts()),
+    )
+    .await
+    .expect("the act answers rather than refusing");
+
+    match outcome {
+        WindowMutationOutcome::Committed(receipt) => {
+            assert_pending_ref(&h, plan_id, seeded.revision, &receipt.pending_version_ref).await;
+        }
+        WindowMutationOutcome::SubmittedForApproval(pending) => panic!(
+            "the policy is in force at 2026-08-04T12:00Z and `EUR` has an entry, so a zero-delta \
+             schedule is below its bar; a unit here would mean the case above is about the bar \
+             and not about the clock: {:?}",
+            pending.verdict.reason()
+        ),
+    }
+}

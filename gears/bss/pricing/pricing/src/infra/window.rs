@@ -155,7 +155,15 @@
 //! difference — what puts them on step 3 is not the trigger list but
 //! [`crate::domain::materiality::evaluate`]'s answer over the tenant's configured
 //! policy, read inside this transaction through
-//! [`crate::infra::threshold::effective_policy`].
+//! [`crate::infra::threshold::effective_policy_at`] — the `_at` form, at the instant
+//! the act's own stamp carries. That was `effective_policy`, the `Utc::now()` wrapper,
+//! and the difference is not cosmetic: under D-188 a version is not the policy before
+//! its `effective_from`, so a mutation that read the wall clock while stamping some
+//! other instant could decide a verdict against a policy the record it wrote says was
+//! not yet in force. `api::rest::windows` stamps from `Utc::now()`, so no route could
+//! reach it; an in-process caller holding a fixed stamp can, and every service-level
+//! suite is one. `infra::threshold`'s own doc states the rule this obeys, and
+//! `api::rest::publish` obeys it with the submit's instant.
 //!
 //! What that means concretely, because it is narrower than "a schedule may now need an
 //! approval": a window mutation moves an interval and no money, so **every row of its
@@ -1140,14 +1148,16 @@ where
     // decides them is the per-currency comparison against the
     // tenant's configured policy — read through the **same**
     // transaction that is about to write, so the verdict and the unit
-    // it opens are about one policy.
+    // it opens are about one policy, and at the **same instant** the
+    // act is stamped with, so the verdict and the record cannot land
+    // on opposite sides of a policy's `effective_from` (D-188).
     let verdict = materiality::evaluate(
         &ChangeSet::of_window_mutation(
             window_id,
             planned.op.registered_trigger(&planned),
             planned.plan.published.iter().cloned(),
         ),
-        crate::infra::threshold::effective_policy(runner, scope, tenant_id)
+        crate::infra::threshold::effective_policy_at(runner, scope, tenant_id, now)
             .await?
             .as_ref(),
         // `Some` for every plan this path can reach — `load_current`
