@@ -571,6 +571,24 @@ async fn every_shape_rule_is_threshold_invalid_and_writes_nothing() {
             serde_json::json!({ "effective_from": EFFECTIVE_FROM,
                 "entries": [{ "currency": "EURO", "absolute_minor": 1 }] }),
         ),
+        // The three shapes the D-185 marker adds. A body carrying both a retirement
+        // and a threshold set names two different versions, and the operator could
+        // not be told which one a reviewer is about to sign; the two halves of a
+        // proposal are each required on their own because an absent one is not an
+        // empty one.
+        (
+            "a retirement carrying entries",
+            serde_json::json!({ "retire": true,
+                "entries": [{ "currency": "EUR", "absolute_minor": 1 }] }),
+        ),
+        (
+            "a retirement carrying a start, which is not schedulable",
+            serde_json::json!({ "retire": true, "effective_from": EFFECTIVE_FROM }),
+        ),
+        (
+            "a proposal with no start",
+            serde_json::json!({ "entries": [{ "currency": "EUR", "absolute_minor": 1 }] }),
+        ),
         (
             "neither basis",
             serde_json::json!({ "effective_from": EFFECTIVE_FROM,
@@ -917,5 +935,410 @@ async fn a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_stora
     assert_eq!(
         after["effective"]["version"], 0,
         "the approved version is still the only one: {after}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-185: the way back to the fail-safe.
+// ---------------------------------------------------------------------------
+
+/// Propose the tombstone as `principal`, through the **`PUT`** — the same door every
+/// other version is authored by.
+///
+/// A tombstone is an appended version whose content is "no thresholds", not a
+/// deletion: the store is append-only and nothing is removed. So it is authored the
+/// way versions are authored, with a positive marker in the body. A `DELETE` would
+/// have said the opposite of what happens, answered 202 with a pending unit, and
+/// added a verb §5 does not declare for this path.
+async fn retire_as(h: &Harness, principal: Uuid) -> axum::http::Response<axum::body::Body> {
+    h.allowed_as(principal)
+        .send(with_headers(
+            "PUT",
+            APPROVAL_THRESHOLD_POLICY,
+            Some(serde_json::json!({ "retire": true })),
+            &[],
+        ))
+        .await
+}
+
+/// **D-185 — a tenant can go back to "unset", and it takes two people to do it.**
+///
+/// §6 makes *unset ⇒ the two-person rule always* the G1 fail-safe and every tenant
+/// starts there. Until this decision it was also a state no tenant could **return**
+/// to: the policy is per-currency rows keyed `(tenant, version, currency)`, so "no
+/// thresholds" would have to be a version with zero rows — which the authoring door
+/// refuses (`THRESHOLD_INVALID`) and which, if admitted, `latest_version` could not
+/// see and no pin could cover. The only way back was a version of absurdly high
+/// bars, which is not the same rule, reads nothing like it to an auditor, and stops
+/// being true the day a currency is added.
+///
+/// So the way back is a **tombstone**: a version that positively says *this tenant
+/// has no thresholds*, minted with the next number, pinned, and approved by an
+/// independent principal like every other policy diff (D-10). Every clause of that
+/// sentence is asserted here, because between them they are the decision:
+///
+/// * the retirement answers **202** with a pending unit, not 200 with a diff applied;
+/// * the old policy is **still in force** while that unit is open — a tenant must not
+///   be able to revert the two-person rule single-handed;
+/// * once approved the tombstone is the **effective** version, and it is `entries: []`
+///   rather than `effective: null`, which is what distinguishes an authored *none*
+///   from a tenant that never configured anything.
+#[tokio::test]
+async fn a_tenant_returns_to_the_fail_safe_through_a_tombstone_a_second_principal_approves() {
+    let h = Harness::new().await;
+
+    // A configured policy, in force. Without it the tombstone would be indistinguishable
+    // from the bootstrap and this case would prove nothing.
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+    let configured = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(configured["effective"]["entries"][0]["currency"], "EUR");
+
+    let response = retire_as(&h, PROPOSER).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "retiring the policy opens a unit; it does not apply a diff"
+    );
+    let opened = body_json(response).await;
+    assert_eq!(
+        opened["proposed"]["version"], 1,
+        "the tombstone is a version like any other, minted with the next number: {opened}"
+    );
+    assert_eq!(
+        opened["proposed"]["entries"]
+            .as_array()
+            .map(Vec::len)
+            .expect("the proposal renders an entry list"),
+        0,
+        "and it is the version that says **none**: {opened}"
+    );
+    assert_eq!(
+        opened["approval"]["materiality"]["reason"], "alwaysMaterialTrigger",
+        "it rides the same always-material unit every other policy diff rides (D-10)"
+    );
+    let approval_id: Uuid = opened["approval"]["approval_id"]
+        .as_str()
+        .expect("the unit's id")
+        .parse()
+        .expect("a uuid");
+
+    // The clause that makes the whole thing safe: the thresholds are still the
+    // tenant's policy while the retirement is under review.
+    let during = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(
+        during["effective"]["version"], 0,
+        "a retirement under review is not yet the tenant's policy: {during}"
+    );
+    assert_eq!(during["effective"]["entries"][0]["currency"], "EUR");
+
+    // The reviewer is shown what they are signing — "no thresholds", not a hash and
+    // not a plan.
+    let detail = body_json(
+        h.allowed_as(REVIEWER)
+            .send(with_headers(
+                "GET",
+                &format!("/bss-pricing/v1/approvals/{approval_id}"),
+                None,
+                &[],
+            ))
+            .await,
+    )
+    .await;
+    assert_eq!(detail["approval"]["subject_kind"], "policy");
+    assert_eq!(detail["pinned_threshold_policy"]["version"], 1);
+    assert_eq!(
+        detail["pinned_threshold_policy"]["entries"]
+            .as_array()
+            .map(Vec::len)
+            .expect("the pinned document renders an entry list"),
+        0,
+        "the approver signs 'no thresholds', distinguishably from any particular set: {detail}"
+    );
+    assert_eq!(
+        detail["content_matches_pin"], true,
+        "and the re-derivation digests to what was pinned: {detail}"
+    );
+
+    assert_eq!(approve(&h, approval_id).await.status(), StatusCode::OK);
+
+    let after = read_policy_as(&h, PROPOSER).await;
+    assert!(
+        !after["effective"].is_null(),
+        "the tombstone is a version **in force**, not the absence of one - an authored, \
+         pinnable, approved 'none' rather than the bootstrap: {after}"
+    );
+    assert_eq!(after["effective"]["version"], 1);
+    assert_eq!(
+        after["effective"]["entries"]
+            .as_array()
+            .map(Vec::len)
+            .expect("the effective version renders an entry list"),
+        0,
+        "and it is empty, which is what makes every change material again: {after}"
+    );
+
+    // **The clause the wire cannot show**, and the one the decision turns on:
+    // `effective_version` answers `Some` — there *is* a version in force — while
+    // `effective_policy` answers `None`, which is what makes `materiality::evaluate`
+    // answer `noConfiguredThreshold`. The two functions disagree on purpose, and a
+    // reader that took the `GET`'s non-null `effective` as "this tenant has
+    // thresholds" would have the fail-safe switched off by a rendering.
+    let conn = h.db.conn().expect("a scoped connection");
+    let policy = bss_pricing::infra::threshold::effective_policy(&conn, &h.scope(), h.tenant)
+        .await
+        .expect("the effective policy reads");
+    assert!(
+        policy.is_none(),
+        "an effective tombstone configures nothing, so every change is material again: \
+         {policy:?}"
+    );
+    let version = bss_pricing::infra::threshold::effective_version(&conn, &h.scope(), h.tenant)
+        .await
+        .expect("the effective version reads")
+        .expect("the tombstone is in force");
+    assert_eq!(version.version(), 1);
+    assert!(
+        version.is_tombstone(),
+        "and the version in force is the one that says none: {version:?}"
+    );
+}
+
+/// **The second run — every direction of the round trip, because a one-way tombstone
+/// is a trap door.**
+///
+/// The decision is only worth having if the state it reaches is an ordinary one. Three
+/// transitions have to be defined and none of them is implied by the others:
+///
+/// * a **tombstone superseded by a real policy** — a tenant that retired its
+///   thresholds can configure them again, or the fail-safe is a state with no exit and
+///   the gear has traded one trap for another;
+/// * a **real policy superseded by a tombstone**, which the case above asserts;
+/// * a **tombstone proposed twice** — the second is a version like any other, not a
+///   no-op and not a refusal, because the store is append-only history and a tenant
+///   re-asserting "still no thresholds" has authored a fact an auditor can read.
+///
+/// The version numbers are asserted at every step, because they are the shared
+/// sequence: a tombstone that did not consume a number would let the next proposal
+/// mint the one it holds, leaving a single version carrying both an authored
+/// retirement and an authored entry set — a version neither approver signed.
+#[tokio::test]
+async fn a_tombstone_is_superseded_by_a_real_policy_and_can_be_authored_again_after_it() {
+    let h = Harness::new().await;
+
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+
+    // Retire it: version 1.
+    let retired = body_json(retire_as(&h, PROPOSER).await).await;
+    assert_eq!(retired["proposed"]["version"], 1);
+    let retired_id: Uuid = retired["approval"]["approval_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("a uuid");
+    assert_eq!(approve(&h, retired_id).await.status(), StatusCode::OK);
+
+    // **A real policy after a tombstone**: version 2, and it takes effect. A
+    // `latest_version` blind to the tombstone would have minted 1 again here, and the
+    // two versions would then share one number.
+    let reconfigured = propose_and_approve(&h, proposal("USD", 900)).await;
+    assert_eq!(
+        reconfigured, 2,
+        "the tombstone consumed version 1, so the next proposal is 2"
+    );
+    let back = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(back["effective"]["version"], 2);
+    assert_eq!(back["effective"]["entries"][0]["currency"], "USD");
+    assert_eq!(
+        back["effective"]["entries"][0]["absolute_minor"], 900,
+        "a retired policy can be configured again - the fail-safe is a state, not a trap door: \
+         {back}"
+    );
+
+    // **And a tombstone again**: version 3, distinct from version 1, which is what
+    // makes the history readable rather than idempotent.
+    let again = body_json(retire_as(&h, PROPOSER).await).await;
+    assert_eq!(
+        again["proposed"]["version"], 3,
+        "a second retirement is a second version, not a no-op: {again}"
+    );
+    let again_id: Uuid = again["approval"]["approval_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("a uuid");
+    assert_eq!(approve(&h, again_id).await.status(), StatusCode::OK);
+
+    let end = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(end["effective"]["version"], 3);
+    assert_eq!(
+        end["effective"]["entries"]
+            .as_array()
+            .map(Vec::len)
+            .expect("an entry list"),
+        0
+    );
+
+    // The whole sequence is still there: nothing was deleted by a `DELETE`.
+    let conn = h.db.conn().expect("a scoped connection");
+    let versions = bss_pricing::infra::storage::repo::threshold_repo::versions_desc(
+        &conn,
+        &h.scope(),
+        h.tenant,
+    )
+    .await
+    .expect("the version list reads");
+    assert_eq!(
+        versions,
+        vec![3, 2, 1, 0],
+        "one sequence across both tables, greatest first - the walk's whole contract: {versions:?}"
+    );
+}
+
+/// **The refusal of an empty `PUT` stays, and the tombstone is not a way round it.**
+///
+/// The two halves are one decision. An empty entry set writes zero rows, so
+/// `latest_version` cannot see it, `read_version` cannot tell it from a version nobody
+/// proposed, and an approval pin would cover nothing — which is why it is refused at
+/// the door where the operator hears about it. A tombstone is the *positive* marker
+/// that fixes the capability without relaxing the refusal, and a build that admitted
+/// the empty `PUT` "because retirement is expressible now" would have re-opened the
+/// hole the tombstone exists to close from the other side.
+#[tokio::test]
+async fn an_empty_put_is_still_refused_even_though_retirement_is_now_expressible() {
+    let h = Harness::new().await;
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+
+    let response = propose_as(
+        &h,
+        PROPOSER,
+        serde_json::json!({ "effective_from": EFFECTIVE_FROM, "entries": [] }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "THRESHOLD_INVALID");
+
+    // And it wrote nothing: no version was minted, so the retirement that follows is
+    // still version 1.
+    let still = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(
+        still["effective"]["version"], 0,
+        "a refused proposal consumes no version number: {still}"
+    );
+    let retired = body_json(retire_as(&h, PROPOSER).await).await;
+    assert_eq!(retired["proposed"]["version"], 1);
+}
+
+/// One pending policy unit per tenant, **whichever door opened it**.
+///
+/// `inst-co-single-pending`'s per-tenant reading is `find_pending_policy_unit`, which
+/// is about the unit's subject kind and not about which route opened it. So a
+/// retirement while a configuration is under review is refused, and the converse too —
+/// and the converse is the one worth asserting, because a reviewer looking at
+/// "configure EUR at 500" while a retirement of the whole policy sat beside it would
+/// be deciding one of two proposals whose order of arrival then decides the tenant's
+/// policy.
+#[tokio::test]
+async fn a_retirement_and_a_proposal_cannot_both_be_under_review() {
+    let h = Harness::new().await;
+
+    // A proposal is open; the retirement is refused.
+    let opened = body_json(propose_as(&h, PROPOSER, proposal("EUR", 500)).await).await;
+    let opened_id: Uuid = opened["approval"]["approval_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("a uuid");
+    let refused = retire_as(&h, PROPOSER).await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "PENDING_CHANGE_UNIT_EXISTS");
+    assert_eq!(approve(&h, opened_id).await.status(), StatusCode::OK);
+
+    // A retirement is open; the proposal is refused.
+    let retiring = body_json(retire_as(&h, PROPOSER).await).await;
+    let retiring_id: Uuid = retiring["approval"]["approval_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("a uuid");
+    let refused = propose_as(&h, PROPOSER, proposal("USD", 900)).await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "PENDING_CHANGE_UNIT_EXISTS");
+
+    // And the refused proposal left the retirement the only thing under review, on the
+    // version it minted — not on one the refused proposal had already consumed.
+    let during = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(
+        during["pending_approval"]["approval_id"],
+        retiring_id.to_string()
+    );
+    assert_eq!(retiring["proposed"]["version"], 1);
+}
+
+/// **A retirement under review is not the tenant's policy, and a rejected one never
+/// becomes it.**
+///
+/// The direction that matters most on this route: the whole safety of D-185 is that
+/// the tombstone rides an approval, so a rejected retirement must leave the thresholds
+/// exactly where they were. A build that wrote the tombstone row and treated the unit
+/// as advisory passes every case above and fails this one.
+#[tokio::test]
+async fn a_rejected_retirement_leaves_the_thresholds_in_force() {
+    let h = Harness::new().await;
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+
+    let retiring = body_json(retire_as(&h, PROPOSER).await).await;
+    let retiring_id: Uuid = retiring["approval"]["approval_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("a uuid");
+
+    let rejected = h
+        .allowed_as(REVIEWER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/approvals/{retiring_id}/reject"),
+            Some(serde_json::json!({ "reason": "not yet - the audit is next month" })),
+            &[],
+        ))
+        .await;
+    assert_eq!(rejected.status(), StatusCode::OK);
+
+    let after = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(
+        after["effective"]["version"], 0,
+        "a rejected retirement is not a retirement: {after}"
+    );
+    assert_eq!(after["effective"]["entries"][0]["currency"], "EUR");
+
+    // The rejected version's row is still in the store — append-only — and it is
+    // still not the policy, which is the pair `effective_version` has to get right:
+    // the greatest version is 1 and the greatest **approved** one is 0.
+    let conn = h.db.conn().expect("a scoped connection");
+    let latest = bss_pricing::infra::storage::repo::threshold_repo::latest_version(
+        &conn,
+        &h.scope(),
+        h.tenant,
+    )
+    .await
+    .expect("the latest version reads");
+    assert_eq!(
+        latest,
+        Some(1),
+        "the tombstone row is still there; what it lacks is an approval"
+    );
+    let states: Vec<String> = approval_rows(&h)
+        .await
+        .into_iter()
+        .map(|record| record.state)
+        .collect();
+    assert_eq!(states.len(), 2, "both units are on the record: {states:?}");
+    assert!(
+        states.contains(&ApprovalState::Rejected.as_str().to_owned()),
+        "the retirement's unit is rejected: {states:?}"
+    );
+    assert!(
+        !audit_rows(&h).await.is_empty(),
+        "and the decision is on the trail"
     );
 }

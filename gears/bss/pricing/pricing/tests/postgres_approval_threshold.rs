@@ -36,6 +36,16 @@
 //! arm under a different sentence — which would make the proof a proof about a
 //! message.
 //!
+//! # The tombstone table is here too, because it is the same store's other half
+//!
+//! `m20260802_000020` adds `pricing_approval_threshold_tombstone` (D-185) — one row
+//! per version that has **no** currencies, which is the shape the entry table's
+//! `(tenant_id, version, currency)` key cannot express and therefore the only way back
+//! to §6's *"unset ⇒ two-person rule always"*. Its guards are asserted beside its
+//! sibling's rather than in a suite of their own, because the property that matters is
+//! about the **pair**: one version sequence, two tables, and no schema constraint
+//! spanning them. The last case in this file is what pins that last clause.
+//!
 //! Ignored by default; they need Docker. Run with
 //! `cargo test -p bss-pricing --test postgres_approval_threshold -- --ignored`.
 
@@ -333,4 +343,125 @@ async fn the_policy_objects_old_threshold_pair_is_gone() {
     // The table itself is untouched and still readable, so this is a column drop
     // and not a table that failed to migrate.
     must_succeed(&conn, "SELECT tenant_id FROM bss.pricing_policy_object").await;
+}
+
+// ---------------------------------------------------------------------------
+// D-185's tombstone table, on the backend it targets.
+// ---------------------------------------------------------------------------
+
+/// One tombstone row, valid unless an override makes it otherwise.
+fn tombstone(overrides: &[(&str, &str)]) -> String {
+    let mut columns: Vec<(&str, String)> = vec![
+        ("tenant_id", format!("'{TENANT}'")),
+        ("version", "0".to_owned()),
+        ("effective_from", AT.to_owned()),
+        ("created_by", format!("'{ACTOR}'")),
+    ];
+    for (name, value) in overrides {
+        match columns.iter_mut().find(|(column, _)| column == name) {
+            Some(slot) => (*value).clone_into(&mut slot.1),
+            None => columns.push((name, (*value).to_owned())),
+        }
+    }
+    let names = columns
+        .iter()
+        .map(|(column, _)| *column)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = columns
+        .iter()
+        .map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("INSERT INTO bss.pricing_approval_threshold_tombstone ({names}) VALUES ({values})")
+}
+
+/// The baseline, and the thing the entry table cannot hold: **a version with no
+/// currency at all**.
+///
+/// It is what makes §6's *"unset ⇒ two-person rule always"* a state a tenant can
+/// return to. The entry table's key is `(tenant_id, version, currency)`, so a version
+/// naming no currency has zero rows there — invisible to `latest_version`, and
+/// indistinguishable from a version nobody proposed.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_well_formed_tombstone_lands_and_holds_one_row_per_version() {
+    let conn = applied().await;
+    must_succeed(&conn, &tombstone(&[])).await;
+    // One tombstone per version, by the primary key: a second row would be a
+    // retirement with two authored instants and no answer to which one an approver
+    // signed.
+    must_be_rejected(
+        &conn,
+        &tombstone(&[("effective_from", "'2099-06-01T00:00:00Z'")]),
+        "pricing_approval_threshold_tombstone_pkey",
+    )
+    .await;
+    must_succeed(&conn, &tombstone(&[("version", "1")])).await;
+}
+
+/// `version >= 0` here too, because the two threshold tables are one sequence and
+/// therefore carry one rule.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_negative_tombstone_version_is_refused() {
+    let conn = applied().await;
+    must_be_rejected(
+        &conn,
+        &tombstone(&[("version", "-1")]),
+        "chk_pricing_approval_threshold_tombstone_version",
+    )
+    .await;
+    must_succeed(&conn, &tombstone(&[("version", "0")])).await;
+}
+
+/// `DELETE` is refused: a retirement is what an approval's pin covers, and an
+/// auditor asking when this tenant stopped having thresholds reads exactly this row.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_deleted_tombstone_is_refused() {
+    let conn = applied().await;
+    must_succeed(&conn, &tombstone(&[])).await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "DELETE FROM bss.pricing_approval_threshold_tombstone WHERE tenant_id = '{TENANT}'"
+        ),
+        "append-only history",
+    )
+    .await;
+}
+
+/// `UPDATE` is refused, and `effective_from` is why it matters most: it is **when the
+/// two-person rule comes back**, and it is inside the digest the reviewer signed.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn an_updated_tombstone_is_refused() {
+    let conn = applied().await;
+    must_succeed(&conn, &tombstone(&[])).await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE bss.pricing_approval_threshold_tombstone SET effective_from = \
+             '2099-06-01T00:00:00Z' WHERE tenant_id = '{TENANT}'"
+        ),
+        "is immutable",
+    )
+    .await;
+}
+
+/// **Nothing in either schema refuses one version number in both tables**, and that
+/// is asserted rather than assumed.
+///
+/// It is the premise `threshold_repo::read_version`'s `CorruptRow` arm rests on: the
+/// two tables have two primary keys and neither sees the other, so the ambiguous state
+/// is reachable and the reader is the only thing that can fail closed on it. A build
+/// that quietly grew a cross-table trigger would make that arm dead code, and this is
+/// the test that would say so.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_two_tables_do_not_refuse_each_others_version_numbers() {
+    let conn = applied().await;
+    must_succeed(&conn, &entry(&[])).await;
+    must_succeed(&conn, &tombstone(&[])).await;
 }

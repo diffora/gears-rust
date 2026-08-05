@@ -1,12 +1,28 @@
-//! Repository over `pricing_approval_threshold` — the versioned, per-currency
-//! approval-threshold policy (`design/05-governance.md` §6, D-10).
+//! Repository over `pricing_approval_threshold` **and its tombstone table** — the
+//! versioned, per-currency approval-threshold policy (`design/05-governance.md` §6,
+//! D-10, D-185).
 //!
-//! Three operations and no update, which is the store's whole shape. A proposal
-//! is [`open_version`]; a reader of one version's entries is [`read_version`];
-//! and [`latest_version`] is what a proposer asks before minting the next number.
-//! There is no `apply`, no `activate` and no delete, because a version's content
-//! is what an approval's `content_hash` covers and a mutated version would leave
-//! a signature over content nobody can reconstruct.
+//! Four operations and no update, which is the store's whole shape. A proposal is
+//! [`open_version`]; a **retirement** is [`open_tombstone`]; a reader of one version
+//! is [`read_version`]; and [`latest_version`] is what a proposer asks before minting
+//! the next number. There is no `apply`, no `activate` and no delete, because a
+//! version's content is what an approval's `content_hash` covers and a mutated
+//! version would leave a signature over content nobody can reconstruct.
+//!
+//! # Two tables, **one** version sequence, and this module is where they meet
+//!
+//! `pricing_approval_threshold` holds one row per currency of a version;
+//! `pricing_approval_threshold_tombstone` holds one row per version that has **no**
+//! currencies (D-185 — the authored way back to §6's *"unset ⇒ two-person rule
+//! always"*, which the entry table alone cannot express, a zero-row version being
+//! indistinguishable from a version nobody proposed). They are two tables and one
+//! sequence: [`latest_version`] takes the maximum across both and [`versions_desc`]
+//! merges both, so a tombstone consumes a number, is walked by the effective-policy
+//! resolution, and is superseded by the next proposal exactly as an entry version is.
+//!
+//! Every reader above this module sees one sequence and never the seam. That is the
+//! reason the join lives here rather than in `infra::threshold`: a caller that had to
+//! remember to ask both tables is a caller that will one day ask one.
 //!
 //! # Runner-taking, not provider-holding, and the reason is D-10's
 //!
@@ -33,7 +49,7 @@ use uuid::Uuid;
 use crate::domain::audit::AuditStamp;
 use crate::domain::materiality::ThresholdBasis;
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::approval_threshold;
+use crate::infra::storage::entity::{approval_threshold, approval_threshold_tombstone};
 use crate::infra::storage::repo::check_authored_instant;
 
 /// One currency's entry in one version, as the store holds it.
@@ -80,25 +96,45 @@ impl ThresholdEntryRow {
 /// entries alone, which made the pinned subject unreconstructible from the store
 /// that holds it — the reader had the currencies and the thresholds and no way to
 /// say when they start applying.
+///
+/// **An empty `entries` is the tombstone (D-185), and it is not a hole.**
+/// [`read_version`] answers `None` for a version nobody proposed and
+/// `Some(StoredVersion { entries: [] })` only for a version whose row sits in
+/// `pricing_approval_threshold_tombstone` — so the emptiness is a fact read off a
+/// stored row, not the absence of one. A `tombstone: bool` beside the vector would
+/// be a second answer to what the vector already says, and the domain makes the same
+/// choice for the same reason (`ThresholdVersion::tombstone`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredVersion {
-    /// When the thresholds start applying, once the version is approved.
+    /// When the thresholds start applying — or stop, on a tombstone — once the
+    /// version is approved.
     ///
     /// One value for the whole version: every row of a version is written by one
     /// [`open_version`] call with one instant, so a per-entry reading would be a
-    /// column with N spellings of one fact.
+    /// column with N spellings of one fact. A tombstone has one row and therefore
+    /// nothing to disagree with.
     pub effective_from: DateTime<Utc>,
-    /// The entries, ordered by currency — the order the pin is taken over.
+    /// The entries, ordered by currency — the order the pin is taken over. Empty
+    /// exactly on a tombstone.
     pub entries: Vec<ThresholdEntryRow>,
 }
 
-/// The greatest version number this tenant has ever proposed.
+/// The greatest version number this tenant has ever proposed, **across both
+/// tables**.
 ///
 /// `None` is a tenant that has never proposed one — which is **not** version 0
 /// and is the state `inst-mat-failsafe` is named for. The next proposal is
 /// therefore `0` on `None` and `n + 1` otherwise, minted by the caller inside the
 /// transaction that writes it so two concurrent proposals cannot mint one number
 /// twice (the primary key refuses the loser either way).
+///
+/// **The maximum is taken over the entry table and the tombstone table**, and that
+/// is load-bearing rather than symmetric: a tombstone that `latest_version` could
+/// not see would let the *next* proposal mint the number the tombstone already
+/// holds, which leaves one version number carrying both an authored retirement and
+/// an authored entry set — a version neither approver signed. See
+/// [`read_version`] for what happens to such a version, and
+/// `m20260802_000020`'s module doc for why no schema constraint can refuse it.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
@@ -107,7 +143,7 @@ pub async fn latest_version(
     scope: &AccessScope,
     tenant_id: Uuid,
 ) -> Result<Option<i64>, RepoError> {
-    let row = approval_threshold::Entity::find()
+    let entries = approval_threshold::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(Condition::all().add(approval_threshold::Column::TenantId.eq(tenant_id)))
@@ -116,7 +152,20 @@ pub async fn latest_version(
         .one(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read latest threshold version: {e}")))?;
-    Ok(row.map(|row| row.version))
+    let tombstones = approval_threshold_tombstone::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(approval_threshold_tombstone::Column::TenantId.eq(tenant_id)))
+        .order_by(approval_threshold_tombstone::Column::Version, Order::Desc)
+        .limit(1)
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read latest threshold tombstone version: {e}")))?;
+    Ok(entries
+        .map(|row| row.version)
+        .into_iter()
+        .chain(tombstones.map(|row| row.version))
+        .max())
 }
 
 /// One version's entries, ordered by currency.
@@ -148,9 +197,32 @@ pub async fn latest_version(
 /// and is the fail-closed direction for a malformed one: the later instant is the one
 /// that has not yet taken effect.
 ///
+/// # The tombstone arm, and the one state it refuses (D-185)
+///
+/// A version with no entry rows is not automatically absent any more: it is the
+/// tombstone if `pricing_approval_threshold_tombstone` carries a row for it, and
+/// absent otherwise. The two are read here, together, because they are two halves of
+/// one question and a caller that asked them separately could see a version appear
+/// between the reads.
+///
+/// A version that carries **both** a tombstone row and entry rows is
+/// [`RepoError::CorruptRow`], on the same warrant as the two-`effective_from` case
+/// above and not as a defensive `else`. It is reachable — two proposals that read one
+/// `latest_version` and mint one number, one retiring and one configuring, collide on
+/// nothing, the two tables having two primary keys — and no schema constraint can
+/// refuse it without making each table's append path query the other. What makes
+/// refusing the *right* answer rather than picking one is that such a version is one
+/// **no approver signed**: the retirement's reviewer signed the empty digest, the
+/// entry set's reviewer signed the entry digest, and the stored version is neither.
+/// `infra::approval::read_threshold_version` skips a corrupt version, so the tenant
+/// stays on the version they already had and neither proposal takes effect — which is
+/// the only outcome that is not somebody's signature applied to content they were not
+/// shown.
+///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`] when one
-/// version's rows carry two different `effective_from` values.
+/// version's rows carry two different `effective_from` values, or when one version is
+/// both a tombstone and an entry set.
 pub async fn read_version(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -169,6 +241,21 @@ pub async fn read_version(
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read threshold version {version}: {e}")))?;
+    let retired = read_tombstone(runner, scope, tenant_id, version).await?;
+    if let Some(retired_at) = retired {
+        if !rows.is_empty() {
+            return Err(RepoError::CorruptRow(format!(
+                "pricing_approval_threshold: version {version} is both a tombstone starting \
+                 {retired_at} and a set of {} entries - so which of the two an approver signed is \
+                 not determined, and the version takes effect as neither",
+                rows.len()
+            )));
+        }
+        return Ok(Some(StoredVersion {
+            effective_from: retired_at,
+            entries: Vec::new(),
+        }));
+    }
     let Some(effective_from) = rows.iter().map(|row| row.effective_from).max() else {
         return Ok(None);
     };
@@ -252,12 +339,101 @@ pub async fn open_version(
     Ok(())
 }
 
-/// Every version number this tenant has proposed, greatest first.
+/// Write one proposed **tombstone** version, inside `runner`'s transaction (D-185).
+///
+/// The retirement half of [`open_version`], and one row rather than N because a
+/// tombstone's whole content is that it has no entries. It is the same transaction
+/// discipline for the same reason: the row and the approval unit that pins it commit
+/// together or a tenant is left with a retirement nobody is reviewing, or a signature
+/// over a retirement that never landed.
+///
+/// `effective_from` passes the same D-144 quantization boundary check every other
+/// authored instant in this gear passes — and it matters more here rather than less,
+/// the instant being *when the two-person rule comes back*.
+///
+/// **This does not refuse a version number the entry table already holds**, and it
+/// cannot: the two tables have two primary keys and neither sees the other. The
+/// caller mints the number off [`latest_version`], which reads both;
+/// [`read_version`] is what fails closed if a race gets past that.
+///
+/// # Errors
+/// [`RepoError::TimestampPrecisionExceeded`] on an unquantized `effective_from`;
+/// [`RepoError::Db`] on a scope failure, a duplicate `(tenant, version)`, or any
+/// CHECK the row violates.
+pub async fn open_tombstone(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    version: i64,
+    effective_from: DateTime<Utc>,
+    stamp: AuditStamp,
+) -> Result<(), RepoError> {
+    check_authored_instant("effectiveFrom", Some(effective_from))?;
+    let model = approval_threshold_tombstone::ActiveModel {
+        tenant_id: sea_orm::ActiveValue::Set(tenant_id),
+        version: sea_orm::ActiveValue::Set(version),
+        effective_from: sea_orm::ActiveValue::Set(effective_from),
+        created_by: sea_orm::ActiveValue::Set(stamp.actor_principal_id),
+        created_at: sea_orm::ActiveValue::Set(stamp.recorded_at),
+    };
+    approval_threshold_tombstone::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| RepoError::Db(format!("threshold tombstone scope: {e}")))?
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            RepoError::Db(format!(
+                "write threshold tombstone {tenant_id}/{version}: {e}"
+            ))
+        })?;
+    Ok(())
+}
+
+/// The instant a version retires the tenant's thresholds, if that version is a
+/// tombstone.
+///
+/// Private, because "is this version a tombstone" is not a question any layer above
+/// this module should have to ask separately: [`read_version`] folds the answer into
+/// the one `StoredVersion` every reader already takes.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+async fn read_tombstone(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    version: i64,
+) -> Result<Option<DateTime<Utc>>, RepoError> {
+    let row = approval_threshold_tombstone::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_threshold_tombstone::Column::TenantId.eq(tenant_id))
+                .add(approval_threshold_tombstone::Column::Version.eq(version)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read threshold tombstone {version}: {e}")))?;
+    Ok(row.map(|row| row.effective_from))
+}
+
+/// Every version number this tenant has proposed, greatest first — **entry versions
+/// and tombstones in one sequence**.
 ///
 /// The effective-policy resolution needs it: "the greatest version whose unit was
 /// approved" is a walk down this list asking the approval store about each, and
 /// asking about a version that does not exist would report a policy the tenant
 /// never proposed.
+///
+/// The tombstones are in it for the converse reason, and it is the single line that
+/// makes D-185 executable rather than stored: a retirement the walk never visits is a
+/// retirement that can never be in force, however many principals approved it. A list
+/// built from the entry table alone would leave an approved tombstone invisible and
+/// the tenant on the thresholds they had asked to be rid of — which is the
+/// fail-**open** direction, since those thresholds are what let a change publish on
+/// one principal.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
@@ -274,14 +450,30 @@ pub async fn versions_desc(
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("list threshold versions: {e}")))?;
+    let retired = approval_threshold_tombstone::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(approval_threshold_tombstone::Column::TenantId.eq(tenant_id)))
+        .order_by(approval_threshold_tombstone::Column::Version, Order::Desc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list threshold tombstone versions: {e}")))?;
     // Deduplicated here rather than by `SELECT DISTINCT`: `SecureSelect` carries
     // no projection, and a version holds one row per configured currency, so the
     // set is a handful of rows per proposal rather than a scan of anything.
-    let mut versions: Vec<i64> = Vec::new();
-    for row in rows {
-        if versions.last() != Some(&row.version) {
-            versions.push(row.version);
-        }
-    }
+    //
+    // Sorted after the merge rather than merged in order: the two `ORDER BY`s are
+    // each descending, but a tombstone at version 4 and an entry version at 3 arrive
+    // in two lists, and the walk's whole contract is *greatest first* over the one
+    // sequence. A merge that trusted the two lists' relative order would silently
+    // visit an older version before a newer one, which is the union reading
+    // `infra::threshold`'s module doc rules out.
+    let mut versions: Vec<i64> = rows
+        .into_iter()
+        .map(|row| row.version)
+        .chain(retired.into_iter().map(|row| row.version))
+        .collect();
+    versions.sort_unstable_by(|left, right| right.cmp(left));
+    versions.dedup();
     Ok(versions)
 }

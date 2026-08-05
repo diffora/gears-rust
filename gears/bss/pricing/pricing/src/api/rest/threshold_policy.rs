@@ -76,13 +76,37 @@
 //! bootstrap, `inst-mat-failsafe` is named for it, and answering 404 would tell an
 //! operator the surface does not exist when what they actually need to know is that
 //! everything is material.
+//!
+//! # The `DELETE` deletes nothing, and it is the only way back to unset (D-185)
+//!
+//! §6 makes *"unset ⇒ two-person rule always"* the state every tenant starts in, and
+//! until D-185 it was a state no tenant could **return** to: the store is per-currency
+//! rows keyed `(tenant, version, currency)`, so "no thresholds" is a version with zero
+//! rows — which the `PUT` refuses (`THRESHOLD_INVALID`) and which, admitted, no reader
+//! could tell from a version nobody proposed. The only way back was a version of
+//! absurdly high bars, which is a different rule wearing the fail-safe's clothes and
+//! stops being true the day a currency is added.
+//!
+//! So the way back is a **tombstone**, and `DELETE` is its door. It is a proposal like
+//! every other: a new version minted with the next number, its content pinned, and the
+//! same always-material unit D-10 opens over any policy diff — so a tenant cannot
+//! revert the two-person rule single-handed, which is the property the whole
+//! arrangement would be worthless without. Nothing is deleted; the store stays
+//! append-only history and the earlier versions stay exactly as their approvers signed
+//! them.
+//!
+//! The `GET` then answers `effective` with that version and an **empty** entry list,
+//! which is deliberately not `effective: null`. Both are unset and both make every
+//! change material, but only one of them is a decision somebody made — and an auditor
+//! asking when this tenant stopped having thresholds reads the version's number and
+//! `effectiveFrom`, neither of which a null carries.
 
 use std::sync::Arc;
 
 use axum::extract::Extension;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::StatusCode};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::AccessScope;
@@ -134,6 +158,14 @@ pub struct ThresholdPolicyView {
     /// is a tenant that has never had one approved, **or** one whose only approved
     /// versions all start in the future. Under `null` every change is material
     /// (`inst-mat-failsafe`).
+    ///
+    /// **Present with an empty `entries` is the third state** and is not the same as
+    /// `null`: it is a tombstone (D-185), a version the tenant authored and a second
+    /// principal approved, saying they have no thresholds. Both make every change
+    /// material; only this distinguishes "never configured" from "configured, then
+    /// deliberately retired", which is what an auditor asking *when did this tenant
+    /// stop having thresholds* needs — the version number and its `effectiveFrom`
+    /// answer it, and a null cannot.
     pub effective: Option<PinnedThresholdPolicyView>,
     /// The unit reviewing a proposal, if one is open. A second `PUT` while this is
     /// present is refused `PENDING_CHANGE_UNIT_EXISTS` (409).
@@ -145,13 +177,31 @@ pub struct ThresholdPolicyView {
 #[toolkit_macros::api_dto(request, response)]
 pub struct PutThresholdPolicyRequest {
     /// When the thresholds start applying, once approved. UTC, millisecond
-    /// precision (D-144).
-    pub effective_from: DateTime<Utc>,
+    /// precision (D-144). Required on a threshold proposal; **must be absent on a
+    /// retirement**, which is not schedulable — see `retire`.
+    pub effective_from: Option<DateTime<Utc>>,
     /// The per-currency entries. **The whole policy**, not a patch: a version is a
     /// complete entry set, so a currency left out of this list is a currency with
     /// no threshold — which is material by `inst-mat-percurrency`'s fail-safe
-    /// rather than a currency that keeps its old value.
-    pub entries: Vec<ThresholdEntryView>,
+    /// rather than a currency that keeps its old value. Required on a threshold
+    /// proposal; **must be absent on a retirement**.
+    pub entries: Option<Vec<ThresholdEntryView>>,
+    /// Propose the **tombstone** — a version that positively says this tenant has
+    /// no thresholds (D-185).
+    ///
+    /// A positive marker rather than an empty `entries`, because an empty entry set
+    /// writes no rows and no reader could tell it from a version nobody proposed —
+    /// which is why the authoring door refuses one. And the same `PUT` rather than
+    /// a `DELETE`, because nothing is deleted: the store is append-only, and a
+    /// retirement is an **appended version** like any other, minted with the next
+    /// number, pinned, and in force only once an independent reviewer approves it.
+    /// A verb promising removal would describe the opposite of what happens.
+    ///
+    /// Mutually exclusive with the two fields above: a retirement authors no
+    /// entries, and it is not schedulable — it takes the tenant back to *everything
+    /// is material*, so a future date would be an operator asking for **less**
+    /// review between now and then than they have already decided they want.
+    pub retire: Option<bool>,
 }
 
 /// What the `PUT` did: opened a unit over the proposed version.
@@ -287,41 +337,63 @@ async fn put_threshold_policy(
     let tenant = ctx.subject_tenant_id();
     let now = Utc::now();
 
-    let entries = parse_entries(&request.entries).map_err(CanonicalError::from)?;
+    let materiality = policy_diff_materiality()?;
+    let stamp = audit_stamp(&ctx, now, correlation);
 
-    // **Evaluated, not asserted.** The verdict recorded on the unit is
-    // `materiality::evaluate`'s over the registered trigger this act *is*
-    // (`Trigger::ThresholdPolicyDiff`, D-10), rather than a `Material` value
-    // written here — so the stored `materiality` jsonb of a policy unit is produced
-    // by the same evaluator as every other unit's, and a reader comparing two units
-    // is comparing two answers from one function. It passes no policy, which is
-    // right for a reason beyond convenience: the trigger is examined at §3 step 4
-    // before any threshold is consulted, so no configured policy can make this act
-    // auto-publishable, which is D-10 exactly.
-    let verdict = materiality::evaluate(
-        &ChangeSet::of_act(Trigger::ThresholdPolicyDiff, Vec::new()),
-        /* policy */ None,
-        /* baseline */ None,
-    );
-    let materiality = serde_json::to_value(MaterialityView::from(verdict)).map_err(|e| {
-        CanonicalError::from(DomainError::Internal(format!(
-            "cannot render the materiality verdict: {e}"
-        )))
-    })?;
-
-    let (version, record) = state
-        .thresholds
-        .propose(
-            &scope,
-            tenant,
-            Uuid::now_v7(),
-            request.effective_from,
-            entries,
-            materiality,
-            audit_stamp(&ctx, now, correlation),
-        )
-        .await
-        .map_err(CanonicalError::from)?;
+    // **The two arms of one door.** A retirement and a threshold set are both
+    // *appended versions* — same mint, same always-material unit, same pin — so they
+    // are authored the same way and differ only in what the version says. The body
+    // discriminates, and the exclusivity is checked rather than assumed: a request
+    // carrying both would be an operator who cannot be told which of the two they
+    // proposed, over a diff a reviewer is about to sign.
+    let (version, record) = if request.retire == Some(true) {
+        if request.entries.is_some() || request.effective_from.is_some() {
+            return Err(CanonicalError::from(DomainError::ThresholdInvalid(
+                "a retirement authors no entries and is not schedulable: it takes the tenant \
+                 back to `everything is material`, so a future start would be asking for less \
+                 review in the meantime than has already been decided. Send `retire` alone"
+                    .to_owned(),
+            )));
+        }
+        // Quantized to the millisecond (D-144) and **truncated**, so the instant is
+        // never later than the moment asked for.
+        let at = now.trunc_subsecs(3);
+        state
+            .thresholds
+            .retire(&scope, tenant, Uuid::now_v7(), at, materiality, stamp)
+            .await
+            .map_err(CanonicalError::from)?
+    } else {
+        let Some(effective_from) = request.effective_from else {
+            return Err(CanonicalError::from(DomainError::ThresholdInvalid(
+                "a threshold proposal authors the instant its bars start applying; send \
+                 `effectiveFrom`, or `retire` to propose the tombstone"
+                    .to_owned(),
+            )));
+        };
+        let Some(entries) = request.entries.as_ref() else {
+            return Err(CanonicalError::from(DomainError::ThresholdInvalid(
+                "a threshold proposal is a complete entry set; send `entries`, or `retire` to \
+                 propose the tombstone. An empty list is not a retirement - it writes no rows \
+                 and no reader could tell it from a version nobody proposed"
+                    .to_owned(),
+            )));
+        };
+        let entries = parse_entries(entries).map_err(CanonicalError::from)?;
+        state
+            .thresholds
+            .propose(
+                &scope,
+                tenant,
+                Uuid::now_v7(),
+                effective_from,
+                entries,
+                materiality,
+                stamp,
+            )
+            .await
+            .map_err(CanonicalError::from)?
+    };
 
     Ok((
         StatusCode::ACCEPTED,
@@ -331,6 +403,38 @@ async fn put_threshold_policy(
         }),
     )
         .into_response())
+}
+/// The materiality verdict a policy diff's unit records — **evaluated, not
+/// asserted**.
+///
+/// The verdict is `materiality::evaluate`'s over the registered trigger this act *is*
+/// (`Trigger::ThresholdPolicyDiff`, D-10), rather than a `Material` value written by
+/// hand — so the stored `materiality` jsonb of a policy unit is produced by the same
+/// evaluator as every other unit's, and a reader comparing two units is comparing two
+/// answers from one function. It passes no policy, which is right for a reason beyond
+/// convenience: the trigger is examined at §3 step 4 before any threshold is
+/// consulted, so no configured policy can make this act auto-publishable, which is
+/// D-10 exactly.
+///
+/// **Shared by the `PUT` and the `DELETE`**, and that is the point rather than
+/// deduplication: D-10 is direction-agnostic, so configuring a threshold and retiring
+/// one are one act as far as materiality is concerned, and two call sites each
+/// building their own verdict would be two places for that to stop being true.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the verdict will not serialize, which is
+/// unreachable and reported rather than unwrapped.
+fn policy_diff_materiality() -> Result<serde_json::Value, CanonicalError> {
+    let verdict = materiality::evaluate(
+        &ChangeSet::of_act(Trigger::ThresholdPolicyDiff, Vec::new()),
+        /* policy */ None,
+        /* baseline */ None,
+    );
+    serde_json::to_value(MaterialityView::from(verdict)).map_err(|e| {
+        CanonicalError::from(DomainError::Internal(format!(
+            "cannot render the materiality verdict: {e}"
+        )))
+    })
 }
 
 // ---------------------------------------------------------------------------

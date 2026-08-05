@@ -1032,3 +1032,82 @@ fn the_threshold_encoding_is_frozen() {
         "3f9d99001744c4974c955d3c882f686bf7d971250d4468b89fe82a54e400799f"
     );
 }
+
+/// **A tombstone's pin says "no thresholds", distinguishably from every particular
+/// set** — D-185's requirement on this encoder.
+///
+/// The reviewer of a retirement signs a digest, and the whole safety of the decision
+/// rests on that digest naming *this* content: an approver who signed "no thresholds"
+/// must not have signed something a proposer could re-derive as an entry set, and the
+/// converse. Three things have to hold, and none of them follows from the others:
+///
+/// * the tombstone's digest differs from an entry version of the same number and
+///   instant — the entry count precedes the entries, so `0` and `1` frame differently;
+/// * it still moves with `version` and with `effective_from`, because a retirement is
+///   a version like any other and both fields are inside the pin;
+/// * two tombstones agreeing on both fields pin **identically**, which is what makes
+///   the re-derivation at approve time verifiable at all.
+///
+/// **No re-freeze, and that is measured rather than assumed.** No token was added to
+/// the preimage: `ThresholdVersion::new` refuses an empty entry set, so a framed count
+/// of zero is a preimage no non-tombstone version can produce, and the entry versions'
+/// bytes are untouched — `the_threshold_encoding_is_frozen` above is unmoved, so
+/// `THRESHOLD_PIN_DOMAIN_SEP` stays at `v1` and no pending unit is invalidated.
+#[test]
+fn a_tombstone_pins_distinguishably_from_every_entry_set() {
+    let retirement = ThresholdVersion::tombstone(3, at(9));
+    assert!(
+        retirement.is_tombstone(),
+        "the fixture has to be the tombstone or this case proves nothing"
+    );
+
+    // Against the version that shares its number and its instant and has entries.
+    assert_ne!(
+        hex32(&threshold_content_hash(&retirement)),
+        hex32(&threshold_content_hash(&threshold_base())),
+        "an approver signing 'no thresholds' must not be signing a digest an entry set can \
+         re-derive to"
+    );
+    // And against the smallest entry set there is, which is the near-collision the
+    // framed count is what prevents.
+    assert_ne!(
+        hex32(&threshold_content_hash(&retirement)),
+        hex32(&threshold_content_hash(&threshold_version(
+            3,
+            at(9),
+            vec![("EUR", ThresholdBasis::Absolute { minor: 0 })],
+        ))),
+        "a threshold of zero is a real threshold - everything in that currency is material - and \
+         is not the absence of one"
+    );
+
+    // Both other fields still move it: a retirement is a version, so its number and
+    // its start are as much the reviewer's business as an entry set's are.
+    assert_ne!(
+        hex32(&threshold_content_hash(&retirement)),
+        hex32(&threshold_content_hash(&ThresholdVersion::tombstone(
+            4,
+            at(9)
+        ))),
+    );
+    assert_ne!(
+        hex32(&threshold_content_hash(&retirement)),
+        hex32(&threshold_content_hash(&ThresholdVersion::tombstone(
+            3,
+            at(10)
+        ))),
+        "the instant the two-person rule comes back is inside the pin, so a proposer cannot move \
+         it after the reviewer signed"
+    );
+
+    // And the re-derivation verifies: same version, same instant, same digest.
+    assert_eq!(
+        hex32(&threshold_content_hash(&retirement)),
+        hex32(&threshold_content_hash(&ThresholdVersion::tombstone(
+            3,
+            at(9)
+        ))),
+        "a tombstone read back out of the store must digest to what was pinned, or every approve \
+         of a retirement answers APPROVAL_CONTENT_MISMATCH"
+    );
+}

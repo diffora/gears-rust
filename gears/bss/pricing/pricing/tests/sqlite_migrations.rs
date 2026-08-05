@@ -39,9 +39,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use bss_pricing::infra::storage::entity::{
-    approval, approval_key, approval_threshold, audit_log, catalog_version_ref, idempotency_dedup,
-    operator_flag, outbox, pin_frontier, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
-    policy_object, price, price_tier_band, price_window, read_model,
+    approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
+    catalog_version_ref, idempotency_dedup, operator_flag, outbox, pin_frontier, plan,
+    plan_addon_rule, plan_descriptor_set, plan_phase, policy_object, price, price_tier_band,
+    price_window, read_model,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
@@ -70,6 +71,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_approval",
     "pricing_approval_key",
     "pricing_approval_threshold",
+    "pricing_approval_threshold_tombstone",
     "pricing_price_window",
     "coord_leases",
 ];
@@ -95,6 +97,8 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_approval_pinned_columns",
     "trg_pricing_approval_threshold_no_delete",
     "trg_pricing_approval_threshold_no_update",
+    "trg_pricing_approval_threshold_tombstone_no_delete",
+    "trg_pricing_approval_threshold_tombstone_no_update",
     "trg_pricing_audit_log_no_delete",
     "trg_pricing_audit_log_no_update",
     "trg_pricing_plan_addon_rule_no_delete",
@@ -180,6 +184,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_approval_threshold_basis",
     "chk_pricing_approval_threshold_currency",
     "chk_pricing_approval_threshold_percent_positive",
+    "chk_pricing_approval_threshold_tombstone_version",
     "chk_pricing_approval_threshold_version",
     "chk_pricing_audit_log_entry_kind",
     "chk_pricing_audit_log_rollup",
@@ -312,6 +317,14 @@ fn expected_trigger_bodies() -> Vec<(String, u64)> {
         (
             "trg_pricing_approval_threshold_no_update",
             11_709_629_607_986_505_725_u64,
+        ),
+        (
+            "trg_pricing_approval_threshold_tombstone_no_delete",
+            12_721_364_154_841_815_973_u64,
+        ),
+        (
+            "trg_pricing_approval_threshold_tombstone_no_update",
+            12_807_063_624_490_211_381_u64,
         ),
         (
             "trg_pricing_audit_log_no_delete",
@@ -666,6 +679,7 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         approval::Entity,
         approval_key::Entity,
         approval_threshold::Entity,
+        approval_threshold_tombstone::Entity,
         price_window::Entity,
     );
 }

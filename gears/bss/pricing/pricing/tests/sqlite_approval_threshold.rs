@@ -499,3 +499,283 @@ async fn a_version_the_store_cannot_read_is_skipped_rather_than_failing_the_whol
          every change material. It must not be an error: {effective:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D-185: the tombstone table, and the one sequence it shares.
+// ---------------------------------------------------------------------------
+
+/// One tombstone row, valid unless an override makes it otherwise.
+fn tombstone(overrides: &[(&str, &str)]) -> String {
+    let mut columns: Vec<(&str, String)> = vec![
+        ("tenant_id", format!("'{TENANT}'")),
+        ("version", "0".to_owned()),
+        ("effective_from", AT.to_owned()),
+        ("created_by", format!("'{ACTOR}'")),
+    ];
+    for (name, value) in overrides {
+        match columns.iter_mut().find(|(column, _)| column == name) {
+            Some(slot) => (*value).clone_into(&mut slot.1),
+            None => columns.push((name, (*value).to_owned())),
+        }
+    }
+    let names = columns
+        .iter()
+        .map(|(column, _)| *column)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = columns
+        .iter()
+        .map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("INSERT INTO pricing_approval_threshold_tombstone ({names}) VALUES ({values})")
+}
+
+/// The whitelist half, and the property the entry table cannot express: a version
+/// with **no currency at all**.
+#[tokio::test]
+async fn a_well_formed_tombstone_lands_and_holds_one_row_per_version() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &tombstone(&[])).await;
+    // One tombstone per version, by the primary key: a second row for version 0 would
+    // be a retirement with two authored instants and no answer to which one an
+    // approver signed.
+    must_be_rejected(
+        &conn,
+        &tombstone(&[("effective_from", "'2099-06-01T00:00:00.000Z'")]),
+        "pricing_approval_threshold_tombstone",
+    )
+    .await;
+    must_succeed(&conn, &tombstone(&[("version", "1")])).await;
+}
+
+/// `version >= 0` on the tombstone table too — one sequence, one rule.
+#[tokio::test]
+async fn a_negative_tombstone_version_is_refused() {
+    let conn = migrated_db().await;
+    must_be_rejected(
+        &conn,
+        &tombstone(&[("version", "-1")]),
+        "chk_pricing_approval_threshold_tombstone_version",
+    )
+    .await;
+    must_succeed(&conn, &tombstone(&[("version", "0")])).await;
+}
+
+/// `trg_pricing_approval_threshold_tombstone_no_delete`, executed, with the read-back
+/// its sibling's proof has.
+#[tokio::test]
+async fn a_deleted_tombstone_is_refused() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &tombstone(&[])).await;
+    must_be_rejected(
+        &conn,
+        &format!("DELETE FROM pricing_approval_threshold_tombstone WHERE tenant_id = '{TENANT}'"),
+        "append-only history",
+    )
+    .await;
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT CAST(count(*) AS text) AS v FROM pricing_approval_threshold_tombstone",
+        )
+        .await,
+        "1",
+        "the refused DELETE must leave the retirement where it was - it is what an approval pin \
+         covers"
+    );
+}
+
+/// `trg_pricing_approval_threshold_tombstone_no_update`, executed.
+///
+/// The column under test is `effective_from`, which is **when the two-person rule
+/// comes back**: an operator who could move it after a reviewer signed would move the
+/// one fact the retirement is about.
+#[tokio::test]
+async fn an_updated_tombstone_is_refused() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &tombstone(&[])).await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE pricing_approval_threshold_tombstone SET effective_from = \
+             '2099-06-01T00:00:00.000Z' WHERE tenant_id = '{TENANT}'"
+        ),
+        "is immutable",
+    )
+    .await;
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT effective_from AS v FROM pricing_approval_threshold_tombstone",
+        )
+        .await,
+        "2099-01-01T00:00:00.000Z",
+        "the refused UPDATE must leave the instant where it was"
+    );
+}
+
+/// **One version sequence across two tables**, through the repository that joins them.
+///
+/// The line that makes D-185 executable rather than merely stored. Three properties,
+/// and each of them is a distinct way to get the join wrong:
+///
+/// * `latest_version` sees the tombstone — blind to it, the next proposal mints the
+///   number the tombstone already holds, and one version ends up carrying both an
+///   authored retirement and an authored entry set;
+/// * `versions_desc` includes it, **greatest first across the merge** — absent from the
+///   list, `effective_version` never visits it, so an approved retirement can never be
+///   in force and the tenant keeps the thresholds they asked to be rid of, which is the
+///   fail-**open** direction;
+/// * `read_version` returns it as a version whose entry set is *empty*, which is what
+///   distinguishes it from `None` — a version nobody proposed.
+#[tokio::test]
+async fn the_two_threshold_tables_are_one_version_sequence() {
+    use bss_pricing::infra::storage::repo::threshold_repo;
+
+    let tenant = TENANT.parse::<uuid::Uuid>().expect("a uuid");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    let stamp = bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: ACTOR.parse().expect("a uuid"),
+        recorded_at: at_utc(1),
+        correlation_id: uuid::Uuid::from_u128(0x_c0_13),
+    };
+    let provider = migrated_provider().await;
+    let conn = provider.conn().expect("a scoped connection");
+
+    // Version 0: an entry set. Version 1: a tombstone. Interleaved on purpose, so a
+    // merge that trusted the two `ORDER BY`s' relative order is caught.
+    threshold_repo::open_version(
+        &conn,
+        &scope,
+        tenant,
+        0,
+        at_utc(1),
+        &[row_for("AUD")],
+        stamp,
+    )
+    .await
+    .expect("the entry version lands");
+    threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), stamp)
+        .await
+        .expect("the tombstone lands");
+
+    assert_eq!(
+        threshold_repo::latest_version(&conn, &scope, tenant)
+            .await
+            .expect("the latest version reads"),
+        Some(1),
+        "the tombstone consumed a number, so the next proposal is 2 and not 1 again"
+    );
+    assert_eq!(
+        threshold_repo::versions_desc(&conn, &scope, tenant)
+            .await
+            .expect("the version list reads"),
+        vec![1, 0],
+        "one sequence, greatest first - the walk's whole contract"
+    );
+
+    let retired = threshold_repo::read_version(&conn, &scope, tenant, 1)
+        .await
+        .expect("a tombstone reads")
+        .expect("version 1 is there, which is exactly what a zero-row version could not be");
+    assert!(
+        retired.entries.is_empty(),
+        "a tombstone is the version that says none: {retired:?}"
+    );
+    assert_eq!(
+        retired.effective_from,
+        at_utc(2),
+        "and it carries its own authored instant, so the pinned subject is reconstructible"
+    );
+    assert!(
+        threshold_repo::read_version(&conn, &scope, tenant, 2)
+            .await
+            .expect("an unknown version reads")
+            .is_none(),
+        "a version nobody proposed is still `None`, which is the distinction the tombstone \
+         exists to make"
+    );
+
+    // And the entry version beside it is unchanged: a tombstone supersedes by being
+    // later, never by editing what came before.
+    let configured = threshold_repo::read_version(&conn, &scope, tenant, 0)
+        .await
+        .expect("the entry version reads")
+        .expect("version 0 is there");
+    assert_eq!(configured.entries.len(), 1);
+    assert_eq!(configured.effective_from, at_utc(1));
+}
+
+/// **A version that is both a tombstone and an entry set is a version no approver
+/// signed, and it is refused rather than resolved.**
+///
+/// The two tables have two primary keys and neither sees the other, so nothing in
+/// either schema refuses this — and it is reachable: two proposals that read one
+/// `latest_version` and mint one number, one retiring and one configuring, collide on
+/// nothing. A trigger could refuse it only by querying the sibling table on every
+/// insert of either, which puts the invariant somewhere no reader of either table would
+/// look for it.
+///
+/// So `read_version` refuses, exactly as it refuses a version whose rows disagree about
+/// their instant — and picking one of the two would be worse than either: the
+/// retirement's reviewer signed the empty digest and the entry set's reviewer signed the
+/// entry digest, so whichever was chosen would be one signature applied to content its
+/// signer was not shown. Refused, the version is skipped by
+/// `infra::approval::read_threshold_version` and the tenant stays on the version they
+/// already had — neither proposal takes effect.
+#[tokio::test]
+async fn a_version_that_is_both_a_tombstone_and_an_entry_set_is_a_corrupt_row() {
+    use bss_pricing::infra::storage::repo::threshold_repo;
+
+    let tenant = TENANT.parse::<uuid::Uuid>().expect("a uuid");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    let stamp = bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: ACTOR.parse().expect("a uuid"),
+        recorded_at: at_utc(1),
+        correlation_id: uuid::Uuid::from_u128(0x_c0_14),
+    };
+    let provider = migrated_provider().await;
+    let conn = provider.conn().expect("a scoped connection");
+
+    threshold_repo::open_version(
+        &conn,
+        &scope,
+        tenant,
+        0,
+        at_utc(1),
+        &[row_for("AUD")],
+        stamp,
+    )
+    .await
+    .expect("the entry version lands");
+    threshold_repo::open_tombstone(&conn, &scope, tenant, 0, at_utc(1), stamp)
+        .await
+        .expect("neither table refuses the other's version number; that is the hazard");
+
+    let err = threshold_repo::read_version(&conn, &scope, tenant, 0)
+        .await
+        .expect_err("a version that is both is not a version");
+    match err {
+        bss_pricing::infra::storage::RepoError::CorruptRow(detail) => {
+            assert!(
+                detail.contains("pricing_approval_threshold"),
+                "the refusal names the table it came from: {detail}"
+            );
+            assert!(
+                detail.contains("tombstone"),
+                "and says which of the two states it could not choose between: {detail}"
+            );
+        }
+        other => panic!("expected a corrupt row, got: {other:?}"),
+    }
+
+    // The fail-safe direction: the ambiguous version takes effect as nothing, and with
+    // no other version approved the tenant has no policy - which makes everything
+    // material.
+    let effective = bss_pricing::infra::threshold::effective_policy(&conn, &scope, tenant).await;
+    assert!(
+        matches!(effective, Ok(None)),
+        "the ambiguous version is skipped, not raised: {effective:?}"
+    );
+}

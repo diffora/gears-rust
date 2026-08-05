@@ -1257,6 +1257,16 @@ pub(crate) async fn read_threshold_version(
         })?;
         entries.push(ThresholdEntry { currency, basis });
     }
+    // **D-185: a version the store returned with no entries is the tombstone.**
+    // `read_version` answers `None` for a version nobody proposed and `Some` with an
+    // empty entry set only when `pricing_approval_threshold_tombstone` carries a row
+    // for it, so the emptiness here is a stored fact rather than an absence — which is
+    // exactly why it must not go through `ThresholdVersion::new`, whose `NoEntries`
+    // refusal would fold the authored retirement back into "no such version" and leave
+    // the tenant on the thresholds they had approved the removal of.
+    if entries.is_empty() {
+        return Ok(Some(ThresholdVersion::tombstone(version, effective_from)));
+    }
     // The version's own rows are ordered by currency in SQL, which is the order the
     // pin was taken over; `ThresholdVersion::new` keeps the caller's order for
     // exactly that reason.

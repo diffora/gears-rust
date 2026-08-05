@@ -422,15 +422,18 @@ pub enum ThresholdRefusal {
     /// nobody proposed, and an approval pin would cover nothing. So it is refused here,
     /// where the operator hears about it, rather than written and lost.
     ///
-    /// **What is *not* this variant's to record is the capability gap behind it**, and
-    /// this doc used to try. §6's *"unset ⇒ two-person rule always"* is a **state**, and
-    /// this store can only ever enter it as the bootstrap: a tenant that has configured
-    /// a threshold can never return to the fail-safe, because retiring a policy would
-    /// need a tombstone row — a version that says "no thresholds" and is
-    /// distinguishable from a version nobody proposed — which the table has no column
-    /// for. That is a gap in what the gear can do, whose home is a register entry
-    /// naming the column its removal needs, not a comment on the refusal that happens
-    /// to sit nearest it. Reported as owed.
+    /// **The capability gap behind it is paid, and the refusal still stands** — which
+    /// is the pairing D-185 turns on. This doc used to report the gap as owed: §6's
+    /// *"unset ⇒ two-person rule always"* is a **state**, and the store could only
+    /// enter it as the bootstrap, because retiring a policy needed a version that says
+    /// "no thresholds" and is distinguishable from a version nobody proposed. That
+    /// version now exists — [`ThresholdVersion::tombstone`], stored in
+    /// `pricing_approval_threshold_tombstone` — and it is emphatically **not** this
+    /// refusal being relaxed. An empty `PUT` is still refused, because an empty entry
+    /// set is indistinguishable from absence at every layer that would have to read it;
+    /// a tombstone is a *positive* marker authored through its own door, minted with
+    /// the next version number, pinned, and approved by an independent principal like
+    /// every other policy diff.
     NoEntries,
     /// Two entries name one currency, which is a policy with two answers for one
     /// row.
@@ -523,6 +526,51 @@ impl ThresholdVersion {
         })
     }
 
+    /// **The tombstone (D-185)**: a version that positively says this tenant has no
+    /// thresholds.
+    ///
+    /// The way back to §6's *"unset ⇒ two-person rule always"*, which every tenant
+    /// starts in and which — before this — no tenant could return to. It is a version
+    /// like any other: minted with the next number, framed by the pin, reviewed by the
+    /// always-material unit D-10 opens over every policy diff, and in force only once
+    /// an independent principal has approved it and its `effective_from` has arrived.
+    ///
+    /// **Total, where [`Self::new`] is fallible**, and that is the shape of the
+    /// decision rather than a convenience. `new`'s two refusals are both about an entry
+    /// set — it is empty, or it names a currency twice — and a tombstone has no entry
+    /// set to be wrong about. There is nothing here for an operator to get wrong and
+    /// therefore nothing to report.
+    ///
+    /// **The empty entry vector is the representation, and it is the only one.**
+    /// `new` refuses an empty set, so this constructor is the sole producer of a
+    /// version with no entries and `entries().is_empty()` is a total, single-owner
+    /// reading of "is this the tombstone" ([`Self::is_tombstone`]). A `bool` field
+    /// beside the vector would be a second answer to a question the vector already
+    /// answers, free to disagree with it — the shape this crate refuses on the store
+    /// side for the same reason there is no `state` column on
+    /// `pricing_approval_threshold`.
+    #[must_use]
+    pub const fn tombstone(version: u64, effective_from: DateTime<Utc>) -> Self {
+        Self {
+            version,
+            effective_from,
+            entries: Vec::new(),
+        }
+    }
+
+    /// Is this the version that says the tenant has **no** thresholds (D-185)?
+    ///
+    /// Derived rather than stored; see [`Self::tombstone`]. It is the exact
+    /// complement of [`Self::policy`] answering `Some`, and a reader that needs the
+    /// policy should ask for the policy — this is for the readers that need to say
+    /// *which kind of version* is in force, which is a different question from *what
+    /// does it threshold*: the surface renders an authored `none` differently from a
+    /// tenant that never configured one, and only this tells them apart.
+    #[must_use]
+    pub fn is_tombstone(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Which version this is — the `version` half of the store's primary key.
     #[must_use]
     pub const fn version(&self) -> u64 {
@@ -569,10 +617,16 @@ impl ThresholdVersion {
     ///
     /// `Option` because [`ThresholdPolicy::of_entries`] is the one authority on
     /// what counts as configured, and re-deciding it here would be a second answer.
-    /// It is `Some` for every version this type can hold — the constructor refuses
-    /// an empty entry set — and the `None` arm is kept rather than unwrapped so
-    /// that the day the store learns to express a retirement, this reads it
-    /// correctly instead of panicking.
+    ///
+    /// **The `None` arm is now reached, and that is D-185.** This doc used to say the
+    /// arm was kept rather than unwrapped "so that the day the store learns to express
+    /// a retirement, this reads it correctly instead of panicking". That day is here:
+    /// [`Self::tombstone`] is a version with no entries, so `of_entries` answers `None`
+    /// for it, so `infra::threshold::effective_policy` answers `None` for a tenant
+    /// whose effective version is the tombstone — and `None` is what makes
+    /// [`evaluate`] answer `NoConfiguredThreshold` and everything material again. The
+    /// chain from an approved retirement back to the G1 fail-safe is that sentence and
+    /// no other code.
     #[must_use]
     pub fn policy(&self) -> Option<ThresholdPolicy> {
         ThresholdPolicy::of_entries(self.entries.iter().cloned())

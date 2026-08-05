@@ -31,6 +31,31 @@
 //!   approver signed;
 //! * a version whose `effective_from` has not arrived is skipped — see below.
 //!
+//! # The fail-safe is a state a tenant can **return** to (D-185)
+//!
+//! Everything above is about reaching `None` by *failing*. There is one way to reach
+//! it by **authoring**: the tombstone, a version that positively says this tenant has
+//! no thresholds. [`effective_version`] answers `Some` for it — it is in force, and
+//! it is a version an approver signed — and [`effective_policy`] answers `None`,
+//! because [`ThresholdVersion::policy`] reads an empty entry set as the absence
+//! `ThresholdPolicy::of_entries` says it is. So the two functions disagree on purpose
+//! and the disagreement is the decision: *there is a version, and it configures
+//! nothing*.
+//!
+//! It is not a way round D-10. The retirement is minted with the next number, pinned,
+//! and reviewed by the same always-material unit every other policy diff rides
+//! ([`ThresholdService::retire`]), so the principal proposing that the two-person rule
+//! come back for everything is not the principal who grants it. And the walk treats it
+//! as an ordinary version in every other respect: a later entry version supersedes it,
+//! a future-dated tombstone is skipped like any future-dated version, and its rows
+//! cannot move, the tombstone table refusing `UPDATE` and `DELETE` like its sibling.
+//!
+//! **What a reader above this module must not do is read `effective_policy`'s `None`
+//! as "no version".** They are two states now — a tenant that never configured one,
+//! and a tenant that authored `none` — and they are only distinguishable through
+//! [`effective_version`]. The policy `GET` is the one surface that has to tell them
+//! apart, and it does: `effective: null` against `effective: { entries: [] }`.
+//!
 //! # Why the walk is greatest-first and stops at the first hit
 //!
 //! A tenant's policy is its **latest approved** version, not the union of its
@@ -230,8 +255,14 @@ pub struct ThresholdService {
 /// superseded beside a proposal that had just been approved.
 #[derive(Clone, Debug)]
 pub struct ThresholdState {
-    /// The greatest approved version, or `None` for a tenant with no policy —
-    /// which is the state `inst-mat-failsafe` is named for and not an error.
+    /// The greatest approved version, or `None` for a tenant that has never had one
+    /// in force — which is the state `inst-mat-failsafe` is named for and not an
+    /// error.
+    ///
+    /// `Some` carrying a version with **no entries** is the other unset state: an
+    /// authored, approved tombstone (D-185). Both make every change material; only
+    /// this field tells them apart, which is why the surface renders the version
+    /// rather than collapsing it to a null.
     pub effective: Option<ThresholdVersion>,
     /// The unit reviewing a proposal, if one is open.
     pub pending: Option<ApprovalRecord>,
@@ -357,6 +388,95 @@ impl ThresholdService {
                         next,
                         effective_from,
                         &rows,
+                        stamp,
+                    )
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                    let record = crate::infra::approval::open_policy_unit(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        approval_id,
+                        &version,
+                        materiality,
+                        stamp,
+                    )
+                    .await?;
+                    Ok((version, record))
+                })
+            })
+            .await;
+        outcome.map_err(into_domain)
+    }
+
+    /// Propose the **tombstone** — the version that says this tenant has no
+    /// thresholds — and open the D-10 unit that reviews it (D-185).
+    ///
+    /// [`Self::propose`]'s transaction, its version minting, its unit and its
+    /// refusals, over a version with no entries. What is *not* shared is worth
+    /// stating: this does not relax [`ThresholdRefusal::NoEntries`]. An empty `PUT`
+    /// is still refused, because an empty entry set is indistinguishable from
+    /// absence — it writes zero rows, which no reader can tell from a version nobody
+    /// proposed. A retirement is a **positive** marker, authored through its own
+    /// door, and it writes a row of its own.
+    ///
+    /// **A second method rather than a flag on [`Self::propose`]**, because the two
+    /// acts differ in what they write (`open_tombstone` against `open_version`), in
+    /// which refusals can reach the caller (a tombstone has no entry set, so neither
+    /// `NoEntries` nor `DuplicateCurrency` is expressible), and in what an operator
+    /// is asking for. A boolean parameter would put the branch inside one function
+    /// and leave the surface naming which side of it by passing a value — two
+    /// functions with extra steps, and one of them reachable by accident.
+    ///
+    /// **It rides the same always-material unit, and that is the whole safety
+    /// argument.** A tenant must not be able to revert the two-person rule
+    /// single-handed: the retirement is minted, pinned and reviewed exactly as an
+    /// entry version is, so the principal who proposes the removal of the reviewer
+    /// requirement is not the principal who grants it. Until that unit is approved
+    /// **and** the tombstone's `effective_from` has arrived (D-188), the tenant's
+    /// policy is the version they already had.
+    ///
+    /// [`ThresholdRefusal::NoEntries`]: crate::domain::materiality::ThresholdRefusal::NoEntries
+    ///
+    /// # Errors
+    /// [`DomainError::PendingChangeUnitExists`] when the tenant already holds a
+    /// pending proposal; [`DomainError::TimestampPrecisionExceeded`] on an
+    /// unquantized `effective_from`; [`DomainError::Internal`] on a storage failure.
+    pub async fn retire(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        approval_id: Uuid,
+        effective_from: DateTime<Utc>,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<(ThresholdVersion, ApprovalRecord), DomainError> {
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<(ThresholdVersion, ApprovalRecord), DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    // The same mint as `propose`, off the same `latest_version` — which
+                    // reads **both** threshold tables, so a retirement cannot take a
+                    // number an entry version already holds and vice versa.
+                    let previous = threshold_repo::latest_version(txn, &scope, tenant_id)
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
+                    let next = previous.map_or(0, |held| held.saturating_add(1));
+                    let number = u64::try_from(next).map_err(|_| {
+                        DomainError::Internal(format!(
+                            "bss-pricing: threshold version {next} is not a value this store can \
+                             hold"
+                        ))
+                    })?;
+                    let version = ThresholdVersion::tombstone(number, effective_from);
+                    threshold_repo::open_tombstone(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        next,
+                        effective_from,
                         stamp,
                     )
                     .await

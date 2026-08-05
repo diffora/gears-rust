@@ -796,6 +796,17 @@ fn put_threshold_version(buf: &mut Vec<u8>, version: &ThresholdVersion) {
     // The count precedes the elements, as every collection's does: without it two
     // versions differing only in where one entry ends and the next begins could
     // frame alike.
+    //
+    // **And a count of zero is the tombstone (D-185), which is why no token was added
+    // for it.** `ThresholdVersion::new` refuses an empty entry set, so
+    // `ThresholdVersion::tombstone` is the sole producer of a version framing `0`
+    // here — an approver signing "this tenant has no thresholds" is signing a preimage
+    // no particular set can produce, which is the property the decision asks of this
+    // encoder. A dedicated marker byte would have said the same thing and moved the
+    // bytes of **every** existing version, re-freezing the encoding and invalidating
+    // every pending D-10 unit to record the arrival of a subject none of them are
+    // about — the argument `CONTENT_PIN_DOMAIN_SEP`'s own doc makes for not bumping
+    // itself when this subject arrived.
     put_u64(buf, count_of(entries.len()));
     // **Not sorted here.** Every other collection in this encoder is, because the
     // repositories' `ORDER BY`s are the thing that could move under it. This one

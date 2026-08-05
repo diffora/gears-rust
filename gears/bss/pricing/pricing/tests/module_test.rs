@@ -116,6 +116,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // and a mandatory `If-Match` would make the bootstrap unreachable.
         ("GET", APPROVAL_THRESHOLD_POLICY),
         ("PUT", APPROVAL_THRESHOLD_POLICY),
+        // D-185's tombstone door — the only way back to §6's *unset ⇒ two-person rule
     ]
 }
 

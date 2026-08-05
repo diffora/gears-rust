@@ -52,6 +52,7 @@ pub mod m20260802_000016_create_pricing_price_window;
 pub mod m20260802_000017_create_pricing_approval_key;
 pub mod m20260802_000018_create_pricing_approval_threshold;
 pub mod m20260802_000019_widen_pricing_approval_subject_kind;
+pub mod m20260802_000020_create_pricing_approval_threshold_tombstone;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -115,6 +116,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000017_create_pricing_approval_key::Migration),
             Box::new(m20260802_000018_create_pricing_approval_threshold::Migration),
             Box::new(m20260802_000019_widen_pricing_approval_subject_kind::Migration),
+            Box::new(m20260802_000020_create_pricing_approval_threshold_tombstone::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

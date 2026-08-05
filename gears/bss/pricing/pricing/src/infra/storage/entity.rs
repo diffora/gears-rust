@@ -12,6 +12,7 @@
 pub mod approval;
 pub mod approval_key;
 pub mod approval_threshold;
+pub mod approval_threshold_tombstone;
 pub mod audit_log;
 pub mod catalog_version_ref;
 pub mod idempotency_dedup;
