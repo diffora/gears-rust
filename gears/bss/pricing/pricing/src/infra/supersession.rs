@@ -290,3 +290,47 @@ pub async fn commit_supersession(
         scheduled,
     })
 }
+
+/// The name of one supersession **act**, as its approval unit and any retry of the
+/// request look it up by.
+///
+/// `inst-su-api` makes the act idempotent per **`(planId, scope key, changeover
+/// instant)`**, so those three are exactly what this renders — no more, because a
+/// component the caller does not control would make a genuine retry a different act, and
+/// no fewer, because each of the three is one an operator actually varies:
+///
+/// - drop the **changeover** and two reprices of one key on two dates share a subject, so
+///   an approval of one authorizes the other. That is the defect
+///   `infra::window`'s `unit_subject_ref` records for a schedule, one plane over.
+/// - drop the **key** and a mass reprice — which names *one* changeover for every row it
+///   touches (`inst-su-instant`'s bulk clause) — becomes one act with one approval.
+/// - drop the **plan** and nothing else in the string is plan-scoped.
+///
+/// It carries no successor `price_id` and no window id: both are minted per request, so a
+/// retry could not reproduce them, which is the same reason a window schedule's subject
+/// names its interval rather than its id.
+///
+/// **The instant is rendered to the millisecond**, D-144's quantum. Anything coarser would
+/// map two distinct legal changeovers onto one act; anything finer names a value
+/// `plan_supersession` refuses.
+///
+/// The unit's `subject_kind` is `price_unit` — the token S5 §6 declares, since its
+/// enumeration has no `supersession` member and the gear does not mint tokens the design
+/// set has not declared. `supersession` therefore appears in the *subject* instead, which
+/// is what tells this act's unit from a `PATCH`'s on the same row.
+#[must_use]
+pub fn supersession_unit_ref(
+    plan_id: PlanId,
+    key: &crate::domain::scope_key::ScopeKey,
+    changeover: DateTime<Utc>,
+) -> String {
+    format!(
+        "{}/supersession/{key}/{}",
+        plan_id.get(),
+        changeover.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    )
+}
+
+#[cfg(test)]
+#[path = "supersession_tests.rs"]
+mod supersession_tests;
