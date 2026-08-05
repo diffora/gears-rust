@@ -279,9 +279,20 @@ impl From<DomainError> for CanonicalError {
             // Every blocking violation is carried as its own precondition
             // violation, so the author sees the whole remediation list in one
             // response. Advisory warnings are deliberately NOT rendered here:
-            // this envelope exists only on the rejecting path, and a warning
-            // must reach the author on the succeeding path too — it rides the
-            // validation report on the response body, not the error.
+            // this envelope exists only on the rejecting path, and a warning must
+            // reach the author on the succeeding path too.
+            //
+            // **What this used to claim next is false and is withdrawn** (D-197,
+            // 2026-08-05): it said the warning "rides the validation report on the
+            // response body". No response body carries it — all three publish
+            // success views are `{ outcome, materiality, approval, receipt }`, and
+            // the pre-check's report is read only to build *this* envelope. So
+            // `PLAN_SIZE_SOFT_CAP_EXCEEDED` and `TIER_BAND_PRICE_INCREASE` are
+            // computed and discarded, and D-160's reason for making the caps
+            // advisory rather than blocking has no channel to be advisory through.
+            // Leaving warnings out of this envelope is still right; what is owed is
+            // the field on the succeeding path, and it is owed by the group that
+            // owns the publish response DTO.
             D::ValidationFailed(report) => {
                 let mut violations = report.violations.into_iter();
                 let Some(first) = violations.next() else {

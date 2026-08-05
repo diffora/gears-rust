@@ -58,6 +58,24 @@
 //! `content_hash` and can re-verify the pin before handing
 //! `PublishAuthorization::Approved` to `commit`.
 //!
+//! # The mint guard's two cases, and what each of them would fail against
+//!
+//! The last two cases in this file are D-192's, and they are about different halves of
+//! one guard. [`the_policy_mint_guard_answers_a_pending_unit_conflict_on_postgres`] pins
+//! its **classification** — that a `unique_violation` over
+//! `uq_pricing_approval_policy_pending` is read as the mint guard and not as the table's
+//! primary key — and needs no race at all; it would fail against a Postgres that stopped
+//! rendering the index name.
+//! [`two_proposals_intersecting_on_a_currency_meet_the_mint_guard_and_not_the_version_key`]
+//! pins its **ordering**: that the guard stands *above* the mint rather than below it. It
+//! would fail against `ThresholdService::propose` as `f69845790` found it, with the
+//! version rows written first — the loser then met
+//! `pricing_approval_threshold`'s `(tenant, version, currency)` key instead of the guard,
+//! and a violation of *that* key is a bare `RepoError::Db` rendering **500**, a server
+//! fault for a race whose whole remedy is to decide or withdraw the proposal the tenant
+//! already holds. Swap the two writes back in `propose` and that case reddens on the
+//! refusal's shape, which is the only thing the swap moves.
+//!
 //! Ignored by default; they need Docker. Run with
 //! `cargo test -p bss-pricing --test postgres_approval_race -- --ignored`.
 
@@ -72,6 +90,7 @@ use std::time::Duration;
 use bss_pricing::domain::approval::{ApprovalState, DecisionBy};
 use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::error::DomainError;
+use bss_pricing::domain::materiality::{ThresholdBasis, ThresholdEntry};
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan_shape::{
     BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
@@ -84,7 +103,10 @@ use bss_pricing::domain::scope_key::{
 use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::repo::price_repo::{self, NewPriceDraft};
-use bss_pricing::infra::storage::repo::{PlanRepo, PlanShapeRepo, PriceRepo};
+use bss_pricing::infra::storage::repo::{
+    PlanRepo, PlanShapeRepo, PriceRepo, ThresholdEntryRow, threshold_repo,
+};
+use bss_pricing::infra::threshold::{AssertedPolicy, ThresholdService};
 use chrono::{DateTime, TimeZone, Utc};
 use pg_support::Pg;
 use serde_json::json;
@@ -873,4 +895,302 @@ fn policy_proposal(
         materiality: json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
         held_keys: BTreeSet::new(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The mint guard's POSITION: above the mint, measured on two writers
+// ---------------------------------------------------------------------------
+
+/// The two proposals of the race below.
+const POLICY_WINNER: Uuid = Uuid::from_u128(0x_b3);
+const POLICY_LOSER: Uuid = Uuid::from_u128(0x_b4);
+
+/// The instant both proposals author their version to take effect at.
+///
+/// One value for both, because a version's `effective_from` is content and two racers
+/// disagreeing about it would be a second difference between them — this case is about
+/// the one difference it names, their currency sets.
+fn policy_effective_from() -> DateTime<Utc> {
+    at(16)
+}
+
+/// The winner's entry set, as the store holds it: **EUR and USD**.
+fn winner_rows() -> Vec<ThresholdEntryRow> {
+    vec![
+        ThresholdEntryRow {
+            currency: "EUR".to_owned(),
+            absolute_minor: Some(50_000),
+            percent_bp: None,
+        },
+        ThresholdEntryRow {
+            currency: "USD".to_owned(),
+            absolute_minor: Some(60_000),
+            percent_bp: None,
+        },
+    ]
+}
+
+/// The loser's entry set, as the domain carries it: **EUR and GBP**.
+///
+/// So the two sets **intersect** on EUR and disagree about the rest, which is the pairing
+/// the register names and the only one that can tell the two write orders apart. GBP is
+/// the row that would have joined the winner's version had both proposals landed, and the
+/// assertion that it did not is what makes the refusal a fact about rows rather than only
+/// about an error code.
+fn loser_entries() -> Vec<ThresholdEntry> {
+    vec![
+        ThresholdEntry {
+            currency: CurrencyCode::new("EUR").expect("three letters"),
+            basis: ThresholdBasis::Absolute { minor: 70_000 },
+        },
+        ThresholdEntry {
+            currency: CurrencyCode::new("GBP").expect("three letters"),
+            basis: ThresholdBasis::Absolute { minor: 80_000 },
+        },
+    ]
+}
+
+/// **The mint guard stands above the mint it guards, and two proposals whose currency
+/// sets intersect are what says so** (D-192, the second of the two things found while
+/// implementing clause (2)).
+///
+/// # What is at stake, and why the intersection is the whole shape
+///
+/// `ThresholdService::propose` mints its version number off
+/// `threshold_repo::latest_version` **inside** its own transaction, so two proposals that
+/// both read a store whose greatest version is *n* both mint *n + 1*. Nothing separates
+/// them but the order of two writes in one transaction, and that order decides which
+/// constraint the loser meets first:
+///
+/// * **the unit first**, as it stands: the loser's `INSERT` into `pricing_approval` meets
+///   `uq_pricing_approval_policy_pending` and is answered `PENDING_CHANGE_UNIT_EXISTS`, a
+///   409 naming a remedy the caller can act on;
+/// * **the rows first**, as `f69845790` found it: the loser's `INSERT` into
+///   `pricing_approval_threshold` meets `(tenant, version, currency)` — *but only if the
+///   two currency sets intersect* — and that key is not one `infra::storage` classifies,
+///   so it arrives as `RepoError::Db` and renders **500**, which is the very shape D-192
+///   clause (1) exists about.
+///
+/// Which is why the two racers here **overlap** rather than coincide or diverge.
+/// *Disjoint* sets cannot pin this: with the rows written first they collide on nothing,
+/// the loser walks on to the unit insert, and the index refuses it anyway — D-192's own
+/// reading, *"an index alone would have delivered the right refusal for disjoint races
+/// and a server fault for overlapping ones"*. *Identical* sets **would** pin it, being an
+/// intersection, and nothing refuses them earlier — two proposals of one entry set differ
+/// in nothing the store compares, `content_hash` carrying no index and the two
+/// `approval_id`s being distinct. They would only cost the sharpest assertion below: the
+/// loser prices a currency the winner does not, so the winner's committed version can be
+/// read back and shown to hold the winner's entry set *and nothing else*.
+///
+/// # One ordering, and why the sibling races' second direction does not apply here
+///
+/// [`a_mutation_and_an_approve_in_flight_leave_the_unit_voided_and_the_approve_refused`]
+/// asserts both commit orders because its two racers are **different acts** over one
+/// record — a mutation and a decision — reaching different constraints and answering
+/// asymmetrically, one of the two directions being a deliberate non-refusal. Both racers
+/// here are the *same* act. Exchanging which commits first exchanges the labels and
+/// nothing else: the winner is whichever committed, and the loser meets the same index
+/// over the same currency in the intersection. A second case would be this one with two
+/// constants swapped.
+///
+/// # The choreography, and where the parked transaction parks
+///
+/// The file's, and step 3 is load-bearing here twice over:
+///
+/// 1. the winner runs `propose`'s two writes and **parks**, holding both uncommitted —
+///    the tenant's one open-proposal slot in `uq_pricing_approval_policy_pending`, and
+///    version 0's EUR row;
+/// 2. the loser starts; it reads a store with no committed policy, mints 0, and its
+///    `INSERT` blocks;
+/// 3. a third connection **observes the block**, which is what proves the loser's reads
+///    already happened;
+/// 4. only then is the winner released, and the loser's insert resolves into the refusal.
+///
+/// Without step 3 the loser would read the winner's committed rows and mint 1, colliding
+/// with nothing — the file's usual reason. The sharper reason is this path's own:
+/// `ThresholdState::tag` covers the tenant's **pending** proposal as well as its effective
+/// version (D-186), so a loser whose reads happened after the winner committed would be
+/// refused by `require_policy_match` with `STALE_VERSION` — before the mint, before the
+/// guard, and under a different code entirely. Green, and about the `If-Match` premise
+/// rather than about this.
+///
+/// # The winner is staged and the loser is driven, deliberately
+///
+/// `propose` owns its transaction and cannot be parked mid-flight, and what has to be held
+/// uncommitted is *both* of its writes — the guard's slot **and** the version row the
+/// loser collides on — so the winner is composed here out of the same two repository calls
+/// `propose` makes. They are written in `propose`'s order, but nothing in this case depends
+/// on that: both are uncommitted when the park happens, so the winner's internal order is
+/// invisible to the loser. **The loser is the real `ThresholdService::propose`**, and that
+/// is where all of this case's sensitivity to the write order lives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_proposals_intersecting_on_a_currency_meet_the_mint_guard_and_not_the_version_key() {
+    let pg = Pg::applied().await;
+    let asserted = AssertedPolicy {
+        // Off the one producer of the tag, over a store with no policy in it: this is
+        // the premise two operators racing each other actually hold, and the loser's
+        // transaction recomputes it before it mints anything.
+        tag: ThresholdService::new(DBProvider::<DbError>::new(pg.db().await))
+            .state(&scope(), TENANT)
+            .await
+            .expect("the policy state reads")
+            .tag(),
+        now: policy_effective_from(),
+    };
+
+    let observer = pg.raw().await;
+    let written = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+
+    let winner = {
+        let db = pg.db().await;
+        let (written, release) = (Arc::clone(&written), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<(), RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        bss_pricing::infra::storage::repo::approval_repo::open(
+                            txn,
+                            &scope(),
+                            policy_proposal(POLICY_WINNER, 0),
+                            stamp_of(SUBMITTER, at(12)),
+                        )
+                        .await?;
+                        threshold_repo::open_version(
+                            txn,
+                            &scope(),
+                            TENANT,
+                            0,
+                            policy_effective_from(),
+                            &winner_rows(),
+                            stamp_of(SUBMITTER, at(12)),
+                        )
+                        .await?;
+                        // Uncommitted: the tenant's one open-proposal slot is taken, and
+                        // version 0 holds EUR.
+                        written.notify_one();
+                        release.notified().await;
+                        Ok(())
+                    })
+                })
+                .await;
+            out
+        })
+    };
+
+    written.notified().await;
+
+    let loser = {
+        let db = pg.db().await;
+        tokio::spawn(async move {
+            ThresholdService::new(DBProvider::<DbError>::new(db))
+                .propose(
+                    &scope(),
+                    TENANT,
+                    POLICY_LOSER,
+                    policy_effective_from(),
+                    loser_entries(),
+                    asserted,
+                    json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
+                    stamp_of(SUBMITTER, at(12)),
+                )
+                .await
+        })
+    };
+
+    // The loser has passed its premise check, read `latest_version` as absent and minted
+    // 0, and its INSERT is waiting. Only now is the winner allowed to commit.
+    pg_support::wait_until_a_backend_blocks(&observer).await;
+    release.notify_one();
+
+    tokio::time::timeout(RACE_TIMEOUT, winner)
+        .await
+        .expect("the winner must finish once released")
+        .expect("its task must not panic")
+        .expect("the winner is uncontended and must commit");
+
+    let refusal = tokio::time::timeout(RACE_TIMEOUT, loser)
+        .await
+        .expect("the loser must be released by the winner's commit")
+        .expect("its task must not panic")
+        .expect_err("one tenant cannot hold two open policy proposals");
+
+    // **The assertion the case exists for.** With the rows written first this is
+    // `DomainError::Internal` off `(tenant, version, currency)` — a 500 for a race whose
+    // remedy is to decide or withdraw a proposal.
+    //
+    // And the tenant in the detail is what says the **index** answered rather than
+    // `open_policy_unit`'s in-transaction pre-check, which reached the same code from the
+    // same call one statement earlier: the check's rendering names the holding unit and
+    // its version, and the index's names the tenant precisely because it cannot name a
+    // unit a rollback might unmake.
+    match &refusal {
+        DomainError::PendingChangeUnitExists(detail) => assert!(
+            detail.contains(&TENANT.to_string()),
+            "the mint guard must be what answered, not the pre-check: {detail}"
+        ),
+        other => panic!("the loser must get the typed refusal, not a storage fault: {other:?}"),
+    }
+
+    assert_only_the_winners_proposal_landed(&pg).await;
+}
+
+/// The winner's proposal, intact and alone, in both stores the act writes to.
+///
+/// Split out of the case above so that neither the choreography nor the arithmetic has to
+/// be read past to reach the other.
+async fn assert_only_the_winners_proposal_landed(pg: &Pg) {
+    let provider = DBProvider::<DbError>::new(pg.db().await);
+    let conn = provider.conn().expect("conn");
+
+    // One version number: the loser minted 0 too, and nothing of it survived.
+    assert_eq!(
+        threshold_repo::latest_version(&conn, &scope(), TENANT)
+            .await
+            .expect("read the version sequence"),
+        Some(0),
+        "exactly one proposal minted a version"
+    );
+    let stored = threshold_repo::read_version(&conn, &scope(), TENANT, 0)
+        .await
+        .expect("read version 0")
+        .expect("the winner's version is there");
+    // **The corrupt state D-192 is named for, stated as rows.** The loser's GBP is not in
+    // version 0 and the winner's two entries are exactly what is: a version holding the
+    // union of two proposals is a row set no approver signed, on a table that then refuses
+    // UPDATE and DELETE.
+    assert_eq!(
+        stored.entries,
+        winner_rows(),
+        "version 0 must be the winner's entry set and nothing else"
+    );
+    assert_eq!(stored.effective_from, policy_effective_from());
+
+    // And one unit reviewing it.
+    assert_eq!(
+        bss_pricing::infra::storage::repo::approval_repo::read(
+            &conn,
+            &scope(),
+            TENANT,
+            POLICY_WINNER
+        )
+        .await
+        .expect("read the winner's unit")
+        .expect("the winner's unit is there")
+        .state,
+        ApprovalState::Submitted
+    );
+    assert!(
+        bss_pricing::infra::storage::repo::approval_repo::read(
+            &conn,
+            &scope(),
+            TENANT,
+            POLICY_LOSER
+        )
+        .await
+        .expect("read the loser's unit")
+        .is_none(),
+        "the loser's whole transaction rolled back - its unit and its version rows together"
+    );
 }

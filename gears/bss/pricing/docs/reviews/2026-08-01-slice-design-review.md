@@ -436,6 +436,7 @@ Recorded so the next pass does not re-derive them.
   2026-07-31d). Recomputed on a deliberately hostile shape — 4 phases × 60 `(currency, region)`
   markets of recurring coverage (240) + 3 phase-invariant meter lines × 60 markets (180) + a
   setup row per market (60) = **480 rows** — which sits inside a cap that is explicitly *soft*
+  **Corrected 2026-08-05 (verification pass): this arithmetic is not the worst case and must not be cited as the bound.** It omits `priceEligibility` and `cohort` — the two axes ADR-0002 added *because* they multiply rows — and retained generations are `published` rows on distinct keys, so they land inside the candidate row set and are counted; one cutover per recurring key roughly doubles the figure. The refutation still holds, but it rests on **D-160's advisory status** (the cap never blocks: the finding rides `warnings[]` and `is_publishable()` does not read it) rather than on any row count. The 180-row term is separately unauthorable in this crate — see **D-196**.
   and tenant-configurable, with usage rows phase-invariant by design (`inst-ph-usage-invariant`)
   keeping the phase axis off the largest term. **Not a finding**; the carried item can be
   closed.

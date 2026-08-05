@@ -205,10 +205,10 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 6,
-    "suspicious:multi-region": 59,
+    "anchored:no-account": 4,
+    "suspicious:multi-region": 60,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 9,
+    "suspicious:weak-coverage": 10,
     "covered:strong": 0,
 }
 #: Moved 2026-08-05 (was 3 / 5 / 59 / 10, judged 69) by the **D-183…D-193 phase-4 close docs wave**
@@ -1070,7 +1070,7 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 68, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 70, "ledger": 17}
 #: pricing 69 -> 68 on the 2026-08-05 **D-183…D-193 phase-4 close docs wave**. One mover,
 #: `fr-supersession`, whose only account (`design/01-foundation.md`, `term-overlap`) scored
 #: **exactly 0.600** and fell under the threshold when corpus growth changed the
@@ -1121,6 +1121,25 @@ PINNED_JUDGE_CALLS = {"pricing": 68, "ledger": 17}
 #: four. What is being counted as coverage is a digest that summarises every requirement in
 #: the gear, so every requirement's vocabulary can match it. Per-id record beside
 #: `PINNED_TRIAGE_PRICING`.)
+
+
+#: pricing 68 -> 70 on 2026-08-05 with the D-88/D-195 supersession wave (D-196 + D-197 minted).
+#: Two ids left `anchored:no-account` for `suspicious:weak-coverage` and are the whole +2:
+#: `fr-supersession` and `fr-rating-compatibility`. A third mover, `nfr-audit-retention`
+#: (`weak-coverage` -> `multi-region`), is judge-neutral. Total held at 77.
+#: **Why this is a real promotion and not the digest coincidence the four movers above were.**
+#: Every previous mover on this list was caused by a summary document gaining a term — one of
+#: them by the single word `wording` — with no account of the requirement written anywhere. This
+#: wave wrote the supersession unit: `inst-su-compose` and `inst-su-commit` gained the composed
+#: window operations, the refusal ordering, the two-door occupancy reading and the commit's
+#: write ordering, and D-195/D-196 discuss the shape at length. `fr-rating-compatibility` follows
+#: because D-196's subject **is** whether the per-`(meter, dimensionKey)` line model rating
+#: presupposes is storable at all — the negative account is still an account.
+#: **What was checked before accepting it:** the live-findings count stayed at **2** and the
+#: known-debt count at **59**, so nothing closed silently — which is the hazard the 2026-08-05
+#: `WINDOW_GAP` episode recorded, where a bare code token in register prose satisfied P3's
+#: "referenced by" test and moved 59 -> 58 without paying the debt. Here neither count moved,
+#: and the per-id diff was taken against a stashed pre-wave tree rather than inferred.
 
 
 def test_pricing_triage_histogram_is_pinned(tmp_path):
