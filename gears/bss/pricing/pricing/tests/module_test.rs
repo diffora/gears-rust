@@ -74,6 +74,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+    use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{
         PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
@@ -101,6 +102,13 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("POST", PRICE_WINDOWS),
         ("PATCH", PRICE_WINDOW),
         ("DELETE", PRICE_WINDOW),
+        // Slice 7's interactive repricing: the supersession unit (D-88), one route in a
+        // module of its own. It answers 202 on both arms and takes **no** idempotency
+        // header, which is S5's own column for it — the act's identity is the key — so
+        // it is deliberately absent from `idempotency_key_routes()` below and the
+        // divergence its natural key leaves past the commit is reported in
+        // `api::rest::supersessions`.
+        ("POST", PLAN_SUPERSESSIONS),
         // Slice 5's entrance: the publish mount and the approval surface.
         ("POST", PLAN_PUBLISH),
         ("GET", APPROVALS),
@@ -175,6 +183,12 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
             ),
         ),
+        supersessions: bss_pricing::infra::supersession::SupersessionService::new(
+            db.clone(),
+            Arc::new(
+                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
+            ),
+        ),
         publish: PublishService::new(
             db,
             &LimitsConfig::default(),
@@ -196,6 +210,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::windows::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::supersessions::router(
                 Arc::clone(&governance),
                 &openapi,
             ))

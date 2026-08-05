@@ -90,6 +90,18 @@ pub struct GovernanceState {
     /// shares the registry `Arc` with [`GovernanceState::publish`]; the module doc
     /// says why that is one incrementer and not two.
     pub windows: crate::infra::window::WindowService,
+    /// The supersession unit's workflow — `POST …/plans/{planId}/supersessions`
+    /// (D-88), the interactive repricing of one published canonical scope key.
+    ///
+    /// Here for [`GovernanceState::windows`]' reason and it is the **third** requester
+    /// of the one registry `Arc`. The module doc's argument scales without amendment:
+    /// what makes three requesters one incrementer is that none of them invents a
+    /// version, and what keeps their handles apart is the first segment of the request
+    /// id — `plan-publish/…`, `window-mutation/…`, `supersession/…`. The third does not
+    /// come from `PublishUnitKind::request_token`, because S5 §6 declares no
+    /// `supersession` subject kind and this gear mints no token the design set has not;
+    /// `infra::supersession::unit_request_id` carries that argument.
+    pub supersessions: crate::infra::supersession::SupersessionService,
     /// The at-most-once gate the `POST …/windows` claims under (D-191).
     ///
     /// Here as well as on [`AuthoringState`] rather than instead of it: the two planes

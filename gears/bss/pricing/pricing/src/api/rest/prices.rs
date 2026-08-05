@@ -905,7 +905,14 @@ fn scope_key_of(plan_id: PlanId, key: &ScopeKeyRequest) -> Result<ScopeKey, Doma
 /// axis is the key's and the copy on [`PriceRow`] is a convenience the shape
 /// rules read. A placeholder is passed and overwritten, which is why the
 /// response echoes what was stored rather than what was sent.
-fn content_of(view: &PriceContentView) -> Result<PriceContent, DomainError> {
+///
+/// `pub(crate)` for one second caller, [`crate::api::rest::supersessions`]: a
+/// supersession's successor is a price row and its body carries the **same**
+/// [`PriceContentView`], so a second conversion of that view would be a second
+/// reading of what a price row's content is — including a second copy of
+/// `refuse_unlanded_primitives`, which is the one guard a divergence there would
+/// silently drop.
+pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, DomainError> {
     refuse_unlanded_primitives(view)?;
     let bands = view
         .bands

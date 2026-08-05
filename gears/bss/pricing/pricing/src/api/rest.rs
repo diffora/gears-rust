@@ -15,5 +15,6 @@ pub mod preconditions;
 pub mod prices;
 pub mod publish;
 pub mod state;
+pub mod supersessions;
 pub mod threshold_policy;
 pub mod windows;

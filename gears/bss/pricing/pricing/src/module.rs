@@ -610,6 +610,13 @@ impl Gear for BssPricingGear {
             // registry, never two incrementers — `api::rest::state`'s module doc
             // carries the argument and the correction it replaces.
             windows: WindowService::new(db.clone(), Arc::clone(&catalog_version_registry)),
+            // The **third** requester of that same `Arc` (D-88). Three requesters is
+            // still one incrementer, and `api::rest::state` carries what keeps their
+            // handles apart.
+            supersessions: crate::infra::supersession::SupersessionService::new(
+                db.clone(),
+                Arc::clone(&catalog_version_registry),
+            ),
             // The window `POST`'s at-most-once gate (D-191), under the **same** TTL the
             // authoring plane's claims expire on: the expiry is a deployment knob about
             // how long a client key is honoured, and two windows for it would mean one
@@ -736,6 +743,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::windows::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::supersessions::router(
                 Arc::clone(&rt.governance_api),
                 openapi,
             ))

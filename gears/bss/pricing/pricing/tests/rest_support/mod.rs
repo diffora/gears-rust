@@ -371,6 +371,10 @@ impl Harness {
             prices: PriceRepo::new(db.clone()),
             approvals: ApprovalService::new(db.clone()),
             windows: WindowService::new(db.clone(), Arc::clone(&registry) as Arc<_>),
+            supersessions: bss_pricing::infra::supersession::SupersessionService::new(
+                db.clone(),
+                Arc::clone(&registry) as Arc<_>,
+            ),
             publish: PublishService::new(
                 db.clone(),
                 &LimitsConfig::default(),
@@ -436,6 +440,10 @@ impl Harness {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::windows::router(
+                Arc::clone(&self.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::supersessions::router(
                 Arc::clone(&self.governance),
                 &openapi,
             ))

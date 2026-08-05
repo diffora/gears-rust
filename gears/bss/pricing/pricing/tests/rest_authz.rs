@@ -38,6 +38,7 @@ use bss_pricing::api::rest::frontier::FRONTIER;
 use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::api::rest::windows::{
     PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
@@ -187,6 +188,19 @@ fn census() -> Vec<Route> {
         Route {
             method: "DELETE",
             path: PRICE_WINDOW,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        // The supersession unit (D-88). **`plan x write`, not `plan x publish`** — S5's
+        // endpoint map puts it there beside the cutover, and the reason is the same one
+        // the window mutations rest on: what `publish` guards is the *entrance*, and a
+        // supersession that commits does so under an approval this route does not grant
+        // itself. Gating it on `publish` would deny it to `ProductManager`, whom the role
+        // matrix does grant `plan x write`.
+        Route {
+            method: "POST",
+            path: PLAN_SUPERSESSIONS,
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
@@ -385,6 +399,19 @@ fn drive(
             })),
             vec![("idempotency-key", key)],
         ),
+        // The supersession body is parsed before the gate for `schedule_window`'s
+        // reason, so a request without one would never reach the PDP this suite is
+        // about. It carries **no** idempotency header: S5's column for this surface is
+        // the act's own identity, not a client key.
+        ("POST", PLAN_SUPERSESSIONS) => (
+            Some(serde_json::json!({
+                "predecessor_price_id": seeded.price.to_string(),
+                "changeover": "2099-08-20T00:00:00Z",
+                "successor": { "model_kind": "flat", "amount_minor": 100 },
+                "reason_code": "authz-probe"
+            })),
+            vec![],
+        ),
         ("PATCH", PRICE_WINDOW) => (
             Some(serde_json::json!({ "effective_to": "2099-06-01T00:00:00Z" })),
             vec![("if-match", "\"0\"")],
@@ -454,6 +481,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::windows::router(
+                Arc::clone(&harness.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::supersessions::router(
                 Arc::clone(&harness.governance),
                 &openapi,
             ))
