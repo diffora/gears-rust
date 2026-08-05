@@ -744,10 +744,15 @@ fn validated_draft_rows(shape: &PlanShape) -> Vec<(Uuid, RowVersion)> {
 /// publish that never happened — which is the outcome the request's position was
 /// chosen to avoid in the first place.
 ///
+/// **`pub(crate)` for a second caller**, `infra::supersession`: a plan whose current
+/// revision can never be superseded takes no *successor row* either, and the refusal
+/// is permanent, so that unit hoists it ahead of its own registry request for exactly
+/// the reason this one does.
+///
 /// # Errors
 /// [`DomainError::PlanRetiredNoSuccessor`] when the plan's current revision
 /// cannot flip `superseded`; [`DomainError::Internal`] on a storage failure.
-async fn refuse_unpublishable_predecessor(
+pub(crate) async fn refuse_unpublishable_predecessor(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,

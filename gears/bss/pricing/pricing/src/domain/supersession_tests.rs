@@ -354,7 +354,9 @@ fn a_cancelled_window_after_the_changeover_does_not_collide_with_the_successor()
 
 use super::{SupersessionPlan, plan_supersession};
 use crate::domain::money::MinorAmount;
-use crate::domain::price_row::{BillingGranularity, ModelKind, PriceRow, TierBand};
+use crate::domain::price_row::{
+    BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
+};
 use crate::domain::scope_key::ChargeKind;
 
 /// A tiered usage predecessor — the shape with unit fields for the guard to have
@@ -368,6 +370,14 @@ fn usage_row(amount: i64, granularity: BillingGranularity) -> PriceRow {
     row.meter = Some("api_calls".to_owned());
     "region:eu".clone_into(&mut row.dimension_key);
     row.billing_granularity = Some(granularity);
+    // **A reset window, because `plan_supersession` now runs the row-local set too.**
+    // These fixtures were built for the unit *guard*, which compares two rows and has no
+    // opinion about whether either is publishable — so they carried only the fields the
+    // guard reads. `inst-su-compose` clause (a) says the successor is judged by the S3
+    // rules as well, and `inst-tb-window` is one of them: a tiered usage row without a
+    // reset window has a counter that never resets. The fixtures reddening when that set
+    // was wired in is the rule working, not the fixtures going stale (2026-08-06).
+    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
     row
 }
 

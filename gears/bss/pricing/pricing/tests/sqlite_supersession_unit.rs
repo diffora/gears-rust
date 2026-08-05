@@ -8,12 +8,18 @@
 //! one. What is here is the half above it, and every property of it is about
 //! **sequence** rather than about a store:
 //!
-//! * the successor draft is staged **before** the unit is opened, because the door
-//!   that stages it voids every `submitted` unit of the plan — so the reverse order
-//!   destroys the unit being composed and answers 202 over it;
+//! * the successor draft is staged **before** the unit is opened, because the unit's
+//!   content pin covers the plan's `draft` rows — so a pin taken first is a pin over a
+//!   world without the row under review, and no reviewer can ever approve it. (This
+//!   file first said the reason was that the door "voids every `submitted` unit of the
+//!   plan". That is **false** for this unit — `void_pending_for_plan` filters
+//!   `subject_kind = 'plan_revision'` and a supersession unit is a `price_unit` — and
+//!   the false version survived here for one commit *after* the correction landed
+//!   elsewhere, which is the stale-correction failure this file's own §5 warns about.)
 //! * the *same act arriving twice* is answered with the same unit
 //!   (`inst-su-api`'s idempotency per `(planId, scope key, changeover instant)`), and
-//!   that lookup has to happen **before** the staging for the same reason;
+//!   that lookup happens **before the evaluator is asked**, so a threshold raised
+//!   between the two calls cannot make an act under review commit on one principal;
 //! * every **permanent** refusal is answered before the `CatalogVersion` request
 //!   (D-156), so a request no retry can ever complete strands no pending handle;
 //! * the two events `inst-su-return` names are enqueued and the **third is not** —
@@ -41,7 +47,7 @@ use bss_pricing::domain::audit::{AuditStamp, AuditSubjectKind};
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::events::CatalogEvent;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::materiality::MaterialityVerdict;
+use bss_pricing::domain::materiality::{MaterialityReason, MaterialityVerdict};
 use bss_pricing::domain::money::MinorAmount;
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::scope_key::{Cohort, PlanId, PriceEligibility, ScopeKey};
@@ -176,8 +182,14 @@ async fn rows_on_key(h: &Harness, key: &ScopeKey) -> Vec<price::Model> {
         .await
         .expect("read the price rows")
         .into_iter()
+        // The **whole** key, not `(currency, region)`: this suite seeds a usage key that
+        // shares both with the recurring one, and a coarser filter counted the other
+        // key's rows as this one's.
         .filter(|row| {
-            row.currency == key.currency().as_str() && row.region == key.region().as_str()
+            row.currency == key.currency().as_str()
+                && row.region == key.region().as_str()
+                && row.charge_kind == key.charge_kind().as_str()
+                && row.price_eligibility == key.price_eligibility().as_str()
         })
         .collect()
 }
@@ -373,9 +385,9 @@ async fn a_material_supersession_stages_its_successor_and_opens_a_unit() {
 #[tokio::test]
 async fn the_same_act_arriving_twice_is_answered_with_the_same_unit() {
     // `inst-su-api`: idempotent per `(planId, scope key, changeover instant)`. The
-    // second call must find the unit rather than refuse it — and the lookup has to
-    // run **before** the staging, because the door voids every `submitted` unit of
-    // the plan. A staging that ran first would destroy the unit this answer names.
+    // second call must find the unit rather than refuse it, and the lookup runs before
+    // the evaluator — so a threshold policy raised between the two calls cannot turn an
+    // act under review into one that commits on a single principal.
     let h = Harness::new().await;
     let (plan_id, seeded) = published_plan(&h).await;
     let key = key_of(plan_id, &seeded);
@@ -521,11 +533,15 @@ async fn an_approved_unit_commits_all_four_writes_and_announces_two_events() {
             .as_str(),
         "the plan subject D-99/D-128 project, not a subject of this act's own"
     );
+    // Against the **seed's** revision, not the receipt's. Both `mine.subject_revision`
+    // and `receipt.revision` are `context.revision`, so comparing them can see the two
+    // copies diverge and cannot see the revision replaced (review, 2026-08-06).
     assert_eq!(
         u64::try_from(mine.subject_revision.expect("a plan subject carries one"))
             .expect("non-negative"),
-        receipt.revision
+        seeded.revision
     );
+    assert_eq!(receipt.revision, seeded.revision);
 
     // `inst-su-return`'s two events, and **only** those two.
     assert_eq!(
@@ -772,10 +788,19 @@ async fn the_pending_answer_carries_the_evaluators_own_reason() {
     let outcome = supersede(&h, request_of(&key, 12_000), SUBMITTER)
         .await
         .expect("the unit opens");
-    assert!(matches!(
-        pending(&outcome).verdict,
-        MaterialityVerdict::Material { .. }
-    ));
+    // **The evaluator's own reason, not merely "material"** — the first version of this
+    // case asserted `Material { .. }`, which every sibling produces and which a
+    // hard-coded constant in place of the carried verdict would also satisfy (review,
+    // 2026-08-06). With no policy configured the answer is `inst-mat-failsafe`'s, and
+    // naming it is what makes the value a carried one.
+    assert_eq!(
+        pending(&outcome)
+            .verdict
+            .as_ref()
+            .expect("a freshly opened unit carries the evaluation that opened it")
+            .reason(),
+        Some(MaterialityReason::NoConfiguredThreshold)
+    );
     assert_eq!(
         pending(&outcome).shortened_window_id,
         common::coverage_window_id(seeded.price_id),
@@ -844,26 +869,446 @@ async fn the_stored_verdict_names_the_row_that_will_publish() {
     let MaterialityVerdict::Material {
         tripped: Some(tripped),
         ..
-    } = &pending(&first).verdict
+    } = pending(&first)
+        .verdict
+        .as_ref()
+        .expect("the opening call evaluates")
     else {
         panic!("got: {:?}", pending(&first).verdict);
     };
     assert_eq!(tripped.price_id, staged_id);
 
-    // And the retry, whose request carries a **different** minted id, still names the
-    // row that is going to publish.
+    // And the retry, whose request carries a **different** minted id, is a replay: it
+    // evaluates nothing and carries no verdict of its own. The authority is the one the
+    // unit **stored**, so that is what this half reads — which is also the assertion that
+    // the two documents cannot disagree, since there is now only one.
     let second = supersede(&h, request_of(&key, 12_000), SUBMITTER)
         .await
         .expect("the retry is answered");
-    let MaterialityVerdict::Material {
-        tripped: Some(tripped),
-        ..
-    } = &pending(&second).verdict
-    else {
-        panic!("got: {:?}", pending(&second).verdict);
-    };
+    assert!(
+        pending(&second).verdict.is_none(),
+        "a replay re-mints no verdict"
+    );
     assert_eq!(
-        tripped.price_id, staged_id,
-        "never the id this request minted and threw away"
+        pending(&second).approval.materiality["tripped"]["price_id"],
+        serde_json::json!(staged_id),
+        "the stored verdict names the row that is going to publish, never the id this \
+         request minted and threw away"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The successor is judged and compared **as the store will hold it** — the two
+// Criticals of the 2026-08-06 review, and both had one root cause.
+// ---------------------------------------------------------------------------
+
+/// A **usage** key of the seeded plan, and a published `graduated` row on it.
+///
+/// Every other fixture here is `recurring`, which is exactly why the two defects below
+/// were invisible: `api::rest::prices::content_of` fills `charge_kind` with a
+/// `Recurring` placeholder — `PriceContentView` has no such field — and the door rewrites
+/// it from the key. On a recurring key the placeholder happens to be right.
+async fn usage_key_with_published_row(
+    h: &Harness,
+    plan_id: PlanId,
+    seeded: &Publishable,
+) -> ScopeKey {
+    let key = ScopeKey::new(
+        plan_id,
+        bss_pricing::domain::money::CurrencyCode::new("EUR").expect("three letters"),
+        bss_pricing::domain::scope_key::Region::new("eu").expect("non-blank"),
+        seeded.phase,
+        PriceEligibility::NewSubscriptionsOnly,
+        bss_pricing::domain::scope_key::ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("new_subscriptions_only pairs with cohort none");
+
+    let price_id = Uuid::now_v7();
+    h.state
+        .prices
+        .create_draft(
+            &h.scope(),
+            h.tenant,
+            bss_pricing::infra::storage::repo::NewPriceDraft {
+                price_id,
+                scope_key: key.clone(),
+                content: graduated_usage(500),
+                created_by: SUBMITTER,
+                created_at_utc: now(),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the usage row");
+    let conn = h.db.conn().expect("conn");
+    common::schedule_coverage_window(&conn, &h.scope(), h.tenant, price_id, stamp_of(SUBMITTER))
+        .await;
+    h.publish_price(plan_id.get(), price_id).await;
+    key
+}
+
+/// A `graduated` usage row the S3 rule set passes: a meter, a quantization, a reset
+/// window and a band set whose top band is open.
+///
+/// Modelled on `domain::rules_tests::graduated_usage`, which is what `price_row_rules`
+/// is exercised against — so a row this suite calls legal is a row that set calls legal.
+fn graduated_usage(unit_price: i64) -> PriceContent {
+    use bss_pricing::domain::price_row::{
+        BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
+    };
+    let mut row = PriceRow::new(
+        bss_pricing::domain::scope_key::ChargeKind::Usage,
+        Some(ModelKind::Graduated),
+    );
+    row.meter = Some("api_calls".to_owned());
+    row.billing_granularity = Some(BillingGranularity::WholeUnit);
+    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+    row.bands = vec![TierBand::open(
+        0,
+        MinorAmount::new(unit_price).expect("non-negative"),
+    )];
+    PriceContent {
+        row,
+        tax_inclusive: false,
+        billing_timing: Some("advance".to_owned()),
+        rounding_policy_ref: Some("half_up".to_owned()),
+        grandfather_until: None,
+        supersedes_price_id: None,
+    }
+}
+
+fn usage_request(key: &ScopeKey, amount: i64) -> SupersessionRequest {
+    SupersessionRequest {
+        key: key.clone(),
+        changeover: changeover(),
+        successor: graduated_usage(amount),
+        successor_price_id: Uuid::now_v7(),
+        successor_window_id: Uuid::now_v7(),
+        reason_code: "repricing".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn a_usage_successor_that_moves_a_unit_field_is_refused_by_the_guard() {
+    // **The Critical.** `SupersessionUnitGuard` gates on `successor.is_usage()`, and the
+    // successor it was handed came off the wire with `charge_kind = Recurring` — the
+    // placeholder `content_of` fills because `PriceContentView` has no such field. So on
+    // a usage key the D-82/D-98/D-122/D-127/D-129 guard returned without evaluating, and
+    // a successor could move `meter` under a continued tier counter: an hours-denominated
+    // `Q` accumulated against one meter, re-read off another, mid-window. The guard was
+    // live, correct, and unreachable through the one surface that has it.
+    //
+    // Every fixture in this file was `recurring`, which is why the suite was green.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = usage_key_with_published_row(&h, plan_id, &seeded).await;
+
+    let mut request = usage_request(&key, 600);
+    request.successor.row.meter = Some("api_bytes".to_owned());
+
+    let refused = supersede(&h, request, SUBMITTER)
+        .await
+        .expect_err("the tier counter continues across a supersession");
+    let DomainError::ValidationFailed(report) = refused else {
+        panic!("got: {refused:?}");
+    };
+    let codes: Vec<&str> = report
+        .violations
+        .iter()
+        .map(|violation| violation.code.as_str())
+        .collect();
+    assert!(
+        codes.contains(&"SUPERSESSION_UNIT_MISMATCH"),
+        "the unit guard must be what answered: {codes:?}"
+    );
+    assert_eq!(
+        rows_on_key(&h, &key).await.len(),
+        1,
+        "and nothing was staged for a successor the guard refuses"
+    );
+}
+
+#[tokio::test]
+async fn a_usage_key_commits_after_its_approve_rather_than_refusing_itself_forever() {
+    // **The second Critical, from the same root cause.** `refuse_divergent_successor`
+    // compares the request against the **stored** successor, and the door rewrites
+    // `charge_kind` from the key and sorts the bands. Un-normalized, the two sides
+    // differed in `charge_kind` on every non-recurring key — so a legitimately approved
+    // unit was refused `DUPLICATE_SCOPE_KEY` on its committing call, permanently, with a
+    // remedy sentence ("re-send that content") no caller could act on: the wire cannot
+    // spell `usage`.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = usage_key_with_published_row(&h, plan_id, &seeded).await;
+
+    let opened = supersede(&h, usage_request(&key, 700), SUBMITTER)
+        .await
+        .expect("the unit opens on a usage key");
+    approve(&h, pending(&opened).approval.approval_id).await;
+
+    let committed = supersede(&h, usage_request(&key, 700), SUBMITTER)
+        .await
+        .expect("and the approved call commits rather than meeting its own guard");
+    assert_eq!(
+        state_of(&h, receipt(&committed).successor_price_id).await,
+        LifecycleState::Published.as_str()
+    );
+}
+
+#[tokio::test]
+async fn a_successor_the_row_rules_refuse_never_reaches_the_published_plane() {
+    // `inst-su-compose` clause (a): "the successor **draft** row on the same canonical
+    // scope key (**S3 rules apply** — incl. the D-82/D-98 unit guard)". Only the guard
+    // was running. `price_row_rules` has one other caller, `run_publish_rules`, and a
+    // supersession successor never reaches it — D-195's exclusion rule drops a draft on
+    // an occupied key from the plan-revision unit's set. So the row that publishes
+    // through this unit was judged by **no** row-local rule: a `graduated` successor with
+    // an empty band set had nothing to refuse it, no CHECK requires bands for a tiered
+    // kind, and with zero band rows no band trigger fires.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = usage_key_with_published_row(&h, plan_id, &seeded).await;
+
+    let mut request = usage_request(&key, 600);
+    request.successor.row.bands.clear();
+    let refused = supersede(&h, request, SUBMITTER)
+        .await
+        .expect_err("a tiered row with no bands prices nothing");
+    assert!(
+        matches!(refused, DomainError::ValidationFailed(_)),
+        "got: {refused:?}"
+    );
+    assert_eq!(rows_on_key(&h, &key).await.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// The two-person control's own arms — the Highs.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_threshold_raised_after_the_submit_does_not_let_the_act_commit_alone() {
+    // **A two-person bypass.** Materiality used to be evaluated first and the unit looked
+    // up only on the material branch. A threshold policy raised between the submit and
+    // the commit therefore made the act auto-publishable at the second call, and it
+    // committed **on one principal** — leaving the unit that had been opened over it
+    // `submitted` forever, asking a reviewer to decide an act that had already happened.
+    // `evaluate`'s own contract is that materiality is decided *once, at submit*.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    let opened = supersede(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("no policy configured, so the fail-safe opens a unit");
+    let unit = pending(&opened).approval.approval_id;
+
+    // A bar the delta cannot reach, approved by two principals as a governance act of
+    // its own — it says nothing about this key.
+    rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
+
+    let replayed = supersede(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the act is still under review");
+    assert_eq!(
+        pending(&replayed).approval.approval_id,
+        unit,
+        "a unit under review holds the act whatever a later policy says about it"
+    );
+    assert_eq!(
+        state_of(&h, seeded.price_id).await,
+        LifecycleState::Published.as_str(),
+        "and one principal did not commit it"
+    );
+    assert!(
+        pending(&replayed).verdict.is_none(),
+        "a replay evaluates nothing, so it carries no second materiality document"
+    );
+}
+
+#[tokio::test]
+async fn an_immaterial_supersession_is_refused_while_another_unit_holds_the_key() {
+    // `inst-co-single-pending` on the **committing** arm, which it did not have. The
+    // window plane asks this unconditionally and before anything is touched; this path
+    // asked it only inside `submit_supersession_on`, i.e. on the controlled arm — so an
+    // immaterial supersession committed straight through a key another unit was
+    // reviewing, moving the very interval set that reviewer had been shown.
+    let h = Harness::new().await;
+    rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    // Somebody else's unit holds this key. Opened through `submit_window_mutation_on`
+    // directly rather than by driving a mutation: every act that would open one here is
+    // refused first by a rule of its own — a cancel of the key's only window is
+    // `WINDOW_TRAILING_VOID`, and a lengthening under the configured threshold is
+    // auto-publishable and opens nothing. What this case is about is the supersession's
+    // behaviour **under** a held key, not how the holder came to exist, and
+    // `sqlite_window_service.rs` seeds holders the same way.
+    let conn = h.db.conn().expect("conn");
+    let holder = bss_pricing::infra::approval::ApprovalService::submit_window_mutation_on(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        common::coverage_window_id(seeded.price_id),
+        seeded.price_id,
+        Uuid::now_v7(),
+        serde_json::json!({ "reason": "alwaysMaterialTrigger" }),
+        stamp_of(REVIEWER),
+        // A well-formed subject: `subject_aggregate` parses `<plan_id>/<rest>` and a
+        // corrupt one is refused before the register is written. The shape is
+        // `infra::window::window_unit_ref`'s.
+        &format!(
+            "{plan_id}/{}/adjust/0/open/open",
+            common::coverage_window_id(seeded.price_id)
+        ),
+    )
+    .await
+    .expect("the window unit opens and registers the key");
+    assert_eq!(
+        approval_repo::held_keys_of(&conn, &h.scope(), h.tenant, holder.approval_id)
+            .await
+            .expect("read the register"),
+        vec![key.to_string()]
+    );
+
+    let refused = supersede(&h, request_of(&key, 10_000), SUBMITTER)
+        .await
+        .expect_err("a key under review is not a key to reprice through");
+    assert!(
+        matches!(refused, DomainError::PendingChangeUnitExists(_)),
+        "got: {refused:?}"
+    );
+    assert_eq!(
+        state_of(&h, seeded.price_id).await,
+        LifecycleState::Published.as_str()
+    );
+}
+
+#[tokio::test]
+async fn a_grandfathering_horizon_is_refused_from_the_request_alone() {
+    // A **fourth** permanent refusal that used to live inside the staging door, i.e.
+    // after the registry request: `check_grandfather_horizon` refuses a horizon on every
+    // class but `existing_grandfathered`, and step 0 has already refused that class
+    // outright — so no value of this field can ever publish through a supersession, and
+    // the refusal belongs where it needs no world at all.
+    let h = Harness::new().await;
+    rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    let mut request = request_of(&key, 10_000);
+    request.successor.grandfather_until = Some(changeover());
+    let refused = supersede(&h, request, SUBMITTER)
+        .await
+        .expect_err("a supersession cannot author a horizon");
+    assert!(
+        matches!(refused, DomainError::GrandfatherUntilForbidden(_)),
+        "got: {refused:?}"
+    );
+    assert!(
+        rest_support::pending_version_refs(&h).await.is_empty(),
+        "and no handle was requested for an act no retry can complete"
+    );
+    assert_eq!(rows_on_key(&h, &key).await.len(), 1);
+}
+
+#[tokio::test]
+async fn the_submit_floor_is_the_lenient_one_and_the_commit_floor_is_not() {
+    // The positive twin the floor case lacked. A changeover two minutes out is **legal at
+    // submit** — `inst-su-instant`'s whole point is that a proposal is not held to the
+    // batching delay, since it is going to be perfectly legal by the time a second person
+    // approves it — and illegal at commit. Without this case, collapsing step 2's
+    // `Submit` into `Commit` left the suite green.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    let mut request = request_of(&key, 12_000);
+    request.changeover = now() + chrono::Duration::minutes(2);
+    let opened = supersede(&h, request, SUBMITTER)
+        .await
+        .expect("two minutes out is a legal proposal");
+    assert!(
+        pending(&opened)
+            .approval
+            .subject_ref
+            .contains("/supersession/"),
+        "the unit opened over it"
+    );
+}
+
+#[tokio::test]
+async fn a_replay_after_the_commit_is_refused_rather_than_replayed() {
+    // The divergence `api::rest::supersessions` reports, given an executable statement.
+    // After the commit the key's current row is the successor and its own window begins
+    // exactly at the changeover, so `compose_windows`' begins-at-the-changeover arm
+    // answers: shortening a window to its own start leaves nothing for a successor to
+    // take over from. Legible and safe — nothing is written — but it is not the replay
+    // S5's idempotency column reads as, which is why the divergence is reported.
+    let h = Harness::new().await;
+    rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    supersede(&h, request_of(&key, 10_000), SUBMITTER)
+        .await
+        .expect("the first call commits");
+    let refused = supersede(&h, request_of(&key, 10_000), SUBMITTER)
+        .await
+        .expect_err("the act has already happened");
+    let DomainError::LifecycleForbidden(message) = refused else {
+        panic!("got: {refused:?}");
+    };
+    assert!(
+        message.contains("the changeover itself"),
+        "the successor's own window now begins there: {message}"
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_unit_leaves_the_act_re_submittable_and_nothing_committed() {
+    // The fourth outcome of the controlled arm, which nothing pinned: `submitted` is not
+    // the only state a unit leaves. A reject is terminal **for the record** — §4's machine
+    // — and the register row follows its parent out of `submitted`, so the key frees and
+    // the next identical request opens a **fresh** unit rather than being refused or
+    // committing. That is this gear's general rule for every unit kind; the case exists
+    // because "the reviewer said no" and "the act may be re-asked" are easy to conflate.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+
+    let opened = supersede(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the unit opens");
+    let first = pending(&opened).approval.approval_id;
+    h.governance
+        .approvals
+        .decide(
+            &h.scope(),
+            h.tenant,
+            DecideRequest {
+                approval_id: first,
+                decision: DecisionBy::Reject(REVIEWER),
+                reason: Some("not this quarter".to_owned()),
+                approver_regions: RegionGrant::Untransported,
+                stamp: stamp_of(REVIEWER),
+            },
+        )
+        .await
+        .expect("the reviewer refuses it");
+
+    let reopened = supersede(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("a refused act may be asked again");
+    assert_ne!(
+        pending(&reopened).approval.approval_id,
+        first,
+        "a fresh unit, because a decided record is immutable"
+    );
+    assert_eq!(
+        state_of(&h, seeded.price_id).await,
+        LifecycleState::Published.as_str(),
+        "and the rejection committed nothing"
     );
 }

@@ -374,7 +374,7 @@ pub fn supersession_unit_ref(
 
 /// One supersession request, as the surface hands it over (`inst-su-api`).
 ///
-/// A struct rather than nine arguments, and the exception to the note every other
+/// A struct rather than six more arguments, and the exception to the note every other
 /// service in this crate carries about not naming a request type in `infra`: those
 /// notes are about `api::rest` **DTOs**, which carry wire spellings and a
 /// `Deserialize`. This is domain values only — a canonical scope key, an instant, a
@@ -451,6 +451,15 @@ pub struct SupersessionReceipt {
     /// reason: there is no `GET` on a window, so a caller's next act on the
     /// predecessor's window has no other producer of the tag it must assert.
     pub shortened_mutation_seq: u64,
+    /// The act sequence the **successor's** window stands at, which nothing else in the
+    /// gear can answer: this act created that window, and there is no `GET` on one.
+    pub successor_mutation_seq: u64,
+    /// Why the act was material, or that it was not — carried on the committed arm as
+    /// well, which is `PublishReceipt`'s decision one surface over.
+    pub verdict: Option<MaterialityVerdict>,
+    /// The unit this commit ran under, `None` exactly when no second principal was
+    /// required. It is what tells an auto-publishable commit from an approved one.
+    pub authorization: Option<ApprovalRecord>,
 }
 
 /// The facts a caller needs when a second principal is required.
@@ -476,9 +485,16 @@ pub struct SupersessionPending {
     pub changeover: DateTime<Utc>,
     /// The window whose end would move to the changeover.
     pub shortened_window_id: Uuid,
-    /// Why a second principal is required, carried as a value so the unit's stored
-    /// verdict and this answer cannot disagree.
-    pub verdict: MaterialityVerdict,
+    /// Why a second principal is required — the evaluator's own answer, carried rather
+    /// than re-minted.
+    ///
+    /// **`None` on the idempotent replay**, and that is the fix rather than an omission:
+    /// a replay opens no unit and evaluates nothing, so the authority is the verdict the
+    /// unit already **stored**, which rides `approval`. Carrying a freshly computed one
+    /// there let a single 202 assert two materiality reasons for one act — this call's
+    /// at the top level and the record's inside it — which is exactly the disagreement
+    /// this field's own doc claimed it prevented (review, 2026-08-06).
+    pub verdict: Option<MaterialityVerdict>,
     /// The unit now reviewing the act, opened inside the same transaction that
     /// declined to commit it.
     pub approval: ApprovalRecord,
@@ -705,8 +721,42 @@ pub async fn supersede_in(
     //    one spelling both use.
     price_repo::refuse_unsupersedable_class(&request.key).map_err(|e| repo_failure(&e))?;
 
+    // 0a. A grandfathering horizon, refused from the request alone. It is **always**
+    //     wrong on this route and it was reaching the store's own check inside the
+    //     staging door — i.e. after the registry request, as a fourth permanent refusal
+    //     the step list did not know it had (review, 2026-08-06). Step 0 has just
+    //     guaranteed the key is not `existing_grandfathered`, and
+    //     `check_grandfather_horizon` refuses a horizon on every other class, so no
+    //     value of this field can ever publish through a supersession. A horizon is
+    //     tightened through its own surface.
+    if request.successor.grandfather_until.is_some() {
+        return Err(DomainError::GrandfatherUntilForbidden(format!(
+            "{}: a supersession cannot author a grandfathering horizon. Only an \
+             existing_grandfathered generation may carry one, and such a generation may not \
+             be superseded at all; tighten the horizon through its own surface instead",
+            request.key
+        )));
+    }
+
     // 1. Every fact the judgement needs, read inside the transaction that writes.
     let context = read_unit_context(txn, scope, tenant_id, &request.key, now).await?;
+
+    // 1a. A plan whose current revision can never be superseded takes no successor row
+    //     either — `PublishService::commit`'s own hoisted refusal, for the same reason
+    //     it is hoisted there: it is **permanent**, so a handle requested for it would
+    //     stand pending forever.
+    crate::infra::publish::refuse_unpublishable_predecessor(txn, scope, tenant_id, context.plan_id)
+        .await?;
+
+    // The successor **as the store will hold it**, and this is not a convenience.
+    // `api::rest::prices::content_of` cannot fill `charge_kind` — `PriceContentView` has
+    // no such field — so the wire's row carries a `Recurring` placeholder, and the door
+    // rewrites it from the key along with the band order. Judging or comparing the wire's
+    // row therefore judged a row that does not exist: on a **usage** key the unit guard
+    // saw `Recurring`, answered `is_usage() == false`, and returned without evaluating
+    // (review, 2026-08-06 — Critical). `price_repo::authored_content` is the one spelling
+    // of those two rewrites and the door applies it too.
+    let successor_content = requested_content(request, &context);
 
     // The id the act is really about: the **staged** draft's when one stands, and the
     // one the surface minted only when this call is what stages it. See
@@ -716,79 +766,117 @@ pub async fn supersede_in(
         .as_ref()
         .map_or(request.successor_price_id, |row| row.price_id);
 
-    // 2. `inst-su-compose` at the floor **every** call must clear, over the content the
-    //    caller submitted. The commit floor is stricter and is applied at step 5; this
-    //    run is what refuses a request nobody should be asked to review.
+    // 2. `inst-su-compose` at the floor **every** call must clear, over the successor as
+    //    authored. The commit floor is stricter and is applied at step 6; this run is
+    //    what refuses a request nobody should be asked to review.
     let composed = plan_supersession(
         &context.predecessor.row,
-        &request.successor.row,
+        &successor_content.row,
         &context.plane,
         request.changeover,
         now,
         ChangeoverMoment::Submit,
     )?;
 
-    // 3. The standard per-currency price-delta evaluation `inst-su-commit` names,
-    //    against the policy in force **at the act's own instant** (D-188) and read
-    //    through the transaction that is about to write.
-    let verdict = materiality::evaluate(
-        &ChangeSet::of_records([successor_candidate(
-            request,
-            &context,
-            successor_price_id,
-            stamp,
-        )]),
-        crate::infra::threshold::effective_policy_at(txn, scope, tenant_id, now)
-            .await?
-            .as_ref(),
-        context.baseline().as_ref(),
-    );
     let subject_ref = supersession_unit_ref(context.plan_id, &request.key, request.changeover);
 
-    // 4. The two-person control, before anything is written.
-    let authorization = if verdict.is_material() {
-        match crate::infra::approval::authorizing_unit(
-            txn,
-            scope,
-            tenant_id,
-            &context.shape,
-            &subject_ref,
-        )
-        .await?
-        {
-            Some(record) => Some(record),
-            None => {
-                return submitted_for_approval(
-                    txn,
-                    scope,
-                    tenant_id,
-                    &context,
-                    request,
-                    &composed,
-                    &subject_ref,
-                    verdict,
-                    verdict_json,
-                    stamp,
-                )
-                .await;
+    // 3. **An approved unit decides before the evaluator is asked**, and that order is a
+    //    fix rather than a preference (review, 2026-08-06). Materiality used to be
+    //    evaluated first and the unit looked up only on the material branch — so a
+    //    threshold policy raised between the submit and the commit made the act
+    //    auto-publishable at the second call and it **committed on one principal**,
+    //    leaving the unit that had been opened over it `submitted` forever. `evaluate`'s
+    //    own contract says materiality is decided *once, at submit*; consulting the
+    //    unit first is how a second call obeys that.
+    let authorization = crate::infra::approval::authorizing_unit(
+        txn,
+        scope,
+        tenant_id,
+        &context.shape,
+        &subject_ref,
+    )
+    .await?;
+
+    // The evaluator's answer, on the one arm that asks it. `None` on the approved arm,
+    // where the authority is the verdict the **unit** stored and the record carries it —
+    // the same division `ApprovalView` makes on the publish mount.
+    let verdict = if authorization.is_none() {
+        // 4. This act's **own** pending unit — `inst-su-api`'s idempotency, and the
+        //    second half of the fix above: a unit under review holds the act whatever a
+        //    later policy says about it. Answered before anything is staged, because the
+        //    answer is that nothing more should be.
+        if let Some(staged) = context.staged.as_ref() {
+            refuse_divergent_successor(staged, &successor_content)?;
+            if let Some(held) =
+                approval_repo::find_pending_for_subject(txn, scope, tenant_id, &subject_ref)
+                    .await
+                    .map_err(|e| repo_failure(&e))?
+            {
+                return Ok(pending_answer(&context, request, &composed, None, held));
             }
         }
+
+        // 5. The evaluator, and only now: no unit of this act exists, so its verdict is
+        //    the thing that decides. Against the policy in force **at the act's own
+        //    instant** (D-188), read through the transaction that is about to write.
+        let verdict = materiality::evaluate(
+            &ChangeSet::of_records([successor_candidate(
+                &successor_content,
+                request,
+                successor_price_id,
+                stamp,
+            )]),
+            crate::infra::threshold::effective_policy_at(txn, scope, tenant_id, now)
+                .await?
+                .as_ref(),
+            context.baseline().as_ref(),
+        );
+        if verdict.is_material() {
+            return submitted_for_approval(
+                txn,
+                scope,
+                tenant_id,
+                &context,
+                request,
+                &successor_content,
+                &composed,
+                verdict,
+                verdict_json,
+                stamp,
+            )
+            .await;
+        }
+        Some(verdict)
     } else {
         None
     };
 
-    // 5. The two remaining permanent refusals, both ahead of the registry request.
+    // 6. `inst-co-single-pending` on the committing arm, which it did not have. The
+    //    window plane asks this **unconditionally and before anything is touched**
+    //    (`infra::window`'s step 2) and this path asked it only inside
+    //    `submit_supersession_on`, i.e. on the controlled arm — so an *immaterial*
+    //    supersession committed straight through a key another unit was reviewing,
+    //    moving the very interval set that reviewer had been shown (review, 2026-08-06).
+    //    This unit's own approved record does not hold the key: the register row follows
+    //    its parent out of `submitted` through a trigger, so `approved` frees it.
+    crate::infra::approval::refuse_held_key(
+        txn,
+        scope,
+        tenant_id,
+        &std::collections::BTreeSet::from([request.key.to_string()]),
+    )
+    .await?;
+
+    // 7. The remaining permanent refusals, both ahead of the registry request.
     if let Some(staged) = context.staged.as_ref() {
-        refuse_divergent_successor(staged, request, context.predecessor.price_id)?;
+        refuse_divergent_successor(staged, &successor_content)?;
     }
-    // `inst-su-compose` re-validated at commit, at the batching-delay floor. Over the
-    // request's content, which the guard above has just proved is the **stored**
-    // successor's content when one is staged — so this judges the row that will publish
-    // without needing it in hand, and the staging can stay behind the registry request
-    // where D-156 puts every write.
+    // `inst-su-compose` re-validated at commit, at the batching-delay floor, over the
+    // successor as authored — which the guard above has just proved is the **stored**
+    // successor when one is staged.
     let plan = plan_supersession(
         &context.predecessor.row,
-        &request.successor.row,
+        &successor_content.row,
         &context.plane,
         request.changeover,
         now,
@@ -798,20 +886,27 @@ pub async fn supersede_in(
     let shorten_seq = shorten.mutation_seq;
     let shortened_window_id = shorten.window_id;
 
-    // 6. Addressability, fail closed, after re-validation and before the writes (D-156).
-    let pending = registry
-        .request_version(ctx, &unit_request_id(tenant_id, &subject_ref))
-        .await
-        .map_err(|e| registry_failure(&e))?;
-
-    // 7a. The successor draft, staged now if no earlier attempt did it. On the approved
-    //     path this is a no-op and the row the first call staged is what publishes.
+    // 8. The successor draft, staged now if no earlier attempt did it — and **before**
+    //    the registry request rather than after it. D-156 puts the version request
+    //    before "the writes", and the writes it means are the publish's: this insert is
+    //    `inst-su-compose` clause (a), the compose's own write, which the controlled arm
+    //    performs with no version requested at all. Keeping it after the request put
+    //    `prepare_draft`'s content validation — a value out of range, an unquantized
+    //    instant — on the far side of the handle, where a refusal no retry can pass
+    //    strands it forever (review, 2026-08-06).
     let successor = match context.staged.as_ref() {
         Some(staged) => staged.clone(),
         None => stage_successor(txn, scope, tenant_id, request, stamp).await?,
     };
 
-    // 7b. The four writes, in one order, in this transaction.
+    // 9. Addressability, fail closed, after every refusal and before the publish's own
+    //    writes (D-156).
+    let pending = registry
+        .request_version(ctx, &unit_request_id(tenant_id, &subject_ref))
+        .await
+        .map_err(|e| registry_failure(&e))?;
+
+    // 10. The four writes, in one order, in this transaction.
     let written = commit_supersession(
         txn,
         scope,
@@ -908,8 +1003,42 @@ pub async fn supersede_in(
             successor_window_id: request.successor_window_id,
             pending_version_ref: pending.pending_ref,
             shortened_mutation_seq: written.shortened.mutation_seq,
+            successor_mutation_seq: written.scheduled.mutation_seq,
+            verdict,
+            authorization,
         },
     )))
+}
+
+/// One `SubmittedForApproval` answer, built in one place.
+///
+/// Two arms produce one — the replay and the freshly-opened unit — and they differ in
+/// exactly one field, which is why they share a builder rather than a struct literal
+/// each: **the verdict is `None` on the replay**. It used to be the *freshly computed*
+/// one there, so a 202 could carry two materiality documents that disagree — this
+/// call's evaluation at the top level and the unit's stored one inside `approval` — over
+/// one act (review, 2026-08-06). On the replay the stored verdict is the only authority
+/// there is, and it already rides the record.
+fn pending_answer(
+    context: &UnitContext,
+    request: &SupersessionRequest,
+    composed: &SupersessionPlan,
+    verdict: Option<MaterialityVerdict>,
+    approval: ApprovalRecord,
+) -> SupersessionOutcome {
+    SupersessionOutcome::SubmittedForApproval(Box::new(SupersessionPending {
+        plan_id: context.plan_id,
+        revision: context.revision,
+        predecessor_price_id: context.predecessor.price_id,
+        successor_price_id: context
+            .staged
+            .as_ref()
+            .map_or(request.successor_price_id, |row| row.price_id),
+        changeover: request.changeover,
+        shortened_window_id: composed.windows.shorten.window_id,
+        verdict,
+        approval,
+    }))
 }
 
 /// The controlled arm: stage the successor if nothing has, open the unit, write nothing
@@ -932,27 +1061,27 @@ pub async fn supersede_in(
 /// that can be opened and never decided. That is the order's real ground, and
 /// `the_units_pin_covers_the_successor_it_stages` is the case that holds it.
 ///
-/// # The pending unit is looked up before the staging, which is `inst-su-api`
+/// # What this arm does **not** do, and the caller has already done
 ///
-/// The act is idempotent per `(planId, scope key, changeover instant)`, and this is
-/// where that is paid: the same act arriving twice is answered with the **same** unit
-/// rather than refused `PENDING_CHANGE_UNIT_EXISTS` for being its own duplicate.
-///
-/// The lookup is conditional on a staged draft existing, which is not belt-and-braces. A
-/// pending unit whose successor draft has been deleted underneath it pins content that no
-/// longer includes the row it is about, so re-staging and opening a fresh unit is the
-/// honest repair rather than reporting a review of a row that is gone.
+/// The idempotent replay (`inst-su-api`) is decided by [`supersede_in`] before this is
+/// reached, so arriving here means no unit of this act exists. An earlier shape looked
+/// for one here instead, and its doc claimed that a pending unit whose successor draft
+/// had been deleted would be repaired by re-staging and opening a fresh unit. **That was
+/// never what happened** (review, 2026-08-06): `submit_supersession_on` performs its own
+/// subject lookup and refuses `PENDING_CHANGE_UNIT_EXISTS`, rolling the staging back. The
+/// behaviour is unchanged and the claim is withdrawn — a unit whose draft was deleted is
+/// undecidable and has to be withdrawn by hand, which is the residue the register carries.
 ///
 /// # Errors
-/// [`DomainError::DuplicateScopeKey`] when a staged draft disagrees with the request;
-/// [`DomainError::PendingChangeUnitExists`] when a unit holds this key for another act;
-/// [`DomainError::Internal`] on a storage failure.
+/// [`DomainError::PendingChangeUnitExists`] when a unit holds this key — including this
+/// act's own, whose draft has been deleted; [`DomainError::Internal`] on a storage
+/// failure.
 #[allow(
     clippy::too_many_arguments,
     reason = "every value is one [`supersede_in`] already resolved and this arm must not resolve \
-              any of them a second time - the context, the request, the composition, the subject, \
-              the verdict, its renderer and the stamp. Extracted for readability of the ordering \
-              argument in its own doc, so the parameter list is that function's"
+              any of them a second time - the context, the request, the authored successor, the \
+              composition, the verdict, its renderer and the stamp. Extracted for readability of \
+              the ordering argument in its own doc, so the parameter list is that function's"
 )]
 async fn submitted_for_approval(
     runner: &impl DBRunner,
@@ -960,36 +1089,15 @@ async fn submitted_for_approval(
     tenant_id: Uuid,
     context: &UnitContext,
     request: &SupersessionRequest,
+    successor_content: &PriceContent,
     composed: &SupersessionPlan,
-    subject_ref: &str,
     verdict: MaterialityVerdict,
     verdict_json: VerdictJson,
     stamp: AuditStamp,
 ) -> Result<SupersessionOutcome, DomainError> {
-    let pending = |successor_price_id: Uuid, approval: ApprovalRecord| {
-        SupersessionOutcome::SubmittedForApproval(Box::new(SupersessionPending {
-            plan_id: context.plan_id,
-            revision: context.revision,
-            predecessor_price_id: context.predecessor.price_id,
-            successor_price_id,
-            changeover: request.changeover,
-            shortened_window_id: composed.windows.shorten.window_id,
-            verdict: verdict.clone(),
-            approval,
-        }))
-    };
-
     if let Some(staged) = context.staged.as_ref() {
-        refuse_divergent_successor(staged, request, context.predecessor.price_id)?;
-        if let Some(held) =
-            approval_repo::find_pending_for_subject(runner, scope, tenant_id, subject_ref)
-                .await
-                .map_err(|e| repo_failure(&e))?
-        {
-            return Ok(pending(staged.price_id, held));
-        }
+        refuse_divergent_successor(staged, successor_content)?;
     }
-
     let successor = match context.staged.as_ref() {
         Some(staged) => staged.clone(),
         None => stage_successor(runner, scope, tenant_id, request, stamp).await?,
@@ -1005,7 +1113,13 @@ async fn submitted_for_approval(
         stamp,
     )
     .await?;
-    Ok(pending(successor.price_id, record))
+    let mut answer = pending_answer(context, request, composed, Some(verdict), record);
+    if let SupersessionOutcome::SubmittedForApproval(pending) = &mut answer {
+        // The row this call staged, which `pending_answer` could not see: it reads
+        // `context.staged`, and the context was assembled before the insert.
+        pending.successor_price_id = successor.price_id;
+    }
+    Ok(answer)
 }
 
 /// Stage the successor draft through D-195's door.
@@ -1050,38 +1164,48 @@ async fn stage_successor(
 /// rule the two undeclared supersession refusals already record. What is added is the
 /// **sentence**, because the store's cannot say what an operator has to do about it.
 ///
-/// # Why the link is normalized before comparing
+/// # Both sides are the row **as the store holds it**, and getting that wrong made every
+/// non-recurring key unsupersedable
 ///
-/// `insert_successor_draft_on` stamps `supersedes_price_id` from the read that validated
-/// the key, overwriting whatever the caller sent. Comparing the caller's value would
-/// therefore report a difference the door itself introduced, on every retry, and no
-/// supersession would ever commit.
+/// The comparison is against `staged.content()` — a record read back — so the request's
+/// side has to be the row the door *would have written*, not the row the wire carried.
+/// It used to normalize `supersedes_price_id` alone, and the door rewrites two more
+/// things: `charge_kind`, from the key, and the band order. So on a **usage**,
+/// `one_time` or `one_time_setup` key the two sides differed in `charge_kind` on every
+/// call — the wire cannot spell that axis — and a legitimately approved unit was refused
+/// here, permanently, with a remedy sentence ("re-send that content") no caller could
+/// act on (review, 2026-08-06). A body listing bands out of order failed the same way on
+/// any key. Both sides now go through `price_repo::authored_content`.
 ///
 /// # Errors
 /// [`DomainError::DuplicateScopeKey`] naming the staged row.
 fn refuse_divergent_successor(
     staged: &PriceRecord,
-    request: &SupersessionRequest,
-    predecessor: Uuid,
+    successor_content: &PriceContent,
 ) -> Result<(), DomainError> {
-    if staged.content() == requested_content(request, predecessor) {
+    if staged.content() == *successor_content {
         return Ok(());
     }
     Err(DomainError::DuplicateScopeKey(format!(
-        "the successor draft {} already staged on {} for the supersession at {} carries different \
-         content from this request; a composed unit's content is what a reviewer agreed to, so \
-         re-send that content, or withdraw the unit to free the key and compose again",
-        staged.price_id,
-        request.key,
-        request.changeover.to_rfc3339()
+        "the successor draft {} already staged on {} carries different content from this \
+         request; a composed unit's content is what a reviewer agreed to, so re-send that \
+         content, or withdraw the unit to free the key and compose again",
+        staged.price_id, staged.scope_key
     )))
 }
 
-/// The request's content as the door would have written it.
-fn requested_content(request: &SupersessionRequest, predecessor: Uuid) -> PriceContent {
+/// The request's successor **as the door would write it**.
+///
+/// Three rewrites, and only one of them was here before: `price_repo::authored_content`
+/// applies the key's `charge_kind` and the band order — the two the store performs and
+/// the wire cannot express — and the link is stamped from the read that validated the
+/// key, overwriting whatever the caller sent. Comparing or judging without all three is
+/// what made the unit guard unreachable and the divergence guard always-true; see
+/// `refuse_divergent_successor`.
+fn requested_content(request: &SupersessionRequest, context: &UnitContext) -> PriceContent {
     PriceContent {
-        supersedes_price_id: Some(predecessor),
-        ..request.successor.clone()
+        supersedes_price_id: Some(context.predecessor.price_id),
+        ..price_repo::authored_content(&request.key, request.successor.clone())
     }
 }
 
@@ -1089,17 +1213,18 @@ fn requested_content(request: &SupersessionRequest, predecessor: Uuid) -> PriceC
 ///
 /// A hypothetical [`PriceRecord`] rather than the staged row, so that the verdict is a
 /// function of the **request** and cannot differ between the call that opens the unit and
-/// the call that commits it. The one field that has to be real is `price_id`:
+/// the call that commits it. The content is the authored one, for
+/// [`requested_content`]'s reason. The one field that has to be real is `price_id`:
 /// `MaterialityVerdict::tripped_row` names it, and a stored verdict naming a row that
 /// never published would be unreadable years later — hence `successor_price_id`, which is
 /// the staged row's whenever one stands.
 fn successor_candidate(
+    successor_content: &PriceContent,
     request: &SupersessionRequest,
-    context: &UnitContext,
     successor_price_id: Uuid,
     stamp: AuditStamp,
 ) -> PriceRecord {
-    let authored = requested_content(request, context.predecessor.price_id);
+    let authored = successor_content.clone();
     PriceRecord {
         price_id: successor_price_id,
         scope_key: request.key.clone(),
@@ -1197,10 +1322,14 @@ async fn enqueue_events(
 ///
 /// Built from [`supersession_unit_ref`] rather than from a minted
 /// `PublishUnitKind` variant, and the two properties the registry contract needs are
-/// exactly the two that subject already has: **stable across a retry** of one act, so an
-/// approved re-submit is handed the handle the first attempt requested rather than
-/// stranding it, and **distinct across two acts**, so two changeovers on one key do not
-/// share a `CatalogVersion`.
+/// exactly the two that subject already has: **stable across a retry**, and **distinct
+/// across two acts** so that two changeovers on one key do not share a `CatalogVersion`.
+///
+/// "Stable across a retry" is about the **commit** attempt specifically, and an earlier
+/// wording overstated it: the controlled arm returns before this is ever called, so a
+/// first attempt that opens a unit requests no handle at all. What the stability buys is
+/// that a commit refused after the request — a lost window race, a storage fault — is
+/// handed the *same* handle when it is retried, rather than stranding the first.
 ///
 /// The `supersession/` prefix is what keeps it clear of `plan-publish/…` and
 /// `window-mutation/…`, which is the role `PublishUnitKind::request_token` plays for the

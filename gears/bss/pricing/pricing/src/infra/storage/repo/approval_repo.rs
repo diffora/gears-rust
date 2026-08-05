@@ -174,6 +174,7 @@ use crate::infra::storage::{RepoError, contention_or_db, policy_guard_or_content
 /// assumption.
 pub const SUBJECT_KINDS_WITH_A_WRITER: &[AuditSubjectKind] = &[
     AuditSubjectKind::PlanRevision,
+    AuditSubjectKind::PriceUnit,
     AuditSubjectKind::Window,
     AuditSubjectKind::Policy,
 ];

@@ -177,14 +177,40 @@ pub struct SupersessionOutcomeView {
     /// The registry's pending handle. `null` on the controlled arm: no version was
     /// requested for an act that did not commit, and D-156 is why.
     pub pending_version_ref: Option<String>,
-    /// The act sequence the shortened window now stands at — the `ETag` a caller's next
-    /// act on that window must assert (D-190/D-191). `null` on the controlled arm, where
-    /// the window did not move.
+    /// The act sequence the shortened window now stands at — the tag a caller's next act
+    /// on that window must assert (D-190/D-191). `null` on the controlled arm, where the
+    /// window did not move.
+    ///
+    /// # Why these two tags are body fields and this route emits no `ETag`
+    ///
+    /// `api::rest::windows`' `if_match_param` tells a caller the tag comes from *"the
+    /// answer to the act that scheduled or last moved this window"*, and every committed
+    /// window act there emits one header. That rule was written when one surface moved
+    /// windows. A supersession moves **two** in one act — it shortens the predecessor's
+    /// and schedules the successor's — and one `ETag` header cannot carry two tags, so
+    /// both travel as fields and neither is dropped. Emitting the shortened window's as
+    /// the header would have been the worse choice: a caller reading it per the declared
+    /// contract would have no way to tell which of the two windows it named (review,
+    /// 2026-08-06).
     pub shortened_mutation_seq: Option<u64>,
-    /// Why a second principal was required. `null` on the committed arm — including the
-    /// auto-publishable case, where the verdict exists and says nothing a caller acts on.
+    /// The act sequence the **successor's** window stands at, which no other response
+    /// carries at all: the window is created by this act, so a caller that has to adjust
+    /// it later has no other producer of its tag. `null` on the controlled arm, where no
+    /// window was scheduled.
+    pub successor_mutation_seq: Option<u64>,
+    /// Why a second principal was required, or was not — **this call's** evaluation.
+    ///
+    /// Present exactly when this call evaluated one: on the arm that opened a unit, and
+    /// on the auto-publishable commit. `null` on the two arms that evaluate nothing —
+    /// the idempotent replay and the commit under an approval — where the authority is
+    /// the verdict the **unit stored**, and it rides `approval`. One verdict per answer,
+    /// which is the whole of it: carrying a fresh one beside a stored one let a single
+    /// 202 assert two materiality reasons for one act (review, 2026-08-06).
     pub materiality: Option<MaterialityView>,
-    /// The unit now reviewing the act. `null` on the committed arm.
+    /// The unit reviewing the act, **or the one it committed under**. `null` exactly when
+    /// no second principal was involved — which makes it the discriminator between an
+    /// auto-publishable commit and an approved one, the role it plays on the publish
+    /// mount.
     pub approval: Option<ApprovalView>,
 }
 
@@ -201,8 +227,16 @@ impl SupersessionOutcomeView {
             successor_window_id: Some(receipt.successor_window_id),
             pending_version_ref: Some(receipt.pending_version_ref.clone()),
             shortened_mutation_seq: Some(receipt.shortened_mutation_seq),
-            materiality: None,
-            approval: None,
+            successor_mutation_seq: Some(receipt.successor_mutation_seq),
+            // **Both carried on this arm too**, which is `api::rest::publish`'s decision
+            // and was this module's mistake: `PublishOutcomeView` renders the verdict on
+            // both arms and uses `approval` as the discriminator between "two principals
+            // agreed" and "no second principal was required". Nulling both here made a
+            // committed supersession under an approval byte-identical to an
+            // auto-publishable one, so a client could not record which approval
+            // authorized the price change it had just made (review, 2026-08-06).
+            materiality: receipt.verdict.as_ref().map(MaterialityView::from),
+            approval: receipt.authorization.as_ref().map(ApprovalView::from),
         }
     }
 
@@ -218,7 +252,11 @@ impl SupersessionOutcomeView {
             successor_window_id: None,
             pending_version_ref: None,
             shortened_mutation_seq: None,
-            materiality: Some(MaterialityView::from(&pending.verdict)),
+            successor_mutation_seq: None,
+            // `None` on the idempotent replay, where the unit's **stored** verdict is
+            // the authority and rides `approval` — see `SupersessionPending::verdict`.
+            // Two documents here is how one 202 came to assert two reasons for one act.
+            materiality: pending.verdict.as_ref().map(MaterialityView::from),
             approval: Some(ApprovalView::from(&pending.approval)),
         }
     }
@@ -235,7 +273,6 @@ async fn supersede_price(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(correlation)?;
-    let request: SupersedeRequest = preconditions::parse_body(&body)?;
     let plan_id = PlanId::new(plan_id);
     let tenant = ctx.subject_tenant_id();
 
@@ -255,6 +292,15 @@ async fn supersede_price(
     )
     .await
     .map_err(authz_error_to_canonical)?;
+
+    // **Parsed after the gate**, which is `api::rest::plans`' house rule stated outright:
+    // a module doc asserting "the gate before the repository" reads as two disciplines if
+    // two modules differ on where the body is read. `windows.rs` parses first only because
+    // `preconditions::idempotency_key` must be read first (D-171) — a reason this route
+    // does not have, since the gate needs nothing but the path. Before this order a
+    // caller holding no grant at all was told their body was malformed, and a PDP outage
+    // answered 400 rather than the fail-closed 503 (review, 2026-08-06).
+    let request: SupersedeRequest = preconditions::parse_body(&body)?;
 
     // The key comes from the **row**, resolved under the scope the gate compiled. This
     // read is outside the service's transaction on purpose and is not a precondition:

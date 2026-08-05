@@ -400,10 +400,27 @@ pub fn plan_supersession(
     check_changeover_instant(changeover, now, moment)?;
     let windows = compose_windows(plane, changeover)?;
 
-    let report = crate::domain::rules::supersession_rules().run(&SupersessionPair::new(
-        predecessor.clone(),
-        successor.clone(),
-    ));
+    // The content step, and it is **two** rule sets rather than one. `inst-su-compose`
+    // clause (a) says the successor is "the successor draft row on the same canonical
+    // scope key (**S3 rules apply** — incl. the D-82/D-98 unit guard)", and only the
+    // guard was being run: `price_row_rules` has exactly one other caller,
+    // `run_publish_rules`, and a supersession successor never reaches it —
+    // `infra::publish::validated_draft_rows` deliberately excludes a draft on an
+    // occupied key from the plan-revision unit's set (D-195). So the row that publishes
+    // through this unit was judged by **no** row-local rule at all: a `graduated`
+    // successor with an empty band set had nothing to refuse it, no CHECK requires bands
+    // for a tiered kind, and with zero band rows no band trigger fires (review,
+    // 2026-08-06).
+    //
+    // One report for both, so an operator gets one document naming every violation
+    // rather than the first set's and then, on the next attempt, the second's.
+    let mut report = crate::domain::rules::price_row_rules().run(successor);
+    report.absorb(
+        crate::domain::rules::supersession_rules().run(&SupersessionPair::new(
+            predecessor.clone(),
+            successor.clone(),
+        )),
+    );
     if !report.is_publishable() {
         return Err(DomainError::ValidationFailed(report));
     }

@@ -219,14 +219,15 @@ fn a_row_added_to_a_published_plan_is_material_having_no_baseline() {
 /// real per-currency delta, and `tests/sqlite_supersession_unit.rs` holds both halves:
 /// the `thresholdReached` case and the `AutoPublishable` one.
 ///
-/// **D-183 expected that to arrive through a *publish*, and it will not.** D-195's
-/// exclusion rule is what forbids it: `infra::publish::validated_draft_rows` drops a
-/// draft row whose key already carries a published row, because that row is not the
-/// plan-revision unit's to publish. So a plan-revision change set is *still* always
-/// either a row with no baseline (`inst-mat-newrow`, step 3a) or no moved row at all
-/// (D-115's pure-shape clause) — permanently, by design rather than for want of a
-/// surface — and the end-to-end case D-183 asked for on the publish path is unreachable
-/// rather than unwritten.
+/// **D-183 expected that to arrive through a *publish*, and the first correction of that
+/// expectation was itself wrong** (both 2026-08-06; the second found by review of the
+/// first). It said `infra::publish::validated_draft_rows` forbids the pair permanently.
+/// That function governs what a publish **writes**; the evaluator's **input** is built
+/// at `api::rest::publish` from the assembled shape — published *plus* draft — so a plan
+/// holding a staged supersession successor **does** present the pair. See **D-200**: the
+/// consequence is a plan-revision unit whose stored verdict can name a row the revision
+/// will not publish. What is true without qualification is the output half: no publish
+/// ever *flips* a moved row against a published predecessor on one key.
 ///
 /// So this stays a legitimate unit test of `evaluate` over a **hand-built** input, and
 /// it is kept for the reason it always was: it is the only executable statement of the

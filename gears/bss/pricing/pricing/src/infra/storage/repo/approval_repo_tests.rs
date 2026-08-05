@@ -140,14 +140,27 @@ fn the_price_unit_kind_is_the_one_with_no_writer() {
         SUBJECT_KINDS_WITH_A_WRITER,
         &[
             AuditSubjectKind::PlanRevision,
+            // **`price_unit` joined the roster on 2026-08-06**, when D-88's
+            // `ApprovalService::submit_supersession_on` became its first writer. This
+            // assertion asserted the opposite — "price_unit has none" — and stayed true
+            // for exactly as long as nothing opened such a unit; a roster is a
+            // maintained list, so the day it is wrong is the day a reader takes it as
+            // normative and the writer as the mistake.
+            AuditSubjectKind::PriceUnit,
             AuditSubjectKind::Window,
             AuditSubjectKind::Policy,
         ]
     );
     assert!(AuditSubjectKind::ALL.contains(&AuditSubjectKind::PriceUnit));
-    assert!(
-        !SUBJECT_KINDS_WITH_A_WRITER.contains(&AuditSubjectKind::PriceUnit),
-        "a member with a writer is what the constant means; price_unit has none"
+    // The roster is now **every** kind the enum declares, which is itself the finding:
+    // it was the four-of-three list that made `price_unit`'s absence look deliberate.
+    // `AuditSubjectKind` carries only the kinds this gear can write — S5 §6's wider
+    // enumeration lives in the store's CHECK — so the day a fifth is minted, this
+    // equality is what asks whether it has a writer.
+    assert_eq!(
+        SUBJECT_KINDS_WITH_A_WRITER.len(),
+        AuditSubjectKind::ALL.len(),
+        "every kind this gear declares now has a writer; a new one must answer the question"
     );
 }
 

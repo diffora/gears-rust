@@ -12,9 +12,12 @@
 //! rather than a per-suite copy free to be the weaker one.
 //!
 //! The commit arms here really do commit: `Harness` supplies a working
-//! `RegistryDouble`. It is the **e2e stand** that has no `CatalogVersionRegistryV1`, so
-//! there every commit arm is a 503 by design and what is asserted is that the arm was
-//! reached — the asymmetry is the harness's, and it is why both suites exist.
+//! `RegistryDouble`. That is worth stating because the *deployed* gear has no
+//! `CatalogVersionRegistryV1` implementation anywhere in this repository — it boots with
+//! `UnconfiguredCatalogVersionRegistryV1`, so a commit arm exercised against a running
+//! stand answers **503** at the version request. Nothing in this file asserts anything
+//! about that stand; the sentence is here so a reader does not take these 202s as
+//! evidence about one.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -184,9 +187,16 @@ async fn the_same_act_with_different_content_is_409() {
         ))
         .await;
     assert_eq!(refused.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        rest_support::problem_code(refused).await,
-        "DUPLICATE_SCOPE_KEY"
+    // **The code *and* the sentence.** `DUPLICATE_SCOPE_KEY` has two producers reachable
+    // from here — this guard and the store's own `duplicate_key` — and the service-level
+    // twin exists precisely because the store cannot write the sentence. A code-only
+    // assertion here would stay green with the guard deleted and the staging re-attempted
+    // (review, 2026-08-06).
+    let problem = body_json(refused).await;
+    assert_eq!(rest_support::code_in(&problem), "DUPLICATE_SCOPE_KEY");
+    assert!(
+        problem.to_string().contains("different content"),
+        "the guard's own sentence, not the store's: {problem}"
     );
 }
 
@@ -232,8 +242,13 @@ async fn the_call_after_an_independent_approve_commits_and_answers_the_pending_h
     assert!(view["pending_version_ref"].is_string());
     assert!(view["successor_window_id"].is_string());
     assert!(view["shortened_mutation_seq"].is_number());
-    // And the review's halves are absent on this arm.
-    assert!(view["approval"].is_null());
+    // **`approval` names the unit this commit ran under**, which is the discriminator
+    // between the two committing arms; `materiality` is null because this call evaluated
+    // nothing — the unit's stored verdict is the authority and rides `approval`.
+    assert_eq!(
+        view["approval"]["approval_id"],
+        serde_json::json!(unit.to_string())
+    );
     assert!(view["materiality"].is_null());
 }
 
@@ -301,8 +316,119 @@ async fn a_dormant_changeover_is_400_carrying_its_code() {
         .send(request("POST", &path(plan_id), Some(body)))
         .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        rest_support::problem_code(response).await,
-        "LIFECYCLE_FORBIDDEN"
+    // The code alone cannot identify a guard here: `LIFECYCLE_FORBIDDEN` has at least six
+    // producers reachable from this route — `compose_windows`' two arms and four
+    // `RepoError` variants that share one mapping arm. This case's own history is the
+    // demonstration: it was answered by `TIMESTAMP_PRECISION_EXCEEDED` and then by a
+    // different `LIFECYCLE_FORBIDDEN` before it asserted the right thing.
+    let problem = body_json(response).await;
+    assert_eq!(rest_support::code_in(&problem), "LIFECYCLE_FORBIDDEN");
+    assert!(
+        problem.to_string().contains("dormant"),
+        "the dormancy arm, not one of its five siblings: {problem}"
     );
+}
+
+#[tokio::test]
+async fn an_auto_publishable_supersession_commits_on_one_call_and_says_so() {
+    // The wire's negative control, and the arm `SupersessionOutcomeView::materiality`'s
+    // doc makes a specific claim about. Every other committing case here reaches the
+    // commit through an approve, so without this one the surface could refuse every
+    // single-call commit and the suite would not notice.
+    let h = Harness::new().await;
+    rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
+    let (plan_id, seeded) = published(&h).await;
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request(
+            "POST",
+            &path(plan_id),
+            Some(supersede_body(seeded.price_id, 10_000)),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let view = body_json(response).await;
+    assert_eq!(view["outcome"], "superseded");
+    // **`approval` is the discriminator**, which is `api::rest::publish`'s decision: an
+    // auto-publishable commit and a commit under an approval are otherwise the same
+    // document, and a client has to be able to record which approval authorized a price
+    // change it just made.
+    assert!(
+        view["approval"].is_null(),
+        "no second principal was required: {view}"
+    );
+    assert_eq!(view["materiality"]["material"], serde_json::json!(false));
+    assert!(view["successor_mutation_seq"].is_number());
+}
+
+#[tokio::test]
+async fn a_commit_under_an_approval_names_the_unit_that_authorized_it() {
+    // The other half of the discriminator above. Both arms answer 202 `superseded`, and
+    // this is the only field that tells them apart.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published(&h).await;
+
+    let opened = body_json(
+        h.allowed_as(SUBMITTER)
+            .send(request(
+                "POST",
+                &path(plan_id),
+                Some(supersede_body(seeded.price_id, 12_000)),
+            ))
+            .await,
+    )
+    .await;
+    let unit: Uuid = opened["approval"]["approval_id"]
+        .as_str()
+        .expect("the unit id")
+        .parse()
+        .expect("a uuid");
+    approve(&h, unit).await;
+
+    let view = body_json(
+        h.allowed_as(SUBMITTER)
+            .send(request(
+                "POST",
+                &path(plan_id),
+                Some(supersede_body(seeded.price_id, 12_000)),
+            ))
+            .await,
+    )
+    .await;
+    assert_eq!(view["outcome"], "superseded");
+    assert_eq!(
+        view["approval"]["approval_id"],
+        serde_json::json!(unit.to_string()),
+        "the commit says which approval it ran under: {view}"
+    );
+    assert!(
+        view["materiality"].is_null(),
+        "a commit under an approval evaluates nothing; the stored verdict rides the record"
+    );
+    assert_eq!(
+        view["approval"]["materiality"]["material"],
+        serde_json::json!(true),
+        "and it is the record that says what made the act material"
+    );
+}
+
+#[tokio::test]
+async fn a_caller_with_no_grant_is_denied_before_the_body_is_read() {
+    // The gate runs before the parse, which is `api::rest::plans`' house rule. Before
+    // this order a caller holding no grant at all was told their body was malformed, and
+    // a PDP outage answered 400 rather than the fail-closed 503 — so the outage property
+    // `rest_authz.rs` asserts held only for callers who sent parseable bodies.
+    let h = Harness::new().await;
+    let (plan_id, _) = published(&h).await;
+
+    let response = h
+        .denied()
+        .send(request(
+            "POST",
+            &path(plan_id),
+            Some(serde_json::json!({ "not": "a supersession" })),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

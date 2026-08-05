@@ -72,14 +72,18 @@
 //! (`infra::supersession::commit_supersession`), the orchestrator and approval unit
 //! (`infra::supersession::SupersessionService`) and the route
 //! (`POST …/plans/{planId}/supersessions`). So a caller **can** now stage the pair, and
-//! [`triggered_by_row`]'s horizon arm is reachable from a mounted surface for the first
-//! time.
+//! [`triggered_by_row`]'s **second** arm — the no-computable-delta one — is reachable
+//! from a mounted surface for the first time.
 //!
-//! What is *still* only unit-tested is that arm's own staging: a successor whose
-//! `grandfatherUntil` is earlier than its predecessor's. Reaching it needs a
-//! grandfathered key, and `price_repo::refuse_unsupersedable_class` refuses to supersede
-//! an `existing_grandfathered` generation at all (Foundation §4.3), so the horizon arm's
-//! subject is a key the one new door will not touch. `update_draft`'s swap guard carries
+//! **The horizon arm is not, and a first draft of this paragraph said it was** (review,
+//! 2026-08-06 — the sentence claimed reachability and then withdrew it four lines later,
+//! which is worse than either half alone). That arm needs a successor whose
+//! `grandfatherUntil` is earlier than its predecessor's; the column is authorable only on
+//! an `existing_grandfathered` generation (`GRANDFATHER_HORIZON_OFF_CLASS`), and
+//! `price_repo::refuse_unsupersedable_class` refuses to supersede that class at all
+//! (Foundation §4.3) — which `infra::supersession` now also refuses from the request
+//! alone, ahead of everything. So the horizon arm's subject is a key no door will touch,
+//! and it stays unit-tested over hand-built rows. `update_draft`'s swap guard carries
 //! `lifecycle_state = 'draft'`, so a published row's horizon cannot be moved in place
 //! either. The `true` is left as it is for the reason it always was: the subject — the
 //! column, the comparison, the record — is genuinely here, and flipping it to `false`

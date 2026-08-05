@@ -520,3 +520,30 @@ async fn the_window_cancel_declares_no_precondition_header() {
         "the cancel takes neither an If-Match nor an Idempotency-Key: {headers:?}"
     );
 }
+
+/// The **second** route that declares no precondition header, and it needs its own
+/// assertion for [`the_window_cancel_declares_no_precondition_header`]'s reason.
+///
+/// S5's idempotency column for `POST …/supersessions` is `(planId, scope key, changeover
+/// instant)` — the act's own identity — not a client key, and the handler takes no
+/// `HeaderMap` at all. So a declaration either way would be a header the server ignores.
+/// Without this case the absence is indistinguishable from a forgotten declaration, and a
+/// later group reading the route as "a create like the other creates" could add an
+/// `Idempotency-Key` param with every test still green — handing callers at-most-once
+/// semantics they do not have, on a surface whose own module doc argues that wiring that
+/// gate here would make the commit arm permanently unreachable.
+#[tokio::test]
+async fn the_supersession_declares_no_precondition_header() {
+    let openapi = registered_operations().await;
+
+    let headers = declared_headers(
+        &openapi,
+        "POST",
+        bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS,
+    );
+
+    assert!(
+        headers.is_empty(),
+        "the supersession takes neither an If-Match nor an Idempotency-Key: {headers:?}"
+    );
+}
