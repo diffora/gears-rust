@@ -51,6 +51,8 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::price_row::PriceRow;
+use crate::domain::rules::SupersessionPair;
 use crate::domain::window::{OCCUPYING_STATES, WindowInterval, WindowState};
 
 /// The wire code §5 declares for a changeover instant that has fallen behind its
@@ -268,6 +270,88 @@ pub fn compose_windows(
             effective_to: changeover,
         },
         successor: WindowInterval::new(changeover, None, WindowState::Scheduled),
+    })
+}
+
+/// Everything the unit needs to survive between compose and commit.
+///
+/// It carries the **changeover instant** rather than only the composed intervals,
+/// and that is the load-bearing field: `inst-su-commit` applies both window
+/// operations at *commit*, so nothing about the plane is written at compose and the
+/// commit re-derives the intervals from this instant against the plane as it then
+/// stands. A plan that carried only the intervals would leave the commit
+/// re-validating numbers it could not re-derive if a window had moved under it.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SupersessionPlan {
+    /// The changeover — the one input the unit's payload must preserve.
+    pub changeover: DateTime<Utc>,
+    /// The two window operations, as they stand against the plane just read.
+    pub windows: ComposedWindows,
+}
+
+/// The whole compose-time judgement of a supersession: the instant, the plane, and
+/// the successor's content.
+///
+/// Called at **both** of `inst-su-compose`'s moments — "validated at compose **and**
+/// re-validated at commit" — with the same world and a different
+/// [`ChangeoverMoment`]. Everything except the floor is re-read identically, which
+/// is what makes a plan that submitted legally refusable at commit with nothing else
+/// having moved.
+///
+/// # The three refusals are ordered, and the order is a decision
+///
+/// Any two of them can apply at once, so what an operator hears first is chosen
+/// rather than incidental:
+///
+/// 1. **The instant** ([`check_changeover_instant`]). It is the only one of the
+///    three that is wrong about the *request* rather than about what the request
+///    would do, it needs no reading of the world, and its remedy — recomposition
+///    against a fresh instant — is what produces a request the other two can even be
+///    asked of.
+/// 2. **The plane** ([`compose_windows`]: dormancy, then collision). These decide
+///    whether a *supersession* is the right operation at all: a dormant key's remedy
+///    is a publish plus a window schedule, an entirely different act, and a key
+///    carrying later coverage is one this act's open-ended successor cannot be shaped
+///    for.
+/// 3. **The content** (the D-82/D-98/D-122/D-127/D-129 unit guard). It presupposes
+///    there is a supersession to do and asks only whether this one is shaped right.
+///
+/// The reverse order has a real argument — the content guard's violations are
+/// fixable in the caller's own payload, while (1) and (2) send them elsewhere — and
+/// it loses on this: validating the content of an act that must not be attempted
+/// tells someone to correct a payload they should not send at all. It is written
+/// down so the next reader can disagree with an argument rather than with a coin
+/// flip.
+///
+/// # Errors
+/// [`DomainError::SupersessionInstantPassed`], [`DomainError::LifecycleForbidden`]
+/// or [`DomainError::WindowOverlap`] per the order above, and
+/// [`DomainError::ValidationFailed`] carrying the unit guard's report — the same
+/// shape a publish reports its rule violations in, because
+/// `SUPERSESSION_UNIT_MISMATCH` is one of those rules rather than a precondition.
+pub fn plan_supersession(
+    predecessor: &PriceRow,
+    successor: &PriceRow,
+    plane: &[NamedWindow],
+    changeover: DateTime<Utc>,
+    now: DateTime<Utc>,
+    moment: ChangeoverMoment,
+) -> Result<SupersessionPlan, DomainError> {
+    check_changeover_instant(changeover, now, moment)?;
+    let windows = compose_windows(plane, changeover)?;
+
+    let report = crate::domain::rules::supersession_rules().run(&SupersessionPair::new(
+        predecessor.clone(),
+        successor.clone(),
+    ));
+    if !report.is_publishable() {
+        return Err(DomainError::ValidationFailed(report));
+    }
+
+    Ok(SupersessionPlan {
+        changeover,
+        windows,
     })
 }
 

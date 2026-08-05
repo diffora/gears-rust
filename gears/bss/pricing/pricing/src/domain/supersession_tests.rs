@@ -352,3 +352,183 @@ fn a_cancelled_window_after_the_changeover_does_not_collide_with_the_successor()
 
     assert_eq!(composed.shorten.window_id, window_id(1));
 }
+
+// ---------------------------------------------------------------------------
+// The whole compose-time judgement, and the order it answers in.
+// ---------------------------------------------------------------------------
+
+use super::{SupersessionPlan, plan_supersession};
+use crate::domain::money::MinorAmount;
+use crate::domain::price_row::{BillingGranularity, ModelKind, PriceRow, TierBand};
+use crate::domain::scope_key::ChargeKind;
+
+/// A tiered usage predecessor — the shape with unit fields for the guard to have
+/// an opinion about.
+fn usage_row(amount: i64, granularity: BillingGranularity) -> PriceRow {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    row.bands = vec![
+        TierBand::closed(0, 100, MinorAmount::new(0).unwrap()),
+        TierBand::open(100, MinorAmount::new(amount).unwrap()),
+    ];
+    row.meter = Some("api_calls".to_owned());
+    "region:eu".clone_into(&mut row.dimension_key);
+    row.billing_granularity = Some(granularity);
+    row
+}
+
+fn predecessor() -> PriceRow {
+    usage_row(25, BillingGranularity::PerHour)
+}
+
+/// A pure price change: new band rate, every unit field preserved.
+fn priced_differently() -> PriceRow {
+    usage_row(30, BillingGranularity::PerHour)
+}
+
+/// The ×24 class: the same accumulated counter re-read in a different unit.
+fn denominated_differently() -> PriceRow {
+    usage_row(30, BillingGranularity::PerDay)
+}
+
+#[test]
+fn a_pure_price_change_on_a_live_key_plans() {
+    let plan = plan_supersession(
+        &predecessor(),
+        &priced_differently(),
+        &[live_open_ended()],
+        changeover(),
+        now(),
+        ChangeoverMoment::Submit,
+    )
+    .expect("a new band rate on a covered key is the ordinary supersession");
+
+    assert_eq!(plan.changeover, changeover());
+    assert_eq!(plan.windows.shorten.window_id, window_id(1));
+    assert_eq!(plan.windows.successor.effective_from, changeover());
+}
+
+#[test]
+fn a_successor_that_re_denominates_the_counter_is_refused_by_the_unit_guard() {
+    let err = plan_supersession(
+        &predecessor(),
+        &denominated_differently(),
+        &[live_open_ended()],
+        changeover(),
+        now(),
+        ChangeoverMoment::Submit,
+    )
+    .expect_err("per_hour -> per_day applies an hours-denominated Q to day bands");
+
+    let DomainError::ValidationFailed(report) = err else {
+        panic!("the guard reports violations, got: {err:?}");
+    };
+    assert!(!report.is_publishable());
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == crate::domain::rules::SUPERSESSION_UNIT_MISMATCH),
+        "got: {:?}",
+        report.violations
+    );
+}
+
+#[test]
+fn the_instant_floor_is_answered_before_the_world_is_read() {
+    // A request whose instant has passed AND whose key is dormant AND whose
+    // successor re-denominates the counter. The operator hears about the instant,
+    // because it is the only one of the three that is wrong about the *request*
+    // rather than about what the request would do — and the design set's own remedy
+    // for it, recomposition, is what produces a request the other two can even be
+    // asked of.
+    let err = plan_supersession(
+        &predecessor(),
+        &denominated_differently(),
+        &[],
+        now() - Duration::days(1),
+        now(),
+        ChangeoverMoment::Submit,
+    )
+    .expect_err("everything is wrong with this one");
+
+    assert!(
+        matches!(err, DomainError::SupersessionInstantPassed(_)),
+        "the instant is answered first, got: {err:?}"
+    );
+}
+
+#[test]
+fn the_worlds_shape_is_answered_before_the_successors_content() {
+    // A dormant key and a re-denominating successor. The operator hears "dormant",
+    // because dormancy decides whether a *supersession* is the right operation at
+    // all — the remedy is a publish plus a window schedule, an entirely different
+    // act — while the guard's answer presupposes there is a supersession to do and
+    // asks only whether this one is shaped right. Validating the content of an act
+    // that must not be attempted tells someone to fix a payload they should not
+    // send.
+    let err = plan_supersession(
+        &predecessor(),
+        &denominated_differently(),
+        &[],
+        changeover(),
+        now(),
+        ChangeoverMoment::Submit,
+    )
+    .expect_err("dormant and mis-denominated at once");
+
+    let DomainError::LifecycleForbidden(detail) = err else {
+        panic!("dormancy is answered before content, got: {err:?}");
+    };
+    assert!(detail.contains("dormant"), "got: {detail}");
+}
+
+#[test]
+fn the_commit_moment_holds_the_same_plan_to_the_stricter_floor() {
+    // `inst-su-compose`: validated at compose **and** re-validated at commit. The
+    // world and the content are re-read identically; the only thing that differs
+    // between the two moments is the floor, which is what makes a plan that
+    // submitted legally refusable at commit without anything else having moved.
+    let barely_ahead = now() + Duration::minutes(1);
+
+    plan_supersession(
+        &predecessor(),
+        &priced_differently(),
+        &[live_open_ended()],
+        barely_ahead,
+        now(),
+        ChangeoverMoment::Submit,
+    )
+    .expect("a minute ahead is strictly future");
+
+    let err = plan_supersession(
+        &predecessor(),
+        &priced_differently(),
+        &[live_open_ended()],
+        barely_ahead,
+        now(),
+        ChangeoverMoment::Commit,
+    )
+    .expect_err("a minute ahead is inside the batching delay");
+    assert!(matches!(err, DomainError::SupersessionInstantPassed(_)));
+}
+
+#[test]
+fn the_plan_carries_the_changeover_so_the_commit_can_recompose_from_it() {
+    // The window operations are **not** written at compose — `inst-su-commit` applies
+    // both at commit — so what the unit has to survive on is the instant. A plan that
+    // carried only the composed intervals would leave the commit re-validating
+    // against numbers it could not re-derive if the plane had moved.
+    let plan: SupersessionPlan = plan_supersession(
+        &predecessor(),
+        &priced_differently(),
+        &[live_open_ended()],
+        changeover(),
+        now(),
+        ChangeoverMoment::Submit,
+    )
+    .expect("plan");
+
+    assert_eq!(plan.changeover, changeover());
+    assert_eq!(plan.windows.shorten.effective_to, plan.changeover);
+    assert_eq!(plan.windows.successor.effective_from, plan.changeover);
+}
