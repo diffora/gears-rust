@@ -67,6 +67,15 @@ pub struct Model {
     /// Set exactly on a `cancelled` window, which — since only a `scheduled`
     /// window cancels — never carries an `activated_at`.
     pub cancelled_at: Option<DateTime<Utc>>,
+    /// How many **operator acts** this window has been the subject of: `0` at its
+    /// own schedule, `+1` per adjustment and per cancellation, and **unmoved by the
+    /// activation and expiry sweeps** (D-190, `m20260802_000021`).
+    ///
+    /// Signed because the column is, and every backend's integer column is; the
+    /// repository converts it to a `u64` at the boundary and answers `CorruptRow` on
+    /// a negative, which is where the bound this table carries no CHECK for is
+    /// actually enforced.
+    pub mutation_seq: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

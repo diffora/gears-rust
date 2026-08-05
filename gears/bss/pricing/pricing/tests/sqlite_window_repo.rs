@@ -893,11 +893,20 @@ async fn a_future_end_may_be_shortened_extended_and_opened() {
     let conn = provider.conn().expect("scoped connection");
     let id = Uuid::from_u128(0x14);
 
-    for target in [Some(t(15)), Some(t(25)), None] {
-        let moved =
-            window_repo::adjust_effective_to(&conn, &scope(), TENANT, id, target, stamp_at(t(2)))
-                .await
-                .unwrap_or_else(|e| panic!("moving the end to {target:?} must be legal: {e}"));
+    // Three acts in sequence, so each asserts the number the one before it left
+    // (D-190): the act sequence is the window's, not the request's.
+    for (act, target) in [Some(t(15)), Some(t(25)), None].into_iter().enumerate() {
+        let moved = window_repo::adjust_effective_to(
+            &conn,
+            &scope(),
+            TENANT,
+            id,
+            target,
+            act as u64,
+            stamp_at(t(2)),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("moving the end to {target:?} must be legal: {e}"));
         assert_eq!(moved.effective_to, target);
         let read = window_repo::find(&conn, &scope(), TENANT, id)
             .await
@@ -924,6 +933,7 @@ async fn extending_a_window_into_its_successor_is_refused() {
         TENANT,
         Uuid::from_u128(0x15),
         Some(t(25)),
+        0,
         stamp_at(t(2)),
     )
     .await
@@ -948,6 +958,7 @@ async fn an_adjustment_does_not_collide_with_the_window_being_adjusted() {
         TENANT,
         Uuid::from_u128(0x17),
         Some(t(19)),
+        0,
         stamp_at(t(2)),
     )
     .await
@@ -980,10 +991,17 @@ async fn a_terminal_windows_end_cannot_be_moved() {
     .await
     .expect("scheduled -> cancelled");
 
-    let refusal =
-        window_repo::adjust_effective_to(&conn, &scope(), TENANT, id, Some(t(30)), stamp_at(t(3)))
-            .await
-            .expect_err("a cancelled window is history");
+    let refusal = window_repo::adjust_effective_to(
+        &conn,
+        &scope(),
+        TENANT,
+        id,
+        Some(t(30)),
+        1,
+        stamp_at(t(3)),
+    )
+    .await
+    .expect_err("a cancelled window is history");
     match refusal {
         RepoError::WindowHistorical { frozen, .. } => assert!(
             frozen.contains("cancelled"),
@@ -1030,10 +1048,17 @@ async fn an_end_that_has_already_passed_cannot_be_moved_forward() {
 
     // The world: `active`, started, and its end passed five days ago by the
     // stamp's clock.
-    let refusal =
-        window_repo::adjust_effective_to(&conn, &scope(), TENANT, id, Some(t(28)), stamp_at(t(25)))
-            .await
-            .expect_err("a passed end is history whichever way it is moved");
+    let refusal = window_repo::adjust_effective_to(
+        &conn,
+        &scope(),
+        TENANT,
+        id,
+        Some(t(28)),
+        0,
+        stamp_at(t(25)),
+    )
+    .await
+    .expect_err("a passed end is history whichever way it is moved");
     match refusal {
         RepoError::WindowHistorical { frozen, .. } => assert!(
             frozen.contains(&t(20).to_rfc3339()),
@@ -1062,10 +1087,17 @@ async fn an_end_may_not_be_moved_to_an_instant_that_has_passed() {
     let conn = provider.conn().expect("scoped connection");
     let id = Uuid::from_u128(0x1d);
 
-    let refusal =
-        window_repo::adjust_effective_to(&conn, &scope(), TENANT, id, Some(t(19)), stamp_at(t(20)))
-            .await
-            .expect_err("a shorten into the past is a retroactive reprice");
+    let refusal = window_repo::adjust_effective_to(
+        &conn,
+        &scope(),
+        TENANT,
+        id,
+        Some(t(19)),
+        0,
+        stamp_at(t(20)),
+    )
+    .await
+    .expect_err("a shorten into the past is a retroactive reprice");
     match refusal {
         RepoError::WindowHistorical { frozen, .. } => assert!(
             frozen.contains(&t(19).to_rfc3339()),
@@ -1076,7 +1108,7 @@ async fn an_end_may_not_be_moved_to_an_instant_that_has_passed() {
     // The same shorten, one instant the other side of the clock, is legal — which
     // is what says the refusal above is about the clock rather than about
     // shortening.
-    window_repo::adjust_effective_to(&conn, &scope(), TENANT, id, Some(t(21)), stamp_at(t(20)))
+    window_repo::adjust_effective_to(&conn, &scope(), TENANT, id, Some(t(21)), 0, stamp_at(t(20)))
         .await
         .expect("a shorten to a future instant is the permitted mutation");
 }
@@ -1126,6 +1158,7 @@ async fn an_adjustment_may_not_leave_an_empty_interval() {
         TENANT,
         Uuid::from_u128(0x20),
         Some(t(15)),
+        0,
         stamp_at(t(10)),
     )
     .await
@@ -1214,4 +1247,166 @@ async fn a_plan_with_no_windows_and_a_plan_with_no_rows_both_read_empty() {
         .expect("list")
         .is_empty()
     );
+}
+
+// ---------------------------------------------------------------------------
+// The act sequence (D-190) and the precondition it makes comparable (D-191)
+// ---------------------------------------------------------------------------
+
+/// **The counter D-190 asks for, and the two halves of what it is for.**
+///
+/// A window is born at act `0` and every operator act on it advances the number by
+/// exactly one. That is what makes an act nameable: the act token `<op>/<seq>/…` is
+/// distinct across two acts *and* stable across a genuine retry of one, because a
+/// retry of an act that has not committed reads the same sequence the first attempt
+/// read.
+#[tokio::test]
+async fn a_window_is_born_at_act_zero_and_an_adjustment_advances_it() {
+    let provider = harness().await;
+    let written = must_schedule(&provider, window(0x_5e_01, t(10), Some(t(20)))).await;
+    assert_eq!(
+        written.mutation_seq, 0,
+        "a window has been acted on once - its own schedule - and that is act zero"
+    );
+
+    let conn = provider.conn().expect("scoped connection");
+    let adjusted = window_repo::adjust_effective_to(
+        &conn,
+        &scope(),
+        TENANT,
+        Uuid::from_u128(0x_5e_01),
+        Some(t(25)),
+        /* expected_seq */ 0,
+        stamp_at(t(1)),
+    )
+    .await
+    .expect("a lengthening against the current sequence lands");
+    assert_eq!(adjusted.mutation_seq, 1, "the act advanced the sequence");
+
+    let read = window_repo::find(&conn, &scope(), TENANT, Uuid::from_u128(0x_5e_01))
+        .await
+        .expect("read")
+        .expect("there");
+    assert_eq!(
+        read.mutation_seq, 1,
+        "and the store holds it, rather than the caller's arithmetic"
+    );
+}
+
+/// **The sweep does not advance it, and this is the test that keeps D-184 closed.**
+///
+/// The sequence counts *acts*, not row writes. If the activation sweep advanced it,
+/// a window that activated between a refused act and its approved retry would make
+/// the retry render a different act token — so the retry would name a subject no
+/// unit was opened under, find nothing, and open a second unit. That is exactly the
+/// approval loop with no exit that D-184 closed, reopened through the clock instead
+/// of through the window id.
+///
+/// So the two clock-driven edges of §4 leave the number alone and the one
+/// operator-driven edge advances it, which is `inst-ws-cancel` against
+/// `inst-ws-activate` / `inst-ws-expire`.
+#[tokio::test]
+async fn the_activation_sweep_does_not_advance_the_act_sequence() {
+    let provider = harness().await;
+    must_schedule(&provider, window(0x_5e_02, t(10), Some(t(20)))).await;
+    let conn = provider.conn().expect("scoped connection");
+    let id = Uuid::from_u128(0x_5e_02);
+
+    let active = window_repo::transition(
+        &conn,
+        &scope(),
+        TENANT,
+        id,
+        WindowState::Active,
+        t(10),
+        stamp_at(t(10)),
+    )
+    .await
+    .expect("scheduled -> active");
+    assert_eq!(
+        active.mutation_seq, 0,
+        "an activation is the clock's, not an operator's act"
+    );
+
+    let expired = window_repo::transition(
+        &conn,
+        &scope(),
+        TENANT,
+        id,
+        WindowState::Expired,
+        t(20),
+        stamp_at(t(20)),
+    )
+    .await
+    .expect("active -> expired");
+    assert_eq!(expired.mutation_seq, 0, "and neither is an expiry");
+}
+
+/// A cancellation **is** an operator act, so it advances the sequence — the other
+/// side of [`the_activation_sweep_does_not_advance_the_act_sequence`].
+#[tokio::test]
+async fn a_cancellation_advances_the_act_sequence() {
+    let provider = harness().await;
+    must_schedule(&provider, window(0x_5e_03, t(10), Some(t(20)))).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    let cancelled = window_repo::transition(
+        &conn,
+        &scope(),
+        TENANT,
+        Uuid::from_u128(0x_5e_03),
+        WindowState::Cancelled,
+        t(2),
+        stamp_at(t(2)),
+    )
+    .await
+    .expect("scheduled -> cancelled");
+    assert_eq!(cancelled.mutation_seq, 1);
+}
+
+/// **The precondition is compared by the `UPDATE`, not by a read before it.**
+///
+/// The sequence rides in the statement's own `WHERE`, which is what
+/// `api::rest::preconditions`' doc means by *"the repository's compare-and-swap is
+/// the authority"*: a tag compared after a read and before a write is a decision
+/// handed to a statement that races it. So an act asserting a sequence the row has
+/// left is refused as a stale row version — the same refusal, and the same wire code
+/// (`STALE_VERSION`), that every other precondition in this gear answers with.
+#[tokio::test]
+async fn an_adjustment_against_a_stale_act_sequence_is_refused() {
+    let provider = harness().await;
+    must_schedule(&provider, window(0x_5e_04, t(10), Some(t(20)))).await;
+    let conn = provider.conn().expect("scoped connection");
+    let id = Uuid::from_u128(0x_5e_04);
+
+    window_repo::adjust_effective_to(&conn, &scope(), TENANT, id, Some(t(25)), 0, stamp_at(t(1)))
+        .await
+        .expect("the first act lands and takes the sequence to 1");
+
+    let refused = window_repo::adjust_effective_to(
+        &conn,
+        &scope(),
+        TENANT,
+        id,
+        Some(t(30)),
+        /* the sequence the first act consumed */ 0,
+        stamp_at(t(1)),
+    )
+    .await
+    .expect_err("an act against a consumed sequence is refused");
+    assert!(
+        matches!(refused, RepoError::StaleRowVersion { .. }),
+        "a moved premise is a stale row version, not a storage failure: {refused:?}"
+    );
+
+    let read = window_repo::find(&conn, &scope(), TENANT, id)
+        .await
+        .expect("read")
+        .expect("there");
+    assert_eq!(
+        read.effective_to,
+        Some(t(25)),
+        "and the refused act wrote nothing"
+    );
+    assert_eq!(read.mutation_seq, 1, "nor did it advance the sequence");
 }

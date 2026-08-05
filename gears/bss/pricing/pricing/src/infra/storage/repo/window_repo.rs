@@ -264,6 +264,17 @@ pub struct WindowRecord {
     pub expired_at: Option<DateTime<Utc>>,
     /// When it was cancelled; set exactly on a `cancelled` window.
     pub cancelled_at: Option<DateTime<Utc>>,
+    /// How many **operator acts** this window has been the subject of — `0` at its
+    /// schedule, `+1` per adjustment and per cancellation, unmoved by the activation
+    /// and expiry sweeps (D-190).
+    ///
+    /// It is the window's act identity and its entity tag at once, which is why one
+    /// column pays two owed items: the act token built from it is distinct across two
+    /// acts and stable across a retry of one, and
+    /// [`adjust_effective_to`]'s precondition compares against it in the `UPDATE`'s
+    /// own `WHERE` (D-191). `m20260802_000021`'s module doc carries the argument for
+    /// the sweeps leaving it alone, and it is the load-bearing half.
+    pub mutation_seq: u64,
 }
 
 /// Schedule a window on a price row, refusing an overlap on its canonical scope
@@ -327,6 +338,11 @@ pub async fn schedule(
         activated_at: Set(None),
         expired_at: Set(None),
         cancelled_at: Set(None),
+        // Act zero: the schedule **is** an act on this window, and it is the one act
+        // that cannot collide with an earlier one because there is no earlier one.
+        // Set explicitly rather than left to the column default, so the row this
+        // function returns and the row the store holds agree without a read.
+        mutation_seq: Set(0),
     };
     price_window::Entity::insert(am.clone())
         .secure()
@@ -356,6 +372,7 @@ pub async fn schedule(
         activated_at: None,
         expired_at: None,
         cancelled_at: None,
+        mutation_seq: 0,
     })
 }
 
@@ -848,11 +865,22 @@ pub async fn transition(
         }
     };
 
+    // **Only the operator's edge advances the act sequence.** §4 has three edges and
+    // two of them are the clock's: a sweep that advanced the counter would move a
+    // window's act identity with no operator act, and the retry that follows an
+    // approve would then name a subject no unit was opened under — D-184's approval
+    // loop with no exit, reached through the clock. `m20260802_000021`'s module doc
+    // carries the argument; `inst-ws-cancel` is the one edge an operator drives.
+    let advances = matches!(to, WindowState::Cancelled);
     let result = price_window::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(price_window::Column::State, Expr::value(to.as_str()))
         .col_expr(column, Expr::value(at))
+        .col_expr(
+            price_window::Column::MutationSeq,
+            Expr::value(advanced_seq(window_id, current.mutation_seq, advances)?),
+        )
         .filter(
             Condition::all()
                 .add(price_window::Column::TenantId.eq(tenant_id))
@@ -886,7 +914,31 @@ pub async fn transition(
         activated_at: pick(to, WindowState::Active, at, current.activated_at),
         expired_at: pick(to, WindowState::Expired, at, current.expired_at),
         cancelled_at: pick(to, WindowState::Cancelled, at, current.cancelled_at),
+        mutation_seq: if advances {
+            current.mutation_seq.saturating_add(1)
+        } else {
+            current.mutation_seq
+        },
         ..current
+    })
+}
+
+/// The act sequence one act on from `current`, in the signed shape the column holds.
+///
+/// `advance` is false for the clock's two edges, which write the number back
+/// unchanged rather than skipping the assignment: one statement shape for all three
+/// edges, and a same-value write is what the sixth trigger arm admits.
+fn advanced_seq(window_id: Uuid, current: u64, advance: bool) -> Result<i64, RepoError> {
+    let next = if advance {
+        current.saturating_add(1)
+    } else {
+        current
+    };
+    i64::try_from(next).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "pricing_price_window.mutation_seq of window {window_id} would be {next}, \
+             which is past what the column can hold"
+        ))
     })
 }
 
@@ -929,9 +981,19 @@ pub async fn transition(
 /// and names the owner; this sentence is here so that nobody reads the three
 /// refusals above as the complete set of what a shorten is judged against.
 ///
+/// # The `expected_seq` precondition
+///
+/// `expected_seq` is the act sequence the caller read the window at — D-191's
+/// `If-Match`, arriving here because this is where it can be compared without a race.
+/// It is **not optional**: a precondition that disappears when it is not supplied is
+/// a precondition that disappears exactly when two writers are racing, and the route
+/// requires the header (D-171). The comparison and the advance are one statement.
+///
 /// # Errors
 /// [`RepoError::NotFound`] when no window in scope answers to `window_id`.
 /// [`RepoError::WindowHistorical`] for the three refusals above.
+/// [`RepoError::StaleRowVersion`] naming both sequences when the window has been
+/// acted on since `expected_seq` was read.
 /// [`RepoError::WindowIntervalEmpty`] when the new end is not strictly after the
 /// start. [`RepoError::WindowOverlap`] when the new interval intersects a sibling
 /// on the key. [`RepoError::TimestampPrecisionExceeded`] on an instant finer than
@@ -943,6 +1005,7 @@ pub async fn adjust_effective_to(
     tenant_id: Uuid,
     window_id: Uuid,
     effective_to: Option<DateTime<Utc>>,
+    expected_seq: u64,
     stamp: AuditStamp,
 ) -> Result<WindowRecord, RepoError> {
     check_authored_instant("effectiveTo", effective_to)?;
@@ -961,26 +1024,51 @@ pub async fn adjust_effective_to(
     )
     .await?;
 
+    // **The precondition rides in the statement, not in a comparison before it.**
+    // `api::rest::preconditions`' doc draws the line: that module refuses a request it
+    // cannot understand, and "the repository's compare-and-swap is the authority" on
+    // one whose premise has moved — because a tag read, compared and then handed to a
+    // statement is a decision racing the write it authorizes. So `mutation_seq` joins
+    // the `WHERE` beside the state, and the same statement advances it (D-191).
     let result = price_window::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(price_window::Column::EffectiveTo, Expr::value(effective_to))
+        .col_expr(
+            price_window::Column::MutationSeq,
+            Expr::value(advanced_seq(window_id, current.mutation_seq, true)?),
+        )
         .filter(
             Condition::all()
                 .add(price_window::Column::TenantId.eq(tenant_id))
                 .add(price_window::Column::WindowId.eq(window_id))
-                .add(price_window::Column::State.eq(current.state.as_str())),
+                .add(price_window::Column::State.eq(current.state.as_str()))
+                .add(price_window::Column::MutationSeq.eq(advanced_seq(
+                    window_id,
+                    expected_seq,
+                    false,
+                )?)),
         )
         .exec(runner)
         .await
         .map_err(|e| RepoError::Db(format!("adjust pricing_price_window {window_id}: {e}")))?;
 
     if result.rows_affected == 0 {
-        // The `state = <expected>` predicate matched nothing, so the row moved
-        // between the read and the write. Re-ask the frozen check against what it
-        // moved to: if it became terminal, the adjustment is now refused for a
-        // reason the caller can act on.
+        // Either predicate can have missed, so the fresh read decides which, and the
+        // sequence is asked first: an act sequence that has moved means another
+        // **act** landed, which is the caller's precondition and not this window's
+        // state machine. The two cannot both be the answer — the clock's edges leave
+        // the sequence alone (`m20260802_000021`) — so asking in this order names the
+        // cause rather than whichever check happens to be written first.
         let fresh = require(runner, scope, tenant_id, window_id).await?;
+        if fresh.mutation_seq != expected_seq {
+            return Err(RepoError::StaleRowVersion {
+                subject: "price window".to_owned(),
+                id: window_id.to_string(),
+                current: fresh.mutation_seq,
+                submitted: expected_seq,
+            });
+        }
         refuse_frozen_end(&fresh, effective_to, stamp.recorded_at)?;
         // It moved without becoming frozen, and `scheduled -> active` is the only
         // such move: the adjustment is still perfectly legal and what happened is
@@ -994,6 +1082,7 @@ pub async fn adjust_effective_to(
 
     Ok(WindowRecord {
         effective_to,
+        mutation_seq: current.mutation_seq.saturating_add(1),
         ..current
     })
 }
@@ -1471,6 +1560,18 @@ fn to_domain(row: price_window::Model, scope_key: ScopeKey) -> Result<WindowReco
         activated_at: row.activated_at,
         expired_at: row.expired_at,
         cancelled_at: row.cancelled_at,
+        // The one place the column's lower bound is enforced. `m20260802_000021`
+        // carries no `CHECK (mutation_seq >= 0)` — the portable form of one is a
+        // whole-table rebuild on `SQLite` — so the boundary that converts the signed
+        // column to the unsigned counter is where a negative is refused, in the same
+        // breath as a state token this crate does not know.
+        mutation_seq: u64::try_from(row.mutation_seq).map_err(|_| {
+            RepoError::CorruptRow(format!(
+                "pricing_price_window.mutation_seq of window {} is {}, and an act \
+                 sequence counts acts",
+                row.window_id, row.mutation_seq
+            ))
+        })?,
     })
 }
 

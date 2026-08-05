@@ -125,6 +125,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_tier_band_no_insert",
     "trg_pricing_price_tier_band_no_update",
     "trg_pricing_price_tier_band_parent_kind",
+    "trg_pricing_price_window_act_sequence",
     "trg_pricing_price_window_flip_whitelist",
     "trg_pricing_price_window_frozen_columns",
     "trg_pricing_price_window_future_end",
@@ -423,6 +424,10 @@ fn expected_trigger_bodies() -> Vec<(String, u64)> {
         (
             "trg_pricing_price_tier_band_parent_kind",
             13_015_595_855_638_009_436_u64,
+        ),
+        (
+            "trg_pricing_price_window_act_sequence",
+            8_416_459_948_900_544_137_u64,
         ),
         (
             "trg_pricing_price_window_flip_whitelist",

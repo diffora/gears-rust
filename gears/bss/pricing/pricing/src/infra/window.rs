@@ -252,6 +252,13 @@ pub struct WindowMutationReceipt {
     pub effective_to: Option<DateTime<Utc>>,
     /// The state as stored after the mutation.
     pub state: WindowState,
+    /// The act sequence the window stands at **after** this act — the entity tag the
+    /// caller's next act must assert (D-190, D-191).
+    ///
+    /// On the receipt because there is no `GET` on a window: the mutating verbs are
+    /// the only producers of the tag, so a surface that did not carry it here would
+    /// require a precondition its own caller could not obtain.
+    pub mutation_seq: u64,
 }
 
 /// What a window mutation did: it ran, or it opened a unit and stood still.
@@ -434,7 +441,17 @@ impl WindowService {
     /// extension collides with a sibling; [`DomainError::ValidationFailed`] on an
     /// interior gap; [`DomainError::NotFound`] for an unknown window;
     /// [`DomainError::ServiceUnavailable`] when the registry cannot assign;
-    /// [`DomainError::Internal`] on a storage failure.
+    /// [`DomainError::StaleVersion`] when the window has been acted on since
+    /// `expected_seq` was read; [`DomainError::Internal`] on a storage failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "`Self::schedule`'s reason, plus the one this act has that the other \
+                  two do not: the act sequence the caller read the window at (D-191's \
+                  `If-Match`). It is a fact only the caller holds - the whole point of \
+                  a precondition is that the store did not choose it - so it cannot be \
+                  derived here, and bundling the six into a struct would name a request \
+                  type in `infra` that no surface has"
+    )]
     pub async fn adjust_effective_to(
         &self,
         ctx: &SecurityContext,
@@ -442,6 +459,7 @@ impl WindowService {
         tenant_id: Uuid,
         window_id: Uuid,
         effective_to: Option<DateTime<Utc>>,
+        expected_seq: u64,
         stamp: AuditStamp,
     ) -> Result<WindowMutationOutcome, DomainError> {
         let now = stamp.recorded_at;
@@ -471,7 +489,7 @@ impl WindowService {
                     effective_from: current.effective_from,
                     effective_to,
                     reason_code: current.reason_code.clone(),
-                    op: Op::Adjust,
+                    op: Op::Adjust { expected_seq },
                     plan,
                 })
             },
@@ -545,7 +563,17 @@ impl WindowService {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Op {
     Schedule,
-    Adjust,
+    /// A `PATCH`, carrying the **act sequence the caller read the window at** —
+    /// D-191's `If-Match`, travelling with the act rather than beside it.
+    ///
+    /// On the variant and not on `mutate`'s parameter list because it belongs to
+    /// exactly one of the three acts: the `POST` has no window to have read, and §5
+    /// declares no precondition for the `DELETE` (D-191 clause (3) — an empty cell
+    /// left empty, rather than a pattern completed by analogy). A parameter every
+    /// caller had to pass would make two of them pass a value that means nothing.
+    Adjust {
+        expected_seq: u64,
+    },
     Cancel,
 }
 
@@ -558,7 +586,7 @@ impl Op {
     const fn token(self) -> &'static str {
         match self {
             Self::Schedule => "schedule",
-            Self::Adjust => "adjust",
+            Self::Adjust { .. } => "adjust",
             Self::Cancel => "cancel",
         }
     }
@@ -583,7 +611,7 @@ impl Op {
     /// [`window::shortens`](crate::domain::window::shortens), the single definition
     /// of "shorten" this crate has, rather than through a second spelling here.
     const fn may_remove_coverage(self) -> bool {
-        matches!(self, Self::Adjust | Self::Cancel)
+        matches!(self, Self::Adjust { .. } | Self::Cancel)
     }
 
     /// Which registered always-material trigger this act **is** (§3 step 4, D-62),
@@ -620,7 +648,7 @@ impl Op {
         match self {
             Self::Schedule => None,
             Self::Cancel => Some(Trigger::WindowCancellation),
-            Self::Adjust => planned
+            Self::Adjust { .. } => planned
                 .plan
                 .current
                 .as_ref()
@@ -650,7 +678,7 @@ impl Op {
             // `effectiveFrom`/`effectiveTo`, so a consumer reads the new interval
             // off the same field either way. Minting a fifth name would add a
             // token to `chk_pricing_outbox_event_name` that no document declares.
-            Self::Schedule | Self::Adjust => CatalogEvent::PriceWindowScheduled,
+            Self::Schedule | Self::Adjust { .. } => CatalogEvent::PriceWindowScheduled,
             Self::Cancel => CatalogEvent::PriceWindowCancelled,
         }
     }
@@ -786,27 +814,31 @@ pub fn parse_unit_subject(subject_ref: &str) -> Option<ProposedAct> {
         (token != "open").then(|| token.to_owned())
     }
     let parts: Vec<&str> = subject_ref.split('/').collect();
-    let [_plan, second, third, fourth, fifth] = parts.as_slice() else {
-        return None;
-    };
-    if *second == "schedule" {
-        return Some(ProposedAct {
+    match parts.as_slice() {
+        // A schedule names the act's own content, since its window has no id yet
+        // (D-184 clause (2)) and no act sequence either.
+        [_plan, "schedule", price, from, to] => Some(ProposedAct {
             operation: "schedule".to_owned(),
             window_id: None,
-            price_id: Uuid::parse_str(third).ok(),
-            effective_from: end(fourth),
-            effective_to: end(fifth),
+            price_id: Uuid::parse_str(price).ok(),
+            effective_from: end(from),
+            effective_to: end(to),
             current_effective_to: None,
-        });
+        }),
+        // The other two carry the act sequence they were read at (D-190) between the
+        // operation and the ends. It is **skipped** rather than rendered: it is how
+        // two occurrences of one transition are told apart, and a reviewer is being
+        // shown what moves rather than how many acts preceded it.
+        [_plan, window, op, _seq, prior, new] => Some(ProposedAct {
+            operation: (*op).to_owned(),
+            window_id: Uuid::parse_str(window).ok(),
+            price_id: None,
+            effective_from: None,
+            effective_to: end(new),
+            current_effective_to: end(prior),
+        }),
+        _ => None,
     }
-    Some(ProposedAct {
-        operation: (*third).to_owned(),
-        window_id: Uuid::parse_str(second).ok(),
-        price_id: None,
-        effective_from: None,
-        effective_to: end(fifth),
-        current_effective_to: end(fourth),
-    })
 }
 
 /// One end of an interval, in a spelling that round-trips and sorts.
@@ -862,16 +894,27 @@ impl Planned {
                 interval_end(Some(self.effective_from)),
                 interval_end(self.effective_to),
             ),
-            Op::Adjust | Op::Cancel => {
+            Op::Adjust { .. } | Op::Cancel => {
                 window_unit_ref(self.plan.plan_id, window_id, &self.act_token())
             }
         }
     }
 
+    /// The **act sequence this act was read at** — the window's `mutation_seq` before
+    /// it moves, and `0` for a schedule, whose window does not exist yet.
+    ///
+    /// "Before it moves" is what makes the token stable across a genuine retry: a
+    /// refused act wrote nothing, so the retry reads the same number and renders the
+    /// same token, which is what lets it find the unit the first attempt opened.
+    fn read_at_seq(&self) -> u64 {
+        self.plan.current.as_ref().map_or(0, |w| w.mutation_seq)
+    }
+
     fn act_token(&self) -> String {
         format!(
-            "{}/{}/{}",
+            "{}/{}/{}/{}",
             self.op.token(),
+            self.read_at_seq(),
             interval_end(self.plan.current.as_ref().and_then(|w| w.effective_to)),
             interval_end(self.effective_to),
         )
@@ -1122,6 +1165,7 @@ impl WindowService {
                             effective_from: written.effective_from,
                             effective_to: written.effective_to,
                             state: written.state,
+                            mutation_seq: written.mutation_seq,
                         },
                     )))
                 })
@@ -1161,7 +1205,7 @@ fn project(planned: &Planned, window_id: Uuid) -> KeyWindows {
             planned.effective_to,
             WindowState::Cancelled,
         ),
-        Op::Schedule | Op::Adjust => WindowInterval::new(
+        Op::Schedule | Op::Adjust { .. } => WindowInterval::new(
             planned.effective_from,
             planned.effective_to,
             planned
@@ -1546,12 +1590,13 @@ async fn write(
         )
         .await
         .map_err(|e| repo_failure(&e)),
-        Op::Adjust => window_repo::adjust_effective_to(
+        Op::Adjust { expected_seq } => window_repo::adjust_effective_to(
             runner,
             scope,
             tenant_id,
             window_id,
             planned.effective_to,
+            expected_seq,
             stamp,
         )
         .await

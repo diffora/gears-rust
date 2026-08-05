@@ -243,6 +243,8 @@ async fn seed_active_window(
         activated_at: Set(Some(from)),
         expired_at: Set(None),
         cancelled_at: Set(None),
+        // Born mid-life, so no operator has acted on it beyond its own schedule.
+        mutation_seq: Set(0),
     };
     price_window::Entity::insert(row.clone())
         .secure()

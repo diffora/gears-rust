@@ -72,6 +72,8 @@ fn stored(from: i64, to: Option<i64>) -> WindowRecord {
         activated_at: None,
         expired_at: None,
         cancelled_at: None,
+        // Freshly scheduled: no operator act beyond the schedule itself.
+        mutation_seq: 0,
     }
 }
 
@@ -151,7 +153,11 @@ fn a_schedule_is_not_a_registered_trigger() {
 #[test]
 fn a_shorten_is_a_registered_trigger_and_a_lengthen_is_not() {
     // Bounded, pulled earlier: coverage is removed.
-    let shorten = planned(Op::Adjust, Some(stored(0, Some(30))), Some(20));
+    let shorten = planned(
+        Op::Adjust { expected_seq: 0 },
+        Some(stored(0, Some(30))),
+        Some(20),
+    );
     assert_eq!(
         shorten.op.registered_trigger(&shorten),
         Some(Trigger::WindowShortening),
@@ -159,7 +165,11 @@ fn a_shorten_is_a_registered_trigger_and_a_lengthen_is_not() {
     );
 
     // Bounded, pushed later: coverage is added.
-    let lengthen = planned(Op::Adjust, Some(stored(0, Some(30))), Some(40));
+    let lengthen = planned(
+        Op::Adjust { expected_seq: 0 },
+        Some(stored(0, Some(30))),
+        Some(40),
+    );
     assert_eq!(
         lengthen.op.registered_trigger(&lengthen),
         None,
@@ -167,7 +177,11 @@ fn a_shorten_is_a_registered_trigger_and_a_lengthen_is_not() {
     );
 
     // Bounded, bound removed: the largest extension there is.
-    let unbounded = planned(Op::Adjust, Some(stored(0, Some(30))), None);
+    let unbounded = planned(
+        Op::Adjust { expected_seq: 0 },
+        Some(stored(0, Some(30))),
+        None,
+    );
     assert_eq!(
         unbounded.op.registered_trigger(&unbounded),
         None,
@@ -175,7 +189,11 @@ fn a_shorten_is_a_registered_trigger_and_a_lengthen_is_not() {
     );
 
     // Open-ended, bounded: every instant past the new end is removed.
-    let bounding = planned(Op::Adjust, Some(stored(0, None)), Some(40));
+    let bounding = planned(
+        Op::Adjust { expected_seq: 0 },
+        Some(stored(0, None)),
+        Some(40),
+    );
     assert_eq!(
         bounding.op.registered_trigger(&bounding),
         Some(Trigger::WindowShortening),
@@ -183,7 +201,11 @@ fn a_shorten_is_a_registered_trigger_and_a_lengthen_is_not() {
     );
 
     // The same end again removes nothing, so it needs nobody's signature.
-    let no_op = planned(Op::Adjust, Some(stored(0, Some(30))), Some(30));
+    let no_op = planned(
+        Op::Adjust { expected_seq: 0 },
+        Some(stored(0, Some(30))),
+        Some(30),
+    );
     assert_eq!(
         no_op.op.registered_trigger(&no_op),
         None,
@@ -210,7 +232,11 @@ fn a_shorten_is_a_registered_trigger_and_a_lengthen_is_not() {
 #[test]
 fn the_controlled_arm_echoes_the_stored_interval_and_not_the_request() {
     let window_id = uuid::Uuid::from_u128(0x_d1);
-    let planned = planned(Op::Adjust, Some(stored(0, Some(30))), Some(20));
+    let planned = planned(
+        Op::Adjust { expected_seq: 0 },
+        Some(stored(0, Some(30))),
+        Some(20),
+    );
 
     let pending = pending_approval(
         &planned,

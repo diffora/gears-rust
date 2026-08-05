@@ -743,20 +743,39 @@ async fn post_window(
         .await
 }
 
-/// `PATCH` a window's end.
+/// `PATCH` a window's end, asserting the act sequence a fresh window stands at.
 async fn patch_window(
     h: &Harness,
     window_id: Uuid,
     to: Option<DateTime<Utc>>,
+) -> axum::http::Response<axum::body::Body> {
+    patch_window_asserting(h, window_id, to, IF_MATCH).await
+}
+
+/// `PATCH` a window's end under a caller-chosen tag — the cases that are *about* the
+/// precondition rather than about a window rule.
+async fn patch_window_asserting(
+    h: &Harness,
+    window_id: Uuid,
+    to: Option<DateTime<Utc>>,
+    if_match: &str,
 ) -> axum::http::Response<axum::body::Body> {
     h.allowed()
         .send(with_headers(
             "PATCH",
             &window_path(window_id),
             Some(serde_json::json!({ "effective_to": to })),
-            &[("if-match", IF_MATCH)],
+            &[("if-match", if_match)],
         ))
         .await
+}
+
+/// The `ETag` a mutating window verb hands back, or `None` when it emitted none.
+fn etag_of(response: &axum::http::Response<axum::body::Body>) -> Option<String> {
+    response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .map(|v| v.to_str().expect("an entity tag is ASCII").to_owned())
 }
 
 /// `DELETE` a window. **No headers at all** — §5's Idempotency cell for this
@@ -1538,8 +1557,11 @@ async fn a_cancel_opens_a_unit_and_the_window_is_still_scheduled() {
     );
     assert!(
         unit.subject_ref
-            .ends_with("/cancel/2099-09-01T00:00:00+00:00/2099-09-01T00:00:00+00:00"),
-        "and the act is named in full - the operation and the transition it makes: {}",
+            .ends_with("/cancel/0/2099-09-01T00:00:00+00:00/2099-09-01T00:00:00+00:00"),
+        "and the act is named in full - the operation, the **act sequence the window \
+         was read at** (D-190) and the transition it makes. The sequence is what tells \
+         a repeated oscillation from its own first occurrence, which the transition \
+         alone cannot: {}",
         unit.subject_ref
     );
     assert_eq!(unit.state, ApprovalState::Submitted);
@@ -3074,5 +3096,108 @@ async fn an_overlapping_schedule_is_refused_by_its_code_and_writes_nothing() {
         plane.len(),
         1,
         "the refused schedule wrote no second window: {plane:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The precondition on the PATCH (D-191), over the act sequence D-190 added
+// ---------------------------------------------------------------------------
+
+/// **The `If-Match` this route has always required is now compared.**
+///
+/// Until D-191 the header was parsed for its 400 and dropped, which is worse than not
+/// requiring it: a caller who sent it believed they were protected. What the tag names
+/// is the window's **act sequence**, the one monotonic thing a window row carries
+/// (D-190) — there is no row version on this table and no `GET` on a window, so the
+/// tag is minted by the mutating verbs themselves and this is the loop it closes.
+///
+/// The three acts are the whole argument: the first lands under the tag the window
+/// stands at, the second is refused for asserting a sequence the first consumed, and
+/// the third — the same act under the tag the refusal implies — lands. Without the
+/// third this case could not tell "refuses a stale tag" from "refuses every second
+/// act".
+#[tokio::test]
+async fn an_adjustment_asserting_a_consumed_act_sequence_is_refused_as_stale() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published(&h, plan_id).await;
+    let window_id = common::coverage_window_id(seeded.price_id);
+
+    let first = patch_window_asserting(&h, window_id, Some(at(30)), "\"0\"").await;
+    assert_eq!(
+        first.status(),
+        StatusCode::ACCEPTED,
+        "a lengthening under a configured policy commits on one principal"
+    );
+
+    let stale = patch_window_asserting(&h, window_id, Some(at(40)), "\"0\"").await;
+    assert_eq!(
+        stale.status(),
+        StatusCode::CONFLICT,
+        "the act sequence the caller asserted has been consumed"
+    );
+    assert_eq!(
+        conflict_reason(stale).await,
+        "STALE_VERSION",
+        "a moved premise is the Foundation's own code and no new one is minted"
+    );
+
+    let conn = h.state.db.conn().expect("conn");
+    let stored = bss_pricing::infra::storage::repo::window_repo::find(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        window_id,
+    )
+    .await
+    .expect("read the window")
+    .expect("it is there");
+    assert_eq!(
+        stored.effective_to,
+        Some(at(30)),
+        "and the refused act wrote nothing"
+    );
+
+    let fresh = patch_window_asserting(&h, window_id, Some(at(40)), "\"1\"").await;
+    assert_eq!(
+        fresh.status(),
+        StatusCode::ACCEPTED,
+        "the same act under the sequence the window now stands at is ordinary"
+    );
+}
+
+/// **The tag has a producer, which is what makes the precondition satisfiable.**
+///
+/// D-191 clause (2) records that a window has no `GET` and therefore no representation
+/// that could carry an entity tag. That is still true and is not worked around here:
+/// the tag is handed back by the **mutating** verbs, so a caller who schedules a
+/// window holds the tag its next act must assert, and each act hands back the next
+/// one. A surface that demanded a precondition no response ever supplied would be
+/// requiring a header the caller cannot obtain.
+#[tokio::test]
+async fn a_committed_window_mutation_hands_back_the_tag_the_next_act_must_assert() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published(&h, plan_id).await;
+
+    let scheduled = post_window(&h, seeded.price_id, common_to(), Some(at(0))).await;
+    assert_eq!(scheduled.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        etag_of(&scheduled).as_deref(),
+        Some("\"0\""),
+        "a window is born at act zero, and the schedule says so"
+    );
+    let body = body_json(scheduled).await;
+    let window_id = body["window"]["window_id"]
+        .as_str()
+        .map(|s| Uuid::parse_str(s).expect("a uuid"))
+        .expect("the schedule names the window it wrote");
+
+    let adjusted = patch_window_asserting(&h, window_id, Some(at(30)), "\"0\"").await;
+    assert_eq!(adjusted.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        etag_of(&adjusted).as_deref(),
+        Some("\"1\""),
+        "and the act that consumed act zero hands back the next tag"
     );
 }

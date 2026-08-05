@@ -118,6 +118,8 @@ use std::sync::Arc;
 
 use axum::extract::{Extension, Path, Query};
 use axum::http::HeaderMap;
+use axum::http::header::ETAG;
+use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, body::Bytes, http::StatusCode};
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, Utc};
@@ -134,6 +136,7 @@ use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::plans::{idempotency_key_param, if_match_param};
 use crate::api::rest::preconditions;
 use crate::api::rest::state::GovernanceState;
+use crate::domain::concurrency::RowVersion;
 use crate::domain::coverage::{self, CoverageReport, KeyCoverage};
 use crate::domain::error::DomainError;
 use crate::domain::money::CurrencyCode;
@@ -955,7 +958,7 @@ async fn schedule_window(
     Path(price_id): Path<Uuid>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<(StatusCode, Json<WindowMutationOutcomeView>), CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(correlation)?;
     // The key is required (D-171) and is read before anything is resolved, so a
@@ -998,12 +1001,13 @@ async fn adjust_window(
     Path(window_id): Path<Uuid>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<(StatusCode, Json<WindowMutationOutcomeView>), CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(correlation)?;
     // Required and parsed here; the comparison itself is the store's, inside the
-    // writing transaction (D-176 — a tag compared out here is a hint).
-    let _expected = preconditions::if_match(&headers)?;
+    // writing transaction (D-176 — a tag compared out here is a hint), where it rides
+    // the `UPDATE`'s own `WHERE` over the window's act sequence (D-191).
+    let expected = preconditions::if_match(&headers)?;
     let request: AdjustWindowRequest = preconditions::parse_body(&body)?;
     let tenant = ctx.subject_tenant_id();
     let coarse = tenant_write_scope(&enforcer, &ctx, tenant).await?;
@@ -1013,7 +1017,15 @@ async fn adjust_window(
     let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, Utc::now(), correlation);
     let outcome = state
         .windows
-        .adjust_effective_to(&ctx, &scope, tenant, window_id, request.effective_to, stamp)
+        .adjust_effective_to(
+            &ctx,
+            &scope,
+            tenant,
+            window_id,
+            request.effective_to,
+            expected.get(),
+            stamp,
+        )
         .await?;
     answer(&state, &scope, tenant, outcome, stamp).await
 }
@@ -1029,7 +1041,7 @@ async fn cancel_window(
     extension_ctx: Option<Extension<SecurityContext>>,
     correlation: Option<Extension<CorrelationId>>,
     Path(window_id): Path<Uuid>,
-) -> Result<(StatusCode, Json<WindowMutationOutcomeView>), CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(correlation)?;
     let tenant = ctx.subject_tenant_id();
@@ -1066,17 +1078,27 @@ async fn answer(
     tenant: Uuid,
     outcome: WindowMutationOutcome,
     stamp: crate::domain::audit::AuditStamp,
-) -> Result<(StatusCode, Json<WindowMutationOutcomeView>), CanonicalError> {
+) -> Result<Response, CanonicalError> {
     match outcome {
-        WindowMutationOutcome::Committed(receipt) => Ok((
-            StatusCode::ACCEPTED,
-            Json(WindowMutationOutcomeView {
-                outcome: OUTCOME_MUTATED.to_owned(),
-                window: WindowMutationView::from(*receipt),
-                materiality: None,
-                approval: None,
-            }),
-        )),
+        WindowMutationOutcome::Committed(receipt) => {
+            // **The tag, and this is its only producer.** There is no `GET` on a
+            // window (D-191 clause (2)), so a `PATCH` that demanded a precondition no
+            // response ever emitted would be requiring a header its own caller cannot
+            // obtain. Every committed act therefore hands back the sequence the window
+            // now stands at, which is the tag the next act asserts.
+            let tag = preconditions::etag(RowVersion::new(receipt.mutation_seq));
+            Ok((
+                StatusCode::ACCEPTED,
+                [(ETAG, tag)],
+                Json(WindowMutationOutcomeView {
+                    outcome: OUTCOME_MUTATED.to_owned(),
+                    window: WindowMutationView::from(*receipt),
+                    materiality: None,
+                    approval: None,
+                }),
+            )
+                .into_response())
+        }
         WindowMutationOutcome::SubmittedForApproval(pending) => {
             let view = MaterialityView::from(pending.verdict);
             let record = state
@@ -1104,6 +1126,10 @@ async fn answer(
                     &pending.subject_ref,
                 )
                 .await?;
+            // **No `ETag` on this arm, deliberately.** Nothing was written, so the
+            // window stands at the sequence the caller already asserted; emitting it
+            // again would suggest an act had advanced it. On a refused *schedule*
+            // there is no window at all and so no sequence to name.
             Ok((
                 StatusCode::ACCEPTED,
                 Json(WindowMutationOutcomeView {
@@ -1112,7 +1138,8 @@ async fn answer(
                     materiality: Some(view),
                     approval: Some(ApprovalView::from(&record)),
                 }),
-            ))
+            )
+                .into_response())
         }
     }
 }
