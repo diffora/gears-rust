@@ -124,6 +124,46 @@ fn a_plan_that_can_never_be_superseded_is_refused_in_its_own_words() {
 }
 
 #[test]
+fn a_row_that_is_not_its_keys_current_one_is_refused_in_its_own_words() {
+    // D-146's reasoning, applied to the supersession commit's predecessor swap:
+    // the caller is not editing draft content, so `NotDraft`'s "only draft content
+    // is mutable" would name as the remedy an operation nobody attempted. The two
+    // states this variant can actually report want different next actions —
+    // `superseded` means recompose against the key's new current row, `draft`
+    // means publish it rather than supersede it — and neither of them is "open the
+    // next revision".
+    //
+    // **The code is still shared with `NotDraft`, and that is a known gap rather
+    // than a decision.** D-146's own lesson is that a differing remedy wants a
+    // differing code, not only a differing sentence; the design set declares no
+    // error code for this refusal (S7 §5 has `SUPERSESSION_INSTANT_PASSED` and
+    // `SUPERSESSION_UNIT_MISMATCH` and nothing else), and inventing one here would
+    // be designing the wire contract ahead of the route that renders it. The
+    // sentence carries the distinction until then, which is exactly the prose a
+    // consumer cannot branch on — recorded against D-195 rather than left here.
+    let err = RepoError::NotSupersedable {
+        subject: "price".to_owned(),
+        id: "3f2a".to_owned(),
+        state: "superseded".to_owned(),
+    };
+
+    let DomainError::LifecycleForbidden(detail) = repo_failure(&err) else {
+        panic!("a row that is not current must map to LIFECYCLE_FORBIDDEN for now");
+    };
+    assert!(detail.contains("superseded"), "got: {detail}");
+    assert!(
+        detail.contains("only a published row is supersedable"),
+        "the ground the refusal rests on has to be in the sentence while it is all \
+         there is, got: {detail}"
+    );
+    assert!(
+        !detail.contains("only draft content is mutable"),
+        "the content-mutability sentence is one this variant exists to stop being \
+         told, got: {detail}"
+    );
+}
+
+#[test]
 fn a_second_open_draft_is_a_conflict_and_names_the_one_that_exists() {
     // A plan has at most one concurrently editable shape. The refusal points at
     // the revision holding the slot, so the caller edits it instead of guessing.

@@ -74,8 +74,11 @@ use uuid::Uuid;
 const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
 
 /// The repository, plus the provider the seeding helper needs to put a row into
-/// a state `price_repo::publish_rows` now reaches, and one - `superseded` - that
-/// still has no producer at all (D-88 / D-100, Slice 7).
+/// a state `price_repo::publish_rows` reaches. Both states it fabricates now have
+/// real producers — `superseded` gained one with
+/// `price_repo::commit_supersession_rows` (D-88's row half) — and it is kept
+/// anyway: a case about one row should not have to compose a whole supersession to
+/// reach the state it wants to assert against.
 async fn harness() -> (PriceRepo, DBProvider<DbError>) {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
@@ -211,11 +214,12 @@ fn draft(price_id: Uuid, scope_key: ScopeKey, content: PriceContent) -> NewPrice
 
 /// Move a row's `lifecycle_state` directly.
 ///
-/// `draft -> published` is `price_repo::publish_rows`'s flip and is fabricated
-/// here so a suite about one row does not need a publish unit;
-/// `published -> superseded` still has no producer in this gear at all. The
-/// append-only trigger permits both: it fires only when the row is already past
-/// `draft`, and `published -> superseded` is one of the two flips it whitelists.
+/// `draft -> published` is `price_repo::publish_rows`'s flip and
+/// `published -> superseded` is `commit_supersession_rows`'s; both are fabricated
+/// here so a suite about one row needs neither a publish unit nor a composed
+/// supersession. The append-only trigger permits both: it fires only when the row
+/// is already past `draft`, and `published -> superseded` is one of the two flips
+/// it whitelists.
 async fn flip_state(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,
@@ -2298,6 +2302,198 @@ async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_p
             .await
             .lifecycle_state,
         LifecycleState::Published.as_str()
+    );
+}
+
+/// `commit_supersession_rows` through a real transaction — the row half of
+/// `inst-su-commit`, whose whole point is that the caller does not order the two
+/// moves.
+async fn commit_supersession_rows(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    predecessor: Uuid,
+    successor: (Uuid, RowVersion),
+) -> Result<(), RepoError> {
+    let scope = scope.clone();
+    let (_, outcome) = provider
+        .db()
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::price_repo::commit_supersession_rows(
+                    txn,
+                    &scope,
+                    tenant_id,
+                    plan_id,
+                    predecessor,
+                    successor,
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| {
+        err.into_domain(|infra| RepoError::Db(format!("supersession commit transaction: {infra}")))
+    })
+}
+
+/// A key carrying its published predecessor and the staged successor draft — the
+/// world `inst-su-commit` runs against.
+async fn composed_supersession(
+    repo: &PriceRepo,
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+) -> (Uuid, Uuid) {
+    let predecessor = published_predecessor(repo, provider, scope).await;
+    let successor = Uuid::from_u128(0xb_5002);
+    supersede(
+        provider,
+        scope,
+        tenant(),
+        draft(successor, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("compose");
+    (predecessor, successor)
+}
+
+#[tokio::test]
+async fn the_supersession_commit_flips_the_predecessor_and_publishes_the_successor() {
+    // `inst-su-commit`'s two row moves, in the one order that works, from one
+    // call — so that no caller is in a position to order them wrongly. D-195
+    // clause (3) in code rather than in prose.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor) = composed_supersession(&repo, &provider, &scope).await;
+
+    commit_supersession_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        predecessor,
+        (successor, RowVersion::new(0)),
+    )
+    .await
+    .expect("the pair commits");
+
+    assert_eq!(
+        stored_row(&provider, &scope, predecessor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Superseded.as_str(),
+        "the predecessor left the published plane"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, successor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str(),
+        "and the successor arrived on it"
+    );
+}
+
+#[tokio::test]
+async fn the_predecessors_flip_leaves_its_frozen_entity_tag_alone() {
+    // D-141 / §3.7: the row version freezes with the published row's content and
+    // neither sanctioned in-place mutation moves it — not the `lifecycle_state`
+    // flips, not the monotonic `grandfatherUntil` tightening. A tag that moved
+    // under a representation no caller can write to would report a stale cache
+    // that is not stale.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor) = composed_supersession(&repo, &provider, &scope).await;
+    let before = stored_row(&provider, &scope, predecessor).await.row_version;
+
+    commit_supersession_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        predecessor,
+        (successor, RowVersion::new(0)),
+    )
+    .await
+    .expect("the pair commits");
+
+    assert_eq!(
+        stored_row(&provider, &scope, predecessor).await.row_version,
+        before,
+        "the flip is not a content mutation and does not move the tag"
+    );
+}
+
+#[tokio::test]
+async fn the_supersession_commit_refuses_a_predecessor_that_is_no_longer_published() {
+    // The replay case, and the reason the flip is a compare-and-swap rather than
+    // an UPDATE the state machine is trusted to have gated: a committed unit
+    // leaves the key's former current row `superseded`, and a second commit of
+    // the same unit must not silently move a row that has already moved.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor) = composed_supersession(&repo, &provider, &scope).await;
+    flip_state(&provider, &scope, predecessor, LifecycleState::Superseded).await;
+
+    let err = commit_supersession_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        predecessor,
+        (successor, RowVersion::new(0)),
+    )
+    .await
+    .expect_err("a row that has already left `published` is not supersedable again");
+
+    // Not `NotDraft`: that variant's sentence names as the remedy an operation
+    // this caller is not attempting. The remedy here is to recompose against the
+    // key's new current row.
+    let RepoError::NotSupersedable { id, state, .. } = err else {
+        panic!("the refusal names the state it found, got: {err:?}");
+    };
+    assert_eq!(id, predecessor.to_string());
+    assert_eq!(state, LifecycleState::Superseded.as_str());
+}
+
+#[tokio::test]
+async fn the_supersession_commit_leaves_the_predecessor_standing_when_the_successor_will_not_publish()
+ {
+    // `inst-su-commit`: "or everything rolls back". The predecessor's flip is the
+    // first move, so a successor refused by the *second* is exactly the case that
+    // would leave a key with no current row at all — a sales outage produced by a
+    // half-applied unit. The successor is refused on a version that moved.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor) = composed_supersession(&repo, &provider, &scope).await;
+
+    let err = commit_supersession_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        predecessor,
+        (successor, RowVersion::new(7)),
+    )
+    .await
+    .expect_err("a successor whose content moved since validation is refused");
+    assert!(
+        matches!(err, RepoError::StaleRowVersion { .. }),
+        "the successor's own precondition still decides, got: {err:?}"
+    );
+
+    assert_eq!(
+        stored_row(&provider, &scope, predecessor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str(),
+        "the flip rolled back with the publish it was paired with"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, successor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Draft.as_str()
     );
 }
 

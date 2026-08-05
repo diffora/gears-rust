@@ -812,6 +812,132 @@ pub async fn publish_rows(
     Ok(validated.iter().map(|(price_id, _)| *price_id).collect())
 }
 
+/// The supersession unit's **row half**: the predecessor leaves the published
+/// plane, then the successor arrives on it.
+///
+/// # The ordering is the function
+///
+/// `inst-su-commit`'s moves include these two, and D-195 makes their order
+/// normative: §3.7 admits at most one published row per key, so a successor
+/// flipped `draft → published` while its predecessor still reads `published`
+/// violates `uq_pricing_price_scope_key_current` — and violates it as a raw driver
+/// error, a 500 carrying nothing an operator can act on rather than a refusal.
+///
+/// They are therefore **one function rather than two calls a caller sequences**. A
+/// caller who can order them can order them wrongly, and the failure mode is not a
+/// refused request but a fault; the whole reason the ordering had to be written
+/// into the design set is that it is invisible until it fires. Withholding the
+/// separate moves is the point of this shape, not an oversight in it.
+///
+/// # Atomicity, and which move goes first
+///
+/// Both statements run in the caller's transaction, so `inst-su-commit`'s "or
+/// everything rolls back" holds for the pair. The order serves the *failure* path
+/// as well as the index: with the flip first, a successor the publish refuses
+/// leaves a transaction that rolls the flip back with it, and the state that is
+/// never briefly true is the one where the key has no current row at all —
+/// coverage removed, nothing selling — which is worse than either move not having
+/// happened.
+///
+/// # The predecessor's tag does not move, and is not a precondition either
+///
+/// The flip is a compare-and-swap on the row's **state**, not on its version.
+/// D-141 freezes the row version with the published row's content and exempts the
+/// `lifecycle_state` flips from moving it, so there is no version for a caller to
+/// present and none to bump: a tag that moved under a representation no caller can
+/// write to would report a stale cache that is not stale. What the swap is against
+/// is `lifecycle_state = 'published'`, and that is what makes a replayed commit
+/// refuse rather than re-flip a row that has already moved.
+///
+/// The successor's version **is** presented, because its content stays mutable
+/// right up to this statement. That precondition is [`publish_rows`]', unchanged,
+/// and this function delegates to it rather than restating it.
+///
+/// # No audit record here
+///
+/// The publish commit writes one record for the whole act at the subject's level
+/// rather than one per row moved — see
+/// [`PublishService::commit`](crate::infra::publish::PublishService::commit) step 6,
+/// where [`publish_rows`] is likewise silent. The supersession unit's record is its
+/// own, and belongs to whichever layer holds its approval reference.
+///
+/// # Errors
+/// [`RepoError::NotSupersedable`] when the predecessor is not the key's current
+/// row, naming the state it was found in; [`RepoError::NotFound`] when it is
+/// invisible to `scope`; everything [`publish_rows`] answers for the successor,
+/// notably [`RepoError::StaleRowVersion`]; [`RepoError::Db`] on a storage failure.
+pub async fn commit_supersession_rows(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    predecessor: Uuid,
+    successor: (Uuid, RowVersion),
+) -> Result<(), RepoError> {
+    supersede_row(txn, scope, tenant_id, predecessor).await?;
+    publish_rows(txn, scope, tenant_id, plan_id, &[successor]).await?;
+    Ok(())
+}
+
+/// Move one published row to `superseded`, refusing anything else.
+///
+/// The swap is on the state alone — see [`commit_supersession_rows`] for why there
+/// is no version to present. The **row count is the guard**, and the re-read that
+/// produces a precise refusal is taken *after* the count comes back short: the
+/// opposite order from [`publish_rows`]', for the opposite reason. There a pre-read
+/// is what names which of three conjuncts failed; here there is one conjunct, so
+/// the count is the whole question and a pre-read would only widen the window
+/// between asking and acting.
+async fn supersede_row(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+) -> Result<(), RepoError> {
+    let result = price::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            price::Column::LifecycleState,
+            Expr::value(LifecycleState::Superseded.as_str()),
+        )
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PriceId.eq(price_id))
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .exec(txn)
+        .await
+        .map_err(|e| RepoError::Db(format!("supersede price row: {e}")))?;
+
+    if result.rows_affected == 1 {
+        return Ok(());
+    }
+    Err(refuse_unsupersedable(txn, scope, tenant_id, price_id).await)
+}
+
+/// Why a row would not flip: it is gone, it is unreadable, or it is not current.
+async fn refuse_unsupersedable(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+) -> RepoError {
+    match load_row(runner, scope, tenant_id, price_id).await {
+        Err(err) => err,
+        Ok(None) => not_found(price_id),
+        Ok(Some(row)) => match read_lifecycle(&row.lifecycle_state) {
+            Err(err) => err,
+            Ok(state) => RepoError::NotSupersedable {
+                subject: SUBJECT.to_owned(),
+                id: price_id.to_string(),
+                state: state.to_string(),
+            },
+        },
+    }
+}
+
 /// Read a set of rows by id, scoped, in one query.
 ///
 /// Deliberately **not** filtered by `plan_id`: it mirrors [`mutable_draft`]'s

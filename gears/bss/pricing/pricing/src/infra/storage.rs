@@ -118,6 +118,29 @@ pub enum RepoError {
         /// The lifecycle state the row is actually in.
         state: String,
     },
+    /// A supersession aimed at a row that is not the key's **current** one.
+    ///
+    /// Deliberately not [`RepoError::NotDraft`], for the reason D-146 carved
+    /// [`RepoError::NoSuccessorRevision`] out of it: that variant's sentence —
+    /// "only draft content is mutable" — names as the remedy an operation this
+    /// caller is not attempting, and an operator following it would go and open a
+    /// revision that has nothing to do with the refusal. Nor is it a stale
+    /// version: the predecessor's tag is **frozen** (D-141), so there is no
+    /// refresh-and-retry, and the two states it can actually be found in mean
+    /// different things — `superseded` says this unit, or another one, has already
+    /// committed on this key and the remedy is to recompose against the new
+    /// current row (`inst-su-instant`'s recompose), while `draft` says the target
+    /// was never published at all and the remedy is a plain publish plus a window
+    /// schedule (`inst-su-compose`'s revival path).
+    #[error("pricing repo: {subject} {id} is {state}; only a published row is supersedable")]
+    NotSupersedable {
+        /// The kind of thing that was aimed at.
+        subject: String,
+        /// The reference the caller supplied.
+        id: String,
+        /// The lifecycle state the row is actually in.
+        state: String,
+    },
     /// A request for a **successor** revision on a plan whose current revision
     /// can never be superseded.
     ///
@@ -683,7 +706,16 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
             tracing::error!(error = %err, "bss-pricing: storage failure");
             DomainError::Internal(err.to_string())
         }
-        RepoError::FrontierRegression { .. } | RepoError::NotDraft { .. } => {
+        // Every refused state-machine edge, in one arm. `WindowStateForbidden` used
+        // to sit down among the window refusals with a comment saying it belonged
+        // "with the other refused edges" — which is here; it was only apart because
+        // of where the window variants are declared, and `clippy::match_same_arms`
+        // could not see the duplication while this body was a block and that one an
+        // expression. None of the four mints a code of its own.
+        RepoError::FrontierRegression { .. }
+        | RepoError::NotDraft { .. }
+        | RepoError::NotSupersedable { .. }
+        | RepoError::WindowStateForbidden { .. } => {
             DomainError::LifecycleForbidden(err.to_string())
         }
         RepoError::NoSuccessorRevision { .. } => {
@@ -752,10 +784,9 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         // corrupting this line to `Internal` left the whole crate green while a
         // colliding interval answered 500.
         RepoError::WindowOverlap { .. } => DomainError::WindowOverlap(err.to_string()),
-        // A refused state-machine edge, with the other refused edges. It mints no
-        // code of its own; the variant's own doc says why the two §5 window
-        // refusals that remain a surface's are not it.
-        RepoError::WindowStateForbidden { .. } => DomainError::LifecycleForbidden(err.to_string()),
+        // `WindowStateForbidden` was here, and is now in the refused-edge arm above
+        // where its own comment always said it belonged. The variant's doc still
+        // says why the two §5 window refusals that remain a surface's are not it.
         // The one window refusal the store both enforces physically and now
         // answers itself, so a caller who asked to move a window's end into the
         // past reads the 409 §5 declares instead of the trigger's 500.
