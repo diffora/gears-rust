@@ -109,14 +109,18 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("POST", APPROVAL_REJECT),
         ("POST", APPROVAL_WITHDRAW),
         // Slice 5's governance config: the threshold policy a D-10 unit is opened
-        // over. The `PUT` carries **no** precondition header of any kind and is
-        // therefore absent from both rosters below — §5's `ETag` cell is a
-        // divergence reported in `api::rest::threshold_policy`'s module doc, whose
-        // short form is that a tenant's first proposal has no prior version to name
-        // and a mandatory `If-Match` would make the bootstrap unreachable.
+        // over, and D-185's way back to §6's *unset ⇒ two-person rule always* — the
+        // tombstone, authored through the `PUT`'s `retire` marker rather than a verb
+        // of its own, so there are two operations here and not three.
+        //
+        // The `PUT` requires an `If-Match` (D-186) and is therefore in
+        // `if_match_routes()` below. The sentence that used to stand here said it
+        // carried no precondition "because a tenant's first proposal has no prior
+        // version to name and a mandatory `If-Match` would make the bootstrap
+        // unreachable" — false, and withdrawn: the `GET` answers 200 with
+        // `effective: null`, so there is always a representation to tag.
         ("GET", APPROVAL_THRESHOLD_POLICY),
         ("PUT", APPROVAL_THRESHOLD_POLICY),
-        // D-185's tombstone door — the only way back to §6's *unset ⇒ two-person rule
     ]
 }
 
@@ -345,6 +349,7 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+    use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{PRICE_WINDOW, PRICE_WINDOWS};
     vec![
         ("PATCH", PLAN),
@@ -359,6 +364,14 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         // tag is the window row's own version (D-141's rule for a price row, applied
         // to the surface that addresses one window by id).
         ("PATCH", PRICE_WINDOW),
+        // Slice 5's policy `PUT`: §5's cell is *`ETag` + approval unit* and D-186
+        // implements the first half. It is the one entry here whose tag is **not** a
+        // row version — the store is append-only and has no version column — so the
+        // tag is a digest over the representation the `GET` serves. The declaration
+        // matters as much as on the others and for a sharper reason: this resource's
+        // `GET` is the only place a tag can be obtained, so a client that does not
+        // know to send one cannot write at all.
+        ("PUT", APPROVAL_THRESHOLD_POLICY),
         // The creates assert their precondition through the idempotency gate rather
         // than through a version, and are listed under `idempotency_key_routes` too —
         // the window schedule among them, which is §5's own Idempotency cell for it.

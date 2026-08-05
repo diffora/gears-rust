@@ -1464,6 +1464,19 @@ async fn open_unit(h: &Harness, approvals: &ApprovalService, approval_id: Uuid) 
 async fn drive_the_threshold_policy_plane(h: &Harness) {
     let thresholds = bss_pricing::infra::threshold::ThresholdService::new(h.provider.clone());
     let unit = Uuid::now_v7();
+    // The `If-Match` premise the proposal asserts (D-186), read off the service so
+    // this fixture cannot drift from the one producer of the tag. This tenant has no
+    // policy, so it is the bootstrap's tag — the case the withdrawn premise claimed
+    // was unreachable. The instant is the act's own `at(16)`, not a second wall-clock
+    // reading, which is what `AssertedPolicy` exists to keep together.
+    let asserted = bss_pricing::infra::threshold::AssertedPolicy {
+        tag: thresholds
+            .state(&h.scope, TENANT)
+            .await
+            .expect("the policy state reads")
+            .tag(),
+        now: at(16),
+    };
     thresholds
         .propose(
             &h.scope,
@@ -1475,6 +1488,7 @@ async fn drive_the_threshold_policy_plane(h: &Harness) {
                     .expect("a valid code"),
                 basis: bss_pricing::domain::materiality::ThresholdBasis::Absolute { minor: 500 },
             }],
+            asserted,
             serde_json::json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
             stamp_of(ACTOR, at(16)),
         )

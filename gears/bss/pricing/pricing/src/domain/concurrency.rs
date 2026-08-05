@@ -16,6 +16,17 @@
 //! free to drift from the one that parses tags back, and a drift between those
 //! two is a submit that looks fresh and is not.
 //!
+//! # Two tags, because two resources have different state
+//!
+//! [`RowVersion`] is the tag of a **mutable row**, and it is what every `If-Match`
+//! on the authoring plane names. [`PolicyTag`] is the tag of the tenant's
+//! approval-threshold policy, which has no mutable row to version: the store is
+//! append-only, so the thing a caller read is a *representation* composed of two
+//! facts rather than a column. Both live here for the reason the paragraph above
+//! gives — one rendering, shared by whoever emits a tag and whoever parses one
+//! back — and both share [`strong_tag_body`], so neither reader can end up laxer
+//! than the other on the wildcard, the weak validator and the list.
+//!
 //! There is deliberately **no increment** here. The bump belongs in SQL —
 //! `row_version = row_version + 1` in the same atomic UPDATE that matches on
 //! the version the caller read — so the successor is computed by the database
@@ -203,6 +214,176 @@ pub fn require_match(current: RowVersion, submitted: RowVersion) -> Result<(), D
     }
     Err(DomainError::StaleVersion(format!(
         "current {current}, submitted {submitted}"
+    )))
+}
+
+/// The domain separator of [`PolicyTag`]'s preimage.
+///
+/// A tag is only ever compared with another tag of the same resource, so the
+/// separator buys nothing about *collisions*; what it buys is that a digest
+/// leaking out of some other framing in this crate — a content pin, an audit
+/// hash — can never be a valid policy tag by accident, which is the property
+/// that keeps a caller from satisfying this precondition with a string it read
+/// somewhere else.
+const POLICY_TAG_DOMAIN_SEP: &[u8] = b"cf.bss.pricing.approval_threshold_policy.etag.v1\x00";
+
+/// NULL-safe framing markers, [`crate::domain::approval::content_pin`]'s, for the
+/// reason that module gives: a field's **absence** has to frame differently from
+/// every value it could have held.
+const TAG_ABSENT: u8 = 0x00;
+/// The present marker; see [`TAG_ABSENT`].
+const TAG_PRESENT: u8 = 0x01;
+
+/// The entity tag of a tenant's **approval-threshold policy** representation
+/// (D-186).
+///
+/// # Why this resource's tag is not a [`RowVersion`]
+///
+/// Every other `If-Match` on this surface names a mutable row's `row_version`
+/// column. `pricing_approval_threshold` has no such column and never will: it is
+/// append-only history, and a version is minted rather than bumped. But an entity
+/// tag is a statement about a **representation**, not about a column — so the tag
+/// is derived from the two facts the `GET` serves, and it changes exactly when
+/// what the caller read changes.
+///
+/// # The two facts, and why both
+///
+/// `ThresholdPolicyView` carries `effective` and `pendingApproval`. A tag that
+/// moved only with `effective` would not change when a proposal opens or is
+/// withdrawn — and a tag that does not change when the representation changes is
+/// a broken validator, not a lenient one. So the preimage covers the effective
+/// version's **number or its absence** and the pending unit's **id or its
+/// absence**.
+///
+/// # Absence is not version zero, and the framing is what makes that true
+///
+/// `ThresholdService::propose` mints a tenant's first version as `0`, so "no
+/// effective version" and "effective version 0" are two states this tag must not
+/// confuse — a bootstrap tag that equalled the tag of the first approved version
+/// would accept a `PUT` authored before that approval. Absence frames as a lone
+/// [`TAG_ABSENT`] marker and presence as [`TAG_PRESENT`] followed by the number's
+/// eight big-endian bytes, so no absence shares a preimage with any value.
+///
+/// # Opaque to the caller
+///
+/// The body is a digest and the caller's only correct use of it is to copy it
+/// verbatim out of an `ETag` response header and back into `If-Match` — which is
+/// the argument
+/// [`revision_etag`](crate::api::rest::preconditions::revision_etag) already
+/// makes for the plan tag, arriving at a two-token form there because two
+/// decimals are what that resource's state *is*. Here the state is a number that
+/// may be absent beside a uuid that may be absent, and a digest is the rendering
+/// that carries "absent" without spending a sentinel value the domain also uses.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PolicyTag(String);
+
+impl PolicyTag {
+    /// The tag of the representation these two facts describe.
+    ///
+    /// Total: there is no pair this cannot render, which is why it answers the
+    /// tag rather than a `Result`.
+    #[must_use]
+    pub fn of(effective_version: Option<u64>, pending_unit: Option<uuid::Uuid>) -> Self {
+        let mut buf = Vec::with_capacity(POLICY_TAG_DOMAIN_SEP.len() + 26);
+        buf.extend_from_slice(POLICY_TAG_DOMAIN_SEP);
+        match effective_version {
+            Some(number) => {
+                buf.push(TAG_PRESENT);
+                buf.extend_from_slice(&number.to_be_bytes());
+            }
+            None => buf.push(TAG_ABSENT),
+        }
+        match pending_unit {
+            Some(unit) => {
+                buf.push(TAG_PRESENT);
+                buf.extend_from_slice(unit.as_bytes());
+            }
+            None => buf.push(TAG_ABSENT),
+        }
+        Self(crate::domain::audit::hex_bytes(
+            aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &buf).as_ref(),
+        ))
+    }
+
+    /// The digest inside the quotes, for a diagnostic that has to name a tag.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The RFC 9110 **strong** entity tag, ready for an `ETag` response header.
+    ///
+    /// Strong for [`RowVersion::to_etag`]'s reason: a weak validator asserts
+    /// semantic equivalence, and a write guard needs identity.
+    #[must_use]
+    pub fn to_etag(&self) -> String {
+        format!("\"{}\"", self.0)
+    }
+
+    /// Parse one `If-Match` header value as a policy tag.
+    ///
+    /// The envelope is [`strong_tag_body`]'s — no wildcard, no weak validator, no
+    /// list, quotes required — and what is inside it is checked to be a tag this
+    /// surface could have **issued**: 64 lowercase hex characters. That check is
+    /// what keeps the two refusals apart. A body of some other shape was never
+    /// served by this resource, so the caller did not read it here and the
+    /// request cannot be interpreted (400); a well-formed body that no longer
+    /// matches is a premise that moved (409), and only the store can say so.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::InvalidRequest`] for the three refusals of meaning
+    /// [`strong_tag_body`] owns, and for a body that is not exactly 64 lowercase
+    /// hex characters.
+    pub fn from_etag(raw: &str) -> Result<Self, DomainError> {
+        let body = strong_tag_body(raw)?;
+        if body.len() != 64
+            || !body
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(DomainError::InvalidRequest(format!(
+                "If-Match {raw}: an approval-threshold-policy tag is the opaque digest this \
+                 surface issues, 64 lowercase hex characters; pass back the `ETag` the `GET` \
+                 handed you, verbatim"
+            )));
+        }
+        Ok(Self(body.to_owned()))
+    }
+}
+
+impl fmt::Display for PolicyTag {
+    /// The bare digest — the body of the entity tag, so a log line and a wire
+    /// value are read the same way ([`RowVersion`]'s `Display` makes the same
+    /// choice).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Refuse a policy proposal whose premise has moved.
+///
+/// [`require_match`]'s counterpart, and the same category: `STALE_VERSION` (409)
+/// is `01-foundation.md` §3.3's name for an *`ETag`/row-version conflict*, and a
+/// tag that no longer describes the resource is precisely that. It is deliberately
+/// **not** a 412: the canonical error family this gear renders through carries no
+/// such status, and §3.3 forbids minting one — the same argument that keeps 422
+/// out of the gear.
+///
+/// # Errors
+///
+/// [`DomainError::StaleVersion`] naming **both** tags when they differ, for
+/// [`require_match`]'s reason. The tags are opaque, so the detail also says what
+/// the remedy is: re-read, and resubmit against what the read hands back.
+pub fn require_policy_match(current: &PolicyTag, submitted: &PolicyTag) -> Result<(), DomainError> {
+    if current == submitted {
+        return Ok(());
+    }
+    Err(DomainError::StaleVersion(format!(
+        "the approval-threshold policy has moved since it was read: current {current}, submitted \
+         {submitted}. Either a version took effect or a proposal opened or closed; re-read the \
+         policy and author against the `ETag` that read hands back"
     )))
 }
 

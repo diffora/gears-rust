@@ -14,11 +14,25 @@
 //! `THRESHOLD_INVALID`) and **that refusal stays**: an empty entry set is
 //! indistinguishable from absence, so the way back has to be a *positive* marker.
 //!
-//! The only alternative the entry table left was a version whose every entry is set
-//! absurdly high. That is not the same rule — it is a threshold nothing reaches
-//! rather than no threshold at all — it reads nothing like the fail-safe to an
-//! auditor, and it silently stops being true the day the tenant sells in a currency
-//! the version does not name.
+//! **What the alternative actually is, corrected 2026-08-05.** This paragraph said the
+//! only way back was "a version whose every entry is set absurdly high", which "silently
+//! stops being true the day the tenant sells in a currency the version does not name".
+//! Both halves are false, and the second is false in the reassuring direction, which is
+//! why it is corrected rather than softened. `reaches_absolute` is
+//! `magnitude >= absolute_minor`, so a **high** bar makes *fewer* changes material — the
+//! opposite of the fail-safe. What behaves like the fail-safe is a bar of **zero**, which
+//! `chk_pricing_approval_threshold_absolute_non_negative` explicitly permits and which
+//! every delta reaches; so a tenant *could* already get back to "everything is material"
+//! through an ordinary `PUT`. And nothing silently stops being true when a currency is
+//! added: a currency with no entry meets `inst-mat-percurrency`'s own fail-safe and is
+//! material anyway.
+//!
+//! So what this table buys is **expressiveness, not capability** (D-185 clause (1)): a
+//! version reading `entries: [USD 0, EUR 0]` says *"we have thresholds and they are
+//! zero"*, where the operator meant *"we have no thresholds"*. An auditor asking **when
+//! did this tenant stop thresholding** reads the answer off a tombstone's number and
+//! `effectiveFrom` instead of inferring it from a row of zeroes, and the statement is
+//! currency-agnostic rather than an enumeration somebody has to keep complete.
 //!
 //! # Why a marker table, and not a column
 //!

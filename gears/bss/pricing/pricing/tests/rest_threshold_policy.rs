@@ -25,7 +25,9 @@ mod rest_support;
 use axum::http::StatusCode;
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::domain::approval::ApprovalState;
-use rest_support::{Harness, approval_rows, audit_rows, body_json, problem_code, with_headers};
+use rest_support::{
+    Harness, approval_rows, audit_rows, body_json, policy_etag_of, problem_code, with_headers,
+};
 use uuid::Uuid;
 
 /// The principal who proposes. Distinct from [`REVIEWER`] because
@@ -81,18 +83,35 @@ async fn propose_and_approve(h: &Harness, body: serde_json::Value) -> u64 {
         .expect("the 202 names the version it minted")
 }
 
-/// `PUT` the body as `principal`.
+/// `PUT` the body as `principal`, under the policy's **current** tag (D-186).
+///
+/// The tag is read immediately before the write, which is what makes this the
+/// *positive* path: every refusal this file asserts is then the refusal it names
+/// rather than a `STALE_VERSION` standing in for it. The cases whose subject **is**
+/// the precondition drive [`propose_with_tag`] instead and say which tag they mean.
 async fn propose_as(
     h: &Harness,
     principal: Uuid,
     body: serde_json::Value,
+) -> axum::http::Response<axum::body::Body> {
+    let tag = policy_etag_of(h, principal).await;
+    propose_with_tag(h, principal, body, &[("if-match", tag.as_str())]).await
+}
+
+/// `PUT` the body as `principal` under whatever precondition headers are given —
+/// including none.
+async fn propose_with_tag(
+    h: &Harness,
+    principal: Uuid,
+    body: serde_json::Value,
+    headers: &[(&str, &str)],
 ) -> axum::http::Response<axum::body::Body> {
     h.allowed_as(principal)
         .send(with_headers(
             "PUT",
             APPROVAL_THRESHOLD_POLICY,
             Some(body),
-            &[],
+            headers,
         ))
         .await
 }
@@ -105,6 +124,25 @@ async fn read_policy_as(h: &Harness, principal: Uuid) -> serde_json::Value {
         .await;
     assert_eq!(response.status(), StatusCode::OK, "the read always answers");
     body_json(response).await
+}
+
+/// The tenant's policy premise as it stands right now, for the two service-level
+/// calls that bypass the route (D-186).
+///
+/// Read off the service rather than composed by hand: the tag has exactly one
+/// producer, and a fixture that rebuilt the digest here would pass while the real
+/// derivation drifted.
+async fn asserted_now(h: &Harness) -> bss_pricing::infra::threshold::AssertedPolicy {
+    let held = h
+        .governance
+        .thresholds
+        .state(&h.scope(), h.tenant)
+        .await
+        .expect("the policy state reads");
+    bss_pricing::infra::threshold::AssertedPolicy {
+        tag: held.tag(),
+        now: chrono::Utc::now(),
+    }
 }
 
 /// Approve `approval_id` as [`REVIEWER`].
@@ -886,6 +924,7 @@ async fn a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_stora
             taken,
             effective_from,
             vec![entry.clone()],
+            asserted_now(&h).await,
             materiality.clone(),
             rest_support::stamp_of(PROPOSER, rest_support::at(9)),
         )
@@ -902,6 +941,10 @@ async fn a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_stora
             taken,
             effective_from,
             vec![entry],
+            // Re-read, because the approval above moved the policy: a tag captured
+            // before it would refuse `STALE_VERSION` and this case would assert the
+            // precondition instead of the store's key.
+            asserted_now(&h).await,
             materiality,
             rest_support::stamp_of(PROPOSER, rest_support::at(10)),
         )
@@ -951,14 +994,14 @@ async fn a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_stora
 /// have said the opposite of what happens, answered 202 with a pending unit, and
 /// added a verb §5 does not declare for this path.
 async fn retire_as(h: &Harness, principal: Uuid) -> axum::http::Response<axum::body::Body> {
-    h.allowed_as(principal)
-        .send(with_headers(
-            "PUT",
-            APPROVAL_THRESHOLD_POLICY,
-            Some(serde_json::json!({ "retire": true })),
-            &[],
-        ))
-        .await
+    let tag = policy_etag_of(h, principal).await;
+    propose_with_tag(
+        h,
+        principal,
+        serde_json::json!({ "retire": true }),
+        &[("if-match", tag.as_str())],
+    )
+    .await
 }
 
 /// **D-185 — a tenant can go back to "unset", and it takes two people to do it.**
@@ -968,9 +1011,14 @@ async fn retire_as(h: &Harness, principal: Uuid) -> axum::http::Response<axum::b
 /// to: the policy is per-currency rows keyed `(tenant, version, currency)`, so "no
 /// thresholds" would have to be a version with zero rows — which the authoring door
 /// refuses (`THRESHOLD_INVALID`) and which, if admitted, `latest_version` could not
-/// see and no pin could cover. The only way back was a version of absurdly high
-/// bars, which is not the same rule, reads nothing like it to an auditor, and stops
-/// being true the day a currency is added.
+/// see and no pin could cover. What was missing was **expressiveness**: the sentence
+/// here used to say the only way back was "a version of absurdly high bars" which
+/// "stops being true the day a currency is added", and both halves were wrong.
+/// `reaches_absolute` is `magnitude >= absolute_minor`, so a high bar makes *fewer*
+/// changes material — the arithmetic way back is a bar of **zero**, which the CHECK
+/// permits — and a currency with no entry meets `inst-mat-percurrency`'s fail-safe,
+/// so nothing silently stops being true. What a zero-bar version cannot do is say
+/// what the operator meant, which is what an auditor needs.
 ///
 /// So the way back is a **tombstone**: a version that positively says *this tenant
 /// has no thresholds*, minted with the next number, pinned, and approved by an
@@ -1340,5 +1388,418 @@ async fn a_rejected_retirement_leaves_the_thresholds_in_force() {
     assert!(
         !audit_rows(&h).await.is_empty(),
         "and the decision is on the trail"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-186: §5's `ETag` half. The precondition, and the premise it replaced.
+// ---------------------------------------------------------------------------
+
+/// The tenant's latest **minted** version number, approved or not.
+///
+/// The write-side twin of `read_policy_as`, and the one the refusal cases need: a
+/// refused proposal must leave the counter alone, and `effective` cannot see that
+/// because an unapproved version is not effective either way.
+async fn latest_minted(h: &Harness) -> Option<i64> {
+    let conn = h.db.conn().expect("a scoped connection");
+    bss_pricing::infra::storage::repo::threshold_repo::latest_version(&conn, &h.scope(), h.tenant)
+        .await
+        .expect("the latest version reads")
+}
+
+/// **The bootstrap carries a tag, which is the sentence the withdrawn premise got
+/// wrong.**
+///
+/// The `PUT` used to declare no `If-Match` on the argument that *"a tenant's first
+/// proposal has no prior version to name, so a mandatory precondition would make the
+/// bootstrap unreachable"*. It is false, and this is the case that says so: a tenant
+/// with **no policy at all** reads a tag off the `GET` and its very first `PUT` is
+/// accepted carrying it. Nothing about the bootstrap is special.
+///
+/// Both halves are asserted, because either alone is satisfiable by a defect: that
+/// the unset read carries the header, and that the value it carries is one the `PUT`
+/// accepts.
+#[tokio::test]
+async fn a_tenant_with_no_policy_reads_a_tag_and_its_first_proposal_is_accepted_with_it() {
+    let h = Harness::new().await;
+
+    let unset = h
+        .allowed_as(PROPOSER)
+        .send(with_headers("GET", APPROVAL_THRESHOLD_POLICY, None, &[]))
+        .await;
+    assert_eq!(unset.status(), StatusCode::OK);
+    let tag = rest_support::etag_of(&unset).expect("the unset read carries a tag");
+    let body = body_json(unset).await;
+    assert!(
+        body["effective"].is_null() && body["pending_approval"].is_null(),
+        "this is the bootstrap, or the case is about something else: {body}"
+    );
+    assert!(
+        tag.starts_with('"') && tag.ends_with('"'),
+        "a strong entity tag is quoted: {tag}"
+    );
+
+    let accepted = propose_with_tag(
+        &h,
+        PROPOSER,
+        proposal("EUR", 500),
+        &[("if-match", tag.as_str())],
+    )
+    .await;
+    assert_eq!(
+        accepted.status(),
+        StatusCode::ACCEPTED,
+        "the bootstrap satisfies the precondition like any other caller"
+    );
+    let opened = body_json(accepted).await;
+    assert_eq!(
+        opened["proposed"]["version"], 0,
+        "and it is still version zero, which is the number absence must not render as: {opened}"
+    );
+}
+
+/// **An absent `If-Match` is refused, and nothing is written.**
+///
+/// D-171 makes the header required wherever §5 names a precondition, and §5 gives
+/// this row *"`ETag` + approval unit"*. `400` rather than a new code, which is
+/// `03-price-structure.md` §5's own reading: an absent precondition is a malformed
+/// request under the Foundation validation envelope.
+///
+/// The write-side assertion is the half that matters. A handler that refused *after*
+/// opening the transaction would answer 400 and still have consumed a version number,
+/// and the next proposal would mint over it.
+#[tokio::test]
+async fn a_proposal_without_an_if_match_is_refused_and_writes_nothing() {
+    let h = Harness::new().await;
+
+    let refused = propose_with_tag(&h, PROPOSER, proposal("EUR", 500), &[]).await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    // The refusal names the header, or the remedy is unreachable: a caller told only
+    // "invalid argument" over a body that is perfectly well formed cannot act.
+    let problem = body_json(refused).await.to_string();
+    assert!(
+        problem.contains("If-Match"),
+        "the refusal names the header the caller must send: {problem}"
+    );
+
+    assert_eq!(
+        latest_minted(&h).await,
+        None,
+        "no version was minted by a request that never passed its precondition"
+    );
+    assert!(
+        approval_rows(&h).await.is_empty(),
+        "and no unit was opened for a reviewer to look at"
+    );
+
+    // The retirement arm carries the same requirement: it is the same door, and it is
+    // the arm where an unconditional write is worst — it takes the tenant back to
+    // *everything is material*.
+    let retirement =
+        propose_with_tag(&h, PROPOSER, serde_json::json!({ "retire": true }), &[]).await;
+    assert_eq!(retirement.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(latest_minted(&h).await, None);
+}
+
+/// **A malformed tag is refused as a malformed request, and the wildcard is named
+/// separately.**
+///
+/// The three refusals of *meaning* are `domain::concurrency::strong_tag_body`'s and
+/// are shared with every other `If-Match` on this surface, which is the property
+/// worth pinning at the route: a reader that re-implemented the envelope would be
+/// free to accept `*` on exactly the verb where it is the defect — an unconditional
+/// mutation of the policy that governs every other change.
+///
+/// The fourth case is this resource's own: the tag is opaque, so a body that is not a
+/// digest this surface could have issued was never read here, and the request cannot
+/// be interpreted. It is deliberately **not** `STALE_VERSION` — that code means *the
+/// premise moved*, and nothing moved for a caller who invented a tag.
+#[tokio::test]
+async fn a_malformed_tag_is_four_hundred_and_never_a_stale_version() {
+    let h = Harness::new().await;
+
+    for (what, raw) in [
+        (
+            "the wildcard, which would overwrite whichever policy is current",
+            "*",
+        ),
+        (
+            "a weak validator, which cannot decide whether a write is safe",
+            "W/\"00\"",
+        ),
+        (
+            "an unquoted body",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "a list, which does not say which policy was read",
+            "\"aa\", \"bb\"",
+        ),
+        (
+            "a well-formed quote around something this surface never issued",
+            "\"not-a-digest\"",
+        ),
+    ] {
+        let refused =
+            propose_with_tag(&h, PROPOSER, proposal("EUR", 500), &[("if-match", raw)]).await;
+        assert_eq!(
+            refused.status(),
+            StatusCode::BAD_REQUEST,
+            "{what} must be refused as malformed, not applied"
+        );
+        // Not a 409: the two refusals mean different things and a caller branches on
+        // them differently. `STALE_VERSION` says *re-read and try again*, which is
+        // wrong advice for a tag nobody ever issued.
+        let problem = body_json(refused).await.to_string();
+        assert!(
+            !problem.contains("STALE_VERSION"),
+            "{what} is not a premise that moved: {problem}"
+        );
+    }
+
+    assert_eq!(latest_minted(&h).await, None, "and none of them wrote");
+    assert!(approval_rows(&h).await.is_empty());
+}
+
+/// **A stale tag is refused `STALE_VERSION` (409), and nothing is written.**
+///
+/// The state is built the way an operator reaches it, which is the only construction
+/// worth asserting: read the tag, let the world move — a proposal is approved, so
+/// `effective` moves — and then `PUT` against the tag that was read. This is the
+/// sequential case the approval unit cannot see: `PENDING_CHANGE_UNIT_EXISTS` refuses
+/// a second proposal only *while one is open*, and by the time the second operator
+/// writes, the first unit is decided and nothing is open.
+///
+/// `409` and not `412`: `01-foundation.md` §3.3 names `STALE_VERSION` as the category
+/// for an `ETag`/row-version conflict, and forbids minting a status the canonical
+/// family does not carry — the same argument that keeps 422 out of this gear.
+#[tokio::test]
+async fn a_proposal_under_a_tag_the_world_has_moved_past_is_a_stale_version() {
+    let h = Harness::new().await;
+
+    // The operator reads the policy. Nothing is in force yet.
+    let stale = policy_etag_of(&h, PROPOSER).await;
+
+    // The world moves: somebody else's proposal is approved, so `effective` is now
+    // version 0 and the representation the tag described is gone.
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+    let fresh = policy_etag_of(&h, PROPOSER).await;
+    assert_ne!(
+        stale, fresh,
+        "the tag has to move when the representation does, or this case proves nothing"
+    );
+
+    let refused = propose_with_tag(
+        &h,
+        PROPOSER,
+        proposal("USD", 900),
+        &[("if-match", stale.as_str())],
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "STALE_VERSION");
+
+    assert_eq!(
+        latest_minted(&h).await,
+        Some(0),
+        "the refusal happened before a number was minted: version 1 does not exist"
+    );
+    assert_eq!(
+        approval_rows(&h).await.len(),
+        1,
+        "and no second unit was opened"
+    );
+
+    // ...and the same request under the tag the read hands back now is accepted, which
+    // is what makes the refusal above a precondition rather than a dead surface.
+    let accepted = propose_with_tag(
+        &h,
+        PROPOSER,
+        proposal("USD", 900),
+        &[("if-match", fresh.as_str())],
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    assert_eq!(latest_minted(&h).await, Some(1));
+}
+
+/// **A retirement under a stale tag is refused too, and that is the arm where it
+/// matters most.**
+///
+/// A retirement takes the tenant back to *everything is material*. An operator who
+/// authored one against a reading that has since been superseded is retiring
+/// thresholds that are no longer the ones they looked at — so the door that is
+/// hardest to argue for a precondition on (nothing is being *set*) is the one where
+/// an unchecked premise changes the most.
+#[tokio::test]
+async fn a_retirement_under_a_stale_tag_is_refused_and_leaves_the_policy_alone() {
+    let h = Harness::new().await;
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+
+    let stale = policy_etag_of(&h, PROPOSER).await;
+    // The world moves under the operator: a second version takes effect.
+    assert_eq!(propose_and_approve(&h, proposal("USD", 900)).await, 1);
+
+    let refused = propose_with_tag(
+        &h,
+        PROPOSER,
+        serde_json::json!({ "retire": true }),
+        &[("if-match", stale.as_str())],
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "STALE_VERSION");
+    assert_eq!(
+        latest_minted(&h).await,
+        Some(1),
+        "no tombstone was minted: the retirement never reached the mint"
+    );
+
+    // And the fresh tag retires it, so both arms of the door are pinned on both sides.
+    let accepted = retire_as(&h, PROPOSER).await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    assert_eq!(latest_minted(&h).await, Some(2));
+}
+
+/// **The tag moves when a proposal opens, which is why it covers both fields.**
+///
+/// `ThresholdPolicyView` serves `effective` **and** `pendingApproval`. A tag derived
+/// from the effective version alone would be unchanged by a proposal opening or being
+/// withdrawn — and an entity tag that does not change when the representation changes
+/// is broken, not lenient: a caller who read the policy, then saw somebody else open
+/// a proposal, would be told their premise still held.
+///
+/// Three readings, because the two transitions are separate facts: a proposal opening
+/// moves the tag, and withdrawing it moves the tag back to what it was — the
+/// representation really is the one the caller first read, so the round trip is an
+/// equality rather than merely a third distinct value.
+#[tokio::test]
+async fn the_tag_moves_when_a_proposal_opens_and_returns_when_it_is_withdrawn() {
+    let h = Harness::new().await;
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+
+    let quiet = policy_etag_of(&h, PROPOSER).await;
+
+    let opened = body_json(propose_as(&h, PROPOSER, proposal("USD", 900)).await).await;
+    let approval_id: Uuid = opened["approval"]["approval_id"]
+        .as_str()
+        .expect("the unit's id")
+        .parse()
+        .expect("a uuid");
+    let pending = policy_etag_of(&h, PROPOSER).await;
+    assert_ne!(
+        quiet, pending,
+        "a proposal is part of what the GET serves, so it is part of the tag"
+    );
+
+    assert_eq!(
+        h.allowed_as(PROPOSER)
+            .send(with_headers(
+                "POST",
+                &format!("/bss-pricing/v1/approvals/{approval_id}/withdraw"),
+                None,
+                &[],
+            ))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        policy_etag_of(&h, PROPOSER).await,
+        quiet,
+        "and withdrawing it puts the representation back, tag included"
+    );
+}
+
+/// **Absence is not version zero, on the wire.**
+///
+/// `ThresholdService::propose` mints a tenant's first version as `0`, so the two
+/// states this tag must never confuse are "no effective version" and "effective
+/// version 0" — and the confusion would be silent in exactly the wrong direction: a
+/// bootstrap tag equal to the first approved version's tag would accept a `PUT`
+/// authored before that approval, which is the sequential lost update the
+/// precondition exists to refuse.
+///
+/// Asserted through the surface rather than over the renderer, because the renderer
+/// agreeing with itself is not the property — `domain::concurrency_tests` owns that
+/// one.
+#[tokio::test]
+async fn the_unset_tag_is_not_the_tag_of_version_zero() {
+    let h = Harness::new().await;
+    let unset = policy_etag_of(&h, PROPOSER).await;
+
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+    let version_zero = policy_etag_of(&h, PROPOSER).await;
+
+    assert_ne!(
+        unset, version_zero,
+        "`effective: null` and `effective: version 0` are two representations and must be two \
+         tags"
+    );
+}
+
+/// **The clock is part of the representation, so the tag changes with no write at
+/// all (D-188).**
+///
+/// A version whose `effective_from` is still ahead is approved and **not** in force,
+/// so it is not in `effective` and not in the tag. When its instant arrives the
+/// representation changes — and nothing was written, nobody called a verb, and no row
+/// moved. That is the one property that makes it clear the tag is over a
+/// *representation* rather than over the store's contents.
+///
+/// It is reachable in-process because [`bss_pricing::infra::threshold::state_at`]
+/// takes the instant, which is what D-188 made it take. It is **not** reachable
+/// through the route, which reads the wall clock: the route could only show this by
+/// waiting for a fixture's instant to pass, so what is driven here is the seam the
+/// route calls rather than the route.
+#[tokio::test]
+async fn a_version_whose_start_is_still_ahead_is_not_in_the_tag_until_it_arrives() {
+    let h = Harness::new().await;
+
+    // Approved, and dated well ahead: in force at no instant this test names but the
+    // second.
+    assert_eq!(
+        propose_and_approve(&h, dated_proposal(NOT_YET, "EUR", 500)).await,
+        0
+    );
+
+    let conn = h.db.conn().expect("a scoped connection");
+    let before: chrono::DateTime<chrono::Utc> =
+        "2099-02-01T00:00:00Z".parse().expect("an RFC 3339 instant");
+    let after: chrono::DateTime<chrono::Utc> =
+        "2099-04-01T00:00:00Z".parse().expect("an RFC 3339 instant");
+
+    let ahead = bss_pricing::infra::threshold::state_at(&conn, &h.scope(), h.tenant, before)
+        .await
+        .expect("the state reads");
+    let arrived = bss_pricing::infra::threshold::state_at(&conn, &h.scope(), h.tenant, after)
+        .await
+        .expect("the state reads");
+
+    assert!(
+        ahead.effective.is_none(),
+        "a version whose start is ahead is not in force, so the tenant is on nothing"
+    );
+    assert_eq!(
+        arrived
+            .effective
+            .as_ref()
+            .map(bss_pricing::domain::materiality::ThresholdVersion::version),
+        Some(0),
+        "and the same rows are in force once the instant has passed"
+    );
+    assert_ne!(
+        ahead.tag(),
+        arrived.tag(),
+        "so the tag changed with no write at all: it is over the representation, not the store"
+    );
+    // And the tag of the not-yet state is the unset tag, which is the fail-safe
+    // reading it has to be: between approval and `effectiveFrom` the tenant's policy
+    // is the design set's *unset*, and a caller reading then holds a premise that
+    // genuinely is "this tenant has nothing in force".
+    assert_eq!(
+        ahead.tag(),
+        bss_pricing::domain::concurrency::PolicyTag::of(None, None),
+        "the not-yet state and the never-configured state are the same representation"
     );
 }

@@ -100,6 +100,23 @@
 //! and the policy `GET` read the wall clock, which for those callers is the same
 //! instant to within the call.
 //!
+//! # The `If-Match` premise is this module's to refuse (D-186)
+//!
+//! §5 gives the policy row the Idempotency cell *"`ETag` + approval unit"*, and the
+//! `ETag` half lands here rather than at the transport. `api::rest::preconditions`
+//! draws the line and this side of it is the store's: *that* module refuses a
+//! request it cannot understand, and this one refuses a request whose premise has
+//! moved. The comparison therefore happens **inside** [`ThresholdService::propose`]
+//! and [`ThresholdService::retire`]'s transaction, recomputed from the same two
+//! reads [`state_at`] composes, and before a version number is minted — a
+//! comparison in the handler would read the world, decide, and hand the decision to
+//! a statement that races it.
+//!
+//! The tag itself has exactly one producer, [`ThresholdState::tag`], because the
+//! `GET` that issues it and the transaction that tests it must agree to the byte:
+//! a second derivation is free to drift, and a drift in either direction is either
+//! a precondition nobody can satisfy or one that refuses nothing.
+//!
 //! The walk is bounded by the number of versions a tenant has ever proposed, which
 //! is a governance act performed by a human through a two-person review. If that
 //! ever stops being a handful, the remedy is an index-backed join and not a cache:
@@ -114,6 +131,7 @@ use uuid::Uuid;
 
 use crate::domain::approval::content_pin::threshold_content_hash;
 use crate::domain::audit::AuditStamp;
+use crate::domain::concurrency::{PolicyTag, require_policy_match};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{ThresholdEntry, ThresholdPolicy, ThresholdVersion};
 use crate::infra::approval::read_threshold_version;
@@ -268,6 +286,73 @@ pub struct ThresholdState {
     pub pending: Option<ApprovalRecord>,
 }
 
+impl ThresholdState {
+    /// The entity tag of this state (D-186).
+    ///
+    /// **The one producer of the rendering**, and that is the point rather than
+    /// deduplication. The tag the `GET` emits and the tag a `PUT`'s transaction
+    /// recomputes have to agree to the byte or the precondition is either
+    /// unsatisfiable or vacuous, and the way that failure arrives is a second
+    /// derivation that drifted. So both go through this method, over the same
+    /// `ThresholdState` both already hold.
+    ///
+    /// It covers **both** fields, because both are served: a tag that moved only
+    /// with `effective` would not change when a proposal opened, and a caller who
+    /// read the policy before somebody else opened a proposal would be told their
+    /// premise still held.
+    #[must_use]
+    pub fn tag(&self) -> PolicyTag {
+        PolicyTag::of(
+            self.effective.as_ref().map(ThresholdVersion::version),
+            self.pending.as_ref().map(|unit| unit.approval_id),
+        )
+    }
+}
+
+/// The tenant's effective version and open proposal, read through one runner.
+///
+/// Extracted from [`ThresholdService::state`] so that the `GET` and the
+/// comparison inside [`ThresholdService::propose`] compose the **same two reads**
+/// rather than two arrangements of them. Runner-taking for
+/// [`effective_policy`]'s reason: a caller inside a transaction has to read the
+/// world it is about to write.
+///
+/// # Errors
+/// [`DomainError::Internal`] on a storage failure, or on a stored row the domain
+/// refuses.
+pub async fn state_at(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<ThresholdState, DomainError> {
+    Ok(ThresholdState {
+        effective: effective_version_at(runner, scope, tenant_id, now).await?,
+        pending: approval_repo::find_pending_policy_unit(runner, scope, tenant_id)
+            .await
+            .map_err(|e| repo_failure(&e))?,
+    })
+}
+
+/// The premise a policy `PUT` asserts, and the instant it is judged at (D-186).
+///
+/// **Two fields rather than two parameters, because they are one fact.** The tag
+/// describes a representation, and this resource's representation is a function of
+/// the clock — a version approved with an `effective_from` still ahead is not in
+/// it (D-188). So a tag is only meaningful *as of* an instant, and passing the two
+/// separately would let a call site compare against a wall-clock reading different
+/// from the one its own act is stamped with. That straddle is exactly what
+/// [`effective_version_at`]'s signature exists to prevent, and it would be
+/// reintroduced here by two arguments nothing binds together.
+#[derive(Clone, Debug)]
+pub struct AssertedPolicy {
+    /// The `ETag` the caller copied back out of the `GET`.
+    pub tag: PolicyTag,
+    /// The instant the whole act is about — the handler's `now`, the same one its
+    /// [`AuditStamp`] carries.
+    pub now: DateTime<Utc>,
+}
+
 impl ThresholdService {
     /// Build the surface over one database provider.
     #[must_use]
@@ -289,14 +374,7 @@ impl ThresholdService {
             .db
             .db()
             .in_transaction::<ThresholdState, DomainError, _>(move |txn| {
-                Box::pin(async move {
-                    Ok(ThresholdState {
-                        effective: effective_version(txn, &scope, tenant_id).await?,
-                        pending: approval_repo::find_pending_policy_unit(txn, &scope, tenant_id)
-                            .await
-                            .map_err(|e| repo_failure(&e))?,
-                    })
-                })
+                Box::pin(async move { state_at(txn, &scope, tenant_id, Utc::now()).await })
             })
             .await;
         outcome.map_err(into_domain)
@@ -331,17 +409,33 @@ impl ThresholdService {
     /// diff applies only after an independent `FinanceReviewer` approves"* — and it
     /// is why the store is versioned rather than mutated in place.
     ///
+    /// **The `If-Match` premise is tested here, not at the transport (D-186).**
+    /// `api::rest::preconditions`' own division of labour says why: that module
+    /// refuses a request it cannot understand, and the store refuses one whose
+    /// premise has moved. A comparison in the handler would read the world, decide,
+    /// and then hand the decision to a statement that races it — two proposals
+    /// could each read a matching tag and both proceed. Recomputed from the same two
+    /// reads [`state_at`] composes, inside this transaction, **before** a version
+    /// number is minted, so a refused proposal consumes nothing.
+    ///
+    /// The instant comes off `asserted` rather than the wall clock: the tag is a
+    /// function of the clock (D-188), and reading "now" a second time here would
+    /// compare against a different representation from the one the caller's act is
+    /// stamped with.
+    ///
     /// # Errors
-    /// [`DomainError::ThresholdInvalid`] when the entry set is empty or names one
-    /// currency twice; [`DomainError::PendingChangeUnitExists`] when the tenant
-    /// already holds a pending proposal;
-    /// [`DomainError::TimestampPrecisionExceeded`] on an unquantized
-    /// `effective_from`; [`DomainError::Internal`] on a storage failure.
+    /// [`DomainError::StaleVersion`] when the asserted tag no longer describes the
+    /// tenant's policy; [`DomainError::ThresholdInvalid`] when the entry set is
+    /// empty or names one currency twice;
+    /// [`DomainError::PendingChangeUnitExists`] when the tenant already holds a
+    /// pending proposal; [`DomainError::TimestampPrecisionExceeded`] on an
+    /// unquantized `effective_from`; [`DomainError::Internal`] on a storage failure.
     #[allow(
         clippy::too_many_arguments,
-        reason = "`ApprovalService::submit`'s reason, and the same eight facts: the scope and \
+        reason = "`ApprovalService::submit`'s reason, and the same facts: the scope and \
                   the tenant the gate compiled, the approval id the surface minted, the two \
-                  halves of the proposal, the evaluator's verdict and the caller's stamp. \
+                  halves of the proposal, the premise the caller asserted, the evaluator's \
+                  verdict and the caller's stamp. \
                   Folding them into a request struct would name a type only this call site \
                   has, and the DTO the surface already parses is the wire shape rather than \
                   this one - `PutThresholdPolicyRequest` carries no approval id, no verdict \
@@ -354,6 +448,7 @@ impl ThresholdService {
         approval_id: Uuid,
         effective_from: DateTime<Utc>,
         entries: Vec<ThresholdEntry>,
+        asserted: AssertedPolicy,
         materiality: JsonValue,
         stamp: AuditStamp,
     ) -> Result<(ThresholdVersion, ApprovalRecord), DomainError> {
@@ -363,6 +458,10 @@ impl ThresholdService {
             .db()
             .in_transaction::<(ThresholdVersion, ApprovalRecord), DomainError, _>(move |txn| {
                 Box::pin(async move {
+                    require_policy_match(
+                        &state_at(txn, &scope, tenant_id, asserted.now).await?.tag(),
+                        &asserted.tag,
+                    )?;
                     let previous = threshold_repo::latest_version(txn, &scope, tenant_id)
                         .await
                         .map_err(|e| repo_failure(&e))?;
@@ -438,16 +537,33 @@ impl ThresholdService {
     ///
     /// [`ThresholdRefusal::NoEntries`]: crate::domain::materiality::ThresholdRefusal::NoEntries
     ///
+    /// It also rides [`Self::propose`]'s **`If-Match` premise**, tested in this
+    /// transaction before the number is minted, and that is not a formality on this
+    /// arm: a retirement is the one act that takes the tenant back to *everything is
+    /// material*, so an operator authoring one against a stale reading may be
+    /// retiring thresholds that a version approved since their read has already
+    /// replaced.
+    ///
     /// # Errors
-    /// [`DomainError::PendingChangeUnitExists`] when the tenant already holds a
-    /// pending proposal; [`DomainError::TimestampPrecisionExceeded`] on an
-    /// unquantized `effective_from`; [`DomainError::Internal`] on a storage failure.
+    /// [`DomainError::StaleVersion`] when the asserted tag no longer describes the
+    /// tenant's policy; [`DomainError::PendingChangeUnitExists`] when the tenant
+    /// already holds a pending proposal;
+    /// [`DomainError::TimestampPrecisionExceeded`] on an unquantized
+    /// `effective_from`; [`DomainError::Internal`] on a storage failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "[`Self::propose`]'s reason, one argument short of it: this arm authors no \
+                  entry set. The premise the caller asserted is what took it over the bound, \
+                  and folding the rest into a request struct would name a type only these two \
+                  call sites have"
+    )]
     pub async fn retire(
         &self,
         scope: &AccessScope,
         tenant_id: Uuid,
         approval_id: Uuid,
         effective_from: DateTime<Utc>,
+        asserted: AssertedPolicy,
         materiality: JsonValue,
         stamp: AuditStamp,
     ) -> Result<(ThresholdVersion, ApprovalRecord), DomainError> {
@@ -457,6 +573,10 @@ impl ThresholdService {
             .db()
             .in_transaction::<(ThresholdVersion, ApprovalRecord), DomainError, _>(move |txn| {
                 Box::pin(async move {
+                    require_policy_match(
+                        &state_at(txn, &scope, tenant_id, asserted.now).await?.tag(),
+                        &asserted.tag,
+                    )?;
                     // The same mint as `propose`, off the same `latest_version` — which
                     // reads **both** threshold tables, so a retirement cannot take a
                     // number an entry version already holds and vice versa.

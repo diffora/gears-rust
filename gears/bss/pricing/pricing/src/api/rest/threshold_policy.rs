@@ -34,40 +34,55 @@
 //! `approval_policy × write/read` in the matrix, which is also what makes D-61
 //! satisfiable — the approver of a policy unit can read what they are approving.
 //!
-//! # §5's Idempotency cell is **not** satisfied, and this is an open gap against
-//! # D-171 rather than a settled divergence
+//! # §5's Idempotency cell, both halves (D-186)
 //!
-//! §5 gives this row the cell *"`ETag` + approval unit"*. The approval unit half is
-//! implemented exactly. The `ETag` half is not implemented at all, and the argument
-//! that used to stand here for why that was *fine* does not hold. It is restated as
-//! the gap it is, for the owner to decide.
+//! §5 gives this row the cell *"`ETag` + approval unit"*. The approval unit half was
+//! always implemented exactly. The `ETag` half now is too, and the argument that used
+//! to stand here for skipping it is **withdrawn as false** rather than edited around.
 //!
 //! **The premise that failed.** It read: *"a tenant's **first** proposal is made
 //! against no prior version, so there is no tag the caller could echo … a mandatory
 //! `If-Match` would make the bootstrap unreachable"*. The `GET` answers **200** with
 //! `effective: null` for a tenant that has never had a version approved — that is this
-//! module's own decision, argued three sections down — so the resource always has a
-//! representation and therefore always has an entity tag. `If-Match` is satisfiable on
-//! the first `PUT`; the bootstrap is not unreachable and never was.
+//! module's own decision, argued two sections down — so the resource always has a
+//! representation and therefore always has an entity tag. The bootstrap was never
+//! unreachable, and `rest_threshold_policy.rs` pins it: a tenant with no policy reads
+//! the tag off the `GET` and its first `PUT` is accepted carrying it.
 //!
-//! **The other premise is weak rather than false.** It is true that every `If-Match`
-//! in this gear today names a [`RowVersion`] read off a mutable row's `row_version`
-//! column, and that `pricing_approval_threshold` carries no such column. But an entity
-//! tag need not be a row version: the **effective version number** and the **pending
-//! unit id** are both to hand on the `GET`, and either would name the state a caller
-//! read. What is owed is a decision about which, not a column the store lacks.
+//! **The second premise was true and beside the point.** Every other `If-Match` in
+//! this gear names a [`RowVersion`] read off a mutable row's `row_version` column, and
+//! `pricing_approval_threshold` carries no such column — it is append-only history and
+//! a version is minted, not bumped. But an entity tag is a statement about a
+//! **representation**, not about a column. So the tag is a digest over the two facts
+//! this `GET` serves: the effective version's number *or its absence*, and the pending
+//! unit's id *or its absence*. Both, because a tag that moved only with `effective`
+//! would not change when a proposal opened, and a validator that does not change when
+//! the representation changes is broken rather than lenient. Absence is framed
+//! distinctly from any number, which matters because a tenant's first version is
+//! `0` — see [`PolicyTag`].
 //!
-//! **And the replacement does not fully cover what the cell is aimed at.**
+//! **What the approval unit covers, and what it left open.**
 //! `PENDING_CHANGE_UNIT_EXISTS` (409) refuses a second proposal while one is under
-//! review, and every proposal that opens is reviewed by a second principal who is shown
-//! its content (D-61) — which is a strong control and is why the gap is a gap and not a
-//! hole. It leaves two things: two operators proposing *in sequence* (the first is
-//! approved, the second is authored against a policy the operator read before that
-//! happened, and nothing tells them the world moved), and the pending-unit guard's own
-//! read-then-write race, which is a real lost-update window rather than a theoretical
-//! one — see `ThresholdService::propose`.
+//! review, and every proposal that opens is reviewed by a second principal who is
+//! shown its content (D-61). That is a strong control and it is why this was a gap
+//! rather than a hole. What it does not reach is the **sequential** case: two
+//! operators propose in turn, the first is approved, the second authored their version
+//! against a policy they read before that happened, and nothing told them the world
+//! moved. The precondition closes exactly that.
+//!
+//! **Where it is tested is a decision, not an implementation detail.** The header is
+//! *read* at the transport ([`preconditions::if_match_policy`]) and *compared* inside
+//! `ThresholdService::propose`/`retire`'s transaction, against the same two reads the
+//! `GET` composes and before a version number is minted. `preconditions`' own doc
+//! draws that line — this module refuses a request it cannot understand, the store
+//! refuses one whose premise has moved — and a comparison in the handler would read
+//! the world, decide, and then hand the decision to a statement that races it. The
+//! refusal is `STALE_VERSION` (409), §3.3's own category for an `ETag` conflict, and
+//! deliberately not a 412: the canonical family carries no such status and §3.3
+//! forbids minting one, which is the same argument that keeps 422 out of this gear.
 //!
 //! [`RowVersion`]: crate::domain::concurrency::RowVersion
+//! [`PolicyTag`]: crate::domain::concurrency::PolicyTag
 //!
 //! # No `404`, and no route-level `409` on the `GET`
 //!
@@ -77,23 +92,36 @@
 //! operator the surface does not exist when what they actually need to know is that
 //! everything is material.
 //!
-//! # The `DELETE` deletes nothing, and it is the only way back to unset (D-185)
+//! # The way back to unset is the `PUT`'s `retire` marker, and it deletes nothing
+//! # (D-185)
 //!
 //! §6 makes *"unset ⇒ two-person rule always"* the state every tenant starts in, and
 //! until D-185 it was a state no tenant could **return** to: the store is per-currency
 //! rows keyed `(tenant, version, currency)`, so "no thresholds" is a version with zero
 //! rows — which the `PUT` refuses (`THRESHOLD_INVALID`) and which, admitted, no reader
-//! could tell from a version nobody proposed. The only way back was a version of
-//! absurdly high bars, which is a different rule wearing the fail-safe's clothes and
-//! stops being true the day a currency is added.
+//! could tell from a version nobody proposed.
 //!
-//! So the way back is a **tombstone**, and `DELETE` is its door. It is a proposal like
-//! every other: a new version minted with the next number, its content pinned, and the
-//! same always-material unit D-10 opens over any policy diff — so a tenant cannot
-//! revert the two-person rule single-handed, which is the property the whole
-//! arrangement would be worthless without. Nothing is deleted; the store stays
-//! append-only history and the earlier versions stay exactly as their approvers signed
-//! them.
+//! **What was missing was expressiveness, not a capability**, and the sentence that
+//! used to claim otherwise is withdrawn: it read that the only way back was "a version
+//! of absurdly high bars", which "stops being true the day a currency is added". Both
+//! halves were wrong. `reaches_absolute` is `magnitude >= absolute_minor`, so a
+//! **high** bar makes *fewer* changes material, not more — the way back by arithmetic
+//! is a bar of **zero**, which the CHECK permits and which every delta reaches. And a
+//! currency with no entry meets `inst-mat-percurrency`'s fail-safe, so adding one
+//! makes changes in it material rather than silently unreviewed; nothing stops being
+//! true. What a zero-bar version cannot do is *say what the operator meant* — an
+//! auditor reading it sees a threshold set to zero, not a decision to have none.
+//!
+//! So the way back is a **tombstone**, and its door is the `PUT`'s `retire` marker
+//! rather than a verb of its own. A `DELETE` was built for it and withdrawn on the
+//! same day, because a verb promising removal would describe the opposite of what
+//! happens: the store is append-only and a retirement is an **appended version**. It
+//! is a proposal like every other — a new version minted with the next number, its
+//! content pinned, and the same always-material unit D-10 opens over any policy diff,
+//! so a tenant cannot revert the two-person rule single-handed, which is the property
+//! the whole arrangement would be worthless without. Nothing is deleted; the store
+//! stays append-only history and the earlier versions stay exactly as their approvers
+//! signed them.
 //!
 //! The `GET` then answers `effective` with that version and an **empty** entry list,
 //! which is deliberately not `effective: null`. Both are unset and both make every
@@ -104,10 +132,13 @@
 use std::sync::Arc;
 
 use axum::extract::Extension;
+use axum::http::HeaderMap;
+use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::StatusCode};
 use chrono::{DateTime, SubsecRound, Utc};
 use toolkit::api::canonical_prelude::CanonicalError;
+use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
@@ -119,11 +150,13 @@ use crate::api::rest::approvals::{
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
+use crate::api::rest::preconditions;
 use crate::api::rest::state::GovernanceState;
 use crate::domain::error::DomainError;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{self, ChangeSet, ThresholdBasis, ThresholdEntry};
 use crate::domain::money::CurrencyCode;
+use crate::infra::threshold::AssertedPolicy;
 
 /// `OpenAPI` tag applied to both operations (DE0205).
 const TAG: &str = "BSS Pricing Governance";
@@ -145,6 +178,42 @@ pub const APPROVAL_THRESHOLD_POLICY: &str = "/bss-pricing/v1/config/approval-thr
 /// the range. It is also what keeps `percent_bp`'s domain `u32` inside the store's
 /// signed 32-bit column with four orders of magnitude to spare.
 pub const MAX_PERCENT_BP: u32 = 10_000;
+
+/// The `If-Match` header this `PUT` requires, declared so a generated client sends
+/// it (D-171).
+///
+/// **Not `plans::if_match_param`**, though the discipline is that helper's and the
+/// argument for declaring at all is quoted from it: without a declaration a
+/// generated client omits the header and learns of it from a 400. What does not
+/// transfer is the *subject*. That helper's text is about a draft row and D-141 —
+/// "every mutating verb on a draft presents its `ETag`" — and this resource is
+/// neither a draft nor a row: it is append-only history, its tag is not a row
+/// version, and the rule that puts a precondition here is §5's Idempotency cell
+/// plus D-186. Reusing the sentence would have declared a true header under a false
+/// reason.
+fn if_match_param() -> ParamSpec {
+    ParamSpec {
+        name: "If-Match".to_owned(),
+        location: ParamLocation::Header,
+        required: true,
+        description: Some(
+            "Mandatory precondition (RFC 9110), and the governance section 5 `ETag` cell for this \
+             row. The value is \
+             the **opaque** tag the `GET` returns in its `ETag` header - copy it back verbatim. \
+             It is not a row version: this store is append-only and has no version column, so \
+             the tag is a digest over the representation the `GET` serves, which means it moves \
+             when a version takes effect **and** when a proposal opens or closes. A tenant with \
+             no policy at all is answered `200` and carries a tag, so the first proposal a \
+             tenant ever makes satisfies this like any other. A tag that no longer describes \
+             the policy is `409` `STALE_VERSION`; an absent or malformed one is `400`. Weak \
+             validators, the wildcard `*` and tag lists are all refused - a wildcard would \
+             author a governance policy over whatever happens to be current, which is what the \
+             precondition exists to prevent."
+                .to_owned(),
+        ),
+        param_type: "string".to_owned(),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Views.
@@ -231,7 +300,13 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              `effective: null`, which is a state and not an absent resource: unset means the \
              two-person rule \
              applies to **every** change (`inst-mat-failsafe`), and a currency with no entry in a \
-             configured policy is material for the same reason. Gates on `approval_policy` x \
+             configured policy is material for the same reason. **The response carries the \
+             `ETag` the `PUT` demands**, and this is the only place to obtain one: the tag is an \
+             opaque digest over what this response serves - the effective version's number or \
+             its absence, and the pending unit's id or its absence - so it moves when a version \
+             takes effect and when a proposal opens or is withdrawn. A tenant with no policy is \
+             answered `200` and carries a tag like any other, which is what makes a first \
+             proposal satisfiable. Gates on `approval_policy` x \
              `read`, which is deliberately not `config` x `read`: a config admin must not read or \
              move the policy that governs their own changes.",
         )
@@ -267,14 +342,21 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              rules, all `THRESHOLD_INVALID` (400): keys are ISO 4217 codes, at least one entry, \
              no currency twice, exactly one of `absoluteMinor` / `percentBp` per entry, \
              `absoluteMinor` >= 0, and `percentBp` in `1..=10000`. A second proposal while one is \
-             under review is `PENDING_CHANGE_UNIT_EXISTS` (409) - decide it or withdraw it. This \
-             surface declares **no** `If-Match`: the store carries no row version and a tenant's \
-             first proposal has no prior version to name, so a mandatory precondition would make \
-             the bootstrap unreachable; see the module doc. Gates on `approval_policy` x `write`.",
+             under review is `PENDING_CHANGE_UNIT_EXISTS` (409) - decide it or withdraw it. \
+             **`If-Match` is required**: send the opaque `ETag` the `GET` returned, verbatim. It \
+             is not a row version - this store has none - but a digest over the policy as the \
+             `GET` serves it, so it moves both when a version takes effect and when a proposal \
+             opens or closes. The bootstrap is not an exception: a tenant with no policy is \
+             answered `200` with `effective: null` and that response carries a tag, so a first \
+             proposal asserts it like any other. A tag that no longer describes the policy is \
+             refused `STALE_VERSION` (409) and **nothing is written** - no version number is \
+             consumed and no unit opens; re-read the `GET` and author against the tag it hands \
+             back. An absent or malformed tag is `400`. Gates on `approval_policy` x `write`.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .param(if_match_param())
         .json_request::<PutThresholdPolicyRequest>(openapi, "The proposed per-currency entries.")
         .handler(put_threshold_policy)
         .json_response_with_schema::<ThresholdProposalView>(
@@ -305,11 +387,16 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
 // ---------------------------------------------------------------------------
 
 /// `GET /config/approval-threshold-policy`.
+/// It answers a [`Response`] rather than a [`Json`] because it carries the `ETag`
+/// the `PUT` demands (D-186), and it is the **only** place a caller can obtain one:
+/// there is no create on this resource whose response could seed a tag. A tenant
+/// with no policy at all is answered 200 and carries a tag like everyone else,
+/// which is the sentence the withdrawn premise got wrong.
 async fn get_threshold_policy(
     Extension(state): Extension<Arc<GovernanceState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
-) -> Result<Json<ThresholdPolicyView>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
     let held = state
@@ -317,10 +404,18 @@ async fn get_threshold_policy(
         .state(&scope, ctx.subject_tenant_id())
         .await
         .map_err(CanonicalError::from)?;
-    Ok(Json(ThresholdPolicyView {
-        effective: held.effective.as_ref().map(PinnedThresholdPolicyView::from),
-        pending_approval: held.pending.as_ref().map(ApprovalView::from),
-    }))
+    // The tag comes off the state the body is rendered from, not off a second
+    // read: `ThresholdState::tag` is the one producer, shared with the comparison
+    // inside `propose`.
+    let tag = preconditions::policy_etag(&held.tag());
+    Ok((
+        [(ETAG, tag)],
+        Json(ThresholdPolicyView {
+            effective: held.effective.as_ref().map(PinnedThresholdPolicyView::from),
+            pending_approval: held.pending.as_ref().map(ApprovalView::from),
+        }),
+    )
+        .into_response())
 }
 
 /// `PUT /config/approval-threshold-policy`.
@@ -329,6 +424,7 @@ async fn put_threshold_policy(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     extension_correlation: Option<Extension<CorrelationId>>,
+    headers: HeaderMap,
     Json(request): Json<PutThresholdPolicyRequest>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
@@ -336,6 +432,16 @@ async fn put_threshold_policy(
     let scope = write_scope(&enforcer, &ctx).await?;
     let tenant = ctx.subject_tenant_id();
     let now = Utc::now();
+
+    // **After the gate, deliberately.** A caller who may not touch this resource is
+    // told that, rather than being told their header is malformed — the ordering
+    // `rest_authz.rs`'s `every_route_asks_the_catalogued_pair` depends on, and the
+    // same ordering `schedule_window` argues for its own parameters. The tag is
+    // *asserted* here and *tested* inside the service's transaction (D-186).
+    let asserted = AssertedPolicy {
+        tag: preconditions::if_match_policy(&headers).map_err(CanonicalError::from)?,
+        now,
+    };
 
     let materiality = policy_diff_materiality()?;
     let stamp = audit_stamp(&ctx, now, correlation);
@@ -360,7 +466,15 @@ async fn put_threshold_policy(
         let at = now.trunc_subsecs(3);
         state
             .thresholds
-            .retire(&scope, tenant, Uuid::now_v7(), at, materiality, stamp)
+            .retire(
+                &scope,
+                tenant,
+                Uuid::now_v7(),
+                at,
+                asserted,
+                materiality,
+                stamp,
+            )
             .await
             .map_err(CanonicalError::from)?
     } else {
@@ -388,6 +502,7 @@ async fn put_threshold_policy(
                 Uuid::now_v7(),
                 effective_from,
                 entries,
+                asserted,
                 materiality,
                 stamp,
             )
@@ -416,10 +531,13 @@ async fn put_threshold_policy(
 /// consulted, so no configured policy can make this act auto-publishable, which is
 /// D-10 exactly.
 ///
-/// **Shared by the `PUT` and the `DELETE`**, and that is the point rather than
-/// deduplication: D-10 is direction-agnostic, so configuring a threshold and retiring
-/// one are one act as far as materiality is concerned, and two call sites each
-/// building their own verdict would be two places for that to stop being true.
+/// **Shared by both arms of the `PUT`** — a threshold set and the `retire` marker —
+/// and that is the point rather than deduplication: D-10 is direction-agnostic, so
+/// configuring a threshold and retiring one are one act as far as materiality is
+/// concerned, and two call sites each building their own verdict would be two places
+/// for that to stop being true. (It read "the `PUT` and the `DELETE`" while that verb
+/// existed; the `DELETE` was withdrawn in favour of the marker, and the sharing is
+/// now between two branches of one handler rather than two routes.)
 ///
 /// # Errors
 /// [`DomainError::Internal`] when the verdict will not serialize, which is

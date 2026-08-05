@@ -1501,6 +1501,33 @@ pub async fn approve_threshold_policy(harness: &Harness, entries: &[(&str, i64)]
     approve_threshold_policy_from(harness, "2020-01-01T00:00:00Z", entries).await;
 }
 
+/// The tenant's current policy `ETag`, read the way a caller has to read it.
+///
+/// A helper rather than an inline `GET` because every policy `PUT` in every suite
+/// needs one and there is no other way to get it: the tag is opaque by construction
+/// (D-186), so a fixture cannot compute one and a fixture that hard-coded one would
+/// pin the digest's framing instead of the precondition.
+pub async fn policy_etag_of(harness: &Harness, principal: Uuid) -> String {
+    let read = harness
+        .allowed_as(principal)
+        .send(with_headers(
+            "GET",
+            bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY,
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(
+        read.status(),
+        axum::http::StatusCode::OK,
+        "the policy read always answers, unset or not"
+    );
+    etag_of(&read).expect(
+        "the policy GET carries the ETag its PUT demands; without it the precondition is \
+         unsatisfiable",
+    )
+}
+
 /// [`approve_threshold_policy`] over an authored start, for the suites whose
 /// subject is the start itself.
 pub async fn approve_threshold_policy_from(
@@ -1518,13 +1545,19 @@ pub async fn approve_threshold_policy_from(
             }))
             .collect::<Vec<_>>(),
     });
+    // The `PUT` requires the policy's `ETag` (D-186), and the read that supplies it
+    // is the same read an operator makes: there is no tag to fabricate, because the
+    // value is an opaque digest over the representation the `GET` serves. A tenant
+    // with no policy at all is answered 200 and carries one, which is what makes this
+    // fixture work on a fresh harness.
+    let tag = policy_etag_of(harness, POLICY_PROPOSER).await;
     let proposed = harness
         .allowed_as(POLICY_PROPOSER)
         .send(with_headers(
             "PUT",
             bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY,
             Some(body),
-            &[],
+            &[("if-match", tag.as_str())],
         ))
         .await;
     assert_eq!(

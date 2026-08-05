@@ -43,12 +43,18 @@
 //! second rendering is free to drift from the one that parses tags back. What
 //! this module adds is the **header** layer the domain must not know about —
 //! which header carries the tag, and what an absent one means.
+//!
+//! [`PolicyTag`] arrived under the same rule and is worth naming because it is the
+//! one tag on this surface that is **not** a row version: the
+//! approval-threshold policy has no mutable row, so its tag is a digest over the
+//! two facts its `GET` serves (D-186). The rendering is still the domain's, and
+//! [`policy_etag`]/[`if_match_policy`] are still only the header layer.
 
 use axum::http::HeaderMap;
 use axum::http::header::IF_MATCH;
 use serde::Serialize;
 
-use crate::domain::concurrency::{RowVersion, strong_tag_body};
+use crate::domain::concurrency::{PolicyTag, RowVersion, strong_tag_body};
 use crate::domain::error::DomainError;
 use crate::infra::storage::repo::IdempotencyGate;
 
@@ -238,6 +244,69 @@ pub fn if_match_revision(headers: &HeaderMap) -> Result<RevisionTag, DomainError
         revision: revision.parse::<u64>().map_err(|_| refuse())?,
         version: RowVersion::new(version.parse::<u64>().map_err(|_| refuse())?),
     })
+}
+
+/// The entity tag denoting a tenant's approval-threshold policy, ready for an
+/// `ETag` response header (D-186).
+///
+/// [`etag`]'s counterpart on the resource whose state is not a row version, and a
+/// wrapper over [`PolicyTag::to_etag`] for the same reason [`etag`] is one over
+/// [`RowVersion::to_etag`]: the rendering is the domain's, and what this module
+/// adds is which header carries it.
+///
+/// **Emitting it on the `GET` is not optional**, and here that sentence has teeth
+/// it does not have elsewhere: this resource's `If-Match` is mandatory and the
+/// `GET` is the *only* place a caller can obtain a tag — there is no create whose
+/// response seeds one. A `GET` that answered without the header would make the
+/// `PUT` unsatisfiable for every caller, including the bootstrap.
+#[must_use]
+pub fn policy_etag(tag: &PolicyTag) -> String {
+    tag.to_etag()
+}
+
+/// The policy representation an `If-Match` header asserts (D-186).
+///
+/// # Why this verb has a precondition at all, when its store has no version column
+///
+/// `05-governance.md` §5 gives the row the Idempotency cell *"`ETag` + approval
+/// unit"*, and D-171 makes `If-Match` required wherever a table names a
+/// precondition. The argument that used to stand here for skipping it — that a
+/// tenant's first proposal has no prior version to name, so the bootstrap would be
+/// unreachable — was false: the `GET` answers **200** with `effective: null`, so
+/// there is always a representation and therefore always a tag. The bootstrap
+/// reads its tag like every other caller.
+///
+/// The approval unit is not a substitute. `PENDING_CHANGE_UNIT_EXISTS` refuses a
+/// second proposal *while one is open*, which leaves the sequential case wide: two
+/// operators propose in turn, the first is approved, and the second authored their
+/// version against a policy they read before that happened. Nothing told them the
+/// world moved. That is what this precondition closes.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] naming the header when it is **absent** — a
+/// `PUT` that ran without it would author a governance policy over a reading the
+/// caller never checked; when the value is not valid UTF-8; and, through
+/// [`PolicyTag::from_etag`], when it is a weak validator, the wildcard `*`, a
+/// list, or not a quoted 64-character lowercase hex digest. A well-formed tag that
+/// does not match is **not** refused here — see this module's opening: the store
+/// refuses a premise that has moved, inside the transaction that would otherwise
+/// race it.
+pub fn if_match_policy(headers: &HeaderMap) -> Result<PolicyTag, DomainError> {
+    let Some(raw) = headers.get(IF_MATCH) else {
+        return Err(DomainError::InvalidRequest(
+            "If-Match is required on this verb: a policy proposal asserts the \
+             policy it was authored against (D-186, and governance section 5's \
+             `ETag` cell), and an \
+             unconditional write would author a threshold set over a reading the \
+             proposer never checked. Read the `ETag` off the `GET` - a tenant with \
+             no policy at all is answered 200 and carries one"
+                .to_owned(),
+        ));
+    };
+    let raw = raw.to_str().map_err(|_| {
+        DomainError::InvalidRequest("If-Match: the header value is not valid UTF-8".to_owned())
+    })?;
+    PolicyTag::from_etag(raw)
 }
 
 /// Parse a JSON request body.

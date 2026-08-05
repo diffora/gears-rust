@@ -1483,9 +1483,20 @@ def test_a_threshold_policy_takes_two_principals_before_it_is_in_force(
     assert before.status_code == 200, before.text
     assert before.json()["pending_approval"] is None, before.text
 
+    # The `PUT` requires an `If-Match` (D-186), and this read is where the tag comes
+    # from: it is an opaque digest over the representation above, so there is nothing
+    # to compute and nothing to hard-code. Asserted rather than fetched silently,
+    # because a `GET` that stopped emitting it would make the `PUT` unsatisfiable for
+    # every client and the failure would otherwise surface as a confusing 400 below.
+    tag = before.headers.get("ETag")
+    assert tag, (
+        "the policy GET must carry the ETag its PUT demands; without it no client can "
+        f"satisfy the precondition: {dict(before.headers)}"
+    )
+
     proposed = client.put(
         f"{api_base}/config/approval-threshold-policy",
-        headers=auth_headers,
+        headers={**auth_headers, "If-Match": tag},
         json={
             "effective_from": POLICY_EFFECTIVE_FROM,
             "entries": [
