@@ -105,22 +105,17 @@ fn the_commit_floor_is_exclusive_at_exactly_the_batching_delay() {
 }
 
 #[test]
-fn the_delay_is_the_ratified_five_minutes_and_the_refusal_says_so() {
-    // D-47's ratified maximum. The number is asserted rather than left to the
-    // constant's own definition because the two floors are the only place it is a
-    // *rule* rather than an alarm threshold, and a silent change to it moves a
-    // money boundary.
+fn the_delay_is_the_ratified_five_minutes() {
+    // D-47's ratified maximum, asserted against the literal rather than against
+    // itself: the two floors are the only place this number is a *rule* rather than an
+    // alarm threshold, and a silent change to it moves a money boundary.
+    //
+    // The message half of this case moved to
+    // `the_commit_remedy_states_the_delay_from_the_constant_and_not_from_a_copy`, which
+    // derives the expected number instead of accepting either of two spellings — the
+    // `||` that used to be here would have stayed green with the constant changed
+    // (review, 2026-08-05).
     assert_eq!(MAX_BATCHING_DELAY, chrono::Duration::minutes(5));
-
-    let err = check_changeover_instant(now(), now(), ChangeoverMoment::Commit)
-        .expect_err("now is not five minutes from now");
-    let DomainError::SupersessionInstantPassed(detail) = err else {
-        panic!("got: {err:?}");
-    };
-    assert!(
-        detail.contains("300s") || detail.contains("5 min"),
-        "an operator has to be told how far ahead is far enough, got: {detail}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -607,5 +602,60 @@ fn a_changeover_finer_than_the_millisecond_quantum_is_refused_at_compose() {
     assert!(
         matches!(err, DomainError::TimestampPrecisionExceeded(_)),
         "the malformed value is answered before its distance, got: {err:?}"
+    );
+}
+
+#[test]
+fn a_key_whose_coverage_ends_exactly_at_the_changeover_is_dormant_at_it() {
+    // The mirror of `a_window_beginning_exactly_at_the_changeover_collides_too`, and the
+    // case the existing dormancy test cannot isolate: that one uses an `Expired` window
+    // whose end is in the past, so it fails the interval test *and* the state test.
+    //
+    // Here the window is `Active`, its end is in the **future**, and it is adjacent-legal
+    // — so the only thing deciding the answer is `covers`'s **exclusive** end. A key
+    // covered right up to the changeover does not cover the changeover, so there is
+    // nothing to shorten and no coverage to hand over; the successor would open at an
+    // instant the predecessor had already stopped covering, which is a trailing void
+    // rather than a supersession.
+    let ends_at_the_changeover = named(
+        1,
+        WindowInterval::new(
+            now() - Duration::days(90),
+            Some(changeover()),
+            WindowState::Active,
+        ),
+    );
+
+    let err = compose_windows(&[ends_at_the_changeover], changeover())
+        .expect_err("coverage that stops at the changeover does not cover it");
+    let DomainError::LifecycleForbidden(detail) = err else {
+        panic!("this is dormancy at that instant, got: {err:?}");
+    };
+    assert!(
+        detail.contains("dormant"),
+        "and it is reported as dormancy, got: {detail}"
+    );
+}
+
+#[test]
+fn the_commit_remedy_states_the_delay_from_the_constant_and_not_from_a_copy() {
+    // The module doc argues two paragraphs above that a hand-maintained second copy of
+    // the SLO is how two mechanisms come to disagree about it — and the remedy sentence
+    // was a hand-maintained second copy. Worse, the case guarding it asserted
+    // `contains("300s") || contains("5 min")`, an `||`, so changing the constant left the
+    // message lying and the suite green. Found by review, 2026-08-05.
+    //
+    // Both halves are now derived: the sentence formats `MAX_BATCHING_DELAY`, and this
+    // asserts the formatted number rather than either literal.
+    let err = check_changeover_instant(now(), now(), ChangeoverMoment::Commit)
+        .expect_err("now is not a batching delay from now");
+    let DomainError::SupersessionInstantPassed(detail) = err else {
+        panic!("got: {err:?}");
+    };
+    let seconds = MAX_BATCHING_DELAY.num_seconds();
+    assert!(
+        detail.contains(&format!("{seconds}s")),
+        "the operator has to be told how far ahead is far enough, from the constant \
+         itself, got: {detail}"
     );
 }

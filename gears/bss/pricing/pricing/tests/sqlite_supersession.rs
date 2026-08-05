@@ -533,11 +533,139 @@ async fn the_predecessors_window_is_shortened_and_never_cancelled() {
     let window = stored_window(&provider, &scope, predecessor_window())
         .await
         .expect("still there");
-    assert_ne!(window.state, WindowState::Cancelled.as_str());
+    // `!= cancelled` does catch the named alternative — a cancel-and-reschedule leaves
+    // this window `cancelled`, and cancellation is the only way to free the key, since
+    // `OCCUPYING_STATES` includes `scheduled` and DELETE is refused. But it is the weakest
+    // form of the assertion, so the state is pinned positively **and the act count with
+    // it**: `mutation_seq` advances once per operator act (D-190) and is unmoved by the
+    // sweeps, so `seq + 1` says exactly one act touched this window. Nothing else in the
+    // suite pinned that (review, 2026-08-05).
+    assert_eq!(window.state, WindowState::Scheduled.as_str());
+    assert_eq!(
+        u64::try_from(window.mutation_seq).expect("a stored act counter is non-negative"),
+        seq + 1,
+        "exactly one act: the shorten, and not a cancel plus a reschedule"
+    );
     assert_eq!(
         window.effective_from,
         coverage_from(),
         "and its start is untouched"
+    );
+}
+
+#[tokio::test]
+async fn an_active_predecessor_window_is_shortened_the_same_way() {
+    // `inst-ws-immutable`'s actual sentence is "the only permitted mutation of an
+    // **active** window is moving its future `effectiveTo`", and every other case here
+    // shortens a `scheduled` one — the state `window_repo::schedule` creates. In
+    // production the predecessor's window has been swept to `active` long before anyone
+    // reprices it, so the sentence the rule is written in was never exercised (review,
+    // 2026-08-05).
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let seq = composed(&repo, &provider, &scope).await;
+    activate_window(&provider, &scope, predecessor_window()).await;
+
+    commit(&provider, &scope, commit_of(seq))
+        .await
+        .expect("an active window is shortened, not refused");
+
+    let window = stored_window(&provider, &scope, predecessor_window())
+        .await
+        .expect("still there");
+    assert_eq!(window.effective_to, Some(changeover()));
+    assert_eq!(
+        window.state,
+        WindowState::Active.as_str(),
+        "shortening does not move it off `active`; that is the expiry sweep's job"
+    );
+}
+
+#[tokio::test]
+async fn a_predecessor_that_has_already_been_superseded_is_refused_by_name() {
+    // The replay case, through the composition rather than through the row repository.
+    // Worth its own case because **windows-first changes which refusal wins**: a true
+    // replay of the same unit meets the predecessor window's advanced act counter and is
+    // answered `StaleRowVersion`, which sends an operator to re-read a window tag. This
+    // case isolates the row-plane refusal by leaving the window untouched, so what it pins
+    // is that `NotSupersedable` is reachable through this path at all and names the state
+    // it found (review, 2026-08-05).
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let seq = composed(&repo, &provider, &scope).await;
+    flip_state(&provider, &scope, PREDECESSOR, LifecycleState::Superseded).await;
+
+    let err = commit(&provider, &scope, commit_of(seq))
+        .await
+        .expect_err("a row that has already left the published plane is not supersedable");
+    let RepoError::NotSupersedable { state, .. } = err else {
+        panic!("got: {err:?}");
+    };
+    assert_eq!(state, LifecycleState::Superseded.as_str());
+}
+
+#[tokio::test]
+async fn another_tenant_cannot_commit_this_supersession() {
+    // One cross-tenant case over the four-write composition, which had none. Every write
+    // goes through SecureORM, so a foreign scope should see nothing to move rather than be
+    // told it may not — the existence leak `RepoError::NotFound`'s doc exists to close.
+    // Cheap, and in a multi-tenant gear its absence over a composition this wide was the
+    // gap worth naming (review, 2026-08-05).
+    let (repo, provider) = harness().await;
+    let mine = AccessScope::for_tenant(tenant());
+    let seq = composed(&repo, &provider, &mine).await;
+    let theirs = AccessScope::for_tenant(Uuid::from_u128(0x_7e32));
+
+    let err = commit(&provider, &theirs, commit_of(seq))
+        .await
+        .expect_err("another tenant's supersession is not there to commit");
+    assert!(
+        matches!(err, RepoError::NotFound { .. }),
+        "absence rather than refusal, so the surface leaks no existence: {err:?}"
+    );
+
+    assert_eq!(
+        stored_row(&provider, &mine, PREDECESSOR)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str(),
+        "and nothing of mine moved"
+    );
+}
+
+/// Activate a window directly, without waiting for the sweep.
+///
+/// The activation job is what does this in production (`inst-ws-activate`); fabricated
+/// here for the reason `flip_state` fabricates the row flips — a suite about the commit
+/// should not have to run a background job to reach the state it asserts against.
+///
+/// **`activated_at` moves with the state, because the store will not let it not.**
+/// `chk_pricing_price_window_activated_at` requires the stamp to be set exactly on an
+/// `active` or `expired` window, so the first version of this seed — which wrote the
+/// state token alone — was refused by the CHECK. That is the store keeping a fabrication
+/// honest, and it is why this helper takes no state parameter: `active` is the one
+/// transition it is for, and the stamp is part of that transition rather than a field
+/// beside it.
+async fn activate_window(provider: &DBProvider<DbError>, scope: &AccessScope, window_id: Uuid) {
+    let conn = provider.conn().expect("conn");
+    let result = price_window::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            price_window::Column::State,
+            Expr::value(WindowState::Active.as_str()),
+        )
+        .col_expr(
+            price_window::Column::ActivatedAt,
+            Expr::value(coverage_from()),
+        )
+        .filter(Condition::all().add(price_window::Column::WindowId.eq(window_id)))
+        .exec(&conn)
+        .await
+        .expect("activate the window");
+    assert_eq!(
+        result.rows_affected, 1,
+        "the seed must have moved one window"
     );
 }
 

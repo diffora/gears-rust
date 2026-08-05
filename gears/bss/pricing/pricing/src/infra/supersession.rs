@@ -27,38 +27,47 @@
 //! `commit_supersession_rows` makes about its own pair, applied one level up, and it
 //! is why this composition is not a convenience.
 //!
-//! # Windows before rows, and it is a choice with a reason
+//! # Rows before windows, and a probe is what decided it
 //!
-//! The four writes are ordered windows-then-rows. Nothing forces it — the two pairs
-//! are independent, since `window_repo` resolves a window's key through
-//! `pricing_price` without asking the row's lifecycle state — so the reason is about
-//! which failure is cheapest to reach.
+//! The order **between** the two pairs is free for correctness: `window_repo` resolves a
+//! window's canonical scope key through `pricing_price` without regard to the row's
+//! `lifecycle_state` (verified against every predicate it applies, not from its docs), so
+//! a `superseded` predecessor changes nothing either window write sees. What the order
+//! decides is **what the loser of a race is told**, and that is measurable.
 //!
-//! **The reason first given for that was false and is withdrawn** (review, 2026-08-05).
-//! It read "the row preconditions are a state and a frozen version that only this
-//! unit's own siblings move" — but the version presented is the *successor draft's*,
-//! and `PriceRepo::update_draft` bumps it on every `PATCH …/prices/{priceId}`, a
-//! mounted route. D-141 freezes *published* rows; the staged successor is a draft and
-//! its version is as operator-movable as the window's act counter.
+//! This function wrote the windows first, on the stated ground that their preconditions
+//! were the volatile ones while the row's was "a frozen version that only this unit's own
+//! siblings move". **That ground was false** (review, 2026-08-05): the presented version
+//! is the *successor draft's*, and `PriceRepo::update_draft` bumps it on every mounted
+//! `PATCH …/prices/{priceId}`. D-141 freezes *published* rows.
 //!
-//! So the honest statement is weaker: **all four preconditions can go stale between
-//! compose and approval, the ordering preference between the two pairs buys nothing
-//! measurable, and it is kept only because one order had to be chosen.** What is *not*
-//! arbitrary is the order inside each pair, above. Note also the consequence a reviewer
-//! drew out: windows-first means a **replayed** commit is answered by the window's
-//! `StaleRowVersion` rather than by `NotSupersedable`, which sends an operator to
-//! re-read a window tag when the actionable answer is "recompose against the key's new
-//! current row". That is an argument for rows-first, and it is recorded rather than
-//! acted on because the orchestrator will re-run `plan_supersession` at commit and
-//! answer it there, ahead of both pairs.
+//! With the reason gone, `tests/postgres_supersession_race.rs` was written to measure the
+//! difference, and it is not cosmetic. Two commits of one unit — a retry after a timeout,
+//! a double approval — serialize on whichever plane is written first:
 //!
-//! The claim "both orders are correct" is scoped to the four writes and the queries as
-//! they stand: it was verified against every predicate `window_repo` applies, none of
-//! which reads the price row's `lifecycle_state`. A later slice adding a window-plane
-//! precondition that does must re-check it. It is also a **lock order**, and on
-//! Postgres a lock order must be consistent across writers or two transactions
-//! deadlock; nothing violates it today (`infra::window` only *reads* `pricing_price`),
-//! and "free" must not be read as a licence to reverse it elsewhere.
+//! - **windows first**: the loser blocks on the predecessor window's row, finds
+//!   `mutation_seq` moved, and is answered [`RepoError::StaleRowVersion`] — which sends an
+//!   operator to re-read a **window entity tag** that is not what changed.
+//! - **rows first**: the loser blocks on the predecessor *price row*, finds it
+//!   `superseded`, and is answered [`RepoError::NotSupersedable`] — whose message names the
+//!   actionable remedy, *recompose against the key's new current row*.
+//!
+//! The probe is the evidence: reordering the pairs flips the refusal, with the same
+//! choreography and the same winner. So rows go first, and the argument recorded here is
+//! **diagnosis** rather than correctness — which is also why it can be stated plainly
+//! instead of defended.
+//!
+//! The orchestrator does not make this moot, and an earlier note claiming it would was
+//! wrong: re-running `plan_supersession` at commit checks the instant, the plane and the
+//! content, and **not** whether the predecessor is still its key's current row —
+//! `plan_supersession` takes two `PriceRow`s and a window plane, neither of which carries
+//! a lifecycle state.
+//!
+//! It is also a **lock order**, and on Postgres a lock order must be consistent across
+//! writers or two transactions deadlock. Nothing violates it: `infra::window`'s mutation
+//! unit only *reads* `pricing_price` and writes only `pricing_price_window`, and
+//! `publish_rows` touches only price rows, so no writer takes the two in the opposite
+//! order. "Free" is about correctness, never a licence to reverse this elsewhere.
 //!
 //! # What this module does **not** do
 //!
@@ -229,8 +238,25 @@ pub async fn commit_supersession(
     plan: SupersessionCommit,
     stamp: AuditStamp,
 ) -> Result<SupersessionWritten, RepoError> {
-    // 1. The predecessor's coverage ends at the changeover. First, because the
-    //    successor's interval is inside this one until it does.
+    // 1. and 2. The row pair, in the one order that works (D-195). Their own ordering
+    //    lives inside that function so it cannot be got wrong here either.
+    //
+    //    **First, so that a replayed commit is refused where the refusal is
+    //    actionable** — see the module doc. This was the other way round until a probe
+    //    measured what each order tells the loser of a race.
+    price_repo::commit_supersession_rows(
+        txn,
+        scope,
+        tenant_id,
+        plan.plan_id,
+        plan.predecessor,
+        plan.successor,
+    )
+    .await?;
+
+    // 3. The predecessor's coverage ends at the changeover. Before the schedule,
+    //    because the successor's interval is inside this one until it does — the one
+    //    ordering here that is about correctness rather than about diagnosis.
     let shortened = window_repo::adjust_effective_to(
         txn,
         scope,
@@ -242,7 +268,7 @@ pub async fn commit_supersession(
     )
     .await?;
 
-    // 2. The successor's coverage opens there. Open-ended by decision, not by
+    // 4. The successor's coverage opens there. Open-ended by decision, not by
     //    omission — see `successor_from`.
     let scheduled = window_repo::schedule(
         txn,
@@ -256,18 +282,6 @@ pub async fn commit_supersession(
             reason_code: plan.reason_code.clone(),
         },
         stamp,
-    )
-    .await?;
-
-    // 3. and 4. The row pair, in the one order that works (D-195). Their own
-    //    ordering lives inside that function so it cannot be got wrong here either.
-    price_repo::commit_supersession_rows(
-        txn,
-        scope,
-        tenant_id,
-        plan.plan_id,
-        plan.predecessor,
-        plan.successor,
     )
     .await?;
 

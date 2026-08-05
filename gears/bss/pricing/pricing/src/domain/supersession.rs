@@ -85,9 +85,17 @@ pub enum ChangeoverMoment {
 impl ChangeoverMoment {
     /// How far ahead of `now` this moment requires the instant to be.
     ///
-    /// `Submit`'s bound is zero and the comparison below is strict, which is what
-    /// makes "strictly future" and "at least one delay ahead" one expression
-    /// instead of two branches that could drift apart.
+    /// `Submit`'s bound is zero and the comparison below is strict, which is what makes
+    /// "strictly future" and "one delay ahead" one expression instead of two branches that
+    /// could drift apart.
+    ///
+    /// **The strict comparison makes the commit arm one quantum stricter than
+    /// `inst-su-instant`'s "at least the max batching-delay SLO"**, and that is deliberate
+    /// rather than a reading of the spec: the direction is fail-safe, an instant exactly
+    /// one delay out is one the last batch of that window can still miss, and
+    /// `the_commit_floor_is_exclusive_at_exactly_the_batching_delay` pins the stricter
+    /// reading on purpose. Said plainly here because the spec says "at least" and a reader
+    /// checking the code against it should find the divergence named (review, 2026-08-05).
     const fn margin(self) -> Duration {
         match self {
             Self::Submit => Duration::zero(),
@@ -96,12 +104,20 @@ impl ChangeoverMoment {
     }
 
     /// What the refusal tells the operator to do about it.
-    const fn remedy(self) -> &'static str {
+    ///
+    /// The commit arm **formats [`MAX_BATCHING_DELAY`]** rather than restating it. It used
+    /// to spell "300s (5 min)" by hand, which is precisely the hand-maintained second copy
+    /// this module's own header argues is how two mechanisms come to disagree about one
+    /// SLO — and the case guarding the sentence used an `||` over both spellings, so
+    /// changing the constant would have left the message lying and the suite green (review,
+    /// 2026-08-05).
+    fn remedy(self) -> String {
         match self {
-            Self::Submit => "name a future changeover instant",
-            Self::Commit => {
-                "the unit must be recomposed against a changeover at least 300s (5 min) ahead"
-            }
+            Self::Submit => "name a future changeover instant".to_owned(),
+            Self::Commit => format!(
+                "the unit must be recomposed against a changeover at least {}s ahead",
+                MAX_BATCHING_DELAY.num_seconds()
+            ),
         }
     }
 }
