@@ -37,17 +37,48 @@ const PROPOSER: Uuid = Uuid::from_u128(0x5_d0);
 /// The independent `FinanceReviewer` D-10 requires.
 const REVIEWER: Uuid = Uuid::from_u128(0xa_d0);
 
-/// An instant far enough out that no suite's clock reaches it — the fixtures are
-/// on 2099 by convention, so a proposal's `effective_from` is a fact about the
-/// future rather than a value that silently becomes the past.
-const EFFECTIVE_FROM: &str = "2099-03-01T00:00:00Z";
+/// An instant that has **arrived** — the date every case asserting a policy is *in
+/// force* has to carry.
+///
+/// It was `2099-03-01T00:00:00Z` until D-188, on the window suites' convention that
+/// a fixture instant should be far enough out that no clock reaches it. That
+/// convention is right for a window, whose `effectiveFrom` must be in the future
+/// when it is authored, and exactly wrong here: a threshold version is not effective
+/// **before** its instant, so a suite dated 2099 asserted "the approved version is
+/// the tenant's policy" over a version that must not be. Those assertions passed
+/// only because the walk compared the instant against nothing.
+const EFFECTIVE_FROM: &str = "2020-01-01T00:00:00Z";
 
-/// A well-formed proposal body over one currency.
+/// An instant that has **not** arrived — the same date the file used to give every
+/// case, kept for the two that are about a version whose start is still ahead.
+const NOT_YET: &str = "2099-03-01T00:00:00Z";
+
+/// A well-formed proposal body over one currency, starting at [`EFFECTIVE_FROM`].
 fn proposal(currency: &str, absolute_minor: i64) -> serde_json::Value {
+    dated_proposal(EFFECTIVE_FROM, currency, absolute_minor)
+}
+
+/// The same body over an authored start.
+fn dated_proposal(effective_from: &str, currency: &str, absolute_minor: i64) -> serde_json::Value {
     serde_json::json!({
-        "effective_from": EFFECTIVE_FROM,
+        "effective_from": effective_from,
         "entries": [{ "currency": currency, "absolute_minor": absolute_minor }]
     })
+}
+
+/// Propose `body` as [`PROPOSER`], have [`REVIEWER`] approve it, and hand back the
+/// version number the proposal minted.
+async fn propose_and_approve(h: &Harness, body: serde_json::Value) -> u64 {
+    let opened = body_json(propose_as(h, PROPOSER, body).await).await;
+    let approval_id: Uuid = opened["approval"]["approval_id"]
+        .as_str()
+        .expect("the unit's id")
+        .parse()
+        .expect("a uuid");
+    assert_eq!(approve(h, approval_id).await.status(), StatusCode::OK);
+    opened["proposed"]["version"]
+        .as_u64()
+        .expect("the 202 names the version it minted")
 }
 
 /// `PUT` the body as `principal`.
@@ -264,6 +295,89 @@ async fn a_later_approved_version_replaces_the_earlier_one_entirely() {
         .expect("an entry list");
     assert_eq!(entries.len(), 1, "the later version is the whole policy");
     assert_eq!(entries[0]["currency"], "USD");
+}
+
+// ---------------------------------------------------------------------------
+// D-188: the third reason the walk skips a version.
+// ---------------------------------------------------------------------------
+
+/// **An approved version whose `effective_from` has not arrived is not yet the
+/// tenant's policy.**
+///
+/// The instant was stored, quantum-checked, `max`-derived across the version's rows
+/// with disagreement refused as a corrupt row, carried into the domain value and
+/// **hashed into the pin the approver signs** — and compared against nothing. So a
+/// version approved with a start a lifetime out governed *today's* publishes from
+/// the moment it was approved, and a reviewer who signed "these looser bars start in
+/// 2099" had authorized them starting immediately.
+///
+/// It is the one step of this walk whose direction was **fail-open**: between the
+/// approval and the authored start the tenant's policy is the design set's *unset*
+/// state, so every change should be material, and instead each was thresholded
+/// against a bar nobody had reached yet. Skipping restores the direction by
+/// construction — no policy is what makes everything material (`inst-mat-failsafe`).
+///
+/// The read is taken twice on purpose. The comparison is against "now" at read time,
+/// so the same rows answer differently before and after the instant; what must not
+/// happen is two answers *at one clock*, which is what a walk that consumed
+/// something on its first pass would give.
+#[tokio::test]
+async fn an_approved_version_whose_start_has_not_arrived_is_not_yet_the_policy() {
+    let h = Harness::new().await;
+    assert_eq!(
+        propose_and_approve(&h, dated_proposal(NOT_YET, "EUR", 500)).await,
+        0
+    );
+
+    let after = read_policy_as(&h, PROPOSER).await;
+    assert!(
+        after["effective"].is_null(),
+        "a version dated {NOT_YET} does not govern today: {after}"
+    );
+    assert!(
+        after["pending_approval"].is_null(),
+        "and it is not pending either - it is approved and simply not in force yet: {after}"
+    );
+    let again = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(
+        again, after,
+        "the walk is idempotent: one clock, one answer"
+    );
+}
+
+/// A future-dated version leaves the tenant on the version **already in force**,
+/// rather than on nothing.
+///
+/// The half the case above cannot show. Skipping is fail-safe in the direction that
+/// matters — an unreached start must not loosen anything — but it must not *tighten*
+/// by discarding a policy the tenant already has, which is what a walk that stopped
+/// at the greatest approved version and answered `None` for it would do. The walk
+/// carries on to the next version down, exactly as it does for a version whose unit
+/// was rejected and for one whose rows no longer match its pin.
+#[tokio::test]
+async fn a_future_dated_version_leaves_the_tenant_on_the_one_already_in_force() {
+    let h = Harness::new().await;
+    assert_eq!(propose_and_approve(&h, proposal("EUR", 500)).await, 0);
+    assert_eq!(
+        read_policy_as(&h, PROPOSER).await["effective"]["version"],
+        0,
+        "the control: a version whose start has passed is in force"
+    );
+
+    assert_eq!(
+        propose_and_approve(&h, dated_proposal(NOT_YET, "USD", 900)).await,
+        1
+    );
+
+    let after = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(
+        after["effective"]["version"], 0,
+        "the greatest approved version is not the effective one while its start is ahead: {after}"
+    );
+    assert_eq!(
+        after["effective"]["entries"][0]["currency"], "EUR",
+        "and the policy in force is the older version's whole content, not a merge: {after}"
+    );
 }
 
 // ---------------------------------------------------------------------------

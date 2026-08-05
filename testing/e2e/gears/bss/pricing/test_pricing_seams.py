@@ -1414,8 +1414,12 @@ def test_a_schedule_through_the_route_is_refused_before_the_materiality_gate(
 # enforced: pytest collects in source order and this is the last case in the file,
 # and the run protocol's `rm -rf ~/.cf-gears/bss-pricing` clears the store between
 # runs. Both matter because the policy store is the one piece of tenant-singleton
-# state this module writes, and `effective_from` is not compared against anything
-# (D-188), so a `2099` policy is in force the moment it is approved.
+# state this module writes, and the version this case approves is dated in the **past**,
+# so it is in force the moment it is approved. (Until D-188 landed, a 2099 date was in
+# force too — `effective_from` was compared against nothing — which is why an earlier
+# revision of this comment said a future date was harmless. It is not harmless now for
+# the opposite reason: a future-dated policy is never in force at all, and this case
+# would assert against `null`.)
 #
 # So the cases that depend on an unset policy assert it as a **precondition** rather
 # than trusting the ordering — see `_assert_no_effective_policy`. A run whose order
@@ -1423,7 +1427,12 @@ def test_a_schedule_through_the_route_is_refused_before_the_materiality_gate(
 # hundred lines away on a materiality token nobody was thinking about.
 POLICY_CURRENCY = "CHF"
 POLICY_ABSOLUTE_MINOR = 500
-POLICY_EFFECTIVE_FROM = "2099-03-01T00:00:00Z"
+# **In the past, and that is what makes this case's name true.** Since D-188 a version
+# is not the tenant's policy before its own `effective_from`, so a 2099 date would leave
+# `effective` null however many principals signed it — the case asserts the diff is *in
+# force*, which is the whole of "before it is in force". Nothing here is authored
+# forward, so the instant only recedes.
+POLICY_EFFECTIVE_FROM = "2020-01-01T00:00:00Z"
 
 
 def test_a_threshold_policy_takes_two_principals_before_it_is_in_force(

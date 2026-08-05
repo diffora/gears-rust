@@ -9,8 +9,14 @@
 //! tightening one does too, since a tightening that nobody reviewed is a denial of
 //! service on the authoring plane dressed as prudence. So the `PUT` answers **202**
 //! with the pending unit, and the proposed version becomes the tenant's policy when
-//! that unit is approved — which is a fact `infra::threshold::effective_version`
-//! reads off the approval store, not a column anything flips.
+//! that unit is approved **and its `effectiveFrom` has arrived** (D-188) — both facts
+//! `infra::threshold::effective_version` reads, one off the approval store and one off
+//! the clock, and neither a column anything flips.
+//!
+//! The second half is why the `GET` can answer `effective: null` for a tenant whose
+//! proposal was approved minutes ago: an approved version whose start is still ahead
+//! is not in force, and the tenant stays on the version it had — or on nothing, which
+//! makes everything material.
 //!
 //! **The bootstrap is reachable and is fail-safe, which is the sentence that makes
 //! the whole arrangement work.** A tenant with no policy has everything material
@@ -124,8 +130,10 @@ pub const MAX_PERCENT_BP: u32 = 10_000;
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct ThresholdPolicyView {
-    /// The version currently in force, or `null` for a tenant that has never had
-    /// one approved — under which **every** change is material (`inst-mat-failsafe`).
+    /// The version currently in force, or `null` for a tenant that has none — which
+    /// is a tenant that has never had one approved, **or** one whose only approved
+    /// versions all start in the future. Under `null` every change is material
+    /// (`inst-mat-failsafe`).
     pub effective: Option<PinnedThresholdPolicyView>,
     /// The unit reviewing a proposal, if one is open. A second `PUT` while this is
     /// present is refused `PENDING_CHANGE_UNIT_EXISTS` (409).
@@ -167,10 +175,11 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Read the tenant's approval-threshold policy")
         .description(
             "The per-currency thresholds currently **in force** - the greatest proposed version \
-             whose unit an independent `FinanceReviewer` approved and whose content still matches \
-             what they signed - together with the proposal under review, if there is one. A \
-             tenant that has never had a version approved is answered `200` with `effective: \
-             null`, which is a state and not an absent resource: unset means the two-person rule \
+             whose unit an independent `FinanceReviewer` approved, whose content still matches \
+             what they signed, and whose `effectiveFrom` has arrived - together with the proposal \
+             under review, if there is one. A tenant with no such version is answered `200` with \
+             `effective: null`, which is a state and not an absent resource: unset means the \
+             two-person rule \
              applies to **every** change (`inst-mat-failsafe`), and a currency with no entry in a \
              configured policy is material for the same reason. Gates on `approval_policy` x \
              `read`, which is deliberately not `config` x `read`: a config admin must not read or \
@@ -198,7 +207,9 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
             "Writes the proposal as a **new version** and answers `202` with the always-material \
              approval unit reviewing it (D-10). It does **not** apply the diff: the version \
              becomes the tenant's policy when an independent `FinanceReviewer` approves that \
-             unit, which is why the store is versioned and append-only rather than mutated in \
+             unit and its `effectiveFrom` has arrived - a version dated in the future is \
+             approved and not yet in force, and the tenant stays on the policy it had - which is \
+             why the store is versioned and append-only rather than mutated in \
              place - under mutation in place the proposed content would have nowhere to live and \
              the approval's pin nothing to cover. The body is the **whole** policy and not a \
              patch. A tenant's first proposal is itself material under the fail-safe, so no \

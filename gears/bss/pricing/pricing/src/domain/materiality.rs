@@ -529,16 +529,34 @@ impl ThresholdVersion {
         self.version
     }
 
-    /// The instant the version was **authored to** start applying.
+    /// The instant the version starts applying.
     ///
-    /// Stated that way because nothing enforces it: `infra::threshold::effective_version`
-    /// makes the greatest approved version effective at once, whatever this says, and
-    /// that module's doc reports the gap and names its direction. Read here as "what the
-    /// reviewer signed" — which is real, the pin covering it — rather than as "when the
-    /// thresholds start applying", which this crate does not yet make true.
+    /// It used to say "was **authored to** start applying", *"because nothing enforces
+    /// it"* — `infra::threshold::effective_version` made the greatest approved version
+    /// effective at once, whatever this said. D-188 gave the instant a reader
+    /// ([`Self::is_effective_at`]), so the plain reading is now the true one and the
+    /// hedge is gone.
     #[must_use]
     pub const fn effective_from(&self) -> DateTime<Utc> {
         self.effective_from
+    }
+
+    /// Has this version's start arrived at `now`?
+    ///
+    /// The comparison D-188 added, and it lives here rather than in the walk that asks
+    /// it because it is the meaning of the field: *not effective before* its instant,
+    /// effective from it inclusive. The boundary is inclusive for the reason
+    /// [`crate::domain::window::WindowInterval::has_started`]'s is — an interval that
+    /// begins at `t` covers `t` — and because the exclusive reading would leave the
+    /// authored instant itself governed by the *previous* policy, which is a state no
+    /// operator asked for and no reviewer signed.
+    ///
+    /// Nothing here reads a clock. `now` is the caller's, so the same version answers
+    /// the same way for the same instant however many times it is asked — which is
+    /// what lets `infra::threshold`'s walk stay idempotent across two reads.
+    #[must_use]
+    pub fn is_effective_at(&self, now: DateTime<Utc>) -> bool {
+        now >= self.effective_from
     }
 
     /// The entries, in the order the pin frames them.

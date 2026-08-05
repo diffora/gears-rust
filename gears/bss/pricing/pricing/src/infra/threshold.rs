@@ -28,7 +28,8 @@
 //!   did not have** is the one mutation of an approved version the store permits.
 //!   Matching on the pin rather than on the version number is what makes that
 //!   widening take the version out of effect instead of quietly extending what an
-//!   approver signed.
+//!   approver signed;
+//! * a version whose `effective_from` has not arrived is skipped — see below.
 //!
 //! # Why the walk is greatest-first and stops at the first hit
 //!
@@ -39,24 +40,40 @@
 //! also means the ordinary case — the newest version is the approved one — costs
 //! one iteration.
 //!
-//! # `effective_from` is authored, pinned, rendered — and **not** consulted here
+//! # `effective_from` is authored, pinned, rendered — and now **read** (D-188)
 //!
-//! A divergence found while wiring the evaluator's production callers, reported rather
-//! than fixed. [`effective_version`] answers the greatest **approved** version and
-//! compares its `effective_from` against nothing, so a version approved with an
-//! `effective_from` a year out governs *today's* publishes. The column is not
-//! decoration — it is inside the approval pin (`content_pin` hashes it, deliberately,
-//! so an operator cannot move when approved thresholds start applying after a reviewer
-//! signed) and the `GET` renders it — which makes the gap sharper rather than softer: a
-//! reviewer signs an instant that has no reader.
+//! This section reported a divergence rather than fixing it: [`effective_version`]
+//! answered the greatest **approved** version and compared its `effective_from`
+//! against nothing, so a version approved with an `effective_from` a year out
+//! governed *today's* publishes. The column was never decoration — it is inside the
+//! approval pin (`content_pin` hashes it, deliberately, so an operator cannot move
+//! when approved thresholds start applying after a reviewer signed) and the `GET`
+//! renders it — which made the gap sharper rather than softer: **a reviewer signed an
+//! instant that had no reader**, and one who signed "these looser bars start in 2030"
+//! had authorized them starting immediately.
 //!
-//! **The direction is fail-open**, which is why it is written here where the walk is:
-//! between approval and `effective_from` the tenant's policy is the design set's *unset*
-//! state, so every change should be material, and instead it is thresholded against a
-//! bar nobody has reached yet. Closing it means threading the caller's instant into this
-//! walk — `evaluate`'s arguments are "the world as it stood when the unit was opened",
-//! so the instant is the submit's — and deciding what §6 means by a policy version's
-//! start, which it does not say. Both are the owner's, not a code group's.
+//! **The direction was fail-open**, the only step of this walk that did not fail safe:
+//! between approval and `effective_from` the tenant's policy is the design set's
+//! *unset* state, so every change should be material, and instead each was thresholded
+//! against a bar nobody had reached yet.
+//!
+//! It is now the walk's third skip, and the fail-safe direction is preserved by
+//! construction rather than argued: a version whose start is ahead drops out, so the
+//! tenant falls back to an older approved version — or to none, and none makes
+//! everything material. Skipping (rather than stopping) is what keeps the fallback
+//! from becoming a second failure: a walk that returned `None` on meeting a
+//! future-dated version would take away a policy the tenant already had, tightening
+//! where nothing asked it to.
+//!
+//! **Where the clock comes from.** [`effective_version_at`] takes the instant, and
+//! [`effective_version`] is the `Utc::now()` wrapper over it. The comparison is
+//! against "now" at read time by design — the same rows answer differently before and
+//! after the instant, which is what an authored start *means* — and taking it as an
+//! argument is what keeps the walk idempotent: one clock, one answer, however many
+//! times it is asked. The publish route passes the submit's own instant, so the
+//! verdict and the stamp on the unit it opens are about one moment; `infra::window`
+//! and the policy `GET` read the wall clock, which for those callers is the same
+//! instant to within the call.
 //!
 //! The walk is bounded by the number of versions a tenant has ever proposed, which
 //! is a governance act performed by a human through a two-person review. If that
@@ -86,6 +103,10 @@ use crate::infra::storage::repo_failure;
 /// unit it opens must be about one policy, not one read before the transaction and
 /// one inside it.
 ///
+/// Reads the wall clock. A caller that already holds the instant its act is about —
+/// the publish route holds the submit's — should call [`effective_policy_at`], so
+/// that one act does not straddle two readings of "now".
+///
 /// # Errors
 /// [`DomainError::Internal`] on a storage failure, or on a stored row the domain
 /// refuses — see [`read_threshold_version`].
@@ -94,17 +115,30 @@ pub async fn effective_policy(
     scope: &AccessScope,
     tenant_id: Uuid,
 ) -> Result<Option<ThresholdPolicy>, DomainError> {
-    Ok(effective_version(runner, scope, tenant_id)
+    effective_policy_at(runner, scope, tenant_id, Utc::now()).await
+}
+
+/// [`effective_policy`] as of `now`.
+///
+/// # Errors
+/// [`DomainError::Internal`] on a storage failure, or on a stored row the domain
+/// refuses — see [`read_threshold_version`].
+pub async fn effective_policy_at(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Option<ThresholdPolicy>, DomainError> {
+    Ok(effective_version_at(runner, scope, tenant_id, now)
         .await?
         .and_then(|version| version.policy()))
 }
 
-/// The greatest version whose unit an independent principal approved, **and whose
-/// content still matches what they approved**.
+/// The greatest version whose unit an independent principal approved, whose content
+/// still matches what they approved, **and whose `effective_from` has arrived**.
 ///
-/// The module doc has the fail-safe argument for every step of the walk — and the one
-/// step that is **not** fail-safe: `effective_from` is not compared against anything, so
-/// an approved version takes effect immediately whatever instant it names.
+/// Reads the wall clock; see [`effective_version_at`] for the walk itself and the
+/// module doc for the fail-safe argument behind each of its three skips.
 ///
 /// # Errors
 /// [`DomainError::Internal`] on a storage failure, or on a stored row the domain
@@ -113,6 +147,25 @@ pub async fn effective_version(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
+) -> Result<Option<ThresholdVersion>, DomainError> {
+    effective_version_at(runner, scope, tenant_id, Utc::now()).await
+}
+
+/// [`effective_version`] as of `now`.
+///
+/// The module doc has the fail-safe argument for every step of the walk, including
+/// the D-188 one this signature exists for: a version is **not effective before its
+/// `effective_from`**, so the answer is a function of the clock and the clock is the
+/// caller's rather than this function's.
+///
+/// # Errors
+/// [`DomainError::Internal`] on a storage failure, or on a stored row the domain
+/// refuses.
+pub async fn effective_version_at(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
 ) -> Result<Option<ThresholdVersion>, DomainError> {
     let versions = threshold_repo::versions_desc(runner, scope, tenant_id)
         .await
@@ -127,6 +180,16 @@ pub async fn effective_version(
         let Some(version) = read_threshold_version(runner, scope, tenant_id, number).await? else {
             continue;
         };
+        // **D-188, and it is a `continue` rather than a `break`.** A version whose
+        // authored start is ahead of `now` is not this tenant's policy yet, so the
+        // walk carries on to the next version down — which leaves the tenant on an
+        // older approved version, or on none, and none makes everything material.
+        // Stopping instead would take away a policy the tenant already has, which
+        // fails in the *other* direction: a future-dated proposal would tighten
+        // every act the moment it was approved.
+        if !version.is_effective_at(now) {
+            continue;
+        }
         let approved = approval_repo::find_approved_for_content(
             runner,
             scope,

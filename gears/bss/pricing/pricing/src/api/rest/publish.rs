@@ -365,7 +365,7 @@ async fn publish_plan(
         return Err(CanonicalError::from(DomainError::ValidationFailed(report)));
     }
 
-    let verdict = materiality_of(&state, &scope, tenant, plan_id, &shape).await?;
+    let verdict = materiality_of(&state, &scope, tenant, plan_id, &shape, now).await?;
     if verdict.is_material() {
         let opened = state
             .approvals
@@ -535,6 +535,7 @@ async fn materiality_of(
     tenant: Uuid,
     plan_id: PlanId,
     shape: &PlanShape,
+    now: DateTime<Utc>,
 ) -> Result<MaterialityVerdict, CanonicalError> {
     let change = ChangeSet::of_records(shape.rows.iter().cloned());
     let baseline = if shape.baseline.is_none() {
@@ -552,7 +553,14 @@ async fn materiality_of(
             "bss-pricing: threshold policy: {e}"
         )))
     })?;
-    let policy = crate::infra::threshold::effective_policy(&conn, scope, tenant).await?;
+    // **`now` is the request's, not a second reading of the clock.** D-188 makes the
+    // policy a function of the instant — a version whose `effectiveFrom` is ahead is
+    // not in force — and this route already holds one instant that the precheck, the
+    // audit stamp and the unit it opens all carry. Two readings would let a publish
+    // be evaluated against one policy and stamped in a moment where a different one
+    // applied, which is the same "one act, one world" the transaction-taking caller
+    // in `infra::window` gets from sharing a transaction.
+    let policy = crate::infra::threshold::effective_policy_at(&conn, scope, tenant, now).await?;
     Ok(materiality::evaluate(
         &change,
         policy.as_ref(),

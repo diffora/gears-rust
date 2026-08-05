@@ -1482,9 +1482,28 @@ pub const POLICY_REVIEWER: Uuid = Uuid::from_u128(0x_7005_ec02);
 ///
 /// `entries` is `(currency, absolute_minor)`. A bar of any size is *below* nothing —
 /// what matters for a zero-delta act is only that the currency **has** an entry.
+///
+/// # Why the start is in the past
+///
+/// It was `2099-01-01T00:00:00Z`, and under D-188 that is a policy which is **not in
+/// force**: a version is not effective before its authored `effectiveFrom`, so this
+/// fixture would have installed a policy no publish and no window mutation could
+/// see, and every suite built on it would have gone back to asserting the fail-safe
+/// while claiming to assert the comparison — the exact failure this function's own
+/// doc warns about one paragraph up.
 pub async fn approve_threshold_policy(harness: &Harness, entries: &[(&str, i64)]) {
+    approve_threshold_policy_from(harness, "2020-01-01T00:00:00Z", entries).await;
+}
+
+/// [`approve_threshold_policy`] over an authored start, for the suites whose
+/// subject is the start itself.
+pub async fn approve_threshold_policy_from(
+    harness: &Harness,
+    effective_from: &str,
+    entries: &[(&str, i64)],
+) {
     let body = serde_json::json!({
-        "effective_from": "2099-01-01T00:00:00Z",
+        "effective_from": effective_from,
         "entries": entries
             .iter()
             .map(|(currency, minor)| serde_json::json!({

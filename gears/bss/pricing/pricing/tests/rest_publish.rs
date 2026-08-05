@@ -837,3 +837,47 @@ async fn a_configured_threshold_policy_changes_the_stored_materiality_reason() {
         "and no longer the fail-safe's, which is the whole of what wiring the policy changed"
     );
 }
+
+/// **D-188: a policy whose `effectiveFrom` has not arrived does not reach this route
+/// at all.**
+///
+/// The fixture is the case above's *exactly*, one field moved: the same plan, the
+/// same entries, the same two principals, and a start dated 2099 instead of one that
+/// has passed. So the one observable difference is the one fact that changed, and the
+/// reason goes back to `noConfiguredThreshold` — because between the approval and the
+/// authored start the tenant's policy is the design set's **unset** state.
+///
+/// This is where the fail-open was worth closing. `effectiveFrom` was inside the pin
+/// an approver signs and had no reader, so a reviewer who signed "these looser bars
+/// start in 2099" was authorizing them for the next publish — the two-person rule
+/// relaxed years before anybody agreed it should be. A comparison that only moved a
+/// `GET`'s rendering would not have been worth the wave; this is the assertion that
+/// says the enforcement moved with it.
+#[tokio::test]
+async fn a_threshold_policy_whose_start_is_ahead_does_not_govern_todays_publish() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    rest_support::approve_threshold_policy_from(&h, "2099-01-01T00:00:00Z", &[("EUR", 500)]).await;
+
+    let response = publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["materiality"]["reason"], "noConfiguredThreshold",
+        "an approved version whose start has not arrived is not a configured policy: {body}"
+    );
+
+    let opened_id = approval_rows(&h)
+        .await
+        .into_iter()
+        .find(|row| row.subject_kind == "plan_revision")
+        .map(|row| row.approval_id)
+        .expect("the publish opened a plan-revision unit");
+    let unit = approval_row(&h, opened_id).await;
+    assert_eq!(
+        unit.materiality["reason"], "noConfiguredThreshold",
+        "and the stored verdict says so too, which is what an auditor reads"
+    );
+}
