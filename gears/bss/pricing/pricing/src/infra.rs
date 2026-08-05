@@ -9,5 +9,6 @@ pub mod jobs;
 pub mod publish;
 pub mod read_model;
 pub mod storage;
+pub mod supersession;
 pub mod threshold;
 pub mod window;
