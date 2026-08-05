@@ -301,22 +301,56 @@ impl PublishService {
     /// the D-88 supersession unit and the D-100 grandfathering cutover, both
     /// Slice 7's, and neither exists.
     ///
-    /// **The premise still holds, and one clause of its reasoning has expired.**
-    /// This paragraph used to close with "the `PriceWindow` store is unbuilt",
-    /// offered as why the two units could not exist. The store exists as of
-    /// 2026-08-04 and so does the window state machine — and **neither the
-    /// supersession unit nor the cutover was built on them**, so no producer of
-    /// `published -> superseded` was added and nothing about the predicate
-    /// invariant moved. The clause is corrected rather than dropped, because a
-    /// premise resting on a fact that has changed is a premise a later reader will
-    /// believe for the wrong reason.
+    /// **The premise has narrowed twice, and it is now one step from gone.**
+    /// This paragraph first closed with "the `PriceWindow` store is unbuilt",
+    /// offered as why the two units could not exist; the store and the window state
+    /// machine arrived on 2026-08-04 without either unit being built on them.
     ///
-    /// **The premise is deleted by the group that builds either unit.** When
-    /// it goes, the published half of the candidate set needs a guard of its own:
-    /// its rows carry `row_version`, frozen with their content, so the same
-    /// `(price_id, row_version)` shape extends to them — or the membership has to
-    /// be pinned some other way. Whoever lands the supersession unit owns that
-    /// decision, and this paragraph is where they will find out that they do.
+    /// As of **2026-08-05 the flip has a producer in this crate**:
+    /// [`price_repo::commit_supersession_rows`] flips a predecessor
+    /// `published -> superseded` and publishes the successor beside it (D-88's row
+    /// half, ordered per D-195). What holds the premise today is therefore no longer
+    /// "there is no producer" but the strictly weaker **"no surface reaches it"** —
+    /// the unit around those two functions does not exist, so nothing a client can
+    /// call flips a published row out of this candidate set. The premise is stated at
+    /// its real strength rather than at the comfortable one.
+    ///
+    /// # What the next group owes, decided rather than left open (D-195)
+    ///
+    /// The route that reaches the supersession unit deletes the premise, and the
+    /// published half of the candidate set then needs its own pin. **The decision is
+    /// taken: extend the judged set.** Published rows carry `row_version` frozen with
+    /// their content (D-141), so the same `(price_id, row_version)` shape reaches
+    /// them, and the commit verifies before the flips that every published row the
+    /// rule set judged is *still* `published` at *that* version. It is a membership
+    /// check wearing a version check's clothes, which is exactly what a frozen tag
+    /// makes it.
+    ///
+    /// **Departures are the hazard and arrivals are covered — by an argument, so it
+    /// is written down.** A pin over the judged rows catches a published row
+    /// *leaving* the set. It cannot catch one *arriving*, and an arrival matters:
+    /// the market-uniformity rules (`TAX_BASIS_MIXED_MARKET`,
+    /// `PRORATION_CONTRACT_MIXED_MARKET`) read content across the whole set, and the
+    /// D-82 unit guard preserves the counter fields while leaving `tax_inclusive`
+    /// and the proration contract free to move. Arrivals are nevertheless covered:
+    ///
+    /// - A **supersession** arrival is paired with a departure on the same key, by
+    ///   `inst-su-commit`'s ordering — the flip precedes the publish, in one
+    ///   transaction — so the pin fires on the departure.
+    /// - A **cutover** (D-100) arrival on the `all_subscriptions` key is likewise
+    ///   paired with that key's flip (`inst-co-supersede`).
+    /// - The cutover's **grandfathered copy** is the one unpaired arrival: it lands
+    ///   on a new generation key with nothing departing. It is covered by D-132 —
+    ///   the market-uniformity rules exclude immutable grandfathered generations —
+    ///   so the rules that could care do not read it.
+    ///
+    /// If a third producer of a published row is ever added that is *not* paired
+    /// with a departure and *not* a grandfathered generation, this argument is what
+    /// it has to be checked against.
+    ///
+    /// **`SERIALIZABLE` is still not the answer**, for the reason below: it would
+    /// hold predicate locks across the registry round-trip, which is the one cost
+    /// step 2's ordering exists to bound.
     ///
     /// **`SERIALIZABLE` is therefore not raised, and that is a judgement rather
     /// than an impossibility.** `Db::transaction_ref_mapped_with_config` takes no

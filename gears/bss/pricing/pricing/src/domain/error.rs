@@ -173,6 +173,27 @@ pub enum DomainError {
     /// nothing and clears nothing, so re-entry is stable (D-182 clause 5).
     #[error("window trailing void: {0}")]
     WindowTrailingVoid(String),
+    /// A supersession's changeover instant has fallen behind the floor
+    /// `inst-su-instant` holds it to (`07-pricewindow-linkage.md`, architectural
+    /// **422** rendered 400). Names the instant, the floor and the remedy.
+    ///
+    /// **Two floors, one code**, and that is the design set's choice rather than a
+    /// conflation: strictly future at submit, and at least D-47's max batching
+    /// delay ahead at approval commit. The refusal names which moment it was asked
+    /// at, because the same instant can pass one and fail the other and a caller
+    /// told only the code cannot tell those apart.
+    ///
+    /// Not a conflict, for [`DomainError::WindowStartInPast`]'s reason — the world
+    /// did not move under the caller, the clock did — but unlike that one it is
+    /// **not** answered by a retry either. The design set's remedy is that the unit
+    /// is *recomposed* against a fresh instant, so the message says so: resubmitting
+    /// the same instant is refused identically and lands further behind the floor
+    /// each time. That is why this carries its own code rather than joining
+    /// `WINDOW_START_IN_PAST`, which it superficially resembles: the field is
+    /// different, the floor is different at one of the two moments, and the remedy
+    /// is a recomposition rather than a correction.
+    #[error("supersession changeover instant passed: {0}")]
+    SupersessionInstantPassed(String),
     /// A proposed approval-threshold policy breaks one of §6's shape rules
     /// (`design/05-governance.md` §5, which types it 422).
     ///

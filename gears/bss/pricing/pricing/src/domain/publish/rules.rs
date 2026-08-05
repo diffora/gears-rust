@@ -35,14 +35,29 @@
 //!
 //! # `supersession_rules` is not run here, and that is not an oversight
 //!
-//! It takes a `SupersessionPair`, and this publish unit produces no successor on
-//! an occupied key: `PriceRepo::create_draft` refuses a scope key already held
-//! by a `draft` **or** `published` row, so no draft row can be authored onto an
-//! occupied key and nothing can set `supersedes_price_id`. The two sanctioned
-//! producers of that flip — the D-88 supersession unit and the D-100 cutover —
-//! are Slice 7's and neither exists. The guard therefore has no pair to judge in
-//! this group, and running it over a fabricated one would be a rule reporting on
-//! a subject nobody authored.
+//! It takes a `SupersessionPair`, and **this** publish unit produces no successor
+//! on an occupied key: `PriceRepo::create_draft` refuses a scope key already held
+//! by a `draft` **or** `published` row, so nothing the plan-revision publish
+//! authors can set `supersedes_price_id`.
+//!
+//! **One clause of that argument has expired and the conclusion has not.** It used
+//! to close "the two sanctioned producers of that flip are Slice 7's and neither
+//! exists", and D-88's **row half** exists as of 2026-08-05:
+//! `price_repo::insert_successor_draft_on` authors a successor draft on an occupied
+//! key through a door of its own and stamps `supersedes_price_id` from the
+//! predecessor it found (D-195), and `commit_supersession_rows` flips the
+//! predecessor. What does **not** exist is the unit around them — no compose, no
+//! approval unit, no route — so no caller reaches either function, and the pair
+//! this guard judges still cannot arrive on **this** path in any case: the
+//! supersession unit is its own publish unit and runs the guard itself
+//! (`inst-su-compose`). The clause is corrected rather than deleted, because a
+//! premise resting on a fact that has changed is a premise a later reader will
+//! believe for the wrong reason.
+//!
+//! So the guard still has no pair to judge here, and running it over a fabricated
+//! one would be a rule reporting on a subject nobody authored. **What the
+//! supersession unit owes is to run it** — the guard is built and pure and today
+//! has no production caller at all.
 //!
 //! # The Foundation's base set: what is enforced structurally, and what was
 //! missing

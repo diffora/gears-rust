@@ -234,6 +234,37 @@ fn fail_closed_publish_rejections_render_400_not_the_documented_422() {
     // caller — the coverage it declines to remove is the coverage they composed
     // the request against, and a retry unchanged is refused identically.
     assert_eq!(status(DomainError::WindowTrailingVoid(detail())), 400);
+    // `inst-su-instant`'s changeover floor. §5 types it 422, so it lands here for
+    // the same reason as the two above and is not a conflict: the clock moved, not
+    // the world. It is not a retry either — the design set's remedy is a
+    // recomposition — but "not retryable" is not "a conflict", and 409 would
+    // falsely promise that a refresh resolves it.
+    assert_eq!(
+        status(DomainError::SupersessionInstantPassed(detail())),
+        400
+    );
+}
+
+/// `inst-su-instant`'s code survives the ladder.
+///
+/// **Its own test rather than a line in the window list**, for the reason the
+/// trailing void has its own: that list is closed at four by
+/// [`WindowRefusal`](crate::domain::window::WindowRefusal), and appending a
+/// supersession refusal to it would invite the next reader to append it to that
+/// *type* — which would break the partition test below over something that is not a
+/// window refusal at all. This one is about a **row-plane act's** instant; the
+/// window it goes on to schedule is a consequence.
+///
+/// There is no `repo_failure` half to assert: the floor compares two instants the
+/// caller and the clock supply, so it is raised in `domain` and no `RepoError`
+/// variant corresponds. `repo_failure`'s `match` carries no wildcard, so one added
+/// later fails to compile until it is mapped.
+#[test]
+fn the_changeover_floor_code_survives_the_ladder() {
+    assert_eq!(
+        precondition_code(DomainError::SupersessionInstantPassed("detail".to_owned())),
+        crate::domain::supersession::SUPERSESSION_INSTANT_PASSED
+    );
 }
 
 #[test]

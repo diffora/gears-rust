@@ -126,6 +126,20 @@ impl From<DomainError> for CanonicalError {
             D::WindowStartInPast(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation("effective_from", detail, "WINDOW_START_IN_PAST")
                 .create(),
+            // `inst-su-instant`'s two floors. An architectural 422 (§5) rendered
+            // 400, and a precondition failure rather than a conflict for the reason
+            // its neighbour above is one — the clock moved, not the world. It is
+            // **not** a retry, though: the design set's remedy is that the unit is
+            // recomposed against a fresh instant, and the detail carries that word,
+            // because a caller who resubmits the same instant is refused identically
+            // and lands further behind the floor each time.
+            D::SupersessionInstantPassed(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation(
+                    "changeover_instant",
+                    detail,
+                    crate::domain::supersession::SUPERSESSION_INSTANT_PASSED,
+                )
+                .create(),
             // `inst-fg-trailing`, fail-closed under D-182. An architectural 422 (§5)
             // rendered 400, and a precondition failure rather than a conflict for
             // the reason its sibling above is one, with the sign reversed: nothing
