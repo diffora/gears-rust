@@ -666,7 +666,8 @@ impl PublishService {
     }
 }
 
-/// The `(price_id, row_version)` set the rule set actually judged.
+/// The `(price_id, row_version)` set the rule set actually judged **and this publish
+/// unit is entitled to move**.
 ///
 /// The **draft** half of the candidate row set: the published half is already
 /// published and is physically immutable, so nothing about it can move between
@@ -675,11 +676,56 @@ impl PublishService {
 /// publishes, at the versions it was validated at, and a row whose content moved
 /// in between no longer matches. See that function's doc for the defect this
 /// closes.
+///
+/// # A draft on an occupied key belongs to another unit, and is excluded
+///
+/// Price rows hang off `plan_id`, not off a revision, so this set is every draft row
+/// of the plan. Since D-195 that includes one it must not touch: a **supersession
+/// successor**, staged by `price_repo::insert_successor_draft_on` beside the published
+/// row it will supersede.
+///
+/// Sweeping it up is not a near-miss. `publish_rows` would flip it to `published`
+/// while its predecessor still reads `published`, the published-plane partial `UNIQUE`
+/// would refuse the statement, and the refusal arrives as a raw driver error —
+/// `RepoError::Db` → `DomainError::Internal` → **500**, taking an entirely unrelated
+/// revision publish down with it for as long as a supersession is pending on any key
+/// of the plan. No publish rule catches it first; there is no scope-key-duplication
+/// rule in the set (found by review, 2026-08-05, after `publish_rows`' amended doc had
+/// named the wrong caller for this collision).
+///
+/// So the rule is: **a draft row whose canonical scope key already carries a published
+/// row is not this unit's to publish.** It publishes through the unit that staged it,
+/// which is the one that also flips the predecessor and moves the windows. This is the
+/// same reasoning `publish_rows` gives for a *newly inserted* row staying `draft` —
+/// nothing validated it as part of this act — one step further: here something did
+/// validate it, and it still is not this act's row.
+///
+/// The exclusion is **decided here rather than in the rule set** because it is about
+/// entitlement rather than about validity: the successor's content is perfectly
+/// publishable, and a rule reporting a violation would tell an operator to fix a row
+/// that is not wrong. `shape.rows` keeps carrying it, so every completeness and
+/// uniformity rule still sees the key covered.
+///
+/// **It is a no-op on every world that predates the second door** — nothing else can
+/// put a draft on an occupied key (`inst-pr-return`/D-21 refuses it at save,
+/// `IMPORT_TARGETS_PUBLISHED` per row on the bulk plane) — which is why no existing
+/// case moves.
 fn validated_draft_rows(shape: &PlanShape) -> Vec<(Uuid, RowVersion)> {
+    // Compared by canonical **rendering**, the way `infra::window`'s pending-key check
+    // does: `ScopeKey` is not `Ord`, and the rendering is the eight axes in a fixed
+    // order — the same string a `DUPLICATE_SCOPE_KEY` refusal names, so two equal
+    // renderings are one key by construction.
+    let occupied: std::collections::BTreeSet<String> = shape
+        .rows
+        .iter()
+        .filter(|record| record.lifecycle_state == LifecycleState::Published)
+        .map(|record| record.scope_key.to_string())
+        .collect();
     shape
         .rows
         .iter()
         .filter(|record| record.lifecycle_state == LifecycleState::Draft)
+        .filter(|record| !occupied.contains(&record.scope_key.to_string()))
         .map(|record| (record.price_id, record.row_version))
         .collect()
 }

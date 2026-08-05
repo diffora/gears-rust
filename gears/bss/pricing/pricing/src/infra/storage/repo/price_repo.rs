@@ -82,9 +82,11 @@
 //! `supersedes_price_id` — and its row half is
 //! [`insert_successor_draft_on`], whose occupancy precondition is the mirror
 //! image of [`PriceRepo::create_draft`]'s: a published occupant is what it
-//! requires rather than what it refuses (**D-195**). What is *not* built here is
-//! the rest of the unit — the compose, the approval and the commit — so no
-//! mounted surface reaches this door yet.
+//! requires rather than what it refuses (**D-195**). The row half of the commit is
+//! below (`commit_supersession_rows`), the compose is `domain::supersession` and the
+//! cross-plane commit is `infra::supersession`; what is **not** built is the
+//! orchestrator, the approval unit and the route, so no mounted surface reaches this
+//! door yet.
 //!
 //! `create_draft` is unchanged and must still not be reached for on an occupied
 //! key: the authoring door refuses a key an occupied published row holds rather
@@ -861,10 +863,46 @@ pub async fn publish_rows(
 /// where [`publish_rows`] is likewise silent. The supersession unit's record is its
 /// own, and belongs to whichever layer holds its approval reference.
 ///
+/// # The pair is checked, and the key is the load-bearing half
+///
+/// The two ids arrive as independent arguments, so nothing about the *call* says they
+/// belong together — and this function enforced only their **order** until a review
+/// pointed out it enforced nothing about their **pairing** (2026-08-05). A predecessor
+/// on one key and a successor on another key of the same plan committed cleanly:
+/// `supersede_row` never looks at the successor, and [`publish_rows`] filters by
+/// `plan_id` rather than by key. The result is the predecessor's key left with **no
+/// current row at all** — the state this function's own ordering argument calls worse
+/// than either move not having happened.
+///
+/// So both rows are read first and two relations are required:
+///
+/// - **The same canonical scope key.** This is the load-bearing one. A supersession is
+///   by definition a change on *one* key (`inst-ps-supersede`), so a differing key is
+///   not a mispaired supersession, it is two unrelated acts wearing one transaction.
+/// - **`successor.supersedes_price_id == Some(predecessor)`** (D-127). This is the
+///   second belt, and it is second rather than first because it is **spoofable**:
+///   `supersedes_price_id` is caller-supplied content on the authoring routes
+///   (`PriceContentView` carries it, and `POST`/`PATCH` plumb it through unvalidated),
+///   so [`insert_successor_draft_on`]'s claim to be the only writer of it is false. It
+///   still earns its place — it catches a draft authored on a free key that the key's
+///   later occupant would otherwise look paired with.
+///
+/// One extra read for the pair, which buys a refusal in place of a silently
+/// uncovered key.
+///
+/// # No audit record here
+///
+/// The publish commit writes one record for the whole act at the subject's level
+/// rather than one per row moved — see
+/// [`PublishService::commit`](crate::infra::publish::PublishService::commit) step 6,
+/// where [`publish_rows`] is likewise silent. The supersession unit's record is its
+/// own, and belongs to whichever layer holds its approval reference.
+///
 /// # Errors
-/// [`RepoError::NotSupersedable`] when the predecessor is not the key's current
-/// row, naming the state it was found in; [`RepoError::NotFound`] when it is
-/// invisible to `scope`; everything [`publish_rows`] answers for the successor,
+/// [`RepoError::NotSupersedable`] when the predecessor is not the key's current row
+/// (naming the state it was found in), when the two rows stand on different keys, or
+/// when the successor's link names something else; [`RepoError::NotFound`] when either
+/// row is invisible to `scope`; everything [`publish_rows`] answers for the successor,
 /// notably [`RepoError::StaleRowVersion`]; [`RepoError::Db`] on a storage failure.
 pub async fn commit_supersession_rows(
     txn: &DbTx<'_>,
@@ -874,9 +912,81 @@ pub async fn commit_supersession_rows(
     predecessor: Uuid,
     successor: (Uuid, RowVersion),
 ) -> Result<(), RepoError> {
+    refuse_mispaired(txn, scope, tenant_id, predecessor, successor.0).await?;
     supersede_row(txn, scope, tenant_id, predecessor).await?;
     publish_rows(txn, scope, tenant_id, plan_id, &[successor]).await?;
     Ok(())
+}
+
+/// Refuse a predecessor and successor that are not each other's.
+///
+/// Both rows in one query — the pair is two ids and a round trip each would put a
+/// second read inside a transaction that is about to hold four writes.
+async fn refuse_mispaired(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    predecessor: Uuid,
+    successor: Uuid,
+) -> Result<(), RepoError> {
+    let rows: HashMap<Uuid, price::Model> = load_rows(
+        runner,
+        scope,
+        tenant_id,
+        [predecessor, successor].into_iter(),
+    )
+    .await?
+    .into_iter()
+    .map(|row| (row.price_id, row))
+    .collect();
+    let (Some(before), Some(after)) = (rows.get(&predecessor), rows.get(&successor)) else {
+        // Which one is missing is not this function's answer to give: the two sibling
+        // moves below each produce a precise refusal for their own row, and answering
+        // here would pre-empt whichever of them the caller actually needs to hear.
+        return Ok(());
+    };
+
+    if scope_key_columns(before) != scope_key_columns(after) {
+        return Err(RepoError::NotSupersedable {
+            subject: SUBJECT.to_owned(),
+            id: successor.to_string(),
+            state: format!(
+                "on a different canonical scope key from price {predecessor}; a supersession is a \
+                 change on one key"
+            ),
+        });
+    }
+    if after.supersedes_price_id != Some(predecessor) {
+        return Err(RepoError::NotSupersedable {
+            subject: SUBJECT.to_owned(),
+            id: successor.to_string(),
+            state: format!(
+                "carrying supersedesPriceId {:?}, which does not name price {predecessor}",
+                after.supersedes_price_id
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The eight canonical scope-key columns of a stored row, as a comparable tuple.
+///
+/// Compared column-wise rather than by parsing back into a [`ScopeKey`]: a row whose
+/// stored axis is outside its enumeration is a [`RepoError::CorruptRow`] that the
+/// callers' own reads will report with the subject attached, and a comparison that
+/// had to parse first would answer "corrupt" where the honest answer is "these two
+/// rows are not on one key".
+fn scope_key_columns(row: &price::Model) -> (Uuid, &str, &str, &str, Uuid, &str, &str, &str) {
+    (
+        row.plan_id,
+        row.currency.as_str(),
+        row.region.as_str(),
+        row.price_overlay.as_str(),
+        row.phase,
+        row.price_eligibility.as_str(),
+        row.charge_kind.as_str(),
+        row.cohort.as_str(),
+    )
 }
 
 /// Move one published row to `superseded`, refusing anything else.
@@ -1420,10 +1530,17 @@ async fn read_key_occupants(
 /// # The link is stamped here
 ///
 /// `supersedes_price_id` is written from the same read that validated the key
-/// (D-127 requires the successor to carry it), overwriting whatever the caller
-/// sent. A caller-supplied link that disagrees with the key's actual current row
-/// is a class of defect that cannot be expressed if the door is the only writer of
-/// it, and the door is the only reader positioned to be right.
+/// (D-127 requires the successor to carry it), overwriting whatever the caller sent —
+/// this door is the only reader positioned to be right about it.
+///
+/// **It is not the only *writer*, and an earlier version of this paragraph claimed it
+/// was** (corrected 2026-08-05 by review). `PriceContentView` carries
+/// `supersedes_price_id` as a request field and both `POST …/prices` and
+/// `PATCH …/prices/{priceId}` plumb it through unvalidated, so any client on the
+/// authoring plane can give a hand-authored draft an arbitrary link. Stamping here
+/// therefore makes the link right on *this* path and cannot make a disagreement
+/// unexpressible — which is why `commit_supersession_rows` checks the pair rather than
+/// trusting the stamp, with key equality as the load-bearing half.
 ///
 /// # What this does **not** do
 ///
@@ -1433,6 +1550,18 @@ async fn read_key_occupants(
 /// `published` dies on `uq_pricing_price_scope_key_current` as a raw driver error.
 /// After compose, both rows legitimately stand on the key and the predecessor is
 /// untouched.
+///
+/// **What it does do beyond the three writes, which this section used to omit**
+/// (review, 2026-08-05): it reaches [`record_price_mutation`] through
+/// [`write_prepared`], so it appends the row's audit entry **and voids every
+/// `submitted` approval unit of the plan** ([`crate::infra::approval::void_pending_units_of`],
+/// keyed on the plan rather than the key). Two consequences the orchestrator owns:
+/// staging the successor must happen **before** its own unit is opened, or the door
+/// voids the unit it is composing — this is the first act in the gear where the row
+/// insert and the approval unit belong to one act — and composing on one key voids a
+/// pending unit on *another* key of the same plan, which is wider than
+/// `inst-co-single-pending`'s per-key rule and is pre-existing `void_pending_units_of`
+/// semantics rather than this door's invention.
 ///
 /// # Errors
 /// [`RepoError::NotFound`] when the key has no current row to supersede;
@@ -1449,6 +1578,32 @@ pub async fn insert_successor_draft_on(
 ) -> Result<(PriceRecord, Uuid), RepoError> {
     let mut prepared = prepare_draft(tenant_id, draft)?;
     let key = prepared.record.scope_key.clone();
+
+    // Foundation §4.3, refused before the key is even read: an
+    // `existing_grandfathered` row is **immutable in price and MUST NOT be
+    // superseded**, and S7 §1.7's UC table says the same ("only tightening
+    // `grandfatherUntil` is allowed").
+    //
+    // **Here because this is the only layer that can ask.** The unit guard compares
+    // `PriceRow` fields and a `PriceRow` carries no eligibility class; `compose_windows`
+    // reads intervals and states. This door holds the whole canonical scope key, so it
+    // is where the class is knowable — found missing by review, 2026-08-05.
+    //
+    // Its absence was money, not tidiness, and compounded: the successor would rewrite
+    // the retained cohort's price, and the shorten would walk that generation's coverage
+    // inward while `window_repo::adjust_effective_to` still does not enforce D-04's
+    // `inst-co-bounds` (its own doc records that gap), stranding bound subscribers
+    // mid-cycle with no guard on either side.
+    if key.price_eligibility() == PriceEligibility::ExistingGrandfathered {
+        return Err(RepoError::NotSupersedable {
+            subject: SUBJECT.to_owned(),
+            id: key.to_string(),
+            state: "an existing_grandfathered generation, which is immutable in price and may not \
+                    be superseded; only its grandfatherUntil may be tightened"
+                .to_owned(),
+        });
+    }
+
     let occupants = read_key_occupants(runner, scope, tenant_id, &key).await?;
 
     let Some(predecessor) = occupants.published else {

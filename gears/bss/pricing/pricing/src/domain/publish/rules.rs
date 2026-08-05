@@ -46,18 +46,20 @@
 //! `price_repo::insert_successor_draft_on` authors a successor draft on an occupied
 //! key through a door of its own and stamps `supersedes_price_id` from the
 //! predecessor it found (D-195), and `commit_supersession_rows` flips the
-//! predecessor. What does **not** exist is the unit around them — no compose, no
-//! approval unit, no route — so no caller reaches either function, and the pair
-//! this guard judges still cannot arrive on **this** path in any case: the
-//! supersession unit is its own publish unit and runs the guard itself
-//! (`inst-su-compose`). The clause is corrected rather than deleted, because a
+//! predecessor. **The compose exists too** — `domain::supersession::plan_supersession`,
+//! which runs this very guard (corrected 2026-08-05: this paragraph was written before
+//! that landed, later in the same commit series, and denied it for a day). What does
+//! **not** exist is the orchestrator, the approval unit and the route, so no *surface*
+//! reaches any of it — and the pair this guard judges still cannot arrive on **this**
+//! path in any case: the supersession unit is its own publish unit and runs the guard
+//! itself (`inst-su-compose`). The clause is corrected rather than deleted, because a
 //! premise resting on a fact that has changed is a premise a later reader will
 //! believe for the wrong reason.
 //!
 //! So the guard still has no pair to judge here, and running it over a fabricated
-//! one would be a rule reporting on a subject nobody authored. **What the
-//! supersession unit owes is to run it** — the guard is built and pure and today
-//! has no production caller at all.
+//! one would be a rule reporting on a subject nobody authored. **The supersession
+//! unit does run it**, in `plan_supersession`; what is owed is the surface that
+//! reaches that function.
 //!
 //! # The Foundation's base set: what is enforced structurally, and what was
 //! missing

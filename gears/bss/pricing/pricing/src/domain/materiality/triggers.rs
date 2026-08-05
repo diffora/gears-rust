@@ -66,9 +66,11 @@
 //! `find_key_occupant` finds occupied, `DUPLICATE_SCOPE_KEY` — and the way to reprice
 //! an occupied key is the D-88 supersession unit. That unit now has its **row half**
 //! (`price_repo::insert_successor_draft_on`, D-195, which is where the row *pair*
-//! below finally becomes constructible), but no compose, no approval unit, no commit
-//! and no route, so nothing a caller can invoke stages the pair yet.
-//! `update_draft`'s swap guard carries
+//! below finally becomes constructible), its compose (`domain::supersession`) and its
+//! cross-plane commit (`infra::supersession`) — but no orchestrator, no approval unit
+//! and no route, so nothing a caller can invoke stages the pair yet. (The enumeration
+//! is corrected as of 2026-08-05: it said "no compose, no commit" for a day after both
+//! landed.) And `update_draft`'s swap guard carries
 //! `lifecycle_state = 'draft'`, so a published row's horizon cannot be moved in place
 //! either. So [`triggered_by_row`] is reachable as a **function** and its two arms are
 //! unit-tested over hand-built rows; what no mounted surface can present is the row

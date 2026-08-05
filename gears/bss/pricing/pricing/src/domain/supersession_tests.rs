@@ -532,3 +532,80 @@ fn the_plan_carries_the_changeover_so_the_commit_can_recompose_from_it() {
     assert_eq!(plan.windows.shorten.effective_to, plan.changeover);
     assert_eq!(plan.windows.successor.effective_from, plan.changeover);
 }
+
+#[test]
+fn a_changeover_at_the_covering_windows_own_start_is_refused_on_its_own_terms() {
+    // Found by review: `covers` is **inclusive** at the start, so a window beginning
+    // exactly at the changeover both covers it and matches the collision predicate.
+    // The covering window is therefore NOT excluded from that predicate "by
+    // construction", and before this arm existed the caller was told the key "carries
+    // later coverage that this supersession would not replace" — naming a sibling that
+    // does not exist and sending an operator hunting for it.
+    //
+    // Refusing is right either way: shortening a window to its own start leaves an
+    // empty interval, so there is no predecessor coverage left to hand over. What was
+    // wrong was the diagnosis.
+    let at_the_boundary = named(
+        1,
+        WindowInterval::new(changeover(), None, WindowState::Scheduled),
+    );
+
+    let err = compose_windows(&[at_the_boundary], changeover())
+        .expect_err("shortening a window to its own start empties it");
+    let DomainError::LifecycleForbidden(detail) = err else {
+        panic!("this is a refused state of the key, not a collision, got: {err:?}");
+    };
+    assert!(
+        detail.contains(&window_id(1).to_string()),
+        "the refusal names the window it is about, got: {detail}"
+    );
+    assert!(
+        !detail.contains("later coverage"),
+        "and it does NOT claim a sibling that is not there, got: {detail}"
+    );
+}
+
+#[test]
+fn a_changeover_finer_than_the_millisecond_quantum_is_refused_at_compose() {
+    // Found by review. The quantum is the store's rule and both write paths do refuse
+    // a non-quantized instant — but the changeover's first arrival at the store is
+    // inside the commit transaction, after two people have approved. So a microsecond
+    // in the payload survives compose at submit, survives it again at commit, and dies
+    // mid-commit as a storage refusal: a caller mistake reported at the one moment the
+    // caller can no longer fix it, on the very path whose sibling refusal
+    // (`SUPERSESSION_INSTANT_PASSED`) exists to avoid wasting a recomposition.
+    //
+    // This adds no second owner of the rule: `check_quantum` is `is_quantized`
+    // consulted, the same arrangement `check_creation` already uses for emptiness.
+    let ragged = changeover() + Duration::microseconds(1);
+    let err = plan_supersession(
+        &predecessor(),
+        &priced_differently(),
+        &[live_open_ended()],
+        ragged,
+        now(),
+        ChangeoverMoment::Submit,
+    )
+    .expect_err("a sub-millisecond changeover is not storable");
+    assert!(
+        matches!(err, DomainError::TimestampPrecisionExceeded(_)),
+        "got: {err:?}"
+    );
+
+    // And it is answered before the floor, because a malformed instant is not an
+    // instant whose distance is worth comparing.
+    let ragged_and_passed = now() - Duration::days(1) + Duration::microseconds(1);
+    let err = plan_supersession(
+        &predecessor(),
+        &priced_differently(),
+        &[live_open_ended()],
+        ragged_and_passed,
+        now(),
+        ChangeoverMoment::Submit,
+    )
+    .expect_err("both wrong");
+    assert!(
+        matches!(err, DomainError::TimestampPrecisionExceeded(_)),
+        "the malformed value is answered before its distance, got: {err:?}"
+    );
+}

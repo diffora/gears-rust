@@ -30,8 +30,8 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::domain::supersession::WindowShorten;
-use bss_pricing::domain::window::WindowState;
+use bss_pricing::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
+use bss_pricing::domain::window::{WindowInterval, WindowState};
 use bss_pricing::infra::storage::entity::{price, price_window};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, PriceRepo, price_repo, window_repo};
@@ -209,21 +209,56 @@ fn predecessor_window() -> Uuid {
     Uuid::from_u128(0xb_7f01)
 }
 
-/// The commit the composed plan asks for.
+/// The commit a composed plan asks for, built through `SupersessionCommit::of_plan`
+/// from a real `compose_windows` output.
+///
+/// That constructor is the **only** way to build one, which is the point: the two
+/// window instants both come out of the one changeover the plane was validated
+/// against, so the coverage void the earlier public-field shape permitted cannot be
+/// expressed here — not even deliberately, by a test trying to.
+fn commit_built(shorten_seq: u64, successor: (Uuid, RowVersion)) -> SupersessionCommit {
+    let plane = [NamedWindow {
+        window_id: predecessor_window(),
+        interval: WindowInterval::new(coverage_from(), None, WindowState::Scheduled),
+    }];
+    let composed_plan = plan_supersession(
+        &content(1_000).row,
+        &content(1_200).row,
+        &plane,
+        changeover(),
+        now(),
+        ChangeoverMoment::Commit,
+    )
+    .expect("the fixture world composes");
+    SupersessionCommit::of_plan(
+        &composed_plan,
+        plan(),
+        PREDECESSOR,
+        shorten_seq,
+        successor,
+        SUCCESSOR_WINDOW,
+        "repricing".to_owned(),
+    )
+}
+
+/// The ordinary commit: the fixture's successor at the version it was authored with.
 fn commit_of(shorten_seq: u64) -> SupersessionCommit {
-    SupersessionCommit {
-        plan_id: plan(),
-        predecessor: PREDECESSOR,
-        shorten: WindowShorten {
-            window_id: predecessor_window(),
-            effective_to: changeover(),
-        },
-        shorten_expected_seq: shorten_seq,
-        successor: (SUCCESSOR, RowVersion::new(0)),
-        successor_window_id: SUCCESSOR_WINDOW,
-        successor_from: changeover(),
-        reason_code: "repricing".to_owned(),
-    }
+    commit_built(shorten_seq, (SUCCESSOR, RowVersion::new(0)))
+}
+
+/// A second key of the same plan — a different eligibility class, so a legal key that
+/// this supersession has nothing to do with.
+fn other_key() -> ScopeKey {
+    ScopeKey::new(
+        plan(),
+        CurrencyCode::new("USD").expect("three letters"),
+        Region::new("EU").expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_6e)),
+        PriceEligibility::NewSubscriptionsOnly,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("new_subscriptions_only pairs with cohort none")
 }
 
 async fn commit(
@@ -376,9 +411,7 @@ async fn a_refused_window_write_rolls_back_the_row_writes_with_it() {
     let scope = AccessScope::for_tenant(tenant());
     let seq = composed(&repo, &provider, &scope).await;
 
-    let mut stale = commit_of(seq);
-    stale.shorten_expected_seq = seq + 7;
-    let err = commit(&provider, &scope, stale)
+    let err = commit(&provider, &scope, commit_of(seq + 7))
         .await
         .expect_err("the window's own precondition still decides");
     assert!(
@@ -418,11 +451,13 @@ async fn a_refused_row_write_rolls_back_the_window_writes_with_it() {
     let scope = AccessScope::for_tenant(tenant());
     let seq = composed(&repo, &provider, &scope).await;
 
-    let mut stale = commit_of(seq);
-    stale.successor = (SUCCESSOR, RowVersion::new(9));
-    let err = commit(&provider, &scope, stale)
-        .await
-        .expect_err("the successor's own precondition still decides");
+    let err = commit(
+        &provider,
+        &scope,
+        commit_built(seq, (SUCCESSOR, RowVersion::new(9))),
+    )
+    .await
+    .expect_err("the successor's own precondition still decides");
     assert!(
         matches!(err, RepoError::StaleRowVersion { .. }),
         "got: {err:?}"
@@ -521,4 +556,133 @@ fn the_repository_refusals_convert_for_a_service_caller() {
         converted,
         bss_pricing::domain::error::DomainError::StaleVersion(_)
     ));
+}
+
+// ---------------------------------------------------------------------------
+// The cross-field invariants the composed plan proves, and the commit must not
+// be able to drop (found by review, 2026-08-05).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_successor_on_another_key_cannot_be_paired_with_this_predecessor() {
+    // The invariant whose violation is worst in kind: flip the predecessor, freeing
+    // its key on the published plane, and publish a successor standing on a
+    // *different* key of the same plan. The predecessor's key is then left with **no
+    // current row at all** — the state `commit_supersession_rows`' own doc calls
+    // worse than either move not having happened — and nothing refused it.
+    //
+    // The two ids arrive as independent arguments, so only a check inside the commit
+    // can tell them apart: `publish_rows` filters by plan, not by key, and
+    // `supersede_row` never looks at the successor.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let seq = composed(&repo, &provider, &scope).await;
+
+    // A draft of the same plan, on a different eligibility class — a legal row that
+    // this supersession has nothing to do with.
+    let stranger = Uuid::from_u128(0xb_7003);
+    let mut elsewhere = draft(stranger, 900);
+    elsewhere.scope_key = other_key();
+    repo.create_draft(&scope, tenant(), elsewhere)
+        .await
+        .expect("author an unrelated draft of the same plan");
+
+    let err = commit(
+        &provider,
+        &scope,
+        commit_built(seq, (stranger, RowVersion::new(0))),
+    )
+    .await
+    .expect_err("a successor on another key is not this predecessor's successor");
+    assert!(
+        matches!(err, RepoError::NotSupersedable { .. }),
+        "got: {err:?}"
+    );
+
+    assert_eq!(
+        stored_row(&provider, &scope, PREDECESSOR)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str(),
+        "the predecessor's key never lost its current row"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, stranger)
+            .await
+            .lifecycle_state,
+        LifecycleState::Draft.as_str()
+    );
+}
+
+#[tokio::test]
+async fn a_successor_whose_link_names_someone_else_is_refused() {
+    // D-127 requires the successor to carry `supersedes_price_id`, and the door
+    // stamps it. It is **not** the only writer of that column — the authoring routes
+    // plumb a caller-supplied value straight through — so the commit checks the link
+    // rather than trusting that it was stamped. Key equality is the load-bearing
+    // half; this is the second belt, and it is the one that catches a draft authored
+    // on a free key that later becomes occupied.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let seq = composed(&repo, &provider, &scope).await;
+
+    let conn = provider.conn().expect("conn");
+    price::Entity::update_many()
+        .secure()
+        .scope_with(&scope)
+        .col_expr(
+            price::Column::SupersedesPriceId,
+            Expr::value(Uuid::from_u128(0xdead_beef)),
+        )
+        .filter(Condition::all().add(price::Column::PriceId.eq(SUCCESSOR)))
+        .exec(&conn)
+        .await
+        .expect("point the link at a stranger");
+
+    let err = commit(&provider, &scope, commit_of(seq))
+        .await
+        .expect_err("the successor does not claim to supersede this predecessor");
+    assert!(
+        matches!(err, RepoError::NotSupersedable { .. }),
+        "got: {err:?}"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, PREDECESSOR)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str()
+    );
+}
+
+#[tokio::test]
+async fn the_two_window_instants_cannot_disagree_because_one_value_produces_both() {
+    // The invariant whose violation **commits silently**, which is why it is closed
+    // structurally rather than refused. A shorten to T1 and a schedule from T2 > T1
+    // leaves `[T1, T2)` uncovered, and nothing in the transaction notices: window
+    // overlap is an intersection test, and a gap is not an intersection.
+    //
+    // So `SupersessionCommit` is built from the `ComposedWindows` that
+    // `compose_windows` proved adjacent, and both instants come from the one
+    // changeover. There is no way to spell the disagreement, which is what this case
+    // asserts — it is a statement about the type, driven through the store to show
+    // the type is what the commit actually uses.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let seq = composed(&repo, &provider, &scope).await;
+
+    let plan = commit_of(seq);
+    assert_eq!(
+        plan.shorten().effective_to,
+        plan.successor_from(),
+        "one changeover, two writes, no second value to disagree with"
+    );
+    commit(&provider, &scope, plan).await.expect("commit");
+
+    let shortened = stored_window(&provider, &scope, predecessor_window())
+        .await
+        .expect("there");
+    let scheduled = stored_window(&provider, &scope, SUCCESSOR_WINDOW)
+        .await
+        .expect("there");
+    assert_eq!(shortened.effective_to, Some(scheduled.effective_from));
 }

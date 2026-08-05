@@ -219,7 +219,10 @@ fn draft(price_id: Uuid, scope_key: ScopeKey, content: PriceContent) -> NewPrice
 /// here so a suite about one row needs neither a publish unit nor a composed
 /// supersession. The append-only trigger permits both: it fires only when the row
 /// is already past `draft`, and `published -> superseded` is one of the two flips
-/// it whitelists.
+/// it whitelists. (The reason stated here used to be "the trigger fires only when the
+/// row is already past `draft`", which D-153 falsified: the trigger gained a draft
+/// branch on both backends. It still *permits* both flips, so the fabrication is legal
+/// — corrected 2026-08-05.)
 async fn flip_state(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,
@@ -2965,5 +2968,54 @@ async fn every_price_record_carries_the_correlation_its_caller_supplied() {
             ("delete".to_owned(), Some(DELETED_BY_CALL)),
         ],
         "three calls, three records, and each names the call that wrote it"
+    );
+}
+
+#[tokio::test]
+async fn a_grandfathered_generation_may_not_be_superseded() {
+    // Foundation §4.3 is normative: "An `existing_grandfathered` row is **immutable in
+    // price** and MUST NOT be superseded", restated in S7 §1.7's UC table ("Attempt to
+    // supersede or reprice an `existing_grandfathered` row → rejected; only tightening
+    // `grandfatherUntil` is allowed"). Found by review 2026-08-05: **nothing enforced
+    // it.** The unit guard compares `PriceRow` fields and a `PriceRow` carries no
+    // eligibility class; compose reads only intervals; this door checked occupancy only.
+    //
+    // It is money rather than tidiness, and the two halves compound. The successor
+    // rewrites the retained cohort's price — the exact thing the class exists to
+    // prevent. And compose would hand `adjust_effective_to` a shorten of that
+    // generation's window to the changeover, while that function does **not** enforce
+    // D-04's `inst-co-bounds` (coverage through `grandfatherUntil` plus the longest
+    // billing cycle) — a gap recorded in its own doc — so a bound subscriber is
+    // stranded mid-cycle with no guard on either side.
+    //
+    // The door is the cheapest correct home: it already holds the key.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let generation = grandfathered_key(ChargeKind::Recurring, at(12));
+    let retained = Uuid::from_u128(0xb_5101);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(retained, generation.clone(), flat_content()),
+    )
+    .await
+    .expect("author the grandfathered copy");
+    flip_state(&provider, &scope, retained, LifecycleState::Published).await;
+
+    let err = supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(Uuid::from_u128(0xb_5102), generation, flat_content()),
+    )
+    .await
+    .expect_err("a retained generation is immutable in price");
+
+    let RepoError::NotSupersedable { state, .. } = err else {
+        panic!("the class refusal names why, got: {err:?}");
+    };
+    assert!(
+        state.contains("existing_grandfathered"),
+        "the refusal names the class, got: {state}"
     );
 }

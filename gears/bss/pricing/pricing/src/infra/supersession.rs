@@ -32,12 +32,33 @@
 //! The four writes are ordered windows-then-rows. Nothing forces it — the two pairs
 //! are independent, since `window_repo` resolves a window's key through
 //! `pricing_price` without asking the row's lifecycle state — so the reason is about
-//! which failure is cheapest to reach: the window operations carry the two
-//! preconditions most likely to have gone stale between compose and approval (an
-//! `effectiveTo` somebody adjusted, an interval somebody scheduled), while the row
-//! preconditions are a state and a frozen version that only this unit's own siblings
-//! move. Refusing on the volatile half first means the common refusal does the least
-//! work before it answers. Both orders are correct; this one is faster to be wrong in.
+//! which failure is cheapest to reach.
+//!
+//! **The reason first given for that was false and is withdrawn** (review, 2026-08-05).
+//! It read "the row preconditions are a state and a frozen version that only this
+//! unit's own siblings move" — but the version presented is the *successor draft's*,
+//! and `PriceRepo::update_draft` bumps it on every `PATCH …/prices/{priceId}`, a
+//! mounted route. D-141 freezes *published* rows; the staged successor is a draft and
+//! its version is as operator-movable as the window's act counter.
+//!
+//! So the honest statement is weaker: **all four preconditions can go stale between
+//! compose and approval, the ordering preference between the two pairs buys nothing
+//! measurable, and it is kept only because one order had to be chosen.** What is *not*
+//! arbitrary is the order inside each pair, above. Note also the consequence a reviewer
+//! drew out: windows-first means a **replayed** commit is answered by the window's
+//! `StaleRowVersion` rather than by `NotSupersedable`, which sends an operator to
+//! re-read a window tag when the actionable answer is "recompose against the key's new
+//! current row". That is an argument for rows-first, and it is recorded rather than
+//! acted on because the orchestrator will re-run `plan_supersession` at commit and
+//! answer it there, ahead of both pairs.
+//!
+//! The claim "both orders are correct" is scoped to the four writes and the queries as
+//! they stand: it was verified against every predicate `window_repo` applies, none of
+//! which reads the price row's `lifecycle_state`. A later slice adding a window-plane
+//! precondition that does must re-check it. It is also a **lock order**, and on
+//! Postgres a lock order must be consistent across writers or two transactions
+//! deadlock; nothing violates it today (`infra::window` only *reads* `pricing_price`),
+//! and "free" must not be read as a licence to reverse it elsewhere.
 //!
 //! # What this module does **not** do
 //!
@@ -55,47 +76,124 @@ use uuid::Uuid;
 use crate::domain::audit::AuditStamp;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::scope_key::PlanId;
-use crate::domain::supersession::WindowShorten;
+use crate::domain::supersession::{ComposedWindows, SupersessionPlan, WindowShorten};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{NewWindow, WindowRecord, price_repo, window_repo};
 
-/// Everything the supersession unit's commit writes, as the composed plan decided
-/// it.
+/// Everything the supersession unit's commit writes, built **from** the composed
+/// plan rather than beside it.
 ///
-/// A struct rather than nine parameters, and the fields are deliberately the
-/// *decided* values rather than the inputs they were derived from: the changeover
-/// appears twice — once as the predecessor window's new end and once as the
-/// successor window's start — because those are two writes, and a commit that took
-/// one instant and derived both would be re-deciding at write time what
-/// [`compose_windows`](crate::domain::supersession::compose_windows) already decided
-/// and proved adjacent.
+/// # The window instants are not two fields, and that is the whole point
+///
+/// An earlier shape of this struct carried `shorten.effective_to` and
+/// `successor_from` as two independently-settable public fields, with a paragraph
+/// here defending it: deriving both from one instant at write time would re-decide
+/// what [`compose_windows`](crate::domain::supersession::compose_windows) already
+/// decided. **That argument was against re-deriving and it does not license
+/// declining to assert** — and the gap it permitted commits *silently*, which is
+/// worse than every failure this module was built to order.
+///
+/// Concretely: a shorten to `T1` with a schedule from `T2 > T1` leaves `[T1, T2)`
+/// uncovered. Nothing in the transaction notices, because window collision is an
+/// **intersection** test (`window_repo`'s `intersects`) and a gap is not an
+/// intersection. The result is exactly the `WINDOW_TRAILING_VOID` that
+/// `inst-su-compose` promises cannot arise from a committed unit, and exactly the
+/// *"no interim state exists in which the key is shortened without its scheduled
+/// successor"* that `inst-su-commit` promises — both violated by a committed unit,
+/// with no refusal anywhere.
+///
+/// So the fields are **private** and [`ComposedWindows`] — the value that has been
+/// proved adjacent — is the only way to supply them. The disagreement is not
+/// refused; it is unspellable. A module whose stated reason to exist is that "no
+/// caller is in a position to satisfy one constraint and miss the other" cannot then
+/// hand the caller a struct that drops the unit's defining relation.
+///
+/// # What is still checked at run time, and why it cannot be structural
+///
+/// Two relations are about rows the store holds rather than values the plan carries,
+/// so no constructor can enforce them: that the predecessor and the successor stand
+/// on the **same canonical scope key**, and that the successor's
+/// `supersedes_price_id` names this predecessor. Both are checked inside
+/// [`price_repo::commit_supersession_rows`], where the rows are in hand — see its
+/// doc for why the key equality is the load-bearing half of the two.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupersessionCommit {
     /// The plan whose rows are moving — [`price_repo::publish_rows`]' own filter.
-    pub plan_id: PlanId,
+    plan_id: PlanId,
     /// The row leaving the published plane.
-    pub predecessor: Uuid,
-    /// Its window, and the end the changeover moves it to.
-    pub shorten: WindowShorten,
+    predecessor: Uuid,
+    /// Both window operations, as `compose_windows` proved them adjacent.
+    windows: ComposedWindows,
     /// The window's **act counter** as the unit was composed against it (D-190/D-191).
     ///
     /// Presented rather than re-read inside the commit, and that is the precondition
     /// doing its job: a commit that read the counter itself would apply the shorten
     /// over an adjustment somebody made between compose and approval, which is the
     /// exact window D-191's precondition exists to close.
-    pub shorten_expected_seq: u64,
+    shorten_expected_seq: u64,
     /// The successor row, at the version the rule set judged it at.
-    pub successor: (Uuid, RowVersion),
+    successor: (Uuid, RowVersion),
     /// The successor window's durable name, minted by the surface.
-    pub successor_window_id: Uuid,
-    /// Where the successor's coverage opens — the changeover.
+    successor_window_id: Uuid,
+    /// The operator-supplied reason the **scheduled** window is recorded under.
+    ///
+    /// The shorten carries no reason and cannot be given one: `adjust_effective_to`
+    /// takes no `reason_code`, and the column is frozen by the append-only trigger on
+    /// both backends. That is a **design-set gap rather than a code choice** — D-99
+    /// makes the shorten a publish unit in its own right and §6 calls `reason_code`
+    /// "the operator-supplied change reason", so the shorten's reason has nowhere in
+    /// this schema to live. The only place it can go is the unit's own approval or
+    /// audit record, which this module deliberately does not write.
+    reason_code: String,
+}
+
+impl SupersessionCommit {
+    /// Build the commit from a plan `plan_supersession` produced.
+    ///
+    /// Taking [`SupersessionPlan`] rather than its parts is what makes the adjacency
+    /// structural: both window instants come out of the one `changeover` that
+    /// [`compose_windows`](crate::domain::supersession::compose_windows) validated the
+    /// plane against.
+    ///
+    /// The identities are separate arguments because none of them is the domain's to
+    /// know: the plan reasons about intervals and content, while the row ids, the act
+    /// counter and the minted window id are the orchestrator's.
+    #[must_use]
+    pub const fn of_plan(
+        plan: &SupersessionPlan,
+        plan_id: PlanId,
+        predecessor: Uuid,
+        shorten_expected_seq: u64,
+        successor: (Uuid, RowVersion),
+        successor_window_id: Uuid,
+        reason_code: String,
+    ) -> Self {
+        Self {
+            plan_id,
+            predecessor,
+            windows: plan.windows,
+            shorten_expected_seq,
+            successor,
+            successor_window_id,
+            reason_code,
+        }
+    }
+
+    /// The predecessor window's operation.
+    #[must_use]
+    pub const fn shorten(&self) -> WindowShorten {
+        self.windows.shorten
+    }
+
+    /// Where the successor's coverage opens — the same changeover the shorten ends at.
     ///
     /// There is no matching end: `inst-su-compose` schedules the successor
-    /// open-ended, and a field for it would invite a caller to close a key's coverage
-    /// as a side effect of repricing it.
-    pub successor_from: DateTime<Utc>,
-    /// The operator-supplied reason both window writes are recorded under.
-    pub reason_code: String,
+    /// open-ended, and an accessor for one would invite a caller to close a key's
+    /// coverage as a side effect of repricing it.
+    #[must_use]
+    pub const fn successor_from(&self) -> DateTime<Utc> {
+        self.windows.successor.effective_from
+    }
 }
 
 /// The two window rows as they stand after the commit.
@@ -118,7 +216,8 @@ pub struct SupersessionWritten {
 /// # Errors
 /// [`RepoError::StaleRowVersion`] from either precondition — the window's act counter
 /// or the successor's row version; [`RepoError::WindowOverlap`] or
-/// [`RepoError::WindowHistoricalImmutable`] from the window writes;
+/// [`RepoError::WindowHistorical`] from the window writes (`WindowHistoricalImmutable`
+/// is the `DomainError` it maps to, not a variant a caller can match here);
 /// [`RepoError::NotSupersedable`] when the predecessor is no longer the key's current
 /// row; [`RepoError::NotFound`] when anything named is invisible to `scope`;
 /// [`RepoError::Db`] on a storage failure. Every one of them rolls the whole unit
@@ -136,8 +235,8 @@ pub async fn commit_supersession(
         txn,
         scope,
         tenant_id,
-        plan.shorten.window_id,
-        Some(plan.shorten.effective_to),
+        plan.shorten().window_id,
+        Some(plan.shorten().effective_to),
         plan.shorten_expected_seq,
         stamp,
     )
@@ -152,9 +251,9 @@ pub async fn commit_supersession(
             window_id: plan.successor_window_id,
             tenant_id,
             price_id: plan.successor.0,
-            effective_from: plan.successor_from,
+            effective_from: plan.successor_from(),
             effective_to: None,
-            reason_code: plan.reason_code,
+            reason_code: plan.reason_code.clone(),
         },
         stamp,
     )

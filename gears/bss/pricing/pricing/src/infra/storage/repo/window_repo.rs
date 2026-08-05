@@ -196,7 +196,7 @@ use crate::infra::storage::{RepoError, contention_or_db};
 /// [`crate::domain::window::OCCUPYING_STATES`], where the argument for the set
 /// lives.
 ///
-/// **Moved to `domain::window` and re-exported here rather than copied** (2026-08-05,
+/// **Moved to `domain::window` and imported here rather than copied** (2026-08-05,
 /// with D-88's compose). Its whole justification is a chain of domain facts — a
 /// cancelled window never took effect, an expired one cannot be intersected by
 /// anything `inst-ws-future-start` admits — so a second consumer that could not reach

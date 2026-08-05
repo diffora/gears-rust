@@ -206,8 +206,9 @@ pub struct ComposedWindows {
 ///
 /// `cancelled` and `expired` windows are not coverage: a cancelled window is a
 /// schedule that never happened (which is why D-121 keeps it out of the read model)
-/// and an expired one is history. That is exactly `window_repo`'s `OCCUPYING_STATES`
-/// — the same set `refuse_overlap` uses — and it matters twice here, because an
+/// and an expired one is history. That is exactly
+/// [`crate::domain::window::OCCUPYING_STATES`] — the same set
+/// `window_repo::refuse_overlap` asks of its `SELECT` — and it matters twice here, because an
 /// interval-only reading would both *shorten* a cancelled window that carries
 /// nothing and *ignore* a scheduled sibling that would collide.
 ///
@@ -244,17 +245,46 @@ pub fn compose_windows(
         .ok_or_else(|| {
             DomainError::LifecycleForbidden(format!(
                 "the canonical scope key is dormant at {}: no scheduled or active window covers \
-                 that instant, and a supersession presupposes current coverage. Revive the key \
-                 with a publish and a window schedule instead",
+                 that instant, and a supersession presupposes current coverage. Schedule a window \
+                 on the key's current row to revive it; the publish half of that remedy applies \
+                 only where the key carries no published row at all",
                 changeover.to_rfc3339()
             ))
         })?;
 
+    // The covering window's own start, answered before the collision scan and on its
+    // own terms.
+    //
+    // **`covers` is inclusive at the start** (`effective_from <= at`), so a window
+    // beginning exactly at the changeover is the covering window *and* matches the
+    // collision predicate below. This arm used to be absent and a comment here claimed
+    // the covering window was "excluded by construction, since it covers the changeover
+    // its start is strictly before" — false, and the consequence was that such a key
+    // was told it "carries later coverage that this supersession would not replace",
+    // naming a sibling that does not exist. Found by review, 2026-08-05.
+    //
+    // Refusing is right on the substance: shortening a window to its own start leaves
+    // the empty interval `[changeover, changeover)`, so there is no predecessor
+    // coverage left to hand over — the same absence dormancy reports, reached from the
+    // other side. What the operator wants on this key is to edit or reschedule the
+    // window that has not opened yet, not to supersede across it.
+    if covering.interval.effective_from == changeover {
+        return Err(DomainError::LifecycleForbidden(format!(
+            "window {} on this canonical scope key begins at {}, the changeover itself: \
+             shortening it to that instant would leave it empty, so there is no coverage for a \
+             successor to take over from. Adjust or reschedule that window instead of superseding \
+             across it",
+            covering.window_id,
+            changeover.to_rfc3339()
+        )));
+    }
+
     // Anything beginning at or after the changeover is inside the successor's
-    // open-ended interval. The covering window is excluded by construction rather
-    // than by identity: it covers the changeover, so its start is strictly before.
-    if let Some(collision) = occupying().find(|window| window.interval.effective_from >= changeover)
-    {
+    // open-ended interval. The covering window is excluded **by identity**, because it
+    // cannot be excluded by construction — see the arm above.
+    if let Some(collision) = occupying().find(|window| {
+        window.window_id != covering.window_id && window.interval.effective_from >= changeover
+    }) {
         return Err(DomainError::WindowOverlap(format!(
             "window {} begins at {}, which the successor's open-ended interval from {} already \
              covers; the key carries later coverage that this supersession would not replace",
@@ -338,6 +368,19 @@ pub fn plan_supersession(
     now: DateTime<Utc>,
     moment: ChangeoverMoment,
 ) -> Result<SupersessionPlan, DomainError> {
+    // D-144's quantum, **before** the distance is compared: a malformed instant is not
+    // an instant whose distance is worth measuring.
+    //
+    // The store owns this rule and both write paths the commit uses do refuse a
+    // non-quantized instant — `check_quantum` here is that statement *consulted*, not a
+    // second owner of it, exactly as `check_creation` re-checks the emptiness
+    // `window_repo::schedule` also checks. It is consulted because the changeover is
+    // the one authored instant whose first arrival at the store is **inside the commit
+    // transaction**, after two people have approved: without this, a microsecond in the
+    // payload survives compose at submit, survives it again at commit, and dies as a
+    // storage refusal at the one moment the caller can no longer fix it — on the very
+    // path whose sibling refusal exists to avoid wasting a recomposition.
+    crate::domain::instant::check_quantum("changeover", changeover)?;
     check_changeover_instant(changeover, now, moment)?;
     let windows = compose_windows(plane, changeover)?;
 

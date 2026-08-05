@@ -213,8 +213,10 @@ fn a_row_added_to_a_published_plan_is_material_having_no_baseline() {
 /// repository's own sentence: *"this is not the way to reprice an occupied key. That is
 /// the D-88 supersession unit"*. D-88's **row half** now exists —
 /// `price_repo::insert_successor_draft_on` (D-195) authors exactly this pair, and it is
-/// what will make this comparison reachable — but the unit around it does not: no
-/// compose, no approval unit, no commit, no route. So a plan-revision change set is
+/// what will make this comparison reachable — as do its compose
+/// (`domain::supersession::plan_supersession`) and its cross-plane commit
+/// (`infra::supersession::commit_supersession`). What does not exist is the
+/// orchestrator, the approval unit and the route (enumeration corrected 2026-08-05). So a plan-revision change set is
 /// still always either a row with no baseline (`inst-mat-newrow`, step 3a) or no moved
 /// row at all (D-115's pure-shape clause), and `evaluate`'s row walk is reached from
 /// the window plane, where every delta is zero by construction. **This test stays a

@@ -96,13 +96,18 @@
 //! without it safe is untouched.** What the bound buys is stated in D-121's own
 //! words: "a delta is O(live keys x windows within `H`), never O(the plan's
 //! accumulated history)". A plan's accumulated history is its `superseded` price
-//! rows — and `published -> superseded` still has exactly two sanctioned
-//! producers, the D-88 supersession unit and the D-100 cutover, **and this phase
-//! built neither**. [`crate::infra::publish`] carries the same premise in its
-//! CONTRACT paragraph and names the group that deletes it. So the set D-121
-//! filters is still exactly the plan's `published` rows, capped at 500 by §14 —
-//! and the window set beside them is the live keys' own, not an accumulation,
-//! because a key's history is made of the `superseded` rows nothing produces.
+//! rows — and `published -> superseded` has exactly two sanctioned producers, the
+//! D-88 supersession unit and the D-100 cutover. **The premise here has narrowed and
+//! this paragraph had not noticed** (found by review, 2026-08-05): as of that date the
+//! flip has a producer in this crate — `price_repo::supersede_row`, inside
+//! `commit_supersession_rows` — so what holds the premise is no longer "nothing
+//! produces it" but the strictly weaker **"no surface reaches it"**: the orchestrator,
+//! the approval unit and the route do not exist, so nothing a client can call flips a
+//! published row. [`crate::infra::publish`] states its own version of this at the same
+//! strength and names the group that deletes it. So the set D-121 filters is still
+//! exactly the plan's `published` rows, capped at 500 by §14 — and the window set
+//! beside them is the live keys' own rather than an accumulation, because a key's
+//! history is made of `superseded` rows that no *mounted* path yet produces.
 //!
 //! **The group that builds the supersession unit or the cutover deletes that
 //! premise and owes the horizon** — and, with it, `H`'s own input, "the longest

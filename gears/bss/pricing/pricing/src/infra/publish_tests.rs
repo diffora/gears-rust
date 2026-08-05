@@ -9,9 +9,16 @@
 use uuid::Uuid;
 
 use super::CANDIDATE_ROW_STATES;
+use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
+use crate::domain::money::CurrencyCode;
+use crate::domain::plan_shape::PlanShape;
+use crate::domain::price_record::PriceRecord;
+use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::publish::PlanPublishUnit;
-use crate::domain::scope_key::PlanId;
+use crate::domain::scope_key::{
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+};
 
 #[test]
 fn the_candidate_row_set_is_the_shape_the_commit_will_leave_behind() {
@@ -170,4 +177,79 @@ fn the_audit_after_state_connects_the_flip_to_the_addressability_it_produced() {
             "pendingVersionRef": "pend-9",
         })
     );
+}
+
+/// A supersession successor is not the plan revision's row to publish.
+///
+/// Found by review, 2026-08-05. Price rows hang off `plan_id`, not off a revision, so
+/// the validated set is every draft row of the plan — and since D-195 that can include
+/// a successor staged beside the published row it will supersede. Sweeping it up flips
+/// it while its predecessor still reads `published`, which the published-plane partial
+/// `UNIQUE` refuses as a raw driver error: a **500** on an entirely unrelated revision
+/// publish, for as long as a supersession is pending on any key of the plan.
+///
+/// Driven over a hand-built shape, because the property is about which rows the set
+/// *omits* and reaching it through the commit would need a whole staged supersession to
+/// demonstrate one row's absence.
+#[test]
+fn a_draft_on_a_key_a_published_row_already_holds_is_not_this_units_to_publish() {
+    let occupied = key(PriceEligibility::AllSubscriptions);
+    let free = key(PriceEligibility::NewSubscriptionsOnly);
+
+    let predecessor = row(0x_b1, &occupied, LifecycleState::Published);
+    let successor = row(0x_b2, &occupied, LifecycleState::Draft);
+    let ordinary = row(0x_b3, &free, LifecycleState::Draft);
+
+    let mut shape = PlanShape::new(PlanId::new(Uuid::from_u128(0x_9f)), 1, now());
+    shape.rows = vec![predecessor, successor.clone(), ordinary.clone()];
+
+    let validated = super::validated_draft_rows(&shape);
+
+    assert!(
+        validated.contains(&(ordinary.price_id, ordinary.row_version)),
+        "the revision's own draft row publishes"
+    );
+    assert!(
+        !validated.contains(&(successor.price_id, successor.row_version)),
+        "the successor standing beside a published row does not: it publishes through \
+         the unit that staged it, which also flips the predecessor"
+    );
+    assert_eq!(validated.len(), 1);
+}
+
+/// One key per eligibility class, so two rows can be made to share a key or not.
+fn key(class: PriceEligibility) -> ScopeKey {
+    ScopeKey::new(
+        PlanId::new(Uuid::from_u128(0x_9f)),
+        CurrencyCode::new("USD").expect("three letters"),
+        Region::new("EU").expect("non-blank"),
+        PhaseId::new(Uuid::from_u128(0x_fa)),
+        class,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("both classes pair with cohort none")
+}
+
+/// A minimal candidate row: identity, key and state are all this set reads.
+fn row(id: u128, scope_key: &ScopeKey, state: LifecycleState) -> PriceRecord {
+    PriceRecord {
+        price_id: Uuid::from_u128(id),
+        scope_key: scope_key.clone(),
+        row: PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat)),
+        tax_inclusive: false,
+        billing_timing: None,
+        rounding_policy_ref: None,
+        grandfather_until: None,
+        supersedes_price_id: None,
+        lifecycle_state: state,
+        created_by: Uuid::from_u128(0x_ac),
+        created_at_utc: now(),
+        row_version: RowVersion::new(0),
+    }
+}
+
+fn now() -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone;
+    chrono::Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap()
 }

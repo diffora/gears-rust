@@ -56,9 +56,16 @@
 //! route authors through the **authoring** door and
 //! `price_repo::insert_prepared` refuses a draft row on a key `find_key_occupant`
 //! finds occupied — *"this is not the way to reprice an occupied key. That is the
-//! D-88 supersession unit"*. D-88's row half is built
-//! (`price_repo::insert_successor_draft_on`, D-195) and the unit around it is not,
-//! so nothing yet stages a moved row for this route to judge:
+//! D-88 supersession unit"*. D-88's row half, its compose and its cross-plane
+//! commit are all built (`price_repo::insert_successor_draft_on` D-195,
+//! `domain::supersession`, `infra::supersession`); its orchestrator, approval unit
+//! and route are not, so nothing yet stages a moved row for this route to judge
+//! (enumeration corrected 2026-08-05 — it read "the unit around it is not" for a day
+//! after two thirds of the unit had landed):
+//!
+//! And the successor a staged supersession *does* leave on the plane is not this
+//! route's to publish: `validated_draft_rows` excludes a draft whose key already
+//! carries a published row, for the reason its own doc gives.
 //!
 //! * it carries a **draft** row, whose key therefore holds no published row, so
 //!   `inst-mat-newrow` answers `rowWithoutBaseline` at step 3a; or

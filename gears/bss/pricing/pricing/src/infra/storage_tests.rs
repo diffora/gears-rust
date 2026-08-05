@@ -136,8 +136,9 @@ fn a_row_that_is_not_its_keys_current_one_is_refused_in_its_own_words() {
     // **The code is still shared with `NotDraft`, and that is a known gap rather
     // than a decision.** D-146's own lesson is that a differing remedy wants a
     // differing code, not only a differing sentence; the design set declares no
-    // error code for this refusal (S7 §5 has `SUPERSESSION_INSTANT_PASSED` and
-    // `SUPERSESSION_UNIT_MISMATCH` and nothing else), and inventing one here would
+    // error code for this refusal (S7 §5's list carries ~15 codes and the only
+    // supersession one among them is `SUPERSESSION_INSTANT_PASSED`;
+    // `SUPERSESSION_UNIT_MISMATCH` is S3 §5's), and inventing one here would
     // be designing the wire contract ahead of the route that renders it. The
     // sentence carries the distinction until then, which is exactly the prose a
     // consumer cannot branch on — recorded against D-195 rather than left here.
