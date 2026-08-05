@@ -43,7 +43,7 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
-use bss_pricing::domain::price_record::PriceContent;
+use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
 use bss_pricing::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, ModelKind,
     PriceRow, QuantitySource, RolloverPolicy, TierAggregationWindow, TierBand,
@@ -2057,6 +2057,247 @@ async fn the_key_moves_from_the_draft_plane_index_to_the_published_plane() {
     assert!(
         matches!(refusal, RepoError::DuplicateScopeKey(_)),
         "got {refusal:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The supersession door (D-195), and the ordering its commit owes.
+// ---------------------------------------------------------------------------
+
+/// `insert_successor_draft_on` through a real transaction, the way the D-88
+/// composer will hold it.
+async fn supersede(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    draft: NewPriceDraft,
+) -> Result<(PriceRecord, Uuid), RepoError> {
+    let scope = scope.clone();
+    let (_, outcome) = provider
+        .db()
+        .in_transaction::<(PriceRecord, Uuid), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::price_repo::insert_successor_draft_on(
+                    txn, &scope, tenant_id, draft,
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| {
+        err.into_domain(|infra| RepoError::Db(format!("supersession transaction: {infra}")))
+    })
+}
+
+/// Put a published row on the base key and answer its id — the predecessor every
+/// case below supersedes.
+async fn published_predecessor(
+    repo: &PriceRepo,
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+) -> Uuid {
+    let predecessor = Uuid::from_u128(0xb_5001);
+    repo.create_draft(
+        &scope.clone(),
+        tenant(),
+        draft(predecessor, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("author the predecessor");
+    flip_state(provider, scope, predecessor, LifecycleState::Published).await;
+    predecessor
+}
+
+#[tokio::test]
+async fn the_supersession_door_puts_a_successor_draft_on_the_key_its_predecessor_holds() {
+    // The shape §3.7's two disjoint partial `UNIQUE`s permit and the authoring
+    // door refuses: a draft beside the published row it will supersede, on one
+    // canonical scope key. D-195 clause (2) — the occupancy precondition is the
+    // authoring door's, inverted.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let predecessor = published_predecessor(&repo, &provider, &scope).await;
+    let successor = Uuid::from_u128(0xb_5002);
+
+    let (record, superseded) = supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(successor, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("a published occupant is this door's precondition, not its refusal");
+
+    assert_eq!(superseded, predecessor, "the door names what it superseded");
+    assert_eq!(record.price_id, successor);
+    assert_eq!(record.lifecycle_state, LifecycleState::Draft);
+    // Both rows stand on the key, which is the whole point.
+    assert_eq!(
+        stored_row(&provider, &scope, predecessor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str(),
+        "the predecessor is untouched by the compose - the flip is the commit's"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, successor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Draft.as_str()
+    );
+}
+
+#[tokio::test]
+async fn the_supersession_door_stamps_the_predecessor_it_found() {
+    // D-127: the successor carries `supersedes_price_id`. The door stamps it from
+    // the same read that validated the key, so a link disagreeing with the key's
+    // actual current row is not expressible — whatever the caller sent.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let predecessor = published_predecessor(&repo, &provider, &scope).await;
+    let successor = Uuid::from_u128(0xb_5002);
+
+    let mut content = flat_content();
+    content.supersedes_price_id = Some(Uuid::from_u128(0xdead_beef));
+    let (record, _) = supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(successor, base_key(ChargeKind::Recurring), content),
+    )
+    .await
+    .expect("compose");
+
+    assert_eq!(
+        record.supersedes_price_id,
+        Some(predecessor),
+        "the door's own read decides the link, not the payload"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, successor)
+            .await
+            .supersedes_price_id,
+        Some(predecessor),
+        "and it is what the table holds"
+    );
+}
+
+#[tokio::test]
+async fn the_supersession_door_refuses_a_key_no_published_row_holds() {
+    // `inst-su-compose` presupposes current coverage and fails compose on a
+    // dormant key. This is that presupposition read off the row plane: a key with
+    // no current row has nothing to supersede, and the caller named a target that
+    // is not there.
+    let (_repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+
+    let err = supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(
+            Uuid::from_u128(0xb_5002),
+            base_key(ChargeKind::Recurring),
+            flat_content(),
+        ),
+    )
+    .await
+    .expect_err("an empty key is not supersedable");
+
+    let RepoError::NotFound { subject, id } = err else {
+        panic!("a key with no current row must answer NotFound, got: {err:?}");
+    };
+    assert!(subject.contains("current price"), "got: {subject}");
+    assert!(
+        id.starts_with(&base_key(ChargeKind::Recurring).to_string()),
+        "the refusal names the key that has no occupant, got: {id}"
+    );
+}
+
+#[tokio::test]
+async fn the_supersession_door_refuses_a_key_a_draft_already_stands_on() {
+    // One draft per key stays the most the two doors admit between them (§3.7's
+    // D-148 argument, under D-195's two-door reading). A draft here is a
+    // composition that already staged one; `inst-co-single-pending` refuses the
+    // second *unit* a layer up, and this is the floor under it.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    published_predecessor(&repo, &provider, &scope).await;
+    let first = Uuid::from_u128(0xb_5002);
+    let second = Uuid::from_u128(0xb_5003);
+
+    supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(first, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("the first composition stages its successor");
+
+    let err = supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(second, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect_err("a second successor on one key must be refused");
+
+    let RepoError::DuplicateScopeKey(detail) = err else {
+        panic!("a draft occupant must answer DUPLICATE_SCOPE_KEY, got: {err:?}");
+    };
+    assert!(detail.contains("draft"), "got: {detail}");
+    assert!(
+        detail.contains(&first.to_string()),
+        "the refusal names the draft holding the key, got: {detail}"
+    );
+}
+
+#[tokio::test]
+async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_plane() {
+    // D-195 clause (3), measured rather than reasoned. §3.7 admits one published
+    // row per key, so the order of the commit's two row moves is not free: the
+    // failing order is a raw driver error - a 500 - and not a refusal, which is
+    // why the rule is written down at `inst-su-commit` rather than left to be
+    // rediscovered. With the flip first, `publish_rows` needs no change at all.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let predecessor = published_predecessor(&repo, &provider, &scope).await;
+    let successor = Uuid::from_u128(0xb_5002);
+    supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(successor, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("stage the shape through the door that permits it");
+
+    let validated = vec![(successor, RowVersion::new(0))];
+    let refused = publish_rows(&provider, &scope, tenant(), plan(), validated.clone())
+        .await
+        .expect_err("publishing beside a live predecessor collides on the key");
+    let RepoError::Db(detail) = &refused else {
+        panic!("the collision arrives as a storage fault, got: {refused:?}");
+    };
+    assert!(
+        detail.contains("UNIQUE"),
+        "and it is the published-plane index that produced it, got: {detail}"
+    );
+
+    // The ordering `inst-su-commit` now states: the predecessor leaves first.
+    flip_state(&provider, &scope, predecessor, LifecycleState::Superseded).await;
+    let moved = publish_rows(&provider, &scope, tenant(), plan(), validated)
+        .await
+        .expect("with the key free on the published plane, the flip is ordinary");
+
+    assert_eq!(moved, vec![successor]);
+    assert_eq!(
+        stored_row(&provider, &scope, successor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str()
     );
 }
 

@@ -206,15 +206,20 @@ fn a_row_added_to_a_published_plan_is_material_having_no_baseline() {
 /// # This change set is one `create_draft` refuses to author, and that is stated
 /// # rather than fixed
 ///
-/// **No production path can reach this comparison.** The change set is a row that
+/// **No mounted surface can reach this comparison.** The change set is a row that
 /// moved on a key the baseline already carries — a *reprice of an occupied key* — and
-/// `price_repo::insert_prepared` refuses one unconditionally when
-/// `find_key_occupant` finds a `draft` or `published` row there, with the repository's
-/// own sentence: *"this is not the way to reprice an occupied key. That is the D-88
-/// supersession unit"*. D-88 is unbuilt (spec §4), so a plan-revision change set is
-/// always either a row with no baseline (`inst-mat-newrow`, step 3a) or no moved row
-/// at all (D-115's pure-shape clause) — and `evaluate`'s row walk is reached only
-/// from the window plane, where every delta is zero by construction.
+/// the **authoring** door refuses one unconditionally: `price_repo::insert_prepared`
+/// refuses when `find_key_occupant` finds a `draft` or `published` row there, with the
+/// repository's own sentence: *"this is not the way to reprice an occupied key. That is
+/// the D-88 supersession unit"*. D-88's **row half** now exists —
+/// `price_repo::insert_successor_draft_on` (D-195) authors exactly this pair, and it is
+/// what will make this comparison reachable — but the unit around it does not: no
+/// compose, no approval unit, no commit, no route. So a plan-revision change set is
+/// still always either a row with no baseline (`inst-mat-newrow`, step 3a) or no moved
+/// row at all (D-115's pure-shape clause), and `evaluate`'s row walk is reached from
+/// the window plane, where every delta is zero by construction. **This test stays a
+/// unit test over a hand-built input; the end-to-end case D-183 owes is a different
+/// test and is owed by the group that finishes the unit.**
 ///
 /// So this is a legitimate unit test of `evaluate` over a **hand-built** input, and
 /// it is kept for that: it exercises the comparison §3 specifies and the production

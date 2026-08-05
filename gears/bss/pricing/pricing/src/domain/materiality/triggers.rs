@@ -61,10 +61,14 @@
 //!
 //! This paragraph used to claim a reachable path: *"a successor draft row on a key
 //! that already carries a published row, whose `grandfatherUntil` is earlier than the
-//! baseline's"*. **That path does not exist.** `price_repo::insert_prepared` refuses a
-//! draft row whose key `find_key_occupant` finds occupied — `DUPLICATE_SCOPE_KEY`, and
-//! the repository's own doc says the way to reprice an occupied key is the D-88
-//! supersession unit, which is unbuilt. `update_draft`'s swap guard carries
+//! baseline's"*. **No mounted surface reaches that path.** The authoring door refuses
+//! it — `price_repo::insert_prepared` refuses a draft row whose key
+//! `find_key_occupant` finds occupied, `DUPLICATE_SCOPE_KEY` — and the way to reprice
+//! an occupied key is the D-88 supersession unit. That unit now has its **row half**
+//! (`price_repo::insert_successor_draft_on`, D-195, which is where the row *pair*
+//! below finally becomes constructible), but no compose, no approval unit, no commit
+//! and no route, so nothing a caller can invoke stages the pair yet.
+//! `update_draft`'s swap guard carries
 //! `lifecycle_state = 'draft'`, so a published row's horizon cannot be moved in place
 //! either. So [`triggered_by_row`] is reachable as a **function** and its two arms are
 //! unit-tested over hand-built rows; what no mounted surface can present is the row

@@ -76,13 +76,20 @@
 //! given the key's rather than a refusal, because there is no second value for
 //! them to have disagreed about.
 //!
-//! **Superseding a published scope key is a different path.** It is the D-88
-//! supersession unit — successor row, predecessor-window shorten and
+//! **Superseding a published scope key is a different door, in this file.** It is
+//! the D-88 supersession unit — successor row, predecessor-window shorten and
 //! successor-window schedule composed gap-free in one commit, setting
-//! `supersedes_price_id` — and it is not implemented here and must not be
-//! reached for by calling [`PriceRepo::create_draft`] on an occupied key. This
-//! repository authors draft rows; the key an occupied published row holds is
-//! refused, not taken over.
+//! `supersedes_price_id` — and its row half is
+//! [`insert_successor_draft_on`], whose occupancy precondition is the mirror
+//! image of [`PriceRepo::create_draft`]'s: a published occupant is what it
+//! requires rather than what it refuses (**D-195**). What is *not* built here is
+//! the rest of the unit — the compose, the approval and the commit — so no
+//! mounted surface reaches this door yet.
+//!
+//! `create_draft` is unchanged and must still not be reached for on an occupied
+//! key: the authoring door refuses a key an occupied published row holds rather
+//! than taking it over, which is `inst-pr-return`'s save-time duplicate check and
+//! is what keeps one draft per key the most the two doors admit between them.
 
 use std::collections::HashMap;
 
@@ -248,7 +255,8 @@ impl PriceRepo {
     /// earlier.
     ///
     /// This is not the way to reprice an occupied key. That is the D-88
-    /// supersession unit; see the module doc.
+    /// supersession unit, whose row half is [`insert_successor_draft_on`] — a door
+    /// of its own precisely so this one keeps refusing (D-195); see the module doc.
     ///
     /// # The race, and why its loser is not told `DUPLICATE_SCOPE_KEY`
     ///
@@ -683,6 +691,26 @@ fn tx_failure(err: TxError<RepoError>) -> RepoError {
 /// a `draft` **or** a `published` row, so a plan's draft rows sit on keys nothing
 /// else holds; a concurrent publish of a *second* plan cannot collide because
 /// every key carries `plan_id`.
+///
+/// # The one draft row that does **not** sit on a free key, and what it owes
+///
+/// The paragraph above was the whole argument while the authoring door was the
+/// only door. It is not any more: [`insert_successor_draft_on`] stages a successor
+/// **beside** the published row it will supersede (D-195), which is exactly a
+/// draft row on a key something else holds — and this statement flips it while
+/// that something is still `published`, so `uq_pricing_price_scope_key_current`
+/// refuses it. Measured, not reasoned: the refusal arrives as a raw driver
+/// unique-violation, so it reaches the caller as [`RepoError::Db`] — **a 500, not
+/// a refusal an operator can act on**.
+///
+/// This function is nevertheless **unchanged**, and deliberately so. The remedy is
+/// an ordering the supersession commit owes rather than a check here:
+/// `inst-su-commit` flips the predecessor `published → superseded` **before** the
+/// successor's publish, in the same transaction, and with the key free on the
+/// published plane this statement is ordinary again. A guard here could only
+/// re-refuse what the index already refuses, one round trip earlier and for every
+/// publish, to catch a caller that has skipped a documented step of its own
+/// commit; `tests/sqlite_price_repo.rs` pins both arms instead.
 ///
 /// **`draft -> published` is the row's only edge out of `draft`** and this is the
 /// sanctioned producer of it. The predicate is restated here rather than left to
@@ -1130,11 +1158,15 @@ async fn load_record(
 /// them, which `chk_pricing_price_lifecycle_state` now says out loud.
 ///
 /// A key can hold a draft **and** a published row at once — the partial `UNIQUE`
-/// only forbids two published ones, and the D-88 supersession unit will reach
-/// that state by another path. Both block a new draft equally, so the query
-/// takes the lowest `price_id` rather than whichever row the plan index happened
-/// to reach first: a refusal that named a different row on each attempt would
-/// send an author looking in a different place each time.
+/// only forbids two published ones, and [`insert_successor_draft_on`] is the path
+/// that reaches that state (D-88's row half; **D-195** is why it is a second door
+/// rather than a relaxation of this reader). Both block a new draft equally, so
+/// the query takes the lowest `price_id` rather than whichever row the plan index
+/// happened to reach first: a refusal that named a different row on each attempt
+/// would send an author looking in a different place each time.
+///
+/// That collapse is also why the supersession door does not use this reader: it
+/// needs the two planes told apart, and [`read_key_occupants`] is what tells them.
 async fn find_key_occupant(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1154,6 +1186,160 @@ async fn find_key_occupant(
         .one(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read scope-key occupant: {e}")))
+}
+
+/// The draft and the published row standing on one key, told apart.
+///
+/// [`find_key_occupant`] answers "is this key taken" and collapses the two states
+/// into one `Option` deliberately — that is the authoring door's question, and
+/// both answers mean the same thing to it. The supersession door asks a different
+/// question of the same two rows: the published one is **what it supersedes** and
+/// the draft one is **what refuses it** (D-195), so it needs the pair and cannot
+/// use a reader that hands back whichever has the lower `price_id`.
+///
+/// At most one of each can exist — the two partial `UNIQUE` indexes over the
+/// scope key say so, one per plane (§3.7) — so a third row on this key is a
+/// corrupt store rather than a case, and the read reports it as one rather than
+/// silently keeping the first.
+struct KeyOccupants {
+    /// The key's current row, if it has one.
+    published: Option<price::Model>,
+    /// A draft already standing on the key, if there is one.
+    draft: Option<price::Model>,
+}
+
+/// Read both planes of one key in a single statement.
+async fn read_key_occupants(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    key: &ScopeKey,
+) -> Result<KeyOccupants, RepoError> {
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            scope_key_filter(tenant_id, key).add(price::Column::LifecycleState.is_in([
+                LifecycleState::Draft.as_str(),
+                LifecycleState::Published.as_str(),
+            ])),
+        )
+        .order_by(price::Column::PriceId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read scope-key occupants: {e}")))?;
+
+    let mut occupants = KeyOccupants {
+        published: None,
+        draft: None,
+    };
+    for row in rows {
+        let plane = if row.lifecycle_state == LifecycleState::Published.as_str() {
+            &mut occupants.published
+        } else {
+            &mut occupants.draft
+        };
+        if let Some(first) = plane {
+            return Err(RepoError::CorruptRow(format!(
+                "{key} carries two {} rows, {} and {}; the plane's partial UNIQUE admits one",
+                row.lifecycle_state, first.price_id, row.price_id
+            )));
+        }
+        *plane = Some(row);
+    }
+    Ok(occupants)
+}
+
+/// Author the supersession unit's successor **draft** beside the published row it
+/// will supersede, inside the caller's transaction, and answer the predecessor it
+/// found.
+///
+/// # This is the other door, and its precondition is the authoring door's inverted
+///
+/// [`PriceRepo::create_draft`] refuses a key held by a `draft` **or** a
+/// `published` row, and that stays true: `inst-pr-return` (D-21) puts scope-key
+/// duplication in the save-time row-local set, and the bulk plane refuses the same
+/// shape per row. So the draft-beside-published shape §3.7's two disjoint partial
+/// `UNIQUE`s permit has no authoring door at all — which is correct, and is why
+/// this one exists (**D-195**). Occupancy is a property of the door rather than of
+/// the table, and this door's reading of the same two rows is the mirror image:
+///
+/// - a **published** occupant is the **precondition**. It is the row being
+///   superseded, and its absence means the key has no current row to supersede —
+///   the same presupposition of current coverage `inst-su-compose` states from the
+///   window side when it fails compose on a dormant key, read here off the row
+///   plane. The remedy the design names for that key is a plain publish plus a
+///   window schedule, not a supersession, so the refusal is `NotFound` on the key
+///   rather than a conflict inviting a retry.
+/// - a **draft** occupant is the **refusal**. On a key carrying a published row a
+///   hand-authored draft is impossible by the paragraph above, so a draft here is
+///   a composition that already staged its successor. Between the two doors, one
+///   draft per key therefore stays the most that is admitted, which is the
+///   guarantee §3.7's D-148 argument rests on.
+///
+/// The order of the two is not arbitrary: a key with no current row is answered as
+/// unsupersedable even when a draft stands on it, because "publish this key
+/// instead" is the actionable half and the draft is beside the point.
+///
+/// # The refusal a draft occupant gets is the floor, not the whole answer
+///
+/// `DUPLICATE_SCOPE_KEY` is what the store can say. The operator-facing answer for
+/// a key a pending unit holds is `PENDING_CHANGE_UNIT_EXISTS`
+/// (`inst-co-single-pending`), and it belongs to the approval plane, which knows
+/// about units; this refusal is what remains for a draft no live unit explains.
+/// The read is also still a **read**, so two concurrent composers can both pass
+/// it and the draft-plane partial `UNIQUE` decides — the same race, with the same
+/// narrowing owed to the surface, that [`PriceRepo::create_draft`]'s doc sets out.
+///
+/// # The link is stamped here
+///
+/// `supersedes_price_id` is written from the same read that validated the key
+/// (D-127 requires the successor to carry it), overwriting whatever the caller
+/// sent. A caller-supplied link that disagrees with the key's actual current row
+/// is a class of defect that cannot be expressed if the door is the only writer of
+/// it, and the door is the only reader positioned to be right.
+///
+/// # What this does **not** do
+///
+/// It does not flip the predecessor. That is the commit's move and it is ordered
+/// **before** the successor's publish (`inst-su-commit`, D-195): §3.7 admits one
+/// published row per key, so a successor flipped while its predecessor still reads
+/// `published` dies on `uq_pricing_price_scope_key_current` as a raw driver error.
+/// After compose, both rows legitimately stand on the key and the predecessor is
+/// untouched.
+///
+/// # Errors
+/// [`RepoError::NotFound`] when the key has no current row to supersede;
+/// [`RepoError::DuplicateScopeKey`] naming the draft already standing on it;
+/// [`RepoError::CorruptRow`] when one plane of the key carries two rows;
+/// and everything [`PriceRepo::create_draft`] answers for the content itself —
+/// [`RepoError::GrandfatherHorizonOffClass`], [`RepoError::ValueOutOfRange`],
+/// [`RepoError::Db`].
+pub async fn insert_successor_draft_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    draft: NewPriceDraft,
+) -> Result<(PriceRecord, Uuid), RepoError> {
+    let mut prepared = prepare_draft(tenant_id, draft)?;
+    let key = prepared.record.scope_key.clone();
+    let occupants = read_key_occupants(runner, scope, tenant_id, &key).await?;
+
+    let Some(predecessor) = occupants.published else {
+        return Err(RepoError::NotFound {
+            subject: "current price row on canonical scope key".to_owned(),
+            id: key.to_string(),
+        });
+    };
+    if let Some(standing) = occupants.draft {
+        return Err(duplicate_key(&key, &standing));
+    }
+
+    prepared.record.supersedes_price_id = Some(predecessor.price_id);
+    prepared.row.supersedes_price_id = Set(Some(predecessor.price_id));
+
+    let record = write_prepared(runner, scope, tenant_id, prepared).await?;
+    Ok((record, predecessor.price_id))
 }
 
 /// Write the price row itself.
@@ -1490,15 +1676,35 @@ async fn insert_prepared(
     tenant_id: Uuid,
     prepared: PreparedDraft,
 ) -> Result<PriceRecord, RepoError> {
+    if let Some(occupant) =
+        find_key_occupant(runner, scope, tenant_id, &prepared.record.scope_key).await?
+    {
+        return Err(duplicate_key(&prepared.record.scope_key, &occupant));
+    }
+    write_prepared(runner, scope, tenant_id, prepared).await
+}
+
+/// The two row writes and the audit record, with the occupancy question already
+/// answered by whichever door asked it.
+///
+/// Split out for [`insert_successor_draft_on`], which asks the **opposite**
+/// question of the same key and must not re-ask this one: `find_key_occupant`
+/// answers "is this key taken", and for the supersession door a taken key is the
+/// precondition rather than the refusal (D-195). What the two doors share is
+/// everything after that answer, and it is shared rather than restated for the
+/// reason [`PreparedDraft`]'s doc gives about the other split in this file.
+async fn write_prepared(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    prepared: PreparedDraft,
+) -> Result<PriceRecord, RepoError> {
     let PreparedDraft {
         record,
         row,
         bands,
         correlation_id,
     } = prepared;
-    if let Some(occupant) = find_key_occupant(runner, scope, tenant_id, &record.scope_key).await? {
-        return Err(duplicate_key(&record.scope_key, &occupant));
-    }
     insert_price(runner, scope, row).await?;
     insert_bands(runner, scope, bands).await?;
     // The record, in the same transaction as the insert (D-135). The stamp is the

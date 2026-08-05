@@ -2063,12 +2063,15 @@ async fn published_price_id(h: &Harness, plan_id: PlanId) -> Uuid {
 ///
 /// Written through the entity rather than through `PriceRepo::create_draft`, for
 /// `tests/sqlite_window_repo.rs`'s reason one table over: `find_key_occupant`
-/// refuses a new draft on a key a `published` row already holds, so the authoring
-/// door in this crate cannot build this world — and it is nonetheless a **legal**
-/// world and a produced one. Foundation §3.7's two partial `UNIQUE` predicates
-/// are disjoint (only two *published* rows on a key collide), and
-/// `find_key_occupant`'s own doc says a key holds a draft and a published row at
-/// once with "the D-88 supersession unit reaching that state by another path".
+/// refuses a new draft on a key a `published` row already holds, so the **authoring**
+/// door cannot build this world — and it is nonetheless a **legal** world and a
+/// produced one. Foundation §3.7's two partial `UNIQUE` predicates are disjoint
+/// (only two *published* rows on a key collide), and the door that does produce it
+/// is `price_repo::insert_successor_draft_on` (D-195, D-88's row half). The seeding
+/// is deliberately **not** moved onto it: this suite is about what the read model
+/// projects from a pair of rows, and it should not acquire the supersession door's
+/// preconditions — a predecessor with current coverage, no draft already standing —
+/// as incidental setup for an assertion about projection.
 /// The insert still goes through the tenant gate, so the seeding cannot fabricate
 /// a row the scope would not admit.
 async fn draft_row_on_the_same_key(h: &Harness, source: &price::Model, draft_id: Uuid) {
