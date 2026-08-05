@@ -997,11 +997,6 @@ async fn schedule_window(
 
     let now = Utc::now();
     let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
-    // Server-minted, like a price row's id and for the same reason: the surface has to
-    // be able to name the window in its answer before the row is durable. Minted
-    // **outside** the gate's closure on purpose — a replay never reaches the closure, so
-    // this id belongs to this attempt and the replay answers with the recorded one.
-    let window_id = Uuid::now_v7();
     let windows = state.windows.clone();
     let mutation_ctx = ctx.clone();
     let mutation_scope = scope.clone();
@@ -1023,6 +1018,13 @@ async fn schedule_window(
         },
         move |txn| {
             Box::pin(async move {
+                // Minted **inside** the guarded body, which is `plans.rs`'s and
+                // `prices.rs`'s stated rule and not a preference: an id minted outside
+                // would be a second one nobody is ever told about, since a replay does
+                // not reach this closure at all. Server-minted either way, like a price
+                // row's id and for the same reason — the surface has to name the window
+                // in its answer before the row is durable.
+                let window_id = Uuid::now_v7();
                 windows
                     .schedule_in(
                         txn,
