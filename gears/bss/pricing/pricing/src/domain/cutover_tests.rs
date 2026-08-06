@@ -336,3 +336,37 @@ fn prior_generations_on_other_instants_are_untouched() {
 
     assert_eq!(copy.cohort(), Cohort::Generation(at(10)));
 }
+
+#[test]
+fn the_copys_window_is_open_ended_so_the_d04_bound_holds_by_construction() {
+    // `inst-co-bounds` (D-04): the copy carries two clocks, its window and
+    // `grandfatherUntil`, and the window MUST cover through `grandfatherUntil` plus
+    // **the longest billing cycle sold on that key** - open-ended when the horizon
+    // is null. The margin exists because re-binding happens only at the next
+    // renewal after expiry: a bound period that started before the horizon keeps
+    // rating against the generation's key until that renewal, so a window ending at
+    // `grandfatherUntil` strands subscribers for up to one full cycle.
+    //
+    // **Compose satisfies that bound the only way it can here: by not ending the
+    // window at all.** An open interval covers every instant the rule could name,
+    // whatever the horizon and whatever the cycle roster says - which matters
+    // because the roster is not in hand at compose, and W6 leaves "the longest
+    // billing cycle sold on the key" undefined for usage and one-time keys anyway.
+    // Nothing leaks: the row sells nothing new past expiry, because new
+    // subscriptions never bind grandfathered rows.
+    //
+    // So the rule's teeth are on the **adjustment** path - a later `effectiveTo`
+    // below the bound - and not here. This case exists so that a future change
+    // giving the copy a computed end has to come past it and answer the bound
+    // explicitly rather than by omission.
+    let plane = vec![window(1, at(1), None, WindowState::Active)];
+
+    let composed = compose_cutover_windows(&plane, at(10)).expect("a live key composes");
+
+    assert_eq!(
+        composed.copy().effective_to,
+        None,
+        "the grandfathered copy's window is open-ended at compose, which is what makes the \
+         D-04 bound hold whatever the horizon and the cycle roster turn out to be"
+    );
+}
