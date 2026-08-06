@@ -65,6 +65,7 @@ fn the_persisted_tokens_are_asserted_against_literals() {
     assert_eq!(AuditSubjectKind::PriceUnit.as_str(), "price_unit");
     assert_eq!(AuditSubjectKind::Window.as_str(), "window");
     assert_eq!(AuditSubjectKind::Policy.as_str(), "policy");
+    assert_eq!(AuditSubjectKind::PriceOverlay.as_str(), "price_overlay");
     assert_eq!(
         AuditAction::ALL,
         &[
@@ -87,6 +88,7 @@ fn the_persisted_tokens_are_asserted_against_literals() {
             AuditSubjectKind::PriceUnit,
             AuditSubjectKind::Window,
             AuditSubjectKind::Policy,
+            AuditSubjectKind::PriceOverlay,
         ]
     );
 }

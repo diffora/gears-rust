@@ -361,6 +361,32 @@ pub enum AuditSubjectKind {
     /// one segment per tenant, which is also what keeps a policy proposal off the
     /// head every mutation of some arbitrary plan is contending for.
     Policy,
+    /// One `pricing_price_overlay` row, named by its `price_overlay_id`.
+    ///
+    /// **Not declared in S5 §6**, and the second member of this enumeration that is
+    /// not the plan's — for `Policy`'s reason read one entry along S5 §6's own
+    /// aggregate list: plan, **overlay**, payer, policy, bulk operation. An overlay
+    /// is an aggregate in its own right there, and it has to be: an overlay **is not
+    /// a plan and has no plan**, so borrowing [`Self::PlanRevision`] would put two
+    /// aggregates on one chain and make "who changed this plan" answer about an
+    /// object the plan does not contain.
+    ///
+    /// Its writer is `OverlayRepo`'s four mutations, which is why it is here — until
+    /// 2026-08-06 the overlay plane wrote **no audit record at all**, a plain
+    /// regression against D-14 on an always-material subject, and the whole obstacle
+    /// was this enumeration having no token for it (Slice 9's register, O-3).
+    ///
+    /// **Its approval-plane writer does not exist yet**, and that is the one respect
+    /// in which this member differs from `Policy`, whose token, Rust member and
+    /// writer all landed together. D-50 makes every overlay mutation an approval
+    /// subject, so the token is owed on that plane too; the unit that would open it
+    /// is Slice 9's O-7 and is not wired. D-158 makes `pricing_approval` and
+    /// `pricing_audit_log` one enumeration and requires them to be **extended
+    /// together**, so the mirror's `chk_pricing_approval_subject_kind` admits
+    /// `price_overlay` from `m20260802_000035` — a kind that is storable and not yet
+    /// stored, which is what D-158 asks for and is strictly narrower than the "no
+    /// token without a writer" rule the audit plane's writer satisfies.
+    PriceOverlay,
 }
 
 impl AuditSubjectKind {
@@ -370,6 +396,7 @@ impl AuditSubjectKind {
         Self::PriceUnit,
         Self::Window,
         Self::Policy,
+        Self::PriceOverlay,
     ];
 
     /// The persisted `subject_kind` token.
@@ -380,6 +407,7 @@ impl AuditSubjectKind {
             Self::PriceUnit => "price_unit",
             Self::Window => "window",
             Self::Policy => "policy",
+            Self::PriceOverlay => "price_overlay",
         }
     }
 }

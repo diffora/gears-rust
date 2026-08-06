@@ -206,6 +206,45 @@ pub const fn policy_chain() -> Uuid {
     Uuid::from_u128(0x0000_0000_0000_8000_8000_7072_6963_696e_u128)
 }
 
+/// The segment every audited mutation **of one price overlay** extends.
+///
+/// D-135 keys a chain on the audited subject's aggregate, and S5 §6's aggregate list
+/// — plan, **overlay**, payer, policy, bulk operation — makes an overlay one in its
+/// own right. It has to be: an overlay is not a plan and has no plan, so putting its
+/// mutations on [`plan_chain`] would interleave two aggregates on one segment and
+/// make "who changed this plan" answer about an object the plan does not contain.
+///
+/// # It is not the overlay id, and the four bits are the whole reason
+///
+/// [`plan_chain`] is `plan_id.get()` verbatim, and a plan id and an overlay id are
+/// **both** `Uuid::now_v7()` from one generator into two different tables — so an
+/// overlay chain spelled as the raw overlay id would be disjoint from every plan
+/// chain only by improbability. Neither table constrains the other, and
+/// [`policy_chain`] already refuses that standard in as many words: *"disjoint by
+/// construction rather than by improbability — a collision would be the one defect
+/// that is invisible: two aggregates interleaved on one hash chain verify
+/// perfectly."*
+///
+/// So this rewrites the UUID **version nibble** to `8`, which is
+/// [`policy_chain`]'s own device, and it buys three properties at once:
+///
+/// * **disjoint from every plan chain**, because a v7 plan id's nibble is `7`;
+/// * **disjoint from [`policy_chain`]**, whose value is a zero timestamp no `now_v7`
+///   can mint;
+/// * **injective over overlays**, because every input carries nibble `7` and only
+///   that nibble moves — two overlays differing anywhere differ here too.
+///
+/// `audit_repo_tests::overlay_chains_are_disjoint_from_plan_chains_by_construction`
+/// asserts all three rather than describing them.
+#[must_use]
+pub const fn overlay_chain(price_overlay_id: Uuid) -> Uuid {
+    // The version nibble is bits 79..76 of the 128-bit value — the 13th hex digit,
+    // `xxxxxxxx-xxxx-Vxxx-…`. Cleared and re-set rather than OR-ed onto whatever was
+    // there, so the result does not depend on the input's version being 7.
+    const VERSION_MASK: u128 = 0xF << 76;
+    Uuid::from_u128((price_overlay_id.as_u128() & !VERSION_MASK) | (0x8 << 76))
+}
+
 /// A threshold-policy version's durable audit name — its version number.
 ///
 /// The tenant is not repeated in it, for [`price_unit_ref`]'s reason: the record's
@@ -439,3 +478,7 @@ fn head_hash(head: &audit_log::Model) -> Result<[u8; 32], RepoError> {
         ))
     })
 }
+
+#[cfg(test)]
+#[path = "audit_repo_tests.rs"]
+mod audit_repo_tests;

@@ -1460,6 +1460,24 @@ async fn re_derive(
         // currency it did not have, which is the one mutation the primary key
         // permits and the one this re-derivation is what catches.
         AuditSubjectKind::Policy => policy_version_of(runner, scope, tenant_id, record).await,
+        // **An overlay unit is not opened by this crate**, so this arm is reachable
+        // only through a `pricing_approval` row it did not write —
+        // `approval_repo::subject_aggregate` refuses the same record for the same
+        // reason, and the two agree deliberately.
+        //
+        // It answers `Err` rather than `Ok(None)`, and the difference is the one this
+        // function's own history is about. `None` here means *"the subject is gone"*,
+        // which flows to `content_matches_pin: false` and `APPROVAL_CONTENT_MISMATCH`
+        // — the answer a reviewer gets for a draft somebody deleted. Giving that
+        // answer to a record whose kind this crate cannot open at all would tell a
+        // reviewer their subject had changed, when what actually happened is that the
+        // store holds a row from somewhere else. That mistranslation is exactly what
+        // the `price_unit` and `window` arms above were fixed for, twice.
+        AuditSubjectKind::PriceOverlay => Err(DomainError::Internal(format!(
+            "approval {} is a price_overlay unit and this crate opens none \
+             (D-50's overlay unit is unwired — Slice 9, O-7)",
+            record.approval_id
+        ))),
     }
 }
 

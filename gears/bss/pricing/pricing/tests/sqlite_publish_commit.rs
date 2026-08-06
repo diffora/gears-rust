@@ -1623,6 +1623,56 @@ async fn decide_one(
         .expect("the decision is taken")
 }
 
+/// The overlay plane, for the `price_overlay` subject kind.
+///
+/// The census below insists every **declared** kind is produced by driving the
+/// crate's own paths, so a fifth member of `AuditSubjectKind` obliges a fifth
+/// driver — which is the whole point of the census and is why this is here rather
+/// than the assertion being narrowed. `OverlayRepo::create` alone is enough: what is
+/// being censused is the kind, and the four actions it writes are all covered by
+/// the plan plane above. `sqlite_overlay_repo::every_overlay_mutation_appends_exactly_one_audit_record`
+/// is where the four are held apart.
+///
+/// It reaches the repository directly rather than the route, deliberately: the route
+/// would drag §5's whole validation pipeline and a taxonomy fixture into a test about
+/// a vocabulary, and the repository **is** the writer — unlike `window_repo`, which
+/// takes an `AuditStamp` and writes nothing, and whose census entry therefore has to
+/// go through its service.
+async fn drive_the_overlay_plane(h: &Harness) {
+    let overlays = bss_pricing::infra::storage::repo::OverlayRepo::new(h.provider.clone());
+    overlays
+        .create(
+            &h.scope,
+            bss_pricing::infra::storage::repo::NewOverlay {
+                price_overlay_id: Uuid::from_u128(0xb_0009),
+                tenant_id: TENANT,
+                scope: bss_pricing::domain::overlay::ScopeSelector::scoped(
+                    bss_pricing::domain::overlay::ScopeClass::Brand,
+                    bss_pricing::domain::overlay::ScopeValue::new("acme")
+                        .expect("a non-blank value"),
+                )
+                .expect("brand is not the global class"),
+                precedence: 10,
+                interval: bss_pricing::domain::overlay::OverlayInterval::default(),
+                tax_basis: bss_pricing::domain::overlay::TaxBasis::DelegatedTariffs,
+                disclosure: bss_pricing::domain::overlay::Disclosure::Restricted,
+                // Empty: the overlay targets no plan in particular, which is the
+                // one shape a list-default line can serve on its own.
+                target_ref: bss_pricing::domain::overlay::TargetRef { plans: Vec::new() },
+            },
+            vec![bss_pricing::domain::overlay::OverlayLine {
+                line_id: Uuid::from_u128(0xb_000a),
+                key: bss_pricing::domain::overlay::LineKey::list_default(),
+                adjustment: bss_pricing::domain::overlay::Adjustment::Discount(
+                    bss_pricing::domain::overlay::Magnitude::PercentBp(1000),
+                ),
+            }],
+            stamp_of(ACTOR, at(19)),
+        )
+        .await
+        .expect("an overlay is created, and audited");
+}
+
 async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     // create (plan), update x2 (facets), create (price)
     let (revision, version, _) = seed_publishable(h).await;
@@ -1703,6 +1753,7 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     // is driven — which is also the operator sequence D-10 forces.
     drive_the_threshold_policy_plane(h).await;
     drive_the_window_plane(h).await;
+    drive_the_overlay_plane(h).await;
 
     let mut rows = audit_rows(h).await;
     rows.sort_by_key(|row| row.seq);
@@ -1754,18 +1805,44 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
     let rows = drive_every_audited_path(&h).await;
     assert!(rows.len() >= 7, "the sequence is mixed: {}", rows.len());
 
-    // **Two segments, not one**, since the threshold-policy proposal and its approval
-    // joined the driven set. D-135 keys a segment on the audited subject's *aggregate* and a
-    // policy's is the tenant's policy rather than any plan, so its record opens a
-    // chain of its own at `seq 0` — which a single walk over every row reads as a
-    // gap in the plan's segment. Partitioning is not a workaround for that: the
-    // partition **is** the property, and its sizes are asserted so that a policy
-    // record silently filed on a plan's chain fails here rather than verifying
-    // perfectly on the wrong segment.
-    let (plan_rows, policy_rows): (Vec<_>, Vec<_>) = rows
+    // **Three segments, not one.** D-135 keys a segment on the audited subject's
+    // *aggregate*, so each aggregate the driven set touches opens a chain of its own
+    // at `seq 0` — which a single walk over every row reads as a gap in the plan's
+    // segment. Partitioning is not a workaround for that: the partition **is** the
+    // property, and each segment's size is asserted so that a record silently filed
+    // on the wrong chain fails here rather than verifying perfectly on it.
+    //
+    // It was **two** until 2026-08-06 and the partition was binary — the plan's chain
+    // against everything else, with "everything else" named `policy_rows`. That held
+    // only while the policy was the sole non-plan aggregate: the overlay plane's
+    // first audit record landed in the else-branch and the count moved 2 → 3, which
+    // is the binary partition failing rather than the overlay misfiling. A partition
+    // whose second half is "the rest" cannot say which aggregate a row belongs to,
+    // which is the one thing this assertion is for.
+    let policy_chain = bss_pricing::infra::storage::repo::audit_repo::policy_chain();
+    let overlay_chain =
+        bss_pricing::infra::storage::repo::audit_repo::overlay_chain(Uuid::from_u128(0xb_0009));
+    let plan_rows: Vec<_> = rows
         .iter()
+        .filter(|row| row.chain_id == plan_id().get())
         .cloned()
-        .partition(|row| row.chain_id == plan_id().get());
+        .collect();
+    let policy_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.chain_id == policy_chain)
+        .cloned()
+        .collect();
+    let overlay_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.chain_id == overlay_chain)
+        .cloned()
+        .collect();
+    assert_eq!(
+        plan_rows.len() + policy_rows.len() + overlay_rows.len(),
+        rows.len(),
+        "every driven record belongs to one of the three aggregates, and none to a \
+         fourth chain nobody named"
+    );
     assert_eq!(
         policy_rows.len(),
         2,
@@ -1773,12 +1850,13 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
          driven set because the window plane below it needs a policy that is actually in force"
     );
     assert_eq!(
-        policy_rows[0].chain_id,
-        bss_pricing::infra::storage::repo::audit_repo::policy_chain(),
-        "and that segment is the policy chain, never a plan's"
+        overlay_rows.len(),
+        1,
+        "the overlay's create, on the overlay's own segment and not the plan's"
     );
     verify_segment(&plan_rows, plan_id().get());
-    verify_segment(&policy_rows, policy_rows[0].chain_id);
+    verify_segment(&policy_rows, policy_chain);
+    verify_segment(&overlay_rows, overlay_chain);
 }
 
 /// Walk one segment link by link and recompute every row's digest.

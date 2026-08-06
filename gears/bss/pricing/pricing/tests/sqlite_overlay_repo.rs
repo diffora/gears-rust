@@ -23,10 +23,10 @@ use bss_pricing::domain::overlay::{
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{
-    brand_taxonomy, plan, price_overlay, price_overlay_line,
+    audit_log, brand_taxonomy, plan, price_overlay, price_overlay_line,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
-use bss_pricing::infra::storage::repo::{NewOverlay, OverlayRepo};
+use bss_pricing::infra::storage::repo::{NewOverlay, OverlayRepo, audit_repo};
 use chrono::{TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait;
@@ -34,7 +34,7 @@ use sea_orm::{ColumnTrait, Condition};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::SecureDeleteExt;
-use toolkit_db::secure::{AccessScope, SecureInsertExt};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -964,5 +964,110 @@ async fn a_re_entrant_publish_refuses_without_demoting_anything() {
     assert_eq!(
         current.revision, 0,
         "the published revision must not have been demoted by the refused call"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The audit trail — D-14, `inst-rb-audit`.
+// ---------------------------------------------------------------------------
+
+/// Every record on one overlay's segment, in `seq` order.
+async fn overlay_trail(provider: &DBProvider<DbError>, overlay: Uuid) -> Vec<audit_log::Model> {
+    let conn = provider.conn().expect("a connection");
+    audit_log::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all().add(audit_log::Column::ChainId.eq(audit_repo::overlay_chain(overlay))),
+        )
+        .order_by(audit_log::Column::Seq, sea_orm::Order::Asc)
+        .all(&conn)
+        .await
+        .expect("the trail reads")
+}
+
+/// **All four mutations write, and each writes exactly one record.**
+///
+/// The four are asserted together rather than one case each because what D-14
+/// requires is a trail with no gaps, and a per-mutation case cannot see a gap — it
+/// can only see its own record. Four cases would all pass over a repository that
+/// wrote its record in the wrong `action`, or that wrote two.
+///
+/// The overlay plane wrote **nothing at all** until 2026-08-06: `AuditSubjectKind`
+/// had no member for it, so all four sites carried their `AuditStamp` to a
+/// `let _ = stamp;` (Slice 9's register, O-3).
+#[tokio::test]
+async fn every_overlay_mutation_appends_exactly_one_audit_record() {
+    let (repo, scope, provider) = seeded_full().await;
+
+    repo.publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
+        .await
+        .expect("revision 0 publishes");
+    repo.open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("revision 1 opens");
+    repo.replace_lines(
+        &scope,
+        TENANT,
+        OVERLAY,
+        1,
+        0,
+        vec![percent_line(LINE_A, LineKey::for_plan(plan(1)), 2000)],
+        stamp(),
+    )
+    .await
+    .expect("the draft's lines are replaced");
+
+    let trail = overlay_trail(&provider, OVERLAY).await;
+    let actions: Vec<&str> = trail.iter().map(|r| r.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        ["create", "publish", "create", "update"],
+        "one record per mutation, in the order the mutations happened: {trail:?}"
+    );
+
+    // `seq` starts at 0 on a fresh segment and counts up without gaps — the
+    // property that makes a *missing* record detectable rather than invisible.
+    let seqs: Vec<i64> = trail.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, [0, 1, 2, 3]);
+
+    for record in &trail {
+        assert_eq!(record.subject_kind, "price_overlay");
+        assert_eq!(record.subject_ref, OVERLAY.to_string());
+        assert_eq!(record.actor_principal_id, stamp().actor_principal_id);
+        assert_eq!(record.correlation_id, Some(stamp().correlation_id));
+    }
+}
+
+/// An overlay's records are on the **overlay's** segment, and no plan's.
+///
+/// D-135 keys a chain on the audited subject's aggregate, and an overlay is not a
+/// plan and has no plan — so borrowing the plan chain would interleave two
+/// aggregates on one hash chain, which verifies perfectly and tells an auditor
+/// something false. The line this overlay carries targets `plan(1)`, which is the
+/// plan whose chain it would most plausibly have been put on.
+#[tokio::test]
+async fn an_overlays_records_never_land_on_the_plan_its_lines_target() {
+    let (_repo, _scope, provider) = seeded_full().await;
+    let conn = provider.conn().expect("a connection");
+
+    assert_eq!(
+        overlay_trail(&provider, OVERLAY).await.len(),
+        1,
+        "the create is on the overlay's own segment"
+    );
+
+    let on_the_plan = audit_log::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all().add(audit_log::Column::ChainId.eq(audit_repo::plan_chain(plan(1)))),
+        )
+        .all(&conn)
+        .await
+        .expect("the plan's trail reads");
+    assert!(
+        on_the_plan.is_empty(),
+        "the targeted plan's segment must carry none of the overlay's records: {on_the_plan:?}"
     );
 }

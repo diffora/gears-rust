@@ -45,30 +45,37 @@
 //! the first is that the query has no way to tell the two apart once both are
 //! `published`.
 //!
-//! # No audit record is written here, and that is owed rather than omitted
+//! # All four mutations write an audit record, on the overlay's own chain
 //!
-//! Every other mutating repository in this crate appends to `pricing_audit_log`
-//! inside its own transaction (D-14: a record that could commit separately from
-//! the mutation it describes is evidence of something that may not have
-//! happened). This one does not, and the obstacle is precise rather than
-//! philosophical.
+//! D-14 and `inst-rb-audit`: [`record_overlay_mutation`] appends to
+//! `pricing_audit_log` **inside** each mutation's transaction, because a record
+//! that could commit separately from the mutation it describes is evidence of
+//! something that may not have happened.
 //!
-//! [`AuditSubjectKind`](crate::domain::audit::AuditSubjectKind) has no overlay
-//! member, and an overlay may not borrow `PlanRevision`: an overlay is not a
-//! plan and has no plan, so that token would put two aggregates on one chain and
-//! make *"who changed this plan"* answer about an object the plan does not
-//! contain. Adding the member is a two-line change — and it makes **two**
-//! exhaustive `match`es non-exhaustive, one of them in `infra::approval`, which
-//! this strand is forbidden to touch. `pricing_audit_log.subject_kind` carries
-//! no `CHECK`, so nothing in the store is in the way; the whole obstacle is the
-//! enum's second consumer.
+//! The chain is [`audit_repo::overlay_chain`] and not any plan's. D-135 keys a
+//! segment on the audited subject's *aggregate*; S5 §6 lists an overlay as one in
+//! its own right, and it has to be, because an overlay is not a plan and has no
+//! plan — borrowing `PlanRevision` would put two aggregates on one hash chain,
+//! which then verifies perfectly while telling an auditor something false. An
+//! overlay's lines may target several plans or none at all
+//! ([`LineKey::list_default`]), so there is not even a well-defined plan to
+//! borrow.
 //!
-//! So the variant, the two arms and the four `append` calls this repository
-//! would make are **owed to the controller**, and they are owed as one change
-//! rather than four — exactly the arrangement `Trigger::PriceOverlayMutation` is
-//! in, and for the same reason. `AuditStamp` is still threaded through every
-//! mutating entry point here, so the change is an addition at four call sites
-//! and not a signature sweep.
+//! **This section said the opposite until 2026-08-06, and the account it gave of
+//! why was accurate**: `AuditSubjectKind` had no overlay member, adding one made
+//! two exhaustive `match`es non-exhaustive, and one of those is in
+//! `infra::approval`, a file the strand that built this repository was fenced out
+//! of. So the four sites carried their [`AuditStamp`] to a `let _ = stamp;` and
+//! the plane wrote nothing at all — a plain regression against D-14 on an
+//! always-material subject, reported as the overlay register's **O-3** and paid at
+//! the merge.
+//!
+//! What the register sized as *"an addition at four call sites, not a signature
+//! sweep"* was that plus one more thing it did not see: `AuditSubjectKind::ALL`
+//! drives `sqlite_approval_repo::every_subject_kind_d158_declares_is_storable_on_the_mirror`,
+//! so a fifth member obliges `chk_pricing_approval_subject_kind` to admit it —
+//! D-158's *"extended together"*, arriving as `m20260802_000035` and a `SQLite`
+//! table rebuild.
 //!
 //! # What the store answers and what the pipeline answers
 //!
@@ -92,7 +99,7 @@ use toolkit_db::secure::{
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
-use crate::domain::audit::AuditStamp;
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::{
     Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
@@ -106,6 +113,7 @@ use crate::infra::storage::entity::{
     price_overlay_line, price_overlay_line_amount, region_taxonomy,
 };
 use crate::infra::storage::repo::plan_repo::tx_failure;
+use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
 
 // ---------------------------------------------------------------------------
 // The authoring surface's types.
@@ -194,11 +202,6 @@ impl OverlayRepo {
         lines: Vec<OverlayLine>,
         stamp: AuditStamp,
     ) -> Result<u64, RepoError> {
-        // Carried and not yet used: the audit append this would make is owed to
-        // the controller with `AuditSubjectKind::PriceOverlay`, and keeping the
-        // parameter is what makes that an addition at four call sites rather
-        // than a signature sweep. `BundleRepo::create`'s precedent.
-        let _ = stamp;
         let scope = scope.clone();
         let (_, outcome) = self
             .db
@@ -223,6 +226,16 @@ impl OverlayRepo {
                     insert_overlay(txn, &scope, row).await?;
                     write_lines(txn, &scope, new.price_overlay_id, new.tenant_id, 0, &lines)
                         .await?;
+                    record_overlay_mutation(
+                        txn,
+                        &scope,
+                        new.tenant_id,
+                        new.price_overlay_id,
+                        0,
+                        AuditAction::Create,
+                        stamp,
+                    )
+                    .await?;
                     Ok(0)
                 })
             })
@@ -247,11 +260,6 @@ impl OverlayRepo {
         price_overlay_id: Uuid,
         stamp: AuditStamp,
     ) -> Result<u64, RepoError> {
-        // Carried and not yet used: the audit append this would make is owed to
-        // the controller with `AuditSubjectKind::PriceOverlay`, and keeping the
-        // parameter is what makes that an addition at four call sites rather
-        // than a signature sweep. `BundleRepo::create`'s precedent.
-        let _ = stamp;
         let scope = scope.clone();
         let (_, outcome) = self
             .db
@@ -335,6 +343,20 @@ impl OverlayRepo {
                         successor,
                     )
                     .await?;
+                    // `create` rather than `update`: `open_revision` writes a new
+                    // revision **row** and leaves the published one exactly as it
+                    // was, so an auditor reading `update` here would look for a
+                    // change to the revision they were already holding.
+                    record_overlay_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        price_overlay_id,
+                        successor,
+                        AuditAction::Create,
+                        stamp,
+                    )
+                    .await?;
                     Ok(u64::try_from(successor).unwrap_or_default())
                 })
             })
@@ -373,11 +395,6 @@ impl OverlayRepo {
         lines: Vec<OverlayLine>,
         stamp: AuditStamp,
     ) -> Result<i64, RepoError> {
-        // Carried and not yet used: the audit append this would make is owed to
-        // the controller with `AuditSubjectKind::PriceOverlay`, and keeping the
-        // parameter is what makes that an addition at four call sites rather
-        // than a signature sweep. `BundleRepo::create`'s precedent.
-        let _ = stamp;
         let scope = scope.clone();
         let (_, outcome) = self
             .db
@@ -428,6 +445,16 @@ impl OverlayRepo {
 
                     drop_lines(txn, &scope, price_overlay_id, tenant_id, number).await?;
                     write_lines(txn, &scope, price_overlay_id, tenant_id, number, &lines).await?;
+                    record_overlay_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        price_overlay_id,
+                        number,
+                        AuditAction::Update,
+                        stamp,
+                    )
+                    .await?;
                     Ok(expected + 1)
                 })
             })
@@ -454,11 +481,6 @@ impl OverlayRepo {
         revision: u64,
         stamp: AuditStamp,
     ) -> Result<(), RepoError> {
-        // Carried and not yet used: the audit append this would make is owed to
-        // the controller with `AuditSubjectKind::PriceOverlay`, and keeping the
-        // parameter is what makes that an addition at four call sites rather
-        // than a signature sweep. `BundleRepo::create`'s precedent.
-        let _ = stamp;
         let scope = scope.clone();
         let (_, outcome) = self
             .db
@@ -534,6 +556,20 @@ impl OverlayRepo {
                             id: format!("{price_overlay_id}/{revision}"),
                         });
                     }
+                    // **One record for the pair**, not two. The supersession is not
+                    // a second act: §6 requires the flip and the publish to be one
+                    // commit, so a trail carrying them separately would show a state
+                    // the store cannot be in.
+                    record_overlay_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        price_overlay_id,
+                        number,
+                        AuditAction::Publish,
+                        stamp,
+                    )
+                    .await?;
                     Ok(())
                 })
             })
@@ -764,6 +800,59 @@ async fn declares(
 // ---------------------------------------------------------------------------
 // Statements.
 // ---------------------------------------------------------------------------
+
+/// Append this overlay mutation's audit record — D-14, `inst-rb-audit`.
+///
+/// Called **inside** each mutation's own transaction, which is the whole of what
+/// D-14 asks for: a record that commits with its mutation cannot be lost by a crash
+/// between the two, and a failure to write it rolls the mutation back rather than
+/// leaving a trail that is silently incomplete. `plan_repo::record_revision_mutation`
+/// is the same arrangement one plane over.
+///
+/// The chain is [`audit_repo::overlay_chain`] and **not** the target plan's, for the
+/// reason D-135 gives: a segment is keyed on the audited subject's *aggregate*, and
+/// S5 §6 lists an overlay as one in its own right. An overlay's lines may target
+/// several plans, or none — `LineKey::list_default` — so there is not even a
+/// well-defined plan to borrow.
+///
+/// `before_state` is `None` throughout, and that is a statement rather than a
+/// shortcut: three of the four mutations create a row (the overlay, its successor
+/// revision, its replacement line set) and have no before, and `publish_revision`'s
+/// predecessor state is derivable from the record one `seq` back on the same chain.
+/// Recording a before that the writer had to re-read would be a second answer to a
+/// question the chain already answers.
+async fn record_overlay_mutation(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_overlay_id: Uuid,
+    revision: i64,
+    action: AuditAction,
+    stamp: AuditStamp,
+) -> Result<(), RepoError> {
+    audit_repo::append(
+        runner,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            chain_id: audit_repo::overlay_chain(price_overlay_id),
+            recorded_at: stamp.recorded_at,
+            actor_principal_id: stamp.actor_principal_id,
+            action,
+            subject_kind: AuditSubjectKind::PriceOverlay,
+            subject_ref: price_overlay_id.to_string(),
+            before_state: None,
+            after_state: Some(serde_json::json!({ "revision": revision })),
+            // **No approval to name.** D-50 makes an overlay mutation an approval
+            // subject and the unit that would carry the id is Slice 9's O-7, unwired;
+            // the field goes `Some` in the same change that opens one.
+            approval_ref: None,
+            correlation_id: stamp.correlation_id,
+        },
+    )
+    .await
+    .map(|_| ())
+}
 
 async fn insert_overlay(
     runner: &impl DBRunner,

@@ -152,15 +152,28 @@ fn the_price_unit_kind_is_the_one_with_no_writer() {
         ]
     );
     assert!(AuditSubjectKind::ALL.contains(&AuditSubjectKind::PriceUnit));
-    // The roster is now **every** kind the enum declares, which is itself the finding:
-    // it was the four-of-three list that made `price_unit`'s absence look deliberate.
-    // `AuditSubjectKind` carries only the kinds this gear can write — S5 §6's wider
-    // enumeration lives in the store's CHECK — so the day a fifth is minted, this
-    // equality is what asks whether it has a writer.
+
+    // **A fifth was minted on 2026-08-06, and this is the question being answered.**
+    // The assertion above used to be an equality with `AuditSubjectKind::ALL.len()`,
+    // written so that *"the day a fifth is minted, this equality is what asks whether
+    // it has a writer"*. `price_overlay` is that fifth, and the answer is: on the
+    // **audit** plane yes — `OverlayRepo`'s four mutations — and on **this** plane,
+    // the approval one, no. D-50 makes every overlay mutation an approval subject and
+    // Slice 9's O-7 is the unwired unit that would open one.
+    //
+    // So the roster is one short of the enum again, deliberately, and the arithmetic
+    // names which one is missing rather than only how many. A test asserting a bare
+    // count would go green the day `price_overlay` gained an approval writer and
+    // `price_unit` lost its own.
+    let without_a_writer: Vec<AuditSubjectKind> = AuditSubjectKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| !SUBJECT_KINDS_WITH_A_WRITER.contains(kind))
+        .collect();
     assert_eq!(
-        SUBJECT_KINDS_WITH_A_WRITER.len(),
-        AuditSubjectKind::ALL.len(),
-        "every kind this gear declares now has a writer; a new one must answer the question"
+        without_a_writer,
+        [AuditSubjectKind::PriceOverlay],
+        "exactly one declared kind has no approval-plane writer, and it is the overlay"
     );
 }
 

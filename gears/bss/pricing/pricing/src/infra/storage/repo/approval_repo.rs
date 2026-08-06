@@ -172,6 +172,16 @@ use crate::infra::storage::{RepoError, contention_or_db, policy_guard_or_content
 /// submits a price row on its own. It is stated as a constant rather than left
 /// implicit so a later slice widening the store finds the sentence rather than the
 /// assumption.
+///
+/// **This roster is the *approval* plane's, and as of `AuditSubjectKind`'s fifth
+/// member that distinction is load-bearing rather than pedantic.**
+/// `AuditSubjectKind` spells two columns — `pricing_audit_log.subject_kind` and
+/// `pricing_approval.subject_kind` — and `price_overlay` has a writer on the first
+/// (`OverlayRepo`'s four mutations) and none on the second. So it is **absent
+/// here**, and its absence is the same kind of statement `price_unit`'s was: D-50
+/// makes every overlay mutation an approval subject, and the unit that would open
+/// one is Slice 9's O-7, unwired. `approval_repo_tests::the_price_unit_kind_is_the_one_with_no_writer`
+/// carries the arithmetic.
 pub const SUBJECT_KINDS_WITH_A_WRITER: &[AuditSubjectKind] = &[
     AuditSubjectKind::PlanRevision,
     AuditSubjectKind::PriceUnit,
@@ -1119,6 +1129,24 @@ pub fn subject_aggregate(record: &ApprovalRecord) -> Result<SubjectAggregate, Re
             subject_plan(record).map(SubjectAggregate::Plan)
         }
         AuditSubjectKind::Policy => Ok(SubjectAggregate::Policy),
+        // **No writer on this plane, so no resolution** — and unlike `price_unit`
+        // above, which inherits the plan parse because its ref format is at least
+        // *decided*, an overlay unit has nothing to inherit: an overlay is not a plan,
+        // so `subject_plan` would answer about an aggregate the subject does not
+        // belong to. D-50 makes every overlay mutation an approval subject and Slice
+        // 9's O-7 is the unit that would open one; until it exists,
+        // `pricing_approval` cannot hold an overlay row that this crate wrote, and one
+        // that appears did not come from here.
+        //
+        // The kind is nonetheless **storable** (`chk_pricing_approval_subject_kind`,
+        // `m20260802_000035`) because D-158 makes the two stores one enumeration
+        // extended together — so this arm is what keeps "storable" from being read as
+        // "resolvable", which are different claims and only the first is true today.
+        AuditSubjectKind::PriceOverlay => Err(RepoError::CorruptRow(format!(
+            "pricing_approval {} is a price_overlay unit, and this crate opens none — \
+             D-50's overlay approval unit is unwired (Slice 9, O-7)",
+            record.approval_id
+        ))),
     }
 }
 
