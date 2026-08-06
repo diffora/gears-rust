@@ -60,6 +60,9 @@ use crate::infra::storage::RepoError;
 
 pub use approval_repo::{ApprovalRecord, NewApproval};
 pub use audit_repo::NewAuditEntry;
+pub use bundle_repo::{
+    BundleComponentDraft, BundleRecord, BundleRepo, CompositionDraft, NewBundle,
+};
 pub use catalog_version_ref_repo::PendingVersionRow;
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
 pub use outbox_repo::{

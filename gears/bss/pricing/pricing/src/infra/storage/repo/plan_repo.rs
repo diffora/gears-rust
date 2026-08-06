@@ -953,7 +953,9 @@ pub(super) async fn record_revision_mutation(
 /// revision has to reach the caller as [`RepoError::NotDraft`], not as "the
 /// store failed". What arrives as infrastructure is only what happens outside
 /// the body — beginning the transaction, and committing it.
-fn tx_failure(err: TxError<RepoError>) -> RepoError {
+/// `pub(super)` because [`bundle_repo`](super::bundle_repo) opens transactions of
+/// the same shape and must render their failures the same way.
+pub(super) fn tx_failure(err: TxError<RepoError>) -> RepoError {
     err.into_domain(|infra| RepoError::Db(format!("plan revision transaction: {infra}")))
 }
 

@@ -209,6 +209,16 @@ impl From<DomainError> for CanonicalError {
             D::OpenDraftRevisionExists(detail) => PlanResource::aborted(detail)
                 .with_reason("OPEN_DRAFT_REVISION_EXISTS")
                 .create(),
+            // One bundle per plan. The conflict class for the line above's
+            // reason — a uniqueness conflict on a slot the plan has one of — and
+            // the reason string is `BUNDLE_EXISTS_ON_PLAN` because §5 declares no
+            // code for it and a caller still needs a discriminator that is not
+            // the message. Owed-register entry B-9 asks the design set to
+            // declare one; until it does this is the gear naming a refusal it
+            // owns rather than borrowing a code that names something else.
+            D::BundleExistsOnPlan(detail) => PlanResource::aborted(detail)
+                .with_reason("BUNDLE_EXISTS_ON_PLAN")
+                .create(),
             // A decision that lost a race with another decision
             // (`design/05-governance.md` §5, which types it 409 outright rather
             // than as one of the section's architectural 422s). It joins the

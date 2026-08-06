@@ -1029,7 +1029,15 @@ pub(super) async fn copy_descriptor_set(
 /// version the caller read, for the reason [`super::plan_repo`]'s module doc
 /// gives: computing the successor in Rust would let two writers holding the same
 /// current version compute the same next one and both write it.
-async fn plan_revision_bump(
+/// Bump the revision's `row_version` under `guard`, in the same statement that
+/// matches on the version the caller read.
+///
+/// `pub(super)` because [`bundle_repo`](super::bundle_repo) performs the same
+/// compare-and-swap for the Slice-8 composition: a bundle's component and
+/// rev-share sets ride the plan revision's entity tag exactly as this module's
+/// child sets do, so re-spelling the swap there would be a second copy of the
+/// one statement that must not drift.
+pub(super) async fn plan_revision_bump(
     runner: &impl DBRunner,
     scope: &AccessScope,
     guard: Condition,
