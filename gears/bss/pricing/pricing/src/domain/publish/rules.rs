@@ -122,6 +122,7 @@ use uuid::Uuid;
 
 use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
 use crate::domain::coverage::window_coverage_rules;
+use crate::domain::currency_binding::{AddonCoverage, RequiredAddonsCoverMarkets};
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::plan_shape::PlanShape;
@@ -229,6 +230,7 @@ pub struct PublishRuleParams {
     size_caps: SoftSizeCaps,
     referencing_markets: Vec<ReferencingMarket>,
     declared_regions: BTreeSet<Region>,
+    addon_coverage: AddonCoverage,
     tax_display_policy: TaxDisplayPolicy,
     region_readiness: RegionTaxReadiness,
 }
@@ -292,6 +294,9 @@ impl PublishRuleParams {
             size_caps,
             referencing_markets: Vec::new(),
             declared_regions: BTreeSet::new(),
+            // Empty is fail-closed here too: an add-on nobody resolved covers
+            // nothing, so a required one blocks. See `AddonCoverage`.
+            addon_coverage: AddonCoverage::empty(),
             // C4's ratified default, so a caller that says nothing gets the
             // fail-closed rule rather than the permissive one.
             tax_display_policy: TaxDisplayPolicy::FailClosed,
@@ -355,6 +360,13 @@ impl PublishRuleParams {
     #[must_use]
     pub const fn region_readiness(&self) -> &RegionTaxReadiness {
         &self.region_readiness
+    }
+
+    /// Attach the resolved coverage of this plan's add-ons (`inst-cb-addon`).
+    #[must_use]
+    pub fn with_addon_coverage(mut self, coverage: AddonCoverage) -> Self {
+        self.addon_coverage = coverage;
+        self
     }
 
     /// The tenant's default rounding policy, when it has one.
@@ -469,6 +481,14 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
             readiness: params.region_readiness.clone(),
         }))
         .with_rule(Box::new(MarketBasisUniform))
+        // `inst-cb-addon` — case (i) of the single-currency-per-invoice binding.
+        // Cases (ii)/(iii) are the bundle plane's and are already enforced by
+        // `domain::bundle_rules::check_coverage`; D-211's delegation of that
+        // walk's **currency** arm to `currency_binding::uncovered_pairs` is owed
+        // and is not made here.
+        .with_rule(Box::new(RequiredAddonsCoverMarkets {
+            coverage: params.addon_coverage.clone(),
+        }))
 }
 
 /// `inst-bc-taxbasis`'s **reverse** half: this plan is a component, and its rows

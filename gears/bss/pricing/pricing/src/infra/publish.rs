@@ -192,8 +192,11 @@ impl PublishService {
             .db
             .conn()
             .map_err(|e| DomainError::Internal(format!("bss-pricing: publish precheck: {e}")))?;
-        let params = rule_params(&self.policies, &conn, scope, tenant_id, plan_id).await?;
+        // The shape is assembled **first**, because `inst-cb-addon`'s domain is
+        // the add-on set this revision composes — the parameters are now a
+        // function of the subject, not only of the tenant.
         let shape = assemble(&conn, scope, tenant_id, plan_id, now).await?;
+        let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape).await?;
         let report = run_publish_rules(&shape, &params);
         check_fixtures(&self.fixture_gate, &shape)?;
         Ok(report)
@@ -466,9 +469,8 @@ impl PublishService {
                 Box::pin(async move {
                     // 1. The second run. Same assembler, same rule set, same
                     // gate - against the world as it now stands.
-                    let params =
-                        rule_params(&policies, txn, &scope, tenant_id, unit.plan_id).await?;
                     let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
+                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape).await?;
                     if shape.revision != unit.revision {
                         return Err(DomainError::NotFound {
                             subject: "open plan draft revision".to_owned(),
@@ -795,8 +797,9 @@ async fn rule_params(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    plan_id: PlanId,
+    shape: &PlanShape,
 ) -> Result<PublishRuleParams, DomainError> {
+    let plan_id = shape.plan_id;
     let policy = policies
         .authoring_policy_on(runner, scope, tenant_id)
         .await
@@ -844,6 +847,13 @@ async fn rule_params(
             .collect(),
     );
     let tax_display_policy = policy.tax_display_policy().map_err(|e| repo_failure(&e))?;
+    // `inst-cb-addon`'s domain: what each of this plan's add-ons covers. Resolved
+    // here for the reason the markets above are — the rule is a property of other
+    // plans' published rows and the set runs twice on one publish.
+    let addon_coverage =
+        crate::infra::currency_binding::addon_coverage(runner, scope, tenant_id, shape)
+            .await
+            .map_err(|e| repo_failure(&e))?;
     Ok(PublishRuleParams::new(
         policy.interval_bounds(),
         policy.descriptor_rule(),
@@ -858,7 +868,8 @@ async fn rule_params(
     )
     .with_referencing_markets(referencing)
     .with_declared_regions(declared_regions)
-    .with_tax_display(tax_display_policy, readiness))
+    .with_tax_display(tax_display_policy, readiness)
+    .with_addon_coverage(addon_coverage))
 }
 
 /// The registry request id of one publish unit.

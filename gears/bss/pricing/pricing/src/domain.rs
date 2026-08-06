@@ -11,6 +11,7 @@ pub mod bundle_rules;
 pub mod bundle_sellability;
 pub mod concurrency;
 pub mod coverage;
+pub mod currency_binding;
 pub mod cutover;
 pub mod error;
 pub mod evaluation_policy;
