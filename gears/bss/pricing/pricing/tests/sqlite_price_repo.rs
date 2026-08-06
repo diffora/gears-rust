@@ -39,6 +39,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
+
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
@@ -3546,4 +3548,85 @@ async fn a_copy_that_is_not_a_generation_of_the_predecessors_market_is_refused()
         message.contains("not a grandfathered generation"),
         "the refusal names what the copy failed to be: {message}"
     );
+}
+
+#[tokio::test]
+async fn the_cross_plane_commit_moves_three_windows_and_three_rows_together() {
+    // `inst-gc-commit`: the predecessor's window shortens to the cutover, the
+    // successor's and the copy's open there, and the three row moves ride the same
+    // transaction. Every instant comes from the one `ComposedCutover`, so the
+    // handover is gap-free by construction rather than by a later check.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor, copy) =
+        seeded_cutover(&repo, &provider, &scope, Some("cloudlets")).await;
+
+    let conn = provider.conn().expect("conn");
+    let covering =
+        common::schedule_coverage_window(&conn, &scope, tenant(), predecessor, stamp()).await;
+    let cutover_at = common::coverage_from() + chrono::Duration::days(3);
+    let plane = vec![bss_pricing::domain::supersession::NamedWindow {
+        window_id: covering.window_id,
+        interval: bss_pricing::domain::window::WindowInterval::new(
+            covering.effective_from,
+            covering.effective_to,
+            covering.state,
+        ),
+    }];
+    let composed = bss_pricing::domain::cutover::compose_cutover_windows(&plane, cutover_at)
+        .expect("a live key composes");
+
+    let plan = bss_pricing::infra::cutover::CutoverCommit::of_composition(
+        composed,
+        plan(),
+        predecessor,
+        covering.mutation_seq,
+        successor,
+        Uuid::from_u128(0xc0_10),
+        copy,
+        Uuid::from_u128(0xc0_11),
+        "grandfatheringCutover".to_owned(),
+    );
+
+    let scope_for_txn = scope.clone();
+    let (_, outcome) = provider
+        .db()
+        .in_transaction::<_, RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::cutover::commit_cutover(
+                    txn,
+                    &scope_for_txn,
+                    tenant(),
+                    plan,
+                    stamp(),
+                )
+                .await
+            })
+        })
+        .await;
+    let written = outcome
+        .map_err(|err| err.into_domain(|infra| RepoError::Db(format!("cutover: {infra}"))))
+        .expect("the cutover commits across both planes");
+
+    assert_eq!(written.shortened.effective_to, Some(cutover_at));
+    assert_eq!(written.successor_window.effective_from, cutover_at);
+    assert_eq!(
+        written.copy_window.effective_from, cutover_at,
+        "both arrivals open at the instant the predecessor's coverage ends"
+    );
+    assert_eq!(
+        written.copy_window.effective_to, None,
+        "the copy's window is open-ended, which is what makes the D-04 bound hold"
+    );
+
+    let state = async |id: Uuid| {
+        repo.find(&scope, tenant(), id)
+            .await
+            .expect("read")
+            .expect("present")
+            .lifecycle_state
+    };
+    assert_eq!(state(predecessor).await, LifecycleState::Superseded);
+    assert_eq!(state(successor.0).await, LifecycleState::Published);
+    assert_eq!(state(copy.0).await, LifecycleState::Published);
 }
