@@ -354,6 +354,16 @@ async fn version_refs(h: &Harness) -> Vec<catalog_version_ref::Model> {
         .expect("read the version refs")
 }
 
+/// The events **this commit** wrote.
+///
+/// **`PriceCreated` is excluded, and the exclusion is what keeps the assertions
+/// honest rather than what weakens them.** Every seed in this file authors a price
+/// row, and authoring is where S3 §17.5 puts `PriceCreated` — so once that producer
+/// existed, an unfiltered read made `is_empty()` false on paths that write nothing,
+/// and the tempting repair was to bump each expectation from 0 to 1. That would
+/// have left every `..._writes_nothing` case named for a guarantee it no longer
+/// checked. Filtering the seed's own event out instead keeps "the commit wrote
+/// nothing" meaning exactly that.
 async fn outbox_rows(h: &Harness) -> Vec<outbox::Model> {
     let conn = h.provider.conn().expect("conn");
     outbox::Entity::find()
@@ -363,6 +373,9 @@ async fn outbox_rows(h: &Harness) -> Vec<outbox::Model> {
         .all(&conn)
         .await
         .expect("read the outbox")
+        .into_iter()
+        .filter(|row| row.event_name != "PriceCreated")
+        .collect()
 }
 
 async fn audit_rows(h: &Harness) -> Vec<audit_log::Model> {
@@ -498,7 +511,10 @@ async fn a_first_publish_leaves_exactly_the_five_artifacts_and_nothing_else() {
     let events = outbox_rows(&h).await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_name, "PlanPublished");
-    assert_eq!(events[0].seq, 0);
+    // The seed's own `PriceCreated` holds seq 0 — authoring emits now (S3 §17.5) —
+    // so the publish is the tenant's second event. The number is asserted rather
+    // than dropped because the counter is what orders a drain.
+    assert_eq!(events[0].seq, 1);
     assert_eq!(events[0].published_at, None);
     assert_eq!(events[0].aggregate_id, plan_id().get());
     assert_eq!(
@@ -753,7 +769,11 @@ async fn a_second_publish_extends_every_counter_by_one() {
     let mut events = outbox_rows(&h).await;
     events.sort_by_key(|row| row.seq);
     assert_eq!(events.len(), 2);
-    assert_eq!(events[1].seq, 1, "the aggregate's counter advanced by one");
+    assert_eq!(
+        events[1].seq,
+        events[0].seq + 1,
+        "the aggregate's counter advanced by one"
+    );
 
     let records = publish_records(&h).await;
     assert_eq!(records.len(), 2);

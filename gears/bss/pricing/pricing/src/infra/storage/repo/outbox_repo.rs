@@ -353,6 +353,31 @@ impl NewOutboxEvent {
     /// aggregate is the **plan** — Foundation §1.2 orders the frozen set per
     /// `(tenantId, aggregateId)`, and a price row's aggregate is the plan it prices,
     /// which is the same answer `audit_repo::plan_chain` gives one store over.
+    /// `PriceCreated` for a row this gear has just authored (S3 §17.5).
+    ///
+    /// **The payload is deliberately shorter than [`PriceUpdatedPayload`]'s**, and
+    /// the missing member is the informative one: a created row carries **no**
+    /// `pending_version_ref`, because authoring is on the draft plane and a draft is
+    /// addressable at no `CatalogVersion` at all. A supersession's `PriceUpdated`
+    /// carries one because that act publishes. Filling this with a placeholder would
+    /// be the lie this crate has already paid for once.
+    #[must_use]
+    pub fn price_created(
+        tenant_id: Uuid,
+        payload: &PriceCreatedPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::PriceCreated,
+            payload: payload.to_value(),
+            dedup_key: price_created_dedup_key(payload.price_id),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
     #[must_use]
     pub fn price_updated(
         tenant_id: Uuid,
@@ -611,6 +636,36 @@ pub fn price_window_transition_dedup_key(event: CatalogEvent, window_id: Uuid) -
 /// argument does not transfer: the cost is zero and the key is the only field that
 /// tells a consumer *which price* moved without a second lookup.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::doc_markdown,
+    reason = "the sibling's doc block above documents PriceUpdated; this type's own is below"
+)]
+pub struct PriceCreatedPayload {
+    /// The plan the row belongs to, and the event's aggregate.
+    pub plan_id: PlanId,
+    /// The row that was authored.
+    pub price_id: Uuid,
+    /// Its canonical scope key, rendered.
+    pub scope_key: String,
+    /// The request that authored it.
+    pub correlation_id: Uuid,
+}
+
+impl PriceCreatedPayload {
+    /// The payload as the outbox stores it.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        serde_json::json!({
+            "planId": self.plan_id.get(),
+            "priceId": self.price_id,
+            "scopeKey": self.scope_key,
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// The `PriceUpdated` payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PriceUpdatedPayload {
     /// The plan the row belongs to — the aggregate the event is ordered within.
     pub plan_id: PlanId,
@@ -663,6 +718,16 @@ impl PriceUpdatedPayload {
 #[must_use]
 pub fn price_updated_dedup_key(price_id: Uuid) -> String {
     format!("{}/{}", CatalogEvent::PriceUpdated.as_str(), price_id)
+}
+
+/// One `PriceCreated` per price row, ever.
+///
+/// The row id is the whole key because a row is created exactly once: a replayed
+/// authoring call is refused upstream by the idempotency gate, and a re-authored
+/// key is a **different** row with a different id.
+#[must_use]
+pub fn price_created_dedup_key(price_id: Uuid) -> String {
+    format!("{}/{}", CatalogEvent::PriceCreated.as_str(), price_id)
 }
 
 /// Enqueue one event inside `runner`'s transaction, returning the `seq` it

@@ -230,6 +230,11 @@ async fn event_names(h: &Harness) -> Vec<String> {
         .await
         .expect("read the outbox")
         .into_iter()
+        // The seed authors a price row and `PriceCreated` is the authoring door's
+        // (S3 §17.5), so it belongs to the fixture rather than to the unit under
+        // test. Filtered rather than counted in, so "nothing was announced" keeps
+        // meaning what it says.
+        .filter(|row| row.event_name != "PriceCreated")
         .map(|row| row.event_name)
         .collect()
 }

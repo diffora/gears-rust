@@ -3311,3 +3311,82 @@ async fn an_update_may_not_move_the_row_to_another_line() {
     assert_eq!(read.scope_key.meter().map(Meter::as_str), Some("cloudlets"));
     assert_eq!(read.row_version, created.row_version);
 }
+
+// ---------------------------------------------------------------------------
+// `PriceCreated` — the producer S3 puts on this door
+// ---------------------------------------------------------------------------
+
+async fn outbox_events(provider: &DBProvider<DbError>, scope: &AccessScope) -> Vec<String> {
+    let conn = provider.conn().expect("conn");
+    bss_pricing::infra::storage::entity::outbox::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+        .into_iter()
+        .map(|row| row.event_name)
+        .collect()
+}
+
+#[tokio::test]
+async fn authoring_a_draft_row_emits_price_created() {
+    // **S3 puts the producer here in as many words**: "a draft price row is
+    // authored on the canonical scope key ... `PriceCreated` emits per row", and
+    // "`PriceCreated` on row authoring". The event has been declared and
+    // producerless since the gear was created — every consumer counting row
+    // creations has been counting zero.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            Uuid::from_u128(0x9c_01),
+            base_key(ChargeKind::Recurring),
+            flat_content(),
+        ),
+    )
+    .await
+    .expect("author the row");
+
+    assert_eq!(outbox_events(&provider, &scope).await, vec!["PriceCreated"]);
+}
+
+#[tokio::test]
+async fn editing_and_deleting_a_draft_emit_nothing_further() {
+    // The event is `PriceCreated`, not `PriceTouched`: it fires once, on the act
+    // that brought the row into existence. The audit chain is what carries the
+    // edits, and it already does.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0x9c_02);
+
+    let created = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(price_id, base_key(ChargeKind::Recurring), flat_content()),
+        )
+        .await
+        .expect("author the row");
+    let mut edited = flat_content();
+    edited.row.amount_minor = Some(money(2_000));
+    repo.update_draft(
+        &scope,
+        tenant(),
+        price_id,
+        created.row_version,
+        edited,
+        stamp(),
+    )
+    .await
+    .expect("edit it");
+
+    assert_eq!(
+        outbox_events(&provider, &scope).await,
+        vec!["PriceCreated"],
+        "one creation, one event"
+    );
+}

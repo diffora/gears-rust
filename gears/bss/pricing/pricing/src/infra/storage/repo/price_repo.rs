@@ -125,7 +125,8 @@ use crate::domain::scope_key::{
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{price, price_tier_band};
 use crate::infra::storage::repo::check_authored_instant;
-use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
+use crate::infra::storage::repo::outbox_repo::{NewOutboxEvent, PriceCreatedPayload};
+use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
 
 /// The noun the authoring refusals name, so one subject word reaches the wire
 /// from every method here.
@@ -2253,6 +2254,35 @@ async fn record_price_mutation(
         stamp.recorded_at,
     )
     .await?;
+    // **`PriceCreated`, and only on the act that creates** (S3 §17.5: "a draft price
+    // row is authored on the canonical scope key ... `PriceCreated` emits per row").
+    // The event was declared when the gear was created and had **no producer
+    // anywhere** until now, so every consumer counting row creations counted zero.
+    // It fires here rather than at publish because S3 puts it on authoring, and the
+    // payload carries no version ref for the same reason: a draft is addressable at
+    // no `CatalogVersion`.
+    //
+    // The cutover's commit is the **second** producer (R-02, `inst-gc-commit`), and
+    // it will call this same spelling: its two rows are born published rather than
+    // through this door, so neither path can be the other's, and one event name with
+    // two producers is what makes it mean "a price row came into existence".
+    if matches!(action, AuditAction::Create) {
+        outbox_repo::enqueue(
+            runner,
+            scope,
+            NewOutboxEvent::price_created(
+                tenant_id,
+                &PriceCreatedPayload {
+                    plan_id: record.scope_key.plan_id(),
+                    price_id: record.price_id,
+                    scope_key: record.scope_key.to_string(),
+                    correlation_id: stamp.correlation_id,
+                },
+                stamp.recorded_at,
+            ),
+        )
+        .await?;
+    }
     audit_repo::append(
         runner,
         scope,

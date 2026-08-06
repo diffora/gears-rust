@@ -1058,6 +1058,13 @@ pub async fn outbox_correlations(harness: &Harness) -> Vec<Uuid> {
         .await
         .expect("read the outbox")
         .into_iter()
+        // `PriceCreated` is the **authoring** door's (S3 §17.5), so it belongs to
+        // whatever seeded the row rather than to the act under test. Excluded here
+        // for `sqlite_publish_commit::outbox_rows`' reason: the callers assert what
+        // one commit emitted, and counting the seed's event in would have been
+        // repaired by bumping each expectation, which leaves the assertions named
+        // for guarantees they stopped checking.
+        .filter(|row| row.event_name != "PriceCreated")
         .map(|row| row.correlation_id)
         .collect()
 }
