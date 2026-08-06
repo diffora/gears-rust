@@ -1002,6 +1002,120 @@ type ScopeKeyColumns<'a> = (
     &'a str,
 );
 
+/// The cutover's row plane: the predecessor leaves, the successor and the
+/// grandfathered copy arrive, in one transaction (`inst-co-supersede`, D-100).
+///
+/// **The supersession's door with one more row and one looser pairing.** The
+/// successor lands on the predecessor's **own** key, so it is checked by exactly the
+/// guard a supersession's successor is. The copy does not: it lands on a *new
+/// generation* of that key, which by construction differs in `priceEligibility` and
+/// `cohort` and in nothing else. So the copy is paired modulo those two axes — a
+/// comparison that must be written down rather than assumed, because "modulo two
+/// axes" is precisely the kind of looseness that later reads as "unchecked".
+///
+/// **The flip goes first**, for `commit_supersession_rows`' reason and it is the same
+/// index: Foundation §3.7 admits one published row per key, so publishing the
+/// successor while the predecessor still reads `published` violates
+/// `uq_pricing_price_scope_key_current` — and violates it as a raw driver error, a
+/// 500 carrying nothing an operator can act on, rather than as a refusal. The copy is
+/// on a different key and could publish in any order; it goes with the successor so
+/// that one statement covers both and no future edit can separate them.
+///
+/// # Errors
+///
+/// [`RepoError::NotSupersedable`] when the successor is not on the predecessor's key
+/// or does not name it, or when the copy is not a generation of that same market;
+/// whatever the flip and the publish refuse otherwise.
+pub async fn commit_cutover_rows(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    predecessor: Uuid,
+    successor: (Uuid, RowVersion),
+    copy: (Uuid, RowVersion),
+) -> Result<(), RepoError> {
+    refuse_mispaired(txn, scope, tenant_id, predecessor, successor.0).await?;
+    refuse_ungenerational(txn, scope, tenant_id, predecessor, copy.0).await?;
+    supersede_row(txn, scope, tenant_id, predecessor).await?;
+    publish_rows(txn, scope, tenant_id, plan_id, &[successor, copy]).await?;
+    Ok(())
+}
+
+/// The copy must be a **generation of the predecessor's market**, not a row from
+/// somewhere else on the plan.
+///
+/// Compared modulo `priceEligibility` and `cohort`, which are the two axes
+/// `inst-co-copy` moves and the only two it may. Everything else — the plan, the
+/// market, the phase, the charge kind and, since D-196, the usage line — is the
+/// predecessor's or the copy is not a copy of it.
+async fn refuse_ungenerational(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    predecessor: Uuid,
+    copy: Uuid,
+) -> Result<(), RepoError> {
+    let rows: HashMap<Uuid, price::Model> =
+        load_rows(runner, scope, tenant_id, [predecessor, copy].into_iter())
+            .await?
+            .into_iter()
+            .map(|row| (row.price_id, row))
+            .collect();
+    // Which one is missing is the sibling moves' answer to give, exactly as in
+    // `refuse_mispaired`.
+    let (Some(before), Some(after)) = (rows.get(&predecessor), rows.get(&copy)) else {
+        return Ok(());
+    };
+    if market_columns(before) != market_columns(after) {
+        return Err(RepoError::NotSupersedable {
+            subject: SUBJECT.to_owned(),
+            id: copy.to_string(),
+            state: format!(
+                "not a grandfathered generation of price {predecessor}'s market; a cutover copy                  moves the eligibility class and the cohort and no other axis"
+            ),
+        });
+    }
+    if after.price_eligibility != PriceEligibility::ExistingGrandfathered.as_str() {
+        return Err(RepoError::NotSupersedable {
+            subject: SUBJECT.to_owned(),
+            id: copy.to_string(),
+            state: format!(
+                "on eligibility class {}; a cutover copy is the existing_grandfathered row",
+                after.price_eligibility
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The eight scope-key columns a generation shares with the row it was copied from.
+type MarketColumns<'a> = (
+    Uuid,
+    &'a str,
+    &'a str,
+    &'a str,
+    Uuid,
+    &'a str,
+    Option<&'a str>,
+    &'a str,
+);
+
+/// The scope-key columns a generation shares with the row it was copied from — all
+/// of them but `priceEligibility` and `cohort`.
+fn market_columns(row: &price::Model) -> MarketColumns<'_> {
+    (
+        row.plan_id,
+        row.currency.as_str(),
+        row.region.as_str(),
+        row.price_overlay.as_str(),
+        row.phase,
+        row.charge_kind.as_str(),
+        row.meter.as_deref(),
+        row.dimension_key.as_str(),
+    )
+}
+
 /// The canonical scope-key columns of a stored row, as a comparable tuple.
 ///
 /// Compared column-wise rather than by parsing back into a [`ScopeKey`]: a row whose

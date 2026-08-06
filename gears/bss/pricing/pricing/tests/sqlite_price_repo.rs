@@ -3390,3 +3390,160 @@ async fn editing_and_deleting_a_draft_emit_nothing_further() {
         "one creation, one event"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The cutover's row plane (`inst-co-supersede`, D-100)
+// ---------------------------------------------------------------------------
+
+async fn cutover_rows(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    predecessor: Uuid,
+    successor: (Uuid, RowVersion),
+    copy: (Uuid, RowVersion),
+) -> Result<(), RepoError> {
+    let scope = scope.clone();
+    let (_, outcome) = provider
+        .db()
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::price_repo::commit_cutover_rows(
+                    txn,
+                    &scope,
+                    tenant(),
+                    plan(),
+                    predecessor,
+                    successor,
+                    copy,
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| err.into_domain(|infra| RepoError::Db(format!("cutover rows: {infra}"))))
+}
+
+/// A published predecessor, a successor drafted on its own key, and a copy drafted
+/// on a generation of it.
+async fn seeded_cutover(
+    repo: &PriceRepo,
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    meter: Option<&str>,
+) -> (Uuid, (Uuid, RowVersion), (Uuid, RowVersion)) {
+    let key = usage_key(meter, "");
+    let predecessor = Uuid::from_u128(0xc0_01);
+    repo.create_draft(
+        scope,
+        tenant(),
+        draft(predecessor, key.clone(), usage_line_content(meter, "")),
+    )
+    .await
+    .expect("author the predecessor");
+    flip_state(provider, scope, predecessor, LifecycleState::Published).await;
+
+    let successor = Uuid::from_u128(0xc0_02);
+    let mut content = usage_line_content(meter, "");
+    content.supersedes_price_id = Some(predecessor);
+    let conn = provider.conn().expect("conn");
+    let (authored, _) = bss_pricing::infra::storage::repo::price_repo::insert_successor_draft_on(
+        &conn,
+        scope,
+        tenant(),
+        draft(successor, key.clone(), content),
+    )
+    .await
+    .expect("stage the successor on the predecessor's key");
+
+    let copy_id = Uuid::from_u128(0xc0_03);
+    let copy_key = bss_pricing::domain::cutover::grandfathered_copy_key(&key, at(20), &[])
+        .expect("a fresh generation");
+    let copied = repo
+        .create_draft(
+            scope,
+            tenant(),
+            draft(copy_id, copy_key, usage_line_content(meter, "")),
+        )
+        .await
+        .expect("author the grandfathered copy");
+
+    (
+        predecessor,
+        (successor, authored.row_version),
+        (copy_id, copied.row_version),
+    )
+}
+
+#[tokio::test]
+async fn the_cutover_flips_the_predecessor_and_publishes_both_new_rows() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor, copy) =
+        seeded_cutover(&repo, &provider, &scope, Some("cloudlets")).await;
+
+    cutover_rows(&provider, &scope, predecessor, successor, copy)
+        .await
+        .expect("the cutover's four row moves commit together");
+
+    let state = async |id: Uuid| {
+        repo.find(&scope, tenant(), id)
+            .await
+            .expect("read")
+            .expect("present")
+            .lifecycle_state
+    };
+    assert_eq!(state(predecessor).await, LifecycleState::Superseded);
+    assert_eq!(state(successor.0).await, LifecycleState::Published);
+    assert_eq!(
+        state(copy.0).await,
+        LifecycleState::Published,
+        "the copy publishes in the same transaction, on its own generation key"
+    );
+}
+
+#[tokio::test]
+async fn a_copy_that_is_not_a_generation_of_the_predecessors_market_is_refused() {
+    // The looser of the two pairings, and the one that has to be written down:
+    // the copy is compared modulo `priceEligibility` and `cohort`, so every other
+    // axis — the usage line included, since D-196 — has to be the predecessor's.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor, _) =
+        seeded_cutover(&repo, &provider, &scope, Some("cloudlets")).await;
+
+    let stranger = Uuid::from_u128(0xc0_04);
+    let other_line = bss_pricing::domain::cutover::grandfathered_copy_key(
+        &usage_key(Some("egress_gb"), ""),
+        at(20),
+        &[],
+    )
+    .expect("a generation of another line");
+    let authored = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(
+                stranger,
+                other_line,
+                usage_line_content(Some("egress_gb"), ""),
+            ),
+        )
+        .await
+        .expect("author a generation of a different meter");
+
+    let err = cutover_rows(
+        &provider,
+        &scope,
+        predecessor,
+        successor,
+        (stranger, authored.row_version),
+    )
+    .await
+    .expect_err("a generation of another line is not this cutover's copy");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("not a grandfathered generation"),
+        "the refusal names what the copy failed to be: {message}"
+    );
+}
