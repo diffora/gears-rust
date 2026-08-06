@@ -783,6 +783,217 @@ async fn the_meter_line_index_speaks_only_about_metered_lines() {
 }
 
 // ---------------------------------------------------------------------------
+// D-196 clause (2): the usage pair inside the two scope-key indexes
+// ---------------------------------------------------------------------------
+
+/// D-103's confirmed example, which the eight-axis key could not store.
+///
+/// Two usage lines of one plan in one market differ only in `meter`, and under
+/// the eight axes they rendered **one** key — the second was refused
+/// `uq_pricing_price_scope_key_current` at save, so *"a `PaaS` plan pricing
+/// cloudlets, storage and egress is one plan, not three"* was a decision the
+/// store contradicted. Both must land.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_usage_lines_of_one_market_are_two_published_keys() {
+    let conn = applied().await;
+    must_succeed(
+        &conn,
+        &insert(
+            PUBLISHED,
+            &[
+                ("lifecycle_state", "'published'"),
+                ("charge_kind", "'usage'"),
+                ("meter", "'cloudlets'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert(
+            OTHER,
+            &[
+                ("lifecycle_state", "'published'"),
+                ("charge_kind", "'usage'"),
+                ("meter", "'egress_gb'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+}
+
+/// The tenth axis carries its own weight: one meter, two dimensions, two keys.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn one_meter_dimensioned_two_ways_is_two_published_keys() {
+    let conn = applied().await;
+    must_succeed(
+        &conn,
+        &insert(
+            PUBLISHED,
+            &[
+                ("lifecycle_state", "'published'"),
+                ("charge_kind", "'usage'"),
+                ("meter", "'cloudlets'"),
+                ("dimension_key", "'region=eu'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert(
+            OTHER,
+            &[
+                ("lifecycle_state", "'published'"),
+                ("charge_kind", "'usage'"),
+                ("meter", "'cloudlets'"),
+                ("dimension_key", "'region=us'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+}
+
+/// The same widening on the **draft** plane, which D-148's index owns.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_usage_lines_of_one_market_are_two_draft_keys() {
+    let conn = applied().await;
+    must_succeed(
+        &conn,
+        &insert(
+            DRAFT,
+            &[
+                ("charge_kind", "'usage'"),
+                ("meter", "'cloudlets'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert(
+            OTHER,
+            &[
+                ("charge_kind", "'usage'"),
+                ("meter", "'egress_gb'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+}
+
+/// **The hole the naive widening would have opened, proved on Postgres.**
+///
+/// `meter` is nullable and NULLs are *distinct* inside a `UNIQUE` index, so an
+/// index that simply listed the column would stop refusing the duplicate it
+/// refuses today on every non-usage key — every one of which carries
+/// `meter IS NULL`. Measured on `SQLite` before the migration was written; this is
+/// the same fact on the engine that actually runs production, and it is why both
+/// indexes key over `COALESCE(meter, '')` rather than over the column.
+///
+/// Two published usage rows with **no meter at all** are the sharpest form: they
+/// are inside the widened axis set and still share one key.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_meterless_usage_rows_on_one_key_still_collide() {
+    let conn = applied().await;
+    must_succeed(
+        &conn,
+        &insert(
+            PUBLISHED,
+            &[
+                ("lifecycle_state", "'published'"),
+                ("charge_kind", "'usage'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &insert(
+            OTHER,
+            &[
+                ("lifecycle_state", "'published'"),
+                ("charge_kind", "'usage'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+        "uq_pricing_price_scope_key_current",
+    )
+    .await;
+}
+
+/// And the same on the draft plane, where the NULL would have been just as
+/// distinct.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_meterless_usage_drafts_on_one_key_still_collide() {
+    let conn = applied().await;
+    must_succeed(
+        &conn,
+        &insert(
+            DRAFT,
+            &[("charge_kind", "'usage'"), ("model_kind", "'per_unit'")],
+        ),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &insert(
+            OTHER,
+            &[("charge_kind", "'usage'"), ("model_kind", "'per_unit'")],
+        ),
+        "uq_pricing_price_scope_key_draft",
+    )
+    .await;
+}
+
+/// A meterless row and a metered one on otherwise-equal axes are two keys, and
+/// the empty-string sentinel is what makes that statement safe: `Meter::new`
+/// refuses a blank value, so `''` denotes *no meter* and nothing else can render
+/// it.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_metered_line_and_a_meterless_one_are_two_keys() {
+    let conn = applied().await;
+    must_succeed(
+        &conn,
+        &insert(
+            PUBLISHED,
+            &[
+                ("lifecycle_state", "'published'"),
+                ("charge_kind", "'usage'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert(
+            OTHER,
+            &[
+                ("lifecycle_state", "'published'"),
+                ("charge_kind", "'usage'"),
+                ("meter", "'cloudlets'"),
+                ("model_kind", "'per_unit'"),
+            ],
+        ),
+    )
+    .await;
+}
+
+// ---------------------------------------------------------------------------
 // `bss.pricing_price_append_only()` — the five arms
 // ---------------------------------------------------------------------------
 

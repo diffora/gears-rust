@@ -766,6 +766,98 @@ async fn the_pending_key_register_is_unique_and_partial_on_submitted() {
     );
 }
 
+/// D-196 clause (2): both scope-key indexes carry the usage line, **through the
+/// sentinel** — and the behaviour, not only the DDL.
+///
+/// The DDL half is the cheap half. The behavioural half is the one that matters,
+/// because the naive widening — listing `meter` itself — produces DDL that reads
+/// correct and silently stops constraining every non-usage key, `meter` being
+/// nullable and NULLs being distinct inside a `UNIQUE`. So this asserts both
+/// directions on the engine the fast gate runs:
+///
+///   - two usage lines differing only in `meter` are two keys (D-103's example,
+///     which the eight-axis key refused);
+///   - two rows with **no** meter on one key still collide (the hole).
+///
+/// The rows go in as raw SQL rather than through the repository on purpose: the
+/// repository is the layer that cannot see a guard stop refusing, and until
+/// clause (3) it does not carry the pair from the key onto the columns anyway.
+#[tokio::test]
+async fn both_scope_key_indexes_carry_the_usage_line_through_the_sentinel() {
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    for index in [
+        "uq_pricing_price_scope_key_current",
+        "uq_pricing_price_scope_key_draft",
+    ] {
+        let ddl = index_sql(&conn, index).await.expect("the scope-key index");
+        assert!(
+            ddl.contains("COALESCE(meter, '')"),
+            "the meter axis must be indexed through the sentinel, not as the nullable \
+             column: {ddl}"
+        );
+        assert!(
+            ddl.contains("dimension_key"),
+            "the tenth axis belongs to the key too: {ddl}"
+        );
+    }
+
+    let row = |id: u32, state: &str, meter: &str| {
+        format!(
+            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, \
+             charge_kind, model_kind, amount_minor, lifecycle_state, created_by, created_at_utc, \
+             meter) VALUES ('{id:0>8}-0000-0000-0000-000000000000', \
+             '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', \
+             'USD', 'EU', '33333333-3333-3333-3333-333333333333', 'usage', 'per_unit', 1000, \
+             '{state}', '44444444-4444-4444-4444-000000000000', '2026-08-03 09:00:00+00', {meter})"
+        )
+    };
+    let exec = async |sql: String| {
+        conn.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql,
+        ))
+        .await
+    };
+
+    // D-103's example: two meters, one market, two keys — on both planes.
+    exec(row(1, "published", "'cloudlets'"))
+        .await
+        .expect("the first usage line takes its key");
+    exec(row(2, "published", "'egress_gb'"))
+        .await
+        .expect("a second meter is a second key, which is the whole of D-196");
+    exec(row(3, "draft", "'cloudlets'"))
+        .await
+        .expect("the draft plane admits the same pair");
+    exec(row(4, "draft", "'egress_gb'"))
+        .await
+        .expect("a second meter is a second draft key too");
+
+    // And the hole stays closed: no meter is one key, not one key per row.
+    exec(row(5, "published", "NULL"))
+        .await
+        .expect("a meterless usage row takes the sentinel key");
+    let collision = exec(row(6, "published", "NULL"))
+        .await
+        .expect_err("two meterless usage rows share one key and the second must be refused");
+    assert!(
+        collision
+            .to_string()
+            .contains("uq_pricing_price_scope_key_current"),
+        "the refusal must come from the scope-key index: {collision}"
+    );
+}
+
 #[tokio::test]
 async fn the_policy_mint_guard_is_unique_per_tenant_and_partial_on_both_conjuncts() {
     // The **shape** and not only the name, for the sibling case's reason: each half of

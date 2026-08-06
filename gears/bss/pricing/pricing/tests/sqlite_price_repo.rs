@@ -1051,37 +1051,36 @@ async fn the_store_itself_refuses_the_second_draft_the_check_can_only_read_for()
         .await
         .expect_err("a second draft on one canonical scope key must not land");
 
-    // `SQLite` names the colliding **columns** and Postgres names the index, so
-    // the assertion is on the axis list. That difference is also why the
-    // repository does not turn this back into `DUPLICATE_SCOPE_KEY` itself:
-    // recognizing it means knowing which backend is answering, which is a
-    // narrowing owed to the surface layer (see `PriceRepo::create_draft`).
+    // **This assertion changed shape with D-196 clause (2), and the change is a
+    // measured property of `SQLite` rather than a weakening chosen here.** It
+    // used to enumerate the nine indexed columns, because `SQLite` names the
+    // colliding *columns* while Postgres names the index. Once the index carries
+    // an **expression** — `COALESCE(meter, '')`, the sentinel that keeps a
+    // nullable `meter` from dissolving the uniqueness of every non-usage key —
+    // `SQLite` stops naming columns at all and names the index instead:
+    //
+    //     UNIQUE (a, b)                     -> "UNIQUE constraint failed: t.a, t.b"
+    //     UNIQUE (a, b, COALESCE(meter,'')) -> "UNIQUE constraint failed: index 'ix'"
+    //
+    // measured directly on both forms, 2026-08-06. So the axis list is no longer
+    // available to assert on this engine, and the index **name** is what both
+    // engines now have in common. That is a real cost of the sentinel and it is
+    // recorded on D-196 rather than absorbed silently: a reader who wants to know
+    // which axes the guarantee covers reads the migration, not the error.
+    //
+    // The rest of the original note stands: this is also why the repository does
+    // not turn the violation back into `DUPLICATE_SCOPE_KEY` itself — recognizing
+    // it means knowing which backend is answering, a narrowing owed to the
+    // surface layer (see `PriceRepo::create_draft`).
     let message = err.to_string();
     assert!(
         message.contains("UNIQUE constraint failed"),
         "the refusal must be a unique violation, got: {message}"
     );
-    // `tenant_id` leads the list and is not one of the eight axes: the index
-    // scopes the key to a tenant the way the design set's sibling
-    // meter-injectivity index does, so the two spellings of "how far this
-    // uniqueness reaches" agree.
-    for axis in [
-        "pricing_price.tenant_id",
-        "pricing_price.plan_id",
-        "pricing_price.currency",
-        "pricing_price.region",
-        "pricing_price.price_overlay",
-        "pricing_price.phase",
-        "pricing_price.price_eligibility",
-        "pricing_price.charge_kind",
-        "pricing_price.cohort",
-    ] {
-        assert!(
-            message.contains(axis),
-            "the violated index must cover the whole canonical key; {axis} is \
-             missing from: {message}"
-        );
-    }
+    assert!(
+        message.contains("uq_pricing_price_scope_key_draft"),
+        "the violated guard must be the draft-plane scope-key index, got: {message}"
+    );
 
     // And the winner is untouched.
     assert!(
