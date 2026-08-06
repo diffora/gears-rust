@@ -19,7 +19,9 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::bundles::BUNDLES;
-use rest_support::{Harness, body_json, etag_of, problem_code, seed_draft_plan, with_headers};
+use rest_support::{
+    Harness, body_json, etag_of, problem_code, seed_draft_plan, seed_price, with_headers,
+};
 use uuid::Uuid;
 
 fn bundle_path(bundle_id: Uuid) -> String {
@@ -452,5 +454,134 @@ async fn a_clean_publish_is_accepted_and_is_always_material() {
         body["materiality"].as_str(),
         Some("alwaysMaterialTrigger"),
         "D-104: a composition publish is material whatever a threshold says"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-bc-coverage`'s narrowing — which rows count, driven end to end.
+// ---------------------------------------------------------------------------
+
+/// A **published component whose only row is still a draft** covers nothing.
+///
+/// This pair exists because a probe found the gap it closes: deleting the
+/// `lifecycle_state = 'published'` conjunct from the service's coverage filter
+/// reddened **nothing**, since no case here had a draft row for the filter to
+/// exclude. The narrowing was enforced and untested at this layer, which is a
+/// guard that can be removed under a green tree.
+///
+/// The component's *plan* is published, so `COMPONENT_UNPUBLISHED` must **not**
+/// fire — that is what makes this a test of the row filter rather than of the
+/// plan check standing in front of it.
+#[tokio::test]
+async fn a_published_components_draft_row_does_not_cover_a_market() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle(&harness).await;
+
+    // A published component plan carrying one row that never published.
+    let component = Uuid::now_v7();
+    // No `attach_shape` on the component: `pricing_plan_phase` is keyed
+    // `(phase_id, plan_revision)` and the harness attaches a **fixed** phase id,
+    // so a second plan at revision 0 collides with the bundle plan's own. The
+    // price row does not need the phase row to exist - the `phase` axis is a
+    // bare uuid (D-19) and carries no foreign key.
+    seed_draft_plan(&harness, component).await;
+    seed_price(&harness, component, "EU").await;
+    harness.publish(component, 0).await;
+
+    let tag = harness.plan_etag(plan_id).await;
+    harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [{
+                    "component_plan_id": component,
+                    "included_sku_id": Uuid::now_v7(),
+                }],
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "markets": [{ "currency": "USD", "region": "EU" }],
+            })),
+            &[],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(response).await.to_string();
+    assert!(
+        detail.contains("CURRENCY_NOT_COVERED"),
+        "a draft row must not count as coverage, got: {detail}"
+    );
+    assert!(
+        !detail.contains("COMPONENT_UNPUBLISHED"),
+        "the component's plan IS published; this must be the row filter and not the \
+         plan check, got: {detail}"
+    );
+}
+
+/// The other half of the same fact, and the half that makes the pair a
+/// discrimination rather than a rule that always refuses: publish the very same
+/// row and the very same composition passes its coverage walk.
+///
+/// Without this case the filter could be `WHERE false` and the case above would
+/// still be green.
+#[tokio::test]
+async fn the_same_row_published_does_cover_the_market() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle(&harness).await;
+
+    let component = Uuid::now_v7();
+    seed_draft_plan(&harness, component).await;
+    let row = seed_price(&harness, component, "EU").await;
+    harness.publish(component, 0).await;
+    harness.publish_price(component, row.price_id).await;
+
+    let tag = harness.plan_etag(plan_id).await;
+    harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [{
+                    "component_plan_id": component,
+                    "included_sku_id": Uuid::now_v7(),
+                }],
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "markets": [{ "currency": "USD", "region": "EU" }],
+            })),
+            &[],
+        ))
+        .await;
+
+    let status = response.status();
+    let detail = body_json(response).await.to_string();
+    assert!(
+        !detail.contains("CURRENCY_NOT_COVERED"),
+        "a published row on the sold market must cover it, got {status}: {detail}"
     );
 }
