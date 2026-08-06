@@ -573,6 +573,10 @@ impl Gear for BssPricingGear {
         // one transaction the at-most-once contract requires, and the gate holds
         // the configured retention window because expiry is decided on the claim
         // path rather than by a reaper.
+        // **One `ApprovalService`, two states.** The authoring surface's overlay
+        // submit opens a unit (D-50) and the governance surface decides it; two
+        // services over one provider would be two transaction owners for one table.
+        let approvals = ApprovalService::new(db.clone());
         let authoring_api = Arc::new(AuthoringState {
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
@@ -586,6 +590,7 @@ impl Gear for BssPricingGear {
             // because it requests no `CatalogVersion`, which is the criterion
             // that split the two.
             overlays: crate::infra::storage::repo::OverlayRepo::new(db.clone()),
+            approvals: approvals.clone(),
             idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
         });
 
@@ -612,7 +617,7 @@ impl Gear for BssPricingGear {
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
             prices: PriceRepo::new(db.clone()),
-            approvals: ApprovalService::new(db.clone()),
+            approvals,
             publish,
             // The same registry `Arc` the engine holds. Two requesters of one
             // registry, never two incrementers — `api::rest::state`'s module doc

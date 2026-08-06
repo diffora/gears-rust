@@ -129,7 +129,7 @@ use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
-use crate::domain::approval::content_pin::threshold_content_hash;
+use crate::domain::approval::content_pin::{overlay_content_hash, threshold_content_hash};
 use crate::domain::approval::{
     DecisionBy, DecisionRefusal, DecisionRequest, authorize_decision, content_hash,
 };
@@ -137,6 +137,7 @@ use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{ThresholdEntry, ThresholdVersion};
 use crate::domain::money::CurrencyCode;
+use crate::domain::overlay::OverlayRevision;
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::storage::repo::approval_repo::{ApprovalRecord, NewApproval};
@@ -636,6 +637,127 @@ impl ApprovalService {
             content_hash: content_hash(&shape).to_vec(),
             materiality,
             held_keys,
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
+    /// Open the overlay unit in a transaction of this service's own.
+    ///
+    /// [`Self::submit_overlay_on`]'s `&self` half, and the split is this module's
+    /// existing one rather than a new shape: the `_on` form runs inside a caller's
+    /// transaction, this form is for a caller that has none. The overlay submit is
+    /// the second kind — no route in this gear opens a transaction, because a route
+    /// that did would be a second place transaction boundaries are decided.
+    ///
+    /// It is a transaction rather than a bare call because `approval_repo::open`
+    /// appends the unit's audit record inside it: a unit that committed while its
+    /// trail rolled back would leave `pricing_audit_log` answering "who submitted
+    /// this" with nothing.
+    ///
+    /// # Errors
+    /// [`Self::submit_overlay_on`]'s, unchanged.
+    pub async fn submit_overlay(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        revision: &OverlayRevision,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let scope = scope.clone();
+        let revision = revision.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<ApprovalRecord, DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    Self::submit_overlay_on(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &revision,
+                        approval_id,
+                        materiality,
+                        stamp,
+                    )
+                    .await
+                })
+            })
+            .await;
+        outcome.map_err(into_domain)
+    }
+
+    /// Open the **overlay** unit `inst-pl-commit` promises (D-50, D-225).
+    ///
+    /// The fifth submit on this service and the first whose subject is neither a plan
+    /// nor a fact about one. What that changes is not the shape — subject, pin, open —
+    /// but the two things below, and both are decisions rather than omissions.
+    ///
+    /// # It holds **no** keys, and that is `inst-co-single-pending` read literally
+    ///
+    /// That rule binds *"at most one pending approval unit **of any kind** … whose
+    /// change set touches the key"*, and the key it means is a **canonical scope
+    /// key** — the held-key register's vocabulary is scope keys, and
+    /// [`refuse_held_key`]'s refusal says "scope key {key}" in as many words. An
+    /// overlay writes no price row and touches no scope key, so the rule does not
+    /// reach it and a held key minted for it would put a string in that register
+    /// which the register's own diagnostic would then misname.
+    ///
+    /// What guards it instead is the **subject ref**: one pending unit per overlay
+    /// *revision*. Two pending units over one revision would leave two reviewers
+    /// approving two contents whose order of arrival decides the overlay.
+    ///
+    /// **What is deliberately not guarded here** is two *different* overlays pending
+    /// on one `(scope class, precedence)` slot. Both may be approved and the second
+    /// publish is refused by `uq_pricing_price_overlay_precedence` — the read-then-index
+    /// arrangement D-148 states, and the same posture Slice 9 already built for the
+    /// unapproved path. Making it a unit-level refusal would need a register keyed on
+    /// something other than a scope key, which is a decision the design set has not
+    /// made.
+    ///
+    /// # The pin is the overlay's own, not a plan shape's
+    ///
+    /// The window and supersession units pin the **plan shape**, because D-99 makes
+    /// windows plan facts and a supersession's subject is a published plan's key. An
+    /// overlay has no plan — its lines may target several, or none — so there is no
+    /// plan shape to pin, and [`overlay_content_hash`] frames the revision itself.
+    ///
+    /// # Errors
+    /// [`DomainError::PendingChangeUnitExists`] when a unit over this revision is
+    /// already submitted; [`DomainError::Db`] on a storage failure.
+    pub async fn submit_overlay_on(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        revision: &OverlayRevision,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let subject_ref =
+            audit_repo::overlay_revision_ref(revision.price_overlay_id, revision.revision);
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, &subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "overlay revision {subject_ref}: approval {} is still submitted over it; decide \
+                 it, or withdraw it to submit again",
+                held.approval_id
+            )));
+        }
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref,
+            subject_kind: AuditSubjectKind::Overlay,
+            content_hash: overlay_content_hash(revision).to_vec(),
+            materiality,
+            held_keys: BTreeSet::new(),
         };
         approval_repo::open(runner, scope, new, stamp)
             .await

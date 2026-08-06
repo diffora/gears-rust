@@ -177,7 +177,9 @@ async fn registered_operations() -> OpenApiRegistryImpl {
     let frontier_state = Arc::new(bss_pricing::api::rest::frontier::ApiState {
         pin_frontier: PinFrontierRepo::new(db.clone()),
     });
+    let approvals = ApprovalService::new(db.clone());
     let authoring = Arc::new(AuthoringState {
+        approvals: approvals.clone(),
         db: db.clone(),
         plans: PlanRepo::new(db.clone()),
         shapes: PlanShapeRepo::new(db.clone()),
@@ -200,7 +202,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         thresholds: bss_pricing::infra::threshold::ThresholdService::new(db.clone()),
         plans: PlanRepo::new(db.clone()),
         prices: PriceRepo::new(db.clone()),
-        approvals: ApprovalService::new(db.clone()),
+        approvals,
         windows: WindowService::new(
             db.clone(),
             Arc::new(

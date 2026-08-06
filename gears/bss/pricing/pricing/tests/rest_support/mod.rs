@@ -345,7 +345,9 @@ impl Harness {
             .await
             .expect("run the gear migrator");
         let db = DBProvider::<DbError>::new(db);
+        let approvals = ApprovalService::new(db.clone());
         let state = Arc::new(AuthoringState {
+            approvals: approvals.clone(),
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
             shapes: PlanShapeRepo::new(db.clone()),
@@ -372,7 +374,7 @@ impl Harness {
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
             prices: PriceRepo::new(db.clone()),
-            approvals: ApprovalService::new(db.clone()),
+            approvals,
             windows: WindowService::new(db.clone(), Arc::clone(&registry) as Arc<_>),
             supersessions: bss_pricing::infra::supersession::SupersessionService::new(
                 db.clone(),
@@ -411,6 +413,28 @@ impl Harness {
     }
 
     /// The SQL-level scope a seeding helper writes under.
+    /// One approval record, read past the router.
+    ///
+    /// A route that opens an approval unit can only be checked from out here by
+    /// **reading the unit** — the response can be made to say anything, and a test
+    /// that only asserted the response would pass against a handler that minted an id
+    /// and opened nothing. That is the exact defect D-225 records for the overlay
+    /// submit's 202.
+    pub async fn read_approval(
+        &self,
+        approval_id: Uuid,
+    ) -> Option<bss_pricing::infra::storage::repo::ApprovalRecord> {
+        let conn = self.db.conn().expect("a scoped connection");
+        bss_pricing::infra::storage::repo::approval_repo::read(
+            &conn,
+            &self.scope(),
+            self.tenant,
+            approval_id,
+        )
+        .await
+        .expect("the approval reads")
+    }
+
     pub fn scope(&self) -> AccessScope {
         AccessScope::for_tenant(self.tenant)
     }

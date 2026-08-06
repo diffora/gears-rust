@@ -722,6 +722,48 @@ pub fn resolve_line<'a>(
         .max_by_key(|line| line.key.specificity())
 }
 
+/// One overlay revision's **content**, as an approval unit pins it (D-225).
+///
+/// `PlanShape`'s counterpart for this plane: the shape a reviewer is shown and the
+/// shape `content_pin::overlay_content_hash` frames. It is a domain type and not the
+/// repository's `OverlayRecord` because the pin is pure domain — the encoder may not
+/// depend on a storage row's field list, or a column added for an unrelated reason
+/// would silently re-freeze every pending unit in every tenant.
+///
+/// # `row_version` is deliberately not here
+///
+/// The record carries one and this shape does not. A pin exists to answer *"is this
+/// the content the reviewer saw"*, and the row version is a **concurrency token**:
+/// it moves when the content moves, so including it adds nothing, and it can move
+/// for reasons the content did not — which is a pin that fails for a reason the
+/// reviewer cannot see. That is the same argument `PlanShape` makes for excluding
+/// its `evaluated_at` and its baseline, and the exclusion is asserted rather than
+/// described by `overlay_repo_tests::the_pin_ignores_the_row_version`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlayRevision {
+    /// The overlay's identity.
+    pub price_overlay_id: Uuid,
+    /// Which revision of it.
+    pub revision: u64,
+    /// Its state — pinned, because approving a draft and approving a published
+    /// revision are not the same act.
+    pub lifecycle_state: OverlayLifecycle,
+    /// Scope class and value.
+    pub scope: ScopeSelector,
+    /// Its precedence within the class.
+    pub precedence: i32,
+    /// Its own dating.
+    pub interval: OverlayInterval,
+    /// Its declared tax basis.
+    pub tax_basis: TaxBasis,
+    /// Its exposure flag.
+    pub disclosure: Disclosure,
+    /// The plans its lines may target.
+    pub target_ref: TargetRef,
+    /// The whole line set — the money.
+    pub lines: Vec<OverlayLine>,
+}
+
 #[cfg(test)]
 #[path = "overlay_tests.rs"]
 mod overlay_tests;

@@ -101,6 +101,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::money::CurrencyCode;
+use crate::domain::overlay::OverlayRevision;
 use crate::domain::overlay::{
     Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
     OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku, TaxBasis,
@@ -166,6 +167,31 @@ pub struct OverlayRecord {
     pub row_version: i64,
     /// Its adjustment lines, in a stable order.
     pub lines: Vec<OverlayLine>,
+}
+
+impl OverlayRecord {
+    /// This revision's **content**, as an approval unit pins it (D-225).
+    ///
+    /// Everything but `row_version`, and the omission is the decision:
+    /// `OverlayRevision`'s doc has the argument at full strength — a pin answers
+    /// *"is this the content the reviewer saw"*, and a concurrency token moves for
+    /// reasons the content did not, so pinning it would fail a decision for a reason
+    /// no reviewer can see or act on.
+    #[must_use]
+    pub fn content(&self) -> OverlayRevision {
+        OverlayRevision {
+            price_overlay_id: self.price_overlay_id,
+            revision: self.revision,
+            lifecycle_state: self.lifecycle_state,
+            scope: self.scope.clone(),
+            precedence: self.precedence,
+            interval: self.interval,
+            tax_basis: self.tax_basis,
+            disclosure: self.disclosure,
+            target_ref: self.target_ref.clone(),
+            lines: self.lines.clone(),
+        }
+    }
 }
 
 /// Repository over `pricing_price_overlay` and its two child tables.

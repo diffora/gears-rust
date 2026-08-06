@@ -44,12 +44,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
+use super::{OVERLAY_PIN_DOMAIN_SEP, overlay_content_hash};
 use super::{content_hash, threshold_content_hash};
 use crate::domain::audit::hex32;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
 use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::overlay::{
+    Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
+    OverlayLine, OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku,
+    TaxBasis,
+};
 use crate::domain::plan_shape::{
     AddonRule, BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseGraph, PhaseKind,
     PlanPhase, PlanShape, PublishedBaseline,
@@ -1146,5 +1152,191 @@ fn a_tombstone_pins_distinguishably_from_every_entry_set() {
         ))),
         "a tombstone read back out of the store must digest to what was pinned, or every approve \
          of a retirement answers APPROVAL_CONTENT_MISMATCH"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The overlay pin (D-225)
+// ---------------------------------------------------------------------------
+
+/// A maximal overlay revision: every `Option` `Some`, every collection non-empty,
+/// so a mutator below changes a value rather than filling in an absence.
+fn overlay_base() -> OverlayRevision {
+    OverlayRevision {
+        price_overlay_id: Uuid::from_u128(0x0_a1),
+        revision: 3,
+        lifecycle_state: OverlayLifecycle::Draft,
+        scope: ScopeSelector::scoped(
+            ScopeClass::Brand,
+            ScopeValue::new("acme").expect("a non-blank value"),
+        )
+        .expect("brand is not the global class"),
+        precedence: 10,
+        interval: OverlayInterval {
+            from: Some(at(9)),
+            to: Some(at(10)),
+        },
+        tax_basis: TaxBasis::DelegatedTariffs,
+        disclosure: Disclosure::Restricted,
+        target_ref: TargetRef {
+            plans: vec![
+                PlanId::new(Uuid::from_u128(1)),
+                PlanId::new(Uuid::from_u128(2)),
+            ],
+        },
+        lines: vec![
+            OverlayLine {
+                line_id: Uuid::from_u128(0x0_c1),
+                key: LineKey::for_sku(
+                    PlanId::new(Uuid::from_u128(1)),
+                    TargetSku::new("sku-a").expect("a non-blank sku"),
+                ),
+                adjustment: Adjustment::Discount(Magnitude::PercentBp(1000)),
+            },
+            OverlayLine {
+                line_id: Uuid::from_u128(0x0_c2),
+                key: LineKey::list_default(),
+                adjustment: Adjustment::Fixed(AmountSet::new([
+                    (CurrencyCode::new("EUR").expect("a valid code"), 1200),
+                    (CurrencyCode::new("USD").expect("a valid code"), 1500),
+                ])),
+            },
+        ],
+    }
+}
+
+/// Each mutator moves the overlay pin, and no two land on one digest.
+///
+/// `every_hashed_field_moves_the_pin`'s property, over the subject D-225's approval
+/// unit pins. The second half is the one that matters: an unframed encoding does not
+/// leave a digest unchanged, it makes two different overlays agree — and here that
+/// would be a reviewer approving a discount they never saw.
+#[test]
+fn every_field_of_an_overlay_revision_moves_the_pin() {
+    type Mutator = (&'static str, fn(&mut OverlayRevision));
+    let mutators: Vec<Mutator> = vec![
+        ("price_overlay_id", |o| {
+            o.price_overlay_id = Uuid::from_u128(0x0_a2);
+        }),
+        ("revision", |o| o.revision = 4),
+        ("lifecycle_state", |o| {
+            o.lifecycle_state = OverlayLifecycle::Published;
+        }),
+        ("scope.class", |o| {
+            o.scope = ScopeSelector::scoped(
+                ScopeClass::Region,
+                ScopeValue::new("acme").expect("a non-blank value"),
+            )
+            .expect("region is not the global class");
+        }),
+        ("scope.value", |o| {
+            o.scope = ScopeSelector::scoped(
+                ScopeClass::Brand,
+                ScopeValue::new("other").expect("a non-blank value"),
+            )
+            .expect("brand is not the global class");
+        }),
+        ("precedence", |o| o.precedence = 11),
+        ("interval.from", |o| o.interval.from = Some(at(8))),
+        ("interval.to", |o| o.interval.to = Some(at(11))),
+        ("interval.to = None", |o| o.interval.to = None),
+        ("interval.from = None", |o| o.interval.from = None),
+        ("tax_basis", |o| o.tax_basis = TaxBasis::Inclusive),
+        ("disclosure", |o| o.disclosure = Disclosure::Public),
+        ("target_ref.plans", |o| {
+            o.target_ref.plans.push(PlanId::new(Uuid::from_u128(3)));
+        }),
+        ("lines.line_id", |o| {
+            o.lines[0].line_id = Uuid::from_u128(0x0_c9);
+        }),
+        ("lines.key.plan_id", |o| {
+            o.lines[0].key = LineKey::for_sku(
+                PlanId::new(Uuid::from_u128(2)),
+                TargetSku::new("sku-a").expect("a non-blank sku"),
+            );
+        }),
+        ("lines.key.target_sku", |o| {
+            o.lines[0].key = LineKey::for_sku(
+                PlanId::new(Uuid::from_u128(1)),
+                TargetSku::new("sku-b").expect("a non-blank sku"),
+            );
+        }),
+        ("lines.key.cohort", |o| {
+            o.lines[0].key = LineKey::for_plan(PlanId::new(Uuid::from_u128(1)))
+                .for_cohort(at(9))
+                .expect("a plan-keyed line may carry a cohort");
+        }),
+        ("lines.adjustment.kind", |o| {
+            o.lines[0].adjustment = Adjustment::Markup(Magnitude::PercentBp(1000));
+        }),
+        ("lines.adjustment.magnitude", |o| {
+            o.lines[0].adjustment = Adjustment::Discount(Magnitude::PercentBp(1001));
+        }),
+        ("lines.adjustment.amount currency", |o| {
+            o.lines[1].adjustment = Adjustment::Fixed(AmountSet::new([
+                (CurrencyCode::new("GBP").expect("a valid code"), 1200),
+                (CurrencyCode::new("USD").expect("a valid code"), 1500),
+            ]));
+        }),
+        ("lines.adjustment.amount minor", |o| {
+            o.lines[1].adjustment = Adjustment::Fixed(AmountSet::new([
+                (CurrencyCode::new("EUR").expect("a valid code"), 1201),
+                (CurrencyCode::new("USD").expect("a valid code"), 1500),
+            ]));
+        }),
+        ("a line removed", |o| {
+            o.lines.pop();
+        }),
+    ];
+
+    let base = overlay_base();
+    let pinned = overlay_content_hash(&base);
+    let mut seen: BTreeMap<[u8; 32], &'static str> = BTreeMap::new();
+    seen.insert(pinned, "the unmutated overlay");
+
+    for (name, mutate) in mutators {
+        let mut overlay = base.clone();
+        mutate(&mut overlay);
+        assert_ne!(
+            overlay, base,
+            "the mutator `{name}` did not change the overlay at all"
+        );
+        if let Some(other) = seen.insert(overlay_content_hash(&overlay), name) {
+            panic!("`{name}` and `{other}` pin identically");
+        }
+    }
+}
+
+/// **The line set is a set, and its query order is not content.**
+///
+/// `read_lines` orders by line id today; a repository that changed the `ORDER BY`
+/// would otherwise invalidate every pending overlay unit in every tenant without
+/// touching a single overlay.
+#[test]
+fn the_line_sets_query_order_is_not_content() {
+    let forward = overlay_base();
+    let mut reversed = overlay_base();
+    reversed.lines.reverse();
+    assert_ne!(forward.lines, reversed.lines, "the fixture must differ");
+    assert_eq!(
+        overlay_content_hash(&forward),
+        overlay_content_hash(&reversed)
+    );
+}
+
+/// The three pin domains are disjoint, and each names its own generation.
+#[test]
+fn the_overlay_pin_domain_is_its_own() {
+    assert_ne!(
+        overlay_content_hash(&overlay_base()).as_slice(),
+        content_hash(&base()).as_slice()
+    );
+    assert_ne!(
+        overlay_content_hash(&overlay_base()).as_slice(),
+        threshold_content_hash(&threshold_base()).as_slice()
+    );
+    assert_eq!(
+        OVERLAY_PIN_DOMAIN_SEP,
+        b"VHP-BSS-PRICING-OVERLAY-PIN-v1\x1f"
     );
 }

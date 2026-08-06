@@ -60,6 +60,7 @@ use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::approvals::{ApprovalView, MaterialityView};
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
@@ -67,7 +68,7 @@ use crate::api::rest::preconditions;
 use crate::api::rest::state::AuthoringState;
 use crate::domain::error::DomainError;
 use crate::domain::materiality::triggers::Trigger;
-use crate::domain::materiality::{self, ChangeSet};
+use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::{
     Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
@@ -249,7 +250,7 @@ pub struct OverlayAcceptedView {
 
 /// What a submit answers with.
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request, response)]
+#[toolkit_macros::api_dto(response)]
 pub struct SubmitAcceptedView {
     /// The overlay submitted.
     pub price_overlay_id: Uuid,
@@ -266,6 +267,18 @@ pub struct SubmitAcceptedView {
     /// `MaterialityReason::as_str`'s in a crate whose rule is that a token has one
     /// home; the two agreed, and nothing but the coincidence kept them agreeing.
     pub materiality: String,
+    /// The Slice 5 approval unit this submit opened (D-50, D-225).
+    ///
+    /// **`Option` because the wire shape must survive the arm that does not open
+    /// one**, and there is exactly one: a submit refused before the unit is opened
+    /// answers an error rather than this view. It is `Some` on every success today,
+    /// and it is optional rather than required so that a later arm — an already-
+    /// approved revision re-submitted, say — has somewhere to say "no new unit"
+    /// without changing the field's type under a consumer.
+    ///
+    /// Until 2026-08-06 this route opened nothing at all and said so nowhere: the
+    /// 202 promised a two-person workflow that did not run (D-225).
+    pub approval: Option<ApprovalView>,
     /// The advisory findings the pipeline raised. Warnings never block, and this
     /// is the channel that makes them advisory — the `ValidationFailed` envelope
     /// exists only on the rejecting path, so a warning carried only there would
@@ -692,7 +705,7 @@ async fn submit_overlay(
     body: Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let _correlation = require_correlation(extension_correlation)?;
+    let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let scope = crate::authz::access_scope(
         &enforcer,
@@ -774,17 +787,37 @@ async fn submit_overlay(
         return Err(DomainError::ValidationFailed(report).into());
     }
 
-    // 202, per `inst-pl-commit`: the submit opens the always-material Slice 5
-    // approval unit (D-50) and the approved overlay is then a publish unit
-    // through the Foundation engine (D-06). **Neither is wired here** — see the
-    // module-level note in the hand-back; what this route does today is
-    // validate, and it answers 202 because that is the status the act has.
+    // `inst-pl-commit`'s first half (D-50, D-225): the submit opens the
+    // always-material Slice 5 approval unit. It runs **inside a transaction**, which
+    // is `approval_repo::open`'s requirement rather than this route's preference —
+    // the unit's audit record is appended in the same transaction, so a unit that
+    // committed while its trail rolled back would leave `pricing_audit_log` answering
+    // "who submitted this" with nothing.
+    //
+    // The **publish** unit `inst-pl-commit` also names (D-06) is still not wired, and
+    // that half is what keeps D-225 open: an approved overlay does not yet reach the
+    // Foundation engine, so nothing publishes.
+    let (reason, stored_materiality) = rendered_materiality(&overlay_submit_materiality())?;
+    let content = record.content();
+    let opened = state
+        .approvals
+        .submit_overlay(
+            &scope,
+            tenant,
+            &content,
+            Uuid::now_v7(),
+            stored_materiality,
+            audit_stamp(&ctx, Utc::now(), correlation),
+        )
+        .await?;
+
     Ok((
         StatusCode::ACCEPTED,
         Json(SubmitAcceptedView {
             price_overlay_id,
             revision: record.revision,
-            materiality: overlay_submit_materiality()?,
+            materiality: reason,
+            approval: Some(ApprovalView::from(&opened)),
             warnings: report
                 .warnings
                 .iter()
@@ -833,19 +866,45 @@ async fn submit_overlay(
 /// threshold — so this is unreachable, and it is *reported* rather than unwrapped
 /// because the alternative is either a panic on a route or a literal fallback, and a
 /// literal fallback is the very duplication this function removes.
-fn overlay_submit_materiality() -> Result<String, CanonicalError> {
+fn overlay_submit_materiality() -> MaterialityVerdict {
     materiality::evaluate(
         &ChangeSet::of_act(Trigger::PriceOverlayMutation, Vec::new()),
         /* policy */ None,
         /* baseline */ None,
     )
-    .reason()
-    .map(|reason| reason.as_str().to_owned())
-    .ok_or_else(|| {
-        CanonicalError::from(DomainError::Internal(
-            "a declared act evaluated to a verdict with no reason".to_owned(),
-        ))
-    })
+}
+
+/// The reason token the accepted view carries, and the jsonb the unit stores.
+///
+/// **One verdict, rendered twice — never built twice.** The pair is returned
+/// together so the wire's string and the record's jsonb cannot come from two
+/// evaluations, which is the same rule that made the token stop being a literal in
+/// the first place: `MaterialityReason::as_str` has one home, and
+/// `MaterialityView` is the one renderer of a verdict.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the verdict carries no reason, or will not
+/// serialize. The only verdict with no reason is a threshold-tripped one and the act
+/// half answers above every threshold, so both arms are unreachable — and *reported*
+/// rather than unwrapped, because the alternative is a panic on a route or a literal
+/// fallback, and a literal fallback is the duplication this removes.
+fn rendered_materiality(
+    verdict: &MaterialityVerdict,
+) -> Result<(String, serde_json::Value), CanonicalError> {
+    let reason = verdict
+        .reason()
+        .map(|reason| reason.as_str().to_owned())
+        .ok_or_else(|| {
+            CanonicalError::from(DomainError::Internal(
+                "a declared act evaluated to a verdict with no reason".to_owned(),
+            ))
+        })?;
+    let stored = serde_json::to_value(MaterialityView::from(verdict)).map_err(|e| {
+        CanonicalError::from(DomainError::Internal(format!(
+            "cannot render the materiality verdict: {e}"
+        )))
+    })?;
+    Ok((reason, stored))
 }
 
 /// `POST /bss-pricing/v1/price-overlays/{overlayId}/submit`.

@@ -265,6 +265,19 @@ pub fn plan_revision_ref(plan_id: PlanId, revision: u64) -> String {
     format!("{plan_id}/{revision}")
 }
 
+/// One overlay revision's durable audit and approval name — `<overlay_id>/<revision>`.
+///
+/// [`plan_revision_ref`]'s shape, and deliberately: an approval unit's `subject_ref`
+/// has to name the revision and not only the overlay, or a pin taken over revision 3
+/// would authorize a decision about revision 4. The overlay id leads so
+/// [`approval_repo::subject_overlay`](super::approval_repo::subject_overlay) can read
+/// the aggregate back out of the ref without a store read — the same property
+/// `subject_plan` relies on one plane over.
+#[must_use]
+pub fn overlay_revision_ref(price_overlay_id: Uuid, revision: u64) -> String {
+    format!("{price_overlay_id}/{revision}")
+}
+
 /// A price row's audit name — its `price_id`.
 ///
 /// The plan is not repeated in it: [`plan_chain`] already carries the aggregate,

@@ -49,6 +49,14 @@ pub struct AuthoringState {
     /// requests none. The approval unit the submit opens is `GovernanceState`'s
     /// to hold when it is wired.
     pub overlays: OverlayRepo,
+    /// The approval service, for the one authoring route that opens a unit.
+    ///
+    /// The overlay **submit** is always material (D-50), so it opens a Slice 5 unit
+    /// before it answers — and it is an authoring route, so it is mounted here rather
+    /// than on `GovernanceState` where the decide/withdraw surfaces live. Carrying the
+    /// service is what keeps the transaction boundary in a service instead of putting
+    /// one in a handler, which no route in this gear does.
+    pub approvals: crate::infra::approval::ApprovalService,
     /// The at-most-once gate, holding the configured retention window.
     pub idempotency: IdempotencyGate,
 }

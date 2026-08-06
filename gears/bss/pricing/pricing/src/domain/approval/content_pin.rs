@@ -208,7 +208,10 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::overlay::{
+    Adjustment, AmountSet, Magnitude, OverlayLine, OverlayRevision, ScopeValue, TargetSku,
+};
 use crate::domain::plan_shape::{
     AddonRule, BillingCycle, DescriptorSet, Frequency, PlanPhase, PlanShape,
 };
@@ -217,7 +220,7 @@ use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
     QuantitySource, TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
-use crate::domain::scope_key::{Meter, PhaseId, ScopeKey};
+use crate::domain::scope_key::{Meter, PhaseId, PlanId, ScopeKey};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 /// Versioned domain-separation tag for the approval content pin.
@@ -355,6 +358,17 @@ pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v4\x1f"
 /// why the arrival of this one did not move it.
 pub const THRESHOLD_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-THRESHOLD-PIN-v1\x1f";
 
+/// The domain separator of the **overlay** pin (D-225).
+///
+/// Its own generation counter, and its own domain, for [`THRESHOLD_PIN_DOMAIN_SEP`]'s
+/// reason: three subject kinds share one `content_hash` column, and a separator per
+/// kind is what makes a digest taken over an overlay unable to verify against a plan
+/// shape or a policy version that happened to frame to the same bytes. `v1` because
+/// nothing has been pinned under it yet — **and it moves only with a drain**, exactly
+/// as the other two do: bumping it invalidates every pending overlay unit in every
+/// tenant, which is a decision and not a repair.
+pub const OVERLAY_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-OVERLAY-PIN-v1\x1f";
+
 /// The token the preimage frames an absolute threshold basis as.
 ///
 /// Written out here rather than taken from any wire or column spelling, for
@@ -429,6 +443,123 @@ pub fn threshold_content_hash(version: &ThresholdVersion) -> [u8; 32] {
 // ---------------------------------------------------------------------------
 // The encoders. Each destructures; see the module doc.
 // ---------------------------------------------------------------------------
+
+/// `SHA-256(overlay_domain_sep || the canonical framing of one overlay revision)`.
+///
+/// The pin of D-225's overlay approval unit, and **total** for [`content_hash`]'s
+/// reason: there is no revision this cannot hash, so a unit can always be opened and
+/// a reviewer is never shown content the pin did not cover.
+///
+/// `content_pin_tests::every_field_of_an_overlay_revision_moves_the_pin` ranges a
+/// mutator over every field of every struct framed below and asserts not only that
+/// each moves the digest but that **no two land on the same one** — which is the
+/// half a framing bug fails, because an unframed encoding does not leave a digest
+/// unchanged, it makes two different overlays agree.
+#[must_use]
+pub fn overlay_content_hash(revision: &OverlayRevision) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(512);
+    buf.extend_from_slice(OVERLAY_PIN_DOMAIN_SEP);
+    put_overlay_revision(&mut buf, revision);
+    digest32(&buf)
+}
+
+fn put_overlay_revision(buf: &mut Vec<u8>, revision: &OverlayRevision) {
+    // Destructured with no rest pattern, so a field added to `OverlayRevision`
+    // is a compile error here rather than content that silently stops being pinned.
+    let OverlayRevision {
+        price_overlay_id,
+        revision: number,
+        lifecycle_state,
+        scope,
+        precedence,
+        interval,
+        tax_basis,
+        disclosure,
+        target_ref,
+        lines,
+    } = revision;
+
+    put_uuid(buf, *price_overlay_id);
+    put_u64(buf, *number);
+    put_str(buf, lifecycle_state.as_str());
+    put_str(buf, scope.class().as_str());
+    put_opt_str(buf, scope.value().map(ScopeValue::as_str));
+    put_i64(buf, i64::from(*precedence));
+    put_opt_instant(buf, interval.from);
+    put_opt_instant(buf, interval.to);
+    put_str(buf, tax_basis.as_str());
+    put_str(buf, disclosure.as_str());
+
+    // **A set, not a list.** `target_ref.plans` arrives in whatever order the row's
+    // jsonb held, and the order is not content.
+    let mut plans: Vec<Uuid> = target_ref.plans.iter().map(|plan| plan.get()).collect();
+    plans.sort_unstable();
+    put_u64(buf, count_of(plans.len()));
+    for plan in plans {
+        put_uuid(buf, plan);
+    }
+
+    // The line set is a set too, ordered here by the one field that is unique within
+    // a revision. `read_lines` happens to order by the same column today, and that is
+    // exactly why the pin must not depend on it: a repository that changed its
+    // `ORDER BY` would otherwise invalidate every pending unit without touching an
+    // overlay.
+    let mut ordered: Vec<&OverlayLine> = lines.iter().collect();
+    ordered.sort_unstable_by_key(|line| line.line_id);
+    put_u64(buf, count_of(ordered.len()));
+    for line in ordered {
+        put_overlay_line(buf, line);
+    }
+}
+
+fn put_overlay_line(buf: &mut Vec<u8>, line: &OverlayLine) {
+    let OverlayLine {
+        line_id,
+        key,
+        adjustment,
+    } = line;
+    put_uuid(buf, *line_id);
+    put_opt_uuid(buf, key.plan_id().map(PlanId::get));
+    put_opt_str(buf, key.target_sku().map(TargetSku::as_str));
+    put_opt_instant(buf, key.cohort());
+    put_str(buf, adjustment.kind());
+    match adjustment {
+        Adjustment::Markup(magnitude) | Adjustment::Discount(magnitude) => {
+            put_magnitude(buf, magnitude);
+        }
+        // `fixed` carries an amount set and no magnitude — the two arms frame
+        // different shapes, and `adjustment.as_str()` above is what tells them apart
+        // in the preimage rather than the shape of what follows.
+        Adjustment::Fixed(amounts) => put_amount_set(buf, amounts),
+    }
+}
+
+fn put_magnitude(buf: &mut Vec<u8>, magnitude: &Magnitude) {
+    match magnitude {
+        // The discriminator is framed, so `percent_bp = 1200` and an amount of 1200
+        // minor units cannot frame alike — D-08's whole point, in the preimage.
+        Magnitude::PercentBp(bp) => {
+            put_str(buf, "percent_bp");
+            put_i64(buf, *bp);
+        }
+        Magnitude::Amount(amounts) => {
+            put_str(buf, "amount");
+            put_amount_set(buf, amounts);
+        }
+    }
+}
+
+fn put_amount_set(buf: &mut Vec<u8>, amounts: &AmountSet) {
+    // `AmountSet` is a `BTreeMap`, so its iteration order is already the currency
+    // order; the count is framed anyway, because a count is what stops two adjacent
+    // collections from being re-split.
+    let entries: Vec<(&CurrencyCode, i64)> = amounts.iter().collect();
+    put_u64(buf, count_of(entries.len()));
+    for (currency, minor) in entries {
+        put_str(buf, currency.as_str());
+        put_i64(buf, minor);
+    }
+}
 
 fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     let PlanShape {

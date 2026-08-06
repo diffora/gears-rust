@@ -725,3 +725,81 @@ async fn the_list_shows_restricted_overlays_to_their_operator() {
     let body = body_json(response).await;
     assert_eq!(body["overlays"].as_array().map(Vec::len), Some(0));
 }
+
+/// **The submit opens the approval unit `inst-pl-commit` promises, and names it.**
+///
+/// D-225: until 2026-08-06 the route validated, answered 202 and opened **nothing** —
+/// so the status was honest about the act and the act was incomplete. A consumer
+/// reading `202 Accepted` with `materiality: alwaysMaterialTrigger` was being told a
+/// two-person workflow had started, and none had; nothing held the overlay while an
+/// approver looked at it, and nothing could ever publish it.
+///
+/// What the wire has to carry is the unit's **id**, because a submitter cannot chase
+/// a review they cannot name — that is what `approvals` already gives every other
+/// always-material act in this gear.
+#[tokio::test]
+async fn a_submit_opens_the_approval_unit_and_names_it_on_the_wire() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+
+    let response = harness
+        .allowed()
+        .send(request(
+            "POST",
+            &submit_path(overlay),
+            Some(serde_json::json!({ "revision": 0 })),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    let approval_id = body["approval"]["approval_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .unwrap_or_else(|| panic!("the submit must name the unit it opened: {body}"));
+
+    // The unit exists, it is pending, and it is over **this overlay revision** —
+    // not over the overlay, which would let a pin taken on revision 3 authorize a
+    // decision about revision 4.
+    let record = harness
+        .read_approval(approval_id)
+        .await
+        .unwrap_or_else(|| panic!("approval {approval_id} must be readable"));
+    assert_eq!(record.subject_kind.as_str(), "overlay");
+    assert_eq!(record.subject_ref, format!("{overlay}/0"));
+    assert_eq!(record.state.as_str(), "submitted");
+}
+
+/// **One pending unit per overlay revision** — a second submit is refused, not
+/// silently duplicated.
+///
+/// `inst-co-single-pending`'s posture for a subject that holds **no canonical scope
+/// key**: that rule binds units whose change set touches a key, and an overlay's
+/// touches none, so the guard here is the subject ref rather than the held-key
+/// register. Two pending units over one revision would leave two reviewers approving
+/// two contents whose order of arrival decides the overlay.
+#[tokio::test]
+async fn a_second_submit_of_one_revision_is_refused_while_the_first_is_pending() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+    let body = serde_json::json!({ "revision": 0 });
+
+    let first = harness
+        .allowed()
+        .send(request("POST", &submit_path(overlay), Some(body.clone())))
+        .await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+    let second = harness
+        .allowed()
+        .send(request("POST", &submit_path(overlay), Some(body)))
+        .await;
+
+    let status = second.status();
+    let rendered = body_json(second).await.to_string();
+    assert_eq!(status, StatusCode::CONFLICT, "{rendered}");
+    assert!(
+        rendered.contains("PENDING_CHANGE_UNIT_EXISTS"),
+        "the refusal names the rule rather than a generic conflict: {rendered}"
+    );
+}

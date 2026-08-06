@@ -1042,6 +1042,27 @@ pub fn subject_plan(record: &ApprovalRecord) -> Result<PlanId, RepoError> {
         })
 }
 
+/// The overlay a unit's `subject_ref` names.
+///
+/// [`subject_plan`]'s counterpart, and it parses rather than reads for the same
+/// reason: the aggregate must be answerable even when the subject itself is gone,
+/// because that is exactly the state a reviewer deciding a stale unit is in.
+///
+/// # Errors
+/// [`RepoError::CorruptRow`] on a ref this crate cannot have written.
+pub fn subject_overlay(record: &ApprovalRecord) -> Result<Uuid, RepoError> {
+    record
+        .subject_ref
+        .split_once('/')
+        .and_then(|(head, _)| Uuid::parse_str(head).ok())
+        .ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "approval {} names the subject {:?}, which is not <price_overlay_id>/<revision>",
+                record.approval_id, record.subject_ref
+            ))
+        })
+}
+
 /// The aggregate whose audit segment a unit of one subject kind belongs to.
 ///
 /// D-135 keys a chain on the audited subject's *aggregate*, and S5 §6's aggregate
@@ -1057,6 +1078,14 @@ pub enum SubjectAggregate {
     /// The tenant's approval-threshold policy: one aggregate per tenant, with no
     /// id of its own because there is only ever one of it.
     Policy,
+    /// One price overlay, named by its `price_overlay_id`.
+    ///
+    /// The third member, and the second that is not a plan. S5 §6's aggregate list
+    /// names an overlay in its own right, and it has to: an overlay **is not a plan
+    /// and has no plan**, so borrowing [`Self::Plan`] would put two aggregates on one
+    /// hash chain — which then verifies perfectly while telling an auditor something
+    /// false.
+    Overlay(Uuid),
 }
 
 impl SubjectAggregate {
@@ -1066,6 +1095,7 @@ impl SubjectAggregate {
         match self {
             Self::Plan(plan_id) => audit_repo::plan_chain(plan_id),
             Self::Policy => audit_repo::policy_chain(),
+            Self::Overlay(price_overlay_id) => audit_repo::overlay_chain(price_overlay_id),
         }
     }
 
@@ -1080,7 +1110,11 @@ impl SubjectAggregate {
     pub const fn plan(self) -> Option<PlanId> {
         match self {
             Self::Plan(plan_id) => Some(plan_id),
-            Self::Policy => None,
+            // Two aggregates that are not a plan, and the overlay is the one where
+            // saying so matters: it is a **subject with a plan-shaped id**, so an
+            // accessor that answered `Some` here would hand a caller a `PlanId` built
+            // from an overlay's uuid and every read under it would miss quietly.
+            Self::Policy | Self::Overlay(_) => None,
         }
     }
 }
@@ -1129,24 +1163,12 @@ pub fn subject_aggregate(record: &ApprovalRecord) -> Result<SubjectAggregate, Re
             subject_plan(record).map(SubjectAggregate::Plan)
         }
         AuditSubjectKind::Policy => Ok(SubjectAggregate::Policy),
-        // **No writer on this plane, so no resolution** — and unlike `price_unit`
-        // above, which inherits the plan parse because its ref format is at least
-        // *decided*, an overlay unit has nothing to inherit: an overlay is not a plan,
-        // so `subject_plan` would answer about an aggregate the subject does not
-        // belong to. D-50 makes every overlay mutation an approval subject and Slice
-        // 9's O-7 is the unit that would open one; until it exists,
-        // `pricing_approval` cannot hold an overlay row that this crate wrote, and one
-        // that appears did not come from here.
-        //
-        // The kind is nonetheless **storable** (`chk_pricing_approval_subject_kind`,
-        // `m20260802_000035`) because D-158 makes the two stores one enumeration
-        // extended together — so this arm is what keeps "storable" from being read as
-        // "resolvable", which are different claims and only the first is true today.
-        AuditSubjectKind::Overlay => Err(RepoError::CorruptRow(format!(
-            "pricing_approval {} is a price_overlay unit, and this crate opens none — \
-             D-50's overlay approval unit is unwired (Slice 9, O-7)",
-            record.approval_id
-        ))),
+        // **Its own aggregate, resolved by parse like every other kind.** This arm
+        // refused outright while the unit was unwired — "storable and not resolvable",
+        // which was true for exactly as long as nothing opened one. D-225's
+        // `submit_overlay_on` is the writer, and the ref it writes is
+        // `audit_repo::overlay_revision_ref`.
+        AuditSubjectKind::Overlay => subject_overlay(record).map(SubjectAggregate::Overlay),
     }
 }
 
