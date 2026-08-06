@@ -19,6 +19,8 @@ pub mod instant;
 pub mod lifecycle;
 pub mod materiality;
 pub mod money;
+pub mod overlay;
+pub mod overlay_rules;
 pub mod plan;
 pub mod plan_rules;
 pub mod plan_shape;

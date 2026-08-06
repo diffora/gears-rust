@@ -18,7 +18,7 @@ use toolkit_db::{DBProvider, DbError};
 use crate::infra::approval::ApprovalService;
 use crate::infra::publish::PublishService;
 use crate::infra::storage::repo::{
-    BundleRepo, IdempotencyGate, PlanRepo, PlanShapeRepo, PriceRepo,
+    BundleRepo, IdempotencyGate, OverlayRepo, PlanRepo, PlanShapeRepo, PriceRepo,
 };
 
 /// The authoring surface's dependencies, shared via
@@ -40,6 +40,15 @@ pub struct AuthoringState {
     /// The composition's assemble/validate/publish seam — the reads
     /// `domain::bundle_rules` is deliberately kept from making for itself.
     pub bundle_service: crate::infra::bundle::BundleService,
+    /// Slice 9's overlay store and its revision chain
+    /// (`design/09-price-overlays.md` §6).
+    ///
+    /// On the **authoring** state and not the governance one, although the
+    /// submit is always material (D-50): the criterion that split those two is
+    /// which of them may request a `CatalogVersion`, and this repository
+    /// requests none. The approval unit the submit opens is `GovernanceState`'s
+    /// to hold when it is wired.
+    pub overlays: OverlayRepo,
     /// The at-most-once gate, holding the configured retention window.
     pub idempotency: IdempotencyGate,
 }

@@ -238,6 +238,20 @@ impl From<DomainError> for CanonicalError {
             // than as one of the section's architectural 422s). It joins the
             // conflict class and not the precondition one: re-reading the record
             // is the remedy, and the caller's own request was never wrong.
+            // §5's `PRECEDENCE_DUPLICATE`, one of the two overlay codes it
+            // types **409 outright** rather than as an architectural 422. It
+            // belongs in the conflict class for `WINDOW_OVERLAP`'s reason: what
+            // refused the request is the state of a sibling row on a slot the
+            // caller's own request never named.
+            D::PrecedenceDuplicate(detail) => PlanResource::aborted(detail)
+                .with_reason(crate::domain::overlay_rules::PRECEDENCE_DUPLICATE)
+                .create(),
+            // §5's second 409: the overlay analogue of `WINDOW_OVERLAP`, and
+            // classified with it. Two intervals on one line key claim one
+            // instant, and re-reading the key's overlays is the remedy.
+            D::OverlayIntervalOverlap(detail) => PlanResource::aborted(detail)
+                .with_reason(crate::domain::overlay_rules::OVERLAY_INTERVAL_OVERLAP)
+                .create(),
             D::ApprovalNotPending(detail) => PlanResource::aborted(detail)
                 .with_reason("APPROVAL_NOT_PENDING")
                 .create(),

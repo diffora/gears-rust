@@ -37,6 +37,7 @@ use bss_pricing::api::rest::approvals::{
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
+use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
 use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
@@ -85,7 +86,7 @@ struct Route {
 }
 
 fn census() -> Vec<Route> {
-    vec![
+    let mut rows = vec![
         Route {
             method: "GET",
             path: FRONTIER,
@@ -306,6 +307,61 @@ fn census() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
+    ];
+    rows.extend(overlay_routes());
+    rows
+}
+
+/// Slice 9's four overlay routes, extracted so [`census`] stays under the line
+/// cap rather than growing a lint allow.
+///
+/// A function per slice would be the wrong shape — the census is one roster and
+/// the properties below range over all of it — but one extraction at the point
+/// the cap bit is honest, and the roster is still `census()`.
+fn overlay_routes() -> Vec<Route> {
+    vec![
+        // Slice 9's overlay half. All four are `price_overlay` x its own action
+        // and deliberately **not** `plan`: the AuthZ catalog gives overlays a
+        // resource of their own, and D-61's reviewability invariant is why the
+        // approving role needs `price_overlay x read` — a reviewer of an
+        // always-material overlay mutation who could not read overlays would be
+        // approving a document they cannot see. Filing these under `plan` would
+        // hand overlay authorship to every holder of `plan x write`, which no
+        // allow/deny fixture can see.
+        //
+        // The submit is `write` and **not** `publish`: what `publish` guards is
+        // the plan entrance, and an overlay submit publishes nothing by itself —
+        // it opens an approval unit (D-50). Gating it on `plan x publish` would
+        // also deny it to every role that holds overlay authoring and no plan
+        // authority at all.
+        Route {
+            method: "POST",
+            path: PRICE_OVERLAYS,
+            resource_type: labels::PRICE_OVERLAY,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "GET",
+            path: PRICE_OVERLAYS,
+            resource_type: labels::PRICE_OVERLAY,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PATCH",
+            path: PRICE_OVERLAY_BY_ID,
+            resource_type: labels::PRICE_OVERLAY,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "POST",
+            path: PRICE_OVERLAY_SUBMIT,
+            resource_type: labels::PRICE_OVERLAY,
+            action: actions::WRITE,
+            mutating: true,
+        },
     ]
 }
 
@@ -328,6 +384,9 @@ struct Seeded {
     /// by id reach their gate instead of failing to parse a path — the same
     /// reason [`Seeded::window`] exists.
     bundle: Uuid,
+    /// One overlay draft, so the two routes that address an overlay by id reach
+    /// their gate rather than a 404 — [`Seeded::bundle`]'s reason.
+    overlay: Uuid,
 }
 
 /// The world the whole census is driven against: a draft plan with a shape and
@@ -377,12 +436,41 @@ async fn seed(harness: &Harness) -> Seeded {
         )
         .await
         .expect("seed the bundle the two bundle-by-id routes address");
+    let overlay = Uuid::now_v7();
+    harness
+        .state
+        .overlays
+        .create(
+            &harness.scope(),
+            bss_pricing::infra::storage::repo::NewOverlay {
+                price_overlay_id: overlay,
+                tenant_id: harness.tenant,
+                scope: bss_pricing::domain::overlay::ScopeSelector::Global,
+                precedence: 10,
+                interval: bss_pricing::domain::overlay::OverlayInterval::default(),
+                tax_basis: bss_pricing::domain::overlay::TaxBasis::DelegatedTariffs,
+                disclosure: bss_pricing::domain::overlay::Disclosure::Restricted,
+                target_ref: bss_pricing::domain::overlay::TargetRef { plans: Vec::new() },
+            },
+            vec![bss_pricing::domain::overlay::OverlayLine {
+                line_id: Uuid::now_v7(),
+                key: bss_pricing::domain::overlay::LineKey::list_default(),
+                adjustment: bss_pricing::domain::overlay::Adjustment::Discount(
+                    bss_pricing::domain::overlay::Magnitude::PercentBp(1000),
+                ),
+            }],
+            rest_support::seed_stamp(),
+        )
+        .await
+        .expect("seed the overlay the two overlay-by-id routes address");
+
     Seeded {
         plan: plan_id,
         price: price.price_id,
         approval: approval_id,
         window,
         bundle,
+        overlay,
     }
 }
 
@@ -408,7 +496,8 @@ fn drive(
         .replace("{priceId}", &seeded.price.to_string())
         .replace("{approvalId}", &seeded.approval.to_string())
         .replace("{windowId}", &seeded.window.to_string())
-        .replace("{bundleId}", &seeded.bundle.to_string());
+        .replace("{bundleId}", &seeded.bundle.to_string())
+        .replace("{overlayId}", &seeded.overlay.to_string());
     // The sellability surface requires all three of §5's query parameters and
     // parses them **before** it asks the PDP — `schedule_window`'s ordering, and
     // for its reason: a caller who omitted one is told that rather than being told
@@ -422,6 +511,36 @@ fn drive(
         path
     };
     let (body, headers): DrivenBody = match (route.method, route.path) {
+        // Slice 9's four. The `POST` takes an idempotency key and a whole
+        // overlay; the `PATCH` takes the **overlay revision's** tag, which the
+        // seeded draft stands at as `"0-0"`; the submit takes neither, since its
+        // concurrency is the approval unit's.
+        ("POST", PRICE_OVERLAYS) => (
+            Some(serde_json::json!({
+                "scope_class": "global",
+                "precedence": 42,
+                "tax_basis": "delegated_tariffs",
+                "target_plan_ids": [],
+                "lines": [{
+                    "adjustment_kind": "discount",
+                    "magnitude_kind": "percent_bp",
+                    "adjustment_value": 1000,
+                }],
+            })),
+            vec![("idempotency-key", key)],
+        ),
+        ("PATCH", PRICE_OVERLAY_BY_ID) => (
+            Some(serde_json::json!({
+                "revision": 0,
+                "lines": [{
+                    "adjustment_kind": "discount",
+                    "magnitude_kind": "percent_bp",
+                    "adjustment_value": 1500,
+                }],
+            })),
+            vec![("if-match", "\"0-0\"")],
+        ),
+        ("POST", PRICE_OVERLAY_SUBMIT) => (Some(serde_json::json!({ "revision": 0 })), Vec::new()),
         ("POST", PLANS) => (
             Some(serde_json::json!({ "plan_tier": "gold" })),
             vec![("idempotency-key", key)],
@@ -575,6 +694,10 @@ async fn registered_paths() -> Vec<String> {
                 Arc::clone(&harness.state),
                 &openapi,
             ))
+            .merge(bss_pricing::api::rest::overlays::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::bundles::router(
                 Arc::clone(&harness.state),
                 &openapi,
@@ -659,6 +782,7 @@ async fn the_census_covers_every_route_the_routers_register() {
         std::collections::BTreeSet::from([
             labels::PLAN,
             labels::BUNDLE,
+            labels::PRICE_OVERLAY,
             labels::APPROVAL,
             labels::APPROVAL_POLICY,
         ]),

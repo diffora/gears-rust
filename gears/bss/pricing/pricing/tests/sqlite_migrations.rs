@@ -40,9 +40,10 @@
 
 use bss_pricing::infra::storage::entity::{
     approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
-    catalog_version_ref, idempotency_dedup, operator_flag, outbox, pin_frontier, plan,
-    plan_addon_rule, plan_descriptor_set, plan_phase, policy_object, price, price_tier_band,
-    price_window, read_model,
+    brand_taxonomy, catalog_version_ref, idempotency_dedup, operator_flag, org_tier_taxonomy,
+    outbox, partner_taxonomy, pin_frontier, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
+    policy_object, price, price_overlay, price_overlay_line, price_overlay_line_amount,
+    price_tier_band, price_window, read_model, region_taxonomy,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
@@ -77,6 +78,16 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_bundle_component",
     "pricing_bundle_revshare_group",
     "pricing_bundle_revshare",
+    // Slice 4's four scope-value taxonomies, built on the Slice 9 chain because
+    // `inst-plv-scope` validates against them and none of them existed.
+    "pricing_region_taxonomy",
+    "pricing_brand_taxonomy",
+    "pricing_partner_taxonomy",
+    "pricing_org_tier_taxonomy",
+    // Slice 9's three, in dependency order.
+    "pricing_price_overlay",
+    "pricing_price_overlay_line",
+    "pricing_price_overlay_line_amount",
     "coord_leases",
 ];
 
@@ -132,6 +143,21 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_frozen_columns",
     "trg_pricing_price_grandfather_monotonic",
     "trg_pricing_price_no_delete",
+    // Slice 9's ten. The header carries the `pricing_plan` arrangement — a
+    // frozen-column whitelist, a draft-exit whitelist, a frozen-state flip
+    // whitelist and a no-delete off the draft plane — and the two child tables
+    // carry `pricing_bundle_component`'s three-verb guard, which is what freezes
+    // a published revision's lines and their money with it (D-92).
+    "trg_pricing_price_overlay_draft_exit",
+    "trg_pricing_price_overlay_frozen_columns",
+    "trg_pricing_price_overlay_frozen_flip",
+    "trg_pricing_price_overlay_line_amount_no_delete",
+    "trg_pricing_price_overlay_line_amount_no_insert",
+    "trg_pricing_price_overlay_line_amount_no_update",
+    "trg_pricing_price_overlay_line_no_delete",
+    "trg_pricing_price_overlay_line_no_insert",
+    "trg_pricing_price_overlay_line_no_update",
+    "trg_pricing_price_overlay_no_delete",
     "trg_pricing_price_tier_band_kind_insert",
     "trg_pricing_price_tier_band_kind_update",
     "trg_pricing_price_tier_band_no_delete",
@@ -170,6 +196,10 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_plan_descriptor_set_revision",
     "idx_pricing_plan_phase_revision",
     "idx_pricing_plan_tenant",
+    "idx_pricing_price_overlay_line_amount_tenant",
+    "idx_pricing_price_overlay_line_plan",
+    "idx_pricing_price_overlay_line_revision",
+    "idx_pricing_price_overlay_scope",
     "idx_pricing_price_plan",
     "idx_pricing_price_supersedes",
     "idx_pricing_price_tier_band_price",
@@ -185,6 +215,15 @@ const EXPECTED_INDEXES: &[&str] = &[
     "uq_pricing_plan_open_draft",
     "uq_pricing_plan_phase_terminal",
     "uq_pricing_price_meter_line_current",
+    // D-42's null-safe line key — an **expression** index over three COALESCEd
+    // sentinels, because a plain UNIQUE over three nullable columns admits the
+    // very rows section 6 spells as "one default line, one line per plan".
+    "uq_pricing_price_overlay_line_key",
+    "uq_pricing_price_overlay_open_draft",
+    // D-107's partial predicate. Dropping the `WHERE lifecycle_state =
+    // 'published'` makes a draft revision of a published overlay collide with
+    // itself, so an overlay is authorable exactly once.
+    "uq_pricing_price_overlay_precedence",
     "uq_pricing_price_scope_key_current",
     "uq_pricing_price_scope_key_draft",
 ];
@@ -210,6 +249,8 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_audit_log_entry_kind",
     "chk_pricing_audit_log_rollup",
     "chk_pricing_audit_log_seq",
+    "chk_pricing_brand_taxonomy_state",
+    "chk_pricing_brand_taxonomy_value_present",
     "chk_pricing_bundle_component_min_qty",
     "chk_pricing_bundle_component_qty_range",
     "chk_pricing_bundle_invoice_itemization",
@@ -227,8 +268,12 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
     "chk_pricing_operator_flag_name",
+    "chk_pricing_org_tier_taxonomy_state",
+    "chk_pricing_org_tier_taxonomy_value_present",
     "chk_pricing_outbox_event_name",
     "chk_pricing_outbox_sequence",
+    "chk_pricing_partner_taxonomy_state",
+    "chk_pricing_partner_taxonomy_value_present",
     "chk_pricing_pin_frontier_version",
     "chk_pricing_plan_addon_rule_qty_range",
     "chk_pricing_plan_addon_rule_required_max_qty",
@@ -264,6 +309,30 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_price_max_hold_granules",
     "chk_pricing_price_model_kind",
     "chk_pricing_price_overlay",
+    // Slice 9's seventeen. Note the near-collision one line up:
+    // `chk_pricing_price_overlay` is the **price row's** `price_overlay` axis
+    // CHECK (always `base`, Foundation section 4.1), and everything from here
+    // down belongs to the overlay object — which is a separate row evaluated
+    // downstream, not a value of that axis.
+    "chk_pricing_price_overlay_disclosure",
+    "chk_pricing_price_overlay_interval",
+    "chk_pricing_price_overlay_lifecycle_state",
+    "chk_pricing_price_overlay_line_adjustment_kind",
+    "chk_pricing_price_overlay_line_amount_currency",
+    "chk_pricing_price_overlay_line_amount_value_minor",
+    "chk_pricing_price_overlay_line_cohort_needs_plan",
+    "chk_pricing_price_overlay_line_discount_ceiling",
+    "chk_pricing_price_overlay_line_fixed_is_amount",
+    "chk_pricing_price_overlay_line_magnitude_kind",
+    "chk_pricing_price_overlay_line_magnitude_pairing",
+    "chk_pricing_price_overlay_line_magnitude_positive",
+    "chk_pricing_price_overlay_line_plan_id_not_nil",
+    "chk_pricing_price_overlay_line_sku_needs_plan",
+    "chk_pricing_price_overlay_line_target_sku_present",
+    "chk_pricing_price_overlay_revision",
+    "chk_pricing_price_overlay_scope_class",
+    "chk_pricing_price_overlay_scope_value",
+    "chk_pricing_price_overlay_tax_basis",
     "chk_pricing_price_package_fields_kind",
     "chk_pricing_price_package_price",
     "chk_pricing_price_package_size",
@@ -284,6 +353,8 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_read_model_catalog_version",
     "chk_pricing_read_model_subject_kind",
     "chk_pricing_read_model_warm_marker",
+    "chk_pricing_region_taxonomy_state",
+    "chk_pricing_region_taxonomy_value_present",
 ];
 
 /// Every trigger's body, pinned by digest — the roster, in `sqlite_master`'s
@@ -468,6 +539,50 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         6_472_678_356_918_752_723_u64,
     ),
     ("trg_pricing_price_no_delete", 4_952_185_589_843_057_617_u64),
+    // Slice 9's ten. Hashes read back off the built schema rather than
+    // hand-derived: what this census defends is that a `WHEN` clause cannot
+    // silently lose a disjunct, and a hand-written number could only ever be
+    // this same read-back written down twice.
+    (
+        "trg_pricing_price_overlay_draft_exit",
+        2_292_452_181_472_169_825_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_frozen_columns",
+        17_562_952_219_673_499_162_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_frozen_flip",
+        15_942_597_115_297_834_987_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_line_amount_no_delete",
+        6_126_575_409_268_361_048_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_line_amount_no_insert",
+        14_004_697_873_420_631_368_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_line_amount_no_update",
+        10_194_414_681_832_050_017_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_line_no_delete",
+        6_741_335_712_440_341_628_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_line_no_insert",
+        12_992_281_057_857_453_494_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_line_no_update",
+        15_101_858_051_437_048_819_u64,
+    ),
+    (
+        "trg_pricing_price_overlay_no_delete",
+        1_755_439_239_709_496_796_u64,
+    ),
     (
         "trg_pricing_price_tier_band_kind_insert",
         12_169_947_829_544_681_527_u64,
@@ -757,6 +872,16 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         approval_threshold::Entity,
         approval_threshold_tombstone::Entity,
         price_window::Entity,
+        // Slice 9's seven. This is what proves each entity's column set is the
+        // one its migration built — a mismatch is a runtime `SeaORM` error on
+        // the first read and nothing earlier catches it.
+        region_taxonomy::Entity,
+        brand_taxonomy::Entity,
+        partner_taxonomy::Entity,
+        org_tier_taxonomy::Entity,
+        price_overlay::Entity,
+        price_overlay_line::Entity,
+        price_overlay_line_amount::Entity,
     );
 }
 

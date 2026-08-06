@@ -60,6 +60,13 @@ pub mod m20260802_000024_create_pricing_bundle;
 pub mod m20260802_000025_create_pricing_bundle_component;
 pub mod m20260802_000026_create_pricing_bundle_revshare_group;
 pub mod m20260802_000027_create_pricing_bundle_revshare;
+pub mod m20260802_000028_create_pricing_region_taxonomy;
+pub mod m20260802_000029_create_pricing_brand_taxonomy;
+pub mod m20260802_000030_create_pricing_partner_taxonomy;
+pub mod m20260802_000031_create_pricing_org_tier_taxonomy;
+pub mod m20260802_000032_create_pricing_price_overlay;
+pub mod m20260802_000033_create_pricing_price_overlay_line;
+pub mod m20260802_000034_create_pricing_price_overlay_line_amount;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -131,6 +138,20 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000025_create_pricing_bundle_component::Migration),
             Box::new(m20260802_000026_create_pricing_bundle_revshare_group::Migration),
             Box::new(m20260802_000027_create_pricing_bundle_revshare::Migration),
+            // Slice 4's four scope-value taxonomies, created on the Slice 9
+            // chain because `inst-plv-scope` validates every non-`global`
+            // overlay scope value against one of them and none of the four
+            // existed. `m20260802_000028`'s module doc carries the argument.
+            Box::new(m20260802_000028_create_pricing_region_taxonomy::Migration),
+            Box::new(m20260802_000029_create_pricing_brand_taxonomy::Migration),
+            Box::new(m20260802_000030_create_pricing_partner_taxonomy::Migration),
+            Box::new(m20260802_000031_create_pricing_org_tier_taxonomy::Migration),
+            // Slice 9's three: the overlay header and its revision chain, the
+            // D-42 adjustment lines, and the D-08 per-currency values. In
+            // dependency order — each one's foreign key points at the one above.
+            Box::new(m20260802_000032_create_pricing_price_overlay::Migration),
+            Box::new(m20260802_000033_create_pricing_price_overlay_line::Migration),
+            Box::new(m20260802_000034_create_pricing_price_overlay_line_amount::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

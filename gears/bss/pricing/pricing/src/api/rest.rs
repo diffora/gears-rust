@@ -12,6 +12,7 @@ pub mod cursor;
 pub mod cutovers;
 pub mod error;
 pub mod frontier;
+pub mod overlays;
 pub mod plans;
 pub mod preconditions;
 pub mod prices;
