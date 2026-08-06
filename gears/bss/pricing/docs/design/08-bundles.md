@@ -134,7 +134,7 @@ flowchart TB
 **Steps**:
 1. [ ] - `p2` - API: POST/PATCH /bss-pricing/v1/bundles (draft; idempotency key) - `inst-ba-author`
 2. [ ] - `p2` - Publish: `BundleValidator` + `RevShareReconciler` run in the Foundation pipeline - `inst-ba-validate`
-2a. [ ] - `p1` - **Composition changes are always material (normative, D-104, 2026-07-31 review fix):** creating a bundle, adding/removing/replacing a **component**, any **rev-share** change (`share_bp`, `platform_cut_bp`, the group's `residual_absorber_party`), a `price_basis` change and an `invoiceItemization` change are **registered always-material triggers** (Slice 5 `inst-mat-registered`) — the commit routes through the two-person workflow before it publishes. The `MaterialityEvaluator` computes per-row deltas over **price rows**, and a `sum_of_parts` recomposition touches none: a component swap or a re-split evaluated `auto_publishable` under any configured threshold and reached consumers with **no approver**, while a $1 price-row change above threshold took two people — the D-50 hole one slice over, and with comparable money (a rev-share split *is* vendor payout; a component swap changes what the customer receives at an unchanged price). It also restores D-11's own premise: that decision dropped `bundle × write` from the publish endpoint because "the composition is protected at publish time by the approval content pin", which a non-material publish never creates. `FinanceReviewer` already holds `bundle × read`, so the D-61 reviewability invariant needs no new grant - `inst-ba-material`
+2a. [ ] - `p1` - **Composition changes are always material (normative, D-104, 2026-07-31 review fix):** creating a bundle, adding/removing/replacing a **component**, any **rev-share** change (`share_bp`, `platform_cut_bp`, the group's `residual_absorber_party`), a `price_basis` change and an `invoiceItemization` change are **registered always-material triggers** (Slice 5 `inst-mat-registered`; **the last two are on an un-revisioned table and D-206 is the entry that owns the consequence**) — the commit routes through the two-person workflow before it publishes. The `MaterialityEvaluator` computes per-row deltas over **price rows**, and a `sum_of_parts` recomposition touches none: a component swap or a re-split evaluated `auto_publishable` under any configured threshold and reached consumers with **no approver**, while a $1 price-row change above threshold took two people — the D-50 hole one slice over, and with comparable money (a rev-share split *is* vendor payout; a component swap changes what the customer receives at an unchanged price). It also restores D-11's own premise: that decision dropped `bundle × write` from the publish endpoint because "the composition is protected at publish time by the approval content pin", which a non-material publish never creates. `FinanceReviewer` already holds `bundle × read`, so the D-61 reviewability invariant needs no new grant - `inst-ba-material`
 3. [ ] - `p2` - **RETURN** 202; `BundleUpdated` emitted; composition frozen into the read model / snapshot - `inst-ba-return`
 
 ## 3. Processes / Business Logic (CDSL)
@@ -154,10 +154,10 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-bundle-coverage`
 
 **Steps**:
-1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — the currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule. Coverage/ambiguity evaluates over `priceEligibility = all_subscriptions` (`cohort = none`) rows **only** — grandfathered generations (ADR-0002) are never coverage candidates, so a cutover-touched component's coexisting generation rows neither cover nor count as ambiguous (2026-07-28 review fix, confirmed 2026-07-31). **The narrowing is deliberate for `new_subscriptions_only` too** (2026-07-31 review fix): a component priced solely via `new_subscriptions_only` rows is not coverage-eligible — bundle composition demands the durable `all_subscriptions` base (a new-only promo row expires with its intent); remediation = author an `all_subscriptions` row on the component - `inst-bc-coverage`
+1. [ ] - `p2` - Every referenced component MUST have a covering **published** row in each `(currency, region)` the bundle sells in — **the set the publish request carries (D-216)**, since a `sum_of_parts` bundle has no rows of its own to read it off. The currency axis delegates to `CurrencyBindingChecker` case ii; the `region` axis is the BundleValidator's own extension of the same rule. **Ordering (D-211, 2026-08-06):** `CurrencyBindingChecker` is Slice 4's and **does not exist yet**, so S8's coverage walk owns **both** axes until it lands, at which point the currency arm delegates and the region arm stays S8's — stated because a delegation with no target is one an implementer either calls into thin air or silently duplicates. Coverage/ambiguity evaluates over `priceEligibility = all_subscriptions` (`cohort = none`) rows **only** — grandfathered generations (ADR-0002) are never coverage candidates, so a cutover-touched component's coexisting generation rows neither cover nor count as ambiguous (2026-07-28 review fix, confirmed 2026-07-31). **The narrowing is deliberate for `new_subscriptions_only` too** (2026-07-31 review fix): a component priced solely via `new_subscriptions_only` rows is not coverage-eligible — bundle composition demands the durable `all_subscriptions` base (a new-only promo row expires with its intent); remediation = author an `all_subscriptions` row on the component - `inst-bc-coverage`
 2. [ ] - `p2` - **Recurring** components MUST match `frequency` (a monthly + annual mix cannot sum onto one invoice line set); usage-only components carry no `frequency` and are outside this rule (their charges rate per their own rows — `inst-bb-sum`) - `inst-bc-frequency`
 3. [ ] - `p2` - A missing or ambiguous component row fails publish naming the component + `(currency, region)` - `inst-bc-fail`
-3a. [ ] - `p1` - **One tax display basis per bundle-market (normative, D-119, 2026-07-31 review fix — flagged for veto):** on every `(currency, region)` the bundle sells, **all** component rows — and the bundle's own rows for `own_price` — MUST carry the **same** `tax_inclusive` value; a mixed market fails publish (`BUNDLE_TAX_BASIS_MIXED`, 422, the divergent components named). The row set is the coverage set of `inst-bc-coverage` — `priceEligibility = all_subscriptions` (`cohort = none`) rows only, so `existing_grandfathered` generations of a component never enter the check (D-132's scoping of the D-110 sibling, applied here by the coverage narrowing this rule already inherits). D-110 pinned one display basis per market per **plan** ("an invoice is one document"); a bundle composes several plans onto exactly one invoice, and the coverage walk above checks currency/region/frequency only — pre-Tax-Engine the mix is masked incidentally (an inclusive component's flagged market blocks the bundle via the D-94 conjunction), and the moment the Tax Engine GAs the same composition sells a mixed-basis invoice. **Reverse guard (the D-54 pattern):** a component re-publish whose basis change would mix a referencing bundle's market fails the same way, the referencing bundle enumerated — otherwise the bundle-side check is a point-in-time promise a later component publish silently breaks - `inst-bc-taxbasis`
+3a. [ ] - `p1` - **One tax display basis per bundle-market (normative, D-119, 2026-07-31 review fix — flagged for veto):** on every `(currency, region)` the bundle sells, **all** component rows — and the bundle's own rows for `own_price` — MUST carry the **same** `tax_inclusive` value; a mixed market fails publish (`BUNDLE_TAX_BASIS_MIXED`, 422, the divergent components named). The row set is the coverage set of `inst-bc-coverage` — `priceEligibility = all_subscriptions` (`cohort = none`) rows only, so `existing_grandfathered` generations of a component never enter the check (D-132's scoping of the D-110 sibling, applied here by the coverage narrowing this rule already inherits). D-110 pinned one display basis per market per **plan** ("an invoice is one document"); a bundle composes several plans onto exactly one invoice, and the coverage walk above checks currency/region/frequency only — pre-Tax-Engine the mix is masked incidentally (an inclusive component's flagged market blocks the bundle via the D-94 conjunction), and the moment the Tax Engine GAs the same composition sells a mixed-basis invoice. **Reverse guard (the D-54 pattern):** a component re-publish whose basis change would mix a referencing bundle's market fails the same way, the referencing bundle enumerated — otherwise the bundle-side check is a point-in-time promise a later component publish silently breaks. **It is a rule of the *component's* publish pipeline, not of the bundle's validator (D-212, 2026-08-06)**: the forward half is a property of a handed-in composition, while the reverse half needs the set of bundles referencing that component — a read the pure walk does not have and must not have — so it registers in the plan publish pipeline beside the other Foundation-owned rules and reads `pricing_bundle_component` by `component_plan_id`. Its absence from a bundle-side validator is therefore not a gap. D-212 settles the two derivations it needs: the markets are the **publishing plan's own candidate rows'** (a basis conflict cannot arise in a market that plan contributes no row to), and the referencing bundle's **current published** revision is the one that counts - `inst-bc-taxbasis`
 4. [ ] - `p1` - **Bundle sellability (normative):** the Slice 7 gate evaluates a bundle as the **conjunction** over its components — sellable at `t` iff **every** referenced component key passes gate predicates (1)–(5) at `t` (plus the bundle's own `availableFrom`/`availableTo`). Components are **exempt from predicate (6)** — the registry `sellable` flag (D-46) applies to the **bundle SKU itself**, not to component references (`sellable = false` components are exactly the composition-only SKUs bundles exist to package). For `sum_of_parts` there are no own rows, so components are the only inputs; for `own_price` the bundle's **own** rows must pass **and** the component keys too (the matching-currency component set is part of the offer). The frozen component key set spans `priceEligibility = all_subscriptions` (`cohort = none`) keys **only** — grandfathered generations are never gate inputs (2026-07-28 review fix, confirmed 2026-07-31). One unsellable component makes the bundle unsellable, never partially-sellable - `inst-bc-sellability`
 
 ### Rev-Share Reconciliation
@@ -166,7 +166,7 @@ flowchart TB
 
 **Steps**:
 1. [ ] - `p2` - When set, rev-share MUST sum to **100% per included vendor SKU**, with an explicit per-group platform cut; rev-share is authorable on **`sum_of_parts`** bundles only (D-55 — an `own_price` bundle has no per-vendor-SKU allocation base; `REVSHARE_BASIS_UNSUPPORTED`). The percentages apply to the vendor SKU's **entire rated revenue under the bundle — recurring and usage alike** (2026-07-30 review fix, L-8): a usage component's metered charges share on the same per-SKU split, so Marketplace accrual needs no second model - `inst-rs-sum`
-2. [ ] - `p2` - **Residual normalization (B2, D-07):** authoring accepts `|Σ(share_bp) + platform_cut_bp − 10000| ≤ 1 bp`; at publish the **group's `residual_absorber_party`** (a party row within that `(bundle, vendor SKU)` group, or the **platform** sentinel — default platform, so an "unnominated" state cannot exist; 2026-07-28 review fix — a bundle-level vendor-SKU absorber named a group, not a party) has its **effective** share adjusted by the residual, and the read model publishes effective shares summing to **exactly 10000 bp** (typed values retained for audit, the adjustment recorded). A residual over 1 bp fails publish (`RESIDUAL_OVER_TOLERANCE`) — e.g. a six-way even split (6 × 1666 bp = 9996) must be reconciled by the operator. Monetary (cent-level) rounding at settlement is a separate downstream rule and also lands on the absorber - `inst-rs-residual`
+2. [ ] - `p2` - **Residual normalization (B2, D-07):** authoring accepts `|Σ(share_bp) + platform_cut_bp − 10000| ≤ 1 bp`; at publish the **group's `residual_absorber_party`** (a party row within that `(bundle, vendor SKU)` group, or the **platform** sentinel — default platform, so an "unnominated" state cannot exist; 2026-07-28 review fix — a bundle-level vendor-SKU absorber named a group, not a party) has its **effective** share adjusted by the residual, and the read model publishes effective shares summing to **exactly 10000 bp** (typed values retained for audit, the adjustment recorded). A residual over 1 bp fails publish (`RESIDUAL_OVER_TOLERANCE`) — e.g. a six-way even split (6 × 1666 bp = 9996) must be reconciled by the operator. **An absorber resolving to neither a party row of its own group nor the platform sentinel renders under `REVSHARE_UNBALANCED` (D-210, 2026-08-06)**: it is a reachable authored state the schema cannot check — the referent is a row in a table pointing back at this one, and the sentinel has no party row by construction — and D-07's narrowing of that code to *structural malformation* fits, because no member takes the residual and the group cannot be made to sum to 10000 bp. Monetary (cent-level) rounding at settlement is a separate downstream rule and also lands on the absorber - `inst-rs-residual`
 3. [ ] - `p2` - `invoiceItemization` (`aggregate | itemize`) persists and MUST preserve per-SKU rev-share either way (Marketplace accrues per SKU regardless of invoice layout) - `inst-rs-itemization`
 
 ## 4. States (CDSL)
@@ -178,17 +178,40 @@ of Slices 2/11 on their `bundle`-type SKU.
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `POST/PATCH` | `/bss-pricing/v1/bundles` | Author bundle composition (draft) | idempotency key / ETag |
-| `POST` | `/bss-pricing/v1/bundles/{bundleId}/publish` | Validate + publish | per revision |
+| `POST` | `/bss-pricing/v1/bundles` | Create the bundle on its plan | idempotency key |
+| `PATCH` | `/bss-pricing/v1/bundles/{bundleId}` | Replace the open draft revision's composition, wholesale (**D-215**) | ETag (`If-Match`) |
+| `POST` | `/bss-pricing/v1/bundles/{bundleId}/publish` | Validate + publish; the request carries the **sold-market set** (**D-216**) | per revision |
 
-**Problem responses (RFC 9457):** `BASIS_MISSING` (422), `COMPONENT_UNPUBLISHED` (422),
+**The composition route addresses the bundle, not the collection (D-215, 2026-08-06).** It was
+spelled `PATCH /bss-pricing/v1/bundles` here, which puts the subject in the body while the route
+carries an `If-Match` precondition — and a precondition addresses a *resource*, so two concurrent
+composition edits on different bundles would present entity tags against one URL.
+
+**The publish request carries the markets the bundle sells in (D-216, 2026-08-06).** Both
+`inst-bc-coverage` and `inst-bc-taxbasis` quantify over that set, and a `sum_of_parts` bundle has
+**no rows of its own** (`inst-bb-rowless`) to read it off; the components' rows are what the set is
+checked *against*, so deriving it from them would make coverage vacuous and `CURRENCY_NOT_COVERED`
+unreachable. A sold-market child table is the named destination once the set must freeze into the
+read model rather than be restated per publish.
+
+**Problem responses (RFC 9457):** `BASIS_MISSING` (422 — **an authoring-edge code, not a
+publish-pipeline one: D-213, 2026-08-06.** `price_basis` is `NOT NULL` under a two-value `CHECK`,
+so a *stored* bundle always has a basis and only a request that omits the field can raise this;
+the publish validator carries no such arm), `COMPONENT_UNPUBLISHED` (422),
 `COMPONENT_IS_BUNDLE` (422 — flat composition at launch; nesting is Future),
 `CURRENCY_NOT_COVERED` (422), `FREQUENCY_MISMATCH` (422), `REVSHARE_UNBALANCED` (422 —
-structurally malformed shares / missing explicit platform cut), `RESIDUAL_OVER_TOLERANCE`
+structurally malformed shares / missing explicit platform cut; **also the code for a
+`residual_absorber_party` that resolves to neither a party row of its group nor the platform
+sentinel — D-210, 2026-08-06**, because an unresolvable absorber means no member takes the
+residual and the group cannot be made to sum to 10000 bp), `RESIDUAL_OVER_TOLERANCE`
 (422 — `|Σ − 10000| > 1 bp`; D-07), `REVSHARE_BASIS_UNSUPPORTED` (422 — rev-share on an
-`own_price` bundle; D-55), `BUNDLE_TAX_BASIS_MIXED` (422 — component rows (or own rows) of one
+`own_price` bundle; D-55), `BUNDLE_EXISTS_ON_PLAN` (409 — **D-214, 2026-08-06**: a plan carries at
+most one bundle, enforced by `uq_pricing_bundle_plan`; it is this gear's own refusal rather than
+`DUPLICATE_SCOPE_KEY`, which names a *price row's* canonical key and would send the operator to the
+wrong object), `BUNDLE_TAX_BASIS_MIXED` (422 — component rows (or own rows) of one
 sold `(currency, region)` disagreeing on `tax_inclusive`; D-119 — also raised on a component
-re-publish that would mix a referencing bundle's market, the bundle enumerated),
+re-publish that would mix a referencing bundle's market, the bundle enumerated; **that reverse half
+is the component publish pipeline's rule, D-212**),
 `COMPONENT_PHASED` (422 — a component plan with an authored phase schedule; composition
 semantics for phased components are a named Future gate — L-4, 2026-07-31c).
 
@@ -196,12 +219,24 @@ semantics for phased components are a named Future gate — L-4, 2026-07-31c).
 
 Slice-owned tables (tenant-scoped, SecureORM per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Foundation §3.7):
 
-**`pricing_bundle`** (PK `bundle_id`; FK **`plan_id`** — the bundle's own `bundle`-type plan,
+**`pricing_bundle`** (PK `bundle_id`; **`plan_id`** — the bundle's own `bundle`-type plan,
 whose revisions the composition tables below ride, added by **D-105**, 2026-07-31 review fix:
 without it D-92's "a bundle rides its plan's revisions" had no join path and `plan_revision`
 below referenced an unnamed plan; FK to the registry `bundle`-type SKU via that plan):
 `price_basis` (`sum_of_parts | own_price`), `invoice_itemization` (`aggregate | itemize`),
-lifecycle refs.
+lifecycle refs. `UNIQUE (tenant_id, plan_id)` — one bundle per plan, whose refusal is
+`BUNDLE_EXISTS_ON_PLAN` (D-214).
+
+**`plan_id` is a reference this table cannot declare as a foreign key (D-207, 2026-08-06,
+measured on Postgres).** `pricing_plan` is keyed `(plan_id, revision)` and its only uniqueness on
+`plan_id` alone lives in two **partial** indexes (`uq_pricing_plan_current`,
+`uq_pricing_plan_open_draft`), which Postgres refuses as a referent; and `pricing_bundle` cannot
+carry a `revision` because it is the bundle's *identity* and belongs to no single one. The
+reference is therefore enforced **one level down**: the three composition tables carry a real
+foreign key onto `pricing_bundle`, and their append-only triggers resolve `plan_id` through it to
+read the owning revision's `lifecycle_state`. An orphan *bundle* row is possible; an orphan
+*composition* is not. Do not try to add the constraint — a non-partial `UNIQUE (plan_id)` on
+`pricing_plan` would contradict D-56's revision-row model outright.
 
 **Revision discipline (D-92, 2026-07-31 review fix — the D-83 model applied here):** a bundle
 rides its plan's revisions, and the three composition tables below therefore carry
@@ -209,6 +244,19 @@ rides its plan's revisions, and the three composition tables below therefore car
 immutable with it, the open draft revision edits **its own copies**, and the projector — warm
 and re-drive alike — reads the published revision's rows, so a draft recomposition can neither
 mutate published truth nor leak into a frozen version through a re-drive.
+
+**`price_basis` and `invoice_itemization` are outside that discipline, and both are
+always-material (D-206, 2026-08-06 — [H], latent).** They live on `pricing_bundle`, which is not
+one of the three tables above, so the column a D-104 trigger governs is mutated **in place**: a
+published revision would read the new value from the instant it is authored, before any approver
+saw it — D-92's own defect one table up, and D-11's premise re-opened from the other side, the
+approval pin protecting a composition whose content moved before the pin existed. It is **latent
+today**: `BundleRepo::create` is the only writer and no mounted route edits either field. The
+decided repair is to **split identity from content** — `pricing_bundle` keeps `PK bundle_id`, and
+the two content columns move onto a revision-scoped carrier taking the same copy-on-new-revision
+treatment and append-only trigger as the three children. It is sequenced with the route that would
+make the hazard live rather than ahead of it, so **the first person to add such a route owns this
+entry**.
 
 **Row discriminators (D-105, 2026-07-31 review fix).** All three tables below are 1:N per
 `(bundle, revision)`, and D-92's "keyed `(bundle_id, plan_revision)`" phrasing dropped their
@@ -219,7 +267,13 @@ walk and "sum to 100% **per** included vendor SKU" unsatisfiable. The PKs below 
 
 **`pricing_bundle_component`** (PK **`(bundle_id, plan_revision, component_plan_id)`** —
 copy-on-new-revision, D-92 + D-105): `included_sku_id`,
-`component_plan_id` (required for `sum_of_parts`, B1), constraints (min/max qty).
+`component_plan_id` (**always required — D-208, 2026-08-06**: it is a primary-key column and
+therefore `NOT NULL`, so the earlier qualifier "required for `sum_of_parts`" could not hold, and
+`inst-bb-own` requires an `own_price` bundle to carry a matching-currency component set anyway;
+B1's rejection of bare `skuId`s is what keeps it in the key), constraints (min/max qty).
+Indexed `(tenant_id, component_plan_id)` — the mirror question *"which bundles reference this
+plan as a component"*, which D-212's reverse tax-basis guard and S11's `inst-re-references` both
+ask.
 
 **`pricing_bundle_revshare`** (PK **`(bundle_id, plan_revision, vendor_sku_id, party)`** — D-92 +
 D-105): `vendor_sku_id`,

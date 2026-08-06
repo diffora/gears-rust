@@ -1846,6 +1846,114 @@ So the gap is **not a missing capability**. It is that the record says something
 - **Not flagged for veto.**
 - **Propagated**: S7 §5 (the two cutover codes, now with producers); S7 `inst-co-copy` (the copy carries the predecessor's usage line).
 
+#### D-205 [H] Widening the canonical scope key re-classified fields at six sites, and D-196 clause (3) reached two of them
+
+- **Where**: [`design/01-foundation.md`](./design/01-foundation.md) §4.1 (the ten axes); D-196 clause (3).
+- **Problem** (found by the 2026-08-06 review of `1287dde6d..cf6af5c3d`, then by re-reading the neighbours it named): clause (3) attached `(meter, dimensionKey)` to `to_scope_key` and `scope_key_filter` and was recorded as paid. **Four further sites compared or rendered the key and were left at eight axes**, each found separately, by a different route, over two days:
+  1. `price_repo::scope_key_columns` — the tuple `refuse_mispaired` decides "these two rows are on one key" with. A successor on a different meter of one market read as being on the predecessor's key. Failed closed behind D-82's unit guard (`0586ff4ee`).
+  2. `domain::sellability::siblings` — six axes of ten, and its own doc said "every *other* axis". Two usage lines of one market in different eligibility classes read as siblings, so most-specific-wins **dropped one from the sellability gate** and `plan_market_verdict` answered over a market whose second line no window had been looked at for. This one is money: a purchase binds both lines.
+  3. `content_pin::put_scope_key` — the approval pin. **Masked** for a price record, whose row carries the same two values, and **live** for `put_key_windows`, where a key is framed with no row beside it: two window plans on two meters of one market pinned identically, so an approve could be satisfied by a re-derivation over the other line's coverage.
+  4. `api::rest::prices::ScopeKeyView` — the served rendering. Two rows on two meters answered with byte-identical `scope_key` objects, so the surface a reviewer approves from showed one key twice.
+- **Decision**: **2026-08-06 — all four repaired, and the generalisation is recorded because it is what the next axis will cost.** **Widening a key is not a schema change; it re-classifies fields, and every site that compares, renders, hashes or stores one has to be re-read.** Clause (3)'s own commit message named three sites and there were seven. Two structural repairs follow from it rather than being incidental:
+  - The sibling comparison moved onto the key as `ScopeKey::is_sibling_of` and **destructures with no rest pattern**, so an eleventh axis is a compile error at the one comparison defined by what it *excludes*. A comparison stated at a distance has no way to learn the list grew, which is how this defect survived.
+  - `CONTENT_PIN_DOMAIN_SEP` moves **`v3` → `v4`**. Framing two more fields changes every preimage containing any scope key, which is the re-freeze that counter exists for. `THRESHOLD_PIN_DOMAIN_SEP` deliberately stays `v1`: a `ThresholdVersion` carries no scope key, and moving it would invalidate every pending policy unit to record a re-freeze of content those units are not about.
+- **The wire grows asymmetrically, and that is D-196's shape rather than an oversight.** `ScopeKeyView` carries ten members and `ScopeKeyRequest` keeps six: the usage line is authored on the **content**, so a request naming it on the key would give one fact two homes — which clause (3) answered with a refusal rather than a rewrite. `dimensionKey` renders `null` for the undimensioned line rather than the store's `''` sentinel.
+- **What made the sweep incomplete is recorded because it is the transferable part**: `scope_key.rs`'s module doc still said D-196 was "not yet built" for a day after it was, and that paragraph is what a reader consults before deciding whether a neighbouring "eight axes" needs revisiting. **A module doc that describes the state of the work goes stale in the same commit that finishes the work.**
+- **Not flagged for veto.** Nothing is narrowed: four sites are brought up to a decision already CONFIRMED.
+- **Propagated**: S1 §4.1 (the ten axes are what every comparison site compares).
+
+#### D-206 [H, latent] `price_basis` and `invoiceItemization` are always-material and not revision-scoped
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) §6 (`pricing_bundle`; the "Revision discipline (D-92)" paragraph); D-92; D-104; `inst-ba-material`.
+- **Problem** (found by the bundles strand while building `m20260802_000024`): D-92 puts the copy-on-new-revision discipline on *"the three composition tables"* — component, rev-share and rev-share group. `pricing_bundle` is not one of them, and it is where `price_basis` and `invoice_itemization` live. Both are D-104 **always-material** triggers, so a change routes through two people before it publishes — but the column is un-revisioned, so the published revision reads the new value from the instant it is authored, before any approver has seen it. That is verbatim the defect D-92 closed, one table above where D-92 looked, and it re-opens D-11's premise from the other side: the approval pin protects the composition, and here the content moves before the pin exists.
+- **Latent, and checked rather than assumed**: the only writer of either column is `BundleRepo::create`, and no mounted route mutates them — `POST …/bundles` sets them once, `PATCH …/bundles/{bundleId}` replaces the composition only. Nothing today can provoke it. The severity stays `[H]` on **consequence**: a basis change turns a bundle from summing its parts into charging its own price, which is a price change to every buyer. The reader this entry is for is the first person to add a route or a bulk path that edits either field, who walks into it with no test and no guard, because the columns are physically mutable and carry no revision.
+- **Decision**: **2026-08-06 — (b), split identity from content**, adopted as proposed. `pricing_bundle` keeps `PK bundle_id` and holds identity, and the two content columns move onto a revision-scoped carrier that takes the same copy-on-new-revision treatment and append-only trigger as the three children. **Not built** — it is a migration against a table the same wave created, and it is sequenced with the route that would make the hazard live rather than ahead of it.
+  - **Rejected: widening `pricing_bundle`'s key to `(bundle_id, plan_revision)`.** It contradicts D-105's stated `PK bundle_id` and makes every child's `bundle_id` foreign key need the revision too.
+  - **Rejected explicitly: accepting the in-place mutation and dropping the two fields from D-104's list.** What they gate is a price change to every buyer; they are on that list for that reason.
+- **Propagated**: S8 §6 (`pricing_bundle`'s column list and the D-92 paragraph); `inst-ba-material`.
+
+#### D-207 [M] The `plan_id` foreign key D-105 presupposes is not declarable on Postgres
+
+- **Where**: D-105 (*"`pricing_bundle` gains the `plan_id` FK the revision keying presupposes"*); [`design/08-bundles.md`](./design/08-bundles.md) §6; [`design/01-foundation.md`](./design/01-foundation.md) §3.7 (D-56's revision-row model).
+- **Problem** (measured on Postgres while building `m20260802_000024`): `pricing_plan` is keyed `(plan_id, revision)`, and its only uniqueness on `plan_id` alone lives in two **partial** indexes — `uq_pricing_plan_current` and `uq_pricing_plan_open_draft`. Postgres refuses a partial index as a foreign key's referent, and `pricing_bundle` cannot carry a `revision` because it is the bundle's identity and belongs to no single revision. The constraint D-105 names cannot be written on either backend.
+- **Decision**: **2026-08-06 — (a), state the reference as un-enforced at this table and enforce it one level down**, which is what the build does: the three composition tables carry a real foreign key onto `pricing_bundle`, and their append-only triggers resolve `plan_id` through it to read the owning revision's `lifecycle_state`. So an orphan **bundle** row is possible and an orphan **composition** is not, and `a_bundle_may_name_a_plan_that_does_not_exist` pins the absence deliberately rather than leaving it to be rediscovered.
+  - **Rejected: a non-partial `UNIQUE (plan_id)` on `pricing_plan`.** It contradicts D-56 outright — one plan has many revision rows.
+- **Propagated**: S8 §6 (`pricing_bundle`'s `plan_id` sentence).
+
+#### D-208 [L] `component_plan_id` is a primary-key column and cannot be conditional
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) §6 (*"`component_plan_id` (required for `sum_of_parts`, B1)"*); D-105 (PK `(bundle_id, plan_revision, component_plan_id)`).
+- **Problem**: a primary-key column is `NOT NULL`, so the qualifier "for `sum_of_parts`" cannot hold — either the column is always required or it is not in the key, and the two statements are in one section.
+- **Decision**: **2026-08-06 — (a), always required**, which the key forces and which costs nothing: `inst-bb-own` already requires an `own_price` bundle to carry a matching-currency component set, and a component row naming no plan is one the coverage walk cannot evaluate. Built that way.
+  - **Rejected: dropping it from the key and discriminating on `included_sku_id`** — it re-introduces the ambiguity B1 rejects, bare SKU ids being ambiguous per `(currency, region)`.
+- **Propagated**: S8 §6 (the component column list).
+
+#### D-209 [M] The two bundle triggers' subject exists in this repository now
+
+- **Where**: `pricing/src/domain/materiality/triggers.rs`; [`design/05-governance.md`](./design/05-governance.md) `inst-mat-registered`; D-104.
+- **Problem**: `Trigger::subject_exists_in_this_crate` answered `false` for `BundleComposition` and `RevenueShareChange`. That predicate's doc says *"a `false` here is a fact about this repository, not about the design set. The slice that lands the subject flips it."* Slice 8 landed it, and nothing goes red on its own — the roster test **transcribes** the answers, so the statement would simply have become false in silence, which is the failure mode the predicate exists to prevent.
+- **Decision**: **2026-08-06 — both flipped to `true`** (`a15f754c8`), on evidence rather than on the hand-back's word: `infra::bundle` declares both acts through `ChangeSet::of_act`, four tables and four entities carry the subject, and `module.rs` merges three mounted routes. The roster test reddened on the flip and was updated in the same edit, which is the obligation it exists to create.
+  - **`GrandfatheringCutover` stays `false`**, and the contrast is the useful part: most of the cutover's *store* landed on `bss/pricing-impl` in the same stretch, but a registered trigger of this kind is an **act**, read back from a change set some surface declared, and no surface declares the cutover — its orchestrator and route are owed. The flip belongs to the commit that writes the declaration, not to the one that finishes the store.
+- **No propagation.** The design set already declares both triggers; what changed is a fact about this repository, and no document cites this.
+
+#### D-210 [L] An unresolvable residual absorber renders under `REVSHARE_UNBALANCED`
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) §5 (problem responses) and `inst-rs-residual`; D-07.
+- **Problem**: `inst-rs-residual` requires the absorber to be *"a party row within that `(bundle, vendor SKU)` group, or the platform sentinel"*. An absorber naming neither is a reachable authored state that the schema cannot check — the referent is a row in a table pointing back at this one, and the `platform` sentinel has no party row by construction — and §5 declares no code for it. A gear may mint an internal variant freely; a **wire code is the design set's to declare**, so the refusal has to render under an existing one.
+- **Decision**: **2026-08-06 — (a), render it as `REVSHARE_UNBALANCED`**, whose D-07 narrowing is *"structural malformation"* and which fits exactly: an unresolvable absorber means no group member takes the residual, so the group cannot be made to sum to 10000 bp. Stated in §5 so the mapping is read rather than inferred.
+- **Propagated**: S8 §5 (the `REVSHARE_UNBALANCED` line); `inst-rs-residual`.
+
+#### D-211 [M] `inst-bc-coverage` delegates the currency axis to a checker no crate declares
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) `inst-bc-coverage` (*"the currency axis delegates to `CurrencyBindingChecker` case ii"*); §1.4 (the Slice 4 dependency).
+- **Problem** (grepped, not assumed): `CurrencyBindingChecker` is Slice 4's named component and **nothing in this crate declares or implements it**. So the sentence describes a delegation with no target, and an implementer either writes a call to an absent type or quietly writes the currency check twice.
+- **Decision**: **2026-08-06 — (a), state the ordering.** S8's coverage walk owns **both** axes until Slice 4 lands its checker, at which point the currency arm delegates and the region arm stays S8's. That is what the build does, and `domain::bundle_rules`' module doc names the arm that has to delegate.
+  - **Rejected: blocking S8 behind S4.** The two halves are one walk; splitting them is what would need justifying.
+- **Propagated**: S8 `inst-bc-coverage` (the ordering clause).
+
+#### D-212 [M] D-119's reverse guard belongs to the **component's** publish pipeline
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) `inst-bc-taxbasis`; D-119 (*"a component re-publish whose basis change would mix a referencing bundle's market fails the same way, the referencing bundle enumerated"*); D-54 (the pattern it rides).
+- **Problem**: the forward half — every row of one sold market shares one `tax_inclusive` — is a property of the composition and is enforced in `domain::bundle_rules::check_tax_basis`. The **reverse** half is a rule about *another plan's* publish, and it needs a read the composition walk does not have and must not have: the set of bundles referencing that component. A pure validator over a handed-in snapshot cannot express it, so as written the rule has no owner in the code.
+- **Decision**: **2026-08-06 — (a), it is a rule of the component's publish pipeline**, registered in `domain::publish::rules::run_publish_rules` beside the other Foundation-owned rules, reading `pricing_bundle_component` by `component_plan_id` — the index `idx_pricing_bundle_component_plan` exists for exactly this shape of question, and S11's `inst-re-references` asks the same one for retirement. `inst-bc-taxbasis` says so, so its absence from a bundle-side validator is not read as a gap.
+  - **Rejected: a periodic reconciliation.** It makes the rule a detection rather than a guard, and contradicts D-119's own argument that the bundle-side check is otherwise *"a point-in-time promise a later component publish silently breaks"*.
+  - **It does not become a second assembly point.** `run_publish_rules` is the single one, and its module doc says why: a bundle-side call bolted into `infra::publish` is the *"whichever slice happens to load first"* outcome §4.2 keeps the base set out of. The facts the rule needs are **resolved by the caller and handed in** on `PublishRuleParams`, exactly as the tenant's default rounding policy and the size caps are.
+- **Two derivations this decision settles, so the implementer inherits no open questions**:
+  1. **Which markets.** Not the referencing bundle's declared set — D-216 leaves that on the publish request and a component's publish does not carry it. The markets that matter are exactly those the **publishing plan's own candidate rows** sell in: a basis conflict cannot arise in a market this plan contributes no row to, so the narrower set is complete for this guard.
+  2. **Which revision of the referencing bundle.** Its **current published** one — the composition consumers actually resolve against. A draft revision's components are not yet anybody's truth, and guarding against them would fail a publish over a composition no consumer can see.
+- **Decision taken, code owed.** The guard is **not built**: it is named here with its placement, its two derivations and its index so that building it is an implementation and no longer a design question.
+- **Propagated**: S8 `inst-bc-taxbasis` (the reverse guard's owner).
+
+#### D-213 [L] The missing-basis refusal is an authoring-edge code, not a publish-pipeline one
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) §5 (the missing-basis problem response); `inst-bb-declared`. *(The code is named descriptively here and not as a bare token: a bare token in register prose reads to spec-check as a reference and would close that code's P3 `code-unreferenced` debt without any rule having gained one — which is what a first draft of this entry did.)*
+- **Problem**: `pricing_bundle.price_basis` is `NOT NULL` under a two-value `CHECK` and the domain type is a closed enum, so a **stored** bundle always has a basis. The code is reachable only from a request that omits the field — which is the right code for the right caller — but §5 lists it beside nine publish-time refusals, so it reads as though the publish pipeline raises it, and a validator carrying that arm would carry a branch no state can reach.
+- **Decision**: **2026-08-06 — annotate it in §5 as an authoring-edge code.** Built that way: `check_basis_declared` is a separate entry point taking `Option<PriceBasis>`, and `validate` does not carry the arm.
+- **Propagated**: S8 §5 (the missing-basis annotation).
+
+#### D-214 [L] "This plan already carries a bundle" gets a code of its own
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) §5 (problem responses); §6 (`pricing_bundle`, one per plan).
+- **Problem**: a plan carries at most one bundle, enforced by `uq_pricing_bundle_plan`, and the refusal is one an operator can act on. §5 declares no code for it. Borrowing `DUPLICATE_SCOPE_KEY` would name a **price row's** canonical key and send the operator to look at the wrong object entirely.
+- **Decision**: **2026-08-06 — (a), declare `BUNDLE_EXISTS_ON_PLAN`** on the conflict ladder, which is the gear naming a refusal it owns. Built with that spelling; a different one is a one-line change in `infra/error_mapping.rs`.
+- **Propagated**: S8 §5 (the new code).
+
+#### D-215 [L] The composition route addresses a resource, not the collection
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) §5 API table (`POST/PATCH | /bss-pricing/v1/bundles`).
+- **Problem**: a `PATCH` to the collection puts the subject in the body, and the composition route carries an `If-Match` precondition. A precondition addresses a **resource**; two concurrent composition edits on different bundles would be presenting entity tags against one URL.
+- **Decision**: **2026-08-06 — (a), `PATCH /bss-pricing/v1/bundles/{bundleId}`**, which is what is built and what every other subject-addressing route in this gear does.
+  - **Rejected: keeping the collection `PATCH` and dropping the precondition.** The composition rides the plan revision's tag, and dropping it reopens the lost update `fr-concurrent-edit` closes.
+- **Propagated**: S8 §5 (the API table row).
+
+#### D-216 [L] The bundle's sold-market set is carried on the publish request
+
+- **Where**: [`design/08-bundles.md`](./design/08-bundles.md) `inst-bc-coverage`, `inst-bc-taxbasis` (both quantify over *"each `(currency, region)` the bundle sells in"*), `inst-bb-rowless` (a `sum_of_parts` bundle carries no price rows of its own).
+- **Problem**: both rules quantify over the markets the bundle sells in, and for `sum_of_parts` there is nothing to read that set off — the bundle has no rows, and the components' rows are the thing being *checked against* it rather than the thing defining it. Taking the union of the components' markets would make the coverage rule vacuous: every market would be covered by construction and `CURRENCY_NOT_COVERED` unreachable.
+- **Decision**: **2026-08-06 — (a), the publish request carries the market set**, which is what is built: it is the operator's declaration of where the bundle is offered, and the rule then has something to fail against. **(b), a sold-market child table, is named as the likely destination** once the set must be *frozen* into the read model rather than restated per publish.
+  - **Rejected: deriving it from the registry's SKU availability.** That is a read across a gear boundary this slice has no contract for.
+- **Propagated**: S8 §5 (the publish request shape); `inst-bc-coverage`.
+
 ## F.1 Open product forks (2026-07-29) — not decided by the review
 
 These carry commercial flavour and are deliberately left for the product owner. Each is a real
