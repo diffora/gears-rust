@@ -206,11 +206,41 @@ PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
     "anchored:no-account": 4,
-    "suspicious:multi-region": 60,
+    "suspicious:multi-region": 59,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 10,
+    "suspicious:weak-coverage": 11,
     "covered:strong": 0,
 }
+#: Moved 2026-08-06 (was 3 / 4 / 60 / 10) by the **D-196 decision wave** — the owner's answer to
+#: D-196 written into `DECISIONS.md`, S1 §3.7, S1 §4.1 and S2 `inst-cs-usage`. Total requirements
+#: unchanged at 77 and the judged count unchanged at 70: the move is +1/−1 **inside** the judged
+#: set, both classes being in `JUDGED`.
+#:
+#: **One mover, and no control was needed to classify it** — the grid could not have moved under
+#: it, which is a cheaper argument than the blank-line control and a stronger one:
+#:
+#:   id                    region that moved                              direction
+#:   nfr-audit-retention   design/01-foundation §3.7 @ 0.656 lost         -> weak-coverage
+#:
+#: The lost window is the `pricing_price` schema bullet at line 541. Both of this wave's edits to
+#: that document are elsewhere — the §4.1 axis statement is an **insertion at line 598**, below it,
+#: and §3.7's own edit rewrote one sentence **inside a single line** without changing the line
+#: count. Windows are 12 lines stepping 6 from the top of the file, so every window boundary at or
+#: above line 541 is byte-identical in position: the score fell because that window's *text*
+#: changed, not because the grid re-sliced under it. That is the distinction entries 18-21 needed
+#: the control to make, and here the geometry settles it.
+#:
+#: **And the drop is honest.** The window scored 0.656 against a 0.6 threshold — a marginal match
+#: that survived on term profile rather than on substance: it accounted for retention nowhere,
+#: carrying `created_by` "(the history-export actor field)" and the append-only trigger, neither of
+#: which states a retention horizon. The D-196 rewrite added ~120 words of index mechanics (NULL
+#: distinctness, the `COALESCE` sentinel) to the same window, diluting a similarity that was thin
+#: to begin with. Nothing audit-related was removed: the audit tokens present in the pre-wave line
+#: — `created_by`, `REVOKE`, "Append-only", "history-export" — are all present in the post-wave
+#: one, checked by diffing the tokens on both sides of the replacement rather than by reading it.
+#: The two surviving fragments are the NFR sentence itself and the audit-record step list, which
+#: are the two regions that actually account for it.
+#:
 #: Moved 2026-08-05 (was 3 / 5 / 59 / 10, judged 69) by the **D-183…D-193 phase-4 close docs wave**
 #: — eleven register entries plus a status-board paragraph and one clause each in S3, S5 and S7.
 #: Total requirements unchanged at 77; **judged 69 -> 68**, the single mover out of the judged set
