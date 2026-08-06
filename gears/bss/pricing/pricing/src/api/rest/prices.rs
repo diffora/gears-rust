@@ -653,7 +653,19 @@ async fn patch_price(
     let expected = preconditions::if_match(&headers)?;
     let stored = row_of_plan(&state, &scope, tenant, plan_id, price_id).await?;
     if let Some(named) = &body.scope_key {
-        let named = scope_key_of(plan_id, named)?;
+        // **Compared over the axes the wire can express** (D-196 clause 3).
+        // `ScopeKeyRequest` has no `meter` member — the usage line is authored on
+        // the *content* view and the door derives the ninth and tenth axes from
+        // it — so a stored usage row's key always carries a line this body could
+        // not have named. Comparing the two raw would refuse every `PATCH` that
+        // echoes its own key on a metered row, which is the opposite of what this
+        // immutability check is for. The stored line is therefore carried onto
+        // the named key before the comparison: the axes the caller *can* state
+        // must match, and the ones they cannot are taken from the row.
+        let named = scope_key_of(plan_id, named)?.with_usage_line(
+            stored.scope_key.meter().cloned(),
+            stored.scope_key.dimension_key().clone(),
+        )?;
         if named != stored.scope_key {
             return Err(CanonicalError::from(DomainError::InvalidRequest(
                 "the canonical scope key is immutable; a row's key decides which duplicate it \

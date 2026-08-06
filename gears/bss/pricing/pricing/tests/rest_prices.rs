@@ -1062,3 +1062,93 @@ async fn every_price_record_carries_the_before_and_after_state_its_action_implie
         "and no after-state: an empty object would claim the row still stands: {after:?}"
     );
 }
+
+#[tokio::test]
+async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
+    // **The hole D-196 clause (3) opened on this path, pinned.** The usage line
+    // is authored on the *content* view — `ScopeKeyRequest` has no `meter`
+    // member — so the door derives the ninth and tenth axes from the content and
+    // a stored usage row's key carries a line no request body could have stated.
+    // The key-immutability check above compares the named key against the stored
+    // one, and comparing those two raw would refuse **every** `PATCH` that echoes
+    // its own key on a metered row: the caller would be told their key moved by
+    // naming exactly the key they are on.
+    //
+    // The comparison is therefore over the axes the wire can express, with the
+    // stored line carried onto the named key first. The neighbouring case proves
+    // the check still refuses a key that really did move.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let create = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(serde_json::json!({
+                "scope_key": {
+                    "currency": "USD",
+                    "region": "EU",
+                    "phase": harness_phase(),
+                    "price_eligibility": "all_subscriptions",
+                    "charge_kind": "usage",
+                    "cohort": serde_json::Value::Null
+                },
+                "content": {
+                    "model_kind": "per_unit",
+                    "amount_minor": 700,
+                    "tax_inclusive": false,
+                    "meter": "cloudlets",
+                    "billing_granularity": "per_hour"
+                }
+            })),
+            &keyed("d196-clause3-create"),
+        ))
+        .await;
+    assert_eq!(create.status(), StatusCode::CREATED, "{:?}", create.body());
+    let price_id = price_rows(&harness, plan_id).await[0].price_id;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id),
+            Some(serde_json::json!({
+                "scope_key": {
+                    "currency": "USD",
+                    "region": "EU",
+                    "phase": harness_phase(),
+                    "price_eligibility": "all_subscriptions",
+                    "charge_kind": "usage",
+                    "cohort": serde_json::Value::Null
+                },
+                "content": {
+                    "model_kind": "per_unit",
+                    "amount_minor": 900,
+                    "tax_inclusive": false,
+                    "meter": "cloudlets",
+                    "billing_granularity": "per_hour"
+                }
+            })),
+            &[("if-match", "\"0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK, "{:?}", response.body());
+    let after = price_rows(&harness, plan_id).await;
+    assert_eq!(
+        after[0]
+            .row
+            .amount_minor
+            .map(bss_pricing::domain::money::MinorAmount::get),
+        Some(900)
+    );
+    assert_eq!(
+        after[0]
+            .scope_key
+            .meter()
+            .map(bss_pricing::domain::scope_key::Meter::as_str),
+        Some("cloudlets"),
+        "the line the row is filed under is untouched by an ordinary content edit"
+    );
+}

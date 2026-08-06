@@ -925,7 +925,14 @@ async fn usage_key_with_published_row(
     .expect("new_subscriptions_only pairs with cohort none");
 
     let price_id = Uuid::now_v7();
-    h.state
+    // **The key the door files it under, not the one handed in** (D-196 clause 3).
+    // `graduated_usage` prices the `api_calls` line, and the line is the key's
+    // ninth and tenth axes now — derived from the content, because that is the
+    // only half of an authoring request that can carry it. A fixture that kept
+    // the line-less key would look the row up on a key no row is on, which is
+    // what every caller of this helper would then be measuring.
+    let authored = h
+        .state
         .prices
         .create_draft(
             &h.scope(),
@@ -941,6 +948,7 @@ async fn usage_key_with_published_row(
         )
         .await
         .expect("author the usage row");
+    let key = authored.scope_key;
     let conn = h.db.conn().expect("conn");
     common::schedule_coverage_window(&conn, &h.scope(), h.tenant, price_id, stamp_of(SUBMITTER))
         .await;

@@ -116,6 +116,18 @@ impl From<DomainError> for CanonicalError {
                     "GRANDFATHER_UNTIL_FORBIDDEN",
                 )
                 .create(),
+            // D-196's axis pair, and the same treatment for the same reason: a
+            // usage line is a key axis, so a pair in the wrong place is a
+            // precondition failure about where the row is filed rather than a
+            // malformed field. The subject is the pair rather than one field —
+            // the two halves are only wrong *together*.
+            D::UsageLineAxisMismatch(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation(
+                    "meter,dimension_key",
+                    detail,
+                    "USAGE_LINE_AXIS_MISMATCH",
+                )
+                .create(),
             // D-63's future-only start. An architectural 422 (§5) rendered 400,
             // and a precondition failure rather than a malformed argument for
             // `TIMESTAMP_PRECISION_EXCEEDED`'s reason: the instant parses and is a

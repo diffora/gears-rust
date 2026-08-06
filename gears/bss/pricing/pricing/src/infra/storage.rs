@@ -229,6 +229,28 @@ pub enum RepoError {
         /// told to retry against.
         aggregate: String,
     },
+    /// The authored row names one `(meter, dimensionKey)` line and its key
+    /// names another (D-196).
+    ///
+    /// A refusal rather than a rewrite, and `price_repo::check_authored_usage_line`
+    /// carries the argument: the wire can express a meter, so a disagreement is
+    /// the caller's mistake, and a door that silently picked a winner would make
+    /// the D-82 unit guard's `meter` and `dimensionKey` clauses unreachable.
+    ///
+    /// It renders under the axis rule's own code — the pair is a key axis, and
+    /// the fact the operator has to act on is that the two halves of their
+    /// request disagree about it.
+    #[error(
+        "pricing repo: the authored row prices the line {row_line} while its canonical scope \
+         key names {key_line}; a row's meter and dimensionKey are axes of its key"
+    )]
+    UsageLineDisagrees {
+        /// The line the key names, as `meter/dimensionKey`.
+        key_line: String,
+        /// The line the row's own fields name.
+        row_line: String,
+    },
+
     /// A grandfathering horizon authored on a row that is not a grandfathered
     /// generation.
     ///
@@ -753,6 +775,10 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         RepoError::GrandfatherHorizonOffClass { .. } => {
             DomainError::GrandfatherUntilForbidden(err.to_string())
         }
+        // The axis rule's own answer: `USAGE_LINE_AXIS_MISMATCH` is what §4.1
+        // declares for a usage pair that does not belong where it was put, and
+        // this is that fact reached through the other half of the request.
+        RepoError::UsageLineDisagrees { .. } => DomainError::UsageLineAxisMismatch(err.to_string()),
         RepoError::TimestampPrecisionExceeded { .. } => {
             DomainError::TimestampPrecisionExceeded(err.to_string())
         }

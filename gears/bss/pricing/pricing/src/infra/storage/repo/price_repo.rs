@@ -109,6 +109,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::{PriceContent, PriceRecord};
@@ -118,7 +119,8 @@ use crate::domain::price_row::{
     TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region, ScopeKey,
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
+    Region, ScopeKey,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{price, price_tier_band};
@@ -477,6 +479,7 @@ impl PriceRepo {
         check_authored_instant("grandfatherUntil", horizon)?;
         let assignments = content_assignments(&content_model(&content)?);
         let bands = band_models(tenant_id, price_id, &content.row.bands)?;
+        let content_line = (content.row.meter.clone(), content.row.dimension_key.clone());
         let Some(guard) = swap_guard(tenant_id, price_id, expected) else {
             let conn = self.conn()?;
             return Err(refuse(&conn, scope, tenant_id, price_id, expected).await);
@@ -496,6 +499,24 @@ impl PriceRepo {
                     // The row's class cannot move on an update, so the stored
                     // one is the one the submitted horizon has to pair with.
                     check_grandfather_horizon(horizon, read_eligibility(&row)?)?;
+                    // **And neither can its usage line, since D-196 made the pair
+                    // key axes.** This path used to rewrite `meter` and
+                    // `dimension_key` as ordinary content columns, which — once
+                    // they became axes — moved the row onto a *different*
+                    // canonical scope key with no occupancy check of any kind: a
+                    // `PATCH` could land a draft on a key another row already
+                    // holds, and the only thing that would notice is the index,
+                    // as a driver error. Found by this door's own round-trip test
+                    // after clause (3) attached the pair to the loaded key.
+                    //
+                    // A refusal rather than `charge_kind`'s silent ignore, and
+                    // this doc's own sentence is the reason: moving a key "is
+                    // exactly what deleting the draft and authoring another one
+                    // is", which is a remedy worth naming. `charge_kind` is
+                    // ignored because the store keeps no second value to have
+                    // disagreed about; here it keeps one and the caller can see
+                    // it.
+                    check_update_keeps_the_line(&row, &content_line)?;
                     delete_bands(txn, &scope, tenant_id, price_id).await?;
                     let mut update = price::Entity::update_many().secure().scope_with(&scope);
                     for (column, value) in assignments {
@@ -1773,6 +1794,99 @@ fn check_grandfather_horizon(
     })
 }
 
+/// Resolve the row's `(meter, dimensionKey)` line against its key's (D-196).
+///
+/// **Each axis is derived from wherever the wire can actually say it**, and that
+/// is what makes this the mirror image of [`authored_content`] rather than an
+/// inconsistency with it. `charge_kind` is expressible only on the **key** view,
+/// so `content_of` fills the row's copy with a placeholder and the door rewrites
+/// it *from the key*. The usage line is expressible only on the **content**
+/// view — `ScopeKeyRequest` has no such member — so the row's fields are the
+/// author's statement and the key's axes are derived *from the row*. Neither
+/// direction is a preference: in each case the other half has nothing to say.
+///
+/// So two arms, with a reason each:
+///
+/// - **The key names no line** — the wire path, where the key literally cannot
+///   carry one. The line is attached, and `check_usage_line_axes` then refuses a
+///   meter on a charge kind that may not have one, so a metered `recurring` row
+///   is answered here rather than by the meter-line index three statements later.
+/// - **Both name a line and they differ** — an internal caller built both halves
+///   (the supersession door passes the predecessor's key), and this is a
+///   **refusal**, never a rewrite. A door that overwrote the successor's meter
+///   with the key's would make the D-82/D-98/D-127 unit guard's `meter` and
+///   `dimensionKey` clauses structurally unreachable — two of the four
+///   components of the tier counter's own key — which is exactly how
+///   `charge_kind`'s placeholder made `is_usage()` unreachable and cost three
+///   Criticals on 2026-08-06. One rewrite of that shape per crate is one too
+///   many, and this is the one.
+///
+/// The store has a single home for the pair — the `meter` and `dimension_key`
+/// columns are both the key's axes and the row's fields — so a disagreement
+/// cannot survive a round trip. It exists only between a [`ScopeKey`] value and
+/// a [`PriceRow`] value, which is where it is still cheap to answer.
+fn resolve_authored_usage_line(key: &ScopeKey, row: &PriceRow) -> Result<ScopeKey, RepoError> {
+    let row_meter = row
+        .meter
+        .as_deref()
+        .map(Meter::new)
+        .transpose()
+        .map_err(|e| RepoError::ValueOutOfRange {
+            field: "meter".to_owned(),
+            value: e.to_string(),
+        })?;
+    let row_dimension = DimensionKey::new(&row.dimension_key);
+    if key.meter().is_none() && key.dimension_key().is_none() {
+        return key
+            .clone()
+            .with_usage_line(row_meter, row_dimension)
+            .map_err(|e| RepoError::UsageLineDisagrees {
+                key_line: key.charge_kind().as_str().to_owned(),
+                row_line: e.to_string(),
+            });
+    }
+    let key_line = (key.meter().map(Meter::as_str), key.dimension_key().as_str());
+    let row_line = (
+        row_meter.as_ref().map(Meter::as_str),
+        row_dimension.as_str(),
+    );
+    if key_line == row_line {
+        return Ok(key.clone());
+    }
+    Err(RepoError::UsageLineDisagrees {
+        key_line: format!("{}/{}", key_line.0.unwrap_or("none"), key_line.1),
+        row_line: format!("{}/{}", row_line.0.unwrap_or("none"), row_line.1),
+    })
+}
+
+/// An update may not move the row's `(meter, dimensionKey)` line (D-196).
+///
+/// The sibling of [`resolve_authored_usage_line`] on the other door, and the
+/// asymmetry is the point: **create** derives the key's line from the content,
+/// because that is the author's only way to state it; **update** compares the
+/// submitted line against the stored one and refuses a move, because by then the
+/// row is filed under a key and the pair are two of its axes. The seven axes an
+/// update cannot touch are simply absent from `PriceContent`; these two are not,
+/// which is the whole reason this check has to exist as code rather than as a
+/// property of the type.
+fn check_update_keeps_the_line(
+    row: &price::Model,
+    submitted: &(Option<String>, String),
+) -> Result<(), RepoError> {
+    let stored = (row.meter.clone(), row.dimension_key.clone());
+    if &stored == submitted {
+        return Ok(());
+    }
+    Err(RepoError::UsageLineDisagrees {
+        key_line: format!("{}/{}", stored.0.as_deref().unwrap_or("none"), stored.1),
+        row_line: format!(
+            "{}/{}",
+            submitted.0.as_deref().unwrap_or("none"),
+            submitted.1
+        ),
+    })
+}
+
 /// Name which conjunct of a failed compare-and-swap actually failed.
 ///
 /// One extra read, taken only on the refusal path. It costs nothing in the
@@ -1845,6 +1959,18 @@ fn scope_key_filter(tenant_id: Uuid, key: &ScopeKey) -> Condition {
         .add(price::Column::PriceEligibility.eq(key.price_eligibility().as_str()))
         .add(price::Column::ChargeKind.eq(key.charge_kind().as_str()))
         .add(price::Column::Cohort.eq(key.cohort().to_string()))
+        // **The NULL trap the indexes have, one layer up (D-196).** A key with
+        // no meter renders `meter IS NULL`, and `Column::Meter.eq(None)` is
+        // `meter = NULL`, which matches nothing — so this read would answer
+        // "the key is free" over an occupied one and the duplicate would arrive
+        // as the index's driver error rather than as this door's refusal. The
+        // store closes the same hole with `COALESCE(meter, '')`; here the
+        // `Option` is in hand, so the arm is explicit.
+        .add(match key.meter() {
+            Some(meter) => price::Column::Meter.eq(meter.as_str()),
+            None => price::Column::Meter.is_null(),
+        })
+        .add(price::Column::DimensionKey.eq(key.dimension_key().as_str()))
 }
 
 /// The "absent, or not yours" refusal — deliberately one answer for both, so
@@ -1976,13 +2102,18 @@ pub fn authored_content(key: &ScopeKey, content: PriceContent) -> PriceContent {
 }
 /// Render a create and refuse every value the store cannot take, statement-free.
 fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft, RepoError> {
+    // The key the row is actually filed under: the usage line comes from the
+    // content, because that is the half of the request that can carry it (D-196
+    // — see `resolve_authored_usage_line` for why this is the mirror image of
+    // `authored_content` rather than a disagreement with it).
+    let scope_key = resolve_authored_usage_line(&draft.scope_key, &draft.content.row)?;
     let record = PriceRecord {
         price_id: draft.price_id,
-        scope_key: draft.scope_key.clone(),
+        scope_key: scope_key.clone(),
         // The two rewrites this door performs, applied through their **one**
         // spelling — see [`authored_content`]. Applied here rather than open-coded
         // because a second caller now has to be able to predict them.
-        row: authored_content(&draft.scope_key, draft.content.clone()).row,
+        row: authored_content(&scope_key, draft.content.clone()).row,
         tax_inclusive: draft.content.tax_inclusive,
         billing_timing: draft.content.billing_timing,
         rounding_policy_ref: draft.content.rounding_policy_ref,
@@ -1999,6 +2130,7 @@ fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft,
         record.grandfather_until,
         record.scope_key.price_eligibility(),
     )?;
+
     check_authored_instant("grandfatherUntil", record.grandfather_until)?;
     let row = insert_model(tenant_id, &record)?;
     let bands = band_models(tenant_id, record.price_id, &record.row.bands)?;
@@ -2462,6 +2594,21 @@ fn to_scope_key(row: &price::Model) -> Result<ScopeKey, RepoError> {
         )?,
         read_cohort(&row.cohort)?,
     )
+    .and_then(|key| {
+        // The ninth and tenth axes, from the same columns the two scope-key
+        // indexes read (D-196). Attached here rather than by every consumer,
+        // for the reason the eight above are: the window plane, the approval
+        // register and the supersession door all compare *loaded* keys, and a
+        // key that dropped the pair would compare equal across two rows that
+        // the store holds as two.
+        let meter = row
+            .meter
+            .as_deref()
+            .map(Meter::new)
+            .transpose()
+            .map_err(|e| DomainError::InvalidRequest(format!("pricing_price.meter: {e}")))?;
+        key.with_usage_line(meter, DimensionKey::new(&row.dimension_key))
+    })
     .map_err(|e| RepoError::CorruptRow(format!("pricing_price scope key: {e}")))
 }
 

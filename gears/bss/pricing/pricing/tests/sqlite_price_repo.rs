@@ -50,7 +50,7 @@ use bss_pricing::domain::price_row::{
     TierQualificationWindow,
 };
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use bss_pricing::infra::storage::entity::{audit_log, price, price_tier_band};
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -290,7 +290,21 @@ async fn a_created_row_and_its_bands_read_back_whole() {
     // `included_allowance`, as a D-129 supersession guard reporting that
     // nothing had changed.
     assert_eq!(read, created);
-    assert_eq!(read.scope_key, key);
+    // **The key the row is filed under carries the line the content named**
+    // (D-196 clause 3): `ScopeKeyRequest` has no meter member, so the row's own
+    // fields are the author's only way to state the line and the door derives
+    // the ninth and tenth axes from them. The key handed in here names no line;
+    // the key that comes back does, and it is the same key the two scope-key
+    // indexes hold the row under.
+    assert_eq!(
+        read.scope_key,
+        key.clone()
+            .with_usage_line(
+                Some(Meter::new("api_calls").expect("a non-blank meter")),
+                DimensionKey::new("region:eu"),
+            )
+            .expect("a usage key carries its line")
+    );
     assert_eq!(read.row.model_kind, Some(ModelKind::Graduated));
     assert_eq!(read.row.charge_kind, ChargeKind::Usage);
     assert_eq!(read.row.meter.as_deref(), Some("api_calls"));
@@ -939,6 +953,12 @@ async fn a_draft_may_shed_its_bands_and_its_tiered_kind_in_one_edit() {
     // band set is replaced **before** the row moves. Written as an ordinary
     // authoring edit rather than as a schema case, because that is what it is.
     let mut content = flat_content();
+    // The row was authored as a metered usage line, and the line is an axis
+    // since D-196 clause (3): an edit that dropped it would be asking to move
+    // the row to another key, which this door refuses. Carried forward
+    // explicitly so this case stays about the band set and the kind.
+    content.row.meter = Some("api_calls".to_owned());
+    content.row.dimension_key = "region:eu".to_owned();
     content.grandfather_until = Some(at(23));
     repo.update_draft(
         &scope,
@@ -1368,8 +1388,12 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
     let mut content = graduated_content();
     content.row.model_kind = Some(ModelKind::Volume);
     content.row.bands = vec![TierBand::open(0, money(7))];
-    content.row.meter = Some("api_bytes".to_owned());
-    content.row.dimension_key = String::new();
+    // **The line stays put, and that is D-196 clause (3) narrowing this case by
+    // exactly two columns.** `meter` and `dimensionKey` are axes of the canonical
+    // scope key now, not content, so an update may not move them — the case
+    // below asserts the refusal. Everything else here still moves.
+    content.row.meter = Some("api_calls".to_owned());
+    content.row.dimension_key = "region:eu".to_owned();
     content.row.billing_granularity = Some(BillingGranularity::PerDay);
     content.row.tier_aggregation_window = Some(TierAggregationWindow::InvoicePeriod);
     content.row.aggregation_function = Some(AggregationFunction::Peak);
@@ -1402,11 +1426,15 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
 
     assert_eq!(read.row.model_kind, Some(ModelKind::Volume));
     assert_eq!(read.row.bands, vec![TierBand::open(0, money(7))]);
-    assert_eq!(read.row.meter.as_deref(), Some("api_bytes"));
+    // The line is unchanged because an update may not move it (D-196 clause 3);
+    // what this case is about is every column that still moves.
+    assert_eq!(read.row.meter.as_deref(), Some("api_calls"));
     // The empty string is the empty-tuple sentinel, not an absent value: the
     // column is NOT NULL DEFAULT '' so the Slice-2 injectivity index collides
-    // undimensioned rows instead of treating them as distinct NULLs.
-    assert_eq!(read.row.dimension_key, "");
+    // undimensioned rows instead of treating them as distinct NULLs. It is now
+    // also the tenth axis's sentinel, which is why `''` had to stay unauthorable
+    // as a *meter* — see `Meter::new`.
+    assert_eq!(read.row.dimension_key, "region:eu");
     assert_eq!(
         read.row.billing_granularity,
         Some(BillingGranularity::PerDay)
@@ -1434,8 +1462,19 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
     assert_eq!(read.rounding_policy_ref, None);
     assert_eq!(read.supersedes_price_id, None);
 
-    // And nothing the update may not move has moved.
-    assert_eq!(read.scope_key, grandfathered_key(ChargeKind::Usage, at(9)));
+    // And nothing the update may not move has moved — including the usage line,
+    // which is an axis of the key rather than an editable content field since
+    // D-196 clause (3), so the update carries it forward rather than re-deriving
+    // it.
+    assert_eq!(
+        read.scope_key,
+        grandfathered_key(ChargeKind::Usage, at(9))
+            .with_usage_line(
+                Some(Meter::new("api_calls").expect("a non-blank meter")),
+                DimensionKey::new("region:eu"),
+            )
+            .expect("a usage key carries its line")
+    );
     assert_eq!(read.created_by, Uuid::from_u128(0xac_10));
     assert_eq!(read.created_at_utc, at(10));
     assert_eq!(read.row_version, RowVersion::new(1));
@@ -3017,4 +3056,258 @@ async fn a_grandfathered_generation_may_not_be_superseded() {
         state.contains("existing_grandfathered"),
         "the refusal names the class, got: {state}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-196 clause (3): the repository carries the usage line into and out of keys
+// ---------------------------------------------------------------------------
+
+/// The line a key names, as the authoring door receives it.
+fn usage_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
+    base_key(ChargeKind::Usage)
+        .with_usage_line(
+            meter.map(|m| Meter::new(m).expect("a non-blank meter")),
+            DimensionKey::new(dimension),
+        )
+        .expect("a usage key carries its line")
+}
+
+/// A usage row's content, carrying the same line its key does.
+fn usage_line_content(meter: Option<&str>, dimension: &str) -> PriceContent {
+    let mut content = flat_content();
+    content.row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    content.row.amount_minor = Some(money(1_000));
+    content.row.meter = meter.map(std::borrow::ToOwned::to_owned);
+    dimension.clone_into(&mut content.row.dimension_key);
+    content
+}
+
+#[tokio::test]
+async fn two_usage_lines_of_one_market_both_author() {
+    // D-103's confirmed example, through the door that refused it: the second
+    // line used to answer `DUPLICATE_SCOPE_KEY` because both rendered one key.
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            Uuid::from_u128(0xd1_96_01),
+            usage_key(Some("cloudlets"), ""),
+            usage_line_content(Some("cloudlets"), ""),
+        ),
+    )
+    .await
+    .expect("the first meter takes its key");
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            Uuid::from_u128(0xd1_96_02),
+            usage_key(Some("egress_gb"), ""),
+            usage_line_content(Some("egress_gb"), ""),
+        ),
+    )
+    .await
+    .expect("a second meter is a second key, which is the whole of D-196");
+}
+
+#[tokio::test]
+async fn the_occupancy_read_finds_a_meterless_occupant() {
+    // **The filter carries the same NULL trap the index did, one layer up.**
+    // A key with no meter renders `meter IS NULL`, and `Column::Meter.eq(None)`
+    // is `meter = NULL`, which matches nothing — so the occupancy read would
+    // answer "free" over an occupied key and the duplicate would be caught by
+    // the index as a driver error rather than by the door as a refusal.
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            Uuid::from_u128(0xd1_96_03),
+            usage_key(None, ""),
+            usage_line_content(None, ""),
+        ),
+    )
+    .await
+    .expect("the meterless line takes its key");
+
+    let err = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(
+                Uuid::from_u128(0xd1_96_04),
+                usage_key(None, ""),
+                usage_line_content(None, ""),
+            ),
+        )
+        .await
+        .expect_err("a second meterless line on one key must be refused");
+
+    assert!(
+        matches!(err, RepoError::DuplicateScopeKey(_)),
+        "the door refuses it by name, not the index by driver error: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_metered_line_does_not_occupy_the_meterless_key() {
+    // The other direction of the same filter: the two are different keys, so
+    // neither read may find the other.
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            Uuid::from_u128(0xd1_96_05),
+            usage_key(Some("cloudlets"), ""),
+            usage_line_content(Some("cloudlets"), ""),
+        ),
+    )
+    .await
+    .expect("the metered line takes its own key");
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            Uuid::from_u128(0xd1_96_06),
+            usage_key(None, ""),
+            usage_line_content(None, ""),
+        ),
+    )
+    .await
+    .expect("the meterless key is free");
+}
+
+#[tokio::test]
+async fn a_loaded_key_carries_the_line_it_was_filed_under() {
+    // `to_scope_key` rebuilds from the columns, so a round trip has to return
+    // the ninth and tenth axes or every consumer of a loaded key — the window
+    // plane, the approval register, the supersession door — compares keys that
+    // are equal on eight axes and different rows.
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xd1_96_07);
+
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            price_id,
+            usage_key(Some("cloudlets"), "region=eu"),
+            usage_line_content(Some("cloudlets"), "region=eu"),
+        ),
+    )
+    .await
+    .expect("author the dimensioned line");
+
+    let loaded = repo
+        .find(&scope, tenant(), price_id)
+        .await
+        .expect("read")
+        .expect("the row is there");
+
+    assert_eq!(
+        loaded.scope_key.meter().map(Meter::as_str),
+        Some("cloudlets")
+    );
+    assert_eq!(loaded.scope_key.dimension_key().as_str(), "region=eu");
+    assert_eq!(loaded.scope_key, usage_key(Some("cloudlets"), "region=eu"));
+}
+
+#[tokio::test]
+async fn a_content_naming_a_line_its_key_does_not_is_refused() {
+    // **A refusal, deliberately, where `charge_kind` gets a rewrite.**
+    // `authored_content` rewrites `charge_kind` from the key because the wire
+    // cannot express it — a placeholder is forced. The wire *can* express a
+    // meter, so a disagreement is a caller's mistake worth naming rather than
+    // one to paper over. And a silent rewrite here would be worse than untidy:
+    // it would make the D-82 unit guard's `meter` and `dimensionKey` clauses
+    // unreachable, which is exactly how `charge_kind`'s placeholder cost three
+    // Criticals on 2026-08-06.
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+
+    let err = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(
+                Uuid::from_u128(0xd1_96_08),
+                usage_key(Some("cloudlets"), ""),
+                usage_line_content(Some("egress_gb"), ""),
+            ),
+        )
+        .await
+        .expect_err("a row whose meter is not its key's must not be stored under either");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("cloudlets") && message.contains("egress_gb"),
+        "the refusal names both lines so the author can see which is wrong: {message}"
+    );
+}
+
+#[tokio::test]
+async fn an_update_may_not_move_the_row_to_another_line() {
+    // **The defect D-196 clause (3) exposed, pinned.** `update_draft` rewrote
+    // `meter` and `dimension_key` as ordinary content columns. Once the pair
+    // became key axes, that meant a `PATCH` could move a draft onto a *different*
+    // canonical scope key with no occupancy check anywhere on the path — the key
+    // another row might already hold — and the only thing that would notice is
+    // the partial `UNIQUE`, arriving as a driver error rather than as a refusal.
+    //
+    // The remedy this door names is the one its own doc already named for every
+    // other axis: delete the draft and author another one.
+    let (repo, _provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xd1_96_09);
+
+    let created = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(
+                price_id,
+                usage_key(Some("cloudlets"), ""),
+                usage_line_content(Some("cloudlets"), ""),
+            ),
+        )
+        .await
+        .expect("author the metered line");
+
+    let err = repo
+        .update_draft(
+            &scope,
+            tenant(),
+            price_id,
+            created.row_version,
+            usage_line_content(Some("egress_gb"), ""),
+            stamp(),
+        )
+        .await
+        .expect_err("an update may not move the row's line");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("cloudlets") && message.contains("egress_gb"),
+        "the refusal names the stored line and the submitted one: {message}"
+    );
+
+    // And the row is untouched — the refusal is before the write.
+    let read = repo
+        .find(&scope, tenant(), price_id)
+        .await
+        .expect("read")
+        .expect("the row survives a refused update");
+    assert_eq!(read.scope_key.meter().map(Meter::as_str), Some("cloudlets"));
+    assert_eq!(read.row_version, created.row_version);
 }

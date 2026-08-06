@@ -624,8 +624,19 @@ a dimension discriminates the dimensions *of* a meter, so with no meter it names
 admitting it would hand the store a second key for one meterless usage line, which is the
 duplicate this pair exists to prevent. Both refusals report `USAGE_LINE_AXIS_MISMATCH`, the code
 this rule owns for `COHORT_ELIGIBILITY_MISMATCH`'s reason: a publish-blocking rule with no code
-cannot be reported to the operator who has to fix it. **The rendering carries ten segments
-always**, `none` in both positions on a non-usage row: the rendered key is embedded in the
+cannot be reported to the operator who has to fix it. **The line is authored on the row and the axes are derived from it (normative, D-196 clause 3,
+2026-08-06).** Each axis of this key is stated by whichever half of a request can carry it, and
+for this pair that is the **content**: `chargeKind` is expressible only on the key, so a row's
+copy of it is rewritten *from* the key; `meter` and `dimensionKey` are expressible only on the
+row, so the key's ninth and tenth axes are derived *from* the row. Neither direction is a
+preference — in each case the other half has nothing to say. Two consequences follow and both
+are rules rather than incidents. **An authored row whose own line differs from a line its key
+already names is refused**, never silently reconciled, because a door that picked a winner would
+make the S3 supersession unit guard's `meter` and `dimensionKey` clauses unreachable — they
+compare the two rows, and two of the four components of the tier counter's key live there. **And
+an update may not move the line**, exactly as it may not move any other axis: the remedy is the
+one §4.3 already names for a key, delete the draft and author another. **The rendering carries
+ten segments always**, `none` in both positions on a non-usage row: the rendered key is embedded in the
 `DUPLICATE_SCOPE_KEY` message, in the approval register's held-key rows and in the registry
 idempotency key, so its arity has to be fixed rather than a function of the row. The physical
 half — how a nullable `meter` is kept from dissolving the uniqueness the two partial `UNIQUE`s

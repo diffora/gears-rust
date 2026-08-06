@@ -115,6 +115,20 @@ pub enum DomainError {
     /// has to clear one field.
     #[error("grandfathering horizon forbidden off the grandfathered class: {0}")]
     GrandfatherUntilForbidden(String),
+    /// A `(meter, dimensionKey)` pair that does not belong where it was put
+    /// (`01-foundation.md` §4.1, D-196).
+    ///
+    /// Two shapes reach it, and they are one rule: the pair on a charge kind
+    /// that cannot carry it (or a `dimensionKey` naming no meter), refused by
+    /// `domain::scope_key::check_usage_line_axes`; and an authored row whose own
+    /// line is not the one its canonical scope key names, refused by
+    /// `price_repo::check_authored_usage_line`. Both are "this line is not this
+    /// key's", which is the fact the author has to act on.
+    ///
+    /// [`GrandfatherUntilForbidden`](Self::GrandfatherUntilForbidden)'s sibling
+    /// in shape as well as in kind: one axis-conditioned rule, one code.
+    #[error("usage line axes disagree with the key: {0}")]
+    UsageLineAxisMismatch(String),
     /// A window was created with a start that is not strictly in the future
     /// (`07-pricewindow-linkage.md` §5, D-63, `inst-ws-future-start`).
     ///
