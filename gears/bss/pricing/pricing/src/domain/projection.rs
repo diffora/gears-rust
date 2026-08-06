@@ -530,6 +530,7 @@ fn price_value(record: &PriceRecord) -> JsonValue {
         scope_key,
         row,
         tax_inclusive,
+        tax_category_ref,
         billing_timing,
         rounding_policy_ref,
         grandfather_until,
@@ -545,6 +546,11 @@ fn price_value(record: &PriceRecord) -> JsonValue {
         "scopeKey": scope_key_value(scope_key),
         "lifecycleState": lifecycle_state.as_str(),
         "taxInclusive": tax_inclusive,
+        // The **authored** column. D-154's *resolved effective* category is a
+        // different field and is projected beside this one by the publish path,
+        // which is the only layer holding the readiness to coalesce against —
+        // see `PlanSubjectDelta::with_tax_projection`.
+        "taxCategoryRef": tax_category_ref,
         "billingTiming": billing_timing,
         "roundingPolicyRef": rounding_policy_ref,
         "grandfatherUntil": grandfather_until,

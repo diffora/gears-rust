@@ -26,6 +26,7 @@ use crate::domain::rules::MODEL_KIND_MISSING;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::tax_display::{RegionReadiness, RegionTaxReadiness, TaxDisplayPolicy};
 use crate::domain::taxonomy::REGION_UNKNOWN;
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
@@ -49,7 +50,31 @@ fn params(default_rounding_policy: Option<&str>) -> PublishRuleParams {
     //
     // `params_declaring` is what the three cases that are *about* the universe
     // use.
-    base_params(default_rounding_policy).with_declared_regions(declared(&["eu"]))
+    base_params(default_rounding_policy)
+        .with_declared_regions(declared(&["eu"]))
+        // And `eu`'s readiness, for the same reason it declares `eu` at all:
+        // `inst-td-policy` is registered in the Foundation set and C4 is
+        // fail-closed, so a fixture whose region declares no tax category would
+        // fail every case in this file on a rule none of them is about.
+        .with_tax_display(TaxDisplayPolicy::FailClosed, readiness_for(&["eu"]))
+}
+
+/// A readiness lookup declaring a category and a rate for each named region.
+fn readiness_for(regions: &[&str]) -> RegionTaxReadiness {
+    RegionTaxReadiness::new(
+        regions
+            .iter()
+            .map(|r| {
+                (
+                    (*r).to_owned(),
+                    RegionReadiness {
+                        tax_category: Some("standard".to_owned()),
+                        tax_rate_present: true,
+                    },
+                )
+            })
+            .collect(),
+    )
 }
 
 /// A region universe, as a set.
@@ -94,6 +119,7 @@ fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>)
         scope_key,
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: rounding.map(ToOwned::to_owned),
         grandfather_until: None,
@@ -397,7 +423,9 @@ fn a_tenant_with_no_declared_region_fails_closed_at_publish() {
 /// building on that one would make `params_declaring(&[])` declare `eu` anyway
 /// and the fail-closed case would silently test nothing.
 fn params_declaring(regions: &[&str]) -> PublishRuleParams {
-    base_params(Some("half_up")).with_declared_regions(declared(regions))
+    base_params(Some("half_up"))
+        .with_declared_regions(declared(regions))
+        .with_tax_display(TaxDisplayPolicy::FailClosed, readiness_for(regions))
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +491,7 @@ fn params_capped(bands: u32, rows: u32) -> PublishRuleParams {
         SoftSizeCaps::new(bands, rows),
     )
     .with_declared_regions(declared(&["eu"]))
+    .with_tax_display(TaxDisplayPolicy::FailClosed, readiness_for(&["eu"]))
 }
 
 fn advisories(report: &crate::domain::validation::ValidationReport) -> Vec<String> {

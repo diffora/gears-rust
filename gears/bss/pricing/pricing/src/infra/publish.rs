@@ -93,6 +93,7 @@ use crate::domain::publish::rules::{PublishRuleParams, SoftSizeCaps, run_publish
 use crate::domain::publish::{PlanPublishUnit, PublishAuthorization, PublishReceipt};
 use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::{PhaseId, PlanId};
+use crate::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
 use crate::domain::validation::ValidationReport;
 use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::fixture_gate::{FixtureGate, Reservation};
@@ -821,6 +822,28 @@ async fn rule_params(
     let declared_regions = taxonomy_repo::active_regions(runner, scope, tenant_id)
         .await
         .map_err(|e| repo_failure(&e))?;
+    // C4's `RegionTaxReadiness`, resolved in the same pass and for the same
+    // reason. One statement over the tenant's declared regions rather than one
+    // per market: a plan at C1's 20-currency floor spans as many, and twenty
+    // round trips inside the commit transaction is twenty chances to hold it
+    // open longer than it needs.
+    let readiness = RegionTaxReadiness::new(
+        taxonomy_repo::region_readiness_map(runner, scope, tenant_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .into_iter()
+            .map(|(region, markers)| {
+                (
+                    region,
+                    RegionReadiness {
+                        tax_category: markers.tax_category,
+                        tax_rate_present: markers.tax_rate_present,
+                    },
+                )
+            })
+            .collect(),
+    );
+    let tax_display_policy = policy.tax_display_policy().map_err(|e| repo_failure(&e))?;
     Ok(PublishRuleParams::new(
         policy.interval_bounds(),
         policy.descriptor_rule(),
@@ -834,7 +857,8 @@ async fn rule_params(
         ),
     )
     .with_referencing_markets(referencing)
-    .with_declared_regions(declared_regions))
+    .with_declared_regions(declared_regions)
+    .with_tax_display(tax_display_policy, readiness))
 }
 
 /// The registry request id of one publish unit.

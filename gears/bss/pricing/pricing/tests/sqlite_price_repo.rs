@@ -164,6 +164,7 @@ fn flat_content() -> PriceContent {
     PriceContent {
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: None,
         grandfather_until: None,
@@ -196,6 +197,7 @@ fn graduated_content() -> PriceContent {
     PriceContent {
         row,
         tax_inclusive: true,
+        tax_category_ref: None,
         billing_timing: Some("arrears".to_owned()),
         rounding_policy_ref: Some("half_even".to_owned()),
         grandfather_until: Some(at(23)),
@@ -450,6 +452,7 @@ async fn the_per_kind_money_columns_round_trip_on_the_kinds_that_carry_them() {
             PriceContent {
                 row: package,
                 tax_inclusive: false,
+                tax_category_ref: None,
                 billing_timing: None,
                 rounding_policy_ref: None,
                 grandfather_until: None,
@@ -476,6 +479,7 @@ async fn the_per_kind_money_columns_round_trip_on_the_kinds_that_carry_them() {
             PriceContent {
                 row: per_unit,
                 tax_inclusive: false,
+                tax_category_ref: None,
                 billing_timing: Some("advance".to_owned()),
                 rounding_policy_ref: None,
                 grandfather_until: None,
@@ -1502,6 +1506,7 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
     let package_content = PriceContent {
         row: package,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: None,
         grandfather_until: None,
@@ -1549,6 +1554,7 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
     let per_unit_content = PriceContent {
         row: per_unit,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: None,
         grandfather_until: None,

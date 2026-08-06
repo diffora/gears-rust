@@ -95,6 +95,7 @@ fn graduated_row() -> PriceRecord {
         .expect("the class pairs with cohort none"),
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,

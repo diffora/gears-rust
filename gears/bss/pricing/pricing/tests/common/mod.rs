@@ -296,8 +296,14 @@ pub async fn declare_fixture_regions(provider: &DBProvider<DbError>, tenant_id: 
             value: Set(value.to_owned()),
             display_name: Set(format!("fixture region {value}")),
             state: Set("active".to_owned()),
-            tax_category: Set(None),
-            tax_rate_present: Set(false),
+            // **Both D-01 markers declared**, and not for tidiness:
+            // `inst-td-policy` is registered in the Foundation set, its category
+            // arm is unconditional (D-154) and C4's rate arm is fail-closed, so a
+            // fixture region declaring neither would fail every publish in the
+            // crate on a rule none of those suites is about. A real operator
+            // declares them in the same `PUT` that declares the region.
+            tax_category: Set(Some("standard".to_owned())),
+            tax_rate_present: Set(true),
         };
         region_taxonomy::Entity::insert(row.clone())
             .secure()

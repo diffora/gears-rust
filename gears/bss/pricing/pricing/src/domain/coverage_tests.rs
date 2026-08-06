@@ -80,6 +80,7 @@ fn row_on(price_id: u128, scope_key: ScopeKey) -> PriceRecord {
             row
         },
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,

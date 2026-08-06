@@ -1178,6 +1178,7 @@ pub async fn seed_price(harness: &Harness, plan_id: Uuid, region: &str) -> Price
                 content: PriceContent {
                     row: PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat)),
                     tax_inclusive: false,
+                    tax_category_ref: None,
                     billing_timing: None,
                     rounding_policy_ref: None,
                     grandfather_until: None,
@@ -1489,6 +1490,7 @@ pub fn publishable_row() -> PriceContentAlias {
     PriceContentAlias {
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         // Its own policy, so the Foundation's rounding rule resolves without a
         // tenant policy row.

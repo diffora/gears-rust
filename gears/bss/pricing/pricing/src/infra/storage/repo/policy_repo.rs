@@ -65,6 +65,7 @@ use uuid::Uuid;
 
 use crate::config::LimitsConfig;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete};
+use crate::domain::tax_display::TaxDisplayPolicy;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::policy_object;
 
@@ -89,6 +90,7 @@ pub struct AuthoringPolicy {
     max_custom_interval_months: u32,
     additional_required_descriptors: Vec<String>,
     default_rounding_policy_ref: Option<String>,
+    tax_display_policy_mode: String,
 }
 
 impl AuthoringPolicy {
@@ -114,6 +116,11 @@ impl AuthoringPolicy {
             // implicit rounding PRD §17.4 refuses. A tenant without an entry
             // simply requires every published row to carry its own.
             default_rounding_policy_ref: None,
+            // C4 is fail-closed "for **all** tenants", so a tenant with no
+            // policy row is governed by it exactly as one with a row that says
+            // so. There is no deployment knob here for the same reason there is
+            // none for the rounding default.
+            tax_display_policy_mode: TaxDisplayPolicy::FailClosed.as_str().to_owned(),
         }
     }
 
@@ -173,6 +180,25 @@ impl AuthoringPolicy {
     #[must_use]
     pub fn default_rounding_policy_ref(&self) -> Option<&str> {
         self.default_rounding_policy_ref.as_deref()
+    }
+
+    /// C4's tax-display enforcement mode.
+    ///
+    /// An unreadable token is **not** a fallback to the default: the column's
+    /// `CHECK` admits exactly two values, so a third is an invariant breach and
+    /// resolving it to `fail_closed` would hide a corrupt row behind the safe
+    /// answer. It surfaces, which is `cap_or_default`'s discipline one field
+    /// over — a stored value the schema forbids is not a tenant preference.
+    ///
+    /// # Errors
+    /// [`RepoError::CorruptRow`] when the stored token is outside the `CHECK`.
+    pub fn tax_display_policy(&self) -> Result<TaxDisplayPolicy, RepoError> {
+        TaxDisplayPolicy::parse(&self.tax_display_policy_mode).ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "pricing_policy_object.tax_display_policy_mode `{}`",
+                self.tax_display_policy_mode
+            ))
+        })
     }
 }
 
@@ -286,6 +312,7 @@ impl PolicyObjectRepo {
             // Taken as stored, with no deployment fallback: see
             // `AuthoringPolicy::default_rounding_policy_ref`.
             default_rounding_policy_ref: row.default_rounding_policy_ref,
+            tax_display_policy_mode: row.tax_display_policy_mode,
         })
     }
 }

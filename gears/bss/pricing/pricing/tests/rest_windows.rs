@@ -2316,6 +2316,7 @@ fn delta_of(
             scope_key: key.clone(),
             row,
             tax_inclusive: false,
+            tax_category_ref: None,
             billing_timing: None,
             rounding_policy_ref: None,
             grandfather_until: None,

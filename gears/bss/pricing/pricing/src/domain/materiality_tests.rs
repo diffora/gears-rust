@@ -51,6 +51,7 @@ fn row(currency: &str, amount: i64) -> PriceRecord {
         scope_key: key(currency),
         row: shape,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: None,
         grandfather_until: None,

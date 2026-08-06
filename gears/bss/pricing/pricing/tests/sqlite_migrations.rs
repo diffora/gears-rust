@@ -294,6 +294,10 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_policy_object_notice_floor",
     "chk_pricing_policy_object_price_row_cap",
     "chk_pricing_policy_object_tax_display",
+    // Slice 4's C4 switch (`m20260802_000037`). Its neighbour above is a
+    // different fact under an adjacent name — that one is a display *basis*
+    // default, this one the fail-closed *enforcement* mode section 6 declares.
+    "chk_pricing_policy_object_tax_display_policy",
     "chk_pricing_policy_object_tier_band_cap",
     "chk_pricing_price_aggregation_function",
     "chk_pricing_price_aggregation_granularity",

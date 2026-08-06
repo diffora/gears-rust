@@ -127,6 +127,9 @@ use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, pla
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::rules::price_row_rules;
 use crate::domain::scope_key::{PriceEligibility, Region};
+use crate::domain::tax_display::{
+    MarketBasisUniform, RegionTaxReadiness, TaxBasisComplete, TaxDisplayPolicy,
+};
 use crate::domain::taxonomy::RegionsDeclared;
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
 
@@ -226,6 +229,8 @@ pub struct PublishRuleParams {
     size_caps: SoftSizeCaps,
     referencing_markets: Vec<ReferencingMarket>,
     declared_regions: BTreeSet<Region>,
+    tax_display_policy: TaxDisplayPolicy,
+    region_readiness: RegionTaxReadiness,
 }
 
 /// One market of one **bundle that references this plan as a component**, and the
@@ -287,6 +292,10 @@ impl PublishRuleParams {
             size_caps,
             referencing_markets: Vec::new(),
             declared_regions: BTreeSet::new(),
+            // C4's ratified default, so a caller that says nothing gets the
+            // fail-closed rule rather than the permissive one.
+            tax_display_policy: TaxDisplayPolicy::FailClosed,
+            region_readiness: RegionTaxReadiness::empty(),
         }
     }
 
@@ -320,6 +329,32 @@ impl PublishRuleParams {
     pub fn with_declared_regions(mut self, regions: BTreeSet<Region>) -> Self {
         self.declared_regions = regions;
         self
+    }
+
+    /// Attach C4's tax-display inputs: the tenant's enforcement mode and the
+    /// `RegionTaxReadiness` lookup (`inst-td-policy`, `inst-td-readiness`).
+    ///
+    /// The two travel together because neither is usable alone — the mode says
+    /// how to treat an incomplete basis and the readiness is what decides
+    /// whether one *is* incomplete — and a caller holding one without the other
+    /// would be a caller free to enforce a policy against an empty world, which
+    /// answers "incomplete" for every row.
+    #[must_use]
+    pub fn with_tax_display(
+        mut self,
+        policy: TaxDisplayPolicy,
+        readiness: RegionTaxReadiness,
+    ) -> Self {
+        self.tax_display_policy = policy;
+        self.region_readiness = readiness;
+        self
+    }
+
+    /// The readiness lookup, for the publish path's own projection of D-154's
+    /// resolved category.
+    #[must_use]
+    pub const fn region_readiness(&self) -> &RegionTaxReadiness {
+        &self.region_readiness
     }
 
     /// The tenant's default rounding policy, when it has one.
@@ -426,6 +461,14 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         .with_rule(Box::new(RegionsDeclared {
             declared: params.declared_regions.clone(),
         }))
+        // Slice 4's tax-display pair. In the Foundation set for
+        // `RegionsDeclared`'s reason: `tax_inclusive` is a column on every price
+        // row, so there is no publish these do not apply to.
+        .with_rule(Box::new(TaxBasisComplete {
+            policy: params.tax_display_policy,
+            readiness: params.region_readiness.clone(),
+        }))
+        .with_rule(Box::new(MarketBasisUniform))
 }
 
 /// `inst-bc-taxbasis`'s **reverse** half: this plan is a component, and its rows

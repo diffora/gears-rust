@@ -87,6 +87,7 @@ fn row() -> PriceRecord {
         scope_key: recurring_key(),
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: None,
         grandfather_until: None,

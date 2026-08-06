@@ -296,6 +296,10 @@ pub struct PriceContentView {
     pub included_allowance: Option<IncludedAllowanceView>,
     /// Whether the authored amounts are tax-inclusive. Absent is `false`.
     pub tax_inclusive: Option<bool>,
+    /// The row's tax category (D-110) — the **source of truth**, and the only
+    /// place one lives. Absent states none, and D-154 then resolves the region
+    /// taxonomy's default at publish; it is not the same as "no category".
+    pub tax_category_ref: Option<String>,
     /// `advance` | `arrears` — Slice-6-owned, so a free string here.
     pub billing_timing: Option<String>,
     /// The named rounding policy this row resolves against.
@@ -333,6 +337,7 @@ impl From<&PriceRecord> for PriceContentView {
                 }
             }),
             tax_inclusive: Some(record.tax_inclusive),
+            tax_category_ref: record.tax_category_ref.clone(),
             billing_timing: record.billing_timing.clone(),
             rounding_policy_ref: record.rounding_policy_ref.clone(),
             grandfather_until: record.grandfather_until,
@@ -1079,6 +1084,19 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
     Ok(PriceContent {
         row,
         tax_inclusive: view.tax_inclusive.unwrap_or(false),
+        // Blank is refused rather than stored: an empty category is a caller
+        // mistake naming one field, and letting it reach the column would make
+        // "states none" and "states the empty string" two spellings of one fact
+        // — which is the ambiguity `m20260802_000036` declines to encode.
+        tax_category_ref: match view.tax_category_ref.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(DomainError::InvalidRequest(
+                    "content.tax_category_ref must not be blank: omit it to state no category,                      which resolves the region's default at publish (D-154)"
+                        .to_owned(),
+                ));
+            }
+            other => other.map(ToOwned::to_owned),
+        },
         billing_timing: view.billing_timing.clone(),
         rounding_policy_ref: view.rounding_policy_ref.clone(),
         grandfather_until: view.grandfather_until,

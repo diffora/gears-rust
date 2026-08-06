@@ -58,6 +58,14 @@ pub struct Model {
     pub amount_minor: Option<i64>,
     pub model_kind: Option<String>,
     pub tax_inclusive: bool,
+    /// The row's tax category (D-110, `m20260802_000036`).
+    ///
+    /// **The source of truth and the only place a category lives** — §6 removes
+    /// the per-plan descriptor-set column that claimed to mirror it. `None` is
+    /// *the row states none*, which D-154 resolves against the region taxonomy's
+    /// default at publish; it is not "no category", and the two are what
+    /// `inst-td-policy`'s coalesce is about.
+    pub tax_category_ref: Option<String>,
     pub billing_timing: Option<String>,
     /// `subscription_seat_count` | `manual` — where a **non-usage** `per_unit`
     /// row gets its quantity. Usage rows never carry it: the meter supplies `Q`,

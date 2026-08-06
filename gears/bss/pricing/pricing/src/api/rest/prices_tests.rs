@@ -41,6 +41,7 @@ fn record(bands: Vec<TierBand>) -> PriceRecord {
             ..PriceRow::new(ChargeKind::Usage, None)
         },
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: None,
         grandfather_until: None,
@@ -128,6 +129,7 @@ fn clean_view() -> PriceContentView {
         max_hold_granules: None,
         included_allowance: None,
         tax_inclusive: Some(false),
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: None,
         grandfather_until: None,
