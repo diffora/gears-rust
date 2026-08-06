@@ -984,14 +984,44 @@ async fn refuse_mispaired(
     Ok(())
 }
 
-/// The eight canonical scope-key columns of a stored row, as a comparable tuple.
+/// The ten canonical scope-key columns of a stored row, as one comparable value.
+///
+/// A named alias rather than a bare tuple because the tuple grew past what clippy
+/// will read at a glance, and a reader counting axes against `01-foundation.md` §4.1
+/// should be counting them in one place.
+type ScopeKeyColumns<'a> = (
+    Uuid,
+    &'a str,
+    &'a str,
+    &'a str,
+    Uuid,
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<&'a str>,
+    &'a str,
+);
+
+/// The canonical scope-key columns of a stored row, as a comparable tuple.
 ///
 /// Compared column-wise rather than by parsing back into a [`ScopeKey`]: a row whose
 /// stored axis is outside its enumeration is a [`RepoError::CorruptRow`] that the
 /// callers' own reads will report with the subject attached, and a comparison that
 /// had to parse first would answer "corrupt" where the honest answer is "these two
 /// rows are not on one key".
-fn scope_key_columns(row: &price::Model) -> (Uuid, &str, &str, &str, Uuid, &str, &str, &str) {
+///
+/// **It compared eight columns while the key had ten, from D-196 until 2026-08-06.**
+/// Clause (3) attached the usage line to `to_scope_key` and to `scope_key_filter`
+/// and missed this third site, so `refuse_mispaired` — whose whole sentence is about
+/// key *identity* — read a successor on a **different meter of the same market** as
+/// being on the predecessor's key. It failed closed elsewhere, because D-82's unit
+/// guard compares `meter` between the two rows and answers
+/// `SUPERSESSION_UNIT_MISMATCH`, which is why no suite noticed; but a guard that
+/// cannot see two axes of the thing it is comparing is wrong even while a sibling
+/// covers for it. Found by reading this function on the way to the cutover's own row
+/// door, which is the third time in this crate that grepping the *fact* rather than
+/// the symbol has been the thing that worked.
+fn scope_key_columns(row: &price::Model) -> ScopeKeyColumns<'_> {
     (
         row.plan_id,
         row.currency.as_str(),
@@ -1001,6 +1031,8 @@ fn scope_key_columns(row: &price::Model) -> (Uuid, &str, &str, &str, Uuid, &str,
         row.price_eligibility.as_str(),
         row.charge_kind.as_str(),
         row.cohort.as_str(),
+        row.meter.as_deref(),
+        row.dimension_key.as_str(),
     )
 }
 
