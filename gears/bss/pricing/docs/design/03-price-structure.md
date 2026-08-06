@@ -454,7 +454,7 @@ which would make a draft successor collide with the very row it supersedes.
 
 ## 7. Events & Alarms
 
-No new event names: `PriceCreated` on row authoring, `PriceUpdated` on supersession
+No new event names: `PriceCreated` on row authoring, `PriceUpdated` on supersession. **This door is the producer, and it has a second (normative, D-203, 2026-08-06):** the event was declared with the gear and emitted by nothing until then, so every consumer counting row creations counted zero. The cutover's copy and successor are born *published* inside its commit and never pass this door, so `inst-gc-commit` emits it too through the same spelling; two producers are what make the name true. The payload carries **no** version ref, because a draft is addressable at no `CatalogVersion`
 (Foundation frozen set). A publish blocked by the `FixtureGate` is a synchronous 422; a
 **stale** fixture (registry drift after publish) raises the operational alarm
 `pricing.conformance.fixture_stale` (Warn) — the mispricing-risk signal that the §17.2
