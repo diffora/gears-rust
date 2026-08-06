@@ -110,6 +110,16 @@ fn every_trigger_carries_a_distinct_token() {
 /// compares** — the S7 route is unmounted and `insert_prepared` refuses a second draft
 /// on an occupied key. The registry's module doc carries that at full strength; what
 /// this list says is that the trigger has an owner here, which it does.
+///
+/// **`bundleComposition` and `revenueShareChange` joined on 2026-08-06**, when
+/// Slice 8 landed four tables, the composition's revision lifecycle,
+/// `infra::bundle`'s two `ChangeSet::of_act` declarations and three mounted routes.
+/// This list is a **transcription**, so it reddened on the flip and was updated in
+/// the same edit — which is the obligation it exists to create.
+///
+/// `grandfatheringCutover` is deliberately still absent while most of the cutover's
+/// store exists on this branch: the trigger is an *act*, no surface declares it
+/// yet, and the flip belongs to the commit that adds the declaration.
 #[test]
 fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
     let reachable: Vec<&str> = Trigger::ALL
@@ -125,6 +135,8 @@ fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
             "thresholdPolicyDiff",
             "windowCancellation",
             "windowShortening",
+            "bundleComposition",
+            "revenueShareChange",
             "noComputableRowDelta",
             "planShapeRevisionContent",
         ]

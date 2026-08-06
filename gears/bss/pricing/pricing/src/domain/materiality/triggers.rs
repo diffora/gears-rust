@@ -29,6 +29,24 @@
 //! that has to change because [`Trigger::ALL`] and both `match`es below are
 //! exhaustive.
 //!
+//! **Slice 8 flipped two of them on 2026-08-06** — `BundleComposition` and
+//! `RevenueShareChange` — and what that rests on is the whole subject being here:
+//! four tables, four entities, the composition's revision lifecycle,
+//! `infra::bundle`'s two `ChangeSet::of_act` declarations, and three mounted
+//! routes. That is the paragraph above working as designed rather than an
+//! exception to it.
+//!
+//! **`GrandfatheringCutover` stays `false`, and that is a live distinction rather
+//! than an oversight.** Most of the cutover's subject landed on this branch in the
+//! same stretch — `domain::cutover`'s compose, the generation key,
+//! `price_repo::commit_cutover_rows`, `infra::cutover::commit_cutover`, the act's
+//! identity — but the trigger is an **act**, and [`triggered`] reads it back from a
+//! change set some surface declared. No surface declares it: the cutover's
+//! orchestrator and its route are the two pieces still owed. So the flip belongs to
+//! the commit that adds `ChangeSet::of_act(Trigger::GrandfatheringCutover, ..)`,
+//! not to the one that finishes the store — which is exactly the line Slice 8
+//! crossed and this slice has not.
+//!
 //! # Two halves, because a trigger is either a property of the act or of the diff
 //!
 //! [`triggered`] answers the **act** half: "this call is a window cancellation" is
@@ -245,7 +263,9 @@ impl Trigger {
             | Self::ThresholdPolicyDiff
             | Self::NoComputableRowDelta
             | Self::PlanShapeRevisionContent
-            | Self::GrandfatherHorizonTightening => true,
+            | Self::GrandfatherHorizonTightening
+            | Self::BundleComposition
+            | Self::RevenueShareChange => true,
             Self::GrandfatheringCutover
             | Self::RetirementUnwindingACutover
             | Self::ImmediateMembershipReresolution
@@ -255,8 +275,6 @@ impl Trigger {
             | Self::PrepaidGateClearingRepublish
             | Self::GrantNonPriceField
             | Self::PriceOverlayMutation
-            | Self::BundleComposition
-            | Self::RevenueShareChange
             | Self::PlanRetirement => false,
         }
     }
