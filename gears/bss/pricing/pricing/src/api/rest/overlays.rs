@@ -66,6 +66,8 @@ use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
 use crate::api::rest::state::AuthoringState;
 use crate::domain::error::DomainError;
+use crate::domain::materiality::triggers::Trigger;
+use crate::domain::materiality::{self, ChangeSet};
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::{
     Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
@@ -258,6 +260,11 @@ pub struct SubmitAcceptedView {
     /// no-delta rule applies and no threshold can make it immaterial. Stated in
     /// the response because an operator who expected auto-publish under a
     /// configured threshold needs the reason, not only the outcome.
+    ///
+    /// **Evaluated, not asserted** — see [`overlay_submit_materiality`]. It held this
+    /// token as a literal until 2026-08-06, which was a second spelling of
+    /// `MaterialityReason::as_str`'s in a crate whose rule is that a token has one
+    /// home; the two agreed, and nothing but the coincidence kept them agreeing.
     pub materiality: String,
     /// The advisory findings the pipeline raised. Warnings never block, and this
     /// is the channel that makes them advisory — the `ValidationFailed` envelope
@@ -777,7 +784,7 @@ async fn submit_overlay(
         Json(SubmitAcceptedView {
             price_overlay_id,
             revision: record.revision,
-            materiality: "alwaysMaterialTrigger".to_owned(),
+            materiality: overlay_submit_materiality()?,
             warnings: report
                 .warnings
                 .iter()
@@ -790,6 +797,55 @@ async fn submit_overlay(
         }),
     )
         .into_response())
+}
+
+/// The materiality verdict an overlay submit carries — **evaluated, not asserted**.
+///
+/// `api::rest::threshold_policy::policy_diff_materiality`'s shape, for its reason:
+/// the token an operator reads is produced by the same evaluator every other unit's
+/// is, so two units compared by a reader are two answers from one function rather
+/// than one answer and one literal. It passes no policy and no baseline, and that is
+/// not a shortcut — [`materiality::evaluate`] examines the **act** half before it
+/// consults either, so a configured threshold cannot reach this act. D-50 in the
+/// evaluator's own terms.
+///
+/// # This call is what makes `Trigger::PriceOverlayMutation` real
+///
+/// `Trigger::subject_exists_in_this_crate` answers `true` for this trigger, and for
+/// an **act**-half trigger that predicate is a claim about a *declaration*: the act
+/// half is `ChangeSet::act()`, reachable through nothing but [`ChangeSet::of_act`],
+/// so a trigger no surface constructs can never be answered by the evaluator however
+/// many tables its subject has. `domain::materiality::triggers`' module doc records
+/// that at length for `GrandfatheringCutover`, whose store landed three commits
+/// before its declaration and which stayed `false` throughout.
+///
+/// **A declaration is not the same as a `pub fn` that builds one**, which is the
+/// sharper half and the reason this sits on a mounted route's path rather than in a
+/// constructor beside the repository: `infra::bundle::composition_change_set` and
+/// `rev_share_change_set` are exactly such constructors, they have **no caller
+/// anywhere in the crate**, and `BundleComposition` and `RevenueShareChange` answer
+/// `true` on the strength of them. Nothing evaluates them, so D-104's rule is not
+/// enforced on the bundle publish route today.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the verdict carries no reason. The only verdict
+/// that does is a threshold-tripped one, and the act half answers above every
+/// threshold — so this is unreachable, and it is *reported* rather than unwrapped
+/// because the alternative is either a panic on a route or a literal fallback, and a
+/// literal fallback is the very duplication this function removes.
+fn overlay_submit_materiality() -> Result<String, CanonicalError> {
+    materiality::evaluate(
+        &ChangeSet::of_act(Trigger::PriceOverlayMutation, Vec::new()),
+        /* policy */ None,
+        /* baseline */ None,
+    )
+    .reason()
+    .map(|reason| reason.as_str().to_owned())
+    .ok_or_else(|| {
+        CanonicalError::from(DomainError::Internal(
+            "a declared act evaluated to a verdict with no reason".to_owned(),
+        ))
+    })
 }
 
 /// `POST /bss-pricing/v1/price-overlays/{overlayId}/submit`.

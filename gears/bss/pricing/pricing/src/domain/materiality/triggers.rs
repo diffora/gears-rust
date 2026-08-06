@@ -274,7 +274,8 @@ impl Trigger {
             | Self::GrandfatherHorizonTightening
             | Self::BundleComposition
             | Self::RevenueShareChange
-            | Self::GrandfatheringCutover => true,
+            | Self::GrandfatheringCutover
+            | Self::PriceOverlayMutation => true,
             Self::RetirementUnwindingACutover
             | Self::ImmediateMembershipReresolution
             | Self::BulkGroupMove
@@ -282,7 +283,6 @@ impl Trigger {
             | Self::GaGateClearingRepublish
             | Self::PrepaidGateClearingRepublish
             | Self::GrantNonPriceField
-            | Self::PriceOverlayMutation
             | Self::PlanRetirement => false,
         }
     }

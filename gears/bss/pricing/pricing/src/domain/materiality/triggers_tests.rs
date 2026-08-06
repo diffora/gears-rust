@@ -136,10 +136,25 @@ fn every_trigger_carries_a_distinct_token() {
 /// This list is a **transcription**, so it reddened on the flip and was updated in
 /// the same edit — which is the obligation it exists to create.
 ///
-/// **`grandfatheringCutover` joined last**, and later than its own store by three
-/// commits: it waited for `infra::cutover::cutover_in` to *declare* the act through
+/// **`grandfatheringCutover` joined later than its own store by three commits**: it
+/// waited for `infra::cutover::cutover_in` to *declare* the act through
 /// `ChangeSet::of_act`, because that is what the predicate is about. A table is not
 /// a declaration.
+///
+/// **`priceOverlayMutation` joined on the merge of Slice 9's overlay half**, and it
+/// waited for the same thing. The strand landed three tables, three entities, a
+/// revision lifecycle and four mounted operations, and the trigger stayed `false`
+/// through all of it because the submit route wrote its `materiality` token as a
+/// **literal** — so nothing in the crate constructed the change set the act half
+/// reads back. `api::rest::overlays::overlay_submit_materiality` is the declaration,
+/// and this list moved with it.
+///
+/// **Two members of this list do not meet that bar**, and the honest place to say so
+/// is here rather than in a register nobody greps: `bundleComposition` and
+/// `revenueShareChange` are declared by `infra::bundle::composition_change_set` and
+/// `rev_share_change_set`, which **have no caller** — `publish_bundle` evaluates no
+/// verdict at all. Their subjects are unarguably here, which is what the predicate
+/// literally asks; what is missing is the evaluation, and with it D-104's rule.
 #[test]
 fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
     let reachable: Vec<&str> = Trigger::ALL
@@ -154,6 +169,7 @@ fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
             "grandfatherHorizonTightening",
             "grandfatheringCutover",
             "thresholdPolicyDiff",
+            "priceOverlayMutation",
             "windowCancellation",
             "windowShortening",
             "bundleComposition",
