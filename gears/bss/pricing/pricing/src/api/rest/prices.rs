@@ -160,7 +160,16 @@ pub struct ScopeKeyRequest {
     pub cohort: Option<DateTime<Utc>>,
 }
 
-/// The eight axes as the store holds them.
+/// The ten axes as the store holds them.
+///
+/// **Two more members than [`ScopeKeyRequest`], and the asymmetry is D-196's.**
+/// The usage line is authored on the *content* view — a request naming it on the
+/// key would be a second place to state one fact — so `ScopeKeyRequest` has no
+/// `meter` and no `dimension_key`, while the key a row is **filed under** carries
+/// both. This view is the store's rendering, not an echo of the request, and it
+/// rendered eight until 2026-08-06: two rows on two meters of one market answered
+/// with byte-identical `scope_key` objects, so a reviewer reading the approval
+/// surface saw one key twice and no way to tell which line they were approving.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct ScopeKeyView {
@@ -180,6 +189,15 @@ pub struct ScopeKeyView {
     pub charge_kind: String,
     /// Axis 8, `null` when the row retains nobody.
     pub cohort: Option<DateTime<Utc>>,
+    /// Axis 9 — the metering unit, `null` on a row that is not metered (D-196).
+    pub meter: Option<String>,
+    /// Axis 10 — the dimension discriminator on the line, `null` for the
+    /// undimensioned one (D-196).
+    ///
+    /// `null` rather than the store's `''` sentinel, for [`Self::cohort`]'s
+    /// reason: an empty string on the wire is a value a caller can read as one,
+    /// and "no dimension" is an absence. The sentinel is the column's business.
+    pub dimension_key: Option<String>,
 }
 
 impl From<&ScopeKey> for ScopeKeyView {
@@ -193,6 +211,9 @@ impl From<&ScopeKey> for ScopeKeyView {
             price_eligibility: key.price_eligibility().as_str().to_owned(),
             charge_kind: key.charge_kind().as_str().to_owned(),
             cohort: key.cohort().generation(),
+            meter: key.meter().map(|meter| meter.as_str().to_owned()),
+            dimension_key: (!key.dimension_key().is_none())
+                .then(|| key.dimension_key().as_str().to_owned()),
         }
     }
 }

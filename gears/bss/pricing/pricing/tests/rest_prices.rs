@@ -1064,6 +1064,72 @@ async fn every_price_record_carries_the_before_and_after_state_its_action_implie
 }
 
 #[tokio::test]
+async fn two_lines_of_one_market_render_two_distinct_keys() {
+    // **The read side of D-196 clause (3), on the wire.** `ScopeKeyRequest` has no
+    // usage-line member by decision — the line is authored on the content — but the
+    // *response* view is the store's rendering of what a row is filed under, and it
+    // showed eight axes. So two rows on two meters of one market answered with byte-
+    // identical `scope_key` objects, and the surface a reviewer approves from could
+    // not tell them apart. Nothing here is about what a caller may say; it is about
+    // what they are told.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let author = async |meter: &str, key: &str| {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &prices_path(plan_id),
+                Some(serde_json::json!({
+                    "scope_key": {
+                        "currency": "USD",
+                        "region": "EU",
+                        "phase": harness_phase(),
+                        "price_eligibility": "all_subscriptions",
+                        "charge_kind": "usage",
+                        "cohort": serde_json::Value::Null
+                    },
+                    "content": {
+                        "model_kind": "per_unit",
+                        "amount_minor": 700,
+                        "tax_inclusive": false,
+                        "meter": meter,
+                        "billing_granularity": "per_hour"
+                    }
+                })),
+                &keyed(key),
+            ))
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "{:?}",
+            response.body()
+        );
+        body_json(response).await
+    };
+
+    let cloudlets = author("cloudlets", "d196-view-1").await;
+    let egress = author("egress_gb", "d196-view-2").await;
+
+    assert_ne!(
+        cloudlets["scope_key"], egress["scope_key"],
+        "two meters of one market are two keys and the view has to say so: {} vs {}",
+        cloudlets["scope_key"], egress["scope_key"]
+    );
+    assert_eq!(
+        cloudlets["scope_key"]["meter"],
+        serde_json::json!("cloudlets")
+    );
+    assert_eq!(
+        cloudlets["scope_key"]["dimension_key"],
+        serde_json::Value::Null,
+        "the undimensioned line renders as absent rather than as the store's empty sentinel"
+    );
+}
+
+#[tokio::test]
 async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
     // **The hole D-196 clause (3) opened on this path, pinned.** The usage line
     // is authored on the *content* view — `ScopeKeyRequest` has no `meter`
