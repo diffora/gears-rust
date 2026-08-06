@@ -375,22 +375,117 @@ fn the_copys_window_is_open_ended_so_the_d04_bound_holds_by_construction() {
 // The act's identity and the keys it holds (`inst-gc-api`, `inst-co-single-pending`)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn the_act_is_named_by_the_plan_and_the_instant_and_not_by_its_keys() {
-    // `inst-gc-api` makes the act idempotent per `(planId, cutover instant)`. The
-    // selected keys are content, not identity: rendering the set into the subject
-    // would make a retry that adds or drops one key a *different* act, so the second
-    // submit would open a second unit instead of finding the first, and an approval
-    // of either would authorize a set nobody reviewed.
-    let one = crate::infra::cutover::cutover_unit_ref(predecessor_key().plan_id(), at(10));
-    let same_act_more_keys =
-        crate::infra::cutover::cutover_unit_ref(predecessor_key().plan_id(), at(10));
-    let other_instant =
-        crate::infra::cutover::cutover_unit_ref(predecessor_key().plan_id(), at(11));
+/// A second selectable key on the predecessor's plan: another market.
+fn sibling_market_key() -> ScopeKey {
+    ScopeKey::new(
+        predecessor_key().plan_id(),
+        CurrencyCode::new("USD").expect("three letters"),
+        Region::new("US").expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("all_subscriptions pairs with cohort none")
+}
 
-    assert_eq!(one, same_act_more_keys);
+#[test]
+fn two_selections_at_one_instant_are_two_acts() {
+    // D-28: the act is `(planId, key-set hash, cutover instant)`. A selection is
+    // *what is being cut over*, so narrowing or widening it is a different request
+    // and must not be answered by the unit already standing for the other one. With
+    // the selection out of the name, a retry that dropped a key would find the wider
+    // unit by subject, be reported `submitted`, and an approver would authorize the
+    // key the operator had just removed.
+    let plan = predecessor_key().plan_id();
+
+    let one_key = crate::infra::cutover::cutover_unit_ref(plan, &[predecessor_key()], at(10));
+    let two_keys = crate::infra::cutover::cutover_unit_ref(
+        plan,
+        &[predecessor_key(), sibling_market_key()],
+        at(10),
+    );
+
+    assert_ne!(
+        one_key, two_keys,
+        "one key and two are two different acts at one instant"
+    );
+}
+
+#[test]
+fn one_selection_named_in_any_order_is_one_act() {
+    // The other half, and the half that makes the hash a *set* hash: the selector is
+    // a set, so two orderings of one selection are one act and a retry of it finds
+    // the unit it opened. A repeated key is the same selection named twice.
+    let plan = predecessor_key().plan_id();
+
+    let forwards = crate::infra::cutover::cutover_unit_ref(
+        plan,
+        &[predecessor_key(), sibling_market_key()],
+        at(10),
+    );
+    let backwards = crate::infra::cutover::cutover_unit_ref(
+        plan,
+        &[sibling_market_key(), predecessor_key()],
+        at(10),
+    );
+    let repeated = crate::infra::cutover::cutover_unit_ref(
+        plan,
+        &[predecessor_key(), sibling_market_key(), predecessor_key()],
+        at(10),
+    );
+
+    assert_eq!(forwards, backwards, "a set has no order");
+    assert_eq!(forwards, repeated, "a set holds a key once");
+}
+
+#[test]
+fn the_act_names_the_plan_the_selection_and_the_instant() {
+    // The two remaining discriminators, and the shape a store and an operator read.
+    let plan = predecessor_key().plan_id();
+    let selection = [predecessor_key()];
+
+    let one = crate::infra::cutover::cutover_unit_ref(plan, &selection, at(10));
+    let other_instant = crate::infra::cutover::cutover_unit_ref(plan, &selection, at(11));
+
     assert_ne!(one, other_instant, "two dates are two acts");
     assert!(one.contains("/cutover/"), "the act names its kind: {one}");
+    assert!(
+        one.starts_with(&format!("{}/", plan.get())),
+        "`subject_aggregate` refuses a subject that is not `<plan_id>/<rest>`: {one}"
+    );
+}
+
+#[test]
+fn two_usage_lines_of_one_market_are_two_selections() {
+    // The key-set hash is taken over the *canonical* rendering, so it discriminates
+    // on all ten axes rather than on the eight a hand-written encoding would list.
+    // Two meters of one market are two selections, which is the same fact C1 had to
+    // restate for the sellability gate.
+    let plan = predecessor_key().plan_id();
+    let line = |meter: &str| {
+        ScopeKey::new(
+            plan,
+            CurrencyCode::new("EUR").expect("three letters"),
+            Region::new("EU").expect("a non-blank region"),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+        )
+        .expect("all_subscriptions pairs with cohort none")
+        .with_usage_line(
+            Some(Meter::new(meter).expect("a non-blank meter")),
+            DimensionKey::none(),
+        )
+        .expect("a usage row carries a usage line")
+    };
+
+    assert_ne!(
+        crate::infra::cutover::cutover_unit_ref(plan, &[line("api-calls")], at(10)),
+        crate::infra::cutover::cutover_unit_ref(plan, &[line("storage-gb")], at(10)),
+        "two meters of one market are two acts"
+    );
 }
 
 #[test]

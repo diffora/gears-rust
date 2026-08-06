@@ -6,11 +6,12 @@
 //! grandfathered copy, on a new generation of the predecessor's key, born in the
 //! same transaction as the successor that replaces it.
 
+use aws_lc_rs::digest::{SHA256, digest as sha256};
 use chrono::{DateTime, Utc};
 use toolkit_db::secure::{AccessScope, DbTx};
 use uuid::Uuid;
 
-use crate::domain::audit::AuditStamp;
+use crate::domain::audit::{AuditStamp, hex_bytes};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::cutover::{ComposedCutover, grandfathered_copy_key};
 use crate::domain::error::DomainError;
@@ -202,27 +203,90 @@ pub async fn commit_cutover(
     })
 }
 
-/// The name of one cutover **act**, as its approval unit and any retry of the
-/// request look it up by.
+/// Domain separation for the key-set hash, so a digest that names an **act** can
+/// never be confused with one that pins **content**.
 ///
-/// **`inst-gc-api` makes the act idempotent per `(planId, cutover instant)`, and the
-/// selected keys are deliberately not in it.** That is the one real difference from
-/// [`supersession_unit_ref`](crate::infra::supersession::supersession_unit_ref),
-/// which carries its key: a supersession *is* a change on one key, so the key is
-/// part of which act it is. A cutover names a whole **set** of keys in its payload,
-/// and rendering the set into the subject would make a retry that adds or drops one
-/// key a *different* act — so the second submit would open a second unit instead of
-/// finding the first, and an approval of either would authorize a set nobody
-/// reviewed. The set is content, and content is what the approval **pin** is for.
+/// The crate's other two digests carry their own
+/// ([`CONTENT_PIN_DOMAIN_SEP`](crate::domain::approval::content_pin::CONTENT_PIN_DOMAIN_SEP),
+/// `THRESHOLD_PIN_DOMAIN_SEP`), and this one is read by a different comparison
+/// than either: the subject register matches it for equality, while a pin is
+/// compared against a re-derivation at approve.
+const CUTOVER_KEY_SET_SEP: &[u8] = b"VHP-BSS-PRICING-CUTOVER-KEYSET-v1\x1f";
+
+/// The hash of the **selected** keys, as D-28 names it.
+///
+/// **A set, so it is sorted and deduplicated first.** The selector is a set in the
+/// payload and nothing downstream makes it a list, so two orderings of one
+/// selection are one act and a key named twice is one member. Sorting is over the
+/// canonical [`ScopeKey`] rendering, which is total and stable.
+///
+/// **Length-framed, so two selections cannot be re-split into each other.** The
+/// axis values are operator-supplied strings and nothing forbids a separator
+/// character inside one, so a plain join would let two distinct selections share a
+/// preimage — the hazard `content_pin`'s framing exists for, met here at a
+/// different layer.
+///
+/// It hashes [`ScopeKey`]'s own rendering rather than an encoding written out
+/// here, and that is the point rather than a shortcut: `Display` is fixed at ten
+/// segments by its own doc, so this hash discriminates on every axis the key has
+/// and gains an eleventh without being edited. A hand-listed encoding is what left
+/// `content_pin::put_scope_key` on eight.
+fn key_set_hash(selected: &[ScopeKey]) -> String {
+    let mut rendered: Vec<String> = selected.iter().map(ScopeKey::to_string).collect();
+    rendered.sort_unstable();
+    rendered.dedup();
+
+    let mut preimage = CUTOVER_KEY_SET_SEP.to_vec();
+    preimage.extend_from_slice(
+        &u64::try_from(rendered.len())
+            .unwrap_or(u64::MAX)
+            .to_be_bytes(),
+    );
+    for key in &rendered {
+        preimage.extend_from_slice(&u64::try_from(key.len()).unwrap_or(u64::MAX).to_be_bytes());
+        preimage.extend_from_slice(key.as_bytes());
+    }
+    hex_bytes(sha256(&SHA256, &preimage).as_ref())
+}
+
+/// The name of one cutover **act**, as its approval unit and any retry of the
+/// request look it up by: `(planId, key-set hash, cutover instant)`.
+///
+/// **D-28 (decided 2026-07-10) and S7 §5's API row both spell it that way**, and
+/// this function dropped the middle term between `cf6af5c3d` and 2026-08-06,
+/// citing `inst-gc-api` — which states no idempotency rule at all. The argument
+/// recorded then was that the selection is content and rendering it into the
+/// subject would make a narrowed retry a different act. It is a different act:
+/// the selection is *what is being cut over*, so a retry that drops a key is a
+/// second request, and answering it out of the unit standing for the wider
+/// selection is the failure rather than the protection. The caller is told
+/// `submitted`, believes their narrower set is under review, and an approver
+/// authorizes the key they removed.
+///
+/// **Nothing is lost by naming the selection, because a second unit over
+/// overlapping keys does not open.** `inst-co-single-pending` pends every touched
+/// key, so an overlapping second selection is refused at submit by name; a
+/// *disjoint* second selection is two genuinely different acts on different keys,
+/// and both may proceed. The subject was never what kept the two apart.
+///
+/// The difference from
+/// [`supersession_unit_ref`](crate::infra::supersession::supersession_unit_ref) is
+/// therefore only in arity: that act names its one key, this one names its set,
+/// and both name what they change.
 ///
 /// The instant is at the millisecond quantum for `supersession_unit_ref`'s reason:
 /// it is matched for equality by a retry, and two renderings of one instant at
 /// different resolutions are two subjects.
 #[must_use]
-pub fn cutover_unit_ref(plan_id: PlanId, cutover_at: DateTime<Utc>) -> String {
+pub fn cutover_unit_ref(
+    plan_id: PlanId,
+    selected: &[ScopeKey],
+    cutover_at: DateTime<Utc>,
+) -> String {
     format!(
-        "{}/cutover/{}",
+        "{}/cutover/{}/{}",
         plan_id.get(),
+        key_set_hash(selected),
         cutover_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     )
 }
