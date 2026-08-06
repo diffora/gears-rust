@@ -1,0 +1,883 @@
+//! `TaxonomyRepo` against a real database — the read and write surface the four
+//! taxonomies did not have (`design/04-currency-tax.md` §3, §5, §6).
+//!
+//! `sqlite_taxonomy_store.rs` proves the **schema**: the composite key, the state
+//! enumeration, the blank-value refusal, and the two `tax_*` columns §6 puts on
+//! the region taxonomy alone. This suite proves the **repository** — that a `PUT`
+//! is a whole-set replacement, that absence retires rather than deletes, that
+//! `inst-tx-mutation`'s guard actually consults both referencing planes, and that
+//! C4's readiness lookup distinguishes an undeclared region from a declared one
+//! with no default category.
+//!
+//! Those are different claims and neither implies the other. A repository that
+//! writes only valid values catches a constraint that got narrower and never one
+//! that stopped refusing; a schema suite catches a `CHECK` that changed and never
+//! a guard the repository forgot to call.
+
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::ActiveValue::Set;
+use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm_migration::MigratorTrait;
+use toolkit_db::migration_runner::run_migrations_for_testing;
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
+use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+use uuid::Uuid;
+
+use bss_pricing::infra::storage::entity::{audit_log, plan, price, price_overlay};
+use bss_pricing::infra::storage::migrations::Migrator;
+
+use bss_pricing::domain::audit::AuditStamp;
+use bss_pricing::domain::overlay::ScopeValue;
+use bss_pricing::domain::scope_key::Region;
+use bss_pricing::domain::taxonomy::{
+    RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState,
+};
+use bss_pricing::infra::storage::repo::taxonomy_repo::{
+    TaxonomyRepo, active_regions, references_to, region_readiness,
+};
+
+const TENANT: Uuid = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
+const OTHER_TENANT: Uuid = Uuid::from_u128(0x9999_9999_9999_9999_9999_9999_9999_9999);
+
+fn now() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0)
+        .single()
+        .expect("the fixed instant is unambiguous")
+}
+
+fn stamp() -> AuditStamp {
+    AuditStamp {
+        actor_principal_id: Uuid::from_u128(0xac_10),
+        recorded_at: now(),
+        correlation_id: Uuid::from_u128(0xc0_11),
+    }
+}
+
+fn entry(value: &str, state: TaxonomyState) -> TaxonomyEntry {
+    TaxonomyEntry {
+        value: ScopeValue::new(value).expect("non-blank"),
+        display_name: format!("label for {value}"),
+        state,
+        tax: None,
+    }
+}
+
+fn region_entry(value: &str, category: Option<&str>, rate_present: bool) -> TaxonomyEntry {
+    TaxonomyEntry {
+        value: ScopeValue::new(value).expect("non-blank"),
+        display_name: format!("label for {value}"),
+        state: TaxonomyState::Active,
+        tax: Some(RegionTaxMarkers {
+            tax_category: category.map(ToOwned::to_owned),
+            tax_rate_present: rate_present,
+        }),
+    }
+}
+
+fn values(entries: &[TaxonomyEntry]) -> Vec<(&str, TaxonomyState)> {
+    entries
+        .iter()
+        .map(|e| (e.value.as_str(), e.state))
+        .collect()
+}
+
+/// A migrated in-memory database, as every repository suite in this crate builds one.
+async fn provider() -> DBProvider<DbError> {
+    let db = connect_db("sqlite::memory:", ConnectOpts::default())
+        .await
+        .expect("connect in-memory sqlite");
+    run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("run migrator");
+    DBProvider::<DbError>::new(db)
+}
+
+/// The repository, the scope every call takes, and the provider the seeds and
+/// the direct reads go through.
+///
+/// The provider is handed back rather than held in a static for
+/// `sqlite_overlay_repo`'s reason: these cases run in one process and a shared
+/// database would let one case's seed decide another's verdict.
+async fn harness() -> (TaxonomyRepo, AccessScope, DBProvider<DbError>) {
+    let provider = provider().await;
+    (
+        TaxonomyRepo::new(provider.clone()),
+        AccessScope::allow_all(),
+        provider,
+    )
+}
+
+/// How many audit records name one taxonomy.
+async fn audit_records_for(provider: &DBProvider<DbError>, subject_ref: &str) -> u64 {
+    let conn = provider.conn().expect("conn");
+    audit_log::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(audit_log::Column::TenantId.eq(TENANT))
+                .add(audit_log::Column::SubjectRef.eq(subject_ref)),
+        )
+        .count(&conn)
+        .await
+        .expect("count audit rows")
+}
+
+// ---------------------------------------------------------------------------
+// The `PUT` is the whole set.
+// ---------------------------------------------------------------------------
+
+/// The first `PUT` on an empty taxonomy declares its values.
+#[tokio::test]
+async fn a_first_put_declares_the_whole_set() {
+    let (repo, scope, _provider) = harness().await;
+
+    let result = repo
+        .replace(
+            &scope,
+            TENANT,
+            TaxonomyClass::Brand,
+            vec![
+                entry("acme", TaxonomyState::Active),
+                entry("zenith", TaxonomyState::Active),
+            ],
+            stamp(),
+        )
+        .await
+        .expect("the first put lands");
+
+    assert!(result.report.is_publishable(), "nothing to guard yet");
+    assert_eq!(
+        values(&result.entries),
+        [
+            ("acme", TaxonomyState::Active),
+            ("zenith", TaxonomyState::Active)
+        ],
+        "and the response is the taxonomy as it now stands, ordered by value"
+    );
+}
+
+/// A value the body leaves out is **retired**, not deleted.
+///
+/// The distinction is the module's central decision. Deleting would break the
+/// guard's whole purpose — a value a published row names has to keep existing,
+/// because the row keeps naming it — and it would make re-activation, which §6
+/// explicitly permits, reachable only by re-inventing the string.
+#[tokio::test]
+async fn a_value_the_body_omits_is_retired_and_still_readable() {
+    let (repo, scope, _provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        vec![
+            entry("acme", TaxonomyState::Active),
+            entry("zenith", TaxonomyState::Active),
+        ],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+
+    let result = repo
+        .replace(
+            &scope,
+            TENANT,
+            TaxonomyClass::Brand,
+            vec![entry("acme", TaxonomyState::Active)],
+            stamp(),
+        )
+        .await
+        .expect("the second put lands");
+
+    assert_eq!(
+        values(&result.entries),
+        [
+            ("acme", TaxonomyState::Active),
+            ("zenith", TaxonomyState::Retired)
+        ],
+        "the omitted value is retired and still present"
+    );
+}
+
+/// §6: *"a `PUT` re-adding an existing retired value re-activates it"*.
+#[tokio::test]
+async fn re_adding_a_retired_value_re_activates_it() {
+    let (repo, scope, _provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Partner,
+        vec![entry("reseller-a", TaxonomyState::Active)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+    repo.replace(&scope, TENANT, TaxonomyClass::Partner, vec![], stamp())
+        .await
+        .expect("retire it");
+
+    let result = repo
+        .replace(
+            &scope,
+            TENANT,
+            TaxonomyClass::Partner,
+            vec![entry("reseller-a", TaxonomyState::Active)],
+            stamp(),
+        )
+        .await
+        .expect("re-activate");
+
+    assert_eq!(
+        values(&result.entries),
+        [("reseller-a", TaxonomyState::Active)],
+        "retired -> active is a legal audited move (§6)"
+    );
+}
+
+/// An explicit `state: retired` and an omission are the same act.
+///
+/// An operator must not be able to slip past the guard by choosing the other
+/// spelling of the same retirement.
+#[tokio::test]
+async fn an_explicit_retirement_and_an_omission_are_the_same_act() {
+    let (repo, scope, _provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::OrgTier,
+        vec![entry("gold", TaxonomyState::Active)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+
+    let result = repo
+        .replace(
+            &scope,
+            TENANT,
+            TaxonomyClass::OrgTier,
+            vec![entry("gold", TaxonomyState::Retired)],
+            stamp(),
+        )
+        .await
+        .expect("explicit retirement");
+
+    assert_eq!(values(&result.entries), [("gold", TaxonomyState::Retired)]);
+}
+
+/// The guard reaches the **explicit** spelling of a retirement too.
+///
+/// Added because a probe found nothing to redden. Ignoring `state: retired` in
+/// the body — while still writing it — left every case in this suite green: the
+/// omission case covers the guard, and the explicit case only checked that the
+/// state landed. So the module doc's claim that "an operator must not be able to
+/// slip past the guard by choosing the other spelling" was true of the code and
+/// held by nothing, which is the same defect as a rule with no rule.
+#[tokio::test]
+async fn an_explicit_retirement_of_a_referenced_value_is_refused_too() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        vec![entry("in-use", TaxonomyState::Active)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+    publish_overlay_scoped(
+        &provider,
+        0x0e_1c,
+        TaxonomyClass::Brand,
+        "in-use",
+        "published",
+    )
+    .await;
+
+    let result = repo
+        .replace(
+            &scope,
+            TENANT,
+            TaxonomyClass::Brand,
+            vec![entry("in-use", TaxonomyState::Retired)],
+            stamp(),
+        )
+        .await
+        .expect("refused, not errored");
+
+    assert_eq!(
+        result
+            .report
+            .violations
+            .iter()
+            .map(|v| v.code.as_str())
+            .collect::<Vec<_>>(),
+        [TAXONOMY_VALUE_IN_USE],
+        "an explicit retirement is a retirement"
+    );
+    assert_eq!(
+        values(&result.entries),
+        [("in-use", TaxonomyState::Active)],
+        "and nothing was written"
+    );
+}
+
+/// The four taxonomies are independent stores.
+///
+/// A `PUT` on one class must not retire another's values — the failure mode a
+/// shared-table implementation would have, and the reason each class is its own
+/// entity here.
+#[tokio::test]
+async fn a_put_on_one_class_leaves_the_other_three_alone() {
+    let (repo, scope, _provider) = harness().await;
+    for class in TaxonomyClass::ALL {
+        repo.replace(
+            &scope,
+            TENANT,
+            *class,
+            vec![entry("shared-value", TaxonomyState::Active)],
+            stamp(),
+        )
+        .await
+        .expect("seed each");
+    }
+
+    repo.replace(&scope, TENANT, TaxonomyClass::Brand, vec![], stamp())
+        .await
+        .expect("clear the brand taxonomy");
+
+    for class in TaxonomyClass::ALL
+        .iter()
+        .filter(|c| **c != TaxonomyClass::Brand)
+    {
+        let held = repo.list(&scope, TENANT, *class).await.expect("read back");
+        assert_eq!(
+            values(&held),
+            [("shared-value", TaxonomyState::Active)],
+            "{class} must be untouched by a brand PUT"
+        );
+    }
+}
+
+/// SQL-level BOLA: a foreign tenant's taxonomy reads empty.
+#[tokio::test]
+async fn a_foreign_tenants_taxonomy_is_invisible() {
+    let (repo, scope, _provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        vec![entry("acme", TaxonomyState::Active)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+
+    let foreign = repo
+        .list(
+            &AccessScope::allow_all(),
+            OTHER_TENANT,
+            TaxonomyClass::Brand,
+        )
+        .await
+        .expect("read");
+
+    assert!(
+        foreign.is_empty(),
+        "another tenant's values are not visible"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-tx-mutation` — the guard, against real referencing rows.
+// ---------------------------------------------------------------------------
+
+/// Seed one published overlay scoped to `(class, value)`.
+///
+/// Written through the entity rather than through `OverlayRepo`, for the reason
+/// `sqlite_overlay_repo` gives in the mirror image of this situation: what is
+/// under test is *this* repository's guard, and routing the fixture through the
+/// overlay authoring path would make a failure here ambiguous between the two.
+async fn publish_overlay_scoped(
+    provider: &DBProvider<DbError>,
+    id: u128,
+    class: TaxonomyClass,
+    value: &str,
+    lifecycle: &str,
+) {
+    let conn = provider.conn().expect("conn");
+    let row = price_overlay::ActiveModel {
+        price_overlay_id: Set(Uuid::from_u128(id)),
+        revision: Set(1),
+        tenant_id: Set(TENANT),
+        lifecycle_state: Set(lifecycle.to_owned()),
+        scope_class: Set(class.scope_class().as_str().to_owned()),
+        scope_value: Set(value.to_owned()),
+        precedence: Set(10),
+        effective_from: Set(None),
+        effective_to: Set(None),
+        tax_basis: Set("delegated_tariffs".to_owned()),
+        disclosure: Set("restricted".to_owned()),
+        target_ref: Set(serde_json::json!({"plans": []})),
+        row_version: Set(0),
+    };
+    price_overlay::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("seed a price overlay");
+}
+
+/// A published overlay scope blocks its value's retirement — in every class.
+///
+/// D-120's widening. Before it, *"a region value retired cleanly while
+/// region-scoped overlays still named it"*.
+#[tokio::test]
+async fn a_published_overlay_scope_blocks_the_retirement_in_every_class() {
+    for class in TaxonomyClass::ALL {
+        let (repo, scope, provider) = harness().await;
+        repo.replace(
+            &scope,
+            TENANT,
+            *class,
+            vec![entry("in-use", TaxonomyState::Active)],
+            stamp(),
+        )
+        .await
+        .expect("seed");
+        publish_overlay_scoped(&provider, 0x0e_1a, *class, "in-use", "published").await;
+
+        let result = repo
+            .replace(&scope, TENANT, *class, vec![], stamp())
+            .await
+            .expect("the call succeeds; the retirement is refused");
+
+        assert_eq!(
+            result
+                .report
+                .violations
+                .iter()
+                .map(|v| v.code.as_str())
+                .collect::<Vec<_>>(),
+            [TAXONOMY_VALUE_IN_USE],
+            "{class}: a published overlay scope is a reference (D-120)"
+        );
+        assert_eq!(
+            values(&result.entries),
+            [("in-use", TaxonomyState::Active)],
+            "{class}: a refused PUT changes nothing at all"
+        );
+    }
+}
+
+/// A **draft** overlay does not block: a value hostage to somebody's unpublished
+/// experiment is a value no operator can retire on a schedule.
+#[tokio::test]
+async fn a_draft_overlay_scope_does_not_block_the_retirement() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        vec![entry("acme", TaxonomyState::Active)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+    publish_overlay_scoped(&provider, 0x0e_1b, TaxonomyClass::Brand, "acme", "draft").await;
+
+    let result = repo
+        .replace(&scope, TENANT, TaxonomyClass::Brand, vec![], stamp())
+        .await
+        .expect("put");
+
+    assert!(
+        result.report.is_publishable(),
+        "a draft is not a commitment"
+    );
+    assert_eq!(values(&result.entries), [("acme", TaxonomyState::Retired)]);
+}
+
+/// The counts are per class **and** per value: an overlay on `brand/acme` does
+/// not block `partner/acme`.
+///
+/// Without the class predicate the guard would be a string match across four
+/// universes, and one tenant's `gold` org tier would pin another taxonomy's
+/// identically-named value forever.
+#[tokio::test]
+async fn the_reference_count_is_scoped_to_its_own_class() {
+    let (_repo, scope, provider) = harness().await;
+    publish_overlay_scoped(
+        &provider,
+        0x0e_1a,
+        TaxonomyClass::Brand,
+        "acme",
+        "published",
+    )
+    .await;
+
+    let same = references_to(
+        &provider.conn().expect("conn"),
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        &ScopeValue::new("acme").expect("non-blank"),
+    )
+    .await
+    .expect("count");
+    let other = references_to(
+        &provider.conn().expect("conn"),
+        &scope,
+        TENANT,
+        TaxonomyClass::Partner,
+        &ScopeValue::new("acme").expect("non-blank"),
+    )
+    .await
+    .expect("count");
+
+    assert_eq!(same.active_overlay_scopes, 1);
+    assert_eq!(
+        other.active_overlay_scopes, 0,
+        "the same string in another class is another value"
+    );
+}
+
+/// Seed one **published** price row on `region`.
+async fn publish_price_row_in(provider: &DBProvider<DbError>, region: &str) {
+    let conn = provider.conn().expect("conn");
+    let plan_id = Uuid::from_u128(0x91a4);
+    let plan_row = plan::ActiveModel {
+        plan_id: Set(plan_id),
+        revision: Set(1),
+        tenant_id: Set(TENANT),
+        lifecycle_state: Set("published".to_owned()),
+        created_by: Set(Uuid::from_u128(0x4444)),
+        created_at_utc: Set(now()),
+        ..Default::default()
+    };
+    plan::Entity::insert(plan_row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &plan_row)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("seed the plan revision");
+
+    let price_row = price::ActiveModel {
+        price_id: Set(Uuid::from_u128(0xb001)),
+        tenant_id: Set(TENANT),
+        plan_id: Set(plan_id),
+        currency: Set("EUR".to_owned()),
+        region: Set(region.to_owned()),
+        price_overlay: Set("base".to_owned()),
+        phase: Set(Uuid::from_u128(0xf1)),
+        price_eligibility: Set("all_subscriptions".to_owned()),
+        charge_kind: Set("recurring".to_owned()),
+        cohort: Set("none".to_owned()),
+        dimension_key: Set(String::new()),
+        tax_inclusive: Set(false),
+        lifecycle_state: Set("published".to_owned()),
+        created_by: Set(Uuid::from_u128(0x4444)),
+        created_at_utc: Set(now()),
+        row_version: Set(0),
+        ..Default::default()
+    };
+    price::Entity::insert(price_row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &price_row)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("seed the price row");
+}
+
+/// Only `region` is counted on the price-row plane, because only `region` is an
+/// axis of a price row (§3 step 2).
+///
+/// **The asymmetry is what is asserted, not a pair of zeros.** An earlier version
+/// of this case seeded nothing and asserted `published_price_rows == 0` for the
+/// three non-region classes — which passes whether the class predicate is there
+/// or not, because there were no rows to count either way. It could not tell "not
+/// counted because this class is not a row axis" from "not counted because the
+/// table is empty", and a probe deleting the branch left it green.
+#[tokio::test]
+async fn the_row_plane_is_counted_for_region_alone() {
+    let (_repo, scope, provider) = harness().await;
+    publish_price_row_in(&provider, "eu").await;
+    let conn = provider.conn().expect("conn");
+    let value = ScopeValue::new("eu").expect("non-blank");
+
+    let region_refs = references_to(&conn, &scope, TENANT, TaxonomyClass::Region, &value)
+        .await
+        .expect("count");
+    assert_eq!(
+        region_refs.published_price_rows, 1,
+        "a published row on `eu` is a reference on the region taxonomy"
+    );
+
+    for class in TaxonomyClass::ALL
+        .iter()
+        .filter(|c| **c != TaxonomyClass::Region)
+    {
+        let refs = references_to(&conn, &scope, TENANT, *class, &value)
+            .await
+            .expect("count");
+        assert_eq!(
+            refs.published_price_rows, 0,
+            "{class} is not a price-row field, so the identically-named value is not a row \
+             reference for it"
+        );
+    }
+}
+
+/// A published price row blocks its region's retirement end to end.
+#[tokio::test]
+async fn a_published_price_row_blocks_its_regions_retirement() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", Some("standard"), true)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+    publish_price_row_in(&provider, "eu").await;
+
+    let result = repo
+        .replace(&scope, TENANT, TaxonomyClass::Region, vec![], stamp())
+        .await
+        .expect("refused, not errored");
+
+    assert_eq!(
+        result
+            .report
+            .violations
+            .iter()
+            .map(|v| v.code.as_str())
+            .collect::<Vec<_>>(),
+        [TAXONOMY_VALUE_IN_USE]
+    );
+    assert_eq!(values(&result.entries), [("eu", TaxonomyState::Active)]);
+}
+
+// ---------------------------------------------------------------------------
+// C4's readiness port.
+// ---------------------------------------------------------------------------
+
+/// An **undeclared** region and a declared one with no default category are
+/// different facts, and the port keeps them apart.
+///
+/// C4 fails closed on the first — *"an unknown region fails closed"* — while the
+/// second is exactly what `inst-td-policy`'s coalesce is about: a row carrying
+/// its own `tax_category_ref` satisfies the check in a region whose taxonomy
+/// carries no default. Collapsing the two would make that case unreachable.
+#[tokio::test]
+async fn readiness_distinguishes_an_unknown_region_from_one_with_no_category() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", None, true)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+
+    let declared = region_readiness(
+        &provider.conn().expect("conn"),
+        &scope,
+        TENANT,
+        &Region::new("eu").expect("ok"),
+    )
+    .await
+    .expect("read");
+    let unknown = region_readiness(
+        &provider.conn().expect("conn"),
+        &scope,
+        TENANT,
+        &Region::new("mars").expect("ok"),
+    )
+    .await
+    .expect("read");
+
+    assert_eq!(
+        declared,
+        Some(RegionTaxMarkers {
+            tax_category: None,
+            tax_rate_present: true
+        }),
+        "a declared region with no default category is Some(..) with None inside"
+    );
+    assert_eq!(
+        unknown, None,
+        "an undeclared region is None, and C4 fails closed on it"
+    );
+}
+
+/// The two markers round-trip through the `PUT`.
+#[tokio::test]
+async fn the_region_markers_round_trip_through_the_put() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", Some("standard"), true)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+
+    let readiness = region_readiness(
+        &provider.conn().expect("conn"),
+        &scope,
+        TENANT,
+        &Region::new("eu").expect("ok"),
+    )
+    .await
+    .expect("read")
+    .expect("declared");
+
+    assert_eq!(readiness.tax_category.as_deref(), Some("standard"));
+    assert!(readiness.tax_rate_present);
+}
+
+/// A **retired** region declares nothing, so it has no readiness to report.
+#[tokio::test]
+async fn a_retired_region_has_no_readiness_and_is_not_in_the_active_universe() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", Some("standard"), true)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+    repo.replace(&scope, TENANT, TaxonomyClass::Region, vec![], stamp())
+        .await
+        .expect("retire it");
+
+    let readiness = region_readiness(
+        &provider.conn().expect("conn"),
+        &scope,
+        TENANT,
+        &Region::new("eu").expect("ok"),
+    )
+    .await
+    .expect("read");
+    let universe = active_regions(&provider.conn().expect("conn"), &scope, TENANT)
+        .await
+        .expect("read");
+
+    assert_eq!(readiness, None, "a retired value validates nothing");
+    assert!(
+        universe.is_empty(),
+        "and is not in `inst-tx-region`'s universe"
+    );
+}
+
+/// `active_regions` is the rule's universe and carries active values only.
+#[tokio::test]
+async fn the_active_region_universe_excludes_retirements() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Region,
+        vec![
+            region_entry("eu", Some("standard"), true),
+            region_entry("us", None, false),
+        ],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", Some("standard"), true)],
+        stamp(),
+    )
+    .await
+    .expect("retire us");
+
+    let universe = active_regions(&provider.conn().expect("conn"), &scope, TENANT)
+        .await
+        .expect("read");
+
+    assert_eq!(
+        universe.iter().map(Region::as_str).collect::<Vec<_>>(),
+        ["eu"]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The audit half of `inst-tx-mutation`.
+// ---------------------------------------------------------------------------
+
+/// *"Taxonomy mutation is tenant-admin config, audited"* — one record per `PUT`.
+#[tokio::test]
+async fn a_put_writes_exactly_one_audit_record_naming_the_taxonomy() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        vec![
+            entry("acme", TaxonomyState::Active),
+            entry("zenith", TaxonomyState::Active),
+        ],
+        stamp(),
+    )
+    .await
+    .expect("put");
+
+    let count = audit_records_for(&provider, "taxonomy/brand").await;
+
+    assert_eq!(count, 1, "one PUT is one act, however many values it moved");
+}
+
+/// A **refused** `PUT` writes no audit record, because nothing happened.
+#[tokio::test]
+async fn a_refused_put_writes_no_audit_record() {
+    let (repo, scope, provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        vec![entry("in-use", TaxonomyState::Active)],
+        stamp(),
+    )
+    .await
+    .expect("seed");
+    publish_overlay_scoped(
+        &provider,
+        0x0e_1a,
+        TaxonomyClass::Brand,
+        "in-use",
+        "published",
+    )
+    .await;
+
+    repo.replace(&scope, TENANT, TaxonomyClass::Brand, vec![], stamp())
+        .await
+        .expect("refused, not errored");
+
+    let count = audit_records_for(&provider, "taxonomy/brand").await;
+
+    assert_eq!(
+        count, 1,
+        "the seeding PUT only — the refused one wrote nothing"
+    );
+}
