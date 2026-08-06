@@ -373,6 +373,16 @@ pub enum DomainError {
     /// a spelling rather than inventing one.
     #[error("taxonomy value in use: {0}")]
     TaxonomyValueInUse(String),
+    /// A price row naming a `region` the tenant's taxonomy does not declare
+    /// active (`04-currency-tax.md` §2, §5, `inst-mc-region`, **422 → 400**).
+    ///
+    /// A caller mistake naming one field, so it is an invalid argument rather
+    /// than a conflict: the remedy is to correct the region or declare it, and
+    /// nothing about the world moved under the caller.
+    ///
+    /// The code is **§5's**, not minted here.
+    #[error("region unknown: {0}")]
+    RegionUnknown(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///

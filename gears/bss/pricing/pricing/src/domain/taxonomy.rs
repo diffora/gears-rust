@@ -60,7 +60,7 @@ use crate::domain::concurrency::{PolicyTag, TaxonomyTagEntry};
 use crate::domain::overlay::{ScopeClass, ScopeValue};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::Region;
-use crate::domain::validation::{ValidationReport, ValidationRule};
+use crate::domain::validation::{ValidationReport, ValidationRule, Violation};
 
 // ---------------------------------------------------------------------------
 // The codes.
@@ -423,6 +423,37 @@ pub struct RegionsDeclared {
     pub declared: BTreeSet<Region>,
 }
 
+impl RegionsDeclared {
+    /// The violation this region earns, if any — **the authoring edge's entry
+    /// point**.
+    ///
+    /// `inst-mc-region` validates membership *"at save **and** publish"*, and the
+    /// two halves must not be two spellings of one refusal: an operator who meets
+    /// it at save and again at publish has to meet one message. So the pipeline
+    /// arm below and `api::rest::prices` both come through here.
+    ///
+    /// Its own entry point rather than an arm of [`ValidationRule::evaluate`]
+    /// because the save has **one** region and no `PlanShape` — building a shape
+    /// to judge one axis would be inventing a subject to satisfy a signature.
+    /// This is `overlay_rules::check_authored_shape`'s arrangement.
+    #[must_use]
+    pub fn violation_for(&self, region: &Region) -> Option<Violation> {
+        if self.declared.contains(region) {
+            return None;
+        }
+        Some(Violation {
+            code: REGION_UNKNOWN.to_owned(),
+            subject: region.as_str().to_owned(),
+            detail: format!(
+                "region `{region}` is not an active value of this tenant's region taxonomy; a \
+                 price row's region is validated at save and at publish, and an unknown value \
+                 fails before publish (C2) — declare it at PUT \
+                 /bss-pricing/v1/config/taxonomies/region first"
+            ),
+        })
+    }
+}
+
 impl ValidationRule<PlanShape> for RegionsDeclared {
     fn name(&self) -> &'static str {
         "inst-tx-region"
@@ -443,16 +474,9 @@ impl ValidationRule<PlanShape> for RegionsDeclared {
             if !reported.insert(region) {
                 continue;
             }
-            report.violate(
-                REGION_UNKNOWN,
-                region.as_str(),
-                format!(
-                    "region `{region}` is not an active value of this tenant's region taxonomy; a \
-                     price row's region is validated at save and at publish, and an unknown value \
-                     fails before publish (C2) — declare it at PUT \
-                     /bss-pricing/v1/config/taxonomies/region first"
-                ),
-            );
+            if let Some(violation) = self.violation_for(region) {
+                report.violations.push(violation);
+            }
         }
     }
 }

@@ -77,10 +77,10 @@ use crate::domain::taxonomy::{
     check_retirable, tag_of,
 };
 use crate::domain::validation::ValidationReport;
-use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     brand_taxonomy, org_tier_taxonomy, partner_taxonomy, price, price_overlay, region_taxonomy,
 };
+use crate::infra::storage::{RepoError, contention_or_db};
 
 use super::audit_repo::{self, NewAuditEntry};
 
@@ -174,7 +174,13 @@ impl TaxonomyRepo {
                 })
             })
             .await;
-        outcome.map_err(|e| RepoError::Db(format!("taxonomy replace: {e}")))
+        // `into_domain`, never a blanket `Db`: `in_transaction` answers
+        // `TxError<RepoError>`, and flattening it turned a retriable
+        // `ConcurrentMutation` into `Internal` — a **500** for a request whose
+        // whole remedy is to retry. Every other repository here unwraps it this
+        // way for exactly that reason.
+        outcome
+            .map_err(|e| e.into_domain(|infra| RepoError::Db(format!("taxonomy replace: {infra}"))))
     }
 }
 
@@ -690,7 +696,13 @@ async fn insert_entry(
                 .exec(runner)
                 .await
                 .map(|_| ())
-                .map_err(|e| RepoError::Db(format!("insert pricing_region_taxonomy: {e}")))
+                .map_err(|e| {
+                    contention_or_db(
+                        &e,
+                        "pricing_region_taxonomy",
+                        "insert pricing_region_taxonomy",
+                    )
+                })
         }
         TaxonomyClass::Brand => {
             let row = brand_taxonomy::ActiveModel {
@@ -706,7 +718,13 @@ async fn insert_entry(
                 .exec(runner)
                 .await
                 .map(|_| ())
-                .map_err(|e| RepoError::Db(format!("insert pricing_brand_taxonomy: {e}")))
+                .map_err(|e| {
+                    contention_or_db(
+                        &e,
+                        "pricing_brand_taxonomy",
+                        "insert pricing_brand_taxonomy",
+                    )
+                })
         }
         TaxonomyClass::Partner => {
             let row = partner_taxonomy::ActiveModel {
@@ -722,7 +740,13 @@ async fn insert_entry(
                 .exec(runner)
                 .await
                 .map(|_| ())
-                .map_err(|e| RepoError::Db(format!("insert pricing_partner_taxonomy: {e}")))
+                .map_err(|e| {
+                    contention_or_db(
+                        &e,
+                        "pricing_partner_taxonomy",
+                        "insert pricing_partner_taxonomy",
+                    )
+                })
         }
         TaxonomyClass::OrgTier => {
             let row = org_tier_taxonomy::ActiveModel {
@@ -738,7 +762,13 @@ async fn insert_entry(
                 .exec(runner)
                 .await
                 .map(|_| ())
-                .map_err(|e| RepoError::Db(format!("insert pricing_org_tier_taxonomy: {e}")))
+                .map_err(|e| {
+                    contention_or_db(
+                        &e,
+                        "pricing_org_tier_taxonomy",
+                        "insert pricing_org_tier_taxonomy",
+                    )
+                })
         }
     }
 }

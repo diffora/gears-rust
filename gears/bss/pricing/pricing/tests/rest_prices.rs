@@ -67,6 +67,84 @@ async fn seeded_plan(harness: &Harness) -> Uuid {
 // Create.
 // ---------------------------------------------------------------------------
 
+/// A row authored on a region the tenant never declared is refused **at save**.
+///
+/// §2 step 2 and C2 both say the membership is validated *"at save **and**
+/// publish"*, and only the publish half was built: an undeclared region was
+/// accepted 201 here and refused much later, at publish, by someone who was
+/// probably not the author. `inst-mc-region`'s save half is this.
+///
+/// The refusal is asserted by its **code**, because a 400 on this route is also
+/// what a malformed body gets, and a case that could not tell the two apart
+/// would stay green if the region check were replaced by any other validation.
+#[tokio::test]
+async fn a_row_on_an_undeclared_region_is_refused_at_save() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(create_body("ap-south")),
+            &keyed("undeclared-region-1"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "REGION_UNKNOWN");
+    assert!(
+        price_rows(&harness, plan_id).await.is_empty(),
+        "a refused save writes no row"
+    );
+}
+
+/// The declared regions still author cleanly, so the check is not refusing
+/// everything.
+#[tokio::test]
+async fn a_row_on_a_declared_region_still_authors() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(create_body("EU")),
+            &keyed("declared-region-1"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+/// A **retired** region cannot take a new row either.
+///
+/// The universe is the `active` set — `overlay_repo::declares`' predicate one
+/// plane over — so a value that reached `retired` must not validate a new row
+/// against itself. Without this the retire guard would be a door that closes
+/// only from one side.
+#[tokio::test]
+async fn a_row_on_a_retired_region_is_refused_at_save() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    common::retire_fixture_region(&harness.db, harness.tenant, "EU").await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(create_body("EU")),
+            &keyed("retired-region-1"),
+        ))
+        .await;
+
+    assert_eq!(problem_code(response).await, "REGION_UNKNOWN");
+}
+
 #[tokio::test]
 async fn a_create_answers_201_with_the_location_and_the_rows_own_tag() {
     let harness = Harness::new().await;

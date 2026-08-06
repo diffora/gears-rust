@@ -309,6 +309,28 @@ pub async fn declare_fixture_regions(provider: &DBProvider<DbError>, tenant_id: 
     }
 }
 
+/// Retire one declared fixture region, past the repository's guard.
+///
+/// Direct because the guard is not what these cases are about: they need a value
+/// that *is* `retired`, and reaching it through `PUT /config/taxonomies/region`
+/// would make an unrelated refusal there look like the failure under test.
+pub async fn retire_fixture_region(provider: &DBProvider<DbError>, tenant_id: Uuid, value: &str) {
+    let conn = provider.conn().expect("conn");
+    let affected = region_taxonomy::Entity::update_many()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .col_expr(region_taxonomy::Column::State, Expr::value("retired"))
+        .filter(
+            Condition::all()
+                .add(region_taxonomy::Column::TenantId.eq(tenant_id))
+                .add(region_taxonomy::Column::Value.eq(value)),
+        )
+        .exec(&conn)
+        .await
+        .expect("retire the fixture region");
+    assert_eq!(affected.rows_affected, 1, "the fixture region must exist");
+}
+
 pub async fn publish_row_directly(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,
