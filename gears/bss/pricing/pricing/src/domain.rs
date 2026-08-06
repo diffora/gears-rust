@@ -8,6 +8,7 @@ pub mod approval;
 pub mod audit;
 pub mod bundle;
 pub mod bundle_rules;
+pub mod bundle_sellability;
 pub mod concurrency;
 pub mod coverage;
 pub mod error;
