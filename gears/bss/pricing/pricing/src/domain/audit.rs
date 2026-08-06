@@ -386,7 +386,7 @@ pub enum AuditSubjectKind {
     /// `price_overlay` from `m20260802_000035` — a kind that is storable and not yet
     /// stored, which is what D-158 asks for and is strictly narrower than the "no
     /// token without a writer" rule the audit plane's writer satisfies.
-    PriceOverlay,
+    Overlay,
 }
 
 impl AuditSubjectKind {
@@ -396,7 +396,7 @@ impl AuditSubjectKind {
         Self::PriceUnit,
         Self::Window,
         Self::Policy,
-        Self::PriceOverlay,
+        Self::Overlay,
     ];
 
     /// The persisted `subject_kind` token.
@@ -407,7 +407,7 @@ impl AuditSubjectKind {
             Self::PriceUnit => "price_unit",
             Self::Window => "window",
             Self::Policy => "policy",
-            Self::PriceOverlay => "price_overlay",
+            Self::Overlay => "overlay",
         }
     }
 }

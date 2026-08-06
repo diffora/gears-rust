@@ -1,4 +1,4 @@
-//! `chk_pricing_approval_subject_kind` gains `'price_overlay'` — the fifth member of
+//! `chk_pricing_approval_subject_kind` gains `'overlay'` — the fifth member of
 //! D-158's enumeration, arriving with a writer on **one** of the two planes it spans.
 //!
 //! `m20260802_000019`'s sibling, and the difference from it is the part worth
@@ -81,7 +81,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
         DROP CONSTRAINT chk_pricing_approval_subject_kind",
     "ALTER TABLE bss.pricing_approval
         ADD CONSTRAINT chk_pricing_approval_subject_kind CHECK (
-            subject_kind IN ('plan_revision','price_unit','window','policy','price_overlay'))",
+            subject_kind IN ('plan_revision','price_unit','window','policy','overlay'))",
 ];
 
 const PG_DOWN_STATEMENTS: &[&str] = &[
@@ -233,7 +233,7 @@ macro_rules! sqlite_rebuild {
 }
 
 const SQLITE_UP_STATEMENTS: &[&str] =
-    sqlite_rebuild!("'plan_revision','price_unit','window','policy','price_overlay'");
+    sqlite_rebuild!("'plan_revision','price_unit','window','policy','overlay'");
 
 const SQLITE_DOWN_STATEMENTS: &[&str] =
     sqlite_rebuild!("'plan_revision','price_unit','window','policy'");

@@ -839,7 +839,7 @@ async fn record_overlay_mutation(
             recorded_at: stamp.recorded_at,
             actor_principal_id: stamp.actor_principal_id,
             action,
-            subject_kind: AuditSubjectKind::PriceOverlay,
+            subject_kind: AuditSubjectKind::Overlay,
             subject_ref: price_overlay_id.to_string(),
             before_state: None,
             after_state: Some(serde_json::json!({ "revision": revision })),

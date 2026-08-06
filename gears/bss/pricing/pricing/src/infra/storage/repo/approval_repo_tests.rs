@@ -92,27 +92,30 @@ fn a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row() {
     // stores in step, so one of these arriving here means somebody widened one of
     // them alone.
     //
-    // The token was `window` until the change that mounted the three window
-    // surfaces, and it moved rather than being deleted: `window` now **is**
-    // declared — in `AuditSubjectKind`, in `chk_pricing_approval_subject_kind` on
-    // both backends, and with the writers that earned it — so asserting it is
-    // unreadable would assert the opposite of what the gear now does. `overlay` is
-    // the next member of S5 §6's enumeration with no writer here, which keeps the
-    // property this test is named for intact: a token outside the declared set is a
-    // corrupt row and never silently the wrong variant.
-    // The count is not in this sentence: it read "three kinds" while `AuditSubjectKind`
-    // declared four, and its sibling in `sqlite_approval_repo.rs` was updated to four
-    // and this was not. `AuditSubjectKind::ALL` is the roster; a token outside it is
-    // what this asserts about.
-    let err = to_domain(row("submitted", "overlay"))
-        .expect_err("`overlay` is not a kind this gear declares");
+    // **The token has moved twice, and both moves are the same event.** It was
+    // `window` until the three window surfaces mounted; then `overlay`, chosen as
+    // *"the next member of S5 §6's enumeration with no writer here"*; and `overlay`
+    // stopped being that on 2026-08-06, when D-221 gave the overlay plane its audit
+    // writer and `chk_pricing_approval_subject_kind` its token. Asserting either is
+    // unreadable would now assert the opposite of what the gear does.
+    //
+    // `membership` is the next one — S5 §6 lists it, this gear declares no such kind,
+    // and Slice 9's membership half is not built. The property the test is named for
+    // is unchanged: a token outside `AuditSubjectKind::ALL` is a corrupt row and never
+    // silently the wrong variant.
+    //
+    // The count is deliberately not in this sentence: it read "three kinds" while
+    // `AuditSubjectKind` declared four, and its sibling in `sqlite_approval_repo.rs`
+    // was updated and this was not. `AuditSubjectKind::ALL` is the roster.
+    let err = to_domain(row("submitted", "membership"))
+        .expect_err("`membership` is not a kind this gear declares");
     match err {
         RepoError::CorruptRow(detail) => {
             assert!(
                 detail.contains("pricing_approval.subject_kind"),
                 "got: {detail}"
             );
-            assert!(detail.contains("overlay"), "got: {detail}");
+            assert!(detail.contains("membership"), "got: {detail}");
         }
         other => panic!("expected a corrupt row, got: {other:?}"),
     }
@@ -172,7 +175,7 @@ fn the_price_unit_kind_is_the_one_with_no_writer() {
         .collect();
     assert_eq!(
         without_a_writer,
-        [AuditSubjectKind::PriceOverlay],
+        [AuditSubjectKind::Overlay],
         "exactly one declared kind has no approval-plane writer, and it is the overlay"
     );
 }

@@ -1473,7 +1473,7 @@ async fn re_derive(
         // reviewer their subject had changed, when what actually happened is that the
         // store holds a row from somewhere else. That mistranslation is exactly what
         // the `price_unit` and `window` arms above were fixed for, twice.
-        AuditSubjectKind::PriceOverlay => Err(DomainError::Internal(format!(
+        AuditSubjectKind::Overlay => Err(DomainError::Internal(format!(
             "approval {} is a price_overlay unit and this crate opens none \
              (D-50's overlay unit is unwired — Slice 9, O-7)",
             record.approval_id

@@ -631,7 +631,14 @@ async fn a_subject_kind_outside_the_enumeration_is_refused_by_the_mirror() {
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
-    for undeclared in ["overlay", "", "PLAN_REVISION", "plan_revision "] {
+    // `overlay` stood at the head of this list until 2026-08-06 and moved out of it
+    // rather than being deleted: D-221 gave the overlay plane an audit writer, and
+    // D-158 obliges this mirror to admit what the audit vocabulary declares, so
+    // `m20260802_000035` widened the CHECK. `membership` is the next member of S5 §6's
+    // enumeration this gear declares no kind for, which keeps the list's property
+    // intact — the three that follow it are the shapes a token can be malformed in
+    // (empty, wrong case, trailing space) and are not going anywhere.
+    for undeclared in ["membership", "", "PLAN_REVISION", "plan_revision "] {
         let id = Uuid::now_v7();
         let am = bss_pricing::infra::storage::entity::approval::ActiveModel {
             approval_id: sea_orm::ActiveValue::Set(id),

@@ -1142,7 +1142,7 @@ pub fn subject_aggregate(record: &ApprovalRecord) -> Result<SubjectAggregate, Re
         // `m20260802_000035`) because D-158 makes the two stores one enumeration
         // extended together — so this arm is what keeps "storable" from being read as
         // "resolvable", which are different claims and only the first is true today.
-        AuditSubjectKind::PriceOverlay => Err(RepoError::CorruptRow(format!(
+        AuditSubjectKind::Overlay => Err(RepoError::CorruptRow(format!(
             "pricing_approval {} is a price_overlay unit, and this crate opens none — \
              D-50's overlay approval unit is unwired (Slice 9, O-7)",
             record.approval_id

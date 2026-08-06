@@ -1032,7 +1032,7 @@ async fn every_overlay_mutation_appends_exactly_one_audit_record() {
     assert_eq!(seqs, [0, 1, 2, 3]);
 
     for record in &trail {
-        assert_eq!(record.subject_kind, "price_overlay");
+        assert_eq!(record.subject_kind, "overlay");
         assert_eq!(record.subject_ref, OVERLAY.to_string());
         assert_eq!(record.actor_principal_id, stamp().actor_principal_id);
         assert_eq!(record.correlation_id, Some(stamp().correlation_id));
