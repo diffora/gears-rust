@@ -417,14 +417,27 @@ async fn a_state_outside_the_machine_is_refused() {
 /// the code deliberately does not — the storable direction is what ranges over
 /// `AuditSubjectKind::ALL`, in `every_state_the_machine_reaches_is_storable`.
 ///
-/// **The token was `window` until the change that mounted the three window
-/// surfaces**, and it moved rather than being deleted: `window` is now declared in
-/// `AuditSubjectKind`, admitted by this CHECK on both backends, and written by
-/// `infra::window` and by the pending unit a window mutation opens — so asserting
-/// the store refuses it would assert the opposite of what the gear now does. The
-/// guard below is what forces that move to be deliberate: it fails if the literal
-/// this test uses ever becomes declared, so the test can never quietly assert a
-/// refusal the store has stopped performing.
+/// **The token has now moved twice, and the guard below forced both moves to be
+/// deliberate: it fails if the literal this test uses ever becomes declared, so the
+/// test can never quietly assert a refusal the store has stopped performing.**
+///
+/// It was `window` until the change that mounted the three window surfaces —
+/// `window` is now declared, admitted by this CHECK on both backends, and written by
+/// `infra::window` and by the pending unit a window mutation opens. Then `overlay`,
+/// until 2026-08-06: D-221 gave the overlay plane its audit writer, D-158 obliged
+/// this mirror to admit what the audit vocabulary declares, and `m20260802_000035`
+/// widened the CHECK. Asserting either is refused would now assert the opposite of
+/// what the gear does.
+///
+/// **This is the copy the fast tier could not reach.** Two siblings carry the same
+/// premise — `approval_repo_tests::a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row`
+/// and `sqlite_approval_repo::a_subject_kind_outside_the_enumeration_is_refused_by_the_mirror`
+/// — and both reddened on the fast suite the moment the token landed. This one is
+/// `#[ignore]`d behind Docker, so it stayed green through that whole round and failed
+/// on the Postgres run afterwards. Three copies of one premise, on two tiers.
+///
+/// `membership` is the next member of S5 §6's enumeration this gear declares no kind
+/// for, and Slice 9's membership half is not built.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_subject_kind_with_no_writer_is_refused() {
@@ -432,12 +445,19 @@ async fn a_subject_kind_with_no_writer_is_refused() {
     assert!(
         !AuditSubjectKind::ALL
             .iter()
-            .any(|kind| kind.as_str() == "overlay"),
+            .any(|kind| kind.as_str() == "membership"),
         "this test is about a token the gear does not declare"
     );
     must_be_rejected(
         &conn,
-        &insert(&id_at(0x05), "submitted", "NULL", "NULL", "NULL", "overlay"),
+        &insert(
+            &id_at(0x05),
+            "submitted",
+            "NULL",
+            "NULL",
+            "NULL",
+            "membership",
+        ),
         "chk_pricing_approval_subject_kind",
     )
     .await;
