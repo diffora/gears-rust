@@ -2,12 +2,15 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use super::{CUTOVER_INSTANT_PASSED, check_cutover_instant};
+use uuid::Uuid;
+
+use super::{CUTOVER_INSTANT_PASSED, check_cutover_instant, compose_cutover_windows};
 use crate::domain::error::DomainError;
 use crate::domain::supersession::{
-    ChangeoverMoment, MAX_BATCHING_DELAY, SUPERSESSION_INSTANT_PASSED, changeover_floor,
-    check_changeover_instant,
+    ChangeoverMoment, MAX_BATCHING_DELAY, NamedWindow, SUPERSESSION_INSTANT_PASSED,
+    changeover_floor, check_changeover_instant,
 };
+use crate::domain::window::{WindowInterval, WindowState};
 
 fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0)
@@ -124,4 +127,108 @@ fn the_two_units_share_one_floor_and_answer_two_codes() {
         as_changeover.starts_with("changeover instant "),
         "and the supersession keeps its own: {as_changeover}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The three window operations (`inst-co-shorten` / `inst-co-copy` / `inst-co-successor`)
+// ---------------------------------------------------------------------------
+
+fn at(hour: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2099, 8, 6, hour, 0, 0)
+        .single()
+        .expect("a fixed future instant")
+}
+
+fn window(
+    id: u128,
+    from: DateTime<Utc>,
+    to: Option<DateTime<Utc>>,
+    state: WindowState,
+) -> NamedWindow {
+    NamedWindow {
+        window_id: Uuid::from_u128(id),
+        interval: WindowInterval::new(from, to, state),
+    }
+}
+
+#[test]
+fn the_three_operations_are_born_of_one_instant() {
+    // The gap-freeness `inst-co-atomic` demands is by **construction**: all three
+    // instants are the cutover, so no caller can compose a shorten to T1 with
+    // schedules from T2 > T1 and leave `[T1, T2)` uncovered. That defect was real
+    // on the supersession unit and was found by review, not by a gate — collision
+    // is an intersection test and a gap is not an intersection.
+    let plane = vec![window(1, at(1), None, WindowState::Active)];
+
+    let composed = compose_cutover_windows(&plane, at(10)).expect("a live key composes");
+
+    assert_eq!(composed.shorten().effective_to, at(10));
+    assert_eq!(composed.shorten().window_id, Uuid::from_u128(1));
+    assert_eq!(composed.copy().effective_from, at(10));
+    assert_eq!(composed.successor().effective_from, at(10));
+    assert_eq!(composed.copy().effective_to, None);
+    assert_eq!(composed.successor().effective_to, None);
+}
+
+#[test]
+fn a_dormant_key_is_refused_by_the_cutovers_own_code() {
+    // `inst-co-shorten`: the unit presupposes coverage to shorten. Reviving a
+    // dormant key is a publish plus a schedule, never a cutover — so the refusal
+    // says that rather than inviting a retry.
+    let plane = vec![window(1, at(1), Some(at(5)), WindowState::Active)];
+
+    let err = compose_cutover_windows(&plane, at(10)).expect_err("a dormant key must be refused");
+
+    assert!(matches!(err, DomainError::CutoverGap(_)), "{err:?}");
+    assert!(
+        message(&err).contains("dormant") && message(&err).contains(&at(10).to_rfc3339()),
+        "the refusal names the instant with no coverage: {}",
+        message(&err)
+    );
+}
+
+#[test]
+fn a_window_beginning_at_the_cutover_is_refused_rather_than_emptied() {
+    // The other side of the same absence: shortening a window to its own start
+    // leaves `[cutover, cutover)`, so there is no coverage to hand over. On the
+    // supersession unit this arm was missing and the key was told it "carries later
+    // coverage", naming a sibling that does not exist (review, 2026-08-05).
+    let plane = vec![window(7, at(10), None, WindowState::Scheduled)];
+
+    let err = compose_cutover_windows(&plane, at(10)).expect_err("an empty shorten is refused");
+
+    assert!(matches!(err, DomainError::CutoverGap(_)), "{err:?}");
+    assert!(
+        message(&err).contains(&Uuid::from_u128(7).to_string()),
+        "the refusal names the window the operator has to deal with: {}",
+        message(&err)
+    );
+}
+
+#[test]
+fn later_coverage_the_cutover_would_not_replace_is_a_collision() {
+    let plane = vec![
+        window(1, at(1), None, WindowState::Active),
+        window(2, at(20), None, WindowState::Scheduled),
+    ];
+
+    let err = compose_cutover_windows(&plane, at(10)).expect_err("the later window collides");
+
+    assert!(matches!(err, DomainError::WindowOverlap(_)), "{err:?}");
+    assert!(message(&err).contains(&Uuid::from_u128(2).to_string()));
+}
+
+#[test]
+fn cancelled_and_expired_windows_are_not_coverage() {
+    // The occupying set is the shared one, so a cancelled window neither covers the
+    // cutover nor collides with the successor.
+    let plane = vec![
+        window(1, at(1), None, WindowState::Cancelled),
+        window(2, at(20), None, WindowState::Cancelled),
+    ];
+
+    let err = compose_cutover_windows(&plane, at(10))
+        .expect_err("a key whose only windows are cancelled is dormant");
+
+    assert!(matches!(err, DomainError::CutoverGap(_)), "{err:?}");
 }

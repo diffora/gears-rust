@@ -136,6 +136,12 @@ impl From<DomainError> for CanonicalError {
             D::CutoverInstantPassed(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation("cutover_at", detail, "CUTOVER_INSTANT_PASSED")
                 .create(),
+            // A composed unit that would leave the key uncovered. §5 types it 422 and
+            // declares the code; the supersession's identical refusal has none, which
+            // is why that one still travels as `LIFECYCLE_FORBIDDEN`.
+            D::CutoverGap(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation("cutover_at", detail, "CUTOVER_GAP")
+                .create(),
             // D-63's future-only start. An architectural 422 (§5) rendered 400,
             // and a precondition failure rather than a malformed argument for
             // `TIMESTAMP_PRECISION_EXCEEDED`'s reason: the instant parses and is a

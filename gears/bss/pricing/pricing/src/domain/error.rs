@@ -140,6 +140,17 @@ pub enum DomainError {
     /// tells the operator which act they were performing.
     #[error("cutover instant passed: {0}")]
     CutoverInstantPassed(String),
+    /// A cutover composed over a key with no coverage to shorten
+    /// (`07-pricewindow-linkage.md` §5, `inst-co-shorten`).
+    ///
+    /// **The supersession's identical refusal has no code of its own** and renders
+    /// as [`LifecycleForbidden`](Self::LifecycleForbidden) with the ground in its
+    /// sentence, because §5 declares one and not the other. The asymmetry is the
+    /// design set's; a gear may mint an internal variant freely but a wire code is
+    /// the set's to declare, so the two units answer one fact under two spellings
+    /// until §5 says otherwise.
+    #[error("cutover leaves the key uncovered: {0}")]
+    CutoverGap(String),
     /// A window was created with a start that is not strictly in the future
     /// (`07-pricewindow-linkage.md` §5, D-63, `inst-ws-future-start`).
     ///
