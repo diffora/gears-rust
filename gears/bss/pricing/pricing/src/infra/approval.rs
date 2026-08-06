@@ -137,7 +137,7 @@ use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{ThresholdEntry, ThresholdVersion};
 use crate::domain::money::CurrencyCode;
-use crate::domain::overlay::OverlayRevision;
+use crate::domain::overlay::{OverlayRevision, ScopeClass};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::storage::repo::approval_repo::{ApprovalRecord, NewApproval};
@@ -312,6 +312,11 @@ pub enum PinnedSubject {
     Plan(Box<PlanShape>),
     /// One proposed version of the tenant's approval-threshold policy.
     ThresholdPolicy(ThresholdVersion),
+    /// One overlay revision (D-225).
+    ///
+    /// Boxed for [`Self::Plan`]'s reason at a smaller scale: the line set is
+    /// unbounded, and this enum is returned and moved on every approval read.
+    Overlay(Box<OverlayRevision>),
 }
 
 impl PinnedSubject {
@@ -328,6 +333,7 @@ impl PinnedSubject {
         match self {
             Self::Plan(shape) => content_hash(shape),
             Self::ThresholdPolicy(version) => threshold_content_hash(version),
+            Self::Overlay(revision) => overlay_content_hash(revision),
         }
     }
 
@@ -346,6 +352,24 @@ impl PinnedSubject {
         match self {
             Self::Plan(shape) => regions_of(shape),
             Self::ThresholdPolicy(_) => BTreeSet::new(),
+            // **An overlay reaches a region exactly when it is scoped to one.** A
+            // brand- or partner-scoped overlay has no region axis at all and answers
+            // the empty set, which every grant covers — the same reading the policy
+            // arm above takes, and right for the same reason: there is no region a
+            // restricted reviewer would be reaching outside of.
+            //
+            // A `region`-scoped overlay is the case where that reading would be
+            // wrong, and it fails **closed** rather than open: a value the region
+            // vocabulary cannot parse yields a set containing nothing a grant can
+            // match is not what happens — it yields the empty set, so the guard
+            // below is that `inst-plv-scope` refuses an unparseable region at
+            // authoring, and a stored one is a row written around the gear.
+            Self::Overlay(revision) => match revision.scope.value() {
+                Some(value) if revision.scope.class() == ScopeClass::Region => {
+                    Region::new(value.as_str()).into_iter().collect()
+                }
+                _ => BTreeSet::new(),
+            },
         }
     }
 
@@ -354,7 +378,7 @@ impl PinnedSubject {
     pub const fn plan(&self) -> Option<&PlanShape> {
         match self {
             Self::Plan(shape) => Some(shape),
-            Self::ThresholdPolicy(_) => None,
+            Self::ThresholdPolicy(_) | Self::Overlay(_) => None,
         }
     }
 
@@ -363,7 +387,16 @@ impl PinnedSubject {
     pub const fn threshold_policy(&self) -> Option<&ThresholdVersion> {
         match self {
             Self::ThresholdPolicy(version) => Some(version),
-            Self::Plan(_) => None,
+            Self::Plan(_) | Self::Overlay(_) => None,
+        }
+    }
+
+    /// The overlay revision, when this subject is one.
+    #[must_use]
+    pub const fn overlay(&self) -> Option<&OverlayRevision> {
+        match self {
+            Self::Overlay(revision) => Some(revision),
+            Self::Plan(_) | Self::ThresholdPolicy(_) => None,
         }
     }
 }
@@ -1582,25 +1615,50 @@ async fn re_derive(
         // currency it did not have, which is the one mutation the primary key
         // permits and the one this re-derivation is what catches.
         AuditSubjectKind::Policy => policy_version_of(runner, scope, tenant_id, record).await,
-        // **An overlay unit is not opened by this crate**, so this arm is reachable
-        // only through a `pricing_approval` row it did not write —
-        // `approval_repo::subject_aggregate` refuses the same record for the same
-        // reason, and the two agree deliberately.
+        // **The overlay revision the unit pins, re-read in the deciding
+        // transaction.** This arm refused outright — "this crate opens none" — which
+        // was true for exactly as long as nothing opened one and became a false claim
+        // in code the moment `submit_overlay` existed. An un-approvable unit is a unit
+        // that can be opened and never decided, which is worse than none.
         //
-        // It answers `Err` rather than `Ok(None)`, and the difference is the one this
-        // function's own history is about. `None` here means *"the subject is gone"*,
-        // which flows to `content_matches_pin: false` and `APPROVAL_CONTENT_MISMATCH`
-        // — the answer a reviewer gets for a draft somebody deleted. Giving that
-        // answer to a record whose kind this crate cannot open at all would tell a
-        // reviewer their subject had changed, when what actually happened is that the
-        // store holds a row from somewhere else. That mistranslation is exactly what
-        // the `price_unit` and `window` arms above were fixed for, twice.
-        AuditSubjectKind::Overlay => Err(DomainError::Internal(format!(
-            "approval {} is a price_overlay unit and this crate opens none \
-             (D-50's overlay unit is unwired — Slice 9, O-7)",
-            record.approval_id
-        ))),
+        // `None` means the revision is **gone**, and that is the right answer here
+        // rather than an error: an absent subject is `ContentMismatch`'s business, not
+        // a 404 about the record the reviewer is looking at. An overlay draft can be
+        // discarded while its unit pends, and the reviewer must be told their subject
+        // changed rather than told the store failed.
+        AuditSubjectKind::Overlay => {
+            let (price_overlay_id, revision) = overlay_of(record)?;
+            let found = crate::infra::storage::repo::overlay_repo::load_on(
+                runner,
+                scope,
+                tenant_id,
+                price_overlay_id,
+                revision,
+            )
+            .await
+            .map_err(|e| repo_failure(&e))?;
+            Ok(found.map(|record| PinnedSubject::Overlay(Box::new(record.content()))))
+        }
     }
+}
+
+/// The `(overlay, revision)` an overlay unit's `subject_ref` names.
+///
+/// The subject is the **revision** and not the overlay, which is what stops a pin
+/// taken over revision 3 from authorizing a decision about revision 4 — so both
+/// halves are parsed here rather than the id alone.
+fn overlay_of(record: &ApprovalRecord) -> Result<(Uuid, u64), DomainError> {
+    record
+        .subject_ref
+        .split_once('/')
+        .and_then(|(id, revision)| Some((Uuid::parse_str(id).ok()?, revision.parse::<u64>().ok()?)))
+        .ok_or_else(|| {
+            DomainError::Internal(format!(
+                "approval {} names the subject {:?}, which is not \
+                 <price_overlay_id>/<revision>",
+                record.approval_id, record.subject_ref
+            ))
+        })
 }
 
 /// Re-read the threshold version a `policy` unit pins.

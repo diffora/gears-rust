@@ -803,3 +803,141 @@ async fn a_second_submit_of_one_revision_is_refused_while_the_first_is_pending()
         "the refusal names the rule rather than a generic conflict: {rendered}"
     );
 }
+
+/// **An opened overlay unit can be decided**, which means its pin re-derives.
+///
+/// The half a submit is worthless without: `re_derive` re-reads the subject under the
+/// same encoding the pin was taken with, and an approve compares the two. Its overlay
+/// arm refused outright while nothing opened such a unit — correctly then, and a
+/// false claim the moment `submit_overlay` existed — so every overlay unit would have
+/// been un-approvable, which is a unit that can be opened and never decided.
+///
+/// This crate has had that exact defect **twice**, on `price_unit` and on `window`,
+/// and both times it was invisible until something actually decided one: the arm
+/// resolved the wrong revision, `content_matches_pin` answered `false`, and the
+/// decision returned `APPROVAL_CONTENT_MISMATCH` for a subject nobody had touched.
+#[tokio::test]
+async fn an_overlay_unit_can_be_approved_because_its_pin_re_derives() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+
+    let opened = harness
+        .allowed()
+        .send(request(
+            "POST",
+            &submit_path(overlay),
+            Some(serde_json::json!({ "revision": 0 })),
+        ))
+        .await;
+    assert_eq!(opened.status(), StatusCode::ACCEPTED);
+    let approval_id = body_json(opened).await["approval"]["approval_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .expect("the unit is named");
+
+    harness
+        .governance
+        .approvals
+        .decide(
+            &harness.scope(),
+            harness.tenant,
+            bss_pricing::infra::approval::DecideRequest {
+                approval_id,
+                decision: bss_pricing::domain::approval::DecisionBy::Approve(REVIEWER),
+                reason: None,
+                approver_regions: bss_pricing::infra::approval::RegionGrant::Untransported,
+                stamp: bss_pricing::domain::audit::AuditStamp {
+                    actor_principal_id: REVIEWER,
+                    recorded_at: chrono::Utc::now(),
+                    correlation_id: Uuid::from_u128(0x_9d_c0),
+                },
+            },
+        )
+        .await
+        .expect("the reviewer approves an overlay unit");
+
+    let record = harness
+        .read_approval(approval_id)
+        .await
+        .expect("the unit reads back");
+    assert_eq!(record.state.as_str(), "approved");
+}
+
+/// The second principal — never the submitter, per `inst-tp-distinct`.
+const REVIEWER: Uuid = Uuid::from_u128(0x_9d_22);
+
+/// **A rejected unit leaves the overlay exactly as it was, and it re-submits.**
+///
+/// `inst-as-reject` promises a rejected non-plan subject returns to *"its slice-defined
+/// pre-submit state"*. For an overlay that costs **nothing**, and the reason is worth
+/// asserting rather than assuming: the submit writes to `pricing_approval` and to
+/// nothing else — it does not flip the revision's lifecycle, does not stage a copy and
+/// does not touch a line — so the pre-submit state *is* the current state and there is
+/// no compensating write for a rejection to make.
+///
+/// That is a property of this slice's design and not a general truth: the plan plane's
+/// submit has a draft to return, and Slice 7 parks a cutover's whole three-operation
+/// payload in the approval record precisely because there is nowhere else to hold it.
+/// Asserted here so a later change that gives the submit a side effect fails this case
+/// rather than silently making `inst-as-reject` unimplemented.
+#[tokio::test]
+async fn a_rejected_unit_leaves_the_overlay_untouched_and_it_submits_again() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+    let body = serde_json::json!({ "revision": 0 });
+
+    let before = harness
+        .allowed()
+        .send(request("GET", PRICE_OVERLAYS, None))
+        .await;
+    let before = body_json(before).await;
+
+    let opened = harness
+        .allowed()
+        .send(request("POST", &submit_path(overlay), Some(body.clone())))
+        .await;
+    let approval_id = body_json(opened).await["approval"]["approval_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .expect("the unit is named");
+
+    harness
+        .governance
+        .approvals
+        .decide(
+            &harness.scope(),
+            harness.tenant,
+            bss_pricing::infra::approval::DecideRequest {
+                approval_id,
+                decision: bss_pricing::domain::approval::DecisionBy::Reject(REVIEWER),
+                reason: Some("not this quarter".to_owned()),
+                approver_regions: bss_pricing::infra::approval::RegionGrant::Untransported,
+                stamp: bss_pricing::domain::audit::AuditStamp {
+                    actor_principal_id: REVIEWER,
+                    recorded_at: chrono::Utc::now(),
+                    correlation_id: Uuid::from_u128(0x_9d_c1),
+                },
+            },
+        )
+        .await
+        .expect("the reviewer rejects");
+
+    let after = harness
+        .allowed()
+        .send(request("GET", PRICE_OVERLAYS, None))
+        .await;
+    assert_eq!(
+        body_json(after).await,
+        before,
+        "a rejection writes nothing to the overlay plane"
+    );
+
+    // And the key freed: the author fixes the objection and submits the same revision
+    // again. A rejection that left the subject un-submittable would be a decision the
+    // operator cannot act on.
+    let again = harness
+        .allowed()
+        .send(request("POST", &submit_path(overlay), Some(body)))
+        .await;
+    assert_eq!(again.status(), StatusCode::ACCEPTED);
+}

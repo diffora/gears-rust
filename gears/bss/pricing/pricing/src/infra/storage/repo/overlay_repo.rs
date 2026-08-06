@@ -620,26 +620,7 @@ impl OverlayRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("pricing_price_overlay conn: {e}")))?;
-        let Ok(number) = i64::try_from(revision) else {
-            return Ok(None);
-        };
-        let Some(row) = price_overlay::Entity::find()
-            .secure()
-            .scope_with(scope)
-            .filter(
-                Condition::all()
-                    .add(price_overlay::Column::TenantId.eq(tenant_id))
-                    .add(price_overlay::Column::PriceOverlayId.eq(price_overlay_id))
-                    .add(price_overlay::Column::Revision.eq(number)),
-            )
-            .one(&conn)
-            .await
-            .map_err(|e| RepoError::Db(format!("read pricing_price_overlay: {e}")))?
-        else {
-            return Ok(None);
-        };
-        let lines = read_lines(&conn, scope, price_overlay_id, tenant_id, number).await?;
-        record_of(&row, lines).map(Some)
+        load_on(&conn, scope, tenant_id, price_overlay_id, revision).await
     }
 
     /// The **published** revision of one overlay, if it has one.
@@ -878,6 +859,40 @@ async fn record_overlay_mutation(
     )
     .await
     .map(|_| ())
+}
+
+/// One overlay revision, read on a **runner** rather than a provider.
+///
+/// [`OverlayRepo::load`]'s body, lifted so a caller already inside a transaction can
+/// use it — `infra::approval::re_derive` is that caller, and it must read the subject
+/// in the same transaction as the decision that compares it against the pin.
+pub(crate) async fn load_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_overlay_id: Uuid,
+    revision: u64,
+) -> Result<Option<OverlayRecord>, RepoError> {
+    let Ok(number) = i64::try_from(revision) else {
+        return Ok(None);
+    };
+    let Some(row) = price_overlay::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price_overlay::Column::TenantId.eq(tenant_id))
+                .add(price_overlay::Column::PriceOverlayId.eq(price_overlay_id))
+                .add(price_overlay::Column::Revision.eq(number)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_price_overlay: {e}")))?
+    else {
+        return Ok(None);
+    };
+    let lines = read_lines(runner, scope, price_overlay_id, tenant_id, number).await?;
+    record_of(&row, lines).map(Some)
 }
 
 async fn insert_overlay(
