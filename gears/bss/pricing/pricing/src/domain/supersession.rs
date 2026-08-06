@@ -132,20 +132,49 @@ pub fn check_changeover_instant(
     now: DateTime<Utc>,
     moment: ChangeoverMoment,
 ) -> Result<(), DomainError> {
+    changeover_floor(changeover, now, moment, "changeover")
+        .map_err(DomainError::SupersessionInstantPassed)
+}
+
+/// The floor itself, without the code — because **two units share it and the
+/// design set says so**.
+///
+/// §5 declares `SUPERSESSION_INSTANT_PASSED` as *"the same floor `inst-gc-compose`
+/// gives cutovers, applied to the everyday mechanism"*, and the grandfathering
+/// cutover's [`check_cutover_instant`] is the second caller. Extracted the moment
+/// that caller appeared rather than copied: a hand-maintained second bound is
+/// precisely how two mechanisms come to disagree about one SLO, which is the
+/// argument this module's header already makes about the delay constant.
+///
+/// The **noun** is the caller's, not a parameterised code: what differs between the
+/// two units is the word an operator reads (`changeover` / `cutover`) and the code
+/// the envelope carries. The sentence, the bound and the remedy are one spelling.
+///
+/// [`check_cutover_instant`]: crate::domain::cutover::check_cutover_instant
+///
+/// # Errors
+///
+/// The refusal **sentence**, for the caller to wrap in its own code.
+pub fn changeover_floor(
+    instant: DateTime<Utc>,
+    now: DateTime<Utc>,
+    moment: ChangeoverMoment,
+    noun: &str,
+) -> Result<(), String> {
     let floor = now + moment.margin();
-    if changeover > floor {
+    if instant > floor {
         return Ok(());
     }
-    Err(DomainError::SupersessionInstantPassed(format!(
-        "changeover instant {} is not strictly after {} at {}; {}",
-        changeover.to_rfc3339(),
+    Err(format!(
+        "{noun} instant {} is not strictly after {} at {}; {}",
+        instant.to_rfc3339(),
         floor.to_rfc3339(),
         match moment {
             ChangeoverMoment::Submit => "submit",
             ChangeoverMoment::Commit => "approval commit",
         },
         moment.remedy()
-    )))
+    ))
 }
 
 /// One of a key's windows as **compose** needs to see it: its durable name and its

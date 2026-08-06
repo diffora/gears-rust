@@ -129,6 +129,17 @@ pub enum DomainError {
     /// in shape as well as in kind: one axis-conditioned rule, one code.
     #[error("usage line axes disagree with the key: {0}")]
     UsageLineAxisMismatch(String),
+    /// A grandfathering cutover's instant has passed, or no longer clears the
+    /// batching delay at approval commit (`07-pricewindow-linkage.md` §5,
+    /// `inst-gc-compose`).
+    ///
+    /// [`SupersessionInstantPassed`](Self::SupersessionInstantPassed)'s twin, and
+    /// the two are deliberately two codes over **one** floor: §5 declares the
+    /// supersession's as "the same floor `inst-gc-compose` gives cutovers", so the
+    /// bound is shared (`domain::supersession::changeover_floor`) while the code
+    /// tells the operator which act they were performing.
+    #[error("cutover instant passed: {0}")]
+    CutoverInstantPassed(String),
     /// A window was created with a start that is not strictly in the future
     /// (`07-pricewindow-linkage.md` §5, D-63, `inst-ws-future-start`).
     ///

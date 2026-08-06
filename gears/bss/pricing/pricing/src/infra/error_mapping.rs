@@ -128,6 +128,14 @@ impl From<DomainError> for CanonicalError {
                     "USAGE_LINE_AXIS_MISMATCH",
                 )
                 .create(),
+            // `SupersessionInstantPassed`'s twin, mapped the same way for the same
+            // reason: §5 types both 422, which this platform renders 400, and the
+            // instant parses perfectly well — it is simply behind a clock the
+            // request cannot see. Two codes over one floor, because the operator is
+            // told which act they were performing.
+            D::CutoverInstantPassed(detail) => PlanResource::failed_precondition()
+                .with_precondition_violation("cutover_at", detail, "CUTOVER_INSTANT_PASSED")
+                .create(),
             // D-63's future-only start. An architectural 422 (§5) rendered 400,
             // and a precondition failure rather than a malformed argument for
             // `TIMESTAMP_PRECISION_EXCEEDED`'s reason: the instant parses and is a
