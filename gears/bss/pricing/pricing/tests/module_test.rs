@@ -70,6 +70,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::approvals::{
         APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
     };
+    use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::frontier::FRONTIER;
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
@@ -89,6 +90,12 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", PLAN_PRICES),
         ("PATCH", PLAN_PRICE),
         ("DELETE", PLAN_PRICE),
+        // Slice 8's three (`design/08-bundles.md` §5). The publish answers 202,
+        // per `inst-ba-return`: the composition is frozen into the read model by
+        // the projector, which the response does not wait for.
+        ("POST", BUNDLES),
+        ("PATCH", BUNDLE_BY_ID),
+        ("POST", BUNDLE_PUBLISH),
         // Slice 7's two reads: the coverage report an operator remediates from,
         // and the gate's surface over one pinned delta. Two routes and not one
         // because they answer different questions over different row sets - see
@@ -161,6 +168,8 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         plans: PlanRepo::new(db.clone()),
         shapes: PlanShapeRepo::new(db.clone()),
         prices: PriceRepo::new(db.clone()),
+        bundles: bss_pricing::infra::storage::repo::BundleRepo::new(db.clone()),
+        bundle_service: bss_pricing::infra::bundle::BundleService::new(db.clone()),
         idempotency: IdempotencyGate::new(Duration::from_hours(1)),
     });
     // The registry is the fail-closed production default and the fixture gate is
@@ -206,6 +215,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::prices::router(
+                Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::bundles::router(
                 Arc::clone(&authoring),
                 &openapi,
             ))

@@ -312,6 +312,22 @@ pub enum DomainError {
     /// revision holds the slot.
     #[error("open draft revision exists: {0}")]
     OpenDraftRevisionExists(String),
+    /// A bundle already exists on this plan (`uq_pricing_bundle_plan`).
+    ///
+    /// The conflict class for `OpenDraftRevisionExists`' reason: a uniqueness
+    /// conflict on a slot the plan has exactly one of, not a state-machine edge.
+    /// The operator's next action is a real one — go and edit that bundle — and
+    /// it is unreachable from a refusal that does not say a bundle is what is in
+    /// the way.
+    ///
+    /// **§5 declares no wire code for it**, so it renders under the existing
+    /// `OPEN_DRAFT_REVISION_EXISTS`-shaped conflict ladder with a reason of its
+    /// own only if the design set later mints one; the gap is owed-register entry
+    /// B-9. A gear may mint a `DomainError` variant freely — a wire code is the
+    /// design set's to declare — so the variant is here and the reason string is
+    /// not invented.
+    #[error("bundle exists on plan: {0}")]
+    BundleExistsOnPlan(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///

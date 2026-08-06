@@ -212,6 +212,17 @@ pub enum RepoError {
     /// that do not actually share a key.
     #[error("pricing repo: duplicate canonical scope key: {0}")]
     DuplicateScopeKey(String),
+    /// A plan already carries a bundle (`uq_pricing_bundle_plan`).
+    ///
+    /// Minted here rather than reported as a driver error because it is a rule
+    /// an operator can act on — a plan is a bundle or it is not — and because
+    /// the index message differs between the two backends, so a caller matching
+    /// on text would be matching on the engine.
+    #[error("pricing repo: plan {plan_id} already carries a bundle")]
+    DuplicateBundleOnPlan {
+        /// The plan that already has one.
+        plan_id: String,
+    },
     /// Another write of this aggregate reached a per-aggregate serialization
     /// point first (D-159).
     ///
@@ -757,6 +768,13 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
             "{subject} {id}: current {current}, submitted {submitted}"
         )),
         RepoError::DuplicateScopeKey(key) => DomainError::DuplicateScopeKey(key.clone()),
+        // A conflicting state the caller can act on, and not a scope-key
+        // collision: `DUPLICATE_SCOPE_KEY` names a price row's canonical key and
+        // reporting a bundle under it would tell an operator to go and look at a
+        // key that has nothing to do with the refusal. `Conflict` is the class
+        // this platform renders 409 from, which is what "the plan already has
+        // one" is.
+        RepoError::DuplicateBundleOnPlan { .. } => DomainError::BundleExistsOnPlan(err.to_string()),
         RepoError::IdempotencyPayloadMismatch { .. } => {
             DomainError::IdempotencyPayloadMismatch(err.to_string())
         }

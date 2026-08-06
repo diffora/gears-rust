@@ -6,6 +6,7 @@
 
 pub mod approvals;
 pub mod auth_context;
+pub mod bundles;
 pub mod correlation;
 pub mod cursor;
 pub mod error;

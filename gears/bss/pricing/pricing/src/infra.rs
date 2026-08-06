@@ -2,6 +2,7 @@
 //! mappings the domain deliberately knows nothing about.
 
 pub mod approval;
+pub mod bundle;
 pub mod cutover;
 pub mod error_mapping;
 pub mod fixture_gate;

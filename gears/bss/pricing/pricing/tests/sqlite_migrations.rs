@@ -73,6 +73,10 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_approval_threshold",
     "pricing_approval_threshold_tombstone",
     "pricing_price_window",
+    "pricing_bundle",
+    "pricing_bundle_component",
+    "pricing_bundle_revshare_group",
+    "pricing_bundle_revshare",
     "coord_leases",
 ];
 
@@ -101,6 +105,15 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_approval_threshold_tombstone_no_update",
     "trg_pricing_audit_log_no_delete",
     "trg_pricing_audit_log_no_update",
+    "trg_pricing_bundle_component_no_delete",
+    "trg_pricing_bundle_component_no_insert",
+    "trg_pricing_bundle_component_no_update",
+    "trg_pricing_bundle_revshare_group_no_delete",
+    "trg_pricing_bundle_revshare_group_no_insert",
+    "trg_pricing_bundle_revshare_group_no_update",
+    "trg_pricing_bundle_revshare_no_delete",
+    "trg_pricing_bundle_revshare_no_insert",
+    "trg_pricing_bundle_revshare_no_update",
     "trg_pricing_plan_addon_rule_no_delete",
     "trg_pricing_plan_addon_rule_no_insert",
     "trg_pricing_plan_addon_rule_no_update",
@@ -144,6 +157,11 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_approval_key_approval",
     "idx_pricing_audit_log_recorded",
     "idx_pricing_audit_log_subject",
+    "idx_pricing_bundle_component_plan",
+    "idx_pricing_bundle_component_revision",
+    "idx_pricing_bundle_revshare_group_revision",
+    "idx_pricing_bundle_revshare_revision",
+    "idx_pricing_bundle_tenant",
     "idx_pricing_catalog_version_ref_version",
     "idx_pricing_idempotency_dedup_created",
     "idx_pricing_operator_flag_by_flag",
@@ -160,6 +178,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_read_model_resolve",
     "uq_pricing_approval_key_pending",
     "uq_pricing_approval_policy_pending",
+    "uq_pricing_bundle_plan",
     "uq_pricing_outbox_dedup_key",
     "uq_pricing_outbox_sequence",
     "uq_pricing_plan_current",
@@ -191,6 +210,15 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_audit_log_entry_kind",
     "chk_pricing_audit_log_rollup",
     "chk_pricing_audit_log_seq",
+    "chk_pricing_bundle_component_min_qty",
+    "chk_pricing_bundle_component_qty_range",
+    "chk_pricing_bundle_invoice_itemization",
+    "chk_pricing_bundle_price_basis",
+    "chk_pricing_bundle_revshare_effective_share_bp",
+    "chk_pricing_bundle_revshare_group_absorber",
+    "chk_pricing_bundle_revshare_group_platform_cut_bp",
+    "chk_pricing_bundle_revshare_party",
+    "chk_pricing_bundle_revshare_share_bp",
     "chk_pricing_catalog_version_ref_commit",
     "chk_pricing_catalog_version_ref_subject_kind",
     "chk_pricing_catalog_version_ref_subject_lifecycle",
@@ -258,202 +286,244 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_read_model_warm_marker",
 ];
 
-/// Every trigger's body, pinned by digest.
+/// Every trigger's body, pinned by digest — the roster, in `sqlite_master`'s
+/// name order.
 ///
-/// A function rather than a `const` because the digests are computed; the list is the
-/// roster and the order is `sqlite_master`'s name order.
+/// A module-level `const` like the four rosters above it, and it was a `Vec`
+/// built inside the accessor until Slice 8's nine triggers pushed that function
+/// past the line cap. Nothing about it was ever computed: the digests are
+/// literals that a legitimate change to a trigger re-pins here, deliberately.
+const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
+    (
+        "trg_pricing_approval_born_submitted",
+        8_026_324_167_547_094_374_u64,
+    ),
+    (
+        "trg_pricing_approval_flip_whitelist",
+        7_582_204_510_596_437_500_u64,
+    ),
+    (
+        "trg_pricing_approval_immutable_once_decided",
+        8_082_372_707_353_450_395_u64,
+    ),
+    (
+        "trg_pricing_approval_key_born_submitted",
+        2_440_950_770_022_816_954_u64,
+    ),
+    (
+        "trg_pricing_approval_key_born_under_a_pending_unit",
+        17_401_364_553_705_688_472_u64,
+    ),
+    (
+        "trg_pricing_approval_key_follow_state",
+        1_503_439_957_052_833_582_u64,
+    ),
+    (
+        "trg_pricing_approval_key_follows_its_unit",
+        3_659_799_981_708_444_309_u64,
+    ),
+    (
+        "trg_pricing_approval_key_follows_once",
+        17_250_957_205_851_589_411_u64,
+    ),
+    (
+        "trg_pricing_approval_key_no_delete",
+        8_268_739_358_483_246_584_u64,
+    ),
+    (
+        "trg_pricing_approval_key_pinned_columns",
+        2_791_595_470_115_359_269_u64,
+    ),
+    (
+        "trg_pricing_approval_no_delete",
+        13_958_316_444_295_959_010_u64,
+    ),
+    (
+        "trg_pricing_approval_pinned_columns",
+        16_147_021_889_530_757_421_u64,
+    ),
+    (
+        "trg_pricing_approval_threshold_no_delete",
+        12_053_586_872_877_274_445_u64,
+    ),
+    (
+        "trg_pricing_approval_threshold_no_update",
+        11_709_629_607_986_505_725_u64,
+    ),
+    (
+        "trg_pricing_approval_threshold_tombstone_no_delete",
+        12_721_364_154_841_815_973_u64,
+    ),
+    (
+        "trg_pricing_approval_threshold_tombstone_no_update",
+        12_807_063_624_490_211_381_u64,
+    ),
+    (
+        "trg_pricing_audit_log_no_delete",
+        4_599_062_756_050_227_754_u64,
+    ),
+    (
+        "trg_pricing_audit_log_no_update",
+        8_228_055_037_257_075_408_u64,
+    ),
+    (
+        "trg_pricing_bundle_component_no_delete",
+        17_530_640_725_345_118_770_u64,
+    ),
+    (
+        "trg_pricing_bundle_component_no_insert",
+        11_007_480_391_378_903_366_u64,
+    ),
+    (
+        "trg_pricing_bundle_component_no_update",
+        3_869_036_056_478_704_678_u64,
+    ),
+    (
+        "trg_pricing_bundle_revshare_group_no_delete",
+        1_541_310_430_529_535_174_u64,
+    ),
+    (
+        "trg_pricing_bundle_revshare_group_no_insert",
+        13_702_565_162_429_317_894_u64,
+    ),
+    (
+        "trg_pricing_bundle_revshare_group_no_update",
+        5_081_614_686_098_930_342_u64,
+    ),
+    (
+        "trg_pricing_bundle_revshare_no_delete",
+        16_850_888_399_988_183_435_u64,
+    ),
+    (
+        "trg_pricing_bundle_revshare_no_insert",
+        17_648_799_137_787_949_339_u64,
+    ),
+    (
+        "trg_pricing_bundle_revshare_no_update",
+        12_884_963_950_550_849_015_u64,
+    ),
+    (
+        "trg_pricing_plan_addon_rule_no_delete",
+        16_098_381_818_331_615_522_u64,
+    ),
+    (
+        "trg_pricing_plan_addon_rule_no_insert",
+        3_837_286_324_373_750_486_u64,
+    ),
+    (
+        "trg_pricing_plan_addon_rule_no_update",
+        16_520_572_091_884_197_445_u64,
+    ),
+    (
+        "trg_pricing_plan_descriptor_set_no_delete",
+        7_950_040_988_195_990_411_u64,
+    ),
+    (
+        "trg_pricing_plan_descriptor_set_no_insert",
+        6_417_891_462_364_744_011_u64,
+    ),
+    (
+        "trg_pricing_plan_descriptor_set_no_update",
+        17_644_945_910_566_070_594_u64,
+    ),
+    (
+        "trg_pricing_plan_draft_flip_whitelist",
+        1_063_197_060_918_151_682_u64,
+    ),
+    (
+        "trg_pricing_plan_flip_whitelist",
+        2_936_899_670_102_780_293_u64,
+    ),
+    (
+        "trg_pricing_plan_frozen_columns",
+        12_503_936_757_081_989_316_u64,
+    ),
+    ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
+    (
+        "trg_pricing_plan_phase_no_delete",
+        10_318_237_350_173_185_356_u64,
+    ),
+    (
+        "trg_pricing_plan_phase_no_insert",
+        5_810_769_608_047_845_284_u64,
+    ),
+    (
+        "trg_pricing_plan_phase_no_update",
+        3_878_195_498_503_408_715_u64,
+    ),
+    (
+        "trg_pricing_price_draft_flip_whitelist",
+        12_283_433_772_935_461_712_u64,
+    ),
+    (
+        "trg_pricing_price_flip_whitelist",
+        6_864_967_922_611_899_704_u64,
+    ),
+    (
+        "trg_pricing_price_frozen_columns",
+        17_494_586_689_977_764_545_u64,
+    ),
+    (
+        "trg_pricing_price_grandfather_monotonic",
+        6_472_678_356_918_752_723_u64,
+    ),
+    ("trg_pricing_price_no_delete", 4_952_185_589_843_057_617_u64),
+    (
+        "trg_pricing_price_tier_band_kind_insert",
+        12_169_947_829_544_681_527_u64,
+    ),
+    (
+        "trg_pricing_price_tier_band_kind_update",
+        4_931_887_817_904_621_455_u64,
+    ),
+    (
+        "trg_pricing_price_tier_band_no_delete",
+        18_080_063_622_350_427_273_u64,
+    ),
+    (
+        "trg_pricing_price_tier_band_no_insert",
+        8_466_772_667_392_780_886_u64,
+    ),
+    (
+        "trg_pricing_price_tier_band_no_update",
+        17_300_718_464_613_080_632_u64,
+    ),
+    (
+        "trg_pricing_price_tier_band_parent_kind",
+        13_015_595_855_638_009_436_u64,
+    ),
+    (
+        "trg_pricing_price_window_act_sequence",
+        8_416_459_948_900_544_137_u64,
+    ),
+    (
+        "trg_pricing_price_window_flip_whitelist",
+        7_945_364_764_739_140_221_u64,
+    ),
+    (
+        "trg_pricing_price_window_frozen_columns",
+        3_006_703_635_329_582_194_u64,
+    ),
+    (
+        "trg_pricing_price_window_future_end",
+        674_975_173_687_143_698_u64,
+    ),
+    (
+        "trg_pricing_price_window_immutable_history",
+        2_969_521_874_630_654_905_u64,
+    ),
+    (
+        "trg_pricing_price_window_no_delete",
+        8_334_934_610_813_099_928_u64,
+    ),
+];
+
+/// [`EXPECTED_TRIGGER_BODIES`] in the shape the assertion compares against.
 fn expected_trigger_bodies() -> Vec<(String, u64)> {
-    [
-        (
-            "trg_pricing_approval_born_submitted",
-            8_026_324_167_547_094_374_u64,
-        ),
-        (
-            "trg_pricing_approval_flip_whitelist",
-            7_582_204_510_596_437_500_u64,
-        ),
-        (
-            "trg_pricing_approval_immutable_once_decided",
-            8_082_372_707_353_450_395_u64,
-        ),
-        (
-            "trg_pricing_approval_key_born_submitted",
-            2_440_950_770_022_816_954_u64,
-        ),
-        (
-            "trg_pricing_approval_key_born_under_a_pending_unit",
-            17_401_364_553_705_688_472_u64,
-        ),
-        (
-            "trg_pricing_approval_key_follow_state",
-            1_503_439_957_052_833_582_u64,
-        ),
-        (
-            "trg_pricing_approval_key_follows_its_unit",
-            3_659_799_981_708_444_309_u64,
-        ),
-        (
-            "trg_pricing_approval_key_follows_once",
-            17_250_957_205_851_589_411_u64,
-        ),
-        (
-            "trg_pricing_approval_key_no_delete",
-            8_268_739_358_483_246_584_u64,
-        ),
-        (
-            "trg_pricing_approval_key_pinned_columns",
-            2_791_595_470_115_359_269_u64,
-        ),
-        (
-            "trg_pricing_approval_no_delete",
-            13_958_316_444_295_959_010_u64,
-        ),
-        (
-            "trg_pricing_approval_pinned_columns",
-            16_147_021_889_530_757_421_u64,
-        ),
-        (
-            "trg_pricing_approval_threshold_no_delete",
-            12_053_586_872_877_274_445_u64,
-        ),
-        (
-            "trg_pricing_approval_threshold_no_update",
-            11_709_629_607_986_505_725_u64,
-        ),
-        (
-            "trg_pricing_approval_threshold_tombstone_no_delete",
-            12_721_364_154_841_815_973_u64,
-        ),
-        (
-            "trg_pricing_approval_threshold_tombstone_no_update",
-            12_807_063_624_490_211_381_u64,
-        ),
-        (
-            "trg_pricing_audit_log_no_delete",
-            4_599_062_756_050_227_754_u64,
-        ),
-        (
-            "trg_pricing_audit_log_no_update",
-            8_228_055_037_257_075_408_u64,
-        ),
-        (
-            "trg_pricing_plan_addon_rule_no_delete",
-            16_098_381_818_331_615_522_u64,
-        ),
-        (
-            "trg_pricing_plan_addon_rule_no_insert",
-            3_837_286_324_373_750_486_u64,
-        ),
-        (
-            "trg_pricing_plan_addon_rule_no_update",
-            16_520_572_091_884_197_445_u64,
-        ),
-        (
-            "trg_pricing_plan_descriptor_set_no_delete",
-            7_950_040_988_195_990_411_u64,
-        ),
-        (
-            "trg_pricing_plan_descriptor_set_no_insert",
-            6_417_891_462_364_744_011_u64,
-        ),
-        (
-            "trg_pricing_plan_descriptor_set_no_update",
-            17_644_945_910_566_070_594_u64,
-        ),
-        (
-            "trg_pricing_plan_draft_flip_whitelist",
-            1_063_197_060_918_151_682_u64,
-        ),
-        (
-            "trg_pricing_plan_flip_whitelist",
-            2_936_899_670_102_780_293_u64,
-        ),
-        (
-            "trg_pricing_plan_frozen_columns",
-            12_503_936_757_081_989_316_u64,
-        ),
-        ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
-        (
-            "trg_pricing_plan_phase_no_delete",
-            10_318_237_350_173_185_356_u64,
-        ),
-        (
-            "trg_pricing_plan_phase_no_insert",
-            5_810_769_608_047_845_284_u64,
-        ),
-        (
-            "trg_pricing_plan_phase_no_update",
-            3_878_195_498_503_408_715_u64,
-        ),
-        (
-            "trg_pricing_price_draft_flip_whitelist",
-            12_283_433_772_935_461_712_u64,
-        ),
-        (
-            "trg_pricing_price_flip_whitelist",
-            6_864_967_922_611_899_704_u64,
-        ),
-        (
-            "trg_pricing_price_frozen_columns",
-            17_494_586_689_977_764_545_u64,
-        ),
-        (
-            "trg_pricing_price_grandfather_monotonic",
-            6_472_678_356_918_752_723_u64,
-        ),
-        ("trg_pricing_price_no_delete", 4_952_185_589_843_057_617_u64),
-        (
-            "trg_pricing_price_tier_band_kind_insert",
-            12_169_947_829_544_681_527_u64,
-        ),
-        (
-            "trg_pricing_price_tier_band_kind_update",
-            4_931_887_817_904_621_455_u64,
-        ),
-        (
-            "trg_pricing_price_tier_band_no_delete",
-            18_080_063_622_350_427_273_u64,
-        ),
-        (
-            "trg_pricing_price_tier_band_no_insert",
-            8_466_772_667_392_780_886_u64,
-        ),
-        (
-            "trg_pricing_price_tier_band_no_update",
-            17_300_718_464_613_080_632_u64,
-        ),
-        (
-            "trg_pricing_price_tier_band_parent_kind",
-            13_015_595_855_638_009_436_u64,
-        ),
-        (
-            "trg_pricing_price_window_act_sequence",
-            8_416_459_948_900_544_137_u64,
-        ),
-        (
-            "trg_pricing_price_window_flip_whitelist",
-            7_945_364_764_739_140_221_u64,
-        ),
-        (
-            "trg_pricing_price_window_frozen_columns",
-            3_006_703_635_329_582_194_u64,
-        ),
-        (
-            "trg_pricing_price_window_future_end",
-            674_975_173_687_143_698_u64,
-        ),
-        (
-            "trg_pricing_price_window_immutable_history",
-            2_969_521_874_630_654_905_u64,
-        ),
-        (
-            "trg_pricing_price_window_no_delete",
-            8_334_934_610_813_099_928_u64,
-        ),
-    ]
-    .into_iter()
-    .map(|(name, hash)| ((*name).to_owned(), hash))
-    .collect()
+    EXPECTED_TRIGGER_BODIES
+        .iter()
+        .map(|(name, hash)| ((*name).to_owned(), *hash))
+        .collect()
 }
 
 /// Every **named CHECK constraint** the chain created, in name order.

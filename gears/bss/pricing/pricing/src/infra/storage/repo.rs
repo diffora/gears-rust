@@ -40,6 +40,7 @@
 
 pub mod approval_repo;
 pub mod audit_repo;
+pub mod bundle_repo;
 pub mod catalog_version_ref_repo;
 pub mod idempotency_repo;
 pub mod outbox_repo;
@@ -59,6 +60,9 @@ use crate::infra::storage::RepoError;
 
 pub use approval_repo::{ApprovalRecord, NewApproval};
 pub use audit_repo::NewAuditEntry;
+pub use bundle_repo::{
+    BundleComponentDraft, BundleRecord, BundleRepo, CompositionDraft, NewBundle,
+};
 pub use catalog_version_ref_repo::PendingVersionRow;
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
 pub use outbox_repo::{

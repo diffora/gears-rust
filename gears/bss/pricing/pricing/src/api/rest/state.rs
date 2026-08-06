@@ -17,7 +17,9 @@ use toolkit_db::{DBProvider, DbError};
 
 use crate::infra::approval::ApprovalService;
 use crate::infra::publish::PublishService;
-use crate::infra::storage::repo::{IdempotencyGate, PlanRepo, PlanShapeRepo, PriceRepo};
+use crate::infra::storage::repo::{
+    BundleRepo, IdempotencyGate, PlanRepo, PlanShapeRepo, PriceRepo,
+};
 
 /// The authoring surface's dependencies, shared via
 /// `Extension<Arc<AuthoringState>>` exactly as
@@ -33,6 +35,11 @@ pub struct AuthoringState {
     pub shapes: PlanShapeRepo,
     /// Draft price rows and their bands.
     pub prices: PriceRepo,
+    /// The bundle and its composition (`design/08-bundles.md` §6).
+    pub bundles: BundleRepo,
+    /// The composition's assemble/validate/publish seam — the reads
+    /// `domain::bundle_rules` is deliberately kept from making for itself.
+    pub bundle_service: crate::infra::bundle::BundleService,
     /// The at-most-once gate, holding the configured retention window.
     pub idempotency: IdempotencyGate,
 }

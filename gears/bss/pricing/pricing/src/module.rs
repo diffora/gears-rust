@@ -48,7 +48,7 @@ use crate::infra::jobs::readmodel_warm::ReadModelWarmJob;
 use crate::infra::jobs::window_activation::WindowActivationJob;
 use crate::infra::publish::PublishService;
 use crate::infra::storage::repo::{
-    IdempotencyGate, PinFrontierRepo, PlanRepo, PlanShapeRepo, PriceRepo,
+    BundleRepo, IdempotencyGate, PinFrontierRepo, PlanRepo, PlanShapeRepo, PriceRepo,
 };
 use crate::infra::window::WindowService;
 
@@ -578,6 +578,10 @@ impl Gear for BssPricingGear {
             plans: PlanRepo::new(db.clone()),
             shapes: PlanShapeRepo::new(db.clone()),
             prices: PriceRepo::new(db.clone()),
+            // Slice 8's two: the composition store, and the seam that assembles
+            // a composition for the pure rules to judge.
+            bundles: BundleRepo::new(db.clone()),
+            bundle_service: crate::infra::bundle::BundleService::new(db.clone()),
             idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
         });
 
@@ -739,6 +743,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::prices::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::bundles::router(
                 Arc::clone(&rt.authoring_api),
                 openapi,
             ))
