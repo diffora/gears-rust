@@ -359,6 +359,16 @@ fn the_copys_window_is_open_ended_so_the_d04_bound_holds_by_construction() {
     // below the bound - and not here. This case exists so that a future change
     // giving the copy a computed end has to come past it and answer the bound
     // explicitly rather than by omission.
+    //
+    // **It adds no coverage, and the commit that introduced it (`751dc16c2`) said
+    // otherwise.** That message claimed the open end "was written nowhere the tree
+    // can check". It was: `the_three_operations_are_born_of_one_instant` has
+    // asserted `composed.copy().effective_to == None` since `71dfa1000`, one commit
+    // earlier. A change giving the copy a computed end reddens both. What this case
+    // adds is the **rule's name and argument** at the assertion, so an author making
+    // that change meets D-04 rather than an equality they will read as incidental -
+    // which is worth a duplicated assertion, and is a different claim from the one
+    // that was made for it.
     let plane = vec![window(1, at(1), None, WindowState::Active)];
 
     let composed = compose_cutover_windows(&plane, at(10)).expect("a live key composes");

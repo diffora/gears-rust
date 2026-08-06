@@ -605,41 +605,19 @@ pub fn price_window_transition_dedup_key(event: CatalogEvent, window_id: Uuid) -
     format!("{}/{}", event.as_str(), window_id)
 }
 
-/// The `PriceUpdated` payload — the **fourth** whose field list no document
-/// declares, and the first of the two `Price*` names to get a producer.
+/// The `PriceCreated` payload — a row coming into existence on a key.
 ///
-/// `03-price-structure.md` §17.5 says only *"`PriceCreated` on row authoring,
-/// `PriceUpdated` on supersession"*, and Foundation §1.2 puts both in the frozen
-/// name set ordered per `(tenantId, aggregateId)`. So what the event *means* is
-/// declared and its content is not; the keys below are this module's, in the same
-/// `camelCase` its three siblings use.
+/// **Two producers, one name**, which is D-203's decision rather than a
+/// duplication: the authoring door, where `03-price-structure.md` §17.5 puts it,
+/// and the cutover's commit, which R-02 requires to announce it twice. Both are a
+/// row being born; neither is the other's special case. This type's field list is
+/// this module's, like its three siblings', because §17.5 declares what the event
+/// *means* and not what it carries.
 ///
-/// **`PriceCreated` still has no producer anywhere in this gear** — row authoring
-/// enqueues nothing — and that gap is recorded rather than closed here: it belongs
-/// to the authoring plane, and minting it from the supersession door would emit a
-/// `PriceCreated` for the one authored row that is *not* an ordinary authoring act.
-///
-/// # It names the predecessor, and the field is not optional
-///
-/// A `PriceUpdated` is *by definition* a row landing on an occupied canonical scope
-/// key: both sanctioned producers of `published → superseded` set
-/// `supersedes_price_id` on the successor (D-127), and there is no third. A
-/// `Option<Uuid>` here would be a shape saying a price can be "updated" with nothing
-/// updated — and a consumer's whole reason to read this event is to stop resolving
-/// the row it replaces.
-///
-/// # It carries the **canonical scope key**, unlike its window sibling
-///
-/// [`PriceWindowTransitionPayload`] deliberately does not, on the ground that
-/// resolving eight axes per event would put a query on a *sweep's* path. This event
-/// is emitted from the operator transaction that already holds the key, so the
-/// argument does not transfer: the cost is zero and the key is the only field that
-/// tells a consumer *which price* moved without a second lookup.
+/// It carries **no** version ref, and that is the difference from
+/// [`PriceUpdatedPayload`] worth stating: a draft is addressable at no
+/// `CatalogVersion`, so there is no pending handle to name from the authoring door.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(
-    clippy::doc_markdown,
-    reason = "the sibling's doc block above documents PriceUpdated; this type's own is below"
-)]
 pub struct PriceCreatedPayload {
     /// The plan the row belongs to, and the event's aggregate.
     pub plan_id: PlanId,
@@ -664,14 +642,47 @@ impl PriceCreatedPayload {
     }
 }
 
-/// The `PriceUpdated` payload.
+/// The `PriceUpdated` payload — the **fourth** whose field list no document
+/// declares.
+///
+/// `03-price-structure.md` §17.5 says only *"`PriceCreated` on row authoring,
+/// `PriceUpdated` on supersession"*, and Foundation §1.2 puts both in the frozen
+/// name set ordered per `(tenantId, aggregateId)`. So what the event *means* is
+/// declared and its content is not; the keys below are this module's, in the same
+/// `camelCase` its three siblings use.
+///
+/// **This block documented [`PriceCreatedPayload`] from `e6a2edcce` until
+/// 2026-08-06.** That commit inserted the sibling type between this doc and the
+/// type it describes, and the symptom was treated rather than the cause: an
+/// `#[allow(clippy::doc_markdown)]` was added with a `reason` explaining that the
+/// block above documents the type below. It also carried the sentence
+/// *"`PriceCreated` still has no producer anywhere in this gear"* — which the very
+/// commit that moved it made false. A doc block that has to explain which type it
+/// belongs to has already been transplanted.
+///
+/// # It names the predecessor, and the field is not optional
+///
+/// A `PriceUpdated` is *by definition* a row landing on an occupied canonical scope
+/// key: both sanctioned producers of `published → superseded` set
+/// `supersedes_price_id` on the successor (D-127), and there is no third. A
+/// `Option<Uuid>` here would be a shape saying a price can be "updated" with nothing
+/// updated — and a consumer's whole reason to read this event is to stop resolving
+/// the row it replaces.
+///
+/// # It carries the **canonical scope key**, unlike its window sibling
+///
+/// [`PriceWindowTransitionPayload`] deliberately does not, on the ground that
+/// resolving ten axes per event would put a query on a *sweep's* path. This event
+/// is emitted from the operator transaction that already holds the key, so the
+/// argument does not transfer: the cost is zero and the key is the only field that
+/// tells a consumer *which price* moved without a second lookup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PriceUpdatedPayload {
     /// The plan the row belongs to — the aggregate the event is ordered within.
     pub plan_id: PlanId,
     /// The row that became current on the key.
     pub price_id: Uuid,
-    /// The eight axes, canonically rendered.
+    /// The ten axes, canonically rendered.
     pub scope_key: String,
     /// The row it replaced, which every producer of this event has.
     pub supersedes_price_id: Uuid,

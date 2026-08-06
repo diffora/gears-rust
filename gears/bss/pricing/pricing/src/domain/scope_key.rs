@@ -1,4 +1,4 @@
-//! The **canonical scope key** and its eight axes.
+//! The **canonical scope key** and its ten axes.
 //!
 //! One key serves four jobs at once (`design/01-foundation.md` §4.1): row
 //! uniqueness, supersession scoping, `PriceWindow` non-overlap, and window
@@ -7,7 +7,8 @@
 //! "the same key" means.
 //!
 //! ```text
-//! (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)
+//! (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind,
+//!  cohort, meter, dimensionKey)
 //! ```
 //!
 //! It extends the manifest's `(plan, currency, region, priceOverlay)` key
@@ -21,24 +22,34 @@
 //! but it is **data, not a constant**, so it is not a `Default` impl on
 //! [`PhaseId`]; see that type.
 //!
-//! # The design set has nine and ten axes here, and this type still has eight
+//! # The ninth and tenth axes (D-196), and they are built
 //!
-//! **D-196 was decided by the product owner on 2026-08-06** and is **not yet
-//! built**: the canonical scope key gains `(meter, dimensionKey)` **on
+//! **D-196 was decided by the product owner on 2026-08-06 and all four clauses
+//! are paid.** The canonical scope key carries `(meter, dimensionKey)` **on
 //! `chargeKind = 'usage'` rows**, because every usage line of one plan in one
-//! market otherwise renders one key and the second is refused
+//! market otherwise rendered one key and the second was refused
 //! `DUPLICATE_SCOPE_KEY` at save — which made D-103's confirmed multi-meter plan
 //! unstorable while the meter-line index, `MeterInjectivity` and
 //! `plan_rules::cycle_shape_tests` all assumed it storable.
 //!
-//! Until the clauses D-196 lists are paid, **every "eight axes" in this crate is
-//! this type's truth and no longer the design set's** (`design/01-foundation.md`
-//! §4.1). The pairing rule to build is an implication and not a biconditional —
-//! a meter implies `usage`, while a usage row with no meter stays admissible —
-//! and the rendering is to keep fixed arity at ten segments. The physical half
-//! is §3.7's: `meter` is nullable and NULLs are distinct inside a `UNIQUE`, so
-//! the two scope-key indexes key over `COALESCE(meter, '')`, measured rather
-//! than assumed.
+//! The pairing rule is an implication and not a biconditional — a meter implies
+//! `usage`, while a usage row with no meter stays admissible ([`ScopeKey::new`]
+//! returns exactly that, and [`ScopeKey::with_usage_line`] is never needed to
+//! omit the pair). [`fmt::Display`] keeps **fixed arity at ten segments**, `none`
+//! filling both usage positions on a key that has no line. The physical half is
+//! §3.7's: `meter` is nullable and NULLs are distinct inside a `UNIQUE`, so the
+//! two scope-key indexes key over `COALESCE(meter, '')` — measured rather than
+//! assumed, because the naive spelling *destroys* the uniqueness every non-usage
+//! key had.
+//!
+//! **This paragraph said "not yet built" for a day after it was, and that cost
+//! four defects.** It is the instruction a reader consults before deciding
+//! whether a neighbouring "eight axes" needs revisiting, so while it said the
+//! axes were unbuilt, every such site read as correct: `scope_key_columns`,
+//! `content_pin::put_scope_key`, `sellability::siblings` and `ScopeKeyView` were
+//! each found separately, by four different routes, over two days. **A module doc
+//! that describes the state of the work is load-bearing and goes stale in the same
+//! commit that finishes it.**
 
 use std::fmt;
 
