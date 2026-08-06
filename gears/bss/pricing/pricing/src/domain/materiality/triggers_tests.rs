@@ -117,9 +117,10 @@ fn every_trigger_carries_a_distinct_token() {
 /// This list is a **transcription**, so it reddened on the flip and was updated in
 /// the same edit — which is the obligation it exists to create.
 ///
-/// `grandfatheringCutover` is deliberately still absent while most of the cutover's
-/// store exists on this branch: the trigger is an *act*, no surface declares it
-/// yet, and the flip belongs to the commit that adds the declaration.
+/// **`grandfatheringCutover` joined last**, and later than its own store by three
+/// commits: it waited for `infra::cutover::cutover_in` to *declare* the act through
+/// `ChangeSet::of_act`, because that is what the predicate is about. A table is not
+/// a declaration.
 #[test]
 fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
     let reachable: Vec<&str> = Trigger::ALL
@@ -132,6 +133,7 @@ fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
         reachable,
         [
             "grandfatherHorizonTightening",
+            "grandfatheringCutover",
             "thresholdPolicyDiff",
             "windowCancellation",
             "windowShortening",

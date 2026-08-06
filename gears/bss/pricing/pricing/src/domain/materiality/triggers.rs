@@ -36,16 +36,15 @@
 //! routes. That is the paragraph above working as designed rather than an
 //! exception to it.
 //!
-//! **`GrandfatheringCutover` stays `false`, and that is a live distinction rather
-//! than an oversight.** Most of the cutover's subject landed on this branch in the
-//! same stretch — `domain::cutover`'s compose, the generation key,
-//! `price_repo::commit_cutover_rows`, `infra::cutover::commit_cutover`, the act's
-//! identity — but the trigger is an **act**, and [`triggered`] reads it back from a
-//! change set some surface declared. No surface declares it: the cutover's
-//! orchestrator and its route are the two pieces still owed. So the flip belongs to
-//! the commit that adds `ChangeSet::of_act(Trigger::GrandfatheringCutover, ..)`,
-//! not to the one that finishes the store — which is exactly the line Slice 8
-//! crossed and this slice has not.
+//! **`GrandfatheringCutover` followed on the same rule, and the wait is worth
+//! recording.** Its *store* landed first — `domain::cutover`'s compose, the
+//! generation key, `price_repo::commit_cutover_rows`,
+//! `infra::cutover::commit_cutover`, the act's identity — and it stayed `false`
+//! through all of it, because a registered trigger of this kind is an **act** and
+//! [`triggered`] reads it back from a change set *some surface declared*. Nothing
+//! declared it until `infra::cutover::cutover_in` did. **The predicate is about a
+//! declaration, not about a table**, and the three commits between the store and
+//! the declaration are what that distinction looks like in practice.
 //!
 //! # Two halves, because a trigger is either a property of the act or of the diff
 //!
@@ -265,9 +264,9 @@ impl Trigger {
             | Self::PlanShapeRevisionContent
             | Self::GrandfatherHorizonTightening
             | Self::BundleComposition
-            | Self::RevenueShareChange => true,
-            Self::GrandfatheringCutover
-            | Self::RetirementUnwindingACutover
+            | Self::RevenueShareChange
+            | Self::GrandfatheringCutover => true,
+            Self::RetirementUnwindingACutover
             | Self::ImmediateMembershipReresolution
             | Self::BulkGroupMove
             | Self::HistoricalImport
