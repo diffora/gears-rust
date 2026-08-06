@@ -40,6 +40,7 @@
 
 pub mod approval_repo;
 pub mod audit_repo;
+pub mod bundle_repo;
 pub mod catalog_version_ref_repo;
 pub mod idempotency_repo;
 pub mod outbox_repo;

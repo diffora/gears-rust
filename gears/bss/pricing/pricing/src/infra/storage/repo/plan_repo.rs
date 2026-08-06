@@ -83,6 +83,7 @@ use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::plan;
+use crate::infra::storage::repo::bundle_repo;
 use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::repo::plan_shape_repo::{
     copy_addon_rules, copy_descriptor_set, copy_phases, delete_addon_rules, delete_descriptor_set,
@@ -503,6 +504,12 @@ impl PlanRepo {
                     delete_phases(txn, &scope, tenant_id, plan_id, revision).await?;
                     delete_addon_rules(txn, &scope, tenant_id, plan_id, revision).await?;
                     delete_descriptor_set(txn, &scope, tenant_id, plan_id, revision).await?;
+                    // Slice 8's three composition tables ride this revision too
+                    // (D-92), and `abandoned` is not `draft`: the drop has to
+                    // precede the flip for the same reason the three above do.
+                    // A plan that is not a bundle drops nothing.
+                    bundle_repo::delete_composition(txn, &scope, tenant_id, plan_id, revision)
+                        .await?;
                     let result = plan::Entity::update_many()
                         .secure()
                         .scope_with(&scope)
@@ -747,6 +754,11 @@ impl PlanRepo {
                     copy_phases(txn, &scope, tenant_id, plan_id, source, next).await?;
                     copy_addon_rules(txn, &scope, tenant_id, plan_id, source, next).await?;
                     copy_descriptor_set(txn, &scope, tenant_id, plan_id, source, next).await?;
+                    // Slice 8's composition, on the same terms and after the new
+                    // revision row exists: these tables refuse an INSERT whose
+                    // parent revision is not `draft`.
+                    bundle_repo::copy_composition(txn, &scope, tenant_id, plan_id, source, next)
+                        .await?;
                     // The record of the identity this transaction minted, in the
                     // transaction that minted it. The stamp is the call's own -
                     // `created_by` is the actor and `now` the instant - so this

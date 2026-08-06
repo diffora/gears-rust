@@ -22,11 +22,14 @@ use bss_pricing::domain::plan_shape::{
     AddonRule, BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
 use bss_pricing::domain::scope_key::{PhaseId, PlanId};
-use bss_pricing::infra::storage::entity::plan;
+use bss_pricing::infra::storage::entity::{
+    bundle, bundle_component, bundle_revshare, bundle_revshare_group, plan,
+};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo, PlanShapeRepo};
 use bss_pricing::infra::storage::{RepoError, repo_failure};
 use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
@@ -1427,8 +1430,173 @@ async fn published_plan_with_shape(
         )
         .await
         .expect("attach the descriptor set on the open draft");
+    seed_bundle_composition(provider, scope, tenant, plan_id).await;
     flip_state(provider, scope, plan_id, 0, LifecycleState::Published).await;
     shapes
+}
+
+/// The plan this fixture builds is also a **bundle**, and its composition is
+/// authored on the open draft like every other part of the shape.
+///
+/// Through the entities rather than a repository: Slice 8's authoring surface is
+/// not what these two cases are about, and what they must see is rows under
+/// revision 0 that `open_revision` then has to copy and `abandon_draft` then has
+/// to drop. Two components, one rev-share group and two parties in it — enough
+/// that a copy which carried *a* row while losing the set would be visible.
+async fn seed_bundle_composition(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plan_id: PlanId,
+) {
+    let conn = provider.conn().expect("conn");
+    let bundle = bundle_id_of(plan_id);
+    let vendor = Uuid::from_u128(0x00be_110d);
+
+    let row = bundle::ActiveModel {
+        bundle_id: Set(bundle),
+        tenant_id: Set(tenant),
+        plan_id: Set(plan_id.get()),
+        price_basis: Set("sum_of_parts".to_owned()),
+        invoice_itemization: Set("itemize".to_owned()),
+    };
+    bundle::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .expect("scope the bundle")
+        .exec(&conn)
+        .await
+        .expect("seed pricing_bundle");
+
+    for (component, sku) in [
+        (Uuid::from_u128(0x0c01), Uuid::from_u128(0x05c1)),
+        (Uuid::from_u128(0x0c02), Uuid::from_u128(0x05c2)),
+    ] {
+        let row = bundle_component::ActiveModel {
+            bundle_id: Set(bundle),
+            plan_revision: Set(0),
+            component_plan_id: Set(component),
+            tenant_id: Set(tenant),
+            included_sku_id: Set(sku),
+            min_qty: Set(None),
+            max_qty: Set(None),
+        };
+        bundle_component::Entity::insert(row.clone())
+            .secure()
+            .scope_with_model(scope, &row)
+            .expect("scope the component")
+            .exec(&conn)
+            .await
+            .expect("seed pricing_bundle_component");
+    }
+
+    let row = bundle_revshare_group::ActiveModel {
+        bundle_id: Set(bundle),
+        plan_revision: Set(0),
+        vendor_sku_id: Set(vendor),
+        tenant_id: Set(tenant),
+        platform_cut_bp: Set(1000),
+        residual_absorber_party: Set("platform".to_owned()),
+    };
+    bundle_revshare_group::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .expect("scope the group")
+        .exec(&conn)
+        .await
+        .expect("seed pricing_bundle_revshare_group");
+
+    for party in ["vendor-a", "vendor-b"] {
+        let row = bundle_revshare::ActiveModel {
+            bundle_id: Set(bundle),
+            plan_revision: Set(0),
+            vendor_sku_id: Set(vendor),
+            party: Set(party.to_owned()),
+            tenant_id: Set(tenant),
+            share_bp: Set(4500),
+            // Set here so the copy has something to drop: a published revision's
+            // parties carry the normalization, and the successor's must not.
+            effective_share_bp: Set(Some(4500)),
+        };
+        bundle_revshare::Entity::insert(row.clone())
+            .secure()
+            .scope_with_model(scope, &row)
+            .expect("scope the party")
+            .exec(&conn)
+            .await
+            .expect("seed pricing_bundle_revshare");
+    }
+}
+
+/// The bundle id this fixture gives a plan. Derived so the assertions can name
+/// it without threading a value through every caller.
+fn bundle_id_of(plan_id: PlanId) -> Uuid {
+    Uuid::from_u128(plan_id.get().as_u128() ^ 0x000b_0d1e)
+}
+
+/// How many components stand under one revision.
+async fn component_rows(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    plan_id: PlanId,
+    revision: i64,
+) -> usize {
+    let conn = provider.conn().expect("conn");
+    bundle_component::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle_component::Column::BundleId.eq(bundle_id_of(plan_id)))
+                .add(bundle_component::Column::PlanRevision.eq(revision)),
+        )
+        .all(&conn)
+        .await
+        .expect("read components")
+        .len()
+}
+
+/// How many rev-share groups stand under one revision.
+async fn group_rows(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    plan_id: PlanId,
+    revision: i64,
+) -> usize {
+    let conn = provider.conn().expect("conn");
+    bundle_revshare_group::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle_revshare_group::Column::BundleId.eq(bundle_id_of(plan_id)))
+                .add(bundle_revshare_group::Column::PlanRevision.eq(revision)),
+        )
+        .all(&conn)
+        .await
+        .expect("read groups")
+        .len()
+}
+
+/// Every rev-share party row of one revision.
+async fn party_rows(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    plan_id: PlanId,
+    revision: i64,
+) -> Vec<bundle_revshare::Model> {
+    let conn = provider.conn().expect("conn");
+    bundle_revshare::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle_revshare::Column::BundleId.eq(bundle_id_of(plan_id)))
+                .add(bundle_revshare::Column::PlanRevision.eq(revision)),
+        )
+        .all(&conn)
+        .await
+        .expect("read parties")
 }
 
 /// A complete v1 descriptor set plus one P5 extra field.
@@ -1734,6 +1902,32 @@ async fn a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83() {
         "the descriptor set travels, the P5 extra fields included"
     );
 
+    // Slice 8's three, on the same terms (D-92): a successor that lost its
+    // components composes with fewer products than its predecessor at an
+    // unchanged price, and one that lost its rev-share pays no vendor at all.
+    assert_eq!(
+        component_rows(&provider, &scope, plan_id, 1).await,
+        2,
+        "the component set travels, every member of it (D-92/D-105)"
+    );
+    assert_eq!(
+        group_rows(&provider, &scope, plan_id, 1).await,
+        1,
+        "the rev-share group travels"
+    );
+    let carried_parties = party_rows(&provider, &scope, plan_id, 1).await;
+    assert_eq!(carried_parties.len(), 2, "every party of the group travels");
+    // The typed share travels; the **effective** share does not, because it is
+    // the previous publish's normalization and the successor has not published.
+    // A draft carrying the predecessor's effective shares would reconcile the
+    // old split the moment its typed shares were edited.
+    assert!(
+        carried_parties
+            .iter()
+            .all(|party| party.share_bp == 4500 && party.effective_share_bp.is_none()),
+        "the typed share travels and the normalized one does not (D-07), got: {carried_parties:?}"
+    );
+
     // The ids are the load-bearing half of the phase copy: the `phase` axis of
     // the canonical scope key holds a bare `phase_id` (D-19) and same-key
     // supersession compares it (D-56), so a re-minted one would move every
@@ -1835,6 +2029,24 @@ async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
         "no descriptor set survives the tombstone"
     );
 
+    // Slice 8's three, on the same terms: a tombstone that kept its composition
+    // would leave a frozen component set hanging off a revision no path reaches,
+    // under a number that stays consumed forever (D-145).
+    assert_eq!(
+        component_rows(&provider, &scope, plan_id, 1).await,
+        0,
+        "no component survives the tombstone"
+    );
+    assert_eq!(
+        group_rows(&provider, &scope, plan_id, 1).await,
+        0,
+        "no rev-share group survives the tombstone"
+    );
+    assert!(
+        party_rows(&provider, &scope, plan_id, 1).await.is_empty(),
+        "no rev-share party survives the tombstone"
+    );
+
     // The published revision is untouched by any of it — the drop is scoped to
     // the discarded revision, not to the plan.
     assert_eq!(
@@ -1889,7 +2101,19 @@ async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
 #[tokio::test]
 async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_dropped() {
     /// Alphabetical, because that is the order the query returns.
-    const REVISION_SCOPED: [&str; 3] = [
+    ///
+    /// Slice 8's three joined Slice 2's three: `pricing_bundle_component`,
+    /// `pricing_bundle_revshare_group` and `pricing_bundle_revshare` version with
+    /// the plan revision under D-92, and their copier and dropper live in
+    /// `repo/bundle_repo.rs` rather than in `plan_shape_repo.rs` — they hang off
+    /// the plan through `pricing_bundle` rather than carrying `plan_id`
+    /// themselves, so their statements need that indirection and Slice 2's do
+    /// not. `PlanRepo` calls both unconditionally; a plan that is not a bundle is
+    /// a no-op.
+    const REVISION_SCOPED: [&str; 6] = [
+        "pricing_bundle_component",
+        "pricing_bundle_revshare",
+        "pricing_bundle_revshare_group",
         "pricing_plan_addon_rule",
         "pricing_plan_descriptor_set",
         "pricing_plan_phase",
