@@ -42,6 +42,7 @@ use bss_pricing::domain::approval::{ApprovalState, DecisionBy};
 use bss_pricing::domain::audit::{
     AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash, genesis_prev_hash,
 };
+use bss_pricing::domain::bundle::{InvoiceItemization, PriceBasis};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
@@ -63,6 +64,9 @@ use bss_pricing::infra::storage::entity::{
     audit_log, catalog_version_ref, outbox, pin_frontier, read_model,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
+use bss_pricing::infra::storage::repo::{
+    BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle,
+};
 use bss_pricing::infra::storage::repo::{
     NewOutboxEvent, NewPlanDraft, NewPriceDraft, PlanPublishedPayload, PlanRepo, PlanShapeRepo,
     PriceRepo, outbox_repo,
@@ -2126,5 +2130,229 @@ async fn the_publish_record_carries_the_before_and_after_state_its_transition_im
         before.get("pendingVersionRef").is_none(),
         "and the before-state has none: there was no handle before the commit \
          requested one: {before}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// inst-bc-taxbasis's reverse half, through the real resolution (D-119, D-212)
+// ---------------------------------------------------------------------------
+
+/// A bundle on its own plan, at that plan's **current published** revision,
+/// composed of this file's plan plus one sibling whose published row carries
+/// `tax_inclusive`.
+///
+/// The whole point of the fixture is that nothing about the bundle is handed to
+/// the publish path: it is written to the store, and the resolver has to find it
+/// from `component_plan_id` alone.
+async fn seed_referencing_bundle(h: &Harness, sibling_tax_inclusive: bool) {
+    let bundle_plan = PlanId::new(Uuid::from_u128(0xb0_a1));
+    let sibling_plan = PlanId::new(Uuid::from_u128(0xb0_a2));
+
+    let mut draft = new_plan_draft();
+    draft.plan_id = bundle_plan;
+    let bundle_rev = h
+        .plans
+        .create_draft(&h.scope, draft)
+        .await
+        .expect("create the bundle's own plan");
+
+    let mut sibling_draft = new_plan_draft();
+    sibling_draft.plan_id = sibling_plan;
+    h.plans
+        .create_draft(&h.scope, sibling_draft)
+        .await
+        .expect("create the sibling component's plan");
+
+    // The sibling's published row, on the market this file's plan also prices.
+    let sibling_price = Uuid::from_u128(0xb0_a3);
+    let mut content = flat_row();
+    content.tax_inclusive = sibling_tax_inclusive;
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: sibling_price,
+                scope_key: ScopeKey::new(
+                    sibling_plan,
+                    CurrencyCode::new("EUR").expect("three letters"),
+                    Region::new("eu").expect("a non-blank region"),
+                    terminal_phase(),
+                    PriceEligibility::AllSubscriptions,
+                    ChargeKind::Recurring,
+                    Cohort::None,
+                )
+                .expect("the class pairs with cohort none"),
+                content,
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the sibling's row");
+    common::publish_row_directly(&h.provider, &h.scope, sibling_price).await;
+
+    // A **second** market, on which this file's plan already sells a published
+    // row. It is what makes D-119's actual scenario reachable — *"a component
+    // **re-publish** whose basis change would mix a referencing bundle's
+    // market"* — and it is the only shape in which excluding the publishing
+    // plan's own rows from the referent is observable at all: on a first publish
+    // the plan has no published row, so the exclusion is a no-op and a probe over
+    // it reddens nothing.
+    for (owner, price, inclusive) in [
+        (plan_id(), Uuid::from_u128(0xb0_a6), false),
+        (
+            sibling_plan,
+            Uuid::from_u128(0xb0_a7),
+            sibling_tax_inclusive,
+        ),
+    ] {
+        let mut second = flat_row();
+        second.tax_inclusive = inclusive;
+        h.prices
+            .create_draft(
+                &h.scope,
+                TENANT,
+                NewPriceDraft {
+                    price_id: price,
+                    scope_key: ScopeKey::new(
+                        owner,
+                        CurrencyCode::new("USD").expect("three letters"),
+                        Region::new("us").expect("a non-blank region"),
+                        terminal_phase(),
+                        PriceEligibility::AllSubscriptions,
+                        ChargeKind::Recurring,
+                        Cohort::None,
+                    )
+                    .expect("the class pairs with cohort none"),
+                    content: second,
+                    created_by: ACTOR,
+                    created_at_utc: at(10),
+                    correlation_id: TEST_CORRELATION,
+                },
+            )
+            .await
+            .expect("author the second market's row");
+        common::publish_row_directly(&h.provider, &h.scope, price).await;
+        let conn = h.provider.conn().expect("conn");
+        common::schedule_coverage_window(&conn, &h.scope, TENANT, price, stamp()).await;
+    }
+
+    // The bundle, and its composition at revision 0 — the revision
+    // `plan_repo::load_current` will answer with once the plan is published.
+    let bundles = BundleRepo::new(h.provider.clone());
+    bundles
+        .create(
+            &h.scope,
+            NewBundle {
+                bundle_id: Uuid::from_u128(0xb0_1d),
+                tenant_id: TENANT,
+                plan_id: bundle_plan,
+                price_basis: PriceBasis::SumOfParts,
+                invoice_itemization: InvoiceItemization::Aggregate,
+            },
+            stamp(),
+        )
+        .await
+        .expect("create the bundle");
+    bundles
+        .replace_composition(
+            &h.scope,
+            TENANT,
+            bundle_plan,
+            bundle_rev.revision,
+            bundle_rev.row_version,
+            CompositionDraft {
+                components: vec![
+                    BundleComponentDraft {
+                        component_plan_id: plan_id().get(),
+                        included_sku_id: Uuid::from_u128(0xb0_a4),
+                        min_qty: None,
+                        max_qty: None,
+                    },
+                    BundleComponentDraft {
+                        component_plan_id: sibling_plan.get(),
+                        included_sku_id: Uuid::from_u128(0xb0_a5),
+                        min_qty: None,
+                        max_qty: None,
+                    },
+                ],
+                rev_share_groups: Vec::new(),
+            },
+            stamp(),
+        )
+        .await
+        .expect("write the composition");
+    common::publish_plan_directly(&h.provider, &h.scope, bundle_plan, bundle_rev.revision).await;
+}
+
+#[tokio::test]
+async fn a_component_publish_that_would_mix_a_referencing_bundles_market_is_refused() {
+    // **The whole chain, not just the rule.** `domain::publish::rules` has its own
+    // cases over a handed-in market set; this one asserts the half that finds it —
+    // the resolver reaches `pricing_bundle_component` by `component_plan_id`,
+    // resolves the bundle's current published revision, reads the *other*
+    // components' rows and hands the basis to the pipeline. Nothing about the
+    // bundle is passed to the publish path.
+    let h = harness().await;
+    let (revision, _tag, _price) = seed_publishable(&h).await;
+    seed_referencing_bundle(&h, true).await;
+
+    let report = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the precheck runs");
+
+    let codes: Vec<String> = report
+        .violations
+        .iter()
+        .map(|violation| violation.code.clone())
+        .collect();
+    assert!(
+        codes.contains(&"BUNDLE_TAX_BASIS_MIXED".to_owned()),
+        "this plan's rows are tax_exclusive and the bundle's market is inclusive: {codes:?}"
+    );
+    // **Named by market, not merely counted.** The `(USD, us)` one is the market
+    // this plan *already* sells in, so it is the only one whose referent could be
+    // this plan's own published row — asserting it by name is what makes
+    // excluding those rows from the referent an observable property rather than a
+    // claim in a doc comment.
+    let subjects: Vec<String> = report
+        .violations
+        .iter()
+        .filter(|violation| violation.code == "BUNDLE_TAX_BASIS_MIXED")
+        .map(|violation| violation.subject.clone())
+        .collect();
+    assert!(
+        subjects.iter().any(|subject| subject.contains("USD/us")),
+        "the market this plan already sells in must be named: {subjects:?}"
+    );
+    assert_eq!(revision, 0, "the fixture publishes revision 0");
+}
+
+#[tokio::test]
+async fn a_component_publish_agreeing_with_the_bundles_market_is_not_refused() {
+    // The control, and it is what keeps the case above from passing against a
+    // resolver that reports every referencing market as a conflict.
+    let h = harness().await;
+    seed_publishable(&h).await;
+    seed_referencing_bundle(&h, false).await;
+
+    let report = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the precheck runs");
+
+    let codes: Vec<String> = report
+        .violations
+        .iter()
+        .map(|violation| violation.code.clone())
+        .collect();
+    assert!(
+        !codes.contains(&"BUNDLE_TAX_BASIS_MIXED".to_owned()),
+        "an agreeing basis is not a mix: {codes:?}"
     );
 }

@@ -39,12 +39,17 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::sea_query::Expr;
+use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
-use toolkit_db::secure::{AccessScope, DBRunner};
+use toolkit_db::secure::{AccessScope, DBRunner, SecureUpdateExt};
+use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use bss_pricing::domain::audit::AuditStamp;
+use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::infra::storage::entity::{plan, price};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::window_repo::{NewWindow, WindowRecord, schedule};
 
@@ -257,4 +262,62 @@ pub async fn schedule_coverage_window(
     )
     .await
     .unwrap_or_else(|e| panic!("schedule the coverage window of price row {price_id}: {e}"))
+}
+
+/// Move a price row to `published` directly, past every door.
+///
+/// **Fabricated on purpose, and the reason is `sqlite_price_repo::flip_state`'s.**
+/// A suite whose subject is something *else* must not depend on the publish
+/// engine's four preconditions to put a row in the state its fixture needs — the
+/// engine has its own suites, and borrowing it here would make an unrelated
+/// failure read as this file's. The append-only trigger permits `draft →
+/// published`: it fires only when the row is already past `draft`.
+pub async fn publish_row_directly(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    price_id: Uuid,
+) {
+    let conn = provider.conn().expect("conn");
+    let result = price::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            price::Column::LifecycleState,
+            Expr::value(LifecycleState::Published.as_str()),
+        )
+        .filter(Condition::all().add(price::Column::PriceId.eq(price_id)))
+        .exec(&conn)
+        .await
+        .expect("publish the seeded row");
+    assert_eq!(result.rows_affected, 1, "the seed must have moved one row");
+}
+
+/// Move a plan revision to `published` directly, past the engine.
+///
+/// [`publish_row_directly`]'s reason exactly. It exists so a fixture can make
+/// `plan_repo::load_current` answer with a revision — which is what D-212's
+/// resolver reads to decide *which* revision of a referencing bundle counts.
+pub async fn publish_plan_directly(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    plan_id: bss_pricing::domain::scope_key::PlanId,
+    revision: u64,
+) {
+    let conn = provider.conn().expect("conn");
+    let result = plan::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            plan::Column::LifecycleState,
+            Expr::value(LifecycleState::Published.as_str()),
+        )
+        .filter(
+            Condition::all()
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::Revision.eq(i64::try_from(revision).expect("a small revision"))),
+        )
+        .exec(&conn)
+        .await
+        .expect("publish the seeded plan revision");
+    assert_eq!(result.rows_affected, 1, "the seed must have moved one row");
 }

@@ -42,6 +42,8 @@
 //! rather than zero. `COMPONENT_PHASED` fires on two or more. Reading it as
 //! `> 0` would refuse every component in the catalogue.
 
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
@@ -58,11 +60,14 @@ use crate::domain::materiality::ChangeSet;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
+use crate::domain::publish::rules::ReferencingMarket;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{bundle, bundle_revshare, plan, plan_phase, price};
-use crate::infra::storage::repo::plan_repo::read_frequency;
+use crate::infra::storage::entity::{
+    bundle, bundle_component, bundle_revshare, plan, plan_phase, price,
+};
+use crate::infra::storage::repo::plan_repo::{self, read_frequency};
 use crate::infra::storage::repo::{BundleRepo, NewOutboxEvent, outbox_repo};
 
 /// The rows a component contributes to coverage: published, on the durable base.
@@ -462,6 +467,181 @@ async fn component_rows(
         });
     }
     Ok(coverage)
+}
+
+/// The bundle markets a **component plan's** publish is judged against
+/// (`inst-bc-taxbasis`'s reverse half; D-119, homed by D-212).
+///
+/// The read the pure publish walk cannot do and must not do. It answers *"which
+/// bundles sell this plan, and on what tax display basis does each of their
+/// markets already stand"*, so that
+/// `domain::publish::rules::BundleMarketBasisUnmixed` can compare this publish's
+/// candidate rows against it. The index it rides is
+/// `idx_pricing_bundle_component_plan` on `(tenant_id, component_plan_id)`, added
+/// by `m20260802_000025` for exactly this shape of question — S11's
+/// `inst-re-references` asks the mirror one for retirement.
+///
+/// # Three narrowings, each of them a decision rather than an optimisation
+///
+/// **Only the referencing bundle's *current published* revision counts** (D-212).
+/// `pricing_bundle_component` is revision-scoped, so the same plan may appear in
+/// several revisions of one bundle; a draft revision's component set is not yet
+/// anybody's truth, and guarding against it would fail a publish over a
+/// composition no consumer can resolve.
+///
+/// **The basis is the *other* members'**, never the publishing plan's own rows —
+/// those are the thing being judged, and folding them in would make the
+/// comparison a tautology on every market where this plan is the only priced
+/// member.
+///
+/// **Where the other members already disagree among themselves, the first is
+/// taken and nothing more is said.** That bundle fails its own publish on the
+/// forward half; reporting it again here would send an operator to repair a
+/// market whose fault is not the one they are publishing.
+///
+/// A plan that is a component of nothing costs **one index probe returning no
+/// rows**, which is the common case by a wide margin.
+///
+/// # Errors
+///
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`] for
+/// a stored token no `CHECK` should have admitted.
+pub async fn referencing_markets(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    component_plan_id: PlanId,
+) -> Result<Vec<ReferencingMarket>, RepoError> {
+    let memberships = bundle_component::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle_component::Column::TenantId.eq(tenant_id))
+                .add(bundle_component::Column::ComponentPlanId.eq(component_plan_id.get())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read bundles referencing a component: {e}")))?;
+
+    let mut bundle_ids: BTreeSet<Uuid> = BTreeSet::new();
+    for row in &memberships {
+        bundle_ids.insert(row.bundle_id);
+    }
+
+    let mut markets = Vec::new();
+    for bundle_id in bundle_ids {
+        let Some(record) = bundle_row(runner, scope, tenant_id, bundle_id).await? else {
+            // The row went while we read; the composition it named is not
+            // resolvable, so there is no market to be judged against.
+            continue;
+        };
+        let bundle_plan = PlanId::new(record.plan_id);
+        let Some(current) = plan_repo::load_current(runner, scope, tenant_id, bundle_plan).await?
+        else {
+            continue;
+        };
+        let revision = i64::try_from(current.revision).unwrap_or(i64::MAX);
+        if !memberships
+            .iter()
+            .any(|row| row.bundle_id == bundle_id && row.plan_revision == revision)
+        {
+            // This plan is a component of some *other* revision of that bundle,
+            // not of the one consumers resolve against.
+            continue;
+        }
+
+        let basis = PriceBasis::parse(&record.price_basis).ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "pricing_bundle {bundle_id} carries an unknown price_basis `{}`",
+                record.price_basis
+            ))
+        })?;
+        let mut rows: Vec<CoverageRow> = Vec::new();
+        if basis == PriceBasis::OwnPrice {
+            rows.extend(component_rows(runner, scope, tenant_id, bundle_plan).await?);
+        }
+        // Every component of that revision *except* the one publishing.
+        for other in siblings_of(runner, scope, tenant_id, bundle_id, revision).await? {
+            if other == component_plan_id {
+                continue;
+            }
+            rows.extend(component_rows(runner, scope, tenant_id, other).await?);
+        }
+
+        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        for row in rows {
+            let market = (
+                row.currency.as_str().to_owned(),
+                row.region.as_str().to_owned(),
+            );
+            if seen.insert(market) {
+                markets.push(ReferencingMarket::new(
+                    bundle_id,
+                    row.currency,
+                    row.region,
+                    row.tax_inclusive,
+                ));
+            }
+        }
+    }
+    Ok(markets)
+}
+
+/// One bundle row by id.
+async fn bundle_row(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    bundle_id: Uuid,
+) -> Result<Option<bundle::Model>, RepoError> {
+    bundle::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle::Column::TenantId.eq(tenant_id))
+                .add(bundle::Column::BundleId.eq(bundle_id)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_bundle by id: {e}")))
+}
+
+/// Every component plan of one bundle revision, **in a fixed order**.
+///
+/// Sorted by plan id, and that is correctness rather than tidiness: the caller
+/// takes the *first* basis it sees per market, so an unsorted read would make the
+/// resolved basis depend on the order the store happened to return rows in — two
+/// engines, or one engine after a vacuum, could answer differently about the same
+/// composition. A probe found this: excluding the publishing plan from the set
+/// reddened nothing, because the sibling happened to be read first, and the guard
+/// would have compared this plan against **itself** whenever the order flipped.
+async fn siblings_of(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    bundle_id: Uuid,
+    revision: i64,
+) -> Result<Vec<PlanId>, RepoError> {
+    let rows = bundle_component::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle_component::Column::TenantId.eq(tenant_id))
+                .add(bundle_component::Column::BundleId.eq(bundle_id))
+                .add(bundle_component::Column::PlanRevision.eq(revision)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read a bundle revision's components: {e}")))?;
+    let mut plans: Vec<PlanId> = rows
+        .into_iter()
+        .map(|row| PlanId::new(row.component_plan_id))
+        .collect();
+    plans.sort_unstable_by_key(|plan| plan.get());
+    Ok(plans)
 }
 
 /// Write one party's normalised effective share.

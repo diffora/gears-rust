@@ -115,13 +115,18 @@
 //! and a refusal. And synthesizing a violation from it needs a code, which this
 //! group will not mint on its own authority.
 
-use toolkit_macros::domain_model;
+use std::collections::BTreeSet;
 
+use toolkit_macros::domain_model;
+use uuid::Uuid;
+
+use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
 use crate::domain::coverage::window_coverage_rules;
+use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::rules::price_row_rules;
-use crate::domain::scope_key::PriceEligibility;
+use crate::domain::scope_key::{PriceEligibility, Region};
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
 
 /// A published row resolves neither its own `rounding_policy_ref` nor a tenant
@@ -218,6 +223,50 @@ pub struct PublishRuleParams {
     descriptors: DescriptorSetComplete,
     default_rounding_policy: Option<String>,
     size_caps: SoftSizeCaps,
+    referencing_markets: Vec<ReferencingMarket>,
+}
+
+/// One market of one **bundle that references this plan as a component**, and the
+/// tax display basis its *other* members have already established there
+/// (`inst-bc-taxbasis`'s reverse half, D-119, homed here by D-212).
+///
+/// **A resolved fact, handed in, exactly as the tenant's rounding default is.**
+/// The rule that reads it is a property of another aggregate entirely, so the
+/// walk cannot go and look: it would need the set of bundles referencing this
+/// plan, which is a storage read, and this set runs twice on one publish with the
+/// same answer required both times. `infra::bundle::referencing_markets` is what
+/// resolves it, off `idx_pricing_bundle_component_plan`.
+///
+/// **The basis is the one the bundle's *other* members carry**, never this plan's
+/// own rows — those are the thing being judged. Where the others already disagree
+/// among themselves, the first is taken and this guard says nothing more: that
+/// bundle's own publish fails the forward half, and reporting it twice would send
+/// an operator to fix a market whose fault is not theirs.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReferencingMarket {
+    bundle_id: Uuid,
+    currency: CurrencyCode,
+    region: Region,
+    tax_inclusive: bool,
+}
+
+impl ReferencingMarket {
+    /// Name one referencing bundle's established basis in one market.
+    #[must_use]
+    pub const fn new(
+        bundle_id: Uuid,
+        currency: CurrencyCode,
+        region: Region,
+        tax_inclusive: bool,
+    ) -> Self {
+        Self {
+            bundle_id,
+            currency,
+            region,
+            tax_inclusive,
+        }
+    }
 }
 
 impl PublishRuleParams {
@@ -234,7 +283,22 @@ impl PublishRuleParams {
             descriptors,
             default_rounding_policy,
             size_caps,
+            referencing_markets: Vec::new(),
         }
+    }
+
+    /// Attach the bundle markets this plan's rows are judged against (D-212).
+    ///
+    /// A **second call** rather than a fifth parameter on [`Self::new`], for
+    /// `ScopeKey::with_usage_line`'s reason: almost no plan is a component of any
+    /// bundle, so every caller would be passing an empty vector to satisfy a
+    /// signature it has nothing to say to. The empty set is what [`Self::new`]
+    /// already produces, so this is never needed to express "no referencing
+    /// bundle".
+    #[must_use]
+    pub fn with_referencing_markets(mut self, markets: Vec<ReferencingMarket>) -> Self {
+        self.referencing_markets = markets;
+        self
     }
 
     /// The tenant's default rounding policy, when it has one.
@@ -325,6 +389,96 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         }))
         .with_rule(Box::new(GrandfatherHorizonOnItsClass))
         .with_rule(Box::new(NoUnjudgedPrimitive))
+        .with_rule(Box::new(BundleMarketBasisUnmixed {
+            markets: params.referencing_markets.clone(),
+        }))
+}
+
+/// `inst-bc-taxbasis`'s **reverse** half: this plan is a component, and its rows
+/// must not mix the tax display basis of a bundle that sells them (D-119, D-212).
+///
+/// # Why it is here and not in the bundle's own validator
+///
+/// The forward half — every row of one sold market shares one `tax_inclusive` —
+/// is a property of a composition handed to `domain::bundle_rules`, and it holds
+/// at the instant that bundle publishes. This half is about **another plan's**
+/// publish, so it needs the set of bundles referencing that plan, which no pure
+/// walk over one plan shape can have. Without it the bundle-side check is *"a
+/// point-in-time promise a later component publish silently breaks"* — D-119's
+/// own words for the hazard.
+///
+/// It registers **here**, in the Foundation's pipeline, rather than as a call
+/// bolted into `infra::publish`: this module's own doc gives the reason, and it
+/// is the reason a second assembly point is refused — a slice-side call is the
+/// *"whichever slice happens to load first"* outcome §4.2 keeps the base set out
+/// of.
+///
+/// # The two derivations D-212 settles, so nothing here is invented
+///
+/// **The markets are this publish's own candidate rows'**, not the referencing
+/// bundle's declared set. A component's publish does not carry that set — D-216
+/// leaves it on the *bundle's* publish request — and the narrower one is complete
+/// for this guard, because a basis conflict cannot arise in a market this plan
+/// contributes no row to.
+///
+/// **The revision is the referencing bundle's current published one**, resolved
+/// by the caller. A draft revision's component set is not yet anybody's truth,
+/// and guarding against it would fail a publish over a composition no consumer
+/// can see.
+///
+/// Reported **once per (bundle, market)** that disagrees, naming the bundle,
+/// because D-119 requires the referencing bundle enumerated and because a
+/// component sitting in two bundles gives an operator two things to fix — a
+/// refusal naming one of them makes the next attempt fail for a reason the first
+/// refusal did not mention.
+#[domain_model]
+#[derive(Clone, Debug)]
+struct BundleMarketBasisUnmixed {
+    markets: Vec<ReferencingMarket>,
+}
+
+impl ValidationRule<PlanShape> for BundleMarketBasisUnmixed {
+    fn name(&self) -> &'static str {
+        "foundation.bundle_market_basis_unmixed"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        for market in &self.markets {
+            let mut divergent: BTreeSet<Uuid> = BTreeSet::new();
+            for record in subject.rows.iter().filter(|record| {
+                record.scope_key.currency() == &market.currency
+                    && record.scope_key.region() == &market.region
+            }) {
+                if record.tax_inclusive != market.tax_inclusive {
+                    divergent.insert(record.price_id);
+                }
+            }
+            if divergent.is_empty() {
+                continue;
+            }
+            let rows: Vec<String> = divergent.iter().map(ToString::to_string).collect();
+            report.violate(
+                BUNDLE_TAX_BASIS_MIXED,
+                format!(
+                    "{}/{}/{}",
+                    market.bundle_id,
+                    market.currency.as_str(),
+                    market.region.as_str()
+                ),
+                format!(
+                    "bundle {} sells market ({}, {}) on tax_inclusive = {}, and this publish would \
+                     put {} row(s) of a different basis into it: {}. A bundle composes several \
+                     plans onto one invoice, so one market carries one display basis",
+                    market.bundle_id,
+                    market.currency.as_str(),
+                    market.region.as_str(),
+                    market.tax_inclusive,
+                    rows.len(),
+                    rows.join(", ")
+                ),
+            );
+        }
+    }
 }
 
 /// No published row may carry a Slice-10 primitive whose rules are unbuilt

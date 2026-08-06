@@ -191,7 +191,7 @@ impl PublishService {
             .db
             .conn()
             .map_err(|e| DomainError::Internal(format!("bss-pricing: publish precheck: {e}")))?;
-        let params = rule_params(&self.policies, &conn, scope, tenant_id).await?;
+        let params = rule_params(&self.policies, &conn, scope, tenant_id, plan_id).await?;
         let shape = assemble(&conn, scope, tenant_id, plan_id, now).await?;
         let report = run_publish_rules(&shape, &params);
         check_fixtures(&self.fixture_gate, &shape)?;
@@ -465,7 +465,8 @@ impl PublishService {
                 Box::pin(async move {
                     // 1. The second run. Same assembler, same rule set, same
                     // gate - against the world as it now stands.
-                    let params = rule_params(&policies, txn, &scope, tenant_id).await?;
+                    let params =
+                        rule_params(&policies, txn, &scope, tenant_id, unit.plan_id).await?;
                     let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
                     if shape.revision != unit.revision {
                         return Err(DomainError::NotFound {
@@ -793,9 +794,19 @@ async fn rule_params(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
+    plan_id: PlanId,
 ) -> Result<PublishRuleParams, DomainError> {
     let policy = policies
         .authoring_policy_on(runner, scope, tenant_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    // D-212: the bundle markets this plan's rows are judged against
+    // (`inst-bc-taxbasis`'s reverse half). Resolved **here**, in the same pass as
+    // the caps, for the reason this function exists at all — the rule set runs
+    // twice on one publish and a rule that reached for storage itself could
+    // answer differently in the two runs for no authored reason. A plan that is a
+    // component of nothing costs one index probe returning no rows.
+    let referencing = crate::infra::bundle::referencing_markets(runner, scope, tenant_id, plan_id)
         .await
         .map_err(|e| repo_failure(&e))?;
     Ok(PublishRuleParams::new(
@@ -809,7 +820,8 @@ async fn rule_params(
             policy.max_tier_bands_per_row(),
             policy.max_price_rows_per_plan(),
         ),
-    ))
+    )
+    .with_referencing_markets(referencing))
 }
 
 /// The registry request id of one publish unit.

@@ -8,8 +8,10 @@ use uuid::Uuid;
 
 use super::{
     GRANDFATHER_UNTIL_FORBIDDEN, PLAN_SIZE_SOFT_CAP_EXCEEDED, PRIMITIVE_RULES_UNBUILT,
-    PublishRuleParams, ROUNDING_POLICY_UNRESOLVED, SoftSizeCaps, run_publish_rules,
+    PublishRuleParams, ROUNDING_POLICY_UNRESOLVED, ReferencingMarket, SoftSizeCaps,
+    run_publish_rules,
 };
+use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -736,4 +738,131 @@ fn the_refusal_is_the_same_on_the_second_run() {
         codes(&second),
         "a re-entered publish must take the same refusal, not walk past a spent one"
     );
+}
+
+// ---------------------------------------------------------------------------
+// inst-bc-taxbasis's reverse half — D-119's guard, homed here by D-212
+// ---------------------------------------------------------------------------
+
+/// One market of one bundle that references this plan as a component, and the
+/// tax basis its **other** members already established there.
+fn referencing(
+    bundle: u128,
+    currency: &str,
+    region: &str,
+    tax_inclusive: bool,
+) -> ReferencingMarket {
+    ReferencingMarket::new(
+        Uuid::from_u128(bundle),
+        CurrencyCode::new(currency).expect("three letters"),
+        Region::new(region).expect("non-blank"),
+        tax_inclusive,
+    )
+}
+
+/// `clean_plan` whose one row declares `tax_inclusive`.
+fn plan_on_basis(tax_inclusive: bool) -> PlanShape {
+    let mut shape = clean_plan();
+    shape.rows[0].tax_inclusive = tax_inclusive;
+    shape
+}
+
+#[test]
+fn a_component_publish_that_would_mix_a_referencing_bundles_market_is_refused() {
+    // D-119's reverse half. The forward half lives in the bundle's own validator
+    // and is a property of a handed-in composition; this one is about *another*
+    // plan's publish, so it is the component's pipeline that has to answer it —
+    // otherwise the bundle-side check is a point-in-time promise a later
+    // component publish silently breaks.
+    let shape = plan_on_basis(false);
+    let params = params(Some("half_up"))
+        .with_referencing_markets(vec![referencing(0xb0_1d, "EUR", "eu", true)]);
+
+    let report = run_publish_rules(&shape, &params);
+
+    assert!(
+        codes(&report).contains(&BUNDLE_TAX_BASIS_MIXED.to_owned()),
+        "the publish must refuse: {:?}",
+        codes(&report)
+    );
+    let named = report
+        .violations
+        .iter()
+        .find(|violation| violation.code == BUNDLE_TAX_BASIS_MIXED)
+        .expect("the violation is there");
+    assert!(
+        named.detail.contains(&Uuid::from_u128(0xb0_1d).to_string()),
+        "D-119 requires the referencing bundle enumerated: {}",
+        named.detail
+    );
+}
+
+#[test]
+fn a_component_publish_that_agrees_with_the_bundles_market_publishes() {
+    // The control. Without it the case above passes against a rule that refuses
+    // whenever any referencing market exists at all.
+    let shape = plan_on_basis(true);
+    let params = params(Some("half_up"))
+        .with_referencing_markets(vec![referencing(0xb0_1d, "EUR", "eu", true)]);
+
+    let report = run_publish_rules(&shape, &params);
+
+    assert!(
+        !codes(&report).contains(&BUNDLE_TAX_BASIS_MIXED.to_owned()),
+        "an agreeing basis is not a mix: {:?}",
+        codes(&report)
+    );
+}
+
+#[test]
+fn a_market_this_plan_prices_nothing_in_cannot_mix_anything() {
+    // **D-212's first derivation, asserted rather than assumed.** The guard
+    // ranges over the markets of *this publish's own candidate rows*, not over
+    // the referencing bundle's declared market set — which a component's publish
+    // does not carry (D-216 leaves it on the bundle's publish request). The
+    // narrower set is complete because a basis conflict cannot arise in a market
+    // this plan contributes no row to. The bundle here disagrees on `US`, where
+    // the plan prices nothing.
+    let shape = plan_on_basis(false);
+    let params = params(Some("half_up")).with_referencing_markets(vec![
+        referencing(0xb0_1d, "USD", "us", true),
+        referencing(0xb0_1d, "EUR", "eu", false),
+    ]);
+
+    let report = run_publish_rules(&shape, &params);
+
+    assert!(
+        !codes(&report).contains(&BUNDLE_TAX_BASIS_MIXED.to_owned()),
+        "only the markets this plan sells in are the guard's business: {:?}",
+        codes(&report)
+    );
+}
+
+#[test]
+fn two_referencing_bundles_are_each_named() {
+    // A component may sit in several bundles, and an operator fixing one basis
+    // has to know every market the change breaks — one report, both bundles,
+    // because a refusal naming one of two makes the second publish attempt fail
+    // for a reason the first refusal did not mention.
+    let shape = plan_on_basis(false);
+    let params = params(Some("half_up")).with_referencing_markets(vec![
+        referencing(0xb0_1d, "EUR", "eu", true),
+        referencing(0xb0_2d, "EUR", "eu", true),
+    ]);
+
+    let report = run_publish_rules(&shape, &params);
+
+    let detail: String = report
+        .violations
+        .iter()
+        .filter(|violation| violation.code == BUNDLE_TAX_BASIS_MIXED)
+        .map(|violation| violation.detail.clone())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    for bundle in [0xb0_1d_u128, 0xb0_2d] {
+        assert!(
+            detail.contains(&Uuid::from_u128(bundle).to_string()),
+            "bundle {bundle:x} must be named: {detail}"
+        );
+    }
 }
