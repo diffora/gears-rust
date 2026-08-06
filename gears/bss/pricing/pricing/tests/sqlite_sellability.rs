@@ -34,6 +34,7 @@ use bss_pricing::infra::storage::repo::read_model_repo::{self, NewDelta, StoredD
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
+use std::collections::BTreeMap;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -120,6 +121,7 @@ fn delta_covering(coverage_to: Option<DateTime<Utc>>) -> PlanSubjectDelta {
         addon_rules: Vec::new(),
         descriptor_set: None,
         prices: vec![row()],
+        tax_projection: BTreeMap::new(),
         windows: vec![KeyWindows {
             scope_key: recurring_key(),
             intervals: vec![WindowInterval::new(at(0), coverage_to, WindowState::Active)],

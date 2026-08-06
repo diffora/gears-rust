@@ -153,6 +153,8 @@
 //! withheld — and that is where the next author meets the D-162 question, with
 //! this paragraph beside it.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde_json::{Value as JsonValue, json};
 use toolkit_macros::domain_model;
@@ -298,6 +300,19 @@ pub struct PlanSubjectDelta {
     pub descriptor_set: Option<DescriptorSet>,
     /// The price rows the version freezes, drawn from [`PROJECTED_ROW_STATES`].
     pub prices: Vec<PriceRecord>,
+    /// The **derived** tax facts each projected row carries: D-154's resolved
+    /// effective category, and C3's `not_sellable_ga` flag.
+    ///
+    /// **Derived at publish and never authored** (§6), which is why they are a
+    /// side table keyed by `price_id` rather than fields on [`PriceRecord`]:
+    /// that type is the authored truth row, and a resolved value living on it
+    /// would be a second place a category can come from — precisely what D-110
+    /// removed when it deleted the descriptor set's mirroring column.
+    ///
+    /// Empty is a legitimate state and means *nothing was resolved yet*: only
+    /// the publish path holds the readiness to coalesce against, so a delta built
+    /// by any other caller carries none and renders the authored column alone.
+    pub tax_projection: BTreeMap<Uuid, RowTaxProjection>,
     /// The plan's window facts, grouped per canonical scope key, drawn from
     /// [`PROJECTED_WINDOW_STATES`] (D-99, D-121).
     ///
@@ -406,6 +421,7 @@ impl PlanSubjectDelta {
             addon_rules,
             descriptor_set,
             prices,
+            tax_projection,
             windows,
         } = self;
 
@@ -426,7 +442,10 @@ impl PlanSubjectDelta {
             "phases": phases.iter().map(phase_value).collect::<Vec<_>>(),
             "addonRules": addon_rules.iter().map(addon_rule_value).collect::<Vec<_>>(),
             "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
-            "prices": prices.iter().map(price_value).collect::<Vec<_>>(),
+            "prices": prices
+                .iter()
+                .map(|record| price_value(record, tax_projection.get(&record.price_id)))
+                .collect::<Vec<_>>(),
             "windows": windows.iter().map(key_windows_value).collect::<Vec<_>>(),
             "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
             // Read from the constant for `evaluationPolicyVersion`'s reason: it
@@ -524,7 +543,21 @@ fn descriptor_set_value(set: &DescriptorSet) -> JsonValue {
 /// [`PriceRecord`] meets this renderer **and**
 /// [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)'s
 /// D-162 classification, which is the pair of questions a new row field owes.
-fn price_value(record: &PriceRecord) -> JsonValue {
+/// One row's derived tax facts (D-154, C3).
+#[domain_model]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RowTaxProjection {
+    /// `coalesce(row.tax_category_ref, readiness.taxCategory)`, frozen with the
+    /// `CatalogVersion` so Billing never re-resolves the fallback against the
+    /// mutable region taxonomy (D-154).
+    pub resolved_tax_category: Option<String>,
+    /// C3's gate: a tax-inclusive row is authorable and previewable but **not
+    /// sellable** on its market until Tax Engine GA. Per row, hence per
+    /// `(currency, region)` market — never per plan.
+    pub not_sellable_ga: bool,
+}
+
+fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValue {
     let PriceRecord {
         price_id,
         scope_key,
@@ -551,6 +584,11 @@ fn price_value(record: &PriceRecord) -> JsonValue {
         // which is the only layer holding the readiness to coalesce against —
         // see `PlanSubjectDelta::with_tax_projection`.
         "taxCategoryRef": tax_category_ref,
+        // D-154's **resolved** value and C3's gate, both derived at publish.
+        // Rendered even when absent, so a consumer can tell "this version
+        // resolved nothing" from "this field is not part of the contract".
+        "resolvedTaxCategory": tax.and_then(|t| t.resolved_tax_category.clone()),
+        "notSellableGa": tax.is_some_and(|t| t.not_sellable_ga),
         "billingTiming": billing_timing,
         "roundingPolicyRef": rounding_policy_ref,
         "grandfatherUntil": grandfather_until,

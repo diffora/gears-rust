@@ -195,6 +195,21 @@ pub fn effective_category(row: &PriceRecord, readiness: &RegionTaxReadiness) -> 
     })
 }
 
+/// Has the Tax Engine reached GA?
+///
+/// **A launch constant, platform-wide**, and deliberately not a column. C3 makes
+/// the gate a property of the *engine's* status — "MVP sells tax-exclusive …
+/// until Tax Engine GA (ETA ~8 months)" — so a per-tenant carrier would let one
+/// tenant declare itself post-GA while the engine that has to compute the tax
+/// still does not exist. That is `EVALUATION_POLICY_GENERATION`'s argument one
+/// plane over: a property of the gear, not of the artifact.
+///
+/// It flips **in code** when the engine ships, and `inst-td-clear` is what makes
+/// that safe: clearing `not_sellable_ga` is a re-publish through the pipeline
+/// with approval, never a silent flag flip, so a constant changing under a frozen
+/// `CatalogVersion` changes nothing already published.
+pub const TAX_ENGINE_GA: bool = false;
+
 /// §4's per-row sellability state: is this row gated pre-Tax-Engine-GA?
 ///
 /// `inst-td-gagate`: a `taxInclusive = true` row *"MAY be authored and previewed

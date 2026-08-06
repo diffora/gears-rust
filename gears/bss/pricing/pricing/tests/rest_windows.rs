@@ -25,6 +25,7 @@ use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use rest_support::{
     Harness, body_json, request, seed_draft_plan, seed_price, seed_publishable_plan, with_headers,
 };
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// One value for the whole binary; what it is asserted about is nothing.
@@ -2326,6 +2327,7 @@ fn delta_of(
             created_at_utc: at(-10),
             row_version: RowVersion::new(0),
         }],
+        tax_projection: BTreeMap::new(),
         windows: vec![KeyWindows {
             scope_key: key,
             intervals,

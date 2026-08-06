@@ -10,6 +10,7 @@
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::json;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use super::{StoredDelta, sellability_facts};
@@ -147,6 +148,7 @@ fn populated() -> PlanSubjectDelta {
             row_on(generation.clone()),
             row_on(metered),
         ],
+        tax_projection: BTreeMap::new(),
         windows: vec![
             KeyWindows {
                 scope_key: everyone,
