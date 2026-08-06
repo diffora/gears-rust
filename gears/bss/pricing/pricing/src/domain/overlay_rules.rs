@@ -454,6 +454,40 @@ fn check_adjustment(candidate: &OverlayCandidate, report: &mut ValidationReport)
     }
 }
 
+/// **D-67's ranges, over a line set alone** — the authoring edge's entry point.
+///
+/// `inst-plv-adjustment`'s magnitude bound is the one rule in this module that
+/// needs **no world at all**: a magnitude is in range or it is not, whatever the
+/// tenant has published. D-67 says it *"fails save **and** publish"*, and this
+/// is the save half.
+///
+/// # It exists because the store's `CHECK` answers a 500
+///
+/// `chk_pricing_price_overlay_line_discount_ceiling` and its
+/// `..._magnitude_positive` sibling are the physical backstop, and they fire on
+/// the INSERT — which reaches the caller as a driver error, i.e.
+/// `DomainError::Internal` and a **500**, for a request whose whole remedy is to
+/// correct one number. Measured, not reasoned about: before this entry point
+/// existed, authoring `discount / percent_bp = 15000` — D-67's own "150% of
+/// list" example — answered 500.
+///
+/// That is exactly the argument `RepoError::GrandfatherHorizonOffClass` records
+/// one plane over: a value arriving *on a request* that a column refuses is a
+/// caller mistake the request can be reshaped around, and reaching the `CHECK`
+/// makes it an internal fault.
+///
+/// The two guards stay in series deliberately — the `CHECK` is what holds
+/// against a writer that is not this crate — and this one is what makes the
+/// refusal legible.
+#[must_use]
+pub fn check_magnitudes(lines: &[OverlayLine]) -> ValidationReport {
+    let mut report = ValidationReport::default();
+    for line in lines {
+        check_magnitude_range(line, &mut report);
+    }
+    report
+}
+
 /// D-67: `0 < v <= 10000` on a discount, `v > 0` on a markup, `>= 0` on money.
 ///
 /// A pipeline rule and not a constructor refusal, because §5 requires the
@@ -651,6 +685,34 @@ fn check_dating(candidate: &OverlayCandidate, report: &mut ValidationReport) {
             );
         }
     }
+}
+
+/// The first violation in `report` that §5 types **409** rather than as an
+/// architectural 422, if there is one.
+///
+/// §5 types seven of the nine overlay codes 422 — which this platform renders
+/// 400 with the code as the discriminator — and **two of them 409 outright**:
+/// [`PRECEDENCE_DUPLICATE`] and [`OVERLAY_INTERVAL_OVERLAP`]. The difference is
+/// not cosmetic. The seven tell a caller their own request is wrong and name a
+/// field to fix; these two tell them a **sibling overlay** they never named holds
+/// something, and re-reading is the whole remedy — which is what a 409 asks for
+/// and what a 400 would send them looking for a field to correct.
+///
+/// So both halves are true at once: the rules raise these codes into the
+/// one-pass report an author remediates from, and the surface lifts them back
+/// out to answer the status the design set assigns. Splitting them at the rule
+/// instead would have kept them out of the report altogether, and an author
+/// fixing four things would then discover the fifth on the next round trip.
+///
+/// The first rather than all of them, because a conflict is a single fact about
+/// the world: a caller told two sibling overlays are in the way acts on one of
+/// them and re-reads.
+#[must_use]
+pub fn conflict_of(report: &ValidationReport) -> Option<&crate::domain::validation::Violation> {
+    report
+        .violations
+        .iter()
+        .find(|v| v.code == PRECEDENCE_DUPLICATE || v.code == OVERLAY_INTERVAL_OVERLAP)
 }
 
 /// A line key as an operator reads it.

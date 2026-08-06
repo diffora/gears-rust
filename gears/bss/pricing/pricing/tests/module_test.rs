@@ -72,6 +72,9 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     };
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::frontier::FRONTIER;
+    use bss_pricing::api::rest::overlays::{
+        PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS,
+    };
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
@@ -93,6 +96,15 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // Slice 8's three (`design/08-bundles.md` §5). The publish answers 202,
         // per `inst-ba-return`: the composition is frozen into the read model by
         // the projector, which the response does not wait for.
+        // Slice 9's overlay half (`design/09-price-overlays.md` §5). The `PATCH`
+        // is mounted per-resource rather than on the collection §5 spells,
+        // because a precondition addresses a resource — the divergence Slice 8
+        // reported for its own composition route and this one inherits. The
+        // submit answers 202: it opens the always-material approval unit (D-50).
+        ("POST", PRICE_OVERLAYS),
+        ("GET", PRICE_OVERLAYS),
+        ("PATCH", PRICE_OVERLAY_BY_ID),
+        ("POST", PRICE_OVERLAY_SUBMIT),
         ("POST", BUNDLES),
         ("PATCH", BUNDLE_BY_ID),
         ("POST", BUNDLE_PUBLISH),
@@ -170,6 +182,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         prices: PriceRepo::new(db.clone()),
         bundles: bss_pricing::infra::storage::repo::BundleRepo::new(db.clone()),
         bundle_service: bss_pricing::infra::bundle::BundleService::new(db.clone()),
+        overlays: bss_pricing::infra::storage::repo::OverlayRepo::new(db.clone()),
         idempotency: IdempotencyGate::new(Duration::from_hours(1)),
     });
     // The registry is the fail-closed production default and the fixture gate is
@@ -215,6 +228,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::prices::router(
+                Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::overlays::router(
                 Arc::clone(&authoring),
                 &openapi,
             ))

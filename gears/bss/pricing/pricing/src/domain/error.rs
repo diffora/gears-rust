@@ -343,6 +343,20 @@ pub enum DomainError {
     /// price row that has nothing to do with the refusal.
     #[error("precedence duplicate: {0}")]
     PrecedenceDuplicate(String),
+    /// Two overlays' intervals claim one instant on one line key
+    /// (`09-price-overlays.md` §5, D-107, **409**).
+    ///
+    /// [`DomainError::PrecedenceDuplicate`]'s sibling, and the second of the two
+    /// overlay codes §5 types 409 outright. A conflict for
+    /// [`DomainError::WindowOverlap`]'s reason, which it is the overlay analogue
+    /// of: two intervals on **one** key claim one instant, and what refused the
+    /// request is a sibling overlay the caller's own request never named.
+    ///
+    /// The collision domain is *other* overlays' **published** revisions and
+    /// never another revision of the same overlay — D-107, without which every
+    /// edit of a live overlay would be refused by its own predecessor.
+    #[error("overlay interval overlap: {0}")]
+    OverlayIntervalOverlap(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///

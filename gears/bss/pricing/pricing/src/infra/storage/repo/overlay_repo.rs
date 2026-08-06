@@ -81,6 +81,8 @@
 //! halves answer the same code and the same remedy, which is
 //! [`RepoError::PendingKeyHeld`]'s arrangement one plane over.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
@@ -96,11 +98,12 @@ use crate::domain::overlay::{
     Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
     OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku, TaxBasis,
 };
+use crate::domain::overlay_rules::{OverlayWorld, PublishedLineInterval};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    brand_taxonomy, org_tier_taxonomy, partner_taxonomy, price_overlay, price_overlay_line,
-    price_overlay_line_amount, region_taxonomy,
+    brand_taxonomy, org_tier_taxonomy, partner_taxonomy, plan, price, price_overlay,
+    price_overlay_line, price_overlay_line_amount, region_taxonomy,
 };
 use crate::infra::storage::repo::plan_repo::tx_failure;
 
@@ -625,14 +628,11 @@ impl OverlayRepo {
         tenant_id: Uuid,
         selector: &ScopeSelector,
     ) -> Result<bool, RepoError> {
-        let Some(value) = selector.value() else {
-            return Ok(true);
-        };
         let conn = self
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("taxonomy conn: {e}")))?;
-        declares(&conn, scope, tenant_id, selector.class(), value).await
+        declares_selector(&conn, scope, tenant_id, selector).await
     }
 }
 
@@ -1160,4 +1160,288 @@ fn parse_target_ref(value: &sea_orm::JsonValue) -> TargetRef {
         })
         .unwrap_or_default();
     TargetRef { plans }
+}
+
+// ---------------------------------------------------------------------------
+// The world `PriceOverlayValidator` is judged against.
+// ---------------------------------------------------------------------------
+
+impl OverlayRepo {
+    /// Resolve every fact [`crate::domain::overlay_rules::validate`] needs.
+    ///
+    /// The rules are pure with respect to what they are handed (§4.2), because
+    /// the same set runs twice — as a pre-check at submit and again inside the
+    /// publish-commit transaction — and the world moves between the two runs. So
+    /// the reads live here and the judgement lives there, and this function is
+    /// the only place that decides *what* a rule gets to see.
+    ///
+    /// # Two facts have no source in this crate, and they are named rather than
+    /// # guessed
+    ///
+    /// * **`published_skus`** is derived from `pricing_plan.sku_id` — the SKU a
+    ///   published plan revision publishes under — rendered as a string, because
+    ///   §6 types the line's `target_sku` as one. There is no SKU *registry* in
+    ///   this repository, so "a SKU this plan publishes" is exactly "the id on
+    ///   the plan row" and nothing richer. A line naming any other SKU is
+    ///   refused `OVERLAY_LINE_TARGET_UNKNOWN`, which is the fail-closed
+    ///   direction; when the registry lands, this is the read that widens.
+    /// * **`lower_precedence_matchers`** is D-138's warning domain, and it is
+    ///   computed under the reading D-138's own words state — *"the
+    ///   lowest-precedence layer able to match its target"*, i.e. numerically
+    ///   lower. §F.1 leaves the stack's **sort direction** undecided, and under
+    ///   the other reading this set is the complement of itself. See
+    ///   `domain::overlay_rules`' module doc; it is an `[H]` owed entry.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure.
+    pub async fn world_for(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        candidate: &OverlayRecord,
+    ) -> Result<OverlayWorld, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("overlay world conn: {e}")))?;
+
+        let scope_value_declared =
+            declares_selector(&conn, scope, tenant_id, &candidate.scope).await?;
+        let plans = plan_facts(&conn, scope, tenant_id, &candidate.target_ref.plans).await?;
+        let markets = price_facts(&conn, scope, tenant_id, &candidate.target_ref.plans).await?;
+        let overlays = overlay_facts(&conn, scope, tenant_id, candidate).await?;
+
+        Ok(OverlayWorld {
+            scope_value_declared,
+            published_plans: plans.published,
+            published_skus: plans.skus,
+            retired_plans: plans.retired,
+            sold_currencies: markets.currencies,
+            published_cohorts: markets.cohorts,
+            precedence_holder: overlays.precedence_holder,
+            interval_holders: overlays.interval_holders,
+            lower_precedence_matchers: overlays.lower_precedence_matchers,
+        })
+    }
+}
+
+/// What the **plan** plane says about an overlay's targets.
+struct PlanFacts {
+    published: BTreeSet<PlanId>,
+    retired: BTreeSet<PlanId>,
+    skus: BTreeMap<PlanId, BTreeSet<TargetSku>>,
+}
+
+/// Which targets are published, which are retired, and under which SKU.
+async fn plan_facts(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    targets: &[PlanId],
+) -> Result<PlanFacts, RepoError> {
+    let mut facts = PlanFacts {
+        published: BTreeSet::new(),
+        retired: BTreeSet::new(),
+        skus: BTreeMap::new(),
+    };
+    for plan_id in targets {
+        let revisions = plan::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(plan::Column::TenantId.eq(tenant_id))
+                    .add(plan::Column::PlanId.eq(plan_id.get())),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read pricing_plan for overlay world: {e}")))?;
+        for revision in revisions {
+            match revision.lifecycle_state.as_str() {
+                "published" => {
+                    facts.published.insert(*plan_id);
+                    if let Some(sku) = revision.sku_id
+                        && let Some(named) = TargetSku::new(&sku.to_string())
+                    {
+                        facts.skus.entry(*plan_id).or_default().insert(named);
+                    }
+                }
+                "retired" => {
+                    facts.retired.insert(*plan_id);
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(facts)
+}
+
+/// What the **price** plane says about an overlay's targets.
+struct MarketFacts {
+    currencies: BTreeMap<PlanId, BTreeSet<CurrencyCode>>,
+    cohorts: BTreeMap<PlanId, BTreeSet<chrono::DateTime<chrono::Utc>>>,
+}
+
+/// Which markets each target sells, and which grandfathered generations it has
+/// published (D-78).
+async fn price_facts(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    targets: &[PlanId],
+) -> Result<MarketFacts, RepoError> {
+    let mut facts = MarketFacts {
+        currencies: BTreeMap::new(),
+        cohorts: BTreeMap::new(),
+    };
+    for plan_id in targets {
+        let rows = price::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(price::Column::TenantId.eq(tenant_id))
+                    .add(price::Column::PlanId.eq(plan_id.get()))
+                    .add(price::Column::LifecycleState.eq("published")),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read pricing_price for overlay world: {e}")))?;
+        for row in rows {
+            if let Ok(currency) = CurrencyCode::new(&row.currency) {
+                facts
+                    .currencies
+                    .entry(*plan_id)
+                    .or_default()
+                    .insert(currency);
+            }
+            if row.price_eligibility == "existing_grandfathered"
+                && let Some(at) = published_generation(&row.cohort)
+            {
+                facts.cohorts.entry(*plan_id).or_default().insert(at);
+            }
+        }
+    }
+    Ok(facts)
+}
+
+/// What the **overlay** plane says about a candidate.
+struct OverlayFacts {
+    precedence_holder: Option<Uuid>,
+    interval_holders: Vec<PublishedLineInterval>,
+    lower_precedence_matchers: BTreeSet<PlanId>,
+}
+
+/// The precedence slot, the collision domain and D-138's lower layers.
+///
+/// One read of the tenant's published overlays serves all three, because all
+/// three range over the same set. **The candidate's own overlay is skipped** —
+/// D-107: an overlay never collides with another revision of itself, on either
+/// the precedence slot or the interval.
+async fn overlay_facts(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    candidate: &OverlayRecord,
+) -> Result<OverlayFacts, RepoError> {
+    let published = price_overlay::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price_overlay::Column::TenantId.eq(tenant_id))
+                .add(
+                    price_overlay::Column::LifecycleState.eq(OverlayLifecycle::Published.as_str()),
+                ),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read published overlays: {e}")))?;
+
+    let mut facts = OverlayFacts {
+        precedence_holder: None,
+        interval_holders: Vec::new(),
+        lower_precedence_matchers: BTreeSet::new(),
+    };
+    for row in published {
+        if row.price_overlay_id == candidate.price_overlay_id {
+            continue;
+        }
+        let record = record_of(&row, Vec::new())?;
+        if record.scope.class() == candidate.scope.class()
+            && record.precedence == candidate.precedence
+        {
+            facts.precedence_holder = Some(record.price_overlay_id);
+        }
+        let lines =
+            read_lines(runner, scope, row.price_overlay_id, tenant_id, row.revision).await?;
+        for line in &lines {
+            facts.interval_holders.push(PublishedLineInterval {
+                price_overlay_id: record.price_overlay_id,
+                scope: record.scope.clone(),
+                key: line.key.clone(),
+                interval: record.interval,
+            });
+            if record.precedence < candidate.precedence {
+                collect_lower_layer(&mut facts.lower_precedence_matchers, &record, line);
+            }
+        }
+    }
+    Ok(facts)
+}
+
+/// The targets one published line at a lower precedence would have a `fixed`
+/// layer discard (D-138).
+///
+/// A list-default line matches **every** target of its own overlay, so it
+/// contributes that whole set rather than one plan.
+fn collect_lower_layer(into: &mut BTreeSet<PlanId>, holder: &OverlayRecord, line: &OverlayLine) {
+    match line.key.plan_id() {
+        Some(plan_id) => {
+            into.insert(plan_id);
+        }
+        None => {
+            for plan_id in &holder.target_ref.plans {
+                into.insert(*plan_id);
+            }
+        }
+    }
+}
+
+/// [`OverlayRepo::taxonomy_declares`]' body, taken through any runner.
+async fn declares_selector(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    selector: &ScopeSelector,
+) -> Result<bool, RepoError> {
+    match selector.value() {
+        None => Ok(true),
+        Some(value) => declares(runner, scope, tenant_id, selector.class(), value).await,
+    }
+}
+
+/// One published generation's cutover instant, as the **price** plane stores it.
+///
+/// **The two planes render one instant two ways, and this is the seam.**
+/// `pricing_price.cohort` is the canonical scope key's cohort axis and is stored
+/// as **epoch milliseconds in text** (`price_repo::read_cohort`, D-144's quantum
+/// made storable), with the literal `none` for the two non-grandfathered
+/// classes. `pricing_price_overlay_line.cohort` is a `timestamptz`, because §6
+/// types it one and because a line's cohort is authored as an instant rather
+/// than derived from a key.
+///
+/// So `inst-plv-eligibility` — *"a `cohort` value that no published
+/// `existing_grandfathered` row of the line's target plan carries"* — is a
+/// comparison **across two renderings**, and it is done here, once, rather than
+/// at the comparison site. Doing it there would mean comparing timestamps as
+/// text, which is the trap this crate has a standing rule against: `SeaORM`
+/// writes ISO 8601 with a `T`, and `'T'` beats `' '` at byte 11.
+///
+/// `None` is *"not a generation"* and covers both the `none` sentinel and a
+/// token no writer of this crate produces.
+fn published_generation(token: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::TimeZone;
+    let millis: i64 = token.parse().ok()?;
+    chrono::Utc.timestamp_millis_opt(millis).single()
 }

@@ -582,6 +582,10 @@ impl Gear for BssPricingGear {
             // a composition for the pure rules to judge.
             bundles: BundleRepo::new(db.clone()),
             bundle_service: crate::infra::bundle::BundleService::new(db.clone()),
+            // Slice 9's overlay store. Here and not on `GovernanceState`
+            // because it requests no `CatalogVersion`, which is the criterion
+            // that split the two.
+            overlays: crate::infra::storage::repo::OverlayRepo::new(db.clone()),
             idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
         });
 
@@ -747,6 +751,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::bundles::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::overlays::router(
                 Arc::clone(&rt.authoring_api),
                 openapi,
             ))

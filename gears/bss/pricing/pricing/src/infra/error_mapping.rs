@@ -246,6 +246,12 @@ impl From<DomainError> for CanonicalError {
             D::PrecedenceDuplicate(detail) => PlanResource::aborted(detail)
                 .with_reason(crate::domain::overlay_rules::PRECEDENCE_DUPLICATE)
                 .create(),
+            // §5's second 409: the overlay analogue of `WINDOW_OVERLAP`, and
+            // classified with it. Two intervals on one line key claim one
+            // instant, and re-reading the key's overlays is the remedy.
+            D::OverlayIntervalOverlap(detail) => PlanResource::aborted(detail)
+                .with_reason(crate::domain::overlay_rules::OVERLAY_INTERVAL_OVERLAP)
+                .create(),
             D::ApprovalNotPending(detail) => PlanResource::aborted(detail)
                 .with_reason("APPROVAL_NOT_PENDING")
                 .create(),
