@@ -40,9 +40,10 @@
 
 use bss_pricing::infra::storage::entity::{
     approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
-    catalog_version_ref, idempotency_dedup, operator_flag, outbox, pin_frontier, plan,
-    plan_addon_rule, plan_descriptor_set, plan_phase, policy_object, price, price_tier_band,
-    price_window, read_model,
+    brand_taxonomy, catalog_version_ref, idempotency_dedup, operator_flag, org_tier_taxonomy,
+    outbox, partner_taxonomy, pin_frontier, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
+    policy_object, price, price_overlay, price_overlay_line, price_overlay_line_amount,
+    price_tier_band, price_window, read_model, region_taxonomy,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
@@ -77,6 +78,16 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_bundle_component",
     "pricing_bundle_revshare_group",
     "pricing_bundle_revshare",
+    // Slice 4's four scope-value taxonomies, built on the Slice 9 chain because
+    // `inst-plv-scope` validates against them and none of them existed.
+    "pricing_region_taxonomy",
+    "pricing_brand_taxonomy",
+    "pricing_partner_taxonomy",
+    "pricing_org_tier_taxonomy",
+    // Slice 9's three, in dependency order.
+    "pricing_price_overlay",
+    "pricing_price_overlay_line",
+    "pricing_price_overlay_line_amount",
     "coord_leases",
 ];
 
@@ -859,6 +870,16 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         approval_threshold::Entity,
         approval_threshold_tombstone::Entity,
         price_window::Entity,
+        // Slice 9's seven. This is what proves each entity's column set is the
+        // one its migration built — a mismatch is a runtime `SeaORM` error on
+        // the first read and nothing earlier catches it.
+        region_taxonomy::Entity,
+        brand_taxonomy::Entity,
+        partner_taxonomy::Entity,
+        org_tier_taxonomy::Entity,
+        price_overlay::Entity,
+        price_overlay_line::Entity,
+        price_overlay_line_amount::Entity,
     );
 }
 
