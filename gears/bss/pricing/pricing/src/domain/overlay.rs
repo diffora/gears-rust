@@ -739,6 +739,7 @@ pub fn resolve_line<'a>(
 /// reviewer cannot see. That is the same argument `PlanShape` makes for excluding
 /// its `evaluated_at` and its baseline, and the exclusion is asserted rather than
 /// described by `overlay_repo_tests::the_pin_ignores_the_row_version`.
+#[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OverlayRevision {
     /// The overlay's identity.
