@@ -1026,6 +1026,11 @@ type ScopeKeyColumns<'a> = (
 /// [`RepoError::NotSupersedable`] when the successor is not on the predecessor's key
 /// or does not name it, or when the copy is not a generation of that same market;
 /// whatever the flip and the publish refuse otherwise.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "three row identities, the plan they belong to, and the act's instant — which is \
+              not decoration: it is what makes the copy's cohort checkable rather than assumed"
+)]
 pub async fn commit_cutover_rows(
     txn: &DbTx<'_>,
     scope: &AccessScope,
@@ -1034,9 +1039,10 @@ pub async fn commit_cutover_rows(
     predecessor: Uuid,
     successor: (Uuid, RowVersion),
     copy: (Uuid, RowVersion),
+    cutover_at: DateTime<Utc>,
 ) -> Result<(), RepoError> {
     refuse_mispaired(txn, scope, tenant_id, predecessor, successor.0).await?;
-    refuse_ungenerational(txn, scope, tenant_id, predecessor, copy.0).await?;
+    refuse_ungenerational(txn, scope, tenant_id, predecessor, copy.0, cutover_at).await?;
     supersede_row(txn, scope, tenant_id, predecessor).await?;
     publish_rows(txn, scope, tenant_id, plan_id, &[successor, copy]).await?;
     Ok(())
@@ -1049,12 +1055,26 @@ pub async fn commit_cutover_rows(
 /// `inst-co-copy` moves and the only two it may. Everything else — the plan, the
 /// market, the phase, the charge kind and, since D-196, the usage line — is the
 /// predecessor's or the copy is not a copy of it.
+///
+/// **Both moved axes are pinned, and the cohort was not until 2026-08-06.** The
+/// class alone leaves every *previous* generation of the same market admissible: an
+/// `existing_grandfathered` row on the market whose cohort names an earlier cutover
+/// passed all three checks, and publishing it would have republished an immutable
+/// retained row that this act never composed — the row plane's last guard before
+/// `publish_rows`. "Modulo two axes" has to mean the two axes are checked against
+/// what this act says they are, not merely that they are allowed to differ.
+///
+/// The instant is the caller's rather than read back from the composition, for
+/// `shorten_expected_seq`'s reason one layer up: this door is handed what the act
+/// decided, and a door that re-derived the act's own instant could not tell a
+/// mismatch from a recomputation.
 async fn refuse_ungenerational(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     predecessor: Uuid,
     copy: Uuid,
+    cutover_at: DateTime<Utc>,
 ) -> Result<(), RepoError> {
     let rows: HashMap<Uuid, price::Model> =
         load_rows(runner, scope, tenant_id, [predecessor, copy].into_iter())
@@ -1083,6 +1103,19 @@ async fn refuse_ungenerational(
             state: format!(
                 "on eligibility class {}; a cutover copy is the existing_grandfathered row",
                 after.price_eligibility
+            ),
+        });
+    }
+    let this_generation = Cohort::Generation(cutover_at).to_string();
+    if after.cohort != this_generation {
+        return Err(RepoError::NotSupersedable {
+            subject: SUBJECT.to_owned(),
+            id: copy.to_string(),
+            state: format!(
+                "on generation {}, not this cutover's {this_generation}; each cutover mints one \
+                 generation keyed by its own instant, and an earlier one is a previous act's \
+                 retained row",
+                after.cohort
             ),
         });
     }

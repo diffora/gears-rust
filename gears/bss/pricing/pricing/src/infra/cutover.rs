@@ -152,6 +152,7 @@ pub async fn commit_cutover(
         plan.predecessor,
         plan.successor,
         plan.copy,
+        plan.cutover_at(),
     )
     .await?;
 

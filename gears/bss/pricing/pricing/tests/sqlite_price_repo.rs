@@ -3403,6 +3403,7 @@ async fn cutover_rows(
     predecessor: Uuid,
     successor: (Uuid, RowVersion),
     copy: (Uuid, RowVersion),
+    cutover_at: DateTime<Utc>,
 ) -> Result<(), RepoError> {
     let scope = scope.clone();
     let (_, outcome) = provider
@@ -3417,6 +3418,7 @@ async fn cutover_rows(
                     predecessor,
                     successor,
                     copy,
+                    cutover_at,
                 )
                 .await
             })
@@ -3426,12 +3428,19 @@ async fn cutover_rows(
 }
 
 /// A published predecessor, a successor drafted on its own key, and a copy drafted
-/// on a generation of it.
+/// on the generation `cutover_at` mints.
+///
+/// **The instant is a parameter because the copy's key is built from it.** It was a
+/// constant until 2026-08-06, which left the cross-plane case seeding a copy on the
+/// 2026 generation while committing at a 2099 one — an incoherence no assertion
+/// could see until `refuse_ungenerational` began comparing the cohort against the
+/// act's own instant, and then it reddened that case immediately.
 async fn seeded_cutover(
     repo: &PriceRepo,
     provider: &DBProvider<DbError>,
     scope: &AccessScope,
     meter: Option<&str>,
+    cutover_at: DateTime<Utc>,
 ) -> (Uuid, (Uuid, RowVersion), (Uuid, RowVersion)) {
     let key = usage_key(meter, "");
     let predecessor = Uuid::from_u128(0xc0_01);
@@ -3458,7 +3467,7 @@ async fn seeded_cutover(
     .expect("stage the successor on the predecessor's key");
 
     let copy_id = Uuid::from_u128(0xc0_03);
-    let copy_key = bss_pricing::domain::cutover::grandfathered_copy_key(&key, at(20), &[])
+    let copy_key = bss_pricing::domain::cutover::grandfathered_copy_key(&key, cutover_at, &[])
         .expect("a fresh generation");
     let copied = repo
         .create_draft(
@@ -3481,9 +3490,9 @@ async fn the_cutover_flips_the_predecessor_and_publishes_both_new_rows() {
     let (repo, provider) = harness().await;
     let scope = AccessScope::for_tenant(tenant());
     let (predecessor, successor, copy) =
-        seeded_cutover(&repo, &provider, &scope, Some("cloudlets")).await;
+        seeded_cutover(&repo, &provider, &scope, Some("cloudlets"), at(20)).await;
 
-    cutover_rows(&provider, &scope, predecessor, successor, copy)
+    cutover_rows(&provider, &scope, predecessor, successor, copy, at(20))
         .await
         .expect("the cutover's four row moves commit together");
 
@@ -3511,7 +3520,7 @@ async fn a_copy_that_is_not_a_generation_of_the_predecessors_market_is_refused()
     let (repo, provider) = harness().await;
     let scope = AccessScope::for_tenant(tenant());
     let (predecessor, successor, _) =
-        seeded_cutover(&repo, &provider, &scope, Some("cloudlets")).await;
+        seeded_cutover(&repo, &provider, &scope, Some("cloudlets"), at(20)).await;
 
     let stranger = Uuid::from_u128(0xc0_04);
     let other_line = bss_pricing::domain::cutover::grandfathered_copy_key(
@@ -3539,6 +3548,7 @@ async fn a_copy_that_is_not_a_generation_of_the_predecessors_market_is_refused()
         predecessor,
         successor,
         (stranger, authored.row_version),
+        at(20),
     )
     .await
     .expect_err("a generation of another line is not this cutover's copy");
@@ -3551,6 +3561,101 @@ async fn a_copy_that_is_not_a_generation_of_the_predecessors_market_is_refused()
 }
 
 #[tokio::test]
+async fn a_successor_on_another_line_of_one_market_is_refused() {
+    // **`0586ff4ee`'s owed test, and it was not paid by `a032befd5` as that commit
+    // claimed.** That commit varied the *copy* and left `refuse_mispaired` — the
+    // guard whose columns it had just widened from eight to ten — driven only by
+    // successors on the predecessor's own key. So reverting `scope_key_columns` to
+    // eight reddened nothing, which is the whole failure mode a fix's test exists to
+    // rule out. This case is the missing one: a successor on a **different meter of
+    // the same market**, naming the predecessor, so the key comparison is the only
+    // thing left that can refuse it.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, _, copy) =
+        seeded_cutover(&repo, &provider, &scope, Some("cloudlets"), at(20)).await;
+
+    let other_line = Uuid::from_u128(0xc0_05);
+    let mut content = usage_line_content(Some("egress_gb"), "");
+    content.supersedes_price_id = Some(predecessor);
+    let authored = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(other_line, usage_key(Some("egress_gb"), ""), content),
+        )
+        .await
+        .expect("author a successor on another line of the same market");
+
+    let err = cutover_rows(
+        &provider,
+        &scope,
+        predecessor,
+        (other_line, authored.row_version),
+        copy,
+        at(20),
+    )
+    .await
+    .expect_err("a row on another line is not this key's successor");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("on a different canonical scope key"),
+        "the ten-column comparison is what refuses, not the supersedes link: {message}"
+    );
+}
+
+#[tokio::test]
+async fn a_copy_on_an_earlier_generation_of_the_same_market_is_refused() {
+    // The copy is a generation of the right market and carries the right class, and
+    // it is still not **this** cutover's copy: its cohort names another instant, so
+    // it is a previous cutover's immutable retained row. Publishing it would republish
+    // a generation nobody composed, and `inst-co-copy` mints exactly one generation
+    // per act — keyed by the act's own instant.
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let (predecessor, successor, _) =
+        seeded_cutover(&repo, &provider, &scope, Some("cloudlets"), at(20)).await;
+
+    let earlier = Uuid::from_u128(0xc0_06);
+    let earlier_key = bss_pricing::domain::cutover::grandfathered_copy_key(
+        &usage_key(Some("cloudlets"), ""),
+        at(19),
+        &[],
+    )
+    .expect("a generation of the same market at another instant");
+    let authored = repo
+        .create_draft(
+            &scope,
+            tenant(),
+            draft(
+                earlier,
+                earlier_key,
+                usage_line_content(Some("cloudlets"), ""),
+            ),
+        )
+        .await
+        .expect("author an earlier generation of the same market");
+
+    let err = cutover_rows(
+        &provider,
+        &scope,
+        predecessor,
+        successor,
+        (earlier, authored.row_version),
+        at(20),
+    )
+    .await
+    .expect_err("a generation on another instant is another cutover's copy");
+
+    let message = format!("{err:?}");
+    assert!(
+        message.contains("generation"),
+        "the refusal names the axis that is wrong: {message}"
+    );
+}
+
+#[tokio::test]
 async fn the_cross_plane_commit_moves_three_windows_and_three_rows_together() {
     // `inst-gc-commit`: the predecessor's window shortens to the cutover, the
     // successor's and the copy's open there, and the three row moves ride the same
@@ -3558,13 +3663,18 @@ async fn the_cross_plane_commit_moves_three_windows_and_three_rows_together() {
     // handover is gap-free by construction rather than by a later check.
     let (repo, provider) = harness().await;
     let scope = AccessScope::for_tenant(tenant());
+    // Inside the fixture coverage window `[2099-08-04, 2099-09-01)`, because this
+    // case commits against a real window plane. The copy is seeded on **this**
+    // instant's generation: the row-plane cases can use any instant, but here the
+    // window the shorten moves and the cohort the copy carries are two halves of
+    // one act and cannot be built from two different clocks.
+    let cutover_at = common::coverage_from() + chrono::Duration::days(3);
     let (predecessor, successor, copy) =
-        seeded_cutover(&repo, &provider, &scope, Some("cloudlets")).await;
+        seeded_cutover(&repo, &provider, &scope, Some("cloudlets"), cutover_at).await;
 
     let conn = provider.conn().expect("conn");
     let covering =
         common::schedule_coverage_window(&conn, &scope, tenant(), predecessor, stamp()).await;
-    let cutover_at = common::coverage_from() + chrono::Duration::days(3);
     let plane = vec![bss_pricing::domain::supersession::NamedWindow {
         window_id: covering.window_id,
         interval: bss_pricing::domain::window::WindowInterval::new(
