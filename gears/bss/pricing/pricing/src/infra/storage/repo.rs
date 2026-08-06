@@ -44,6 +44,7 @@ pub mod bundle_repo;
 pub mod catalog_version_ref_repo;
 pub mod idempotency_repo;
 pub mod outbox_repo;
+pub mod overlay_repo;
 pub mod pin_frontier_repo;
 pub mod plan_repo;
 pub mod plan_shape_repo;
@@ -69,6 +70,7 @@ pub use outbox_repo::{
     NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload, PriceUpdatedPayload,
     PriceWindowTransitionPayload,
 };
+pub use overlay_repo::{NewOverlay, OverlayRecord, OverlayRepo};
 pub use pin_frontier_repo::PinFrontierRepo;
 pub use plan_repo::{NewPlanDraft, PlanRepo};
 pub use plan_shape_repo::PlanShapeRepo;

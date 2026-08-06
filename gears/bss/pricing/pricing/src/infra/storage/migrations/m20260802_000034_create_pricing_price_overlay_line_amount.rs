@@ -10,13 +10,22 @@
 //! `chk_pricing_price_overlay_line_magnitude_pairing` makes physical one table
 //! up.
 //!
-//! # The key is the pair, and the pair is the primary key
+//! # The key carries the revision, because §6 says this table rides one
 //!
-//! §6 says `UNIQUE (line_id, currency)`. It is spelled as the **primary key**
-//! rather than as a surrogate id plus a unique index, because the pair *is* the
-//! row's identity: there is no such thing as two values of one line in one
-//! currency, and a surrogate would invite a second row to exist and be
-//! ignored. Nothing references this table, so nothing needs a narrower handle.
+//! §6 says `UNIQUE (line_id, currency)` and, in the same sentence one table up,
+//! that the amount table *"rides the same revision through its line"*. Once
+//! `pricing_price_overlay_line` is keyed `(line_id, overlay_revision)` — see
+//! that migration's doc for why §6's `PK line_id` is not buildable beside D-92's
+//! stable line identity — the pair alone cannot reference a line, and a value
+//! set that did not carry the revision would be **shared** by every revision of
+//! its line rather than riding one. So the key is
+//! `(line_id, overlay_revision, currency)` and the foreign key is the pair.
+//!
+//! It is spelled as the **primary key** rather than as a surrogate plus a unique
+//! index, because the triple *is* the row's identity: there is no such thing as
+//! two values of one line's revision in one currency, and a surrogate would
+//! invite a second row to exist and be ignored. Nothing references this table,
+//! so nothing needs a narrower handle.
 //!
 //! # `value_minor >= 0` is D-67 and not the money rule
 //!
@@ -57,13 +66,15 @@ pub struct Migration;
 
 const PG_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE bss.pricing_price_overlay_line_amount (
-        line_id     uuid   NOT NULL,
-        currency    text   NOT NULL,
-        tenant_id   uuid   NOT NULL,
-        value_minor bigint NOT NULL,
-        PRIMARY KEY (line_id, currency),
-        CONSTRAINT fk_pricing_price_overlay_line_amount_line FOREIGN KEY (line_id)
-            REFERENCES bss.pricing_price_overlay_line (line_id),
+        line_id          uuid   NOT NULL,
+        overlay_revision bigint NOT NULL,
+        currency         text   NOT NULL,
+        tenant_id        uuid   NOT NULL,
+        value_minor      bigint NOT NULL,
+        PRIMARY KEY (line_id, overlay_revision, currency),
+        CONSTRAINT fk_pricing_price_overlay_line_amount_line
+            FOREIGN KEY (line_id, overlay_revision)
+            REFERENCES bss.pricing_price_overlay_line (line_id, overlay_revision),
         CONSTRAINT chk_pricing_price_overlay_line_amount_value_minor CHECK (
             value_minor >= 0),
         CONSTRAINT chk_pricing_price_overlay_line_amount_currency CHECK (
@@ -83,7 +94,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
               JOIN bss.pricing_price_overlay o
                 ON o.price_overlay_id = l.price_overlay_id
                AND o.revision = l.overlay_revision
-             WHERE l.line_id = OLD.line_id;
+             WHERE l.line_id = OLD.line_id AND l.overlay_revision = OLD.overlay_revision;
             IF parent_state IS DISTINCT FROM 'draft' THEN
               RAISE EXCEPTION
                 'pricing_price_overlay_line_amount: % of a value under a non-draft overlay revision is not permitted (state %)',
@@ -100,7 +111,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             JOIN bss.pricing_price_overlay o
               ON o.price_overlay_id = l.price_overlay_id
              AND o.revision = l.overlay_revision
-           WHERE l.line_id = NEW.line_id;
+           WHERE l.line_id = NEW.line_id AND l.overlay_revision = NEW.overlay_revision;
           IF parent_state IS DISTINCT FROM 'draft' THEN
             RAISE EXCEPTION
               'pricing_price_overlay_line_amount: % of a value under a non-draft overlay revision is not permitted (state %)',
@@ -126,13 +137,15 @@ const PG_DOWN_STATEMENTS: &[&str] = &[
 
 const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE pricing_price_overlay_line_amount (
-        line_id     text   NOT NULL,
-        currency    text   NOT NULL,
-        tenant_id   text   NOT NULL,
-        value_minor bigint NOT NULL,
-        PRIMARY KEY (line_id, currency),
-        CONSTRAINT fk_pricing_price_overlay_line_amount_line FOREIGN KEY (line_id)
-            REFERENCES pricing_price_overlay_line (line_id),
+        line_id          text   NOT NULL,
+        overlay_revision bigint NOT NULL,
+        currency         text   NOT NULL,
+        tenant_id        text   NOT NULL,
+        value_minor      bigint NOT NULL,
+        PRIMARY KEY (line_id, overlay_revision, currency),
+        CONSTRAINT fk_pricing_price_overlay_line_amount_line
+            FOREIGN KEY (line_id, overlay_revision)
+            REFERENCES pricing_price_overlay_line (line_id, overlay_revision),
         CONSTRAINT chk_pricing_price_overlay_line_amount_value_minor CHECK (
             value_minor >= 0),
         CONSTRAINT chk_pricing_price_overlay_line_amount_currency CHECK (
@@ -151,7 +164,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
               JOIN pricing_price_overlay o
                 ON o.price_overlay_id = l.price_overlay_id
                AND o.revision = l.overlay_revision
-             WHERE l.line_id = NEW.line_id AND o.lifecycle_state = 'draft');
+             WHERE l.line_id = NEW.line_id AND l.overlay_revision = NEW.overlay_revision
+               AND o.lifecycle_state = 'draft');
         END",
     "CREATE TRIGGER trg_pricing_price_overlay_line_amount_no_update
         BEFORE UPDATE ON pricing_price_overlay_line_amount
@@ -170,7 +184,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
               JOIN pricing_price_overlay o
                 ON o.price_overlay_id = l.price_overlay_id
                AND o.revision = l.overlay_revision
-             WHERE l.line_id = NEW.line_id AND o.lifecycle_state = 'draft');
+             WHERE l.line_id = NEW.line_id AND l.overlay_revision = NEW.overlay_revision
+               AND o.lifecycle_state = 'draft');
         END",
     "CREATE TRIGGER trg_pricing_price_overlay_line_amount_no_delete
         BEFORE DELETE ON pricing_price_overlay_line_amount
@@ -183,7 +198,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
               JOIN pricing_price_overlay o
                 ON o.price_overlay_id = l.price_overlay_id
                AND o.revision = l.overlay_revision
-             WHERE l.line_id = OLD.line_id AND o.lifecycle_state = 'draft');
+             WHERE l.line_id = OLD.line_id AND l.overlay_revision = OLD.overlay_revision
+               AND o.lifecycle_state = 'draft');
         END",
 ];
 

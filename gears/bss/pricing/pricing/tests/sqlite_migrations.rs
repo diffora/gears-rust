@@ -555,15 +555,15 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     ),
     (
         "trg_pricing_price_overlay_line_amount_no_delete",
-        12_886_737_153_168_735_147_u64,
+        6_126_575_409_268_361_048_u64,
     ),
     (
         "trg_pricing_price_overlay_line_amount_no_insert",
-        13_570_100_797_324_476_270_u64,
+        14_004_697_873_420_631_368_u64,
     ),
     (
         "trg_pricing_price_overlay_line_amount_no_update",
-        6_186_535_984_698_748_848_u64,
+        5_385_847_319_431_521_126_u64,
     ),
     (
         "trg_pricing_price_overlay_line_no_delete",

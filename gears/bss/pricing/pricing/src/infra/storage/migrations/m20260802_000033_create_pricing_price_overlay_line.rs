@@ -6,6 +6,30 @@
 //! keyed `(planId?, targetSku?)` with its own kind and magnitude, and D-78
 //! extended that key with `cohort`. This table is that key.
 //!
+//! # The primary key is `(line_id, overlay_revision)`, and §6's is not buildable
+//!
+//! §6 gives this table **`PK line_id`** and, in the same parenthesis,
+//! *"**copy-on-new-revision** with stable line identity where unchanged,
+//! D-92"*. Those two sentences cannot both hold. A copy-on-new-revision writes a
+//! **second row** for the same line under the successor revision; under a
+//! `line_id` primary key that second row needs a **new** `line_id`, and then the
+//! line's identity is not stable across revisions — which is the half of the
+//! sentence a consumer diffing two revisions actually uses, and the half D-92
+//! is about.
+//!
+//! The primary key is what gives, because D-92 is a decision and the key is a
+//! spelling of one. `(line_id, overlay_revision)` makes both sentences true at
+//! once: a line keeps its id across every revision that does not change it, and
+//! each revision holds its own copy. `pricing_price_overlay_line_amount`'s
+//! foreign key widens with it, for the reason §6 gives that table — it *"rides
+//! the same revision through its line"*, which is only expressible if the line's
+//! key carries the revision.
+//!
+//! This divergence from §6's literal column list is reported in the owed
+//! register rather than smoothed over. Nothing else about the table moves: the
+//! null-safe line key below is unchanged, and it is what stops one revision
+//! holding the same *logical* line twice.
+//!
 //! # The uniqueness is **null-safe**, and the naive form is silently wrong
 //!
 //! §6 states `UNIQUE (price_overlay_id, overlay_revision, plan_id, target_sku,
@@ -110,7 +134,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
         adjustment_kind  text   NOT NULL,
         magnitude_kind   text   NOT NULL,
         adjustment_value bigint,
-        PRIMARY KEY (line_id),
+        PRIMARY KEY (line_id, overlay_revision),
         CONSTRAINT fk_pricing_price_overlay_line_overlay
             FOREIGN KEY (price_overlay_id, overlay_revision)
             REFERENCES bss.pricing_price_overlay (price_overlay_id, revision),
@@ -207,7 +231,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         adjustment_kind  text   NOT NULL,
         magnitude_kind   text   NOT NULL,
         adjustment_value bigint,
-        PRIMARY KEY (line_id),
+        PRIMARY KEY (line_id, overlay_revision),
         CONSTRAINT fk_pricing_price_overlay_line_overlay
             FOREIGN KEY (price_overlay_id, overlay_revision)
             REFERENCES pricing_price_overlay (price_overlay_id, revision),

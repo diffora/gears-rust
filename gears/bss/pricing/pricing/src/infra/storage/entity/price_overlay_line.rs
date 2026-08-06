@@ -46,14 +46,20 @@ use uuid::Uuid;
     no_type
 )]
 pub struct Model {
+    /// The line's **logical** identity, stable across every revision that does
+    /// not change it (D-92).
     #[sea_orm(primary_key, auto_increment = false)]
     pub line_id: Uuid,
+    /// **The revision this copy belongs to** — the second half of the key.
+    ///
+    /// §6 spells the primary key `line_id` alone, which cannot coexist with the
+    /// stable line identity D-92 requires: a copy-on-new-revision writes a
+    /// second row for one line, and under a bare `line_id` that row would need a
+    /// new id. `m20260802_000033`'s module doc carries the argument.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub overlay_revision: i64,
     /// The overlay this line belongs to.
     pub price_overlay_id: Uuid,
-    /// **The revision it is frozen with** (D-92, copy-on-new-revision). Without
-    /// this half a line would belong to the overlay rather than to one of its
-    /// revisions, and there would be nothing to copy forward.
-    pub overlay_revision: i64,
     /// Copied from the parent overlay by the repository, never taken from a
     /// request (Global Constraint 9).
     pub tenant_id: Uuid,

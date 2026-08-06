@@ -745,6 +745,90 @@ async fn the_line_key_is_scoped_to_one_revision() {
     must_succeed(&conn, &default_line(OTHER_LINE, OVERLAY, 1)).await;
 }
 
+/// **D-92's stable line identity, and the reason §6's `PK line_id` is not
+/// buildable.**
+///
+/// A copy-on-new-revision writes a second row for **one** line. Under §6's
+/// literal `PK line_id` that row would need a new id, and then the identity D-92
+/// calls stable is not — which is the half of the sentence a consumer diffing
+/// two revisions actually uses. The key is `(line_id, overlay_revision)`, so the
+/// **same** `line_id` appears under both revisions and the two rows are
+/// distinguishable by the revision alone.
+#[tokio::test]
+async fn one_line_id_survives_the_copy_onto_a_new_revision() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+    must_succeed(&conn, &default_line(LINE, OVERLAY, 0)).await;
+    flip(&conn, OVERLAY, 0, "published").await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 1)).await;
+
+    // The copy: the same line id, one revision on.
+    must_succeed(&conn, &default_line(LINE, OVERLAY, 1)).await;
+
+    let revisions = scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(count(*) AS text) AS v FROM pricing_price_overlay_line \
+             WHERE line_id = '{LINE}'"
+        ),
+    )
+    .await;
+    assert_eq!(
+        revisions, "2",
+        "one line must exist under both revisions under ONE id"
+    );
+
+    // ...and the same key is still refused twice within one revision.
+    must_be_rejected(
+        &conn,
+        &default_line(OTHER_LINE, OVERLAY, 1),
+        "uq_pricing_price_overlay_line_key",
+    )
+    .await;
+}
+
+/// Each revision's value set is its own, so a published revision's money is not
+/// shared with the draft that succeeds it.
+#[tokio::test]
+async fn the_amount_set_rides_the_revision_and_not_the_line_id() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+    must_succeed(
+        &conn,
+        &insert_line(
+            LINE, OVERLAY, 0, "NULL", "NULL", "NULL", "fixed", "amount", "NULL",
+        ),
+    )
+    .await;
+    must_succeed(&conn, &insert_amount_at(LINE, 0, "EUR", 5000)).await;
+    flip(&conn, OVERLAY, 0, "published").await;
+
+    must_succeed(&conn, &draft_overlay(OVERLAY, 1)).await;
+    must_succeed(
+        &conn,
+        &insert_line(
+            LINE, OVERLAY, 1, "NULL", "NULL", "NULL", "fixed", "amount", "NULL",
+        ),
+    )
+    .await;
+    // The successor prices the same line differently, and the published
+    // revision's value is untouched.
+    must_succeed(&conn, &insert_amount_at(LINE, 1, "EUR", 9000)).await;
+
+    let published = scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(value_minor AS text) AS v FROM pricing_price_overlay_line_amount \
+             WHERE line_id = '{LINE}' AND overlay_revision = 0 AND currency = 'EUR'"
+        ),
+    )
+    .await;
+    assert_eq!(
+        published, "5000",
+        "the published revision keeps serving unchanged"
+    );
+}
+
 /// `CHECK (cohort IS NULL OR plan_id IS NOT NULL)` — §6.
 ///
 /// A `cohort` is validated against *"the line's target plan"*
@@ -1017,6 +1101,7 @@ async fn a_line_carries_at_most_one_value_per_currency() {
         &conn,
         &insert_amount(LINE, "EUR", 6000),
         "UNIQUE constraint failed: pricing_price_overlay_line_amount.line_id, \
+         pricing_price_overlay_line_amount.overlay_revision, \
          pricing_price_overlay_line_amount.currency",
     )
     .await;
@@ -1108,8 +1193,15 @@ async fn the_amounts_of_a_published_revision_are_frozen() {
 }
 
 fn insert_amount(line: &str, currency: &str, value_minor: i64) -> String {
+    insert_amount_at(line, 0, currency, value_minor)
+}
+
+/// The same, naming the revision the value rides — the second half of the
+/// amount table's foreign key since the line's own key widened.
+fn insert_amount_at(line: &str, revision: i64, currency: &str, value_minor: i64) -> String {
     format!(
-        "INSERT INTO pricing_price_overlay_line_amount (line_id, currency, tenant_id, value_minor) \
-         VALUES ('{line}', '{currency}', '{TENANT}', {value_minor})"
+        "INSERT INTO pricing_price_overlay_line_amount (
+            line_id, overlay_revision, currency, tenant_id, value_minor) \
+         VALUES ('{line}', {revision}, '{currency}', '{TENANT}', {value_minor})"
     )
 }

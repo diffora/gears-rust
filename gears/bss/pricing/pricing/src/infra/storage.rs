@@ -212,6 +212,37 @@ pub enum RepoError {
     /// that do not actually share a key.
     #[error("pricing repo: duplicate canonical scope key: {0}")]
     DuplicateScopeKey(String),
+    /// The `(scope_class, precedence)` slot is already held by another
+    /// **published** overlay (`uq_pricing_price_overlay_precedence`, L2).
+    ///
+    /// Raised by the index rather than by a comparison, and it is the other half
+    /// of a rule `domain::overlay_rules::check_precedence` also checks — the
+    /// loser of two submits that both read a free slot before either wrote.
+    /// [`RepoError::PendingKeyHeld`]'s arrangement, and it carries no holder for
+    /// that variant's reason: at the moment the index fires, the transaction
+    /// that inserted the winning row may not have committed, so there is no
+    /// overlay this transaction is entitled to read.
+    #[error(
+        "pricing repo: this scope class and precedence are already held by a published \
+         overlay; choose another precedence, or supersede the overlay holding it"
+    )]
+    OverlayPrecedenceHeld,
+    /// The overlay already holds an open draft revision, named by the refusal
+    /// (`uq_pricing_price_overlay_open_draft`, D-92).
+    ///
+    /// [`RepoError::OpenDraftExists`]' sibling one plane over, and deliberately
+    /// not that variant: its sentence says *plan*, and an operator told a plan
+    /// holds their overlay's draft slot would go looking in the wrong place.
+    #[error(
+        "pricing repo: price overlay {price_overlay_id} already has an open draft at \
+         revision {revision}"
+    )]
+    OverlayOpenDraftExists {
+        /// The overlay whose draft slot is taken.
+        price_overlay_id: String,
+        /// The revision number of the draft holding it.
+        revision: u64,
+    },
     /// A plan already carries a bundle (`uq_pricing_bundle_plan`).
     ///
     /// Minted here rather than reported as a driver error because it is a rule
@@ -775,6 +806,20 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         // this platform renders 409 from, which is what "the plan already has
         // one" is.
         RepoError::DuplicateBundleOnPlan { .. } => DomainError::BundleExistsOnPlan(err.to_string()),
+        // §5 types `PRECEDENCE_DUPLICATE` **409 outright**, unlike the seven
+        // overlay codes it types as architectural 422s, and this is that code's
+        // constraint half. It joins the conflict class with
+        // `PENDING_CHANGE_UNIT_EXISTS`: the caller's request was well formed and
+        // what refused it is a sibling overlay their own request never named, so
+        // re-reading the class's overlays is the remedy — which is what a 409
+        // asks for.
+        RepoError::OverlayPrecedenceHeld => DomainError::PrecedenceDuplicate(err.to_string()),
+        // A uniqueness conflict on the overlay's one editable slot, and the
+        // `OPEN_DRAFT_REVISION_EXISTS` class for `OpenDraftExists`' reason: the
+        // operator's next action is a real one — go and edit that revision.
+        RepoError::OverlayOpenDraftExists { .. } => {
+            DomainError::OpenDraftRevisionExists(err.to_string())
+        }
         RepoError::IdempotencyPayloadMismatch { .. } => {
             DomainError::IdempotencyPayloadMismatch(err.to_string())
         }

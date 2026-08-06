@@ -7,10 +7,11 @@
 //! save and publish (`ADJUSTMENT_CURRENCY_NOT_COVERED`, naming the line). A
 //! percent line is currency-neutral and has no rows here at all.
 //!
-//! The key is `(line_id, currency)` and it is spelled as the **primary key**
-//! rather than as a surrogate plus a unique index, because the pair *is* the
-//! row's identity — there is no such thing as two values of one line in one
-//! currency, and a surrogate would invite a second row to exist and be ignored.
+//! The key is `(line_id, overlay_revision, currency)`. §6 spells it
+//! `UNIQUE (line_id, currency)`, which stops being a key once the line's own key
+//! carries the revision — see `m20260802_000034`'s module doc. It is the
+//! **primary key** rather than a surrogate plus a unique index, because the
+//! triple *is* the row's identity.
 //!
 //! There is no `lifecycle_state` here. A value is frozen when the revision its
 //! **line** belongs to publishes, so the reference is the overlay revision and
@@ -28,6 +29,11 @@ use uuid::Uuid;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub line_id: Uuid,
+    /// The revision this value rides — §6's *"the amount table rides the same
+    /// revision through its line"*, which is only expressible once the line's
+    /// own key carries the revision.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub overlay_revision: i64,
     /// ISO 4217.
     #[sea_orm(primary_key, auto_increment = false)]
     pub currency: String,

@@ -328,6 +328,21 @@ pub enum DomainError {
     /// not invented.
     #[error("bundle exists on plan: {0}")]
     BundleExistsOnPlan(String),
+    /// Two published overlays of one scope class claim one `precedence`
+    /// (`09-price-overlays.md` §5, L2, **409**).
+    ///
+    /// A conflict rather than a precondition failure, and §5 types it 409
+    /// outright — one of only two overlay codes it does. The reading holds: the
+    /// caller's request was well formed and their authority sufficient, and what
+    /// refused it is a **sibling overlay** they cannot see from their own
+    /// request. Re-reading the class's overlays is the remedy.
+    ///
+    /// Deliberately not [`DomainError::DuplicateScopeKey`], which it
+    /// superficially resembles: that one is about a price row's canonical key,
+    /// and a caller told their scope key was duplicated would go looking for a
+    /// price row that has nothing to do with the refusal.
+    #[error("precedence duplicate: {0}")]
+    PrecedenceDuplicate(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///
