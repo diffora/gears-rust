@@ -218,23 +218,55 @@ async fn window_of(h: &Harness, window_id: Uuid) -> Option<price_window::Model> 
         .expect("read the window")
 }
 
-/// Every event name the tenant's outbox holds, in `seq` order.
-async fn event_names(h: &Harness) -> Vec<String> {
+/// The outbox's high-water mark, taken after the fixture and before the act.
+///
+/// See [`event_names_since`] for why the fixture is excluded by **when** here and
+/// by **name** in `sqlite_publish_commit`.
+async fn outbox_floor(h: &Harness) -> i64 {
     let conn = h.db.conn().expect("conn");
     outbox::Entity::find()
         .secure()
         .scope_with(&AccessScope::allow_all())
         .filter(Condition::all().add(outbox::Column::TenantId.eq(h.tenant)))
+        .order_by(outbox::Column::Seq, Order::Desc)
+        .one(&conn)
+        .await
+        .expect("read the outbox")
+        .map_or(0, |row| row.seq)
+}
+
+/// Every event name the act wrote after `floor`, in `seq` order.
+///
+/// **The fixture is excluded by when, not by what.** This helper filtered
+/// `PriceCreated` out by name until 2026-08-06, on the reasoning that the seed
+/// authors a price row and authoring is where S3 §17.5 puts that event. The
+/// reasoning is right about the seed and wrong about this file: the act under test
+/// stages its **successor draft** through
+/// `insert_successor_draft_on` -> `write_prepared` -> `record_price_mutation(Create)`,
+/// which has enqueued `PriceCreated` since `e6a2edcce`. So a name filter deleted an
+/// event the compose really produced, and `"nothing was announced"` was asserted
+/// over an announcement.
+///
+/// A sequence floor cannot make that mistake: it says "what happened after the
+/// fixture" without needing to know which names the fixture uses. The name filter
+/// stays correct in `sqlite_publish_commit`, where the paths under test author no
+/// rows — the generalisation from that file to this one is what failed, and it
+/// failed because the second file's act was not re-read.
+async fn event_names_since(h: &Harness, floor: i64) -> Vec<String> {
+    let conn = h.db.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(outbox::Column::TenantId.eq(h.tenant))
+                .add(outbox::Column::Seq.gt(floor)),
+        )
         .order_by(outbox::Column::Seq, Order::Asc)
         .all(&conn)
         .await
         .expect("read the outbox")
         .into_iter()
-        // The seed authors a price row and `PriceCreated` is the authoring door's
-        // (S3 §17.5), so it belongs to the fixture rather than to the unit under
-        // test. Filtered rather than counted in, so "nothing was announced" keeps
-        // meaning what it says.
-        .filter(|row| row.event_name != "PriceCreated")
         .map(|row| row.event_name)
         .collect()
 }
@@ -305,6 +337,8 @@ async fn a_material_supersession_stages_its_successor_and_opens_a_unit() {
     let (plan_id, seeded) = published_plan(&h).await;
     let key = key_of(plan_id, &seeded);
 
+    let floor = outbox_floor(&h).await;
+
     let request = request_of(&key, 12_000);
     let staged_id = request.successor_price_id;
     let outcome = supersede(&h, request, SUBMITTER)
@@ -374,9 +408,17 @@ async fn a_material_supersession_stages_its_successor_and_opens_a_unit() {
         rest_support::pending_version_refs(&h).await.is_empty(),
         "no CatalogVersion was requested for an act that did not commit"
     );
-    assert!(
-        event_names(&h).await.is_empty(),
-        "and nothing was announced"
+    // **One event, and it is the staged draft's own.** The compose announces
+    // nothing about the act — no `PriceUpdated`, no window event, nothing a
+    // consumer could read as a repricing having happened — but it does author a
+    // row, and S3 §17.5 puts `PriceCreated` on row authoring. Asserting the exact
+    // list rather than emptiness is what makes both halves of that statable; this
+    // case claimed "nothing was announced" until 2026-08-06, over an outbox reader
+    // that deleted the announcement by name.
+    assert_eq!(
+        event_names_since(&h, floor).await,
+        vec![CatalogEvent::PriceCreated.as_str().to_owned()],
+        "the compose authors the successor draft and announces exactly that"
     );
     assert!(
         price_unit_audit(&h)
@@ -485,10 +527,12 @@ async fn an_approved_unit_commits_all_four_writes_and_announces_two_events() {
     let h = Harness::new().await;
     let (plan_id, seeded) = published_plan(&h).await;
     let key = key_of(plan_id, &seeded);
+    let floor = outbox_floor(&h).await;
 
     let opened = supersede(&h, request_of(&key, 12_000), SUBMITTER)
         .await
         .expect("the unit opens");
+    let after_compose = outbox_floor(&h).await;
     let unit = pending(&opened).approval.approval_id;
     let successor_id = pending(&opened).successor_price_id;
     approve(&h, unit).await;
@@ -550,13 +594,28 @@ async fn an_approved_unit_commits_all_four_writes_and_announces_two_events() {
 
     // `inst-su-return`'s two events, and **only** those two.
     assert_eq!(
-        event_names(&h).await,
+        event_names_since(&h, after_compose).await,
         vec![
             CatalogEvent::PriceUpdated.as_str().to_owned(),
             CatalogEvent::PriceWindowScheduled.as_str().to_owned(),
         ],
         "the predecessor's PriceWindowExpired is the sweep's at the changeover, not this \
          transaction's"
+    );
+    // And the **act's** whole trail, over the two calls it takes: the compose's
+    // `PriceCreated` for the draft it staged, then the commit's two. Both floors are
+    // asserted because they answer different questions — `inst-su-return` is a claim
+    // about the commit, while a consumer subscribing to this plan sees the union —
+    // and because a reader of the two-event assertion alone would conclude the act
+    // announces nothing before its approve.
+    assert_eq!(
+        event_names_since(&h, floor).await,
+        vec![
+            CatalogEvent::PriceCreated.as_str().to_owned(),
+            CatalogEvent::PriceUpdated.as_str().to_owned(),
+            CatalogEvent::PriceWindowScheduled.as_str().to_owned(),
+        ],
+        "the compose announced the successor's creation before the approve"
     );
     let updated = event_payload(&h, CatalogEvent::PriceUpdated).await;
     assert_eq!(updated["priceId"], serde_json::json!(successor_id));

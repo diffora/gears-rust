@@ -364,6 +364,16 @@ async fn version_refs(h: &Harness) -> Vec<catalog_version_ref::Model> {
 /// have left every `..._writes_nothing` case named for a guarantee it no longer
 /// checked. Filtering the seed's own event out instead keeps "the commit wrote
 /// nothing" meaning exactly that.
+///
+/// **It is correct here for a reason that does not travel**, and it did not:
+/// `write_prepared` — the only path to `record_price_mutation(Create)` — has two
+/// callers, the authoring door and `insert_successor_draft_on`, and neither is
+/// reachable from a publish or a window op. So in this file every `PriceCreated`
+/// really is a seed's. `sqlite_supersession_unit` copied the filter without
+/// re-reading its own act, which *does* stage a draft, and spent a stretch
+/// asserting "nothing was announced" over an announcement; it excludes the fixture
+/// by sequence now. **Before reusing this helper, check whether the act under test
+/// can author a row.**
 async fn outbox_rows(h: &Harness) -> Vec<outbox::Model> {
     let conn = h.provider.conn().expect("conn");
     outbox::Entity::find()

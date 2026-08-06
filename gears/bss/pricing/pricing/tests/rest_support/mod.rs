@@ -1064,6 +1064,12 @@ pub async fn outbox_correlations(harness: &Harness) -> Vec<Uuid> {
         // one commit emitted, and counting the seed's event in would have been
         // repaired by bumping each expectation, which leaves the assertions named
         // for guarantees they stopped checking.
+        //
+        // **True only while no caller's act authors a price row.** Today's callers
+        // publish plans and mutate windows, and neither path reaches
+        // `write_prepared`. A caller whose act stages a draft — a supersession —
+        // would have this helper delete its event: that is what happened in
+        // `sqlite_supersession_unit`, which excludes the fixture by sequence now.
         .filter(|row| row.event_name != "PriceCreated")
         .map(|row| row.correlation_id)
         .collect()
