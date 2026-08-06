@@ -585,3 +585,109 @@ async fn the_same_row_published_does_cover_the_market() {
         "a published row on the sold market must cover it, got {status}: {detail}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The TOCTOU guard, on the plane that rides a plan revision.
+// ---------------------------------------------------------------------------
+
+/// **A composition edit voids the pending unit over the plan it rides.**
+///
+/// `inst-ap-pin` states the guard without qualification: *"any mutation of the subject
+/// while `submitted` invalidates the pending approval"*. A bundle composition **is** a
+/// mutation of a plan revision — it rides the revision, and the edit takes the
+/// revision's entity tag and advances it.
+///
+/// **It holds, and this case exists because two of the three things that would break it
+/// are true.** Written first as a demonstration that it did *not* hold, and the
+/// hypothesis was wrong at exactly one link:
+///
+/// 1. `PlanShape` — what a `plan_revision` unit pins — carries **no composition**. Its
+///    nineteen fields are the plan's own shape, its rows and its windows; the component
+///    list, the rev-share splits, `price_basis` and `invoiceItemization` are none of
+///    them. **True.**
+/// 2. So a component swap **does not move the pin**: `content_matches_pin` would stay
+///    `true` across it, which is the answer a reviewer's read is built to trust.
+///    **True.**
+/// 3. And nothing voids the unit. **False** — and the reason is one level down, which
+///    is why it survived a grep: `bundle_repo` never names `void_pending_units_of`, but
+///    `replace_composition` calls `plan_repo::record_revision_mutation`, whose *first*
+///    statement is that void. The composition edit is recorded as a plan-revision
+///    mutation, so it inherits the TOCTOU guard rather than restating it.
+///
+/// Which makes 1 and 2 harmless **only while 3 holds**, and that is what this case
+/// pins. A refactor that gave the composition its own recorder — a plausible thing to
+/// want, since the audit record it writes is a plan record for a bundle act — would
+/// reopen D-104's own scenario (*"a component swap reached consumers with no
+/// approver"*) through the **approved** path, which is the worse half: the approval
+/// record would say the act was reviewed, and the composition reaching consumers would
+/// be one no reviewer ever saw. Nothing asserted this before.
+///
+/// The control below is not ceremony. Without it the case passes over a guard that does
+/// not exist, because a unit that was never `submitted` reads `voided` at the end
+/// whatever the edit did.
+#[tokio::test]
+async fn a_composition_edit_voids_the_pending_unit_over_its_plan() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle(&harness).await;
+
+    let opened = harness
+        .governance
+        .approvals
+        .submit(
+            &harness.scope(),
+            harness.tenant,
+            bss_pricing::domain::scope_key::PlanId::new(plan_id),
+            Uuid::now_v7(),
+            serde_json::json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
+            bss_pricing::domain::audit::AuditStamp {
+                actor_principal_id: Uuid::from_u128(0x_b0_11),
+                recorded_at: chrono::Utc::now(),
+                correlation_id: Uuid::from_u128(0x_b0_c0),
+            },
+        )
+        .await
+        .expect("a plan-revision unit opens over the plan the bundle rides");
+
+    // **The control.** Without it this case proves nothing: a unit that was never
+    // `submitted` reads "voided" at the end whatever the composition edit did, and the
+    // assertion below would pass over a guard that does not exist.
+    assert_eq!(
+        harness
+            .read_approval(opened.approval_id)
+            .await
+            .expect("the unit reads back")
+            .state
+            .as_str(),
+        "submitted",
+        "the unit must be pending before the composition moves under it"
+    );
+
+    let tag = harness.plan_etag(plan_id).await;
+    let swapped = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [{
+                    "component_plan_id": Uuid::now_v7(),
+                    "included_sku_id": Uuid::now_v7(),
+                }],
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    assert_eq!(swapped.status(), StatusCode::OK);
+
+    let record = harness
+        .read_approval(opened.approval_id)
+        .await
+        .expect("the unit reads back");
+    assert_eq!(
+        record.state.as_str(),
+        "voided",
+        "the composition moved under a pending unit whose pin cannot see it, so the unit \
+         must be voided rather than left approvable"
+    );
+}
