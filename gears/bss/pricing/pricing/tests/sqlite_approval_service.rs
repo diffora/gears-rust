@@ -2088,3 +2088,213 @@ async fn the_supersession_unit_pins_the_plan_shape_a_reviewer_is_shown() {
         "the pin follows the plan's content, so an edit between two submits is visible"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The cutover's unit: two keys, one act (`inst-co-single-pending`, D-100)
+// ---------------------------------------------------------------------------
+
+async fn submit_cutover(
+    h: &Harness,
+    approval_id: Uuid,
+    market: &str,
+    at_instant: DateTime<Utc>,
+) -> Result<ApprovalRecord, DomainError> {
+    let conn = h.provider.conn().expect("conn");
+    ApprovalService::submit_cutover_on(
+        &conn,
+        &h.scope,
+        TENANT,
+        &[scope_key(market)],
+        at_instant,
+        approval_id,
+        json!({ "reason": "alwaysMaterialTrigger" }),
+        stamp(),
+    )
+    .await
+}
+
+/// The keys one record holds, read back from the register.
+async fn held_keys_of(h: &Harness, approval_id: Uuid) -> Vec<String> {
+    let conn = h.provider.conn().expect("conn");
+    bss_pricing::infra::storage::repo::approval_repo::held_keys_of(
+        &conn,
+        &h.scope,
+        TENANT,
+        approval_id,
+    )
+    .await
+    .expect("read the register")
+}
+
+#[tokio::test]
+async fn a_cutover_holds_the_market_key_and_the_generation_it_mints() {
+    // **Two keys, and the second is the whole difference from a supersession.**
+    // `inst-co-single-pending` pends *"the `all_subscriptions` key and the **new
+    // generation's** key — prior generations are not pended"*. Without the first,
+    // a window mutation could be approved against the key mid-cutover; without the
+    // second, two cutovers of one plan at one instant would each read the
+    // generation as free, and the loser would meet a partial-`UNIQUE` violation
+    // inside its commit instead of a refusal at submit.
+    let h = harness().await;
+    seed_published(&h).await;
+
+    let record = submit_cutover(&h, Uuid::from_u128(0xa_6001), "eu", changeover())
+        .await
+        .expect("a cutover opens a unit");
+
+    assert_eq!(record.subject_kind, AuditSubjectKind::PriceUnit);
+    assert!(
+        record.subject_ref.contains("/cutover/"),
+        "the act is in the subject, since S5 section 6 declares no cutover token: {}",
+        record.subject_ref
+    );
+    let held = held_keys_of(&h, record.approval_id).await;
+    assert_eq!(held.len(), 2, "the market key and the generation: {held:?}");
+    assert!(
+        held.iter().any(|key| key == &scope_key("eu").to_string()),
+        "the all_subscriptions key is pended: {held:?}"
+    );
+    assert!(
+        held.iter()
+            .any(|key| key.contains("existing_grandfathered")),
+        "and the generation this act mints: {held:?}"
+    );
+}
+
+#[tokio::test]
+async fn another_act_cannot_be_submitted_against_a_key_a_cutover_holds() {
+    // The **first** key's purpose, asserted through the thing it exists to stop
+    // rather than by reading the register: mid-cutover the market key is spoken
+    // for, so another unit over it is refused at submit instead of racing the
+    // commit. A supersession is the act used here because it is the other producer
+    // of `published -> superseded` on that very key.
+    let h = harness().await;
+    seed_published(&h).await;
+    submit_cutover(&h, Uuid::from_u128(0xa_6001), "eu", changeover())
+        .await
+        .expect("the cutover opens");
+
+    let err = submit_supersession(&h, Uuid::from_u128(0xa_6002), "eu", changeover())
+        .await
+        .expect_err("the key is held by the cutover");
+
+    let DomainError::PendingChangeUnitExists(message) = &err else {
+        panic!("got: {err:?}");
+    };
+    // **This case cannot separate the two guards that answer here, and that is
+    // stated rather than papered over** — the third instance of D-192's
+    // guard-above-index shape in this crate. `refuse_held_key` is the explanatory
+    // check; the `pricing_approval_key` index is the guarantee one layer down, and
+    // `infra::storage`'s fold maps both to `PENDING_CHANGE_UNIT_EXISTS`. Deleting
+    // the check leaves this case green — **measured, not assumed** — and so does
+    // asserting the message names the holding act, because the index's body names
+    // the subject too. `infra::storage`'s own comment predicts exactly that: both
+    // name the key and both end in the same instruction, and only *whether a unit
+    // is named* differs, which the winning transaction's commit timing decides.
+    //
+    // So what this case pins is the **behaviour an operator meets**: the key is
+    // spoken for, the answer says which act holds it, and the remedy is in the
+    // sentence. Separating the pair needs a race the store's own suite stages
+    // (`storage_tests`), not a service-level submit.
+    assert!(
+        message.contains("/cutover/"),
+        "the refusal names the act holding the key, whichever guard answered: {message}"
+    );
+}
+
+#[tokio::test]
+async fn a_widened_selection_is_a_new_act_and_collides_on_the_keys_it_shares() {
+    // The **second** key's purpose, and the shape that reaches it.
+    //
+    // My first version of this case asserted that two cutovers of one plan at one
+    // instant collide on the generation, and it was **false**: the generation key
+    // carries every axis but `priceEligibility` and `cohort`, the market included,
+    // so two markets mint two generations and nothing collides. That is
+    // `grandfathered_copy_key` behaving exactly as `inst-co-copy` says.
+    //
+    // What does reach it is D-28's own scenario: a second submit whose **selection
+    // differs**, which is a different key-set hash and therefore a different
+    // subject, so the subject guard lets it past — and then the keys the two
+    // selections share are already pended. Both halves matter: this is the guard
+    // that stops one plan being cut over twice through two differently-named acts.
+    let h = harness().await;
+    seed_published(&h).await;
+    submit_cutover(&h, Uuid::from_u128(0xa_6001), "eu", changeover())
+        .await
+        .expect("the first cutover opens");
+
+    let conn = h.provider.conn().expect("conn");
+    let err = ApprovalService::submit_cutover_on(
+        &conn,
+        &h.scope,
+        TENANT,
+        &[scope_key("eu"), scope_key("us")],
+        changeover(),
+        Uuid::from_u128(0xa_6002),
+        json!({ "reason": "alwaysMaterialTrigger" }),
+        stamp(),
+    )
+    .await
+    .expect_err("the widened selection shares eu's two keys with the standing unit");
+
+    assert!(
+        matches!(err, DomainError::PendingChangeUnitExists(_)),
+        "got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn two_markets_of_one_plan_cut_over_independently() {
+    // The control for the case above, and it is what keeps the held-key set from
+    // being read as "one cutover per plan". Two markets are two generations, and
+    // nothing about one act touches the other's keys.
+    let h = harness().await;
+    seed_published(&h).await;
+    submit_cutover(&h, Uuid::from_u128(0xa_6001), "eu", changeover())
+        .await
+        .expect("the eu cutover opens");
+
+    submit_cutover(&h, Uuid::from_u128(0xa_6002), "us", changeover())
+        .await
+        .expect("a different market is a different set of keys");
+}
+
+#[tokio::test]
+async fn a_selection_spanning_two_plans_is_refused() {
+    // The subject's first segment is the plan id — `subject_aggregate` refuses a
+    // subject that is not `<plan_id>/<rest>` — so a selection over two plans has
+    // no segment to be named by. One refusal here, naming both plans, rather than
+    // a corrupt subject the register rejects three layers down.
+    let h = harness().await;
+    seed_published(&h).await;
+
+    let other_plan = ScopeKey::new(
+        PlanId::new(Uuid::from_u128(0x9_9999)),
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("eu").expect("a non-blank region"),
+        terminal_phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("all_subscriptions pairs with cohort none");
+
+    let conn = h.provider.conn().expect("conn");
+    let err = ApprovalService::submit_cutover_on(
+        &conn,
+        &h.scope,
+        TENANT,
+        &[scope_key("eu"), other_plan],
+        changeover(),
+        Uuid::from_u128(0xa_6003),
+        json!({ "reason": "alwaysMaterialTrigger" }),
+        stamp(),
+    )
+    .await
+    .expect_err("one act cuts over one plan");
+
+    assert!(
+        matches!(err, DomainError::InvalidRequest(_)),
+        "got: {err:?}"
+    );
+}

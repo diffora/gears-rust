@@ -743,6 +743,136 @@ impl ApprovalService {
             .map_err(|e| repo_failure(&e))
     }
 
+    /// Open the **grandfathering cutover's** unit (`inst-gc-api`,
+    /// `inst-co-single-pending`, D-100).
+    ///
+    /// [`Self::submit_supersession_on`]'s shape with two differences, and both are
+    /// the design set's rather than this function's.
+    ///
+    /// **The act names its selection** (D-28): the subject is
+    /// `(planId, key-set hash, cutover instant)`, so a retry that adds or drops a
+    /// key is a *different* act and does not find this unit. See
+    /// [`cutover_unit_ref`](crate::infra::cutover::cutover_unit_ref) for why
+    /// naming the selection is what protects the caller rather than what
+    /// endangers them.
+    ///
+    /// **It pends two keys per selected key, not one.** A supersession is a change
+    /// on one key; a cutover also *mints a generation*, and
+    /// `inst-co-single-pending` names both — *"the `all_subscriptions` key and the
+    /// **new generation's** key — prior generations are not pended"*. Without the
+    /// first, a window mutation could be approved against the key mid-cutover;
+    /// without the second, two cutovers of one plan at one instant would each read
+    /// the generation as free and the loser would meet a partial-`UNIQUE`
+    /// violation inside its commit rather than a refusal at submit. Prior
+    /// generations are excluded **by construction**: the set is built from the
+    /// keys this act touches, and a prior generation is not one of them.
+    ///
+    /// The generation keys are minted against an **empty** existing-generation
+    /// list on purpose. Refusing a cutover onto an instant some generation already
+    /// carries is *compose's* answer, where the plan's real generations have been
+    /// read; here the key is wanted only for its rendering, and duplicating that
+    /// refusal against a list this function has not read would answer it from less
+    /// information than the caller already has.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] when the plan has no current revision;
+    /// [`DomainError::PendingChangeUnitExists`] when this act is already
+    /// submitted, or when any key it would pend is held;
+    /// [`DomainError::InvalidRequest`] when the selection is empty or names more
+    /// than one plan; whatever
+    /// [`grandfathered_copy_key`](crate::domain::cutover::grandfathered_copy_key)
+    /// refuses.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the same eight `submit_supersession_on` takes, with the selection in place of \
+                  its one key: the runner and the scope, the tenant, what is being cut over, when, \
+                  the minted approval id, the verdict and the stamp. None is derivable from the \
+                  others, and grouping them into a request type here would move the list rather \
+                  than shorten it — the surface's DTO is where that type belongs"
+    )]
+    pub async fn submit_cutover_on(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        selected: &[crate::domain::scope_key::ScopeKey],
+        cutover_at: DateTime<Utc>,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let now = stamp.recorded_at;
+        let Some(first) = selected.first() else {
+            return Err(DomainError::InvalidRequest(
+                "a cutover selects at least one canonical scope key; an empty selection names no \
+                 act"
+                .to_owned(),
+            ));
+        };
+        let plan_id = first.plan_id();
+        // D-28's selector is *"the plan's keys"*, and the subject's first segment is
+        // the plan id — `subject_aggregate` refuses a subject that is not
+        // `<plan_id>/<rest>`. A selection spanning two plans has no such segment to
+        // be named by, so it is one refusal here rather than a corrupt subject the
+        // register would reject three layers down.
+        if let Some(stray) = selected.iter().find(|key| key.plan_id() != plan_id) {
+            return Err(DomainError::InvalidRequest(format!(
+                "this cutover selects keys of two plans, {plan_id} and {}; one act cuts over one \
+                 plan, and the approval subject is named by it",
+                stray.plan_id()
+            )));
+        }
+
+        let revision = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "current plan revision".to_owned(),
+                id: plan_id.to_string(),
+            })?;
+        let shape =
+            crate::infra::publish::assemble_from(runner, scope, tenant_id, plan_id, revision, now)
+                .await?;
+        let subject_ref = crate::infra::cutover::cutover_unit_ref(plan_id, selected, cutover_at);
+
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, &subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "this cutover of plan {plan_id} at {}: approval {} is still submitted over it; \
+                 decide it, or withdraw it to free the subject",
+                cutover_at.to_rfc3339(),
+                held.approval_id
+            )));
+        }
+
+        let mut held_keys = BTreeSet::new();
+        for key in selected {
+            for touched in crate::infra::cutover::cutover_held_keys(key, cutover_at, &[])? {
+                held_keys.insert(touched.to_string());
+            }
+        }
+        refuse_held_key(runner, scope, tenant_id, &held_keys).await?;
+
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref,
+            // `price_unit`, for `submit_supersession_on`'s reason: S5 §6 declares no
+            // `cutover` member and this gear mints no token the design set has not.
+            // The act rides the subject string.
+            subject_kind: AuditSubjectKind::PriceUnit,
+            content_hash: content_hash(&shape).to_vec(),
+            materiality,
+            held_keys,
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
     /// One page of the tenant's records, for the reviewer's queue.
     ///
     /// No subject is re-derived here, deliberately: a page of 100 would be 100
