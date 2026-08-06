@@ -370,3 +370,59 @@ fn the_copys_window_is_open_ended_so_the_d04_bound_holds_by_construction() {
          D-04 bound hold whatever the horizon and the cycle roster turn out to be"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The act's identity and the keys it holds (`inst-gc-api`, `inst-co-single-pending`)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_act_is_named_by_the_plan_and_the_instant_and_not_by_its_keys() {
+    // `inst-gc-api` makes the act idempotent per `(planId, cutover instant)`. The
+    // selected keys are content, not identity: rendering the set into the subject
+    // would make a retry that adds or drops one key a *different* act, so the second
+    // submit would open a second unit instead of finding the first, and an approval
+    // of either would authorize a set nobody reviewed.
+    let one = crate::infra::cutover::cutover_unit_ref(predecessor_key().plan_id(), at(10));
+    let same_act_more_keys =
+        crate::infra::cutover::cutover_unit_ref(predecessor_key().plan_id(), at(10));
+    let other_instant =
+        crate::infra::cutover::cutover_unit_ref(predecessor_key().plan_id(), at(11));
+
+    assert_eq!(one, same_act_more_keys);
+    assert_ne!(one, other_instant, "two dates are two acts");
+    assert!(one.contains("/cutover/"), "the act names its kind: {one}");
+}
+
+#[test]
+fn a_cutover_holds_the_market_key_and_the_new_generation() {
+    // `inst-co-single-pending`: a cutover unit pends **both** keys it touches.
+    // Without the first, a window mutation could be approved against the key
+    // mid-cutover; without the second, two cutovers of one plan at one instant would
+    // each read the generation as free and the loser would meet a partial-UNIQUE
+    // violation inside its commit instead of a refusal at submit.
+    let held = crate::infra::cutover::cutover_held_keys(&predecessor_key(), at(10), &[])
+        .expect("both keys are mintable");
+
+    assert_eq!(held[0], predecessor_key());
+    assert_eq!(held[1].cohort(), Cohort::Generation(at(10)));
+    assert_eq!(
+        held[1].price_eligibility(),
+        PriceEligibility::ExistingGrandfathered
+    );
+    assert_ne!(held[0], held[1], "two keys, not one named twice");
+}
+
+#[test]
+fn a_cutover_onto_an_existing_generation_holds_nothing() {
+    // The refusal arrives here rather than at the store, so the caller never gets a
+    // half-held pair: `cutover_held_keys` mints the second key through the same door
+    // that refuses a duplicate generation.
+    let err = crate::infra::cutover::cutover_held_keys(
+        &predecessor_key(),
+        at(10),
+        &[Cohort::Generation(at(10))],
+    )
+    .expect_err("the generation is taken");
+
+    assert!(matches!(err, DomainError::DuplicateScopeKey(_)), "{err:?}");
+}

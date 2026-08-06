@@ -12,8 +12,10 @@ use uuid::Uuid;
 
 use crate::domain::audit::AuditStamp;
 use crate::domain::concurrency::RowVersion;
-use crate::domain::cutover::ComposedCutover;
+use crate::domain::cutover::{ComposedCutover, grandfathered_copy_key};
+use crate::domain::error::DomainError;
 use crate::domain::scope_key::PlanId;
+use crate::domain::scope_key::{Cohort, ScopeKey};
 use crate::domain::window::WindowInterval;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::window_repo::{NewWindow, WindowRecord};
@@ -198,4 +200,61 @@ pub async fn commit_cutover(
         successor_window,
         copy_window,
     })
+}
+
+/// The name of one cutover **act**, as its approval unit and any retry of the
+/// request look it up by.
+///
+/// **`inst-gc-api` makes the act idempotent per `(planId, cutover instant)`, and the
+/// selected keys are deliberately not in it.** That is the one real difference from
+/// [`supersession_unit_ref`](crate::infra::supersession::supersession_unit_ref),
+/// which carries its key: a supersession *is* a change on one key, so the key is
+/// part of which act it is. A cutover names a whole **set** of keys in its payload,
+/// and rendering the set into the subject would make a retry that adds or drops one
+/// key a *different* act — so the second submit would open a second unit instead of
+/// finding the first, and an approval of either would authorize a set nobody
+/// reviewed. The set is content, and content is what the approval **pin** is for.
+///
+/// The instant is at the millisecond quantum for `supersession_unit_ref`'s reason:
+/// it is matched for equality by a retry, and two renderings of one instant at
+/// different resolutions are two subjects.
+#[must_use]
+pub fn cutover_unit_ref(plan_id: PlanId, cutover_at: DateTime<Utc>) -> String {
+    format!(
+        "{}/cutover/{}",
+        plan_id.get(),
+        cutover_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    )
+}
+
+/// The canonical scope keys one cutover entry holds while its unit is pending
+/// (`inst-co-single-pending`).
+///
+/// **Two, and the second is the cutover's own.** The supersession pends the one key
+/// it reprices; a cutover also mints a generation, so it pends *"the
+/// `all_subscriptions` key and the **new generation's** key — prior generations are
+/// not pended"*. Both are needed and neither is spare: without the first, a window
+/// mutation could be approved against the key mid-cutover; without the second, two
+/// cutovers of one plan at the same instant would each believe the generation free,
+/// and the loser would discover it as a partial-`UNIQUE` violation inside its commit
+/// rather than as a refusal at submit.
+///
+/// Prior generations are excluded **by construction rather than by a filter**: this
+/// function is handed the two keys the act touches, and a prior generation is not one
+/// of them. Stated because "prior generations are not pended" reads like something a
+/// filter enforces, and here there is nothing to filter.
+///
+/// # Errors
+///
+/// Whatever [`grandfathered_copy_key`] refuses — a generation that already carries
+/// the instant, or an axis the constructor will not take.
+pub fn cutover_held_keys(
+    predecessor: &ScopeKey,
+    cutover_at: DateTime<Utc>,
+    existing_generations: &[Cohort],
+) -> Result<[ScopeKey; 2], DomainError> {
+    Ok([
+        predecessor.clone(),
+        grandfathered_copy_key(predecessor, cutover_at, existing_generations)?,
+    ])
 }
