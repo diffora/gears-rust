@@ -356,6 +356,324 @@ async fn a_grandfathered_only_market_is_not_previewable() {
     assert_eq!(absent_code(response).await, "PRICE_ROW_ABSENT");
 }
 
+/// **A hybrid market has more than one row, and the preview must not pick at
+/// random.**
+///
+/// One `(currency, region)` legitimately carries a recurring row *and* usage rows
+/// — different `chargeKind`, `meter` and `dimensionKey` are all scope-key axes.
+/// §2 says the preview returns "the catalog **base list price**", and a usage row
+/// has no single amount at all: its money lives in tier bands, so `amountMinor`
+/// is NULL on it.
+///
+/// So a preview that took whichever row came first would answer `null` for a
+/// plan that plainly has a monthly price, and *which* row came first would depend
+/// on the projector's array order rather than on anything an operator authored.
+#[tokio::test]
+async fn a_hybrid_market_previews_its_recurring_row_and_not_a_usage_row() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    // The usage row is projected FIRST, so a first-match implementation picks it.
+    let delta = hybrid_delta(plan_id);
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={REGION}")),
+            None,
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["amount_minor"], 1_200,
+        "the base list price is the recurring row's amount, not the usage row's absent one"
+    );
+}
+
+/// One market, two rows: a usage row first, then the recurring base row.
+fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDelta {
+    use bss_pricing::domain::concurrency::RowVersion;
+    use bss_pricing::domain::lifecycle::LifecycleState;
+    use bss_pricing::domain::money::CurrencyCode;
+    use bss_pricing::domain::price_record::PriceRecord;
+    use bss_pricing::domain::price_row::{ModelKind, PriceRow};
+    use bss_pricing::domain::scope_key::{
+        ChargeKind, Cohort, DimensionKey, Meter, PlanId, PriceEligibility, Region, ScopeKey,
+    };
+
+    let mut delta = delta_of(
+        plan_id,
+        CURRENCY,
+        REGION,
+        false,
+        Some("standard"),
+        false,
+        false,
+    );
+
+    let usage_key = ScopeKey::new(
+        PlanId::new(plan_id),
+        CurrencyCode::new(CURRENCY).expect("three letters"),
+        Region::new(REGION).expect("a non-blank region"),
+        rest_support::seeded_phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("the class pairs with cohort none")
+    .with_usage_line(
+        Some(Meter::new("api_calls").expect("a non-blank meter")),
+        DimensionKey::none(),
+    )
+    .expect("a usage line names its meter");
+
+    let mut usage_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    usage_row.meter = Some("api_calls".to_owned());
+    // A usage row's money is in its bands; `amount_minor` is NULL by rule.
+    usage_row.amount_minor = None;
+
+    let usage = PriceRecord {
+        price_id: Uuid::from_u128(0xb_0002),
+        scope_key: usage_key,
+        row: usage_row,
+        tax_inclusive: false,
+        tax_category_ref: None,
+        billing_timing: None,
+        rounding_policy_ref: None,
+        grandfather_until: None,
+        supersedes_price_id: None,
+        lifecycle_state: LifecycleState::Published,
+        created_by: Uuid::from_u128(0xac_10),
+        created_at_utc: at(),
+        row_version: RowVersion::new(0),
+    };
+    delta.prices.insert(0, usage);
+    delta
+}
+
+/// **A repriced market quotes the successor, never the superseded predecessor.**
+///
+/// Found by review and, at first, *fixed without a test* — the probe removing the
+/// `lifecycleState` filter reddened nothing, which is how a remedy gets believed
+/// rather than proven.
+///
+/// `PROJECTED_ROW_STATES` includes `superseded`, and a supersession stages the
+/// successor on the **same** `ScopeKey` while flipping its predecessor — so a
+/// market that has ever been repriced carries two byte-identical keys in the
+/// frozen delta. The predecessor is seeded first here, so a filter-less
+/// implementation picks it.
+#[tokio::test]
+async fn a_repriced_market_quotes_the_successor_and_not_the_superseded_row() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let mut delta = delta_of(
+        plan_id,
+        CURRENCY,
+        REGION,
+        false,
+        Some("standard"),
+        false,
+        false,
+    );
+    // The delta's own row is the successor at 1_200. Put a superseded
+    // predecessor at 9_900 ahead of it on the identical key.
+    let mut predecessor = delta.prices[0].clone();
+    predecessor.price_id = Uuid::from_u128(0x0000_0001);
+    predecessor.lifecycle_state = bss_pricing::domain::lifecycle::LifecycleState::Superseded;
+    predecessor.row.amount_minor =
+        Some(bss_pricing::domain::money::MinorAmount::new(9_900).expect("non-negative"));
+    delta.prices.insert(0, predecessor);
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={REGION}")),
+            None,
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await["amount_minor"],
+        1_200,
+        "a frozen version is never re-projected, so quoting the predecessor would quote a \
+         price nobody sells for the life of that version"
+    );
+}
+
+/// **A version frozen before `notSellableGa` existed reads as gated, not
+/// sellable.**
+///
+/// Deltas are INSERT-only and resolvable forever, so any version projected before
+/// the field was added carries no such key. Defaulting an absent gate to `false`
+/// tells a partner a C3-gated market is sellable, in a handler whose own header
+/// is titled "fail closed", and it cannot heal.
+///
+/// Driven by projecting a **hand-built payload** with the key removed, which is
+/// the only way to reach the state — the current projector always writes it.
+#[tokio::test]
+async fn a_payload_predating_the_ga_flag_reads_as_gated() {
+    use bss_pricing::domain::read_model::SubjectRef;
+    use bss_pricing::infra::storage::repo::{NewDelta, pin_frontier_repo, read_model_repo};
+    use bss_pricing_sdk::CatalogVersion;
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let delta = delta_of(
+        plan_id,
+        CURRENCY,
+        REGION,
+        true,
+        Some("standard"),
+        true,
+        false,
+    );
+    let mut payload = delta.to_value();
+    for row in payload["prices"]
+        .as_array_mut()
+        .expect("the payload carries rows")
+    {
+        row.as_object_mut()
+            .expect("a row is an object")
+            .remove("notSellableGa");
+    }
+
+    let conn = h.db.conn().expect("conn");
+    read_model_repo::project_subject(
+        &conn,
+        &h.scope(),
+        NewDelta {
+            tenant_id: h.tenant,
+            catalog_version: CatalogVersion::new(5),
+            subject: SubjectRef::Plan(plan_id),
+            payload,
+            projected_at: at(),
+        },
+    )
+    .await
+    .expect("project the legacy-shaped subject");
+    pin_frontier_repo::advance(&conn, &h.scope(), h.tenant, CatalogVersion::new(5), at())
+        .await
+        .expect("pin it");
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={REGION}")),
+            None,
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await["not_sellable_ga"],
+        true,
+        "an absent gate is an unknown gate, and unknown fails closed"
+    );
+}
+
+/// **A usage-only market is previewable**, with no amount and a tier summary.
+///
+/// This case exists because a probe stayed silent. Removing the non-usage filter
+/// reddened nothing, and reasoning about why showed the filter was not the
+/// belt-and-braces it looked like: it made a market priced **solely** by usage
+/// answer `404`, as though the plan did not sell there. That contradicts §2
+/// having a "tier summary" at all — a metered market has a price, it just does
+/// not have an `amountMinor`.
+///
+/// So the non-usage rows are a **preference**, not a filter: the fallback is any
+/// row of the market.
+#[tokio::test]
+async fn a_usage_only_market_previews_with_no_amount_and_a_tier_summary() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let mut delta = hybrid_delta(plan_id);
+    // Drop the recurring row, leaving only the metered one.
+    delta.prices.retain(|row| {
+        row.scope_key.charge_kind() == bss_pricing::domain::scope_key::ChargeKind::Usage
+    });
+    assert_eq!(
+        delta.prices.len(),
+        1,
+        "the fixture leaves exactly the usage row"
+    );
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={REGION}")),
+            None,
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a metered market is sold, so it is previewable"
+    );
+    let body = body_json(response).await;
+    assert_eq!(
+        body["amount_minor"],
+        serde_json::Value::Null,
+        "usage money lives in bands, so there is no single amount to quote"
+    );
+}
+
+/// **A per-unit metered row carries an amount, and still must not win the
+/// preview.**
+///
+/// The third case a silent probe forced into existence. Dropping the
+/// `chargeKind != usage` preference reddened nothing, because every usage row in
+/// this file was `graduated` — whose money lives in bands, so `amountMinor` is
+/// NULL and the amount test already excluded it. A **`per_unit`** usage row is
+/// the counter-example: it is metered *and* carries a unit price, so without the
+/// charge-kind preference a hybrid plan would be quoted its per-call rate as
+/// though that were the monthly subscription price.
+#[tokio::test]
+async fn a_per_unit_metered_row_does_not_win_over_the_recurring_row() {
+    use bss_pricing::domain::money::MinorAmount;
+    use bss_pricing::domain::price_row::ModelKind;
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let mut delta = hybrid_delta(plan_id);
+    // The usage row is first in the array and now carries a unit price of 7.
+    let usage = delta
+        .prices
+        .iter_mut()
+        .find(|r| r.scope_key.charge_kind() == bss_pricing::domain::scope_key::ChargeKind::Usage)
+        .expect("the fixture has a usage row");
+    usage.row.model_kind = Some(ModelKind::PerUnit);
+    usage.row.amount_minor = Some(MinorAmount::new(7).expect("non-negative"));
+    // And it sorts first by priceId, so a preference-less implementation takes it.
+    usage.price_id = Uuid::from_u128(0x0000_0001);
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={REGION}")),
+            None,
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await["amount_minor"],
+        1_200,
+        "the base list price is the recurring row's, not the metered unit rate"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The query contract.
 // ---------------------------------------------------------------------------

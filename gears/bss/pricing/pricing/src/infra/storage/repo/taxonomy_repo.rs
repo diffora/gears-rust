@@ -212,16 +212,13 @@ pub struct Replaced {
 
 /// The tenant's **active** region values — `inst-tx-region`'s universe.
 ///
-/// **No production caller yet.** `domain::taxonomy::RegionsDeclared` is the rule
-/// this feeds and it is not registered in any pipeline, so today this function is
-/// exercised only by `sqlite_taxonomy_repo`. That is stated rather than implied:
-/// an earlier version of this paragraph asserted that
-/// `infra::publish::rule_params` resolves it, which was false when written.
+/// Called by `infra::publish::rule_params` — `inst-tx-region`'s universe — and
+/// by the price authoring route for the save-time half.
 ///
-/// It takes a runner rather than a provider **so that** `rule_params` can resolve
-/// it inside the commit transaction when the wiring lands: §4.2 runs the rule set
-/// twice and a read that could not join the transaction would answer the second
-/// run against a world the commit is not holding.
+/// It takes a runner rather than a provider so `rule_params` can resolve it
+/// **inside** the commit transaction: §4.2 runs the rule set twice, and a read
+/// that could not join the transaction would answer the second run against a
+/// world the commit is not holding.
 ///
 /// `active` only, which is `overlay_repo::declares`' predicate one plane over: a
 /// value that reached `retired` anyway must not validate a new row against

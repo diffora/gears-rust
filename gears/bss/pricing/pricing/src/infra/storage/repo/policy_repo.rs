@@ -330,15 +330,21 @@ impl PolicyObjectRepo {
 /// then takes the schema default, which is the ratified launch value each of
 /// them documents.
 ///
+/// Answers **`false`** when the stored mode is not `expected` — a stale
+/// precondition, which the surface renders `STALE_VERSION` (409) — and `true`
+/// when the write landed.
+///
 /// # Errors
-/// [`RepoError::Db`] on a scope or storage failure.
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::ConcurrentMutation`] when two first writes race the same insert.
 pub async fn set_tax_display_policy(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     mode: TaxDisplayPolicy,
+    expected: TaxDisplayPolicy,
     stamp: &AuditStamp,
-) -> Result<(), RepoError> {
+) -> Result<bool, RepoError> {
     let updated = policy_object::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -354,12 +360,44 @@ pub async fn set_tax_display_policy(
             policy_object::Column::UpdatedBy,
             Expr::value(stamp.actor_principal_id),
         )
-        .filter(Condition::all().add(policy_object::Column::TenantId.eq(tenant_id)))
+        // **The premise is in the `WHERE`, so the check and the write are one
+        // statement.** The caller's `If-Match` resolved to `expected`; matching
+        // on it makes this a compare-and-swap, and a concurrent writer who moved
+        // the mode between the caller's read and this statement affects zero rows
+        // rather than being silently overwritten. Comparing in the handler and
+        // updating here unconditionally is the T-7 defect, and it was rebuilt on
+        // this surface one commit after being removed from the taxonomy one.
+        .filter(
+            Condition::all()
+                .add(policy_object::Column::TenantId.eq(tenant_id))
+                .add(policy_object::Column::TaxDisplayPolicyMode.eq(expected.as_str())),
+        )
         .exec(runner)
         .await
         .map_err(|e| RepoError::Db(format!("update tax-display policy: {e}")))?;
     if updated.rows_affected > 0 {
-        return Ok(());
+        return Ok(true);
+    }
+
+    // No row matched. Either the tenant has no policy object at all — the
+    // ordinary bootstrap — or one exists and its mode has moved. Only the first
+    // may insert, and the difference is what separates a first write from a lost
+    // update, so it is read rather than assumed.
+    let exists = policy_object::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(policy_object::Column::TenantId.eq(tenant_id)))
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read policy object: {e}")))?
+        .is_some();
+    if exists {
+        return Ok(false);
+    }
+    // A tenant with no row is governed by `fail_closed`, so that is the only
+    // premise a first write may assert.
+    if expected != TaxDisplayPolicy::FailClosed {
+        return Ok(false);
     }
 
     let row = policy_object::ActiveModel {
@@ -375,7 +413,7 @@ pub async fn set_tax_display_policy(
         .map_err(|e| RepoError::Db(format!("scope pricing_policy_object: {e}")))?
         .exec(runner)
         .await
-        .map(|_| ())
+        .map(|_| true)
         .map_err(|e| contention_or_db(&e, "pricing_policy_object", "insert policy object"))
 }
 

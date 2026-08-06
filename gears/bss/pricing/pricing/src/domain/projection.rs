@@ -535,14 +535,6 @@ fn descriptor_set_value(set: &DescriptorSet) -> JsonValue {
     })
 }
 
-/// One frozen price row: its identity, its canonical scope key, its authored
-/// shape and the row-level metadata a consumer resolves.
-///
-/// Destructured without a rest pattern for [`PlanSubjectDelta::to_value`]'s
-/// reason, and here it carries a second obligation: a field added to
-/// [`PriceRecord`] meets this renderer **and**
-/// [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)'s
-/// D-162 classification, which is the pair of questions a new row field owes.
 /// One row's derived tax facts (D-154, C3).
 #[domain_model]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -557,6 +549,14 @@ pub struct RowTaxProjection {
     pub not_sellable_ga: bool,
 }
 
+/// One frozen price row: its identity, its canonical scope key, its authored
+/// shape and the row-level metadata a consumer resolves.
+///
+/// Destructured without a rest pattern for [`PlanSubjectDelta::to_value`]'s
+/// reason, and here it carries a second obligation: a field added to
+/// [`PriceRecord`] meets this renderer **and**
+/// [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)'s
+/// D-162 classification, which is the pair of questions a new row field owes.
 fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValue {
     let PriceRecord {
         price_id,
@@ -580,13 +580,15 @@ fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValu
         "lifecycleState": lifecycle_state.as_str(),
         "taxInclusive": tax_inclusive,
         // The **authored** column. D-154's *resolved effective* category is a
-        // different field and is projected beside this one by the publish path,
-        // which is the only layer holding the readiness to coalesce against —
-        // see `PlanSubjectDelta::with_tax_projection`.
+        // different field, filled by the projector — the layer holding the
+        // readiness to coalesce against. See `infra::read_model`'s subject
+        // assembly; there is no `with_tax_projection` builder.
         "taxCategoryRef": tax_category_ref,
-        // D-154's **resolved** value and C3's gate, both derived at publish.
-        // Rendered even when absent, so a consumer can tell "this version
-        // resolved nothing" from "this field is not part of the contract".
+        // D-154's **resolved** value and C3's gate, both derived at projection.
+        // `resolvedTaxCategory` renders `null` when nothing was resolved, so a
+        // consumer can tell "this version resolved nothing" from "this field is
+        // not part of the contract". `notSellableGa` cannot say that with a
+        // bare `bool` — see its own line.
         "resolvedTaxCategory": tax.and_then(|t| t.resolved_tax_category.clone()),
         "notSellableGa": tax.is_some_and(|t| t.not_sellable_ga),
         "billingTiming": billing_timing,

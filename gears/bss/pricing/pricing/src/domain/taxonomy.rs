@@ -376,27 +376,21 @@ pub fn check_retirable(
 /// Every candidate row's `region` is declared `active` in the tenant's region
 /// taxonomy (§3 step 1, §2 step 2).
 ///
-/// # NOT YET REGISTERED — this rule runs on no publish
+/// # Registered, and enforced on both halves
 ///
-/// **Nothing constructs this rule outside its own tests.** It is absent from
-/// `domain::publish::rules::foundation_plan_rules`, and
-/// `infra::publish::rule_params` resolves no region set, so no publish evaluates
-/// it and [`REGION_UNKNOWN`] cannot reach the wire. A plan carrying a region the
-/// tenant never declared publishes clean today.
+/// `domain::publish::rules::foundation_plan_rules` constructs this rule and
+/// `infra::publish::rule_params` resolves its universe through
+/// `taxonomy_repo::active_regions`, so every publish evaluates it. The **save**
+/// half of `inst-mc-region` — "validated at save **and** publish" — is
+/// `api::rest::prices`, through [`RegionsDeclared::violation_for`].
 ///
-/// This paragraph previously asserted the opposite — that "the set is resolved
-/// once in `infra::publish::rule_params`" — which was **false when written** and
-/// is withdrawn rather than edited around. A doc comment claiming a wiring that
-/// does not exist is the most expensive defect shape this program has met: four
-/// call sites once read as correct for a day because one said a feature was not
-/// built after it was, and this is the same error pointed the other way.
-///
-/// What is owed to close `inst-tx-region` is: a `declared_regions` field on
-/// `PublishRuleParams`, resolved in `rule_params` through
-/// `taxonomy_repo::active_regions` (which exists and is tested), and this rule
-/// registered beside `RoundingPolicyResolved`. The save-time half
-/// (`inst-mc-region` validates "at save **and** publish") is a second call, on
-/// the price authoring route.
+/// This block twice said something untrue and both are recorded rather than
+/// quietly edited: it first claimed the wiring existed when it did not, and then
+/// claimed the rule ran on nothing after it had been registered. A doc comment
+/// asserting a wiring is the most expensive defect shape this program has met,
+/// and it is expensive in **both** directions — the second version would have
+/// told a reader that `REGION_UNKNOWN` is unreachable while it was blocking
+/// publishes.
 ///
 /// # Why the declared set is a field and not a lookup
 ///

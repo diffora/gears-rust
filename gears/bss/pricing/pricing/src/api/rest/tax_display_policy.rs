@@ -211,32 +211,51 @@ async fn put_policy(
         )))
     })?;
 
-    // The premise is compared against the same read the write then works from.
-    // A tenant's policy is a single scalar, so unlike the taxonomy pair there is
-    // no whole-set replacement here — but the sequential lost update is the same
-    // shape, and the same precondition closes it.
-    let held = held_mode(&state, &scope, tenant).await?;
-    if tag_of(held) != asserted {
-        return Err(CanonicalError::from(DomainError::StaleVersion(
-            "the If-Match tag no longer describes this tenant's tax-display policy: it changed \
-             after you read it. Re-read the GET and author against the tag it hands back"
-                .to_owned(),
-        )));
-    }
+    // **The tag is resolved to a mode here and enforced in the `WHERE` there.**
+    // This module refuses a request it cannot *understand* (`if_match_policy`
+    // above); the store refuses one whose premise has *moved*. Comparing here and
+    // updating unconditionally is the T-7 defect, and it was rebuilt on this
+    // surface one commit after being removed from the taxonomy one — found by
+    // review, twice, independently.
+    //
+    // The tag over a two-valued scalar resolves to exactly one mode, so the
+    // asserted premise **is** `expected`, and the write is a compare-and-swap on
+    // it.
+    let expected = TaxDisplayPolicy::ALL
+        .iter()
+        .copied()
+        .find(|candidate| tag_of(*candidate) == asserted)
+        .ok_or_else(|| {
+            CanonicalError::from(DomainError::StaleVersion(
+                "the If-Match tag does not describe any tax-display policy this tenant could \
+                 hold. Re-read the GET and author against the tag it hands back"
+                    .to_owned(),
+            ))
+        })?;
 
     let conn = state
         .db
         .conn()
         .map_err(|e| CanonicalError::from(DomainError::Internal(format!("policy conn: {e}"))))?;
-    policy_repo::set_tax_display_policy(
+    let applied = policy_repo::set_tax_display_policy(
         &conn,
         &scope,
         tenant,
         mode,
+        expected,
         &audit_stamp(&ctx, chrono::Utc::now(), correlation),
     )
     .await
     .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    if !applied {
+        return Err(CanonicalError::from(DomainError::StaleVersion(
+            "the If-Match tag no longer describes this tenant's tax-display policy: it changed \
+             after you read it, and nothing was written. Re-read the GET and author against the \
+             tag it hands back"
+                .to_owned(),
+        )));
+    }
 
     Ok(render(mode))
 }

@@ -30,10 +30,12 @@
 //! site. What this rule owns is the three descriptor-set fields plus whatever a
 //! tenant adds to them.
 //!
-//! The gap that follows is worth stating rather than hiding: this gear's schema
-//! has **no `tax_category_ref` column at all** (Slice 4 has not landed), so
-//! nothing in this crate checks the tax element today — not this rule, and not
-//! the owner it defers to. G4 covers three of D-48 v1's five elements.
+//! **That gap is now closed** (Slice 4, `m20260802_000036`): `pricing_price`
+//! carries `tax_category_ref`, and the owner this rule defers to is
+//! `domain::tax_display::TaxBasisComplete`, whose category arm blocks publish
+//! unconditionally when the effective category resolves to nothing (D-154). The
+//! paragraph here previously said the column did not exist and that nothing
+//! checked the element; both were true when written and neither is now.
 //!
 //! ## `inst-ds-sufficient` is not a rule here
 //!

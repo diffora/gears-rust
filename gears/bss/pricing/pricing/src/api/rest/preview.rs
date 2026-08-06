@@ -125,6 +125,14 @@ pub struct PreviewView {
     /// market until Tax Engine GA. Carried because §2 explicitly permits the
     /// preview of a gated row — a caller has to be able to tell the two apart.
     pub not_sellable_ga: bool,
+    /// §2's **tier summary**: how many tier bands this market's rows carry, or
+    /// `None` when none do.
+    ///
+    /// A count rather than the bands themselves — a full band table is what
+    /// `GET …/prices` is for. It exists because a tiered or usage-priced market
+    /// has **no** single `amountMinor`, so without it §2's success scenario is
+    /// unanswerable for exactly the plans whose pricing is most worth previewing.
+    pub tier_band_count: Option<u32>,
     /// The trial days a consumer surface shows, when the plan declares any.
     pub display_trial_days: Option<i64>,
     /// §2's required disclaimer.
@@ -268,7 +276,8 @@ async fn preview_plan_price(
         return Err(absent());
     };
 
-    let row = base_row(&delta.payload, currency.as_str(), region.as_str()).ok_or_else(absent)?;
+    let rows = market_rows(&delta.payload, currency.as_str(), region.as_str());
+    let row = base_amount_row(&rows).ok_or_else(absent)?;
 
     Ok(Json(PreviewView {
         plan_id: plan_id.get(),
@@ -278,7 +287,24 @@ async fn preview_plan_price(
         amount_minor: row["amountMinor"].as_i64(),
         tax_inclusive: row["taxInclusive"].as_bool().unwrap_or(false),
         resolved_tax_category: row["resolvedTaxCategory"].as_str().map(ToOwned::to_owned),
-        not_sellable_ga: row["notSellableGa"].as_bool().unwrap_or(false),
+        // **Absent reads as gated, and over the whole market.** Two fail-closed
+        // readings, both deliberate. A delta frozen before `notSellableGa`
+        // existed carries no such key, and defaulting that to `false` would tell
+        // a partner a C3-gated market is sellable — in a handler whose own header
+        // is titled "fail closed" — with no way to heal, since a frozen version
+        // is never re-projected. And the gate is per **market**: if any row of it
+        // is gated the market is not sellable, so reporting only the amount row's
+        // flag would understate it.
+        not_sellable_ga: rows
+            .iter()
+            .any(|r| r["notSellableGa"].as_bool().unwrap_or(true)),
+        tier_band_count: u32::try_from(
+            rows.iter()
+                .filter_map(|r| r["bands"].as_array().map(Vec::len))
+                .sum::<usize>(),
+        )
+        .ok()
+        .filter(|count| *count > 0),
         display_trial_days: delta.payload["phases"]
             .as_array()
             .and_then(|phases| phases.iter().find_map(|p| p["displayTrialDays"].as_i64())),
@@ -287,24 +313,74 @@ async fn preview_plan_price(
     .into_response())
 }
 
-/// The published base row for one market, if the version froze one.
+/// Every row of one market this preview may speak for.
 ///
-/// **Base list rows only** (`inst-pv-resolve`): `priceOverlay` is `base` on every
-/// row this gear authors, and a grandfathered generation is not what a *new*
-/// purchaser would be quoted — quoting one would show a prospective customer a
-/// price only an existing subscriber can have.
-fn base_row<'a>(
+/// **Four filters, and each closes a way to quote a price nobody sells.**
+///
+/// * `priceOverlay = base` — `inst-pv-resolve`'s "base list price rows only".
+/// * not `existing_grandfathered` — a frozen generation is not what a *new*
+///   purchaser is quoted, and this surface's whole audience is people without a
+///   subscription.
+/// * **`lifecycleState = published`.** `PROJECTED_ROW_STATES` includes
+///   `superseded`, and a supersession stages the successor on the **same**
+///   `ScopeKey` while flipping its predecessor — so a market that has ever been
+///   repriced carries two byte-identical keys in the frozen delta. Without this
+///   filter a plan raised from 12.00 to 15.00 quotes 12.00 for the life of that
+///   version, decided only by which `priceId` sorted first, and a frozen version
+///   is never re-projected. Found by review.
+/// * a **non-usage** charge kind, in [`base_amount_row`].
+fn market_rows<'a>(
     payload: &'a serde_json::Value,
     currency: &str,
     region: &str,
-) -> Option<&'a serde_json::Value> {
-    payload["prices"].as_array()?.iter().find(|row| {
-        let key = &row["scopeKey"];
-        key["currency"] == currency
-            && key["region"] == region
-            && key["priceOverlay"] == "base"
-            && key["priceEligibility"] != "existing_grandfathered"
-    })
+) -> Vec<&'a serde_json::Value> {
+    payload["prices"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| {
+                    let key = &row["scopeKey"];
+                    key["currency"] == currency
+                        && key["region"] == region
+                        && key["priceOverlay"] == "base"
+                        && key["priceEligibility"] != "existing_grandfathered"
+                        && row["lifecycleState"] == "published"
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The row whose amount **is** the base list price.
+///
+/// One market legitimately holds many rows — `phase`, `chargeKind`, `meter` and
+/// `dimensionKey` are all scope-key axes — and they are not interchangeable. A
+/// **usage** row's money lives in its tier bands and its `amountMinor` is NULL by
+/// rule, so a preview taking whichever row sorted first answers `null` for a
+/// hybrid plan that plainly has a monthly price.
+///
+/// So the non-usage rows are the candidates, and among them the one carrying an
+/// amount. Ties break on `priceId` — **deterministic and deliberately arbitrary**:
+/// §2 says "the catalog base list price" as though a market had one, and a plan
+/// with a trial-phase row beside a full-price row has two. Which of those a
+/// prospective purchaser should be quoted is a question the design set does not
+/// answer, so this picks reproducibly rather than plausibly, and register entry
+/// `T-12` carries the ambiguity.
+fn base_amount_row<'a>(rows: &[&'a serde_json::Value]) -> Option<&'a serde_json::Value> {
+    let mut ordered: Vec<&'a serde_json::Value> = rows.to_vec();
+    ordered.sort_by_key(|row| row["priceId"].as_str().unwrap_or_default().to_owned());
+    ordered
+        .iter()
+        .copied()
+        .find(|row| row["scopeKey"]["chargeKind"] != "usage" && !row["amountMinor"].is_null())
+        // **A preference, not a filter**, and the difference is a market priced
+        // solely by usage. Excluding metered rows outright made such a market
+        // answer 404 — as though the plan did not sell there — which contradicts
+        // §2 carrying a "tier summary" at all: a metered market has a price, it
+        // just has no `amountMinor`. Found because a probe removing the exclusion
+        // reddened nothing, and reasoning about *why* showed the exclusion was
+        // doing something it was not meant to.
+        .or_else(|| ordered.first().copied())
 }
 
 /// Both query parameters, parsed and non-blank.
