@@ -179,8 +179,14 @@ impl OverlayRepo {
     /// audit record that belongs in it is owed — see the module doc.
     ///
     /// # Errors
-    /// [`RepoError::Db`] on a scope or storage failure;
-    /// [`RepoError::OverlayPrecedenceHeld`] when the precedence index refuses.
+    /// [`RepoError::Db`] on a scope or storage failure.
+    ///
+    /// **Not [`RepoError::OverlayPrecedenceHeld`]**, although a precedence is
+    /// written here: `uq_pricing_price_overlay_precedence` is partial on
+    /// `lifecycle_state = 'published'` and this inserts a `draft`, so the index
+    /// cannot fire on the way in. Two drafts may share a precedence, and the
+    /// second one to **publish** is the one refused — see
+    /// [`OverlayRepo::publish_revision`].
     pub async fn create(
         &self,
         scope: &AccessScope,
@@ -282,7 +288,24 @@ impl OverlayRepo {
                         id: price_overlay_id.to_string(),
                     })?;
 
-                    let successor = published.revision + 1;
+                    // **`max(revision) + 1`, not `published.revision + 1`.**
+                    // `PlanRepo` mints the same way. The published row is not the
+                    // chain's high-water mark in general — a `superseded`
+                    // predecessor can outrank it — so deriving from it is deriving
+                    // from the wrong row even where the two happen to agree.
+                    //
+                    // **It does not make the number monotonic under a discard, and
+                    // it cannot.** A discarded draft leaves by DELETE, because §6
+                    // gives the overlay three states and no `abandoned` tombstone,
+                    // so the number it consumed is gone from the table and `max`
+                    // cannot see it. Measured, not assumed:
+                    // `sqlite_overlay_repo::a_discarded_revision_number_is_re_minted`
+                    // is that case, and it asserts the re-mint rather than a fix.
+                    // Closing it needs a tombstone the design set does not declare
+                    // — owed-register entry O-13.
+                    let successor = highest_revision(txn, &scope, tenant_id, price_overlay_id)
+                        .await?
+                        .saturating_add(1);
                     let copy = price_overlay::ActiveModel {
                         price_overlay_id: Set(published.price_overlay_id),
                         revision: Set(successor),
@@ -448,10 +471,35 @@ impl OverlayRepo {
                             id: format!("{price_overlay_id}/{revision}"),
                         });
                     };
-                    // The predecessor first: publishing before superseding would
+                    // **The target is proved publishable before anything is
+                    // written.** Without this read the predecessor's demotion is
+                    // issued first and only then does the target turn out not to
+                    // be a draft — a write issued on the way to saying no. The
+                    // transaction rolls it back, so it was never a live defect; it
+                    // is the ordering `PlanRepo::publish` explicitly rejects for
+                    // this same operation, and matching it costs one read.
+                    if revision_in_state(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        price_overlay_id,
+                        OverlayLifecycle::Draft,
+                    )
+                    .await?
+                    .is_none_or(|draft| draft.revision != number)
+                    {
+                        return Err(RepoError::NotFound {
+                            subject: "open draft price overlay revision".to_owned(),
+                            id: format!("{price_overlay_id}/{revision}"),
+                        });
+                    }
+
+                    // The predecessor next: publishing before superseding would
                     // put two published revisions on one `(class, precedence)`
                     // for the length of one statement, which the partial index
-                    // refuses outright.
+                    // refuses outright — and the predecessor is found **by
+                    // state**, so a lookup after the flip finds the row just
+                    // published.
                     if let Some(predecessor) = revision_in_state(
                         txn,
                         &scope,
@@ -728,18 +776,12 @@ async fn insert_overlay(
         .map_err(|e| RepoError::Db(format!("pricing_price_overlay scope: {e}")))?
         .exec(runner)
         .await
-        .map_err(|e| {
-            // The index is the guarantee; a racing author loses here rather than
-            // on the pipeline's check, and both answer `PRECEDENCE_DUPLICATE`.
-            if e.to_string()
-                .contains("uq_pricing_price_overlay_precedence")
-                || e.to_string().contains("pricing_price_overlay.precedence")
-            {
-                RepoError::OverlayPrecedenceHeld
-            } else {
-                RepoError::Db(format!("insert pricing_price_overlay: {e}"))
-            }
-        })
+        // **No precedence mapping here, deliberately.** Both callers insert a
+        // `draft`, and the precedence index is partial on `published`, so it
+        // cannot fire on this statement — the arm that used to be here was dead.
+        // The live producer of `OverlayPrecedenceHeld` is `flip`, which is where a
+        // draft becomes the published row that claims the slot.
+        .map_err(|e| RepoError::Db(format!("insert pricing_price_overlay: {e}")))
         .map(|_| ())
 }
 
@@ -896,7 +938,22 @@ async fn write_lines(
             .map_err(|e| RepoError::Db(format!("pricing_price_overlay_line scope: {e}")))?
             .exec(runner)
             .await
-            .map_err(|e| RepoError::Db(format!("insert pricing_price_overlay_line: {e}")))?;
+            .map_err(|e| {
+                // `line_id` is caller-mintable and the line's primary key is
+                // `(line_id, overlay_revision)` — **not** scoped by overlay — so
+                // pasting a line id read off one overlay into another at the same
+                // revision is a primary-key collision. That is a well-formed
+                // request whose whole remedy is to omit one field, so it is a
+                // refusal the caller can act on rather than a storage fault.
+                if is_line_identity_collision(&e) {
+                    RepoError::ValueOutOfRange {
+                        field: "line_id".to_owned(),
+                        value: line.line_id.to_string(),
+                    }
+                } else {
+                    RepoError::Db(format!("insert pricing_price_overlay_line: {e}"))
+                }
+            })?;
 
         let Some(amounts) = line.adjustment.amounts() else {
             continue;
@@ -1257,19 +1314,30 @@ async fn plan_facts(
             .await
             .map_err(|e| RepoError::Db(format!("read pricing_plan for overlay world: {e}")))?;
         for revision in revisions {
-            match revision.lifecycle_state.as_str() {
-                "published" => {
-                    facts.published.insert(*plan_id);
-                    if let Some(sku) = revision.sku_id
-                        && let Some(named) = TargetSku::new(&sku.to_string())
-                    {
-                        facts.skus.entry(*plan_id).or_default().insert(named);
-                    }
-                }
-                "retired" => {
-                    facts.retired.insert(*plan_id);
-                }
-                _ => {}
+            // **`published` and `retired` are BOTH "current"** (D-128, and
+            // `uq_pricing_plan_current`'s own predicate
+            // `lifecycle_state IN ('published','retired')`). Retirement flips the
+            // one current row in place, so a retired plan has **no** published
+            // revision left — and reading that as "not published" would make
+            // `TARGET_UNPUBLISHED` block every overlay on it.
+            //
+            // That is exactly the rule D-31 forbids: *"Retirement of a targeted
+            // plan does not block on overlays … the overlay goes
+            // dangling-and-flagged … remediation = end or retarget the overlay"*.
+            // Blocking would also block the remediation, since ending or
+            // retargeting an overlay is itself a submit.
+            let state = revision.lifecycle_state.as_str();
+            if !matches!(state, "published" | "retired") {
+                continue;
+            }
+            facts.published.insert(*plan_id);
+            if let Some(sku) = revision.sku_id
+                && let Some(named) = TargetSku::new(&sku.to_string())
+            {
+                facts.skus.entry(*plan_id).or_default().insert(named);
+            }
+            if state == "retired" {
+                facts.retired.insert(*plan_id);
             }
         }
     }
@@ -1444,4 +1512,45 @@ fn published_generation(token: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     use chrono::TimeZone;
     let millis: i64 = token.parse().ok()?;
     chrono::Utc.timestamp_millis_opt(millis).single()
+}
+
+/// The highest revision number this overlay has ever minted.
+///
+/// `max`, not "the published one": a `superseded` predecessor can outrank the
+/// published row, so the published row is not the chain's high-water mark. `-1`
+/// for an overlay with no rows, so the first successor is `0`.
+///
+/// **It is the max of what the table still holds**, which is not the max of what
+/// the overlay has ever minted — a discarded draft is deleted outright. See
+/// [`OverlayRepo::open_revision`] and owed-register entry O-13.
+async fn highest_revision(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_overlay_id: Uuid,
+) -> Result<i64, RepoError> {
+    let top = price_overlay::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price_overlay::Column::TenantId.eq(tenant_id))
+                .add(price_overlay::Column::PriceOverlayId.eq(price_overlay_id)),
+        )
+        .order_by(price_overlay::Column::Revision, Order::Desc)
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read the overlay's highest revision: {e}")))?;
+    Ok(top.map_or(-1, |row| row.revision))
+}
+
+/// Is this the line table's identity collision rather than any other fault?
+///
+/// Matched on the primary key's own name (Postgres) and on the column list
+/// `SQLite` reports, because the two engines name a primary-key violation
+/// differently and neither produces the other's spelling.
+fn is_line_identity_collision(err: &impl std::fmt::Display) -> bool {
+    let message = err.to_string();
+    message.contains("pricing_price_overlay_line_pkey")
+        || message.contains("pricing_price_overlay_line.line_id")
 }

@@ -326,7 +326,9 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_price_overlay_line_magnitude_kind",
     "chk_pricing_price_overlay_line_magnitude_pairing",
     "chk_pricing_price_overlay_line_magnitude_positive",
+    "chk_pricing_price_overlay_line_plan_id_not_nil",
     "chk_pricing_price_overlay_line_sku_needs_plan",
+    "chk_pricing_price_overlay_line_target_sku_present",
     "chk_pricing_price_overlay_revision",
     "chk_pricing_price_overlay_scope_class",
     "chk_pricing_price_overlay_scope_value",
@@ -563,7 +565,7 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     ),
     (
         "trg_pricing_price_overlay_line_amount_no_update",
-        5_385_847_319_431_521_126_u64,
+        10_194_414_681_832_050_017_u64,
     ),
     (
         "trg_pricing_price_overlay_line_no_delete",

@@ -68,11 +68,11 @@ use crate::api::rest::state::AuthoringState;
 use crate::domain::error::DomainError;
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::{
-    Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLine,
-    ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku, TaxBasis,
+    Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
+    OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku, TaxBasis,
 };
 use crate::domain::overlay_rules::{
-    OverlayCandidate, check_magnitudes, check_tax_basis_declared, conflict_of, validate,
+    OverlayCandidate, check_authored_shape, check_tax_basis_declared, conflict_of, validate,
 };
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::repo::{NewOverlay, OverlayRecord};
@@ -409,20 +409,28 @@ fn line_of(request: &OverlayLineRequest) -> Result<OverlayLine, DomainError> {
     })
 }
 
-/// Every authored line, with D-67's ranges checked **before** the store sees
-/// them.
+/// Every authored line, with every **world-free** rule checked before the store
+/// sees them.
 ///
-/// The range is the one rule that needs no world, and D-67 says it fails save as
-/// well as publish. Checking it here is not belt-and-braces: the store's two
-/// `CHECK`s fire on the INSERT and reach the caller as a driver error — a **500**
-/// for a request whose whole remedy is to correct one number. See
-/// [`check_magnitudes`] for the measurement.
-fn lines_of(requests: &[OverlayLineRequest]) -> Result<Vec<OverlayLine>, DomainError> {
+/// D-67's magnitude ranges, D-42's line-key uniqueness and §1.7's
+/// effective-interval sanity are all decidable from the authored document alone,
+/// and each of them is otherwise enforced **only** by a `CHECK` or a unique index
+/// — which reaches the caller as a driver error, i.e. a **500**, for a request
+/// whose remedy is to correct one field. All three were measured answering 500
+/// before they moved here; [`check_authored_shape`] carries the argument.
+///
+/// The line-key half matters twice over: the store refusing a duplicate at
+/// **save** also made `OVERLAY_LINE_DUPLICATE` unreachable at **submit**, so a
+/// code §5 declares had no path that could raise it.
+fn lines_of(
+    interval: OverlayInterval,
+    requests: &[OverlayLineRequest],
+) -> Result<Vec<OverlayLine>, DomainError> {
     let lines: Vec<OverlayLine> = requests
         .iter()
         .map(line_of)
         .collect::<Result<_, DomainError>>()?;
-    let report = check_magnitudes(&lines);
+    let report = check_authored_shape(interval, &lines);
     if report.is_publishable() {
         Ok(lines)
     } else {
@@ -532,7 +540,11 @@ async fn create_overlay(
             ))
         })?,
     };
-    let lines = lines_of(&body.lines)?;
+    let interval = OverlayInterval {
+        from: body.effective_from,
+        to: body.effective_to,
+    };
+    let lines = lines_of(interval, &body.lines)?;
 
     let price_overlay_id = Uuid::now_v7();
     let stamp = audit_stamp(&ctx, Utc::now(), correlation);
@@ -545,10 +557,7 @@ async fn create_overlay(
                 tenant_id: tenant,
                 scope: selector,
                 precedence: body.precedence,
-                interval: OverlayInterval {
-                    from: body.effective_from,
-                    to: body.effective_to,
-                },
+                interval,
                 tax_basis,
                 disclosure,
                 target_ref: TargetRef {
@@ -616,7 +625,21 @@ async fn replace_lines(
     let body: ReplaceLinesRequest = preconditions::parse_body(&body)?;
     // The **overlay revision's** tag, not a plan's: an overlay has no plan.
     let tag = preconditions::if_match_revision(&headers)?;
-    let lines = lines_of(&body.lines)?;
+    // **The two must agree.** The store is addressed by the tag, so a body naming
+    // a different revision would rewrite one revision and be told about another —
+    // and a client that then submitted the revision it was handed would submit a
+    // revision it never edited. Refused rather than silently preferring one.
+    if body.revision != tag.revision {
+        return Err(DomainError::InvalidRequest(format!(
+            "the body names revision {} and If-Match names revision {}; a line-set replacement \
+             addresses one revision and the two must agree",
+            body.revision, tag.revision
+        ))
+        .into());
+    }
+    // The lines only — the interval is not editable through this route, so an
+    // interval check here would judge a value the request does not carry.
+    let lines = lines_of(OverlayInterval::default(), &body.lines)?;
 
     let stamp = audit_stamp(&ctx, Utc::now(), correlation);
     let row_version = state
@@ -635,7 +658,8 @@ async fn replace_lines(
 
     let mut response = Json(OverlayAcceptedView {
         price_overlay_id,
-        revision: body.revision,
+        // The revision that was **written**, which is the tag's.
+        revision: tag.revision,
     })
     .into_response();
     response.headers_mut().insert(
@@ -685,6 +709,25 @@ async fn submit_overlay(
             subject: "price overlay revision".to_owned(),
             id: format!("{price_overlay_id}/{}", request.revision),
         })?;
+
+    // **Only an open draft is submittable.** §5's row is "Submit **the draft**"
+    // and `inst-pl-commit` pins the approval unit to one ("subject stays draft;
+    // mutation voids the unit"). Without this, submitting a `published` revision
+    // would open a second always-material unit over content that is already live —
+    // and `overlay_facts` skips the candidate's own overlay (D-107), so a live
+    // revision would validate against a world told to ignore it.
+    //
+    // The `PATCH` gets this from its compare-and-swap, which carries
+    // `lifecycle_state = 'draft'`; the submit has no swap, so it needs the check.
+    if record.lifecycle_state != OverlayLifecycle::Draft {
+        return Err(DomainError::LifecycleForbidden(format!(
+            "price overlay {price_overlay_id} revision {} is {}; only an open draft revision is \
+             submittable",
+            record.revision,
+            record.lifecycle_state.as_str()
+        ))
+        .into());
+    }
 
     // `inst-pl-validate`: the whole rule set, aggregate, over the world as it
     // stands **now**. §4.2 runs the same set again inside the publish commit,

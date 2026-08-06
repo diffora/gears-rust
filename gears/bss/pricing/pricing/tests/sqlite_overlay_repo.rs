@@ -22,14 +22,18 @@ use bss_pricing::domain::overlay::{
 };
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::RepoError;
-use bss_pricing::infra::storage::entity::brand_taxonomy;
+use bss_pricing::infra::storage::entity::{
+    brand_taxonomy, plan, price_overlay, price_overlay_line,
+};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewOverlay, OverlayRepo};
 use chrono::{TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait, Condition};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::migration_runner::run_migrations_for_testing;
+use toolkit_db::secure::SecureDeleteExt;
 use toolkit_db::secure::{AccessScope, SecureInsertExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
@@ -134,9 +138,51 @@ async fn repo() -> (OverlayRepo, AccessScope) {
     (OverlayRepo::new(provider().await), AccessScope::allow_all())
 }
 
+/// Discard one draft revision: its lines first, then the revision row — the
+/// order the foreign key forces.
+///
+/// Takes the provider **as an argument**. It was briefly a process-wide static,
+/// which is wrong for the same reason a shared scratchpad is: these cases run in
+/// parallel, so one test read another's database and the failure looked like a
+/// defect in the code under test rather than in the fixture.
+async fn discard_revision(provider: &DBProvider<DbError>, overlay: Uuid, revision: i64) {
+    let conn = provider.conn().expect("a connection");
+    let scope = AccessScope::allow_all();
+    price_overlay_line::Entity::delete_many()
+        .secure()
+        .scope_with(&scope)
+        .filter(
+            Condition::all()
+                .add(price_overlay_line::Column::PriceOverlayId.eq(overlay))
+                .add(price_overlay_line::Column::OverlayRevision.eq(revision)),
+        )
+        .exec(&conn)
+        .await
+        .expect("the draft's lines are discardable");
+    price_overlay::Entity::delete_many()
+        .secure()
+        .scope_with(&scope)
+        .filter(
+            Condition::all()
+                .add(price_overlay::Column::PriceOverlayId.eq(overlay))
+                .add(price_overlay::Column::Revision.eq(revision)),
+        )
+        .exec(&conn)
+        .await
+        .expect("a draft revision is discardable");
+}
+
 /// The overlay with one per-plan line and one list-default line, at revision 0.
 async fn seeded() -> (OverlayRepo, AccessScope) {
-    let (repo, scope) = repo().await;
+    let (repo, scope, _) = seeded_full().await;
+    (repo, scope)
+}
+
+/// The same, handing back the provider for the cases that must reach past the
+/// repository.
+async fn seeded_full() -> (OverlayRepo, AccessScope, DBProvider<DbError>) {
+    let provider = provider().await;
+    let (repo, scope) = (OverlayRepo::new(provider.clone()), AccessScope::allow_all());
     repo.create(
         &scope,
         new_overlay(OVERLAY, 10),
@@ -148,7 +194,7 @@ async fn seeded() -> (OverlayRepo, AccessScope) {
     )
     .await
     .expect("the overlay is created at revision 0");
-    (repo, scope)
+    (repo, scope, provider)
 }
 
 // ---------------------------------------------------------------------------
@@ -707,5 +753,216 @@ async fn the_list_returns_every_revision_and_hides_no_restricted_overlay() {
     assert!(
         none.is_empty(),
         "a class nothing is authored under is empty"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `world_for` — the seam `PriceOverlayValidator` is judged against.
+// ---------------------------------------------------------------------------
+
+/// Seed one plan revision in a named lifecycle state.
+///
+/// Inserted directly rather than published through `PlanRepo`, because
+/// `pricing_plan`'s append-only trigger guards UPDATE and DELETE and leaves
+/// INSERT free — so this reaches the exact state the world assembly has to read,
+/// which is the point of driving it from here.
+async fn seed_plan(provider: &DBProvider<DbError>, plan_id: PlanId, revision: i64, state: &str) {
+    let conn = provider.conn().expect("a connection");
+    let row = plan::ActiveModel {
+        plan_id: Set(plan_id.get()),
+        revision: Set(revision),
+        tenant_id: Set(TENANT),
+        lifecycle_state: Set(state.to_owned()),
+        created_by: Set(Uuid::from_u128(0x4444)),
+        created_at_utc: Set(Utc
+            .with_ymd_and_hms(2099, 1, 1, 0, 0, 0)
+            .single()
+            .expect("a valid instant")),
+        ..Default::default()
+    };
+    plan::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("the scope admits the row")
+        .exec(&conn)
+        .await
+        .expect("the plan revision is seeded");
+}
+
+/// **D-31 through the seam: a retired target is still a published target.**
+///
+/// `uq_pricing_plan_current` is `UNIQUE (plan_id) WHERE lifecycle_state IN
+/// ('published','retired')`, so retirement flips the plan's **one current**
+/// revision in place — a retired plan has no `published` row left. Reading that
+/// as "not published" makes `TARGET_UNPUBLISHED` block every overlay on it,
+/// which is the rule D-31 forbids, and it blocks the remediation too: ending or
+/// retargeting the overlay is itself a submit.
+///
+/// This is the case that was missing. The domain test hand-built a world with the
+/// plan in **both** sets — a state the schema cannot produce — so it stayed green
+/// while `plan_facts` put a retired plan in neither.
+#[tokio::test]
+async fn a_retired_target_is_still_a_published_target_and_is_flagged() {
+    let provider = provider().await;
+    seed_plan(&provider, plan(1), 0, "retired").await;
+    let repo = OverlayRepo::new(provider);
+    let scope = AccessScope::allow_all();
+
+    repo.create(
+        &scope,
+        new_overlay(OVERLAY, 10),
+        vec![percent_line(LINE_A, LineKey::for_plan(plan(1)), 1000)],
+        stamp(),
+    )
+    .await
+    .expect("the overlay is created");
+    let record = repo
+        .load(&scope, TENANT, OVERLAY, 0)
+        .await
+        .expect("the read succeeds")
+        .expect("revision 0 exists");
+
+    let world = repo
+        .world_for(&scope, TENANT, &record)
+        .await
+        .expect("the world assembles");
+
+    assert!(
+        world.published_plans.contains(&plan(1)),
+        "a retired plan is still the plan's current revision (D-128), so the referential \
+         rule must not refuse it"
+    );
+    assert!(
+        world.retired_plans.contains(&plan(1)),
+        "and it must still be flagged, which is what D-31's warning is"
+    );
+}
+
+/// An **unpublished** plan is genuinely not a target — the other side of the same
+/// rule, so the fix above cannot have made the referential check vacuous.
+#[tokio::test]
+async fn a_draft_only_target_is_not_a_published_target() {
+    let provider = provider().await;
+    seed_plan(&provider, plan(1), 0, "draft").await;
+    let repo = OverlayRepo::new(provider);
+    let scope = AccessScope::allow_all();
+
+    repo.create(
+        &scope,
+        new_overlay(OVERLAY, 10),
+        vec![percent_line(LINE_A, LineKey::for_plan(plan(1)), 1000)],
+        stamp(),
+    )
+    .await
+    .expect("the overlay is created");
+    let record = repo
+        .load(&scope, TENANT, OVERLAY, 0)
+        .await
+        .expect("the read succeeds")
+        .expect("revision 0 exists");
+
+    let world = repo
+        .world_for(&scope, TENANT, &record)
+        .await
+        .expect("the world assembles");
+    assert!(!world.published_plans.contains(&plan(1)));
+    assert!(!world.retired_plans.contains(&plan(1)));
+}
+
+/// A caller-supplied `line_id` already taken at that revision is a **typed
+/// refusal**, not a storage fault.
+///
+/// The line's primary key is `(line_id, overlay_revision)` and is **not** scoped
+/// by overlay, while `line_id` is optional on the wire and echoed by every read —
+/// so pasting a line id read off one overlay into another at the same revision is
+/// a plausible "clone this line" act, and it used to answer 500.
+#[tokio::test]
+async fn a_line_id_already_taken_at_that_revision_is_a_typed_refusal() {
+    let (repo, scope) = seeded().await;
+
+    let refusal = repo
+        .create(
+            &scope,
+            new_overlay(Uuid::from_u128(0xBBBB_BBBB), 20),
+            // `LINE_A` is already `(LINE_A, 0)` under the seeded overlay.
+            vec![percent_line(LINE_A, LineKey::list_default(), 700)],
+            stamp(),
+        )
+        .await
+        .expect_err("the line identity is taken at revision 0");
+    assert!(
+        matches!(refusal, RepoError::ValueOutOfRange { ref field, .. } if field == "line_id"),
+        "got {refusal:?}"
+    );
+}
+
+/// **A discarded revision number IS re-minted, and no repository change closes
+/// it.**
+///
+/// This case began life asserting the opposite. `open_revision` was changed from
+/// `published.revision + 1` to `max(revision) + 1` to close it — and the test
+/// then failed, because a discarded draft is **deleted** (§6 gives the overlay
+/// three states and no `abandoned` tombstone, so DELETE is the only exit a draft
+/// has), and `max` cannot see a row that is gone.
+///
+/// So the hazard is real and its cause is the schema, not the repository: a
+/// client still holding the discarded draft's entity tag `"1-3"` will find a
+/// **different** revision 1 under the same identity, and a stale `If-Match:
+/// "1-0"` would match the fresh row's compare-and-swap. Closing it needs a
+/// tombstone the design set does not declare — owed-register entry **O-13**.
+///
+/// The assertion is what actually happens, so the day a tombstone lands this test
+/// fails and points at the entry.
+#[tokio::test]
+async fn a_discarded_revision_number_is_re_minted() {
+    let (repo, scope, provider) = seeded_full().await;
+    repo.publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
+        .await
+        .expect("revision 0 publishes");
+    repo.open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("revision 1 opens");
+
+    // Discard revision 1 the way the store permits.
+    discard_revision(&provider, OVERLAY, 1).await;
+
+    let successor = repo
+        .open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("a fresh successor opens");
+    assert_eq!(
+        successor, 1,
+        "the discarded draft's number is re-minted, because the row it consumed is gone \
+         and no tombstone records it (O-13)"
+    );
+}
+
+/// A re-entrant publish of an already-published revision refuses and **writes
+/// nothing** — in particular it does not demote the predecessor on the way to
+/// saying no.
+#[tokio::test]
+async fn a_re_entrant_publish_refuses_without_demoting_anything() {
+    let (repo, scope) = seeded().await;
+    repo.publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
+        .await
+        .expect("revision 0 publishes");
+
+    let refusal = repo
+        .publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
+        .await
+        .expect_err("revision 0 is no longer an open draft");
+    assert!(
+        matches!(refusal, RepoError::NotFound { .. }),
+        "got {refusal:?}"
+    );
+
+    let current = repo
+        .current(&scope, TENANT, OVERLAY)
+        .await
+        .expect("the read succeeds")
+        .expect("the overlay still has a published revision");
+    assert_eq!(
+        current.revision, 0,
+        "the published revision must not have been demoted by the refused call"
     );
 }

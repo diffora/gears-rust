@@ -639,11 +639,32 @@ fn an_unpublished_target_fails() {
 ///
 /// In-flight subscribers legitimately keep resolving a retired plan's rows, so
 /// the overlay stays evaluable for them; remediation is to end or retarget it.
-/// A retire-time block would be exactly the rule D-31 refused.
+/// A retire-time block would be exactly the rule D-31 refused — and it would
+/// block the remediation too, since ending or retargeting an overlay is itself a
+/// submit.
+///
+/// # The world here is the one the schema can actually hold
+///
+/// A retired plan is **still in `published_plans`**, and that is not a
+/// convenience of this fixture: `uq_pricing_plan_current` is
+/// `UNIQUE (plan_id) WHERE lifecycle_state IN ('published','retired')`, so
+/// retirement flips the plan's one **current** revision in place and `published`
+/// and `retired` are two spellings of current (D-128).
+///
+/// An earlier version of this case set `retired_plans` **without**
+/// `published_plans` — a state the schema cannot produce — and it passed while
+/// `plan_facts` put a retired plan in neither set, so every overlay on a retired
+/// plan was refused `TARGET_UNPUBLISHED`. A fixture asserting about a world the
+/// system would not hold is a fixture that proves nothing.
 #[test]
 fn a_retired_target_warns_and_does_not_block() {
     let mut candidate = ordinary_candidate();
+    // Retired **and** current: what the plan table actually holds.
     candidate.world.retired_plans = [plan(1)].into_iter().collect();
+    assert!(
+        candidate.world.published_plans.contains(&plan(1)),
+        "a retired plan is still the plan's current revision (D-128)"
+    );
 
     let report = validate(&candidate);
     assert!(
@@ -652,6 +673,72 @@ fn a_retired_target_warns_and_does_not_block() {
         codes(&report)
     );
     assert_eq!(warnings(&report), vec![TARGET_RETIRED]);
+}
+
+/// §1.7's *"effective-interval sanity"*, at the authoring edge.
+///
+/// An inverted or empty interval is refused before the store sees it. It has to
+/// be its own entry point rather than an arm of [`validate`]: an inverted
+/// interval intersects **nothing** (`OverlayInterval::intersects` fails its first
+/// conjunct), so `check_dating` would silently find no collision for it rather
+/// than reporting one — the sanity check is what makes the collision walk mean
+/// anything.
+#[test]
+fn an_inverted_or_empty_interval_is_refused_at_the_authoring_edge() {
+    let lines = vec![discount_line(LineKey::for_plan(plan(1)), 1000)];
+
+    for (from, to) in [(at(2101), at(2099)), (at(2099), at(2099))] {
+        let report = check_authored_shape(
+            OverlayInterval {
+                from: Some(from),
+                to: Some(to),
+            },
+            &lines,
+        );
+        assert_eq!(
+            codes(&report),
+            vec![OVERLAY_INTERVAL_INVALID],
+            "[{from}, {to}) is empty and must be refused"
+        );
+    }
+
+    // Both open arms are legal, and so is an ordinary interval.
+    for interval in [
+        OverlayInterval::default(),
+        OverlayInterval {
+            from: Some(at(2099)),
+            to: None,
+        },
+        OverlayInterval {
+            from: None,
+            to: Some(at(2099)),
+        },
+        OverlayInterval {
+            from: Some(at(2099)),
+            to: Some(at(2101)),
+        },
+    ] {
+        assert!(check_authored_shape(interval, &lines).is_publishable());
+    }
+}
+
+/// **`OVERLAY_LINE_DUPLICATE` is reachable at the authoring edge**, which is the
+/// only place it can fire.
+///
+/// The store's null-safe index refuses a duplicate on the INSERT, so before this
+/// entry point existed a duplicate answered **500** — and, because the save never
+/// landed, the `check_lines` arm that raises the same code at submit had no
+/// reachable path either. A code §5 declares with no producer.
+#[test]
+fn a_duplicate_line_key_is_refused_at_the_authoring_edge() {
+    let report = check_authored_shape(
+        OverlayInterval::default(),
+        &[
+            discount_line(LineKey::list_default(), 500),
+            discount_line(LineKey::list_default(), 900),
+        ],
+    );
+    assert_eq!(codes(&report), vec![OVERLAY_LINE_DUPLICATE]);
 }
 
 // ---------------------------------------------------------------------------

@@ -141,6 +141,20 @@ pub const OVERLAY_INTERVAL_OVERLAP: &str = "OVERLAY_INTERVAL_OVERLAP";
 /// No tax basis declared and none explicitly delegated (§5, L5).
 pub const TAX_BASIS_UNDECLARED: &str = "TAX_BASIS_UNDECLARED";
 
+/// An overlay whose own `[effectiveFrom, effectiveTo)` is empty or inverted
+/// (§1.7's *"effective-interval sanity"*, `inst-plv-dating`).
+///
+/// **Minted by this gear**, for [`SCOPE_VALUE_UNKNOWN`]'s reason: §5 declares
+/// nine overlay codes and none covers an empty interval. This is the window
+/// plane's `RepoError::WindowIntervalEmpty` situation exactly — *"§5 declares
+/// eight window codes and none of them covers an empty interval"* — and the same
+/// answer: the gear names a refusal it owns rather than borrowing a code that
+/// names something else.
+///
+/// `effective_to == effective_from` is **not** a zero-length window: nothing is
+/// effective over it and no consumer can resolve an overlay at any instant of it.
+pub const OVERLAY_INTERVAL_INVALID: &str = "OVERLAY_INTERVAL_INVALID";
+
 /// **Warning.** A `fixed` line that is not the lowest-precedence layer able to
 /// match its target: it silently voids the layers below it (§5, D-138).
 ///
@@ -366,21 +380,9 @@ fn check_lines(candidate: &OverlayCandidate, report: &mut ValidationReport) {
         return;
     }
 
-    let mut seen: BTreeSet<&LineKey> = BTreeSet::new();
-    for line in &candidate.lines {
-        if !seen.insert(&line.key) {
-            report.violate(
-                OVERLAY_LINE_DUPLICATE,
-                render_key(&line.key),
-                format!(
-                    "line key {} appears twice in this revision; one default line, one line per \
-                     plan, one per (plan, sku), and one of each per targeted generation (D-42, \
-                     D-78)",
-                    render_key(&line.key)
-                ),
-            );
-        }
+    check_duplicate_keys(&candidate.lines, report);
 
+    for line in &candidate.lines {
         let Some(plan) = line.key.plan_id() else {
             // The list-default line targets every plan of `target_ref` and has
             // nothing of its own to place.
@@ -451,6 +453,97 @@ fn check_adjustment(candidate: &OverlayCandidate, report: &mut ValidationReport)
         check_magnitude_range(line, report);
         check_currency_coverage(candidate, line, report);
         check_replacement(candidate, line, report);
+    }
+}
+
+/// **Every rule that needs no world at all** — the authoring edge's entry point.
+///
+/// Three of `PriceOverlayValidator`'s rules are decidable from the authored
+/// document alone: D-67's magnitude ranges, D-42's line-key uniqueness, and
+/// §1.7's *"effective-interval sanity"*. They belong at the **save**, because
+/// each of them is otherwise enforced only by the store — and a `CHECK` or a
+/// unique index reaches the caller as a **driver error**, i.e.
+/// `DomainError::Internal` and a 500, for a request whose whole remedy is to
+/// correct one field.
+///
+/// # This was measured three times, not reasoned about once
+///
+/// Each of the three answered 500 before it was moved here:
+/// `discount / percent_bp = 15000` (D-67's own "150% of list" example, refused by
+/// `chk_pricing_price_overlay_line_discount_ceiling`); two list-default lines in
+/// one overlay (D-42's *"one default line"*, refused by
+/// `uq_pricing_price_overlay_line_key`); and `effective_to < effective_from`
+/// (refused by `chk_pricing_price_overlay_interval`).
+///
+/// The line-key case is the sharpest, because the store refusing it at **save**
+/// also made `OVERLAY_LINE_DUPLICATE` unreachable at **submit** — a code §5
+/// declares, with no path that could raise it.
+///
+/// The store keeps every one of those guards: they hold against a writer that is
+/// not this crate. This entry point is what makes the refusal legible, which is
+/// `RepoError::GrandfatherHorizonOffClass`'s argument one plane over — a value
+/// arriving *on a request* that a column refuses is a caller mistake the request
+/// can be reshaped around, and reaching the constraint makes it an internal
+/// fault.
+#[must_use]
+pub fn check_authored_shape(interval: OverlayInterval, lines: &[OverlayLine]) -> ValidationReport {
+    let mut report = ValidationReport::default();
+    check_interval_sanity(interval, &mut report);
+    check_duplicate_keys(lines, &mut report);
+    for line in lines {
+        check_magnitude_range(line, &mut report);
+    }
+    report
+}
+
+/// §1.7's *"effective-interval sanity"*: an authored interval must be non-empty.
+///
+/// The one rule of `PriceOverlayValidator` that `validate` cannot hold, and the
+/// reason is `OverlayInterval::intersects`: an inverted interval intersects
+/// **nothing**, so `check_dating` would silently find no collision for it rather
+/// than reporting one. The sanity check has to run before the collision walk can
+/// mean anything.
+fn check_interval_sanity(interval: OverlayInterval, report: &mut ValidationReport) {
+    let (Some(from), Some(to)) = (interval.from, interval.to) else {
+        // An open end is not an empty interval; both unbounded arms are legal.
+        return;
+    };
+    if to > from {
+        return;
+    }
+    report.violate(
+        OVERLAY_INTERVAL_INVALID,
+        "effective_to",
+        format!(
+            "the overlay interval [{}, {}) is empty; effective_to must be strictly after \
+             effective_from, because nothing is effective over an empty interval",
+            from.to_rfc3339(),
+            to.to_rfc3339()
+        ),
+    );
+}
+
+/// D-42's line-key uniqueness, over a line set alone.
+///
+/// Shared by [`check_authored_shape`] and [`check_lines`] so the two cannot
+/// disagree about what a duplicate is — the null-safe key the store enforces
+/// counts `(plan, sku, cohort)` with absence significant, and `LineKey`'s derived
+/// `Ord` is that same key.
+fn check_duplicate_keys(lines: &[OverlayLine], report: &mut ValidationReport) {
+    let mut seen: BTreeSet<&LineKey> = BTreeSet::new();
+    for line in lines {
+        if !seen.insert(&line.key) {
+            report.violate(
+                OVERLAY_LINE_DUPLICATE,
+                render_key(&line.key),
+                format!(
+                    "line key {} appears twice in this revision; one default line, one line per \
+                     plan, one per (plan, sku), and one of each per targeted generation (D-42, \
+                     D-78)",
+                    render_key(&line.key)
+                ),
+            );
+        }
     }
 }
 

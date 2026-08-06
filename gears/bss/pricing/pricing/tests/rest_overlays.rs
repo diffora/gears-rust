@@ -544,12 +544,155 @@ async fn a_fixed_line_over_a_lower_layer_warns_on_the_succeeding_path() {
         ))
         .await;
 
-    // The submit is refused — the region value is undeclared and the plan is
-    // unpublished — so this case proves the *warning is computed*, and the
-    // succeeding path is proved by `a_clean_submit_is_accepted_and_always_material`.
-    // What must not happen is the warning silently vanishing, which is exactly
-    // what D-197 recorded for the plan plane's caps.
+    // **This case does NOT observe the warning, and says so rather than claiming
+    // to.** The submit is refused — the region value is undeclared and the plan is
+    // unpublished — and the `ValidationFailed` envelope carries `violations`
+    // only, so `warnings` is dropped on the rejecting path by construction.
+    //
+    // What it does prove is that a `fixed` line over a lower layer is **not**
+    // itself a refusal. The warning is observed non-empty by
+    // `domain::overlay_rules::overlay_rules_tests::a_fixed_line_over_a_lower_layer_warns_and_does_not_block`,
+    // and the 202's `warnings` field is observed empty by
+    // `a_clean_submit_is_accepted_and_always_material`. What no test here reaches
+    // is a **non-empty** `warnings` on a 202 — that needs a published plan whose
+    // lower-precedence overlay matches it, and this gear mounts no plan-publish
+    // route for the harness to drive. Recorded rather than left as a gap a reader
+    // would assume covered.
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        violation_codes(&body_json(response).await).contains(&"SCOPE_VALUE_UNKNOWN".to_owned()),
+        "the refusal must be the world's, not the fixed line's"
+    );
+}
+
+/// **A duplicate line key is a 400 naming `OVERLAY_LINE_DUPLICATE`, not a 500.**
+///
+/// D-42's *"one default line"*: two of them collide on the store's null-safe
+/// index, which used to reach the caller as a driver error. The save is also the
+/// only place the code can fire — the store refusing the duplicate here is what
+/// made the `check_lines` arm unreachable at submit.
+#[tokio::test]
+async fn a_duplicate_line_key_is_refused_at_the_save() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PRICE_OVERLAYS,
+            Some(serde_json::json!({
+                "scope_class": "global",
+                "precedence": 10,
+                "tax_basis": "delegated_tariffs",
+                "target_plan_ids": [],
+                "lines": [default_discount(1000), default_discount(2000)],
+            })),
+            &[("idempotency-key", &Uuid::now_v7().to_string())],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(
+        violation_codes(&body).contains(&"OVERLAY_LINE_DUPLICATE".to_owned()),
+        "got {body}"
+    );
+}
+
+/// **An inverted interval is a 400, not a 500** — §1.7's "effective-interval
+/// sanity", which had no implementation and reached `chk_pricing_price_overlay_interval`
+/// as a driver error.
+#[tokio::test]
+async fn an_inverted_effective_interval_is_refused_at_the_save() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PRICE_OVERLAYS,
+            Some(serde_json::json!({
+                "scope_class": "global",
+                "precedence": 10,
+                "tax_basis": "delegated_tariffs",
+                "effective_from": "2099-06-01T00:00:00Z",
+                "effective_to": "2099-01-01T00:00:00Z",
+                "target_plan_ids": [],
+                "lines": [default_discount(1000)],
+            })),
+            &[("idempotency-key", &Uuid::now_v7().to_string())],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(
+        violation_codes(&body).contains(&"OVERLAY_INTERVAL_INVALID".to_owned()),
+        "got {body}"
+    );
+}
+
+/// **A `PATCH` whose body and `If-Match` name different revisions is refused.**
+///
+/// The store is addressed by the tag, so accepting the mismatch would rewrite one
+/// revision and report another — and a client that then submitted the revision it
+/// was handed would submit a revision it never edited.
+#[tokio::test]
+async fn a_patch_whose_body_and_tag_disagree_about_the_revision_is_refused() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &overlay_path(overlay),
+            Some(serde_json::json!({ "revision": 7, "lines": [default_discount(2500)] })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// **Only an open draft is submittable.**
+///
+/// §5's row is "Submit **the draft**" and `inst-pl-commit` pins the approval unit
+/// to one. Submitting a published revision would open a second always-material
+/// unit over content that is already live — and `overlay_facts` skips the
+/// candidate's own overlay (D-107), so a live revision would validate against a
+/// world told to ignore it.
+#[tokio::test]
+async fn a_published_revision_is_not_submittable() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+    harness
+        .state
+        .overlays
+        .publish_revision(
+            &harness.scope(),
+            harness.tenant,
+            overlay,
+            0,
+            rest_support::seed_stamp(),
+        )
+        .await
+        .expect("revision 0 publishes");
+
+    let response = harness
+        .allowed()
+        .send(request(
+            "POST",
+            &submit_path(overlay),
+            Some(serde_json::json!({ "revision": 0 })),
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a published revision is not a draft, and only a draft is submittable"
+    );
 }
 
 /// The list read is the operator's and shows a `restricted` overlay (§3 step 7).

@@ -50,12 +50,22 @@
 //!   cutover instant and no cutover is at negative infinity. The two backends
 //!   differ here because each sentinel is type-native to its column, which is
 //!   what keeps the expression from silently coercing.
-//! * `plan_id` -> the **nil uuid**. A plan id is a v4/v7 uuid and never nil, but
-//!   unlike the other two this sentinel is *forgeable from the wire*: a request
-//!   naming `00000000-…-0000` as its plan would key as the list-default line and
-//!   collide with it. `overlay_repo::check_line_targets` refuses a nil plan id
-//!   for that reason, and `sqlite_overlay_repo` proves it — the constraint is
-//!   the guarantee and the check is what makes the refusal legible.
+//! * `plan_id` -> the **nil uuid**. A plan id is a v4/v7 uuid and never nil.
+//!
+//! **Two of those three sentinels are spellable from the wire**, so the table
+//! refuses them itself rather than relying on a repository to: a request naming
+//! `00000000-…-0000` as its plan, or `''` as its SKU, would key as the
+//! list-default line and collide with it. `chk_..._plan_id_not_nil` and
+//! `chk_..._target_sku_present` are what make the index self-enforcing.
+//!
+//! That is the argument the four taxonomy tables already took for the sibling
+//! sentinel — `m20260802_000028`'s *"A blank value is refused, and that is not
+//! tidiness"*, which exists so `pricing_price_overlay.scope_value`'s `''` cannot
+//! be forged. It was not carried here at first, and the module doc claimed "the
+//! constraint is the guarantee and the check is what makes the refusal legible"
+//! while for `plan_id` it was the other way round. `overlay_repo` still refuses a
+//! nil plan id, so the caller reads a typed refusal rather than a `CHECK`
+//! violation; now the sentence is true as well.
 //!
 //! # The `CHECK`s, and which decision each is
 //!
@@ -154,7 +164,13 @@ const PG_UP_STATEMENTS: &[&str] = &[
             adjustment_value IS NULL OR adjustment_value > 0),
         CONSTRAINT chk_pricing_price_overlay_line_discount_ceiling CHECK (
             adjustment_kind <> 'discount' OR adjustment_value IS NULL
-            OR adjustment_value <= 10000)
+            OR adjustment_value <= 10000),
+        -- The two line-key sentinels a request could otherwise spell. See the
+        -- module doc.
+        CONSTRAINT chk_pricing_price_overlay_line_plan_id_not_nil CHECK (
+            plan_id IS NULL OR plan_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+        CONSTRAINT chk_pricing_price_overlay_line_target_sku_present CHECK (
+            target_sku IS NULL OR length(target_sku) > 0)
     )",
     // The null-safe line key. See the module doc for each sentinel's argument.
     "CREATE UNIQUE INDEX uq_pricing_price_overlay_line_key
@@ -251,7 +267,11 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             adjustment_value IS NULL OR adjustment_value > 0),
         CONSTRAINT chk_pricing_price_overlay_line_discount_ceiling CHECK (
             adjustment_kind <> 'discount' OR adjustment_value IS NULL
-            OR adjustment_value <= 10000)
+            OR adjustment_value <= 10000),
+        CONSTRAINT chk_pricing_price_overlay_line_plan_id_not_nil CHECK (
+            plan_id IS NULL OR plan_id <> '00000000-0000-0000-0000-000000000000'),
+        CONSTRAINT chk_pricing_price_overlay_line_target_sku_present CHECK (
+            target_sku IS NULL OR length(target_sku) > 0)
     )",
     "CREATE UNIQUE INDEX uq_pricing_price_overlay_line_key
         ON pricing_price_overlay_line (

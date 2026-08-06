@@ -38,8 +38,9 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub currency: String,
     /// Copied from the parent line by the repository, never taken from a
-    /// request: the foreign key covers `line_id` alone, so nothing in the schema
-    /// stops a child carrying a foreign tenant.
+    /// request: the foreign key covers `(line_id, overlay_revision)` and says
+    /// nothing about the tenant, so nothing in the schema stops a child carrying
+    /// a foreign one.
     pub tenant_id: Uuid,
     /// The magnitude, in the currency's ISO 4217 minor unit. `>= 0` (D-67), and
     /// **zero is admitted**: a `fixed 0` line is how a market is priced at

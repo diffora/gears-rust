@@ -1192,6 +1192,68 @@ async fn the_amounts_of_a_published_revision_are_frozen() {
     must_be_rejected(&conn, &insert_amount(LINE, "USD", 5500), "is not permitted").await;
 }
 
+/// **A published revision's money cannot be moved off it by re-pointing.**
+///
+/// The `UPDATE` trigger has two arms, and this is the only statement the `OLD`
+/// arm alone can refuse: the row's *new* coordinates are a legal draft, so the
+/// `NEW` arm passes and the whole guard rests on the arm that asks where the row
+/// is coming **from**.
+///
+/// It is the amount table's version of
+/// `postgres_schema_overlay::a_line_cannot_be_re_pointed_onto_a_frozen_revision`,
+/// and it exists because D-92's copy-on-new-revision deliberately reuses one
+/// `line_id` across revisions — so "some revision of this line is a draft" and
+/// "this row's revision is a draft" are different questions, and only the second
+/// one is the rule.
+#[tokio::test]
+async fn a_published_revisions_amounts_cannot_be_re_pointed_onto_a_draft() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+    must_succeed(
+        &conn,
+        &insert_line(
+            LINE, OVERLAY, 0, "NULL", "NULL", "NULL", "fixed", "amount", "NULL",
+        ),
+    )
+    .await;
+    must_succeed(&conn, &insert_amount_at(LINE, 0, "EUR", 5000)).await;
+    flip(&conn, OVERLAY, 0, "published").await;
+
+    // The successor exists and is a draft, so the row's destination is legal.
+    must_succeed(&conn, &draft_overlay(OVERLAY, 1)).await;
+    must_succeed(
+        &conn,
+        &insert_line(
+            LINE, OVERLAY, 1, "NULL", "NULL", "NULL", "fixed", "amount", "NULL",
+        ),
+    )
+    .await;
+
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE pricing_price_overlay_line_amount SET overlay_revision = 1 \
+             WHERE line_id = '{LINE}' AND overlay_revision = 0"
+        ),
+        "is not permitted",
+    )
+    .await;
+
+    // ...and the published revision still carries its value.
+    let value = scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(value_minor AS text) AS v FROM pricing_price_overlay_line_amount \
+             WHERE line_id = '{LINE}' AND overlay_revision = 0 AND currency = 'EUR'"
+        ),
+    )
+    .await;
+    assert_eq!(
+        value, "5000",
+        "a frozen CatalogVersion must not resolve a line whose money has moved away"
+    );
+}
+
 fn insert_amount(line: &str, currency: &str, value_minor: i64) -> String {
     insert_amount_at(line, 0, currency, value_minor)
 }

@@ -45,6 +45,26 @@
 //! `chk_..._currency` holds the ISO 4217 shape; the code's validity is
 //! `domain::money::CurrencyCode`'s and is checked at the authoring edge.
 //!
+//! # The `OLD` arm keys on the **pair**, and the revision half is not decoration
+//!
+//! Every arm of every trigger here resolves its parent by
+//! `(line_id, overlay_revision)`, never by `line_id` alone. D-92's
+//! copy-on-new-revision deliberately reuses one `line_id` across revisions, so
+//! *"some revision of this line sits under a draft"* and *"this row's revision
+//! is a draft"* are different questions and only the second is the rule.
+//!
+//! The `UPDATE` trigger's `OLD` arm is the one place where dropping the half is
+//! invisible: the row's *destination* is a legal draft, so the `NEW` arm passes
+//! and the whole guard rests on the arm asking where the row comes **from**. With
+//! `line_id` alone, `UPDATE … SET overlay_revision = <the open draft>` moves a
+//! **published** revision's money off it, and the overlay then resolves without
+//! that line for those currencies (D-42's amount-incomplete fallback) at a
+//! frozen `CatalogVersion`.
+//!
+//! `sqlite_overlay_store::a_published_revisions_amounts_cannot_be_re_pointed_onto_a_draft`
+//! and its Postgres twin are that statement, and they are the only cases the
+//! `OLD` arm alone can refuse.
+//!
 //! # The append-only trigger reaches its parent through the line
 //!
 //! An amount rides the same revision its line does (§6: *"the amount table below
@@ -178,7 +198,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
               JOIN pricing_price_overlay o
                 ON o.price_overlay_id = l.price_overlay_id
                AND o.revision = l.overlay_revision
-             WHERE l.line_id = OLD.line_id AND o.lifecycle_state = 'draft')
+             WHERE l.line_id = OLD.line_id AND l.overlay_revision = OLD.overlay_revision
+               AND o.lifecycle_state = 'draft')
              OR NOT EXISTS (
             SELECT 1 FROM pricing_price_overlay_line l
               JOIN pricing_price_overlay o

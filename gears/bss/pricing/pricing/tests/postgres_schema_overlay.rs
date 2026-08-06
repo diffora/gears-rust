@@ -345,8 +345,9 @@ async fn a_draft_cannot_flip_straight_to_superseded() {
 /// **The null-safe line key, and Postgres names the index.**
 ///
 /// The three cases §6 spells as *"one default line, one line per plan, one per
-/// (plan, sku)"* — each of which a plain `UNIQUE` over three nullable columns
-/// would admit, because NULLs are distinct inside one on this engine too.
+/// `(plan, sku)`"* — each of which a plain `UNIQUE` over three nullable columns
+/// would admit, because NULLs are distinct inside one on this engine too — plus
+/// D-78's cohort distinctness, which must **not** collide.
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn the_line_key_is_null_safe_on_all_three_nullable_columns() {
@@ -375,12 +376,32 @@ async fn the_line_key_is_null_safe_on_all_three_nullable_columns() {
     )
     .await;
 
+    // Two lines on one `(plan, sku)`: cohort NULL. This is the third of §6's
+    // three, and the `COALESCE(target_sku, '')` component is exercised in the
+    // **collision** direction only here.
+    let sku_line = |line: &str| {
+        format!(
+            "INSERT INTO bss.pricing_price_overlay_line (
+                line_id, price_overlay_id, overlay_revision, tenant_id,
+                plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value)
+             VALUES ('{line}', '{OVERLAY_A}', 0, '{TENANT}',
+                     '{PLAN_1}', 'sku-a', 'discount', 'percent_bp', 1500)"
+        )
+    };
+    must_succeed(&conn, &sku_line(LINE_3)).await;
+    must_be_rejected(
+        &conn,
+        &sku_line("cccccccc-0000-0000-0000-000000000004"),
+        "uq_pricing_price_overlay_line_key",
+    )
+    .await;
+
     // ...and a cohort-targeted line on the same plan is a **different** key
     // (D-78): disjoint by eligibility, so it never collides.
     must_succeed(
         &conn,
         &insert_line(
-            LINE_3,
+            "cccccccc-0000-0000-0000-000000000005",
             OVERLAY_A,
             0,
             &format!("'{PLAN_1}'"),
@@ -609,6 +630,64 @@ async fn the_amounts_of_a_published_revision_are_frozen() {
             "INSERT INTO bss.pricing_price_overlay_line_amount (
                 line_id, overlay_revision, currency, tenant_id, value_minor)
              VALUES ('{LINE_1}', 0, 'USD', '{TENANT}', 5500)"
+        ),
+        "is not permitted",
+    )
+    .await;
+}
+
+/// **The amount table's `OLD` arm**, which is the only arm this statement can
+/// trip.
+///
+/// The row's destination is a legal draft, so the `NEW` arm passes and the whole
+/// guard rests on the arm asking where the row comes **from**. Postgres had this
+/// right; the `SQLite` mirror keyed the same arm on `line_id` alone and admitted
+/// the statement, moving a published revision's money onto a draft — so this case
+/// and its `SQLite` twin exist to keep the two engines saying one thing.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn a_published_revisions_amounts_cannot_be_re_pointed_onto_a_draft() {
+    let conn = applied().await;
+    must_succeed(&conn, &insert_overlay(OVERLAY_A, 0, "draft", 10)).await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO bss.pricing_price_overlay_line (
+                line_id, price_overlay_id, overlay_revision, tenant_id,
+                adjustment_kind, magnitude_kind)
+             VALUES ('{LINE_1}', '{OVERLAY_A}', 0, '{TENANT}', 'fixed', 'amount')"
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO bss.pricing_price_overlay_line_amount (
+                line_id, overlay_revision, currency, tenant_id, value_minor)
+             VALUES ('{LINE_1}', 0, 'EUR', '{TENANT}', 5000)"
+        ),
+    )
+    .await;
+    flip(&conn, OVERLAY_A, 0, "published").await;
+
+    // The successor exists and is a draft, so the destination is legal.
+    must_succeed(&conn, &insert_overlay(OVERLAY_A, 1, "draft", 10)).await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO bss.pricing_price_overlay_line (
+                line_id, price_overlay_id, overlay_revision, tenant_id,
+                adjustment_kind, magnitude_kind)
+             VALUES ('{LINE_1}', '{OVERLAY_A}', 1, '{TENANT}', 'fixed', 'amount')"
+        ),
+    )
+    .await;
+
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE bss.pricing_price_overlay_line_amount SET overlay_revision = 1 \
+             WHERE line_id = '{LINE_1}' AND overlay_revision = 0"
         ),
         "is not permitted",
     )
