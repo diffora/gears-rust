@@ -1760,7 +1760,11 @@ fn read_row_version(row: &plan::Model) -> Result<RowVersion, RepoError> {
 /// already false — is refused **only** here, which is why the reading is
 /// written as a whitelist of the two legal shapes rather than as a lookup that
 /// ignores whatever else the row carries.
-fn read_frequency(row: &plan::Model) -> Result<Option<Frequency>, RepoError> {
+/// `pub(crate)` because [`infra::bundle`](crate::infra::bundle) asks the same
+/// question of a *component's* plan row: `inst-bc-frequency` compares components
+/// to each other, and a second reader of this column would be a second answer to
+/// what `custom_every_n` beside a null interval means.
+pub(crate) fn read_frequency(row: &plan::Model) -> Result<Option<Frequency>, RepoError> {
     let Some(token) = row.frequency.as_deref() else {
         if row.custom_interval_n.is_some() || row.custom_interval_unit.is_some() {
             return Err(orphan_interval(row));

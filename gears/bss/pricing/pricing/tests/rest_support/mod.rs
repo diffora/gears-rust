@@ -350,6 +350,8 @@ impl Harness {
             plans: PlanRepo::new(db.clone()),
             shapes: PlanShapeRepo::new(db.clone()),
             prices: PriceRepo::new(db.clone()),
+            bundles: bss_pricing::infra::storage::repo::BundleRepo::new(db.clone()),
+            bundle_service: bss_pricing::infra::bundle::BundleService::new(db.clone()),
             idempotency: IdempotencyGate::new(Duration::from_hours(1)),
         });
         // **One registry, handed to both services**, which is `src/module.rs`'s own
@@ -436,6 +438,10 @@ impl Harness {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::prices::router(
+                Arc::clone(&self.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::bundles::router(
                 Arc::clone(&self.state),
                 &openapi,
             ))
@@ -694,6 +700,24 @@ impl Harness {
 
     /// Attach one of each child set to a draft revision, so a read has all three
     /// facets to answer with.
+    /// The plan's current entity tag, read the way a caller obtains one.
+    ///
+    /// Read rather than constructed: a tag this harness built itself would keep
+    /// matching after the route stopped minting the one the store expects, which
+    /// is the whole failure `If-Match` exists to catch.
+    pub async fn plan_etag(&self, plan_id: Uuid) -> String {
+        let response = self
+            .allowed()
+            .send(with_headers(
+                "GET",
+                &format!("{}/{plan_id}", bss_pricing::api::rest::plans::PLANS),
+                None,
+                &[],
+            ))
+            .await;
+        etag_of(&response).expect("a plan read must carry its entity tag")
+    }
+
     pub async fn attach_shape(&self, plan_id: Uuid, revision: u64) {
         let plan_id = PlanId::new(plan_id);
         let scope = self.scope();

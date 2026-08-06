@@ -460,6 +460,7 @@ pub struct BundleRecord {
 }
 
 /// Repository over `pricing_bundle` and its three composition children.
+#[derive(Clone)]
 pub struct BundleRepo {
     db: DBProvider<DbError>,
 }
@@ -553,6 +554,40 @@ impl BundleRepo {
             return Ok(None);
         };
         record_of(&row).map(Some)
+    }
+
+    /// The plan a bundle rides, by the bundle's own id.
+    ///
+    /// The composition routes address a **bundle** and every guard downstream
+    /// addresses a **plan revision**, so this is the one hop between them. It is
+    /// a read the handler makes rather than a column the routes carry, because a
+    /// caller supplying both would be supplying a pair the store can already
+    /// disagree with.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure.
+    pub async fn plan_of(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        bundle_id: Uuid,
+    ) -> Result<Option<PlanId>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("pricing_bundle conn: {e}")))?;
+        let row = bundle::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(bundle::Column::TenantId.eq(tenant_id))
+                    .add(bundle::Column::BundleId.eq(bundle_id)),
+            )
+            .one(&conn)
+            .await
+            .map_err(|e| RepoError::Db(format!("read pricing_bundle by id: {e}")))?;
+        Ok(row.map(|row| PlanId::new(row.plan_id)))
     }
 
     /// Replace an open draft revision's whole composition, under the caller's

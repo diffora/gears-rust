@@ -34,6 +34,7 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::approvals::{
     APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
 };
+use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::frontier::FRONTIER;
 use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
@@ -103,6 +104,32 @@ fn census() -> Vec<Route> {
             path: PLANS,
             resource_type: labels::PLAN,
             action: actions::WRITE,
+            mutating: true,
+        },
+        // Slice 8. Authoring is `bundle x write`; **publish is `plan x publish`
+        // only** — D-11, because under the conjunction the design set first
+        // stated, only CatalogAdmin could publish a bundle while S8 §1.3
+        // promises FinanceManager can. Catalogued here so the gate is a fact
+        // this census asserts rather than a comment in a handler.
+        Route {
+            method: "POST",
+            path: BUNDLES,
+            resource_type: labels::BUNDLE,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "PATCH",
+            path: BUNDLE_BY_ID,
+            resource_type: labels::BUNDLE,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "POST",
+            path: BUNDLE_PUBLISH,
+            resource_type: labels::PLAN,
+            action: actions::PUBLISH,
             mutating: true,
         },
         Route {
@@ -285,6 +312,10 @@ struct Seeded {
     /// One `scheduled` window on [`Seeded::price`], so the two window routes that
     /// address a window by id reach their gate instead of failing to parse a path.
     window: Uuid,
+    /// One bundle on [`Seeded::plan`], so the two routes that address a bundle
+    /// by id reach their gate instead of failing to parse a path — the same
+    /// reason [`Seeded::window`] exists.
+    bundle: Uuid,
 }
 
 /// The world the whole census is driven against: a draft plan with a shape and
@@ -318,11 +349,28 @@ async fn seed(harness: &Harness) -> Seeded {
         .await
         .expect("open the pending unit the approval rows are driven against");
     let window = rest_support::seed_window(harness, price.price_id).await;
+    let bundle = harness
+        .state
+        .bundles
+        .create(
+            &harness.scope(),
+            bss_pricing::infra::storage::repo::NewBundle {
+                bundle_id: Uuid::now_v7(),
+                tenant_id: harness.tenant,
+                plan_id: bss_pricing::domain::scope_key::PlanId::new(plan_id),
+                price_basis: bss_pricing::domain::bundle::PriceBasis::SumOfParts,
+                invoice_itemization: bss_pricing::domain::bundle::InvoiceItemization::Aggregate,
+            },
+            rest_support::seed_stamp(),
+        )
+        .await
+        .expect("seed the bundle the two bundle-by-id routes address");
     Seeded {
         plan: plan_id,
         price: price.price_id,
         approval: approval_id,
         window,
+        bundle,
     }
 }
 
@@ -347,7 +395,8 @@ fn drive(
         .replace("{planId}", &seeded.plan.to_string())
         .replace("{priceId}", &seeded.price.to_string())
         .replace("{approvalId}", &seeded.approval.to_string())
-        .replace("{windowId}", &seeded.window.to_string());
+        .replace("{windowId}", &seeded.window.to_string())
+        .replace("{bundleId}", &seeded.bundle.to_string());
     // The sellability surface requires all three of §5's query parameters and
     // parses them **before** it asks the PDP — `schedule_window`'s ordering, and
     // for its reason: a caller who omitted one is told that rather than being told
@@ -364,6 +413,28 @@ fn drive(
         ("POST", PLANS) => (
             Some(serde_json::json!({ "plan_tier": "gold" })),
             vec![("idempotency-key", key)],
+        ),
+        // Slice 8's three. The composition route takes the **plan revision's**
+        // tag, which is the plane the seeded draft stands on; the publish route
+        // takes neither a tag nor a key, since its concurrency is the approval
+        // unit's and its idempotency is per revision.
+        ("POST", BUNDLES) => (
+            Some(serde_json::json!({
+                "plan_id": Uuid::now_v7(),
+                "price_basis": "sum_of_parts",
+            })),
+            vec![("idempotency-key", key)],
+        ),
+        ("PATCH", BUNDLE_BY_ID) => (
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [],
+            })),
+            vec![("if-match", version)],
+        ),
+        ("POST", BUNDLE_PUBLISH) => (
+            Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
+            vec![],
         ),
         ("POST", PLAN_PRICES) => (
             Some(serde_json::json!({
@@ -480,6 +551,10 @@ async fn registered_paths() -> Vec<String> {
                 Arc::clone(&harness.state),
                 &openapi,
             ))
+            .merge(bss_pricing::api::rest::bundles::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::windows::router(
                 Arc::clone(&harness.governance),
                 &openapi,
@@ -528,11 +603,21 @@ async fn the_census_covers_every_route_the_routers_register() {
         registered, expected,
         "the routers register a path the census does not cover, or the other way round"
     );
-    // Three labels and no fourth. This used to read "every surface in this group is
+    // **Four** labels and no fifth. This used to read "every surface in this group is
     // on the `plan` label", which stopped being true the day the approval surface
-    // was mounted, and "two labels and no third", which stopped being true the day
-    // the threshold policy was — so it is stated as the set it is, and a census row
-    // on a label nobody decided about fails here rather than reading as coverage.
+    // was mounted, "two labels and no third", which stopped being true the day the
+    // threshold policy was, and "three and no fourth", which stopped being true the
+    // day Slice 8 mounted the bundle authoring surface — so it is stated as the set
+    // it is, and a census row on a label nobody decided about fails here rather than
+    // reading as coverage.
+    //
+    // `bundle` is the fourth, and it is deliberately **not** `plan`: authoring a
+    // composition is `bundle x write` (ProductManager, CatalogAdmin) while
+    // publishing it is `plan x publish` **only** (D-11). Filing the authoring routes
+    // under `plan` would hand composition authorship to every holder of
+    // `plan x write`, and filing the publish route under `bundle` would take the
+    // entrance away from FinanceManager, whom S8 §1.3 promises it. Neither is
+    // visible to an allow/deny fixture, which is why both are asserted here.
     //
     // `approval_policy` is the third and it is deliberately **not** `config`: the
     // segregation of duties is the whole reason the catalog carries two labels, and
@@ -543,7 +628,12 @@ async fn the_census_covers_every_route_the_routers_register() {
         census().iter().map(|route| route.resource_type).collect();
     assert_eq!(
         used,
-        std::collections::BTreeSet::from([labels::PLAN, labels::APPROVAL, labels::APPROVAL_POLICY]),
+        std::collections::BTreeSet::from([
+            labels::PLAN,
+            labels::BUNDLE,
+            labels::APPROVAL,
+            labels::APPROVAL_POLICY,
+        ]),
         "a census row on a label this gear has not mounted before needs a decision, not a row"
     );
 }
