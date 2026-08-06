@@ -224,10 +224,13 @@ fn a_row_added_to_a_published_plan_is_material_having_no_baseline() {
 /// first). It said `infra::publish::validated_draft_rows` forbids the pair permanently.
 /// That function governs what a publish **writes**; the evaluator's **input** is built
 /// at `api::rest::publish` from the assembled shape — published *plus* draft — so a plan
-/// holding a staged supersession successor **does** present the pair. See **D-200**: the
-/// consequence is a plan-revision unit whose stored verdict can name a row the revision
-/// will not publish. What is true without qualification is the output half: no publish
-/// ever *flips* a moved row against a published predecessor on one key.
+/// holding a staged supersession successor **does** present the pair. See **D-200**,
+/// **decided 2026-08-06 on option (b)**: the two sets stay different by decision — the
+/// evaluator ranges over the candidate set, the commit flips `validated_draft_rows` — so
+/// a plan-revision unit's stored verdict can name a row the revision will not publish.
+/// That is over-material and never under-material, and S5 §3 now says so normatively.
+/// What is true without qualification is the output half: no publish ever *flips* a
+/// moved row against a published predecessor on one key.
 ///
 /// So this stays a legitimate unit test of `evaluate` over a **hand-built** input, and
 /// it is kept for the reason it always was: it is the only executable statement of the

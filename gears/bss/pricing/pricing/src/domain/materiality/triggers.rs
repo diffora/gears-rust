@@ -139,6 +139,17 @@ pub enum Trigger {
     /// Cancelling a scheduled window (Slice 7, D-62).
     WindowCancellation,
     /// Shortening a window's `effectiveTo` (Slice 7, D-62).
+    ///
+    /// **Not the shorten a D-88 supersession composes** (D-201, decided 2026-08-06):
+    /// `inst-su-commit` carves that one out and `inst-mat-registered` repeats the
+    /// carve-out from this side. The hazard D-62 registers is coverage *removal*; the
+    /// supersession hands coverage over inside the same transaction, and
+    /// `domain::supersession::compose_windows` refuses the composition outright if any
+    /// window occupying the key begins at or after the changeover — so it cannot
+    /// truncate an approved scheduled successor at all. The exemption is that
+    /// composition's, not any caller's: a shorten reaching the window plane by any
+    /// other route carries this trigger. That is why `SupersessionService` evaluates
+    /// its unit on the per-currency delta alone and declares no trigger here.
     WindowShortening,
     /// Bundle creation or a component add / remove / replace (Slice 8, D-104).
     BundleComposition,
