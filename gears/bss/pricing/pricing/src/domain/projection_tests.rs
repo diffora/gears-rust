@@ -290,8 +290,14 @@ fn a_price_row_freezes_its_key_its_shape_and_its_bands() {
             "priceEligibility": "all_subscriptions",
             "chargeKind": "usage",
             "cohort": null,
+            // Axes 9 and 10 (D-196). `null` on this row because the fixture's key
+            // carries no line; the delta is where a consumer resolving a metered
+            // plan reads which line a published usage row prices, and before
+            // D-196 it could not need to — one market held one usage row.
+            "meter": null,
+            "dimensionKey": null,
         })),
-        "all eight canonical axes, in the normative order"
+        "all ten canonical axes, in the normative order"
     );
     assert_eq!(
         row.get("bands"),

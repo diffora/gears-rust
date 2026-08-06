@@ -23,7 +23,7 @@ use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::projection::PlanSubjectDelta;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use crate::domain::sellability::{PinnedFacts, SellabilityFacts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
@@ -95,6 +95,20 @@ fn populated() -> PlanSubjectDelta {
         PriceEligibility::ExistingGrandfathered,
         Cohort::Generation(at(1)),
     );
+    // **A third key, and it carries a usage line** (D-196): the round-trip pin
+    // below compares every projected key, so a corpus of line-less keys would
+    // leave axes 9 and 10 asserted by nothing — the projector could stop writing
+    // them and the reader stop reading them, in step, with this file green.
+    let metered = key_of(
+        ChargeKind::Usage,
+        PriceEligibility::AllSubscriptions,
+        Cohort::None,
+    )
+    .with_usage_line(
+        Some(Meter::new("cloudlets").expect("a non-blank meter")),
+        DimensionKey::new("region=eu"),
+    )
+    .expect("a usage key carries its line");
     PlanSubjectDelta {
         plan_id: plan_id(),
         revision: 3,
@@ -127,7 +141,11 @@ fn populated() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
-        prices: vec![row_on(everyone.clone()), row_on(generation.clone())],
+        prices: vec![
+            row_on(everyone.clone()),
+            row_on(generation.clone()),
+            row_on(metered),
+        ],
         windows: vec![
             KeyWindows {
                 scope_key: everyone,

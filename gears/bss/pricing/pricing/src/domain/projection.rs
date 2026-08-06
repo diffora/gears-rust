@@ -168,7 +168,7 @@ use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
     QuantitySource, TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
-use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::scope_key::{Meter, PlanId, ScopeKey};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 /// The lifecycle states a plan-subject delta draws its price rows from.
@@ -683,6 +683,15 @@ fn scope_key_value(key: &ScopeKey) -> JsonValue {
         "priceEligibility": key.price_eligibility().as_str(),
         "chargeKind": key.charge_kind().as_str(),
         "cohort": key.cohort().generation(),
+        // Axes 9 and 10 (D-196). `null` rather than the rendering's `none`
+        // sentinel on a row that has no line: the rendering needs fixed arity
+        // because it is embedded in strings, a JSON member does not, and the
+        // read side already reads `cohort` back the same way. A consumer
+        // resolving a metered plan needs the line here or it cannot tell one
+        // published usage row of a market from another — which, before this
+        // decision, could not happen because there could only be one.
+        "meter": key.meter().map(Meter::as_str),
+        "dimensionKey": (!key.dimension_key().is_none()).then(|| key.dimension_key().as_str()),
     })
 }
 

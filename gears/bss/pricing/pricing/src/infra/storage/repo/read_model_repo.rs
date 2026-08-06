@@ -77,7 +77,8 @@ use crate::domain::plan_shape::{CustomIntervalUnit, Frequency};
 use crate::domain::projection::PROJECTED_WINDOW_STATES;
 use crate::domain::read_model::{SubjectKind, SubjectRef};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region, ScopeKey,
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
+    Region, ScopeKey,
 };
 use crate::domain::sellability::{PinnedFacts, SellabilityFacts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
@@ -469,6 +470,21 @@ fn read_scope_key(value: &JsonValue) -> Result<ScopeKey, RepoError> {
         None => Cohort::None,
         Some(_) => Cohort::Generation(instant(value, "cohort")?),
     };
+    // Axes 9 and 10 (D-196), read back the way `cohort` is: an absent member and
+    // a `null` both mean "no line". The payload is JSON and needs no fixed
+    // arity — only the key's *rendering* does, and for a different reason: it is
+    // embedded in strings a consumer cannot parse by field.
+    let meter = match value.get("meter").filter(|v| !v.is_null()) {
+        None => None,
+        Some(_) => Some(
+            Meter::new(string(value, "meter")?)
+                .map_err(|e| malformed("scopeKey.meter", &e.to_string()))?,
+        ),
+    };
+    let dimension = match value.get("dimensionKey").filter(|v| !v.is_null()) {
+        None => DimensionKey::none(),
+        Some(_) => DimensionKey::new(string(value, "dimensionKey")?),
+    };
     ScopeKey::new(
         PlanId::new(uuid(value, "planId")?),
         CurrencyCode::new(string(value, "currency")?)
@@ -490,6 +506,7 @@ fn read_scope_key(value: &JsonValue) -> Result<ScopeKey, RepoError> {
         )?,
         cohort,
     )
+    .and_then(|key| key.with_usage_line(meter, dimension))
     .map_err(|e| malformed("scopeKey", &e.to_string()))
 }
 
