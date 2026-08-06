@@ -205,12 +205,36 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 4,
+    "anchored:no-account": 5,
     "suspicious:multi-region": 59,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 11,
+    "suspicious:weak-coverage": 10,
     "covered:strong": 0,
 }
+#: Moved 2026-08-06 (was 4 / 10 above, i.e. `anchored:no-account` 4 and `weak-coverage` 11) by the
+#: **Slice 9 overlay merge docs wave** — D-219…D-233 in `DECISIONS.md`, plus their citations in
+#: S9 §3/§5/§6 and S8 `inst-ba-material`. Total requirements unchanged at 77; the judged count
+#: moves 70 -> 69 because this is a **judged-to-unjudged** move, unlike the D-196 wave's.
+#:
+#:   id                  region that moved                                direction
+#:   fr-event-contract   DESIGN.md:85-96 @ 0.478 and                      -> anchored:no-account
+#:                       design/01-foundation.md:73-84 @ 0.609
+#:
+#: **The control here is stronger than a geometry argument, because the geometry did not move at
+#: all.** The requirement keeps the *same three candidate regions*, at the same files and the same
+#: line ranges, and their text is **byte-identical** on both sides — checked by regenerating the
+#: pre-wave corpus with `git archive HEAD` and diffing the emitted fragments rather than by
+#: reading. What moved is corpus-relative and nothing else: `matched_terms` 11 -> 10 and 14 -> 13,
+#: scores 0.478 -> 0.455 and 0.609 -> 0.591, both crossing the account threshold from just above
+#: to just below. Across the whole corpus **no region was gained or lost** and exactly two shared
+#: regions changed text — the two paragraphs this wave edited in S9, neither of them this
+#: requirement's.
+#:
+#: So this is the `catalog`/`rule` document-frequency class recorded further down, not ladder
+#: drift and not a document defect: ~15 register entries of new prose moved the document frequency
+#: of a term this requirement's vocabulary depends on, and two marginal matches fell 0.02 under a
+#: threshold they were sitting 0.02 over. The evidence for `fr-event-contract` is the same evidence
+#: it had before the wave; what changed is how a corpus-relative score weighs it.
 #: Moved 2026-08-06 (was 3 / 4 / 60 / 10) by the **D-196 decision wave** — the owner's answer to
 #: D-196 written into `DECISIONS.md`, S1 §3.7, S1 §4.1 and S2 `inst-cs-usage`. Total requirements
 #: unchanged at 77 and the judged count unchanged at 70: the move is +1/−1 **inside** the judged
@@ -1100,7 +1124,11 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 70, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 69, "ledger": 17}
+#: pricing 70 -> 69 on the 2026-08-06 **Slice 9 overlay merge docs wave**. One mover,
+#: `fr-event-contract`, leaving the judged set for `anchored:no-account` — the full control is
+#: recorded beside `PINNED_TRIAGE_PRICING` above and it is document-frequency movement over a
+#: byte-identical set of regions, not ladder drift.
 #: pricing 69 -> 68 on the 2026-08-05 **D-183…D-193 phase-4 close docs wave**. One mover,
 #: `fr-supersession`, whose only account (`design/01-foundation.md`, `term-overlap`) scored
 #: **exactly 0.600** and fell under the threshold when corpus growth changed the
