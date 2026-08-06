@@ -257,7 +257,13 @@ pub async fn record_pending(
     Ok(())
 }
 
-/// Read one pending ref back by its composite identity.
+/// Read one ref row back by its composite identity — the handle **and the
+/// subject** (D-234).
+///
+/// The subject is part of the identity since `m20260802_000036`: a handle names
+/// one assignment and an overlay publish unit records two or three subjects
+/// against it, so `(tenant, handle)` alone selects a set and `.one()` over it
+/// would answer with whichever row the store returned first.
 ///
 /// SQL-level BOLA: a foreign tenant's ref yields `None`.
 ///
@@ -269,21 +275,73 @@ pub async fn record_pending(
 pub async fn find(
     runner: &impl DBRunner,
     scope: &AccessScope,
-    tenant_id: Uuid,
-    pending_ref: &str,
+    id: RefIdentity<'_>,
 ) -> Result<Option<PendingVersionRow>, RepoError> {
     let row = catalog_version_ref::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(catalog_version_ref::Column::TenantId.eq(tenant_id))
-                .add(catalog_version_ref::Column::PendingRef.eq(pending_ref)),
-        )
+        .filter(id.condition())
         .one(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read pending catalog version ref: {e}")))?;
     row.map(to_domain).transpose()
+}
+
+/// The four columns that identify one ref row since `m20260802_000036`.
+///
+/// One value rather than four parameters, and that is the point rather than a
+/// convenience: [`find`] and [`finalize`] must select the **same** row — the
+/// finalize's compare-and-swap and the re-read that interprets its zero-rows case
+/// are one decision, and two spellings of the identity would let the swap miss a
+/// row the re-read then reports as an invariant breach. A caller cannot supply
+/// three of the four.
+#[derive(Clone, Copy, Debug)]
+pub struct RefIdentity<'a> {
+    /// The owning tenant.
+    pub tenant_id: Uuid,
+    /// The registry's handle — one assignment, which a unit may record several
+    /// subjects against.
+    pub pending_ref: &'a str,
+    /// Which kind of subject this row is about.
+    pub subject_kind: SubjectKind,
+    /// Which subject of that kind.
+    pub subject_ref: &'a str,
+}
+
+impl<'a> RefIdentity<'a> {
+    /// The identity of a row the caller already holds.
+    ///
+    /// The projector reads a subject and then finalizes **that** subject, so it
+    /// never assembles an identity by hand — which is what keeps the finalize on
+    /// the row whose projection shares its transaction.
+    #[must_use]
+    pub fn of(row: &'a PendingVersionRow) -> Self {
+        Self {
+            tenant_id: row.tenant_id,
+            pending_ref: &row.pending_ref,
+            subject_kind: row.subject_kind,
+            subject_ref: &row.subject_ref,
+        }
+    }
+
+    /// The `WHERE` this identity selects.
+    fn condition(self) -> Condition {
+        Condition::all()
+            .add(catalog_version_ref::Column::TenantId.eq(self.tenant_id))
+            .add(catalog_version_ref::Column::PendingRef.eq(self.pending_ref))
+            .add(catalog_version_ref::Column::SubjectKind.eq(self.subject_kind.as_str()))
+            .add(catalog_version_ref::Column::SubjectRef.eq(self.subject_ref))
+    }
+}
+
+impl std::fmt::Display for RefIdentity<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}/{}/{}",
+            self.pending_ref, self.subject_kind, self.subject_ref
+        )
+    }
 }
 
 /// Record that this gear has seen the registry's answer for `pending_ref`
@@ -335,25 +393,38 @@ pub async fn observe_commit(
     Ok(())
 }
 
-/// Resolve a pending handle to its committed version, inside `runner`'s
-/// transaction.
+/// Resolve one **subject** of a pending handle to its committed version, inside
+/// `runner`'s transaction.
 ///
 /// A compare-and-swap on `catalog_version IS NULL`. See the module doc for why
 /// the zero-rows case is re-read rather than accepted, and why one of its two
 /// outcomes is an invariant breach.
 ///
+/// # Per subject, not per handle (D-234)
+///
+/// A handle carries every subject its publish unit projects — one on the plan
+/// plane, two or three on the overlay plane (D-112, D-133) — and the projector
+/// finalizes a ref **inside the transaction that projects that subject**, so
+/// that a crash between the two cannot leave a committed ref nothing ever
+/// projected. Finalized handle-wide, one subject's transaction would commit its
+/// siblings' rows too; a sibling whose own projection then failed would be
+/// committed and unwarm, therefore absent from
+/// [`list_pending_for_tenant`] — and no later pass would ever offer its version
+/// to the projector again. The version would stand incomplete and the frontier
+/// stuck, with both signals that would say so reading off pending refs.
+///
 /// # Errors
-/// [`RepoError::NotFound`] when the tenant has no such handle — a version was
-/// assigned to a publish this store never recorded, which the sweep can only
-/// have reached by asking the registry about a ref it read from this table.
+/// [`RepoError::NotFound`] when the tenant has no such handle **for this
+/// subject** — a version was assigned to a publish this store never recorded,
+/// which the sweep can only have reached by asking the registry about a ref it
+/// read from this table.
 /// [`RepoError::CorruptRow`] when the row already carries a **different**
 /// committed version, or when `version` exceeds the signed range the column
 /// stores. [`RepoError::Db`] on a scope or storage failure.
 pub async fn finalize(
     runner: &impl DBRunner,
     scope: &AccessScope,
-    tenant_id: Uuid,
-    pending_ref: &str,
+    id: RefIdentity<'_>,
     version: CatalogVersion,
     committed_at: DateTime<Utc>,
 ) -> Result<(), RepoError> {
@@ -370,9 +441,7 @@ pub async fn finalize(
             Expr::value(committed_at),
         )
         .filter(
-            Condition::all()
-                .add(catalog_version_ref::Column::TenantId.eq(tenant_id))
-                .add(catalog_version_ref::Column::PendingRef.eq(pending_ref))
+            id.condition()
                 // The swap half: a row another sweep already finalized is not
                 // matched at all, so two sweeps cannot both write a version.
                 .add(catalog_version_ref::Column::CatalogVersion.is_null()),
@@ -384,17 +453,18 @@ pub async fn finalize(
         return Ok(());
     }
 
-    let existing = find(runner, scope, tenant_id, pending_ref)
+    let existing = find(runner, scope, id)
         .await?
         .ok_or_else(|| RepoError::NotFound {
             subject: "pending catalog version ref".to_owned(),
-            id: pending_ref.to_owned(),
+            id: id.to_string(),
         })?;
+    let tenant_id = id.tenant_id;
     match existing.catalog_version {
         Some(already) if already == version => Ok(()),
         Some(already) => Err(RepoError::CorruptRow(format!(
-            "pending ref {pending_ref} of tenant {tenant_id} is committed at catalog version {}, \
-             and the registry answered {} for the same handle",
+            "ref {id} of tenant {tenant_id} is committed at catalog version {}, and the registry \
+             answered {} for the same handle",
             already.get(),
             version.get()
         ))),
@@ -402,8 +472,8 @@ pub async fn finalize(
         // gear can produce that, so it is the store disagreeing with itself
         // rather than a race this function lost.
         None => Err(RepoError::CorruptRow(format!(
-            "pending ref {pending_ref} of tenant {tenant_id} refused a finalize to catalog \
-             version {} while still holding no version",
+            "ref {id} of tenant {tenant_id} refused a finalize to catalog version {} while still \
+             holding no version",
             version.get()
         ))),
     }

@@ -1208,6 +1208,39 @@ async fn the_version_index_on_the_ref_table_is_not_unique() {
     );
 }
 
+#[tokio::test]
+async fn the_ref_tables_key_carries_the_subject_as_well_as_the_handle() {
+    // `m20260802_000036` (D-234), pinned **because no roster covers it**. This
+    // suite carries five rosters — tables, triggers, indexes, CHECK names and
+    // trigger bodies — and a primary key is none of them, so the chain changing
+    // the physical identity of a truth-linkage table passed every store census
+    // in this file silently. That gap is general and is recorded as such; this
+    // test closes it for the one table the change was about.
+    //
+    // What it pins: a handle names one registry assignment, and a publish unit
+    // records against it every subject it projects — one on the plan plane, two
+    // on the overlay plane and three when a revision moves the scope value
+    // (D-112, D-133). Narrowed back to the handle, the second subject of an
+    // overlay publish is refused by the key and the act cannot commit at all.
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    let ddl = table_sql(&conn, "pricing_catalog_version_ref").await;
+    let normalised = ddl.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        normalised.contains("PRIMARY KEY (tenant_id, pending_ref, subject_kind, subject_ref)"),
+        "the key must carry the subject, got: {normalised}"
+    );
+}
+
 /// The `CREATE TABLE ...` statement `SQLite` recorded for `table`.
 async fn table_sql(conn: &sea_orm::DatabaseConnection, table: &str) -> String {
     let sql =

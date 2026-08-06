@@ -68,6 +68,7 @@ pub mod m20260802_000032_create_pricing_price_overlay;
 pub mod m20260802_000033_create_pricing_price_overlay_line;
 pub mod m20260802_000034_create_pricing_price_overlay_line_amount;
 pub mod m20260802_000035_widen_pricing_approval_subject_kind_overlay;
+pub mod m20260802_000036_widen_pricing_catalog_version_ref_subject_key;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -159,6 +160,7 @@ impl MigratorTrait for Migrator {
             // migration that attaches anything to that table — `000022`'s index is
             // the object it restates that `m20260802_000019` did not have to.
             Box::new(m20260802_000035_widen_pricing_approval_subject_kind_overlay::Migration),
+            Box::new(m20260802_000036_widen_pricing_catalog_version_ref_subject_key::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

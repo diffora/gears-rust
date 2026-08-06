@@ -162,6 +162,25 @@ const ALARM_COMMIT_OVERDUE: &str = "pricing.catalogversion.commit_overdue";
 /// within the same SLO. Likewise the design set's string.
 const ALARM_PIN_ELIGIBILITY_OVERDUE: &str = "pricing.readmodel.pin_eligibility_overdue";
 
+/// What the registry answered about **one handle**.
+///
+/// Named rather than left as `Result<Option<CatalogVersion>, ()>`, because a
+/// pass caches these per handle (D-234: a unit records every subject it projects
+/// against one handle, so the rows repeat handles) and a cached `Err(())` reads
+/// as a failure that has been swallowed rather than as the classification it is.
+/// The unconfigured answer is deliberately **not** a member: it ends the pass
+/// rather than describing a handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HandleAnswer {
+    /// The registry could not be asked. Costs the pass its right to judge any of
+    /// this tenant's versions complete.
+    Unresolved,
+    /// Answered, and the handle has no version yet — the budgeted batching wait.
+    NotYet,
+    /// Answered with the version the handle landed in.
+    Committed(CatalogVersion),
+}
+
 /// What the registry answered for one tenant's pending refs.
 ///
 /// The two halves are one value because they are one fact about the pass: which
@@ -536,6 +555,20 @@ impl ReadModelWarmJob {
     /// clause 2). It leaves a sibling of some version at an unknown version, so
     /// this pass may not judge any of this tenant's versions complete — see
     /// [`PassCoverage`] for why `Ok(None)` is not the same fact.
+    ///
+    /// # One question per **handle**, over rows that are per **subject** (D-234)
+    ///
+    /// `committed_version` takes a `pending_ref` and nothing else, so every
+    /// subject of one handle asks one question — and since a publish unit records
+    /// every subject it projects against a single handle (two or three on the
+    /// overlay plane, D-112/D-133), the rows arriving here repeat handles. The
+    /// answer is cached for the length of the pass, which bounds the sweep's
+    /// registry traffic by the number of publish **acts** rather than by the
+    /// number of subjects they project.
+    ///
+    /// The cache is per pass and never wider. A handle's answer moves — that is
+    /// the whole of what the sweep is watching for — so carrying one across ticks
+    /// would be caching the thing being observed.
     async fn resolve(
         &self,
         conn: &impl DBRunner,
@@ -545,40 +578,33 @@ impl ReadModelWarmJob {
     ) -> Option<Resolution> {
         let ctx = SecurityContext::anonymous();
         let mut resolution = Resolution::default();
+        let mut answered: BTreeMap<String, HandleAnswer> = BTreeMap::new();
         for row in pending {
-            match self
-                .registry
-                .committed_version(&ctx, &row.pending_ref)
-                .await
-            {
-                Err(CatalogVersionRegistryError::Unconfigured) => {
-                    tracing::debug!(
-                        "bss-pricing: read-model warm sweep skipped (no CatalogVersion registry \
-                         configured)"
-                    );
+            let answer = if let Some(known) = answered.get(&row.pending_ref) {
+                *known
+            } else {
+                let Some(fresh) = self.ask_registry(&ctx, &row.pending_ref).await else {
+                    // The pass-ending answer, and the flag is set here rather
+                    // than in the ask: `inert` is a fact about this pass, and
+                    // the ask reports only about the handle.
                     report.inert = true;
                     return None;
-                }
-                Err(e) => {
-                    // A configured registry that cannot answer is a transient
-                    // outage, not a catalog defect: the ref stays pending and
-                    // its age is what eventually alarms. What the outage DOES
-                    // cost is this pass's right to judge completeness, because a
-                    // ref of unknown version may belong to a version this pass
-                    // is about to call complete.
-                    tracing::warn!(
-                        error = %e,
-                        pending_ref = %row.pending_ref,
-                        "bss-pricing: registry could not resolve a pending version ref; no \
-                         completion is decided for this tenant on this pass"
-                    );
+                };
+                answered.insert(row.pending_ref.clone(), fresh);
+                fresh
+            };
+            match answer {
+                // The outage arm. The warning is logged where the answer was
+                // fetched, once per handle; what is recorded here is per **row**,
+                // because coverage is a statement about the subject set.
+                HandleAnswer::Unresolved => {
                     resolution.any_unresolved = true;
                 }
                 // Not committed yet. Not an error and not an alarm here - the
                 // registry batches, and the wait is budgeted. Its age is
                 // observed by the pass, uniformly with every other answer.
-                Ok(None) => {}
-                Ok(Some(version)) => {
+                HandleAnswer::NotYet => {}
+                HandleAnswer::Committed(version) => {
                     self.observe_commit(conn, row, now).await;
                     resolution
                         .by_version
@@ -589,6 +615,45 @@ impl ReadModelWarmJob {
             }
         }
         Some(resolution)
+    }
+
+    /// Ask the registry about **one handle**, and classify the answer.
+    ///
+    /// Split out of [`resolve`](Self::resolve) so the loop reads as "one answer
+    /// per handle, one record per row": the outage warning belongs here, where
+    /// the question was actually asked, and the coverage record belongs there,
+    /// where the subject set is being counted.
+    ///
+    /// `None` is the pass-ending answer — an unconfigured registry — and it is
+    /// propagated with `?` rather than folded into [`HandleAnswer`], because it
+    /// is a fact about the deployment rather than about the handle.
+    async fn ask_registry(&self, ctx: &SecurityContext, pending_ref: &str) -> Option<HandleAnswer> {
+        match self.registry.committed_version(ctx, pending_ref).await {
+            Err(CatalogVersionRegistryError::Unconfigured) => {
+                tracing::debug!(
+                    "bss-pricing: read-model warm sweep skipped (no CatalogVersion registry \
+                     configured)"
+                );
+                None
+            }
+            Err(e) => {
+                // A configured registry that cannot answer is a transient
+                // outage, not a catalog defect: the ref stays pending and its
+                // age is what eventually alarms. What the outage DOES cost is
+                // this pass's right to judge completeness, because a ref of
+                // unknown version may belong to a version this pass is about to
+                // call complete.
+                tracing::warn!(
+                    error = %e,
+                    pending_ref = %pending_ref,
+                    "bss-pricing: registry could not resolve a pending version ref; no \
+                     completion is decided for this tenant on this pass"
+                );
+                Some(HandleAnswer::Unresolved)
+            }
+            Ok(None) => Some(HandleAnswer::NotYet),
+            Ok(Some(version)) => Some(HandleAnswer::Committed(version)),
+        }
     }
 
     /// Stamp `commit_observed_at` on a ref whose commit this pass has just seen.

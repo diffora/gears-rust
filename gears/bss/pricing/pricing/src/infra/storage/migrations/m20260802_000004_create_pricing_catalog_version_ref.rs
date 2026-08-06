@@ -124,14 +124,25 @@
 //! **Reported as a divergence.** §3.7 lists neither this column nor the two
 //! D-157 added, and §4.4's "current revision" rule is what it contradicts.
 //!
-//! **One pair, and the multi-subject unit is owed.** A plan publish projects
-//! exactly one subject. An overlay publish unit projects **two** — the overlay
-//! document and the D-112/D-133 `overlay_index` shard — and one pair of columns
-//! cannot hold that. Generalizing today would be building for a unit no code in
-//! this repository can produce (there is no overlay store), so the plan case is
-//! recorded as one pair and the widening is stated here as owed. While the chain
-//! is greenfield that widening is another in-place amendment, which is exactly
-//! the situation this file is already an instance of.
+//! **One pair, and the multi-subject unit was owed — `m20260802_000036` paid
+//! it** (D-234, 2026-08-06). A plan publish projects exactly one subject. An
+//! overlay publish unit projects **two** — the overlay document and the
+//! D-112/D-133 `overlay_index` shard, three when a revision moves the scope
+//! value — and `PRIMARY KEY (tenant_id, pending_ref)` admits one row per handle.
+//! Generalizing when this file was written would have been building for a unit no
+//! code in this repository could produce (there was no overlay store); the store
+//! landed with Slice 9 and the publish unit with D-234, so the key now carries
+//! `subject_kind` and `subject_ref` too.
+//!
+//! **The pair of *columns* was never the obstacle** and this paragraph used to
+//! imply it was: `subject_revision` and `subject_lifecycle_state` are per **row**,
+//! so N subject rows carry N pairs. What could not hold two subjects was the
+//! **key**, which is what `000036` widens.
+//!
+//! **And it is a migration rather than the in-place amendment this paragraph
+//! predicted.** `m20260802_000035` states the chain's rule — the history stays
+//! legible, a reader asking when something changed gets a dated answer rather than
+//! a `git blame` — and that rule postdates the sentence above.
 //!
 //! # `commit_observed_at` is the instant every post-commit clause was missing
 //! (added 2026-08-03, D-166)

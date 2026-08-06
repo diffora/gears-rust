@@ -200,6 +200,7 @@ use crate::domain::projection::{PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, P
 use crate::domain::read_model::{SubjectKind, SubjectRef};
 use crate::domain::scope_key::PlanId;
 use crate::domain::window::{self, KeyWindows, WindowInterval};
+use crate::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
 use crate::infra::storage::repo::{
     NewDelta, PendingVersionRow, catalog_version_ref_repo, pin_frontier_repo, plan_repo,
     plan_shape_repo, price_repo, read_model_repo, window_repo,
@@ -455,8 +456,7 @@ impl ReadModelProjector {
                     catalog_version_ref_repo::finalize(
                         txn,
                         &scope,
-                        tenant_id,
-                        &subject.pending_ref,
+                        RefIdentity::of(&subject),
                         catalog_version,
                         now,
                     )
@@ -555,8 +555,17 @@ fn log_deferred_completion(
 /// The subject set of one version: the refs already finalized, plus the ones
 /// this pass has just resolved and is about to finalize.
 ///
-/// Deduplicated on `pending_ref`, because a re-drive re-offers a ref the
-/// previous pass finalized and the two halves would otherwise both name it.
+/// Deduplicated on the handle **and the subject**, because a re-drive re-offers
+/// a ref the previous pass finalized and the two halves would otherwise both
+/// name it.
+///
+/// **The subject is in that key since D-234**, and dropping it would silently
+/// lose subjects rather than merely duplicate them: one handle now carries every
+/// subject its unit projects — two or three on the overlay plane (D-112, D-133)
+/// — so a dedup on `pending_ref` alone would admit the first row of a handle and
+/// discard its siblings. The version would then read complete over a subject set
+/// missing the very rows that make an overlay enumerable, and the frontier would
+/// advance past it.
 async fn version_subjects(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -569,10 +578,11 @@ async fn version_subjects(
             .await
             .map_err(|e| repo_failure(&e))?;
     for candidate in newly_committed {
-        if !subjects
-            .iter()
-            .any(|known| known.pending_ref == candidate.pending_ref)
-        {
+        if !subjects.iter().any(|known| {
+            known.pending_ref == candidate.pending_ref
+                && known.subject_kind == candidate.subject_kind
+                && known.subject_ref == candidate.subject_ref
+        }) {
             subjects.push(candidate.clone());
         }
     }
@@ -600,8 +610,16 @@ fn outstanding_subjects(
 
 /// The plan a ref row names, refusing every other subject kind.
 ///
-/// `PriceOverlay`, `OverlayIndex` and `GroupMembership` have **no store in this
-/// gear**, so a ref carrying one is a subject this gear cannot have written.
+/// **The reason is a missing projector, not a missing store**, and this doc said
+/// the second until 2026-08-06. It read "`PriceOverlay`, `OverlayIndex` and
+/// `GroupMembership` have **no store in this gear**" — which stopped being true
+/// of the overlay plane when Slice 9 landed `pricing_price_overlay` and its
+/// lines, and a reader checking the claim by grepping for the table would have
+/// found it and concluded the refusal was stale. What is actually absent is the
+/// projection: nothing here builds an overlay delta or an index shard, so a ref
+/// carrying one of those kinds is a subject **this function** cannot answer for.
+/// `GroupMembership` still has no store either.
+///
 /// It is refused naming the kind rather than skipped: a subject silently
 /// unprojected holds the version incomplete, and therefore holds the frontier,
 /// forever with nothing saying why.

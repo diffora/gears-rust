@@ -36,7 +36,7 @@ use bss_pricing::domain::plan_shape::{
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
-use bss_pricing::domain::read_model::SubjectRef;
+use bss_pricing::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
@@ -48,6 +48,7 @@ use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{catalog_version_ref, outbox, plan, price, read_model};
 use bss_pricing::infra::storage::migrations::Migrator;
+use bss_pricing::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
 use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 use bss_pricing::infra::storage::repo::{
     NewPlanDraft, NewPriceDraft, PendingVersionRow, PinFrontierRepo, PlanRepo, PlanShapeRepo,
@@ -143,6 +144,16 @@ impl RegistryDouble {
             .lock()
             .expect("no panics in the double")
             .clear();
+    }
+
+    /// How many times this handle has been asked for its committed version.
+    fn calls_for(&self, pending_ref: &str) -> usize {
+        self.calls
+            .lock()
+            .expect("no panics in the double")
+            .get(pending_ref)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Answer `pending_ref` with a scripted sequence, the last entry repeating.
@@ -932,6 +943,219 @@ async fn seed_two_subject_version(h: &Harness, version: u64) -> (String, String)
 }
 
 #[tokio::test]
+async fn one_pending_handle_carries_every_subject_its_unit_projects() {
+    // D-234's store half. A plan publish unit projects one subject and the table
+    // was keyed for exactly that — `PRIMARY KEY (tenant_id, pending_ref)`. An
+    // overlay publish unit projects **two** (D-112: the overlay document and the
+    // `overlay_index` shard), and three when a revision moves the scope value
+    // (D-133), so the second `record_pending` of one act was refused by the key.
+    //
+    // Two handles is not the way out and the reason is a pin rather than a
+    // preference: the index is the enumeration access path, so a pin landing
+    // between two handles resolves the overlay document live while the shard at
+    // or below it still says the overlay is not — enumeration and resolution
+    // disagreeing at one pin.
+    //
+    // `m20260802_000004`'s own module doc named this as owed, in these terms.
+    let h = harness().await;
+    let conn = h.provider.conn().expect("conn");
+    let overlay_id = Uuid::new_v4();
+
+    catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope,
+        PendingVersionRow::for_subject(
+            TENANT,
+            "pend-overlay-unit".to_owned(),
+            &SubjectRef::PriceOverlay(overlay_id),
+            Some(1),
+            Some(LifecycleState::Published),
+            at_min(12, 0),
+        ),
+    )
+    .await
+    .expect("the overlay document subject");
+
+    catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope,
+        PendingVersionRow::for_subject(
+            TENANT,
+            "pend-overlay-unit".to_owned(),
+            &SubjectRef::OverlayIndex(OverlayIndexShard::Global),
+            None,
+            None,
+            at_min(12, 0),
+        ),
+    )
+    .await
+    .expect("the same handle's index shard subject");
+
+    let rows = refs(&h).await;
+    assert_eq!(rows.len(), 2, "one handle, two subject rows: {rows:?}");
+    assert!(
+        rows.iter()
+            .all(|row| row.pending_ref == "pend-overlay-unit"),
+        "both rows name the one assignment the act requested: {rows:?}"
+    );
+    let mut kinds: Vec<&str> = rows.iter().map(|row| row.subject_kind.as_str()).collect();
+    kinds.sort_unstable();
+    assert_eq!(kinds, vec!["overlay_index", "price_overlay"]);
+}
+
+#[tokio::test]
+async fn one_handle_still_refuses_a_second_record_of_the_same_subject() {
+    // The protection the old key gave, at the granularity the widened one keeps
+    // it: the registry is idempotent on `request_id`, so one handle arriving
+    // twice for one **subject** means two publish transactions believe they own
+    // that assignment, and an upsert would hand one publish's subject to the
+    // other's version. Widening the key must not widen that hole.
+    let h = harness().await;
+    let conn = h.provider.conn().expect("conn");
+    let overlay_id = Uuid::new_v4();
+    let row = |at: DateTime<Utc>| {
+        PendingVersionRow::for_subject(
+            TENANT,
+            "pend-twice".to_owned(),
+            &SubjectRef::PriceOverlay(overlay_id),
+            Some(1),
+            Some(LifecycleState::Published),
+            at,
+        )
+    };
+
+    catalog_version_ref_repo::record_pending(&conn, &h.scope, row(at_min(12, 0)))
+        .await
+        .expect("the first record");
+    let refusal = catalog_version_ref_repo::record_pending(&conn, &h.scope, row(at_min(12, 1)))
+        .await
+        .expect_err("the same handle and the same subject, twice");
+
+    assert!(
+        matches!(refusal, RepoError::Db(_)),
+        "the primary key's own refusal, unchanged in kind: {refusal:?}"
+    );
+    assert_eq!(refs(&h).await.len(), 1, "and nothing was overwritten");
+}
+
+#[tokio::test]
+async fn finalizing_one_subject_of_a_handle_leaves_its_siblings_pending() {
+    // The finalize is per **subject**, not per handle, and the reason is what
+    // keeps a multi-subject unit self-healing.
+    //
+    // The projector finalizes a ref inside the transaction that projects that
+    // subject. Finalized handle-wide, subject A's transaction would commit
+    // subject B's ref too — and if B's own projection then fails, B is committed
+    // and unwarm, so it is no longer in `list_pending_for_tenant` and **no later
+    // pass ever offers its version to the projector again**. The version stays
+    // incomplete, the frontier stays stuck, and the two signals that would say so
+    // both read off pending refs. Per subject, B stays pending until B is
+    // projected, which is what the re-drive is made of.
+    let h = harness().await;
+    let conn = h.provider.conn().expect("conn");
+    let overlay_id = Uuid::new_v4();
+    for subject in [
+        SubjectRef::PriceOverlay(overlay_id),
+        SubjectRef::OverlayIndex(OverlayIndexShard::Global),
+    ] {
+        catalog_version_ref_repo::record_pending(
+            &conn,
+            &h.scope,
+            PendingVersionRow::for_subject(
+                TENANT,
+                "pend-partial".to_owned(),
+                &subject,
+                None,
+                None,
+                at_min(12, 0),
+            ),
+        )
+        .await
+        .expect("both subjects of the one act");
+    }
+
+    catalog_version_ref_repo::finalize(
+        &conn,
+        &h.scope,
+        RefIdentity {
+            tenant_id: TENANT,
+            pending_ref: "pend-partial",
+            subject_kind: SubjectKind::PriceOverlay,
+            subject_ref: &overlay_id.to_string(),
+        },
+        CatalogVersion::new(5),
+        at(13),
+    )
+    .await
+    .expect("finalize the document subject alone");
+
+    let rows = refs(&h).await;
+    let document = rows
+        .iter()
+        .find(|row| row.subject_kind == "price_overlay")
+        .expect("the document row");
+    let shard = rows
+        .iter()
+        .find(|row| row.subject_kind == "overlay_index")
+        .expect("the shard row");
+    assert_eq!(document.catalog_version, Some(5));
+    assert_eq!(
+        shard.catalog_version, None,
+        "the sibling is still pending, so the sweep keeps offering its version"
+    );
+    assert_eq!(shard.committed_at, None, "and the pair moves together");
+}
+
+#[tokio::test]
+async fn a_multi_subject_handle_is_asked_of_the_registry_once_per_pass() {
+    // The registry is a cross-gear network call and the handle is what it
+    // answers about: `committed_version` takes a `pending_ref` and nothing else,
+    // so every subject of one handle is asking one question. Once a unit records
+    // two or three subjects against one handle (D-112, D-133), a per-row loop
+    // multiplies the sweep's registry traffic by the subject count for an answer
+    // it already holds.
+    //
+    // It also keeps the scripted double honest: `script` indexes its answers by
+    // call count, so a per-row ask would consume a handle's script two entries at
+    // a time and a test scripting "not yet, then V5" would see V5 on the first
+    // pass.
+    let h = harness().await;
+    let conn = h.provider.conn().expect("conn");
+    for subject in [
+        SubjectRef::PriceOverlay(Uuid::new_v4()),
+        SubjectRef::OverlayIndex(OverlayIndexShard::Global),
+    ] {
+        catalog_version_ref_repo::record_pending(
+            &conn,
+            &h.scope,
+            PendingVersionRow::for_subject(
+                TENANT,
+                "pend-two-subjects".to_owned(),
+                &subject,
+                None,
+                None,
+                at_min(12, 0),
+            ),
+        )
+        .await
+        .expect("both subjects of the one act");
+    }
+    h.registry.commit("pend-two-subjects", 5);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(
+        report.pending_seen, 2,
+        "the pass still sees both rows - the dedup is the registry ask, not the subject set"
+    );
+    assert_eq!(
+        h.registry.calls_for("pend-two-subjects"),
+        1,
+        "one handle, one question"
+    );
+}
+
+#[tokio::test]
 async fn a_version_whose_subjects_all_warm_in_one_pass_is_complete_and_advances() {
     // The unchanged base case, asserted on the new report field so the bound is
     // visibly not blocking the ordinary path. A pass that saw both refs and got
@@ -1203,7 +1427,7 @@ async fn a_registry_answering_one_handle_two_versions_is_refused() {
     // property worth stating rather than a gap - it is why the guard is a
     // predicate on a statement and not a check in the pass.
     let h = harness().await;
-    let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    let (plan_id, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
     h.registry.commit(&pending, 5);
 
     let first = sweep(&h, at(13)).await;
@@ -1214,8 +1438,12 @@ async fn a_registry_answering_one_handle_two_versions_is_refused() {
     catalog_version_ref_repo::finalize(
         &conn,
         &h.scope,
-        TENANT,
-        &pending,
+        RefIdentity {
+            tenant_id: TENANT,
+            pending_ref: &pending,
+            subject_kind: SubjectKind::Plan,
+            subject_ref: &plan_id.get().to_string(),
+        },
         CatalogVersion::new(5),
         at(14),
     )
@@ -1225,8 +1453,12 @@ async fn a_registry_answering_one_handle_two_versions_is_refused() {
     let refusal = catalog_version_ref_repo::finalize(
         &conn,
         &h.scope,
-        TENANT,
-        &pending,
+        RefIdentity {
+            tenant_id: TENANT,
+            pending_ref: &pending,
+            subject_kind: SubjectKind::Plan,
+            subject_ref: &plan_id.get().to_string(),
+        },
         CatalogVersion::new(6),
         at(14),
     )

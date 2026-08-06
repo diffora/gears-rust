@@ -601,16 +601,65 @@ async fn a_subject_lifecycle_state_outside_the_two_d128_sanctions_is_refused() {
     must_succeed(&conn, &version_ref("pending-1", &[])).await;
 }
 
-/// A pending handle is one row per tenant.
+/// A pending handle is one row per tenant **and subject** (D-234).
+///
+/// **This test's premise changed with `m20260802_000036`, and it is the surface
+/// that caught the change.** It read "one row per tenant" and proved it by
+/// re-inserting one handle under a different `subject_ref`; that is now the
+/// *admitted* case, because a publish unit records against one handle every
+/// subject it projects — one on the plan plane, two on the overlay plane and
+/// three when a revision moves the scope value (D-112, D-133).
+///
+/// Worth stating twice over, because both halves are load-bearing:
+///
+/// * the key still refuses a **duplicate subject** on one handle, which is the
+///   whole of what `record_pending`'s contract wanted — a handle arriving twice
+///   for one subject means two publish transactions believe they own one
+///   registry assignment;
+/// * the sibling row is not a second publish, it is the same act's other
+///   subject, and admitting it is what the overlay publish pipeline needs.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
-async fn one_pending_ref_is_one_row_per_tenant() {
+async fn one_pending_ref_is_one_row_per_tenant_and_subject() {
     let conn = applied().await;
     must_succeed(&conn, &version_ref("pending-1", &[])).await;
+    // The same handle's other subject: the sibling an overlay publish records.
+    must_succeed(
+        &conn,
+        &version_ref(
+            "pending-1",
+            &[
+                ("subject_kind", "'overlay_index'"),
+                ("subject_ref", "'global/global'"),
+            ],
+        ),
+    )
+    .await;
+    // A second subject of the same **kind** is a sibling too - two shards move
+    // when a revision moves the scope value.
+    must_succeed(
+        &conn,
+        &version_ref(
+            "pending-1",
+            &[
+                ("subject_kind", "'overlay_index'"),
+                ("subject_ref", "'region/eu-west'"),
+            ],
+        ),
+    )
+    .await;
+    // But the same handle and the same subject, twice, is still refused.
     must_be_rejected(
         &conn,
-        &version_ref("pending-1", &[("subject_ref", &format!("'{PLAN_B}'"))]),
+        &version_ref("pending-1", &[]),
         "pricing_catalog_version_ref_pkey",
+    )
+    .await;
+    // A different subject of the kind the first row used is likewise a sibling,
+    // not a duplicate - the refusal above is about the pair, not the kind.
+    must_succeed(
+        &conn,
+        &version_ref("pending-1", &[("subject_ref", &format!("'{PLAN_B}'"))]),
     )
     .await;
     // The same handle spelling under another tenant is another publish.

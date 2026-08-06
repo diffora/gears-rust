@@ -32,8 +32,14 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub pending_ref: String,
     /// What kind of subject this publish unit projects.
+    ///
+    /// **In the key since `m20260802_000036`** (D-234): one publish unit
+    /// projects one subject on the plan plane and two or three on the overlay
+    /// plane (D-112, D-133), so the handle alone does not identify a row.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub subject_kind: String,
     /// Which one.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub subject_ref: String,
     /// The revision of the subject the publish unit judged; `NULL` for a
     /// subject kind that has no revision concept.
