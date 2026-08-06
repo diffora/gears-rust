@@ -303,3 +303,233 @@ async fn the_same_act_arriving_twice_is_answered_with_the_same_unit() {
         "the copy likewise: both drafts are the act's, not the call's"
     );
 }
+
+/// Every event name the tenant's outbox holds after `floor`, in `seq` order.
+///
+/// By **sequence**, not by name — `sqlite_supersession_unit`'s H-A lesson, which
+/// this file inherits rather than rediscovers: a name filter has to know which
+/// events the fixture produces, and it silently deletes the act's own the day the
+/// act starts producing one.
+async fn events_since(h: &Harness, floor: i64) -> Vec<String> {
+    use bss_pricing::infra::storage::entity::outbox;
+    use sea_orm::Order;
+    let conn = h.db.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(outbox::Column::TenantId.eq(h.tenant))
+                .add(outbox::Column::Seq.gt(floor)),
+        )
+        .order_by(outbox::Column::Seq, Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+        .into_iter()
+        .map(|row| row.event_name)
+        .collect()
+}
+
+async fn outbox_floor(h: &Harness) -> i64 {
+    use bss_pricing::infra::storage::entity::outbox;
+    use sea_orm::Order;
+    let conn = h.db.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(Condition::all().add(outbox::Column::TenantId.eq(h.tenant)))
+        .order_by(outbox::Column::Seq, Order::Desc)
+        .one(&conn)
+        .await
+        .expect("read the outbox")
+        .map_or(0, |row| row.seq)
+}
+
+#[tokio::test]
+async fn the_compose_announces_both_drafts_and_nothing_about_the_act() {
+    // **D-203's premise, measured.** That entry says the cutover's two rows are
+    // *"born published, inside its commit, and never pass that door"* — the
+    // authoring door S3 §17.5 puts `PriceCreated` on — and concludes the cutover
+    // must be a **second producer** of the event.
+    //
+    // The tree says otherwise, and it has to: both rows are staged as **drafts**,
+    // because `inst-gc-compose` clause (a) makes them the reviewer's subject and
+    // the content pin covers a shape that has to contain them. So both pass the
+    // authoring door, both announce `PriceCreated` there, and a second emission
+    // from the commit would be a duplicate its own dedup key refuses.
+    //
+    // What the compose does *not* announce is anything about the act: no window
+    // event, nothing a consumer could read as a repricing having happened.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+    let floor = outbox_floor(&h).await;
+
+    cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the unit opens");
+
+    assert_eq!(
+        events_since(&h, floor).await,
+        vec!["PriceCreated".to_owned(), "PriceCreated".to_owned()],
+        "the successor draft and the copy draft, and nothing about the act itself"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The commit arm (`inst-gc-commit`).
+// ---------------------------------------------------------------------------
+
+const REVIEWER: Uuid = Uuid::from_u128(0x_5c_22);
+
+async fn approve(h: &Harness, approval_id: Uuid) {
+    use bss_pricing::domain::approval::DecisionBy;
+    use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
+    h.governance
+        .approvals
+        .decide(
+            &h.scope(),
+            h.tenant,
+            DecideRequest {
+                approval_id,
+                decision: DecisionBy::Approve(REVIEWER),
+                reason: None,
+                approver_regions: RegionGrant::Untransported,
+                stamp: stamp_of(REVIEWER),
+            },
+        )
+        .await
+        .expect("the reviewer approves the unit");
+}
+
+fn receipt(outcome: &CutoverOutcome) -> &bss_pricing::infra::cutover::CutoverReceipt {
+    match outcome {
+        CutoverOutcome::Committed(receipt) => receipt,
+        CutoverOutcome::SubmittedForApproval(_) => panic!("this act must have committed"),
+    }
+}
+
+#[tokio::test]
+async fn an_approved_cutover_announces_two_window_schedules_and_no_second_price_created() {
+    // **`inst-gc-commit`'s event list, corrected against what the act really does.**
+    // That clause says `PriceCreated` x2 + `PriceWindowScheduled` x2, and calls this
+    // unit the *second producer* of `PriceCreated` on the ground that its two rows
+    // are *"born published and pass no authoring door"*.
+    //
+    // They are not, and they cannot be: both are staged as **drafts** at compose,
+    // because `inst-gc-compose` clause (a) makes them the reviewer's subject and a
+    // content pin taken over a shape that does not contain them is a unit no
+    // approve can ever satisfy. So both pass the authoring door, both announce
+    // `PriceCreated` there — asserted by
+    // `the_compose_announces_both_drafts_and_nothing_about_the_act` — and a second
+    // emission here would be a duplicate its own dedup key (`PriceCreated/<price_id>`)
+    // refuses.
+    //
+    // What the commit owes is therefore the **two window schedules**, and this case
+    // is the floor under that: the act's whole trail is two creations then two
+    // schedules, in that order, and nothing else.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+    let floor = outbox_floor(&h).await;
+
+    let opened = cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the unit opens");
+    approve(&h, pending(&opened).approval.approval_id).await;
+
+    let committed = cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the call after an independent approve commits");
+    let receipt = receipt(&committed);
+
+    assert_eq!(receipt.predecessor_price_id, seeded.price_id);
+    assert_eq!(
+        state_of(&h, seeded.price_id).await,
+        LifecycleState::Superseded.as_str()
+    );
+    assert_eq!(
+        state_of(&h, receipt.successor_price_id).await,
+        LifecycleState::Published.as_str()
+    );
+    assert_eq!(
+        state_of(&h, receipt.copy_price_id).await,
+        LifecycleState::Published.as_str(),
+        "the copy publishes in the same transaction, on its own generation"
+    );
+
+    assert_eq!(
+        events_since(&h, floor).await,
+        vec![
+            "PriceCreated".to_owned(),
+            "PriceCreated".to_owned(),
+            "PriceWindowScheduled".to_owned(),
+            "PriceWindowScheduled".to_owned(),
+        ],
+        "two creations at compose, two schedules at commit, and no second PriceCreated"
+    );
+
+    // **The payloads, because the names alone assert nothing about them** — a probe
+    // replacing the written interval with the requested one reddened no case until
+    // this block existed. Both windows open **at the cutover** and run open-ended,
+    // which is the composition's own guarantee: one instant, three operations, no
+    // gap. The copy's is the one worth naming — `inst-co-bounds` holds by the end
+    // being absent, so a future computed end has to come past this assertion.
+    let payloads = window_scheduled_payloads(&h, floor).await;
+    assert_eq!(payloads.len(), 2, "one per scheduled window");
+    for (price_id, from, to) in &payloads {
+        assert_eq!(*from, cutover_at(), "both open at the cutover: {price_id}");
+        assert_eq!(*to, None, "and both open-ended: {price_id}");
+    }
+    let announced: Vec<Uuid> = payloads.iter().map(|(id, _, _)| *id).collect();
+    assert!(
+        announced.contains(&receipt.successor_price_id)
+            && announced.contains(&receipt.copy_price_id),
+        "each event names the row whose window it is: {announced:?}"
+    );
+}
+
+/// The `(priceId, effectiveFrom, effectiveTo)` of every `PriceWindowScheduled`
+/// enqueued after `floor`, in `seq` order.
+async fn window_scheduled_payloads(
+    h: &Harness,
+    floor: i64,
+) -> Vec<(Uuid, DateTime<Utc>, Option<DateTime<Utc>>)> {
+    use bss_pricing::infra::storage::entity::outbox;
+    use sea_orm::Order;
+    let conn = h.db.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(outbox::Column::TenantId.eq(h.tenant))
+                .add(outbox::Column::Seq.gt(floor))
+                .add(outbox::Column::EventName.eq("PriceWindowScheduled")),
+        )
+        .order_by(outbox::Column::Seq, Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+        .into_iter()
+        .map(|row| {
+            let payload = &row.payload;
+            (
+                payload["priceId"]
+                    .as_str()
+                    .and_then(|id| Uuid::parse_str(id).ok())
+                    .expect("the payload names its row"),
+                payload["effectiveFrom"]
+                    .as_str()
+                    .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                    .map(|at| at.with_timezone(&Utc))
+                    .expect("the payload carries its start"),
+                payload["effectiveTo"]
+                    .as_str()
+                    .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                    .map(|at| at.with_timezone(&Utc)),
+            )
+        })
+        .collect()
+}

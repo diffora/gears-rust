@@ -21,6 +21,7 @@ use crate::domain::cutover::{
     ComposedCutover, check_cutover_instant, compose_cutover_windows, grandfathered_copy_key,
 };
 use crate::domain::error::DomainError;
+use crate::domain::events::CatalogEvent;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict};
@@ -37,7 +38,8 @@ use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::approval_repo::{self, ApprovalRecord};
 use crate::infra::storage::repo::window_repo::{NewWindow, WindowRecord};
 use crate::infra::storage::repo::{
-    NewPriceDraft, PendingVersionRow, catalog_version_ref_repo, plan_repo, price_repo, window_repo,
+    NewOutboxEvent, NewPriceDraft, PendingVersionRow, PriceWindowTransitionPayload,
+    catalog_version_ref_repo, outbox_repo, plan_repo, price_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 use crate::infra::window::VerdictJson;
@@ -756,7 +758,49 @@ pub async fn cutover_in(
     .await
     .map_err(|e| repo_failure(&e))?;
 
-    let _ = written;
+    // 12. The announcement, and it is **two** events rather than `inst-gc-commit`'s
+    //     four. That clause lists `PriceCreated` x2 as well, on the ground that this
+    //     unit's two rows are *"born published and pass no authoring door"* — which
+    //     is false, and unavoidably so: both are staged as **drafts** at compose,
+    //     because clause (a) makes them the reviewer's subject and a content pin over
+    //     a shape that does not contain them is a unit no approve can satisfy. So
+    //     both pass the authoring door, both announce there, and a second emission
+    //     here would be a duplicate its own `PriceCreated/<price_id>` dedup key
+    //     refuses. D-203's "second producer" conclusion goes with the premise.
+    //
+    //     Both schedules go through `price_window_mutation`, whose **act segment** is
+    //     what keeps them out of a collision with any other `PriceWindowScheduled` on
+    //     the same window: the subject is the act, and two cutovers of one key at two
+    //     instants are two acts.
+    let act = format!("cutover/{}", request.cutover_at.to_rfc3339());
+    for (window, price_id) in [
+        (&written.successor_window, successor.price_id),
+        (&written.copy_window, copy.price_id),
+    ] {
+        outbox_repo::enqueue(
+            txn,
+            scope,
+            NewOutboxEvent::price_window_mutation(
+                tenant_id,
+                CatalogEvent::PriceWindowScheduled,
+                &PriceWindowTransitionPayload {
+                    window_id: window.window_id,
+                    plan_id: context.plan_id,
+                    price_id,
+                    // **As written, not as asked for** — `commit_cutover` returns the
+                    // rows for exactly this reason.
+                    effective_from: window.effective_from,
+                    effective_to: window.effective_to,
+                    correlation_id: stamp.correlation_id,
+                },
+                now,
+                &act,
+            ),
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    }
+
     Ok(CutoverOutcome::Committed(Box::new(CutoverReceipt {
         plan_id: context.plan_id,
         revision: context.revision,
