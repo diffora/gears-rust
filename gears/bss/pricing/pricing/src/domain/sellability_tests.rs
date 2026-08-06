@@ -26,7 +26,7 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use crate::domain::window::{CoverageEnd, KeyWindows, WindowInterval, WindowState};
 
@@ -99,6 +99,29 @@ fn eligibility_of(class: PriceEligibility, cohort: Cohort) -> ScopeKey {
         cohort,
     )
     .expect("the class pairs with the cohort")
+}
+
+/// One usage **line** on the baseline market: a meter, a dimension, a class.
+///
+/// The pair D-196 added, which `eligibility_of` cannot express: it builds a
+/// recurring key, and a recurring key carrying a meter is refused by
+/// `check_usage_line_axes`.
+fn usage_line_of(meter: &str, dimension: &str, class: PriceEligibility) -> ScopeKey {
+    ScopeKey::new(
+        plan(),
+        eur(),
+        eu(),
+        phase(),
+        class,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("the class pairs with cohort none")
+    .with_usage_line(
+        Some(Meter::new(meter).expect("a non-blank meter")),
+        DimensionKey::new(dimension),
+    )
+    .expect("a usage row carries a usage line")
 }
 
 fn windows_of(scope_key: ScopeKey, intervals: Vec<WindowInterval>) -> KeyWindows {
@@ -744,6 +767,92 @@ fn the_conjunction_is_eligibility_resolved() {
     assert_eq!(
         key_answer(&surface.keys[0], Predicate::ActiveWindowWithHorizon),
         &PredicateAnswer::Satisfied
+    );
+}
+
+#[test]
+fn two_meters_of_one_market_are_not_siblings() {
+    // Most-specific-wins ranks keys that compete for **one** sale, and two meters
+    // of one market do not: a purchase binds both lines, so a `new_subscriptions_only`
+    // row on `api-calls` says nothing about who may buy `storage-gb`. The
+    // `storage-gb` line is staged **uncovered**, so a resolution that mistook the
+    // two for siblings would drop it from the roster and answer over a key with no
+    // window — which is the plan D-196 exists to make storable.
+    let newcomers_line = usage_line_of("api-calls", "", PriceEligibility::NewSubscriptionsOnly);
+    let everyone_line = usage_line_of("storage-gb", "", PriceEligibility::AllSubscriptions);
+
+    let facts = PinnedFacts {
+        price_keys: vec![newcomers_line.clone(), everyone_line.clone()],
+        windows: vec![
+            windows_of(
+                newcomers_line,
+                vec![WindowInterval::new(at(0), None, WindowState::Active)],
+            ),
+            windows_of(everyone_line, Vec::new()),
+        ],
+        ..sellable_facts()
+    };
+
+    let surface = surface_of(facts);
+
+    assert_eq!(
+        surface.keys.len(),
+        2,
+        "both meters' lines are gate inputs: {:?}",
+        surface
+            .keys
+            .iter()
+            .map(|key| key.scope_key.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        surface.plan_market_verdict(),
+        PlanMarketVerdict::NotSellable,
+        "the uncovered line is what answers, and a failed predicate outranks the two unevaluable \
+         ones"
+    );
+}
+
+#[test]
+fn two_dimensions_of_one_meter_are_not_siblings() {
+    // The tenth axis on its own, with the ninth held equal: one meter, two
+    // dimensions. Without this case the one above would still hold if `siblings`
+    // compared `meter` and stopped there, which is exactly the partial fix the
+    // ten-axis key invites.
+    let newcomers_line = usage_line_of(
+        "api-calls",
+        "eu-west",
+        PriceEligibility::NewSubscriptionsOnly,
+    );
+    let everyone_line = usage_line_of("api-calls", "eu-east", PriceEligibility::AllSubscriptions);
+
+    let facts = PinnedFacts {
+        price_keys: vec![newcomers_line.clone(), everyone_line.clone()],
+        windows: vec![
+            windows_of(
+                newcomers_line,
+                vec![WindowInterval::new(at(0), None, WindowState::Active)],
+            ),
+            windows_of(everyone_line, Vec::new()),
+        ],
+        ..sellable_facts()
+    };
+
+    let surface = surface_of(facts);
+
+    assert_eq!(
+        surface.keys.len(),
+        2,
+        "both dimensions of the one meter are gate inputs: {:?}",
+        surface
+            .keys
+            .iter()
+            .map(|key| key.scope_key.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        surface.plan_market_verdict(),
+        PlanMarketVerdict::NotSellable
     );
 }
 

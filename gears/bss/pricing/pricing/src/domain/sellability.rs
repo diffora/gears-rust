@@ -602,9 +602,13 @@ impl SellabilitySurface {
 ///   enables a sale.
 /// - **`new_subscriptions_only` wins over `all_subscriptions` where both exist**,
 ///   which is `PriceEligibility`'s own most-specific-wins order (W3). Sibling
-///   keys are the ones equal on every *other* axis; `cohort` is `none` on both
-///   surviving classes by construction, so the axes that discriminate a sibling
-///   are the plan, the overlay, the phase and the charge kind.
+///   keys are the ones equal on every *other* axis — eight of them since D-196,
+///   and [`ScopeKey::is_sibling_of`] is where they are enumerated, because that
+///   is where the compiler can insist the list stays complete. **This function
+///   had its own six-axis copy of the comparison until 2026-08-06**, which read
+///   two usage lines of one market as siblings and dropped the less specific one
+///   from the roster below: the gate then answered over a market whose second
+///   line it had never looked at a window for.
 fn gate_input_keys(
     price_keys: &[ScopeKey],
     currency: &CurrencyCode,
@@ -621,7 +625,7 @@ fn gate_input_keys(
         let most_specific = candidates
             .iter()
             .copied()
-            .filter(|sibling| siblings(sibling, key))
+            .filter(|sibling| sibling.is_sibling_of(key))
             .map(ScopeKey::price_eligibility)
             .max()
             .unwrap_or_else(|| key.price_eligibility());
@@ -631,17 +635,6 @@ fn gate_input_keys(
     }
     resolved.sort_by_key(ScopeKey::to_string);
     resolved
-}
-
-/// Do these two keys compete for one sale — equal on every axis but the
-/// eligibility class and the cohort?
-fn siblings(left: &ScopeKey, right: &ScopeKey) -> bool {
-    left.plan_id() == right.plan_id()
-        && left.currency() == right.currency()
-        && left.region() == right.region()
-        && left.price_overlay() == right.price_overlay()
-        && left.phase() == right.phase()
-        && left.charge_kind() == right.charge_kind()
 }
 
 /// One key's window facts and its per-key predicates.

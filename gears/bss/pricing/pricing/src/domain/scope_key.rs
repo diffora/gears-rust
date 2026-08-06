@@ -692,6 +692,48 @@ impl ScopeKey {
     pub const fn dimension_key(&self) -> &DimensionKey {
         &self.dimension_key
     }
+
+    /// Do these two keys compete for **one** sale — equal on every axis but the
+    /// eligibility class and the cohort?
+    ///
+    /// The relation W3's most-specific-wins ranks over
+    /// (`design/07-pricewindow-linkage.md`, PRD §1.4): two rows a single purchase
+    /// could bind, of which the more specific class is the one that binds. Two
+    /// rows that are *not* siblings are two different things being bought, and
+    /// ranking them against each other drops one from the sale entirely.
+    ///
+    /// **It lives on the key, and it destructures.** The caller that needs this is
+    /// `domain::sellability`, and it had its own six-axis spelling until 2026-08-06
+    /// — which read two usage lines of one market as siblings and dropped the less
+    /// specific one from the sellability gate, answering over a key whose window
+    /// plane nobody had looked at. A comparison stated as "every axis except two"
+    /// is the one kind that cannot be written safely at a distance: it has to be
+    /// re-read whenever the key gains an axis, and nothing makes that happen. So
+    /// the `let Self { .. }` below carries **no** rest pattern, and an eleventh axis
+    /// is a compile error here rather than a gate input silently disappearing.
+    #[must_use]
+    pub fn is_sibling_of(&self, other: &Self) -> bool {
+        let Self {
+            plan_id,
+            currency,
+            region,
+            price_overlay,
+            phase,
+            price_eligibility: _,
+            charge_kind,
+            cohort: _,
+            meter,
+            dimension_key,
+        } = self;
+        *plan_id == other.plan_id
+            && *currency == other.currency
+            && *region == other.region
+            && *price_overlay == other.price_overlay
+            && *phase == other.phase
+            && *charge_kind == other.charge_kind
+            && *meter == other.meter
+            && *dimension_key == other.dimension_key
+    }
 }
 
 impl fmt::Display for ScopeKey {
