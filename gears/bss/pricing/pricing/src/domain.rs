@@ -6,6 +6,7 @@
 
 pub mod approval;
 pub mod audit;
+pub mod bundle;
 pub mod concurrency;
 pub mod coverage;
 pub mod error;
