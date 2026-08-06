@@ -86,11 +86,10 @@ use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
 use crate::api::rest::state::AuthoringState;
-use crate::domain::concurrency::{PolicyTag, TaxonomyTagEntry};
 use crate::domain::error::DomainError;
 use crate::domain::overlay::ScopeValue;
 use crate::domain::taxonomy::{
-    RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState,
+    RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState, tag_of,
 };
 use crate::infra::storage::repo_failure;
 
@@ -345,44 +344,16 @@ async fn put_taxonomy(
     let request: PutTaxonomyRequest = preconditions::parse_body(&body)?;
     let entries = authored_entries(class, request.values)?;
 
-    // **This comparison is NOT atomic with the write, and the window it leaves is
-    // real.** The read below is on a plain connection; `replace` opens its own
-    // transaction and re-reads, but nothing re-compares the tag there. So this
-    // refuses the **sequential** lost update — author reads, someone else writes
-    // and commits, author writes later — and does not refuse two `PUT`s whose
-    // reads both precede either commit.
+    // **The premise is handed to the store, not tested here** (D-186, and
+    // `infra::threshold::propose`'s arrangement): this module refuses a request
+    // it cannot *understand* — an absent or malformed tag, which
+    // `if_match_policy` already did above — and the store refuses one whose
+    // premise has *moved*, inside the transaction that writes.
     //
-    // The sentence that used to stand here is **withdrawn as false**. It read
-    // that "the narrow window it leaves is closed by the retire guard, which runs
-    // on the transaction's own read". It is not: the guard refuses retirement
-    // only of values with *published* references, and a value a concurrent author
-    // has just added has none by construction — so the guard is structurally
-    // incapable of closing exactly this window, and closes it only for values
-    // already in production use, which is the case that needed it least.
-    //
-    // The concrete surviving failure: A and B both hold tag T over `[alpha]`; A
-    // PUTs `[alpha, acme]` and B PUTs `[alpha, zenith]`; both pre-checks pass,
-    // A commits, B's transaction then reads `[alpha, acme]`, finds `acme` absent
-    // from its body, and retires it. Two 200s and a silently retired brand.
-    //
-    // The fix is to pass the asserted tag into `replace` and compare it against
-    // the `held` that transaction already reads — `infra::threshold`'s
-    // `require_policy_match` is that arrangement. It is owed, and recorded as
-    // `T-7` in the owed register.
-    let held = state
-        .taxonomies
-        .list(&scope, tenant, class)
-        .await
-        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
-    if tag_of(class, &held) != asserted {
-        return Err(CanonicalError::from(DomainError::StaleVersion(format!(
-            "the If-Match tag no longer describes the {class} taxonomy: it changed after you \
-             read it. Re-read the GET and author against the tag it hands back — a PUT replaces \
-             the whole value set, so applying yours over a moved one would retire whatever the \
-             other author added"
-        ))));
-    }
-
+    // It was compared here once, against a read on a plain connection, and that
+    // was a real hole rather than a tidiness question: the `PUT` replaces the
+    // whole set, so two callers whose reads both precede either commit each
+    // passed, and the second one's write retired whatever the first had added.
     let result = state
         .taxonomies
         .replace(
@@ -390,10 +361,20 @@ async fn put_taxonomy(
             tenant,
             class,
             entries,
+            &asserted,
             audit_stamp(&ctx, now, correlation),
         )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    if result.stale {
+        return Err(CanonicalError::from(DomainError::StaleVersion(format!(
+            "the If-Match tag no longer describes the {class} taxonomy: it changed after you \
+             read it. Re-read the GET and author against the tag it hands back — a PUT replaces \
+             the whole value set, so applying yours over a moved one would retire whatever the \
+             other author added"
+        ))));
+    }
 
     if let Some(violation) = result.report.violations.first() {
         // The **first** rather than all of them, for `overlay_rules::conflict_of`'s
@@ -427,21 +408,6 @@ fn render(class: TaxonomyClass, entries: &[TaxonomyEntry]) -> Response {
         }),
     )
         .into_response()
-}
-
-fn tag_of(class: TaxonomyClass, entries: &[TaxonomyEntry]) -> PolicyTag {
-    PolicyTag::of_taxonomy(
-        class.path_segment(),
-        entries.iter().map(|entry| TaxonomyTagEntry {
-            value: entry.value.as_str(),
-            state: entry.state.as_str(),
-            display_name: entry.display_name.as_str(),
-            // Every field `view_of` renders, and the two below are the ones the
-            // first version omitted — see `PolicyTag::of_taxonomy`.
-            tax_category: entry.tax.as_ref().and_then(|t| t.tax_category.as_deref()),
-            tax_rate_present: entry.tax.as_ref().is_some_and(|t| t.tax_rate_present),
-        }),
-    )
 }
 
 fn view_of(entry: &TaxonomyEntry) -> TaxonomyValueView {

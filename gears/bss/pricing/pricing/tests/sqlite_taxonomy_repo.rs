@@ -32,10 +32,10 @@ use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::overlay::ScopeValue;
 use bss_pricing::domain::scope_key::Region;
 use bss_pricing::domain::taxonomy::{
-    RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState,
+    RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState, tag_of,
 };
 use bss_pricing::infra::storage::repo::taxonomy_repo::{
-    TaxonomyRepo, active_regions, references_to, region_readiness,
+    Replaced, TaxonomyRepo, active_regions, references_to, region_readiness,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
@@ -81,6 +81,33 @@ fn values(entries: &[TaxonomyEntry]) -> Vec<(&str, TaxonomyState)> {
         .iter()
         .map(|e| (e.value.as_str(), e.state))
         .collect()
+}
+
+/// `replace` under the tag the store currently renders.
+///
+/// Most cases in this file are not about the precondition — they assert what a
+/// `PUT` *does* — and reading the tag immediately before the call is exactly what
+/// a well-behaved caller does. The two cases that *are* about the precondition
+/// call `replace` directly with a tag they chose.
+///
+/// Returns the `Result` rather than unwrapping, so a call site can still say what
+/// it expects of a failure.
+async fn replace_now(
+    repo: &TaxonomyRepo,
+    scope: &AccessScope,
+    class: TaxonomyClass,
+    entries: Vec<TaxonomyEntry>,
+) -> Result<Replaced, bss_pricing::infra::storage::RepoError> {
+    let held = repo.list(scope, TENANT, class).await.expect("read back");
+    repo.replace(
+        scope,
+        TENANT,
+        class,
+        entries,
+        &tag_of(class, &held),
+        stamp(),
+    )
+    .await
 }
 
 /// A migrated in-memory database, as every repository suite in this crate builds one.
@@ -134,19 +161,17 @@ async fn audit_records_for(provider: &DBProvider<DbError>, subject_ref: &str) ->
 async fn a_first_put_declares_the_whole_set() {
     let (repo, scope, _provider) = harness().await;
 
-    let result = repo
-        .replace(
-            &scope,
-            TENANT,
-            TaxonomyClass::Brand,
-            vec![
-                entry("acme", TaxonomyState::Active),
-                entry("zenith", TaxonomyState::Active),
-            ],
-            stamp(),
-        )
-        .await
-        .expect("the first put lands");
+    let result = replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Brand,
+        vec![
+            entry("acme", TaxonomyState::Active),
+            entry("zenith", TaxonomyState::Active),
+        ],
+    )
+    .await
+    .expect("the first put lands");
 
     assert!(result.report.is_publishable(), "nothing to guard yet");
     assert_eq!(
@@ -168,29 +193,26 @@ async fn a_first_put_declares_the_whole_set() {
 #[tokio::test]
 async fn a_value_the_body_omits_is_retired_and_still_readable() {
     let (repo, scope, _provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Brand,
         vec![
             entry("acme", TaxonomyState::Active),
             entry("zenith", TaxonomyState::Active),
         ],
-        stamp(),
     )
     .await
     .expect("seed");
 
-    let result = repo
-        .replace(
-            &scope,
-            TENANT,
-            TaxonomyClass::Brand,
-            vec![entry("acme", TaxonomyState::Active)],
-            stamp(),
-        )
-        .await
-        .expect("the second put lands");
+    let result = replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Brand,
+        vec![entry("acme", TaxonomyState::Active)],
+    )
+    .await
+    .expect("the second put lands");
 
     assert_eq!(
         values(&result.entries),
@@ -206,29 +228,26 @@ async fn a_value_the_body_omits_is_retired_and_still_readable() {
 #[tokio::test]
 async fn re_adding_a_retired_value_re_activates_it() {
     let (repo, scope, _provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Partner,
         vec![entry("reseller-a", TaxonomyState::Active)],
-        stamp(),
     )
     .await
     .expect("seed");
-    repo.replace(&scope, TENANT, TaxonomyClass::Partner, vec![], stamp())
+    replace_now(&repo, &scope, TaxonomyClass::Partner, vec![])
         .await
         .expect("retire it");
 
-    let result = repo
-        .replace(
-            &scope,
-            TENANT,
-            TaxonomyClass::Partner,
-            vec![entry("reseller-a", TaxonomyState::Active)],
-            stamp(),
-        )
-        .await
-        .expect("re-activate");
+    let result = replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Partner,
+        vec![entry("reseller-a", TaxonomyState::Active)],
+    )
+    .await
+    .expect("re-activate");
 
     assert_eq!(
         values(&result.entries),
@@ -248,26 +267,23 @@ async fn re_adding_a_retired_value_re_activates_it() {
 #[tokio::test]
 async fn an_explicit_retirement_writes_the_retired_state() {
     let (repo, scope, _provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::OrgTier,
         vec![entry("gold", TaxonomyState::Active)],
-        stamp(),
     )
     .await
     .expect("seed");
 
-    let result = repo
-        .replace(
-            &scope,
-            TENANT,
-            TaxonomyClass::OrgTier,
-            vec![entry("gold", TaxonomyState::Retired)],
-            stamp(),
-        )
-        .await
-        .expect("explicit retirement");
+    let result = replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::OrgTier,
+        vec![entry("gold", TaxonomyState::Retired)],
+    )
+    .await
+    .expect("explicit retirement");
 
     assert_eq!(values(&result.entries), [("gold", TaxonomyState::Retired)]);
 }
@@ -283,12 +299,11 @@ async fn an_explicit_retirement_writes_the_retired_state() {
 #[tokio::test]
 async fn an_explicit_retirement_of_a_referenced_value_is_refused_too() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Brand,
         vec![entry("in-use", TaxonomyState::Active)],
-        stamp(),
     )
     .await
     .expect("seed");
@@ -301,16 +316,14 @@ async fn an_explicit_retirement_of_a_referenced_value_is_refused_too() {
     )
     .await;
 
-    let result = repo
-        .replace(
-            &scope,
-            TENANT,
-            TaxonomyClass::Brand,
-            vec![entry("in-use", TaxonomyState::Retired)],
-            stamp(),
-        )
-        .await
-        .expect("refused, not errored");
+    let result = replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Brand,
+        vec![entry("in-use", TaxonomyState::Retired)],
+    )
+    .await
+    .expect("refused, not errored");
 
     assert_eq!(
         result
@@ -338,18 +351,17 @@ async fn an_explicit_retirement_of_a_referenced_value_is_refused_too() {
 async fn a_put_on_one_class_leaves_the_other_three_alone() {
     let (repo, scope, _provider) = harness().await;
     for class in TaxonomyClass::ALL {
-        repo.replace(
+        replace_now(
+            &repo,
             &scope,
-            TENANT,
             *class,
             vec![entry("shared-value", TaxonomyState::Active)],
-            stamp(),
         )
         .await
         .expect("seed each");
     }
 
-    repo.replace(&scope, TENANT, TaxonomyClass::Brand, vec![], stamp())
+    replace_now(&repo, &scope, TaxonomyClass::Brand, vec![])
         .await
         .expect("clear the brand taxonomy");
 
@@ -370,12 +382,11 @@ async fn a_put_on_one_class_leaves_the_other_three_alone() {
 #[tokio::test]
 async fn a_foreign_tenants_taxonomy_is_invisible() {
     let (repo, scope, _provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Brand,
         vec![entry("acme", TaxonomyState::Active)],
-        stamp(),
     )
     .await
     .expect("seed");
@@ -393,6 +404,115 @@ async fn a_foreign_tenants_taxonomy_is_invisible() {
         foreign.is_empty(),
         "another tenant's values are not visible"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The `If-Match` premise, tested where it is enforced (T-7).
+// ---------------------------------------------------------------------------
+
+/// `replace` refuses a tag the store has moved past — **inside its own
+/// transaction**, not at the transport.
+///
+/// This is the property the handler-side comparison could not provide. That check
+/// reads on a plain connection and the write re-reads in a transaction, so two
+/// `PUT`s whose reads both precede either commit both pass it: A commits
+/// `[alpha, acme]`, B's transaction then finds `acme` absent from its body and
+/// **retires it**, and both callers get 200. The retire guard cannot close that
+/// window — a value a concurrent author just added has no published references by
+/// construction, so it is exactly the case the guard says nothing about.
+///
+/// Driven here by moving the store between the caller's read and the call, which
+/// is what a concurrent commit does, without needing two live transactions.
+#[tokio::test]
+async fn replace_refuses_a_tag_the_store_has_moved_past() {
+    let (repo, scope, _provider) = harness().await;
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        vec![entry("alpha", TaxonomyState::Active)],
+        &tag_of(TaxonomyClass::Brand, &[]),
+        stamp(),
+    )
+    .await
+    .expect("seed");
+
+    // The tag our caller is holding, read before the world moved.
+    let held = repo
+        .list(&scope, TENANT, TaxonomyClass::Brand)
+        .await
+        .expect("read");
+    let stale = tag_of(TaxonomyClass::Brand, &held);
+
+    // Somebody else lands a value. This is A's commit in the scenario above.
+    repo.replace(
+        &scope,
+        TENANT,
+        TaxonomyClass::Brand,
+        vec![
+            entry("alpha", TaxonomyState::Active),
+            entry("acme", TaxonomyState::Active),
+        ],
+        &stale,
+        stamp(),
+    )
+    .await
+    .expect("the other author lands");
+
+    // Our caller now writes under the tag they read first. Under the old
+    // arrangement this landed and retired `acme`.
+    let result = repo
+        .replace(
+            &scope,
+            TENANT,
+            TaxonomyClass::Brand,
+            vec![
+                entry("alpha", TaxonomyState::Active),
+                entry("zenith", TaxonomyState::Active),
+            ],
+            &stale,
+            stamp(),
+        )
+        .await
+        .expect("refused, not errored");
+
+    assert!(
+        result.stale,
+        "the asserted tag no longer describes the store"
+    );
+    assert_eq!(
+        values(&result.entries),
+        [
+            ("acme", TaxonomyState::Active),
+            ("alpha", TaxonomyState::Active)
+        ],
+        "and nothing was written: the other author's value survives, ours is absent"
+    );
+}
+
+/// The matching tag is accepted, so the guard is not simply refusing everything.
+#[tokio::test]
+async fn replace_accepts_the_tag_that_describes_the_store() {
+    let (repo, scope, _provider) = harness().await;
+    let held = repo
+        .list(&scope, TENANT, TaxonomyClass::Brand)
+        .await
+        .expect("read");
+
+    let result = repo
+        .replace(
+            &scope,
+            TENANT,
+            TaxonomyClass::Brand,
+            vec![entry("alpha", TaxonomyState::Active)],
+            &tag_of(TaxonomyClass::Brand, &held),
+            stamp(),
+        )
+        .await
+        .expect("accepted");
+
+    assert!(!result.stale);
+    assert_eq!(values(&result.entries), [("alpha", TaxonomyState::Active)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -445,19 +565,17 @@ async fn publish_overlay_scoped(
 async fn a_published_overlay_scope_blocks_the_retirement_in_every_class() {
     for class in TaxonomyClass::ALL {
         let (repo, scope, provider) = harness().await;
-        repo.replace(
+        replace_now(
+            &repo,
             &scope,
-            TENANT,
             *class,
             vec![entry("in-use", TaxonomyState::Active)],
-            stamp(),
         )
         .await
         .expect("seed");
         publish_overlay_scoped(&provider, 0x0e_1a, *class, "in-use", "published").await;
 
-        let result = repo
-            .replace(&scope, TENANT, *class, vec![], stamp())
+        let result = replace_now(&repo, &scope, *class, vec![])
             .await
             .expect("the call succeeds; the retirement is refused");
 
@@ -484,19 +602,17 @@ async fn a_published_overlay_scope_blocks_the_retirement_in_every_class() {
 #[tokio::test]
 async fn a_draft_overlay_scope_does_not_block_the_retirement() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Brand,
         vec![entry("acme", TaxonomyState::Active)],
-        stamp(),
     )
     .await
     .expect("seed");
     publish_overlay_scoped(&provider, 0x0e_1b, TaxonomyClass::Brand, "acme", "draft").await;
 
-    let result = repo
-        .replace(&scope, TENANT, TaxonomyClass::Brand, vec![], stamp())
+    let result = replace_now(&repo, &scope, TaxonomyClass::Brand, vec![])
         .await
         .expect("put");
 
@@ -643,19 +759,17 @@ async fn the_row_plane_is_counted_for_region_alone() {
 #[tokio::test]
 async fn a_published_price_row_blocks_its_regions_retirement() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Region,
         vec![region_entry("eu", Some("standard"), true)],
-        stamp(),
     )
     .await
     .expect("seed");
     publish_price_row_in(&provider, "eu").await;
 
-    let result = repo
-        .replace(&scope, TENANT, TaxonomyClass::Region, vec![], stamp())
+    let result = replace_now(&repo, &scope, TaxonomyClass::Region, vec![])
         .await
         .expect("refused, not errored");
 
@@ -685,12 +799,11 @@ async fn a_published_price_row_blocks_its_regions_retirement() {
 #[tokio::test]
 async fn readiness_distinguishes_an_unknown_region_from_one_with_no_category() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Region,
         vec![region_entry("eu", None, true)],
-        stamp(),
     )
     .await
     .expect("seed");
@@ -730,12 +843,11 @@ async fn readiness_distinguishes_an_unknown_region_from_one_with_no_category() {
 #[tokio::test]
 async fn the_region_markers_round_trip_through_the_put() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Region,
         vec![region_entry("eu", Some("standard"), true)],
-        stamp(),
     )
     .await
     .expect("seed");
@@ -758,16 +870,15 @@ async fn the_region_markers_round_trip_through_the_put() {
 #[tokio::test]
 async fn a_retired_region_has_no_readiness_and_is_not_in_the_active_universe() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Region,
         vec![region_entry("eu", Some("standard"), true)],
-        stamp(),
     )
     .await
     .expect("seed");
-    repo.replace(&scope, TENANT, TaxonomyClass::Region, vec![], stamp())
+    replace_now(&repo, &scope, TaxonomyClass::Region, vec![])
         .await
         .expect("retire it");
 
@@ -794,24 +905,22 @@ async fn a_retired_region_has_no_readiness_and_is_not_in_the_active_universe() {
 #[tokio::test]
 async fn the_active_region_universe_excludes_retirements() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Region,
         vec![
             region_entry("eu", Some("standard"), true),
             region_entry("us", None, false),
         ],
-        stamp(),
     )
     .await
     .expect("seed");
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Region,
         vec![region_entry("eu", Some("standard"), true)],
-        stamp(),
     )
     .await
     .expect("retire us");
@@ -834,15 +943,14 @@ async fn the_active_region_universe_excludes_retirements() {
 #[tokio::test]
 async fn a_put_writes_exactly_one_audit_record_naming_the_taxonomy() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Brand,
         vec![
             entry("acme", TaxonomyState::Active),
             entry("zenith", TaxonomyState::Active),
         ],
-        stamp(),
     )
     .await
     .expect("put");
@@ -856,12 +964,11 @@ async fn a_put_writes_exactly_one_audit_record_naming_the_taxonomy() {
 #[tokio::test]
 async fn a_refused_put_writes_no_audit_record() {
     let (repo, scope, provider) = harness().await;
-    repo.replace(
+    replace_now(
+        &repo,
         &scope,
-        TENANT,
         TaxonomyClass::Brand,
         vec![entry("in-use", TaxonomyState::Active)],
-        stamp(),
     )
     .await
     .expect("seed");
@@ -874,7 +981,7 @@ async fn a_refused_put_writes_no_audit_record() {
     )
     .await;
 
-    repo.replace(&scope, TENANT, TaxonomyClass::Brand, vec![], stamp())
+    replace_now(&repo, &scope, TaxonomyClass::Brand, vec![])
         .await
         .expect("refused, not errored");
 

@@ -56,6 +56,7 @@ use std::fmt;
 
 use toolkit_macros::domain_model;
 
+use crate::domain::concurrency::{PolicyTag, TaxonomyTagEntry};
 use crate::domain::overlay::{ScopeClass, ScopeValue};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::Region;
@@ -256,6 +257,27 @@ pub struct TaxonomyEntry {
     /// D-01's markers, on the region taxonomy only. `None` on the other three,
     /// where the columns do not exist.
     pub tax: Option<RegionTaxMarkers>,
+}
+
+/// The entity tag of one taxonomy's representation (§5's `ETag` cell).
+///
+/// **Here rather than in the surface**, because two layers need it and they must
+/// not compute it twice. The `GET` renders it, and the `PUT`'s precondition is
+/// compared against it **inside the write transaction** — so a second
+/// construction would be a second answer to "what does this taxonomy hash to",
+/// and the two would disagree exactly when it mattered.
+#[must_use]
+pub fn tag_of(class: TaxonomyClass, entries: &[TaxonomyEntry]) -> PolicyTag {
+    PolicyTag::of_taxonomy(
+        class.path_segment(),
+        entries.iter().map(|entry| TaxonomyTagEntry {
+            value: entry.value.as_str(),
+            state: entry.state.as_str(),
+            display_name: entry.display_name.as_str(),
+            tax_category: entry.tax.as_ref().and_then(|t| t.tax_category.as_deref()),
+            tax_rate_present: entry.tax.as_ref().is_some_and(|t| t.tax_rate_present),
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------

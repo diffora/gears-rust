@@ -69,10 +69,12 @@ use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::concurrency::PolicyTag;
 use crate::domain::overlay::ScopeValue;
 use crate::domain::scope_key::Region;
 use crate::domain::taxonomy::{
-    RegionTaxMarkers, TaxonomyClass, TaxonomyEntry, TaxonomyState, ValueReferences, check_retirable,
+    RegionTaxMarkers, TaxonomyClass, TaxonomyEntry, TaxonomyState, ValueReferences,
+    check_retirable, tag_of,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
@@ -158,15 +160,17 @@ impl TaxonomyRepo {
         tenant_id: Uuid,
         class: TaxonomyClass,
         entries: Vec<TaxonomyEntry>,
+        asserted: &PolicyTag,
         stamp: AuditStamp,
     ) -> Result<Replaced, RepoError> {
         let scope = scope.clone();
+        let asserted = asserted.clone();
         let (_, outcome) = self
             .db
             .db()
             .in_transaction::<Replaced, RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    apply_replace(txn, &scope, tenant_id, class, entries, stamp).await
+                    apply_replace(txn, &scope, tenant_id, class, entries, &asserted, stamp).await
                 })
             })
             .await;
@@ -186,6 +190,14 @@ pub struct Replaced {
     pub entries: Vec<TaxonomyEntry>,
     /// Empty on success; `TAXONOMY_VALUE_IN_USE` violations otherwise.
     pub report: ValidationReport,
+    /// The asserted `If-Match` tag no longer described the stored taxonomy, so
+    /// **nothing was written**.
+    ///
+    /// A flag rather than a `RepoError`, for the same reason `report` is not one:
+    /// §5 types this refusal 409 `STALE_VERSION` and the caller renders the
+    /// taxonomy either way — on refusal it is the one the operator must
+    /// re-author against.
+    pub stale: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -383,9 +395,33 @@ async fn apply_replace(
     tenant_id: Uuid,
     class: TaxonomyClass,
     entries: Vec<TaxonomyEntry>,
+    asserted: &PolicyTag,
     stamp: AuditStamp,
 ) -> Result<Replaced, RepoError> {
     let held = list_on(runner, scope, tenant_id, class).await?;
+
+    // **The `If-Match` premise is tested here, and only here** — D-186's division
+    // of labour, and `infra::threshold::propose`'s arrangement exactly: the
+    // transport refuses a request it cannot *understand*, and the store refuses
+    // one whose premise has *moved*.
+    //
+    // A comparison in the handler reads the world, decides, and then hands the
+    // decision to a statement that races it. That is not hypothetical here: the
+    // `PUT` is a whole-set replacement, so two callers whose reads both precede
+    // either commit each pass a handler-side check, and the second one's write
+    // **retires** whatever the first added — a value the retire guard cannot
+    // protect, because a value just created has no published references by
+    // construction. Both callers then see 200.
+    //
+    // Computed from the same `held` the write below works from, so there is no
+    // second read to disagree with.
+    if tag_of(class, &held) != *asserted {
+        return Ok(Replaced {
+            entries: held,
+            report: ValidationReport::default(),
+            stale: true,
+        });
+    }
     let submitted: BTreeMap<String, TaxonomyEntry> = entries
         .into_iter()
         .map(|entry| (entry.value.as_str().to_owned(), entry))
@@ -417,6 +453,7 @@ async fn apply_replace(
         return Ok(Replaced {
             entries: held,
             report,
+            stale: false,
         });
     }
 
@@ -426,6 +463,7 @@ async fn apply_replace(
     Ok(Replaced {
         entries: now,
         report,
+        stale: false,
     })
 }
 
