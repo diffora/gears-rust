@@ -408,6 +408,15 @@ fn a_usage_only_plan_pricing_two_meters_owes_every_market_for_each_of_them() {
     // A plan MAY price several meteringUnits (D-103), so M2 is legal — and
     // being legal is exactly why its coverage has to be checked. The market set
     // here is the union of the usage rows' markets.
+    //
+    // **This case was a rule about a subject the store could not hold, and since
+    // D-196 it is not** (clause 4, 2026-08-06). The canonical scope key carried
+    // no `meter`, so the two `eur/EU` rows below rendered **one** key and the
+    // second was refused `DUPLICATE_SCOPE_KEY` at authoring — this test asserted
+    // publishability for a shape no plan could reach, and D-196's entry recorded
+    // it as such while the fork was open. The key now carries the line, and
+    // `sqlite_price_repo::two_usage_lines_of_one_market_both_author` is the same
+    // pair going through the door it used to bounce off.
     let mut subject = shape(BillingCycle::Usage);
     subject.rows = vec![
         usage(0xd1, "eur", "EU", "cloudlets", phase_id(TERMINAL)),
