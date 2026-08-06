@@ -66,7 +66,7 @@ use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::storage::repo::{BundleComponentDraft, CompositionDraft, NewBundle};
 
-const TAG: &str = "BSS Pricing - Bundles";
+const TAG: &str = "BSS Pricing Bundles";
 
 /// `POST` — create a bundle on its plan.
 pub const BUNDLES: &str = "/bss-pricing/v1/bundles";
