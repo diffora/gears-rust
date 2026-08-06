@@ -4,8 +4,14 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use uuid::Uuid;
 
-use super::{CUTOVER_INSTANT_PASSED, check_cutover_instant, compose_cutover_windows};
+use super::{
+    CUTOVER_INSTANT_PASSED, check_cutover_instant, compose_cutover_windows, grandfathered_copy_key,
+};
 use crate::domain::error::DomainError;
+use crate::domain::money::CurrencyCode;
+use crate::domain::scope_key::{
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+};
 use crate::domain::supersession::{
     ChangeoverMoment, MAX_BATCHING_DELAY, NamedWindow, SUPERSESSION_INSTANT_PASSED,
     changeover_floor, check_changeover_instant,
@@ -231,4 +237,102 @@ fn cancelled_and_expired_windows_are_not_coverage() {
         .expect_err("a key whose only windows are cancelled is dormant");
 
     assert!(matches!(err, DomainError::CutoverGap(_)), "{err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// `inst-co-copy`: the grandfathered copy's new generation key
+// ---------------------------------------------------------------------------
+
+fn predecessor_key() -> ScopeKey {
+    ScopeKey::new(
+        PlanId::new(Uuid::from_u128(0x9_1a4)),
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("EU").expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("all_subscriptions pairs with cohort none")
+}
+
+#[test]
+fn the_copy_lands_on_a_new_generation_of_the_predecessors_key() {
+    // `inst-co-copy`: only the copy moves. Every axis but the two the generation
+    // is made of is the predecessor's, or the copy would be filed under a key no
+    // resolution class reaches from the predecessor's market.
+    let copy = grandfathered_copy_key(&predecessor_key(), at(10), &[])
+        .expect("a fresh generation is mintable");
+
+    assert_eq!(
+        copy.price_eligibility(),
+        PriceEligibility::ExistingGrandfathered
+    );
+    assert_eq!(copy.cohort(), Cohort::Generation(at(10)));
+    assert_eq!(copy.currency(), predecessor_key().currency());
+    assert_eq!(copy.region(), predecessor_key().region());
+    assert_eq!(copy.phase(), predecessor_key().phase());
+    assert_eq!(copy.charge_kind(), predecessor_key().charge_kind());
+    assert_ne!(copy, predecessor_key());
+}
+
+#[test]
+fn the_copy_carries_the_predecessors_usage_line() {
+    // D-196 made the line two axes of the key. A copy that dropped it would be
+    // filed under the meterless line of the same market — a key the predecessor's
+    // subscribers never resolve to, and one that silently collides with the copy
+    // of a *different* meter's cutover on the same plan.
+    let metered = predecessor_key()
+        .with_usage_line(None, DimensionKey::none())
+        .expect("the recurring key carries no line");
+    let usage = ScopeKey::new(
+        PlanId::new(Uuid::from_u128(0x9_1a4)),
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("EU").expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("key")
+    .with_usage_line(
+        Some(Meter::new("cloudlets").expect("a non-blank meter")),
+        DimensionKey::new("region=eu"),
+    )
+    .expect("a usage key carries its line");
+    let _ = metered;
+
+    let copy = grandfathered_copy_key(&usage, at(10), &[]).expect("a metered generation");
+
+    assert_eq!(copy.meter().map(Meter::as_str), Some("cloudlets"));
+    assert_eq!(copy.dimension_key().as_str(), "region=eu");
+}
+
+#[test]
+fn a_generation_that_already_exists_is_refused_at_compose() {
+    // `inst-co-copy`: an instant equal to an existing generation's cohort is
+    // refused here rather than at the store, because at the store it arrives as a
+    // partial-UNIQUE violation inside the commit — a 500 for a request whose author
+    // only has to move the instant.
+    let err = grandfathered_copy_key(&predecessor_key(), at(10), &[Cohort::Generation(at(10))])
+        .expect_err("a second generation on one instant must be refused");
+
+    assert!(matches!(err, DomainError::DuplicateScopeKey(_)), "{err:?}");
+    assert!(
+        message(&err).contains(&at(10).to_rfc3339()),
+        "the refusal names the instant already taken: {}",
+        message(&err)
+    );
+}
+
+#[test]
+fn prior_generations_on_other_instants_are_untouched() {
+    let copy = grandfathered_copy_key(
+        &predecessor_key(),
+        at(10),
+        &[Cohort::Generation(at(3)), Cohort::Generation(at(7))],
+    )
+    .expect("prior generations do not block a new one");
+
+    assert_eq!(copy.cohort(), Cohort::Generation(at(10)));
 }

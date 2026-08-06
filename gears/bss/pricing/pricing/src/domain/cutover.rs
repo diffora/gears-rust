@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use toolkit_macros::domain_model;
 
 use crate::domain::error::DomainError;
+use crate::domain::scope_key::{Cohort, PriceEligibility, ScopeKey};
 use crate::domain::supersession::{ChangeoverMoment, NamedWindow, WindowShorten, changeover_floor};
 use crate::domain::window::{OCCUPYING_STATES, WindowInterval, WindowState};
 
@@ -165,6 +166,60 @@ pub fn compose_cutover_windows(
         copy: WindowInterval::new(cutover, None, WindowState::Scheduled),
         successor: WindowInterval::new(cutover, None, WindowState::Scheduled),
     })
+}
+
+/// Mint the grandfathered copy's key: the predecessor's, moved to a **new
+/// generation** (`inst-co-copy`).
+///
+/// **Only the copy moves.** The successor lands on the predecessor's own key —
+/// that is `inst-co-supersede`, and it is why the cutover commit has to flip the
+/// predecessor `published -> superseded` like a supersession does. So this function
+/// changes exactly two axes, `priceEligibility` and `cohort`, and carries every
+/// other one across, **including the usage line D-196 added**: a copy that dropped
+/// the line would be filed under the meterless line of the same market, a key the
+/// predecessor's subscribers never resolve to and one that would collide with the
+/// copy of a *different* meter's cutover on the same plan.
+///
+/// **The duplicate generation is refused here rather than at the store.** At the
+/// store it arrives as a partial-`UNIQUE` violation inside the commit — a raw driver
+/// error, which is a 500 carrying nothing an operator can act on, for a request
+/// whose author only has to move the instant. The same reasoning `inst-pr-return`
+/// gives for keeping the save-time read beside the index.
+///
+/// The D-144 millisecond quantum is checked by [`ScopeKey::new`], not here: the
+/// cohort axis is matched for equality against an instant another gear produced, so
+/// an unquantized value builds a key nobody can find rather than a key that is
+/// wrong.
+///
+/// # Errors
+///
+/// [`DomainError::DuplicateScopeKey`] when `existing_generations` already carries
+/// this instant; whatever [`ScopeKey::new`] refuses otherwise (the quantum, and the
+/// cohort/eligibility biconditional this function satisfies by construction).
+pub fn grandfathered_copy_key(
+    predecessor: &ScopeKey,
+    cutover: DateTime<Utc>,
+    existing_generations: &[Cohort],
+) -> Result<ScopeKey, DomainError> {
+    if existing_generations.contains(&Cohort::Generation(cutover)) {
+        return Err(DomainError::DuplicateScopeKey(format!(
+            "a grandfathered generation of this canonical scope key already carries the cutover              instant {}; every cutover mints its own generation, so name a different instant",
+            cutover.to_rfc3339()
+        )));
+    }
+    ScopeKey::new(
+        predecessor.plan_id(),
+        predecessor.currency().clone(),
+        predecessor.region().clone(),
+        predecessor.phase(),
+        PriceEligibility::ExistingGrandfathered,
+        predecessor.charge_kind(),
+        Cohort::Generation(cutover),
+    )?
+    .with_usage_line(
+        predecessor.meter().cloned(),
+        predecessor.dimension_key().clone(),
+    )
 }
 
 #[cfg(test)]
