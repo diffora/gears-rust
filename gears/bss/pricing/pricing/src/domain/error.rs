@@ -383,6 +383,16 @@ pub enum DomainError {
     /// The code is **§5's**, not minted here.
     #[error("region unknown: {0}")]
     RegionUnknown(String),
+    /// The preview names a `(currency, region)` this plan publishes no row on
+    /// (`04-currency-tax.md` §2, §5, `inst-pv-return`, **404**).
+    ///
+    /// A **not-found** and not an empty success: the caller asked for a price on
+    /// a market this plan does not sell, so the resource they named does not
+    /// exist — and a 200 carrying no price would be indistinguishable, at a
+    /// partner's end, from a price of zero. The catalog performs no FX, so there
+    /// is nothing else to answer with (`inst-mc-nofx`).
+    #[error("price row absent: {0}")]
+    PriceRowAbsent(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///

@@ -58,16 +58,21 @@
 
 use std::collections::BTreeSet;
 
+use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::config::LimitsConfig;
+use crate::domain::audit::AuditStamp;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete};
 use crate::domain::tax_display::TaxDisplayPolicy;
-use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::policy_object;
+use crate::infra::storage::{RepoError, contention_or_db};
 
 /// One tenant's authoring-time configuration, already resolved against the
 /// deployment defaults.
@@ -315,6 +320,63 @@ impl PolicyObjectRepo {
             tax_display_policy_mode: row.tax_display_policy_mode,
         })
     }
+}
+
+/// Set the tenant's tax-display enforcement mode (§5's `PUT`, C4).
+///
+/// **Upsert, because a tenant with no policy row is the ordinary state.** C4
+/// governs every tenant whether or not one has ever written a policy object, so
+/// the first `PUT` has to be able to create the row — and every other column
+/// then takes the schema default, which is the ratified launch value each of
+/// them documents.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn set_tax_display_policy(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    mode: TaxDisplayPolicy,
+    stamp: &AuditStamp,
+) -> Result<(), RepoError> {
+    let updated = policy_object::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            policy_object::Column::TaxDisplayPolicyMode,
+            Expr::value(mode.as_str()),
+        )
+        .col_expr(
+            policy_object::Column::UpdatedAtUtc,
+            Expr::value(stamp.recorded_at),
+        )
+        .col_expr(
+            policy_object::Column::UpdatedBy,
+            Expr::value(stamp.actor_principal_id),
+        )
+        .filter(Condition::all().add(policy_object::Column::TenantId.eq(tenant_id)))
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("update tax-display policy: {e}")))?;
+    if updated.rows_affected > 0 {
+        return Ok(());
+    }
+
+    let row = policy_object::ActiveModel {
+        tenant_id: Set(tenant_id),
+        tax_display_policy_mode: Set(mode.as_str().to_owned()),
+        updated_at_utc: Set(stamp.recorded_at),
+        updated_by: Set(stamp.actor_principal_id),
+        ..Default::default()
+    };
+    policy_object::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .map_err(|e| RepoError::Db(format!("scope pricing_policy_object: {e}")))?
+        .exec(runner)
+        .await
+        .map(|_| ())
+        .map_err(|e| contention_or_db(&e, "pricing_policy_object", "insert policy object"))
 }
 
 /// Resolve one cap column against the deployment default.

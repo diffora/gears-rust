@@ -771,6 +771,10 @@ impl RestApiCapability for BssPricingGear {
                 Arc::clone(&rt.authoring_api),
                 openapi,
             ))
+            .merge(crate::api::rest::tax_display_policy::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
             .merge(crate::api::rest::windows::router(
                 Arc::clone(&rt.governance_api),
                 openapi,
@@ -788,6 +792,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::publish::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::preview::router(
                 Arc::clone(&rt.governance_api),
                 openapi,
             ))

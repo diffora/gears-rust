@@ -255,6 +255,9 @@ impl From<DomainError> for CanonicalError {
             D::TaxonomyValueInUse(detail) => PlanResource::aborted(detail)
                 .with_reason(crate::domain::taxonomy::TAXONOMY_VALUE_IN_USE)
                 .create(),
+            D::PriceRowAbsent(detail) => PlanResource::not_found(detail)
+                .with_resource(crate::api::rest::preview::PRICE_ROW_ABSENT)
+                .create(),
             D::RegionUnknown(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation(
                     "scope_key.region",

@@ -39,9 +39,11 @@ use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
 use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
+use bss_pricing::api::rest::preview::PLAN_PREVIEW;
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
+use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
 use bss_pricing::api::rest::taxonomies::TAXONOMY;
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::api::rest::windows::{
@@ -320,6 +322,19 @@ fn census() -> Vec<Route> {
 /// `census()`.
 fn config_routes() -> Vec<Route> {
     vec![
+        // Slice 4's preview. `plan × preview` and **not** `plan × read`: §2 and
+        // §10 both make the grant an extra assignment the default role matrix
+        // does not carry, so filing it under `read` would hand it to every
+        // holder of the ordinary catalog read. Invisible to any allow/deny
+        // fixture — the same shape as `plan × publish`, and asserted for the
+        // same reason.
+        Route {
+            method: "GET",
+            path: PLAN_PREVIEW,
+            resource_type: labels::PLAN,
+            action: actions::PREVIEW,
+            mutating: false,
+        },
         // Slice 4's taxonomies are the other half of that separation, and the
         // contrast is the reason they sit here rather than with the authoring
         // routes. They gate on `config`, which is exactly what the threshold
@@ -337,6 +352,24 @@ fn config_routes() -> Vec<Route> {
         Route {
             method: "PUT",
             path: TAXONOMY,
+            resource_type: labels::CONFIG,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        // C4's enforcement mode. `config`, like the taxonomies and unlike the
+        // approval-threshold policy — this one softens how one publish rule
+        // reports one missing external fact; that one decides whether a change
+        // needs a second principal at all.
+        Route {
+            method: "GET",
+            path: TAX_DISPLAY_POLICY,
+            resource_type: labels::CONFIG,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PUT",
+            path: TAX_DISPLAY_POLICY,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
@@ -688,6 +721,13 @@ fn drive(
         // is the ordering `every_route_asks_the_catalogued_pair` depends on, and
         // the ordering this row would silently stop asserting if the header were
         // omitted instead.
+        ("PUT", TAX_DISPLAY_POLICY) => (
+            Some(serde_json::json!({ "mode": "fail_closed" })),
+            vec![(
+                "if-match",
+                "\"0000000000000000000000000000000000000000000000000000000000000000\"",
+            )],
+        ),
         ("PUT", TAXONOMY) => (
             Some(serde_json::json!({
                 "values": [{ "value": "acme", "display_name": "Acme" }]
@@ -755,6 +795,14 @@ async fn registered_paths() -> Vec<String> {
             ))
             .merge(bss_pricing::api::rest::taxonomies::router(
                 Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::tax_display_policy::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::preview::router(
+                Arc::clone(&harness.governance),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::bundles::router(

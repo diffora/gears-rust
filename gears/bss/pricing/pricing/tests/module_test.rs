@@ -77,9 +77,11 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS,
     };
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
+    use bss_pricing::api::rest::preview::PLAN_PREVIEW;
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
+    use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
     use bss_pricing::api::rest::taxonomies::TAXONOMY;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{
@@ -112,8 +114,13 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // This is the surface that had never existed — `inst-plv-scope` and
         // `inst-tx-region` both validate against these tables, and until now the
         // only way to put a value in one was direct SQL.
+        // Slice 4's base-price preview (§2, `inst-pv-api`). A read, gated on
+        // `plan × preview` — deliberately not `plan × read`.
+        ("GET", PLAN_PREVIEW),
         ("GET", TAXONOMY),
         ("PUT", TAXONOMY),
+        ("GET", TAX_DISPLAY_POLICY),
+        ("PUT", TAX_DISPLAY_POLICY),
         ("POST", BUNDLES),
         ("PATCH", BUNDLE_BY_ID),
         ("POST", BUNDLE_PUBLISH),
@@ -254,6 +261,14 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             ))
             .merge(bss_pricing::api::rest::taxonomies::router(
                 Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::tax_display_policy::router(
+                Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::preview::router(
+                Arc::clone(&governance),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::bundles::router(
