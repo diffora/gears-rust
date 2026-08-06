@@ -377,6 +377,10 @@ impl Harness {
                 db.clone(),
                 Arc::clone(&registry) as Arc<_>,
             ),
+            cutovers: bss_pricing::infra::cutover::CutoverService::new(
+                db.clone(),
+                Arc::clone(&registry) as Arc<_>,
+            ),
             publish: PublishService::new(
                 db.clone(),
                 &LimitsConfig::default(),
@@ -450,6 +454,10 @@ impl Harness {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::supersessions::router(
+                Arc::clone(&self.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::cutovers::router(
                 Arc::clone(&self.governance),
                 &openapi,
             ))

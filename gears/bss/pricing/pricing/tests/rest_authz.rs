@@ -35,6 +35,7 @@ use bss_pricing::api::rest::approvals::{
     APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
 };
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
+use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
 use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
@@ -228,6 +229,17 @@ fn census() -> Vec<Route> {
         Route {
             method: "POST",
             path: PLAN_SUPERSESSIONS,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        // The grandfathering cutover (D-100), on the **same** pair and for the same
+        // argument — S5's endpoint map puts the two side by side, and this one commits
+        // under an approval it does not grant itself either. No new authz vocabulary:
+        // the catalog already carries every label and action a cutover needs.
+        Route {
+            method: "POST",
+            path: PLAN_CUTOVERS,
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
@@ -483,6 +495,18 @@ fn drive(
             })),
             vec![],
         ),
+        // The cutover's body, on the supersession's reasoning exactly: parsed after
+        // the gate, and no idempotency header because S5's column for it is the act's
+        // own identity — `(planId, key-set hash, cutover instant)` since D-28.
+        ("POST", PLAN_CUTOVERS) => (
+            Some(serde_json::json!({
+                "predecessor_price_id": seeded.price.to_string(),
+                "cutover_at": "2099-08-20T00:00:00Z",
+                "successor": { "model_kind": "flat", "amount_minor": 100 },
+                "reason_code": "authz-probe"
+            })),
+            vec![],
+        ),
         ("PATCH", PRICE_WINDOW) => (
             Some(serde_json::json!({ "effective_to": "2099-06-01T00:00:00Z" })),
             vec![("if-match", "\"0\"")],
@@ -560,6 +584,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::supersessions::router(
+                Arc::clone(&harness.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::cutovers::router(
                 Arc::clone(&harness.governance),
                 &openapi,
             ))

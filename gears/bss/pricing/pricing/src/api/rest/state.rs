@@ -109,6 +109,15 @@ pub struct GovernanceState {
     /// `supersession` subject kind and this gear mints no token the design set has not;
     /// `infra::supersession::unit_request_id` carries that argument.
     pub supersessions: crate::infra::supersession::SupersessionService,
+    /// The grandfathering cutover's workflow — `POST …/plans/{planId}/cutovers`
+    /// (D-100), the atomic reprice-plus-retain of one canonical scope key.
+    ///
+    /// The **fourth** requester of the one registry `Arc`, and the field above's
+    /// argument scales again without amendment: none of the four invents a version,
+    /// and what keeps their handles apart is the first segment of the request id —
+    /// `cutover/…` here, from `infra::cutover`'s own builder for
+    /// `unit_request_id`'s reason.
+    pub cutovers: crate::infra::cutover::CutoverService,
     /// The at-most-once gate the `POST …/windows` claims under (D-191).
     ///
     /// Here as well as on [`AuthoringState`] rather than instead of it: the two planes

@@ -71,6 +71,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
     };
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
+    use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
     use bss_pricing::api::rest::frontier::FRONTIER;
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
@@ -116,6 +117,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // divergence its natural key leaves past the commit is reported in
         // `api::rest::supersessions`.
         ("POST", PLAN_SUPERSESSIONS),
+        ("POST", PLAN_CUTOVERS),
         // Slice 5's entrance: the publish mount and the approval surface.
         ("POST", PLAN_PUBLISH),
         ("GET", APPROVALS),
@@ -198,6 +200,12 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
             ),
         ),
+        cutovers: bss_pricing::infra::cutover::CutoverService::new(
+            db.clone(),
+            Arc::new(
+                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
+            ),
+        ),
         publish: PublishService::new(
             db,
             &LimitsConfig::default(),
@@ -227,6 +235,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::supersessions::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::cutovers::router(
                 Arc::clone(&governance),
                 &openapi,
             ))

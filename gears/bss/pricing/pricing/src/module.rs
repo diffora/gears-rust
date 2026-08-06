@@ -621,6 +621,11 @@ impl Gear for BssPricingGear {
                 db.clone(),
                 Arc::clone(&catalog_version_registry),
             ),
+            // The **fourth**, on the same argument (D-100).
+            cutovers: crate::infra::cutover::CutoverService::new(
+                db.clone(),
+                Arc::clone(&catalog_version_registry),
+            ),
             // The window `POST`'s at-most-once gate (D-191), under the **same** TTL the
             // authoring plane's claims expire on: the expiry is a deployment knob about
             // how long a client key is honoured, and two windows for it would mean one
@@ -755,6 +760,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::supersessions::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::cutovers::router(
                 Arc::clone(&rt.governance_api),
                 openapi,
             ))
