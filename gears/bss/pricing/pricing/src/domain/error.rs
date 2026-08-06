@@ -357,6 +357,22 @@ pub enum DomainError {
     /// edit of a live overlay would be refused by its own predecessor.
     #[error("overlay interval overlap: {0}")]
     OverlayIntervalOverlap(String),
+    /// A taxonomy value that cannot retire because something active still names
+    /// it (`04-currency-tax.md` §5, `inst-tx-mutation`, **409**).
+    ///
+    /// A conflict rather than a precondition failure, for
+    /// [`DomainError::OverlayIntervalOverlap`]'s reason: nothing the caller
+    /// presented was wrong or stale, and what refused the request is a published
+    /// price row or a published overlay the caller's own body never named.
+    /// Re-reading — going to look at what still references the value — is the
+    /// whole remedy, which is what a 409 asks for and what a 400 would send them
+    /// looking for a field to correct.
+    ///
+    /// The code is **§5's**, not minted here: `TAXONOMY_VALUE_IN_USE` is declared
+    /// in the design set's own problem-response list, so this variant implements
+    /// a spelling rather than inventing one.
+    #[error("taxonomy value in use: {0}")]
+    TaxonomyValueInUse(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///

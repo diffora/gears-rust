@@ -586,6 +586,10 @@ impl Gear for BssPricingGear {
             // because it requests no `CatalogVersion`, which is the criterion
             // that split the two.
             overlays: crate::infra::storage::repo::OverlayRepo::new(db.clone()),
+            // Slice 4's taxonomy store — the writer the four scope-value
+            // universes had never had, and without which a brand-scoped overlay
+            // could not be authored end to end.
+            taxonomies: crate::infra::storage::repo::taxonomy_repo::TaxonomyRepo::new(db.clone()),
             idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
         });
 
@@ -760,6 +764,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::overlays::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::taxonomies::router(
                 Arc::clone(&rt.authoring_api),
                 openapi,
             ))

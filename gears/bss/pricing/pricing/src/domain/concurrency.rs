@@ -227,6 +227,18 @@ pub fn require_match(current: RowVersion, submitted: RowVersion) -> Result<(), D
 /// somewhere else.
 const POLICY_TAG_DOMAIN_SEP: &[u8] = b"cf.bss.pricing.approval_threshold_policy.etag.v1\x00";
 
+/// The taxonomy resource's own domain separator.
+///
+/// **Distinct from [`POLICY_TAG_DOMAIN_SEP`], and that is the point of a
+/// separator rather than a nicety.** Both resources render a [`PolicyTag`] and
+/// both parse one back with [`PolicyTag::from_etag`], so without separation a
+/// digest computed over one representation could be presented as an assertion
+/// about the other — and `If-Match` would accept it. The class is folded in
+/// below for the same reason one level down: four taxonomies share this
+/// separator, and a tag for the brand list must not satisfy a `PUT` on the
+/// partner list.
+const TAXONOMY_TAG_DOMAIN_SEP: &[u8] = b"cf.bss.pricing.taxonomy.etag.v1\x00";
+
 /// NULL-safe framing markers, [`crate::domain::approval::content_pin`]'s, for the
 /// reason that module gives: a field's **absence** has to frame differently from
 /// every value it could have held.
@@ -300,6 +312,44 @@ impl PolicyTag {
                 buf.extend_from_slice(unit.as_bytes());
             }
             None => buf.push(TAG_ABSENT),
+        }
+        Self(crate::domain::audit::hex_bytes(
+            aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &buf).as_ref(),
+        ))
+    }
+
+    /// The tag of one taxonomy's representation (`04-currency-tax.md` §5).
+    ///
+    /// The digest covers the **class** and every entry's `(value, state,
+    /// display_name)`, in the order the repository reads them — which is ordered
+    /// by value, so two reads of an unchanged taxonomy render one tag.
+    ///
+    /// All three entry fields, not just the value set. A tag that moved only with
+    /// membership would not change when an operator re-labelled a value or
+    /// retired one, and a validator that does not change when the representation
+    /// changes is broken rather than lenient — the same argument the threshold
+    /// policy's tag makes for covering its pending unit as well as its effective
+    /// version.
+    ///
+    /// Each field is length-prefixed rather than delimited, because a delimiter
+    /// is forgeable from inside a `display_name`: an operator could otherwise
+    /// label one value so that two different taxonomies digest identically.
+    #[must_use]
+    pub fn of_taxonomy<'a>(
+        class: &str,
+        entries: impl Iterator<Item = (&'a str, &'a str, &'a str)>,
+    ) -> Self {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(TAXONOMY_TAG_DOMAIN_SEP);
+        let mut push = |field: &str| {
+            buf.extend_from_slice(&(field.len() as u64).to_be_bytes());
+            buf.extend_from_slice(field.as_bytes());
+        };
+        push(class);
+        for (value, state, display_name) in entries {
+            push(value);
+            push(state);
+            push(display_name);
         }
         Self(crate::domain::audit::hex_bytes(
             aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &buf).as_ref(),

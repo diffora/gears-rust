@@ -353,6 +353,9 @@ impl Harness {
             bundles: bss_pricing::infra::storage::repo::BundleRepo::new(db.clone()),
             bundle_service: bss_pricing::infra::bundle::BundleService::new(db.clone()),
             overlays: bss_pricing::infra::storage::repo::OverlayRepo::new(db.clone()),
+            taxonomies: bss_pricing::infra::storage::repo::taxonomy_repo::TaxonomyRepo::new(
+                db.clone(),
+            ),
             idempotency: IdempotencyGate::new(Duration::from_hours(1)),
         });
         // **One registry, handed to both services**, which is `src/module.rs`'s own
@@ -447,6 +450,10 @@ impl Harness {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::overlays::router(
+                Arc::clone(&self.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::taxonomies::router(
                 Arc::clone(&self.state),
                 &openapi,
             ))
