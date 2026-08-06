@@ -4,8 +4,9 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::{
-    COHORT_ELIGIBILITY_MISMATCH, ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility,
-    PriceOverlay, Region, ScopeKey, check_cohort_eligibility,
+    COHORT_ELIGIBILITY_MISMATCH, ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId,
+    PriceEligibility, PriceOverlay, Region, ScopeKey, USAGE_LINE_AXIS_MISMATCH,
+    check_cohort_eligibility, check_usage_line_axes,
 };
 use crate::domain::error::DomainError;
 use crate::domain::money::CurrencyCode;
@@ -250,9 +251,11 @@ fn the_axis_defaults_are_base_all_subscriptions_and_none() {
 }
 
 #[test]
-fn the_canonical_rendering_carries_all_eight_axes_in_order() {
+fn the_canonical_rendering_carries_the_first_eight_axes_in_order() {
     // The rendering is what a DUPLICATE_SCOPE_KEY rejection names, so a
     // dropped axis would report a collision between rows that do not collide.
+    // The usage pair D-196 appends is the ten-axis test's subject; this one
+    // owns the order of the eight that are unconditional.
     let rendered = key(
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::OneTime,
@@ -262,7 +265,6 @@ fn the_canonical_rendering_carries_all_eight_axes_in_order() {
     .to_string();
 
     let axes: Vec<&str> = rendered.split('|').collect();
-    assert_eq!(axes.len(), 8);
     assert_eq!(axes[0], plan().to_string());
     assert_eq!(axes[1], "USD");
     assert_eq!(axes[2], "EU");
@@ -315,4 +317,161 @@ fn the_charge_kind_tokens_are_the_persisted_ones() {
     assert_eq!(ChargeKind::Usage.as_str(), "usage");
     assert_eq!(ChargeKind::OneTime.as_str(), "one_time");
     assert_eq!(ChargeKind::OneTimeSetup.as_str(), "one_time_setup");
+}
+
+// ---------------------------------------------------------------------------
+// The usage line axes (D-196, clause 1)
+// ---------------------------------------------------------------------------
+
+fn usage_key(meter: Option<&str>, dimension: &str) -> Result<ScopeKey, DomainError> {
+    key(
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("the eight axes agree")
+    .with_usage_line(
+        meter.map(|m| Meter::new(m).expect("a non-blank meter")),
+        DimensionKey::new(dimension),
+    )
+}
+
+#[test]
+fn two_usage_lines_of_one_market_are_two_keys() {
+    // The whole of D-196: D-103's confirmed example — one plan pricing
+    // cloudlets and egress in one market — rendered ONE key under the eight
+    // axes, and the second line was refused DUPLICATE_SCOPE_KEY at save.
+    let cloudlets = usage_key(Some("cloudlets"), "").expect("a metered line");
+    let egress = usage_key(Some("egress_gb"), "").expect("a second metered line");
+
+    assert_ne!(cloudlets, egress);
+    assert_ne!(cloudlets.to_string(), egress.to_string());
+}
+
+#[test]
+fn one_meter_dimensioned_two_ways_is_two_keys() {
+    // `dimensionKey` is the second half of the line and discriminates on its
+    // own: the meter-line index has always keyed `(meter, dimension_key)`.
+    let eu = usage_key(Some("cloudlets"), "region=eu").expect("a dimensioned line");
+    let us = usage_key(Some("cloudlets"), "region=us").expect("a second dimension");
+
+    assert_ne!(eu, us);
+}
+
+#[test]
+fn a_meter_on_a_non_usage_key_is_refused() {
+    // The implication: a meter present means chargeKind = usage. A recurring
+    // row carrying one would mint a key the meter-line index never sees.
+    let err = key(
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("the eight axes agree")
+    .with_usage_line(
+        Some(Meter::new("cloudlets").expect("meter")),
+        DimensionKey::none(),
+    )
+    .expect_err("a meter on a recurring key is refused");
+
+    assert_eq!(violation_codes(&err), vec![USAGE_LINE_AXIS_MISMATCH]);
+}
+
+#[test]
+fn a_dimension_key_on_a_non_usage_key_is_refused() {
+    // Same implication, reached through the other axis of the pair.
+    let err = key(
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::OneTime,
+        Cohort::None,
+    )
+    .expect("the eight axes agree")
+    .with_usage_line(None, DimensionKey::new("region=eu"))
+    .expect_err("a dimension key on a one_time key is refused");
+
+    assert_eq!(violation_codes(&err), vec![USAGE_LINE_AXIS_MISMATCH]);
+}
+
+#[test]
+fn a_dimension_key_without_a_meter_is_refused_on_a_usage_key_too() {
+    // A dimension discriminates the dimensions OF a meter; with no meter it
+    // names nothing, and it would hand the store a second key for the same
+    // meterless usage line. Not stated in the design set before this clause —
+    // the amendment is recorded on D-196.
+    let err = usage_key(None, "region=eu").expect_err("a dimension with no meter is refused");
+
+    assert_eq!(violation_codes(&err), vec![USAGE_LINE_AXIS_MISMATCH]);
+}
+
+#[test]
+fn a_usage_key_with_no_meter_is_still_admissible() {
+    // The rule is an implication and deliberately NOT a biconditional: the
+    // meter/usage-type binding (`inst-cmp-usagetype`) is registry-dependent
+    // and deferred, so a usage row carrying no meter is a shape the authoring
+    // plane accepts today. A biconditional here would refuse it.
+    assert!(usage_key(None, "").is_ok());
+}
+
+#[test]
+fn a_blank_meter_is_not_an_axis_value() {
+    // The empty string is the store's sentinel for "no meter" inside
+    // COALESCE(meter, ''), so a blank meter would collide with the absent one
+    // rather than being its own line.
+    assert!(Meter::new("   ").is_err());
+    assert_eq!(
+        Meter::new(" cloudlets ").expect("trimmed").as_str(),
+        "cloudlets"
+    );
+}
+
+#[test]
+fn the_canonical_rendering_carries_all_ten_axes_in_order() {
+    // The rendering is what a DUPLICATE_SCOPE_KEY rejection names and what the
+    // approval register and the registry idempotency key embed, so the arity
+    // is fixed at ten whatever the row is (D-196).
+    let rendered = usage_key(Some("cloudlets"), "region=eu")
+        .expect("a dimensioned line")
+        .to_string();
+
+    let axes: Vec<&str> = rendered.split('|').collect();
+    assert_eq!(axes.len(), 10);
+    assert_eq!(axes[6], "usage");
+    assert_eq!(axes[7], "none");
+    assert_eq!(axes[8], "cloudlets");
+    assert_eq!(axes[9], "region=eu");
+}
+
+#[test]
+fn a_non_usage_key_renders_the_sentinel_on_both_usage_axes() {
+    // Fixed arity means the pair is rendered even where it cannot be set, and
+    // `none` is the token for the same reason `Cohort::None` uses it: an empty
+    // segment between two separators cannot be told from a rendering bug.
+    let rendered = key(
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("key")
+    .to_string();
+
+    let axes: Vec<&str> = rendered.split('|').collect();
+    assert_eq!(axes.len(), 10);
+    assert_eq!(axes[8], "none");
+    assert_eq!(axes[9], "none");
+}
+
+#[test]
+fn the_usage_line_rule_is_checkable_without_a_key() {
+    // `check_cohort_eligibility`'s reason, one axis pair over: the columns are
+    // read back from the store as independent values, so the pairing has to be
+    // re-established on every rehydration and not only at construction.
+    assert!(check_usage_line_axes(ChargeKind::Usage, None, &DimensionKey::none()).is_ok());
+    assert!(
+        check_usage_line_axes(
+            ChargeKind::Recurring,
+            Some(&Meter::new("cloudlets").expect("meter")),
+            &DimensionKey::none(),
+        )
+        .is_err()
+    );
 }

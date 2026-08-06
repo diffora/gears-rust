@@ -58,6 +58,15 @@ use crate::domain::validation::ValidationReport;
 /// it under, in the shape the rest of the code set uses.
 pub const COHORT_ELIGIBILITY_MISMATCH: &str = "COHORT_ELIGIBILITY_MISMATCH";
 
+/// Rule code for a usage-line axis pair on a charge kind that cannot carry it,
+/// or a dimension key with no meter (D-196).
+///
+/// Same shape and same reason as [`COHORT_ELIGIBILITY_MISMATCH`]: the design set
+/// states the rule (`design/01-foundation.md` §4.1) without naming a code, and a
+/// publish-blocking rule with no code cannot be reported to the operator who has
+/// to fix it.
+pub const USAGE_LINE_AXIS_MISMATCH: &str = "USAGE_LINE_AXIS_MISMATCH";
+
 /// A plan identifier — the first axis, and the aggregate every other axis
 /// discriminates within.
 #[domain_model]
@@ -377,6 +386,157 @@ pub fn check_cohort_eligibility(
     Err(DomainError::ValidationFailed(report))
 }
 
+/// A published metering unit — the ninth axis, on usage rows only (D-196).
+///
+/// Blank is refused, and that refusal is load-bearing rather than tidy: the
+/// store's two scope-key indexes key over `COALESCE(meter, '')`, so the empty
+/// string is the sentinel meaning *no meter*. A blank meter would land on the
+/// meterless line's key instead of minting its own.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Meter(String);
+
+impl Meter {
+    /// Wrap a metering unit.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::InvalidRequest`] when the value is blank — see the type
+    /// doc: blank is the store's "no meter" sentinel, not a meter.
+    pub fn new(value: &str) -> Result<Self, DomainError> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(DomainError::InvalidRequest(
+                "meter axis value must not be blank".to_owned(),
+            ));
+        }
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    /// The metering unit.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Meter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The dimension discriminator on a `(meter, dimensionKey)` line — the tenth
+/// axis (D-196).
+///
+/// Absent is the *ordinary* usage line rather than an exceptional one, which is
+/// why this is a total type with a `none` value and not an `Option`: the column
+/// is `NOT NULL DEFAULT ''` for the same reason, and an undimensioned line has
+/// to compare equal to itself across a rehydration.
+#[domain_model]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DimensionKey(String);
+
+impl DimensionKey {
+    /// The undimensioned line — the empty-tuple sentinel the column defaults to.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self(String::new())
+    }
+
+    /// Wrap a dimension key; a blank value **is** [`Self::none`] rather than an
+    /// error, because "no dimension" is the ordinary case and every caller that
+    /// reads the column back gets `''` for it.
+    #[must_use]
+    pub fn new(value: &str) -> Self {
+        Self(value.trim().to_owned())
+    }
+
+    /// Is this the undimensioned line?
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The dimension key as stored — `''` when undimensioned.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DimensionKey {
+    /// `none` when undimensioned, for [`Cohort`]'s reason: an empty segment
+    /// between two separators cannot be told from a rendering bug.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            f.write_str("none")
+        } else {
+            f.write_str(&self.0)
+        }
+    }
+}
+
+/// The usage-line implication:
+/// **`meter` or `dimensionKey` set ⇒ `chargeKind = usage`** (D-196).
+///
+/// It is an implication and deliberately **not** a biconditional, which is what
+/// separates it from [`check_cohort_eligibility`] next door. The converse — a
+/// usage row must carry a meter — is a rule this gear cannot make: the
+/// meter/usage-type binding (`inst-cmp-usagetype`) is registry-dependent and
+/// deferred, so a usage row with no meter is a shape the authoring plane admits
+/// today, and asserting the converse here would refuse rows every other door
+/// accepts.
+///
+/// **A dimension key without a meter is refused even on a usage row**, which the
+/// design set did not say before this rule had code (amendment recorded on
+/// D-196): a dimension discriminates the dimensions *of* a meter, so with no
+/// meter it names nothing — and it would hand the store a second key for one
+/// meterless usage line, which is exactly the duplicate this axis pair exists to
+/// prevent.
+///
+/// It is a **checked function** rather than a type-level guarantee for
+/// [`check_cohort_eligibility`]'s reason: the axes are separate columns, read
+/// back as independent values, so the pairing has to be re-established on every
+/// rehydration and not only at first construction.
+///
+/// # Errors
+///
+/// [`DomainError::ValidationFailed`] carrying a single
+/// [`USAGE_LINE_AXIS_MISMATCH`] violation when the axes and the charge kind
+/// disagree.
+pub fn check_usage_line_axes(
+    charge_kind: ChargeKind,
+    meter: Option<&Meter>,
+    dimension_key: &DimensionKey,
+) -> Result<(), DomainError> {
+    let metered = matches!(charge_kind, ChargeKind::Usage);
+    let subject = format!(
+        "{charge_kind}/{}/{dimension_key}",
+        meter.map_or("none", Meter::as_str)
+    );
+    let mut report = ValidationReport::default();
+    if !metered && (meter.is_some() || !dimension_key.is_none()) {
+        report.violate(
+            USAGE_LINE_AXIS_MISMATCH,
+            subject,
+            "meter and dimensionKey are axes of a usage row; a non-usage charge kind carries \
+             neither",
+        );
+        return Err(DomainError::ValidationFailed(report));
+    }
+    if meter.is_none() && !dimension_key.is_none() {
+        report.violate(
+            USAGE_LINE_AXIS_MISMATCH,
+            subject,
+            "a dimensionKey discriminates the dimensions of a meter; without a meter it names \
+             nothing",
+        );
+        return Err(DomainError::ValidationFailed(report));
+    }
+    Ok(())
+}
+
 /// The canonical scope key.
 ///
 /// Fields are private and the constructor validates, so a key that violates the
@@ -394,6 +554,8 @@ pub struct ScopeKey {
     price_eligibility: PriceEligibility,
     charge_kind: ChargeKind,
     cohort: Cohort,
+    meter: Option<Meter>,
+    dimension_key: DimensionKey,
 }
 
 impl ScopeKey {
@@ -439,7 +601,36 @@ impl ScopeKey {
             price_eligibility,
             charge_kind,
             cohort,
+            meter: None,
+            dimension_key: DimensionKey::none(),
         })
+    }
+
+    /// Attach the usage line — the ninth and tenth axes (D-196).
+    ///
+    /// Separate from [`Self::new`] rather than two more parameters on it, and
+    /// the reason is the axes' own shape: they exist on `usage` rows and
+    /// nowhere else, so every non-usage caller would pass `None` and
+    /// [`DimensionKey::none`] to satisfy a signature that cannot use them. The
+    /// eight unconditional axes stay one call; the conditional pair is a second
+    /// one, taken only by the callers that have a line to name.
+    ///
+    /// A key with no usage line is what [`Self::new`] already returns, so this
+    /// is never needed to *omit* the pair.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::ValidationFailed`] carrying a single
+    /// [`USAGE_LINE_AXIS_MISMATCH`] violation; see [`check_usage_line_axes`].
+    pub fn with_usage_line(
+        mut self,
+        meter: Option<Meter>,
+        dimension_key: DimensionKey,
+    ) -> Result<Self, DomainError> {
+        check_usage_line_axes(self.charge_kind, meter.as_ref(), &dimension_key)?;
+        self.meter = meter;
+        self.dimension_key = dimension_key;
+        Ok(self)
     }
 
     /// Axis 1 — the plan.
@@ -489,17 +680,36 @@ impl ScopeKey {
     pub const fn cohort(&self) -> Cohort {
         self.cohort
     }
+
+    /// Axis 9 — the metering unit, on a usage row (D-196).
+    #[must_use]
+    pub const fn meter(&self) -> Option<&Meter> {
+        self.meter.as_ref()
+    }
+
+    /// Axis 10 — the dimension discriminator on the line (D-196).
+    #[must_use]
+    pub const fn dimension_key(&self) -> &DimensionKey {
+        &self.dimension_key
+    }
 }
 
 impl fmt::Display for ScopeKey {
-    /// The canonical rendering: eight axes, normative order, one separator.
+    /// The canonical rendering: ten axes, normative order, one separator.
     /// This is the string a `DUPLICATE_SCOPE_KEY` rejection names, so it has to
     /// be stable and complete — a rendering that dropped an axis would report a
     /// collision between two rows that do not actually share a key.
+    ///
+    /// **The arity is fixed at ten whatever the row is (D-196)**, `none` filling
+    /// both usage positions on a non-usage key. A rendering whose segment count
+    /// depended on the charge kind would be a parsing hazard in the three places
+    /// this string is embedded rather than read: the rejection message, the
+    /// approval register's held-key rows, and `unit_request_id`, the
+    /// cross-tenant registry idempotency key.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.plan_id,
             self.currency,
             self.region,
@@ -507,7 +717,9 @@ impl fmt::Display for ScopeKey {
             self.phase,
             self.price_eligibility,
             self.charge_kind,
-            self.cohort
+            self.cohort,
+            self.meter.as_ref().map_or("none", Meter::as_str),
+            self.dimension_key
         )
     }
 }

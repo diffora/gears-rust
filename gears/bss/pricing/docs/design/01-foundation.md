@@ -618,7 +618,13 @@ therefore part of the key **on usage rows**, and the rule is an implication rath
 biconditional: `meter` or `dimensionKey` present **implies** `chargeKind = 'usage'`, and the
 converse is deliberately not asserted — a usage row carrying no meter is admitted today, the
 meter/usage-type binding being registry-dependent and deferred (`inst-cmp-usagetype`), so the
-converse would refuse rows the authoring plane accepts. **The rendering carries ten segments
+converse would refuse rows the authoring plane accepts. **A `dimensionKey` with no `meter` is
+refused, on a usage row as well (amendment, 2026-08-06, found while building the rule's code):**
+a dimension discriminates the dimensions *of* a meter, so with no meter it names nothing — and
+admitting it would hand the store a second key for one meterless usage line, which is the
+duplicate this pair exists to prevent. Both refusals report `USAGE_LINE_AXIS_MISMATCH`, the code
+this rule owns for `COHORT_ELIGIBILITY_MISMATCH`'s reason: a publish-blocking rule with no code
+cannot be reported to the operator who has to fix it. **The rendering carries ten segments
 always**, `none` in both positions on a non-usage row: the rendered key is embedded in the
 `DUPLICATE_SCOPE_KEY` message, in the approval register's held-key rows and in the registry
 idempotency key, so its arity has to be fixed rather than a function of the row. The physical
