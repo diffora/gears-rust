@@ -217,7 +217,7 @@ use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
     QuantitySource, TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
-use crate::domain::scope_key::{PhaseId, ScopeKey};
+use crate::domain::scope_key::{Meter, PhaseId, ScopeKey};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 /// Versioned domain-separation tag for the approval content pin.
@@ -325,7 +325,26 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// content_hash)` — so two digests over different kinds of content share a column,
 /// and disjoint domains are what make them unable to be read for each other. The
 /// `subject_ref` would have caught it anyway; the tag means it does not have to.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v3\x1f";
+///
+/// # `v4`: D-196's usage line joined the key's framing (2026-08-06)
+///
+/// This **is** the re-freeze the counter is for, and unlike the `v3` case it is not
+/// a narrowing of one token: [`put_scope_key`] gained two framed fields, so every
+/// preimage containing any scope key — which is every plan shape carrying a row or a
+/// window group — produces different bytes. A `v3` digest and a `v4` digest over the
+/// same content differ, and the bump is what makes that legible instead of silent.
+///
+/// The **deployed-world** paragraph applies verbatim, for the reason it applied at
+/// `v2 -> v3`: this needs pending approvals drained before it ships, and it is an
+/// edit today only because nothing durable holds a `v3` digest either.
+///
+/// [`THRESHOLD_PIN_DOMAIN_SEP`] does **not** move with it. A
+/// [`ThresholdVersion`](crate::domain::materiality::ThresholdVersion) contains no
+/// scope key, so its encoding did not change, and moving it would invalidate every
+/// pending policy unit to record a re-freeze of content those units are not about —
+/// which is the argument for two counters, applied in the other direction from the
+/// `v3` note above.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v4\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -681,8 +700,22 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
     put_u64(buf, row_version.get());
 }
 
-/// The eight axes, through their accessors — the one type here the compiler
+/// The ten axes, through their accessors — the one type here the compiler
 /// cannot hold to an exhaustive pattern; see the module doc.
+///
+/// **It framed eight until 2026-08-06**, which is the same D-196 sweep gap that
+/// left `scope_key_columns` and `sellability::siblings` short. It was invisible on
+/// the path a reader is most likely to check: [`put_price_record`] frames the row
+/// straight after the key, and `meter` and `dimension_key` are **also** columns of
+/// [`PriceRow`], so a record's digest moved with them regardless. It was live for
+/// [`put_key_windows`], where a key is framed with no row beside it — two window
+/// plans on two meters of one market pinned identically, so an approve could be
+/// satisfied by a re-derivation over the other line's coverage.
+///
+/// The pair is framed **unconditionally**, `none` and `''` on a non-usage key,
+/// rather than only on `usage` rows: a conditional field count is how two adjacent
+/// values become re-splittable, which is the hazard [`count_of`] exists for one
+/// level up.
 fn put_scope_key(buf: &mut Vec<u8>, key: &ScopeKey) {
     put_uuid(buf, key.plan_id().get());
     put_str(buf, key.currency().as_str());
@@ -695,6 +728,12 @@ fn put_scope_key(buf: &mut Vec<u8>, key: &ScopeKey) {
     // is the instant, and hashing a rendering would make the pin depend on a
     // formatting choice.
     put_opt_instant(buf, key.cohort().generation());
+    // The usage line (D-196). `meter` is genuinely optional — a usage row with no
+    // meter is admissible — while `dimension_key` is total, `''` being the
+    // undimensioned line, so the two take the two different framings rather than
+    // one spelling for both.
+    put_opt_str(buf, key.meter().map(Meter::as_str));
+    put_str(buf, key.dimension_key().as_str());
 }
 
 fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {

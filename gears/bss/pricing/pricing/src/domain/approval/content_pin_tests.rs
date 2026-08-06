@@ -61,7 +61,7 @@ use crate::domain::price_row::{
     TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
@@ -145,6 +145,16 @@ fn maximal_record(seed: u128) -> PriceRecord {
         created_at_utc: at(9),
         row_version: RowVersion::new(4),
     }
+}
+
+/// The baseline key with a usage line attached — D-196's ninth and tenth axes.
+fn line_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
+    key(ChargeKind::Usage, "USD", "EU", phase_id(0x11))
+        .with_usage_line(
+            meter.map(|value| Meter::new(value).expect("a non-blank meter")),
+            DimensionKey::new(dimension),
+        )
+        .expect("a usage key carries its line")
 }
 
 /// One key's window set with **every** field of both structs authored: an
@@ -400,6 +410,19 @@ fn window_mutators() -> Vec<Mutator> {
         ("windows -> empty", |s| s.windows = Vec::new()),
         ("group.scope_key", |s| {
             s.windows[0] = maximal_window_group(phase_id(0x11), "US");
+        }),
+        // The usage line, on the **one** path where a scope key is pinned with no
+        // row beside it. In `put_price_record` these two axes are also columns of
+        // `PriceRow`, so the digest moves with them whether or not the key frames
+        // them; a window group carries no row, so here nothing stands in. The two
+        // entries differ from each other only in the dimension, and the runner
+        // requires every mutant to pin distinctly — which is what makes the tenth
+        // axis asserted rather than covered by the ninth.
+        ("group.scope_key.meter", |s| {
+            s.windows[0].scope_key = line_key(Some("cloudlets"), "");
+        }),
+        ("group.scope_key.dimension_key", |s| {
+            s.windows[0].scope_key = line_key(Some("cloudlets"), "eu-west");
         }),
         ("group: one interval dropped", |s| {
             s.windows[0].intervals.pop();
@@ -832,8 +855,8 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 /// encoding no longer verifies, so every open approval unit refuses. The
 /// domain-separation tag carries the version for exactly that reason.
 ///
-/// It has moved twice, both on 2026-08-04, and each move is recorded rather than
-/// merely re-pasted:
+/// It has moved three times, and each move is recorded rather than merely
+/// re-pasted:
 ///
 /// - `v1` → `v2`, when `PlanShape::windows` joined the preimage.
 /// - `v2` → `v3`, when the window **state** stopped being framed verbatim. Four
@@ -846,8 +869,17 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   was, which is the point: it no longer reads a fact the clock owns.
 ///   [`the_clock_may_flip_a_window_but_not_the_pin`] is the property; this is its
 ///   byte vector.
+/// - `v3` → `v4`, on **2026-08-06**, when D-196's `meter` and `dimensionKey`
+///   joined `put_scope_key`. The first two moves narrowed or extended what the
+///   preimage reads; this one closed a hole in it. The axes were framed by
+///   `put_price_row` and so a *record*'s digest already moved with them, but a
+///   `KeyWindows` group carries no row — two window plans on two meters of one
+///   market pinned identically, and an approve could be answered by a
+///   re-derivation over the other line's coverage. `group.scope_key.meter` and
+///   `group.scope_key.dimension_key` in the mutator table are that property; this
+///   is its byte vector.
 ///
-/// What makes either an edit rather than a migration today is on
+/// What makes any of them an edit rather than a migration today is on
 /// [`CONTENT_PIN_DOMAIN_SEP`](super::CONTENT_PIN_DOMAIN_SEP): this gear is not
 /// deployed, so no durable row holds a `v1` or a `v2` digest. That argument expires
 /// with the first deployment.
@@ -855,7 +887,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "02c7a12624f00dd641a38d2a668fa6954d7b47d9a90671c61b8a2c24b2072f90"
+        "1b07511175608b27a228cbd7c99511f6ad9f40380f7d7f36710b421104b60c25"
     );
 }
 
@@ -992,25 +1024,30 @@ fn an_absolute_and_a_percent_threshold_of_the_same_number_pin_differently() {
     );
 }
 
-/// The two preimages live in **disjoint domains**, and the plan pin did not move
-/// when the second one arrived.
+/// The two preimages live in **disjoint domains**, and each names its own
+/// generation.
 ///
 /// Two assertions and they are different properties. The first is the golden
 /// vector one file over, restated as an inequality against a policy digest: a
 /// threshold version and a plan shape share the `content_hash` column, so a shared
 /// domain separator would leave `find_approved_for_content` matching across kinds
-/// on a collision the `subject_ref` alone would have to catch. The second is that
-/// `CONTENT_PIN_DOMAIN_SEP` is still `v3` — `the_encoding_is_frozen` already pins
-/// the digest, and this pins the *reason* it did not have to move.
+/// on a collision the `subject_ref` alone would have to catch. The second pins the
+/// two counters *independently* — which is the property, rather than either value.
+///
+/// **The plan tag is `v4` since 2026-08-06**: D-196's usage line joined
+/// `put_scope_key`, so the plan preimage was re-frozen and its counter moved. The
+/// threshold tag stayed at `v1` in the same edit, because a `ThresholdVersion`
+/// carries no scope key — and that is the case this test exists for, one counter
+/// moving while the other does not.
 #[test]
-fn the_two_pin_domains_are_disjoint_and_the_plan_generation_did_not_move() {
+fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     assert_ne!(
         threshold_content_hash(&threshold_base()).as_slice(),
         content_hash(&base()).as_slice()
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v3\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v4\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,
