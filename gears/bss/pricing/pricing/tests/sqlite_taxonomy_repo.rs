@@ -233,16 +233,20 @@ async fn re_adding_a_retired_value_re_activates_it() {
     assert_eq!(
         values(&result.entries),
         [("reseller-a", TaxonomyState::Active)],
-        "retired -> active is a legal audited move (§6)"
+        "retired -> active is a legal audited move (section 6)"
     );
 }
 
-/// An explicit `state: retired` and an omission are the same act.
+/// An explicit `state: retired` in the body writes the retired state.
 ///
-/// An operator must not be able to slip past the guard by choosing the other
-/// spelling of the same retirement.
+/// **Named for what it tests.** It was called
+/// `an_explicit_retirement_and_an_omission_are_the_same_act`, which is a claim
+/// about the *guard*, and this case never reaches the guard — the value is
+/// unreferenced, so the write goes through either way. The claim is held by
+/// `an_explicit_retirement_of_a_referenced_value_is_refused_too`, which a probe
+/// forced into existence.
 #[tokio::test]
-async fn an_explicit_retirement_and_an_omission_are_the_same_act() {
+async fn an_explicit_retirement_writes_the_retired_state() {
     let (repo, scope, _provider) = harness().await;
     repo.replace(
         &scope,
@@ -878,6 +882,6 @@ async fn a_refused_put_writes_no_audit_record() {
 
     assert_eq!(
         count, 1,
-        "the seeding PUT only — the refused one wrote nothing"
+        "the seeding PUT only - the refused one wrote nothing"
     );
 }

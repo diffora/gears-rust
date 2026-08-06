@@ -33,7 +33,7 @@ use bss_pricing::api::rest::taxonomies::TAXONOMY;
 use rest_support::{Harness, audit_rows, body_json, etag_of, problem_code, request, with_headers};
 use serde_json::json;
 
-/// The CatalogAdmin who configures the taxonomies.
+/// The `CatalogAdmin` who configures the taxonomies.
 const ADMIN: uuid::Uuid = uuid::Uuid::from_u128(0xca_d0);
 
 fn path(class: &str) -> String {
@@ -72,6 +72,42 @@ async fn put(
             &[("if-match", tag)],
         ))
         .await
+}
+
+/// One **published** overlay scoped to `(class, value)`, written through the
+/// entity.
+///
+/// The authoring route cannot produce this state in one call — a submit opens an
+/// always-material approval unit (D-50) — and what is under test here is the
+/// taxonomy guard, not the overlay lifecycle.
+async fn seed_published_overlay(harness: &Harness, class: &str, value: &str) {
+    use sea_orm::ActiveValue::Set;
+    use sea_orm::EntityTrait;
+    use toolkit_db::secure::{AccessScope, SecureInsertExt};
+
+    let conn = harness.db.conn().expect("conn");
+    let row = bss_pricing::infra::storage::entity::price_overlay::ActiveModel {
+        price_overlay_id: Set(uuid::Uuid::from_u128(0x0e_9a)),
+        revision: Set(1),
+        tenant_id: Set(harness.tenant),
+        lifecycle_state: Set("published".to_owned()),
+        scope_class: Set(class.to_owned()),
+        scope_value: Set(value.to_owned()),
+        precedence: Set(20),
+        effective_from: Set(None),
+        effective_to: Set(None),
+        tax_basis: Set("delegated_tariffs".to_owned()),
+        disclosure: Set("restricted".to_owned()),
+        target_ref: Set(json!({"plans": []})),
+        row_version: Set(0),
+    };
+    bss_pricing::infra::storage::entity::price_overlay::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("seed a published overlay");
 }
 
 fn codes(body: &serde_json::Value) -> Vec<String> {
@@ -319,6 +355,53 @@ async fn the_tag_moves_on_a_relabel() {
     assert_ne!(before, after, "a re-label changes the representation");
 }
 
+/// The tag moves when **only** D-01's region markers change.
+///
+/// Found by review, and it is a lost update with no race in it. `view_of`
+/// renders five fields and the digest covered three, so a `PUT` that changed a
+/// region's `taxCategory` left the validator fixed: a second operator holding
+/// the pre-change tag could revert it and be told the precondition held. The
+/// reverted field is C4's `RegionTaxReadiness` input, so the blast radius is a
+/// publish blocked, or allowed, for a readiness nobody authored.
+///
+/// It also made the tag a lying strong validator: a conditional `GET` answers
+/// 304 for a body that changed.
+#[tokio::test]
+async fn the_tag_moves_when_only_the_region_tax_markers_change() {
+    let harness = Harness::new().await;
+    let (_, tag) = read(&harness, "region").await;
+    put(
+        &harness,
+        "region",
+        &tag,
+        json!([{
+            "value": "eu", "display_name": "Europe",
+            "tax_category": "standard", "tax_rate_present": true
+        }]),
+    )
+    .await;
+    let (_, before) = read(&harness, "region").await;
+
+    // Value, label and state all unchanged; only the two markers move.
+    let response = put(
+        &harness,
+        "region",
+        &before,
+        json!([{
+            "value": "eu", "display_name": "Europe",
+            "tax_category": "reduced", "tax_rate_present": false
+        }]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, after) = read(&harness, "region").await;
+
+    assert_ne!(
+        before, after,
+        "a taxCategory change is a change to the representation, so the validator must move"
+    );
+}
+
 /// A tag read from one class does not satisfy a `PUT` on another — **and the two
 /// classes are compared while their contents are identical**.
 ///
@@ -464,7 +547,7 @@ async fn a_blank_value_is_refused_at_the_edge() {
     assert_eq!(
         response.status(),
         StatusCode::BAD_REQUEST,
-        "a whitespace value must not reach the store — the length CHECK would admit it"
+        "a whitespace value must not reach the store - the length CHECK would admit it"
     );
 }
 
@@ -486,6 +569,43 @@ async fn a_repeated_value_is_refused() {
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The `409` this surface's whole guard exists to produce, driven through HTTP.
+///
+/// Added after review: the handler's violation arm and its error mapping had **no**
+/// REST coverage — deleting the arm would have answered `200` with the unchanged
+/// taxonomy and every case in this file would still have passed.
+#[tokio::test]
+async fn retiring_a_referenced_value_answers_409_with_the_declared_code() {
+    let harness = Harness::new().await;
+    let (_, tag) = read(&harness, "brand").await;
+    put(
+        &harness,
+        "brand",
+        &tag,
+        json!([{ "value": "acme", "display_name": "Acme" }]),
+    )
+    .await;
+
+    // Seeded published rather than authored through the route: `POST
+    // /price-overlays` creates a **draft**, and a draft is deliberately not a
+    // reference (`taxonomy_repo`'s module doc). Only a published overlay blocks a
+    // retirement, so authoring one here would exercise the opposite case.
+    seed_published_overlay(&harness, "brand", "acme").await;
+
+    let (_, tag) = read(&harness, "brand").await;
+    let refused = put(&harness, "brand", &tag, json!([])).await;
+
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "TAXONOMY_VALUE_IN_USE");
+
+    let (body, _) = read(&harness, "brand").await;
+    assert_eq!(
+        codes(&body),
+        ["acme:active"],
+        "a refused PUT writes nothing at all"
+    );
 }
 
 // ---------------------------------------------------------------------------

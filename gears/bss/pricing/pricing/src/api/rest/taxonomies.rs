@@ -66,7 +66,7 @@
 //! taxonomies"*. **No authz vocabulary is minted here.** Deliberately not
 //! `approval_policy`, which is segregated so a config admin cannot weaken the
 //! thresholds governing their own changes — a taxonomy is the config plane's own
-//! subject, and §10 assigns it to CatalogAdmin.
+//! subject, and §10 assigns it to `CatalogAdmin`.
 
 use std::sync::Arc;
 
@@ -86,7 +86,7 @@ use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
 use crate::api::rest::state::AuthoringState;
-use crate::domain::concurrency::PolicyTag;
+use crate::domain::concurrency::{PolicyTag, TaxonomyTagEntry};
 use crate::domain::error::DomainError;
 use crate::domain::overlay::ScopeValue;
 use crate::domain::taxonomy::{
@@ -345,13 +345,30 @@ async fn put_taxonomy(
     let request: PutTaxonomyRequest = preconditions::parse_body(&body)?;
     let entries = authored_entries(class, request.values)?;
 
-    // **The tag is compared against a fresh read, and the read is the one the
-    // write then works from.** A comparison against the caller's body would
-    // assert nothing, and a comparison against a read the transaction does not
-    // hold would race it — which is why the repository re-reads inside its own
-    // transaction and this check is the cheap early refusal rather than the
-    // guard. The narrow window it leaves is closed by the retire guard, which
-    // runs on the transaction's own read.
+    // **This comparison is NOT atomic with the write, and the window it leaves is
+    // real.** The read below is on a plain connection; `replace` opens its own
+    // transaction and re-reads, but nothing re-compares the tag there. So this
+    // refuses the **sequential** lost update — author reads, someone else writes
+    // and commits, author writes later — and does not refuse two `PUT`s whose
+    // reads both precede either commit.
+    //
+    // The sentence that used to stand here is **withdrawn as false**. It read
+    // that "the narrow window it leaves is closed by the retire guard, which runs
+    // on the transaction's own read". It is not: the guard refuses retirement
+    // only of values with *published* references, and a value a concurrent author
+    // has just added has none by construction — so the guard is structurally
+    // incapable of closing exactly this window, and closes it only for values
+    // already in production use, which is the case that needed it least.
+    //
+    // The concrete surviving failure: A and B both hold tag T over `[alpha]`; A
+    // PUTs `[alpha, acme]` and B PUTs `[alpha, zenith]`; both pre-checks pass,
+    // A commits, B's transaction then reads `[alpha, acme]`, finds `acme` absent
+    // from its body, and retires it. Two 200s and a silently retired brand.
+    //
+    // The fix is to pass the asserted tag into `replace` and compare it against
+    // the `held` that transaction already reads — `infra::threshold`'s
+    // `require_policy_match` is that arrangement. It is owed, and recorded as
+    // `T-7` in the owed register.
     let held = state
         .taxonomies
         .list(&scope, tenant, class)
@@ -415,12 +432,14 @@ fn render(class: TaxonomyClass, entries: &[TaxonomyEntry]) -> Response {
 fn tag_of(class: TaxonomyClass, entries: &[TaxonomyEntry]) -> PolicyTag {
     PolicyTag::of_taxonomy(
         class.path_segment(),
-        entries.iter().map(|entry| {
-            (
-                entry.value.as_str(),
-                entry.state.as_str(),
-                entry.display_name.as_str(),
-            )
+        entries.iter().map(|entry| TaxonomyTagEntry {
+            value: entry.value.as_str(),
+            state: entry.state.as_str(),
+            display_name: entry.display_name.as_str(),
+            // Every field `view_of` renders, and the two below are the ones the
+            // first version omitted — see `PolicyTag::of_taxonomy`.
+            tax_category: entry.tax.as_ref().and_then(|t| t.tax_category.as_deref()),
+            tax_rate_present: entry.tax.as_ref().is_some_and(|t| t.tax_rate_present),
         }),
     )
 }

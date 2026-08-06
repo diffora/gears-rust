@@ -146,10 +146,12 @@ impl TaxonomyClass {
 
     /// The physical table, by way of [`ScopeClass::taxonomy_table`].
     ///
-    /// Every one of the four classes has one, which is what makes the
-    /// `expect`-free `unwrap_or` below unreachable in practice; it is written as
-    /// a total function rather than an `Option` because *this* enum's whole
-    /// domain is the classes that have a table.
+    /// Every one of the four classes has one, which is what makes the `None` arm
+    /// below unreachable in practice; it is written as a total function rather
+    /// than an `Option` because *this* enum's whole domain is the classes that
+    /// have a table. The arm fails safe rather than panicking: its sentinel is
+    /// only ever interpolated into a `RepoError::CorruptRow` diagnostic, never
+    /// into SQL and never compared.
     #[must_use]
     pub const fn table(self) -> &'static str {
         match self.scope_class().taxonomy_table() {
@@ -312,14 +314,34 @@ pub fn check_retirable(
     if !references.any() {
         return report;
     }
+    // **Only the planes this class actually has.** The row plane belongs to
+    // `region` alone — §3 step 2 is explicit that `brand` is "**not** a price-row
+    // field", and the same holds for the two D-120 classes — so `references_to`
+    // does not even run that query for them and the count is a structural zero,
+    // not a measurement. Rendering it unconditionally told an operator retiring a
+    // brand that "0 published price row(s) carry it on their region axis",
+    // inviting them to audit a plane their value could never have been on. Found
+    // by review.
+    let mut named = Vec::with_capacity(2);
+    if references.published_price_rows > 0 {
+        named.push(format!(
+            "{} published price row(s) carry it on their region axis",
+            references.published_price_rows
+        ));
+    }
+    if references.active_overlay_scopes > 0 {
+        named.push(format!(
+            "{} published overlay scope(s) select on it",
+            references.active_overlay_scopes
+        ));
+    }
     report.violate(
         TAXONOMY_VALUE_IN_USE,
         value.as_str(),
         format!(
-            "{class} value `{value}` cannot retire: {} published price row(s) carry it on their \
-             region axis and {} published overlay scope(s) select on it; retirement is guarded \
-             rather than cascading, so end or retarget every reference first (D-120)",
-            references.published_price_rows, references.active_overlay_scopes
+            "{class} value `{value}` cannot retire: {}; retirement is guarded rather than \
+             cascading, so end or retarget every reference first (D-120)",
+            named.join(" and ")
         ),
     );
     report
@@ -332,13 +354,36 @@ pub fn check_retirable(
 /// Every candidate row's `region` is declared `active` in the tenant's region
 /// taxonomy (§3 step 1, §2 step 2).
 ///
+/// # NOT YET REGISTERED — this rule runs on no publish
+///
+/// **Nothing constructs this rule outside its own tests.** It is absent from
+/// `domain::publish::rules::foundation_plan_rules`, and
+/// `infra::publish::rule_params` resolves no region set, so no publish evaluates
+/// it and [`REGION_UNKNOWN`] cannot reach the wire. A plan carrying a region the
+/// tenant never declared publishes clean today.
+///
+/// This paragraph previously asserted the opposite — that "the set is resolved
+/// once in `infra::publish::rule_params`" — which was **false when written** and
+/// is withdrawn rather than edited around. A doc comment claiming a wiring that
+/// does not exist is the most expensive defect shape this program has met: four
+/// call sites once read as correct for a day because one said a feature was not
+/// built after it was, and this is the same error pointed the other way.
+///
+/// What is owed to close `inst-tx-region` is: a `declared_regions` field on
+/// `PublishRuleParams`, resolved in `rule_params` through
+/// `taxonomy_repo::active_regions` (which exists and is tested), and this rule
+/// registered beside `RoundingPolicyResolved`. The save-time half
+/// (`inst-mc-region` validates "at save **and** publish") is a second call, on
+/// the price authoring route.
+///
 /// # Why the declared set is a field and not a lookup
 ///
 /// The rule set runs **twice** on one publish — as a pre-check and again inside
 /// the commit transaction (Foundation §4.2) — so a rule that fetched its own
 /// inputs would be free to answer differently in the two runs for no authored
-/// reason. This is `RoundingPolicyResolved`'s arrangement and `ReferencingMarket`'s,
-/// and the set is resolved once in `infra::publish::rule_params`.
+/// reason. That is `RoundingPolicyResolved`'s arrangement and
+/// `ReferencingMarket`'s, and it is why the set is shaped to be resolved once by
+/// the caller when the wiring above lands.
 ///
 /// # `active`, and why an empty set is not a special case
 ///
@@ -349,6 +394,7 @@ pub fn check_retirable(
 /// fail-closed reading rather than an edge case — *"membership is validated at
 /// save/publish (unknown value fails before publish)"* does not carve out the
 /// tenant who configured nothing.
+#[domain_model]
 #[derive(Debug, Clone)]
 pub struct RegionsDeclared {
     /// The tenant's `active` region values, resolved by the caller.

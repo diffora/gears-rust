@@ -54,7 +54,7 @@ pub struct AuthoringState {
     /// Here rather than on [`GovernanceState`] for [`AuthoringState::overlays`]'
     /// reason and the criterion that split the two: a taxonomy `PUT` requests no
     /// `CatalogVersion`. It opens no approval unit either — taxonomy mutation is
-    /// CatalogAdmin config (§10), audited, and not one of D-10's always-material
+    /// `CatalogAdmin` config (§10), audited, and not one of D-10's always-material
     /// acts — so nothing pulls it toward the governance plane.
     pub taxonomies: crate::infra::storage::repo::taxonomy_repo::TaxonomyRepo,
     /// The at-most-once gate, holding the configured retention window.

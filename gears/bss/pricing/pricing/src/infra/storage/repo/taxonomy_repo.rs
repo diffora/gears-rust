@@ -194,10 +194,16 @@ pub struct Replaced {
 
 /// The tenant's **active** region values — `inst-tx-region`'s universe.
 ///
-/// A runner rather than a provider, because `infra::publish::rule_params`
-/// resolves it inside the commit transaction as well as before it: §4.2 runs the
-/// rule set twice and a read that could not join the transaction would answer the
-/// second run against a world the commit is not holding.
+/// **No production caller yet.** `domain::taxonomy::RegionsDeclared` is the rule
+/// this feeds and it is not registered in any pipeline, so today this function is
+/// exercised only by `sqlite_taxonomy_repo`. That is stated rather than implied:
+/// an earlier version of this paragraph asserted that
+/// `infra::publish::rule_params` resolves it, which was false when written.
+///
+/// It takes a runner rather than a provider **so that** `rule_params` can resolve
+/// it inside the commit transaction when the wiring lands: §4.2 runs the rule set
+/// twice and a read that could not join the transaction would answer the second
+/// run against a world the commit is not holding.
 ///
 /// `active` only, which is `overlay_repo::declares`' predicate one plane over: a
 /// value that reached `retired` anyway must not validate a new row against
@@ -394,7 +400,7 @@ async fn apply_replace(
         let key = existing.value.as_str();
         let retiring = submitted
             .get(key)
-            .map_or(true, |entry| entry.state == TaxonomyState::Retired);
+            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
         if !retiring || existing.state == TaxonomyState::Retired {
             // Already retired is not a retirement: re-asserting a value's
             // current state is a no-op, and guarding it would make a taxonomy

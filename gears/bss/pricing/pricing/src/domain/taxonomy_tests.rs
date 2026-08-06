@@ -338,12 +338,16 @@ fn a_value_only_an_overlay_scope_names_cannot_retire_either_in_any_class() {
     }
 }
 
-/// The refusal names **both** planes' counts.
+/// The refusal names each plane's count **as rendered**, and names only the
+/// planes the class actually has.
 ///
-/// An operator holding a value referenced by nine overlays and one row has two
-/// jobs; a refusal naming one of them sends them back a second time.
+/// Rewritten after review found the first version vacuous: it asserted
+/// `detail.contains('1')`, which the trailing `(D-120)` satisfies for any input,
+/// and `detail.contains("region")`, which a hardcoded literal in the template
+/// satisfied for every class. Swapping the two format arguments left it green
+/// while the operator was told the wrong count on each plane.
 #[test]
-fn the_refusal_names_both_referencing_planes() {
+fn the_refusal_names_each_planes_count_as_rendered() {
     let report = check_retirable(
         TaxonomyClass::Region,
         &value("eu"),
@@ -354,10 +358,44 @@ fn the_refusal_names_both_referencing_planes() {
     );
 
     let detail = &report.violations[0].detail;
-    assert!(detail.contains('1'), "the row count is named: {detail}");
-    assert!(detail.contains('9'), "the overlay count is named: {detail}");
     assert!(
-        detail.contains("region"),
-        "and the class, so the operator knows which universe: {detail}"
+        detail.contains("1 published price row(s)"),
+        "the row count is rendered on its own plane: {detail}"
     );
+    assert!(
+        detail.contains("9 published overlay scope(s)"),
+        "and the overlay count on its own: {detail}"
+    );
+    assert!(
+        detail.starts_with("region value `eu` cannot retire"),
+        "and the class is the subject rather than a word from the template: {detail}"
+    );
+}
+
+/// A class with no row plane is not told about one.
+///
+/// `published_price_rows` is a structural zero for `brand`, `partner` and
+/// `orgTier` — `references_to` does not run that query for them — so rendering it
+/// invited an operator to audit a plane §3 step 2 says their value cannot be on.
+#[test]
+fn a_non_region_refusal_does_not_mention_a_price_row_plane() {
+    let report = check_retirable(
+        TaxonomyClass::Partner,
+        &value("reseller-a"),
+        ValueReferences {
+            published_price_rows: 0,
+            active_overlay_scopes: 3,
+        },
+    );
+
+    let detail = &report.violations[0].detail;
+    assert!(
+        detail.starts_with("partner value `reseller-a` cannot retire"),
+        "{detail}"
+    );
+    assert!(
+        !detail.contains("price row"),
+        "a partner value is not a price-row axis, so no such plane is named: {detail}"
+    );
+    assert!(detail.contains("3 published overlay scope(s)"), "{detail}");
 }

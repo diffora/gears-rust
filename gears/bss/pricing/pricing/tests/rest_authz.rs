@@ -308,6 +308,18 @@ fn census() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
+    ];
+    rows.extend(overlay_routes());
+    rows.extend(config_routes());
+    rows
+}
+
+/// Slice 4's two config-plane routes, extracted for [`overlay_routes`]' reason:
+/// [`census`] crossed the line cap again when they were added, and one more
+/// extraction is honest where a lint allow would not be. The roster is still
+/// `census()`.
+fn config_routes() -> Vec<Route> {
+    vec![
         // Slice 4's taxonomies are the other half of that separation, and the
         // contrast is the reason they sit here rather than with the authoring
         // routes. They gate on `config`, which is exactly what the threshold
@@ -329,9 +341,7 @@ fn census() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
-    ];
-    rows.extend(overlay_routes());
-    rows
+    ]
 }
 
 /// Slice 9's four overlay routes, extracted so [`census`] stays under the line
