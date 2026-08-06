@@ -247,6 +247,7 @@ const TAXONOMY_TAG_DOMAIN_SEP: &[u8] = b"cf.bss.pricing.taxonomy.etag.v1\x00";
 /// `GET` renders is here, and that correspondence is the type's whole job: a
 /// field the response carries and this does not is a validator that cannot see
 /// its own representation.
+#[domain_model]
 #[derive(Clone, Copy, Debug)]
 pub struct TaxonomyTagEntry<'a> {
     /// The declared code.

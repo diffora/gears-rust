@@ -39,17 +39,18 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureUpdateExt};
+use toolkit_db::secure::{AccessScope, DBRunner, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::infra::storage::entity::{plan, price};
+use bss_pricing::infra::storage::entity::{plan, price, region_taxonomy};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::window_repo::{NewWindow, WindowRecord, schedule};
 
@@ -272,6 +273,42 @@ pub async fn schedule_coverage_window(
 /// engine has its own suites, and borrowing it here would make an unrelated
 /// failure read as this file's. The append-only trigger permits `draft →
 /// published`: it fires only when the row is already past `draft`.
+/// Declare the region universe every publishing fixture's rows sell in.
+///
+/// **Required since `inst-tx-region` was registered in the Foundation rule set.**
+/// C2 is fail-closed — a tenant whose region taxonomy declares nothing publishes
+/// nothing — so a fixture that publishes a plan has to declare the region its
+/// rows carry, exactly as a real operator would through
+/// `PUT /config/taxonomies/region`.
+///
+/// Before the rule was registered these fixtures published rows in regions no
+/// tenant had ever declared, which is a world the system is not supposed to be
+/// able to reach. That they were green is not evidence the rule was satisfied;
+/// it is evidence nothing was asking.
+///
+/// The set is the union of the spellings the suites use — `region` is
+/// case-sensitive and `eu` and `EU` are two different values on the axis.
+pub async fn declare_fixture_regions(provider: &DBProvider<DbError>, tenant_id: Uuid) {
+    let conn = provider.conn().expect("conn");
+    for value in ["eu", "EU", "us", "US", "DE", "us-east"] {
+        let row = region_taxonomy::ActiveModel {
+            tenant_id: Set(tenant_id),
+            value: Set(value.to_owned()),
+            display_name: Set(format!("fixture region {value}")),
+            state: Set("active".to_owned()),
+            tax_category: Set(None),
+            tax_rate_present: Set(false),
+        };
+        region_taxonomy::Entity::insert(row.clone())
+            .secure()
+            .scope_with_model(&AccessScope::allow_all(), &row)
+            .expect("scope")
+            .exec(&conn)
+            .await
+            .expect("declare a fixture region");
+    }
+}
+
 pub async fn publish_row_directly(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,

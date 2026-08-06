@@ -110,6 +110,21 @@ async fn seed_published_overlay(harness: &Harness, class: &str, value: &str) {
         .expect("seed a published overlay");
 }
 
+/// One entry of a rendered taxonomy, by value.
+///
+/// By value and never by index: the harness declares the fixture region universe
+/// (`inst-tx-region` is fail-closed, so a tenant that declares nothing publishes
+/// nothing), and the list is ordered by value — so position 0 is whichever code
+/// sorts first, not the one a case happens to care about.
+fn entry_for<'a>(body: &'a serde_json::Value, value: &str) -> &'a serde_json::Value {
+    body["values"]
+        .as_array()
+        .expect("values is an array")
+        .iter()
+        .find(|v| v["value"] == value)
+        .unwrap_or_else(|| panic!("no `{value}` in the rendered taxonomy"))
+}
+
 fn codes(body: &serde_json::Value) -> Vec<String> {
     body["values"]
         .as_array()
@@ -521,8 +536,9 @@ async fn the_tax_markers_round_trip_on_the_region_taxonomy() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let (body, _) = read(&harness, "region").await;
-    assert_eq!(body["values"][0]["tax_category"], "standard");
-    assert_eq!(body["values"][0]["tax_rate_present"], true);
+    let eu = entry_for(&body, "eu");
+    assert_eq!(eu["tax_category"], "standard");
+    assert_eq!(eu["tax_rate_present"], true);
 }
 
 /// A blank value is refused at the edge, not by the store.

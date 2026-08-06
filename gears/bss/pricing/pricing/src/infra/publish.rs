@@ -99,7 +99,7 @@ use crate::infra::fixture_gate::{FixtureGate, Reservation};
 use crate::infra::storage::repo::{
     NewAuditEntry, NewOutboxEvent, PendingVersionRow, PlanPublishedPayload, PolicyObjectRepo,
     approval_repo, audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, plan_shape_repo,
-    price_repo, window_repo,
+    price_repo, taxonomy_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -809,6 +809,18 @@ async fn rule_params(
     let referencing = crate::infra::bundle::referencing_markets(runner, scope, tenant_id, plan_id)
         .await
         .map_err(|e| repo_failure(&e))?;
+    // `inst-tx-region`: the tenant's **active** region universe. Resolved here,
+    // in the same pass as everything else, for the reason this function exists —
+    // the rule set runs twice on one publish and a rule reaching for storage
+    // itself could answer differently in the two runs for no authored reason.
+    //
+    // It is the `active` set, which is `overlay_repo::declares`' predicate one
+    // plane over: a value that reached `retired` must not validate a new row
+    // against itself. An empty answer is C2's fail-closed reading and not an
+    // error — a tenant who has declared no region publishes no row.
+    let declared_regions = taxonomy_repo::active_regions(runner, scope, tenant_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
     Ok(PublishRuleParams::new(
         policy.interval_bounds(),
         policy.descriptor_rule(),
@@ -821,7 +833,8 @@ async fn rule_params(
             policy.max_price_rows_per_plan(),
         ),
     )
-    .with_referencing_markets(referencing))
+    .with_referencing_markets(referencing)
+    .with_declared_regions(declared_regions))
 }
 
 /// The registry request id of one publish unit.

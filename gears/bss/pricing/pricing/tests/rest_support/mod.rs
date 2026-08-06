@@ -402,9 +402,21 @@ impl Harness {
         let frontier = Arc::new(FrontierState {
             pin_frontier: PinFrontierRepo::new(db.clone()),
         });
+        let tenant = Uuid::now_v7();
+        // **The tenant declares the regions its fixtures sell in.**
+        // `inst-tx-region` is registered in the Foundation rule set and C2 is
+        // fail-closed, so a tenant whose region taxonomy is empty publishes
+        // nothing. Every suite built on this harness publishes, so the harness
+        // does what a real operator does first: declares the universe.
+        //
+        // Seeded through the entity rather than the route, because what these
+        // suites are about is never the taxonomy — routing every one of them
+        // through a `PUT /config/taxonomies/region` would make an unrelated
+        // failure there look like a failure in whatever they actually test.
+        crate::common::declare_fixture_regions(&db, tenant).await;
         Self {
             db,
-            tenant: Uuid::now_v7(),
+            tenant,
             other: Uuid::now_v7(),
             state,
             governance,

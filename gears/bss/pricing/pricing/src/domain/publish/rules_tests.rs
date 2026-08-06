@@ -26,6 +26,7 @@ use crate::domain::rules::MODEL_KIND_MISSING;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::taxonomy::REGION_UNKNOWN;
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 fn plan() -> PlanId {
@@ -39,6 +40,28 @@ fn now() -> DateTime<Utc> {
 }
 
 fn params(default_rounding_policy: Option<&str>) -> PublishRuleParams {
+    // **Declares `eu`**, which is the region every fixture row in this file sells
+    // in. Not decoration: `inst-tx-region` is registered in the Foundation set,
+    // and the empty universe is C2's fail-closed reading — a tenant who has
+    // declared no region publishes nothing. So a `params` that declared none
+    // would make every case in this file fail on a region it is not about, which
+    // is exactly what happened the moment the rule was registered.
+    //
+    // `params_declaring` is what the three cases that are *about* the universe
+    // use.
+    base_params(default_rounding_policy).with_declared_regions(declared(&["eu"]))
+}
+
+/// A region universe, as a set.
+fn declared(regions: &[&str]) -> std::collections::BTreeSet<Region> {
+    regions
+        .iter()
+        .map(|r| Region::new(r).expect("a non-blank fixture region"))
+        .collect()
+}
+
+/// The base parameters, before a region universe is attached.
+fn base_params(default_rounding_policy: Option<&str>) -> PublishRuleParams {
     PublishRuleParams::new(
         // The ratified launch caps, not zeros: a zero cap rejects every custom
         // frequency ever authored and would exercise that state instead.
@@ -311,6 +334,73 @@ fn the_rounding_code_is_spelled_as_the_design_set_spells_it() {
 }
 
 // ---------------------------------------------------------------------------
+// `inst-tx-region` — region membership, registered in the Foundation set.
+// ---------------------------------------------------------------------------
+
+/// A candidate row whose region the tenant never declared fails publish.
+///
+/// The rule itself is `domain::taxonomy`'s and is unit-tested there. What this
+/// case establishes is the thing that was missing: that it is **registered**, so
+/// a real publish evaluates it. Before this, `RegionsDeclared` existed, was
+/// tested, and ran on nothing — a plan carrying an undeclared region published
+/// clean and `REGION_UNKNOWN` could not reach the wire.
+#[test]
+fn a_row_in_an_undeclared_region_fails_the_registered_set() {
+    let shape = clean_plan();
+    // `clean_plan`'s row sells in `eu`; the tenant declares only `us`.
+    let report = run_publish_rules(&shape, &params_declaring(&["us"]));
+
+    assert!(!report.is_publishable());
+    assert!(
+        codes(&report).contains(&REGION_UNKNOWN.to_owned()),
+        "the registered set must raise the price-row refusal: {:?}",
+        codes(&report)
+    );
+}
+
+/// The same plan passes once its region is declared.
+///
+/// The positive half, and it is not decoration: a rule that refused every plan
+/// would satisfy the case above while making the gear unusable, which is this
+/// program's standing warning about a refusal test with no positive control.
+#[test]
+fn the_same_plan_publishes_once_its_region_is_declared() {
+    let shape = clean_plan();
+
+    let report = run_publish_rules(&shape, &params_declaring(&["eu"]));
+
+    assert_eq!(codes(&report), Vec::<String>::new());
+    assert!(report.is_publishable());
+}
+
+/// A tenant that has declared no region at all fails closed, not open.
+///
+/// C2 carves out no tenant. The opposite reading — an empty universe permits
+/// everything — is the shape D-211 was written against, and it is the difference
+/// between a fail-closed rule and one that is off until somebody configures it on.
+#[test]
+fn a_tenant_with_no_declared_region_fails_closed_at_publish() {
+    let shape = clean_plan();
+
+    let report = run_publish_rules(&shape, &params_declaring(&[]));
+
+    assert!(
+        codes(&report).contains(&REGION_UNKNOWN.to_owned()),
+        "an unconfigured tenant publishes nothing: {:?}",
+        codes(&report)
+    );
+}
+
+/// The base parameters with **only** the named regions declared.
+///
+/// Off [`base_params`] rather than [`params`], which already declares `eu`:
+/// building on that one would make `params_declaring(&[])` declare `eu` anyway
+/// and the fail-closed case would silently test nothing.
+fn params_declaring(regions: &[&str]) -> PublishRuleParams {
+    base_params(Some("half_up")).with_declared_regions(declared(regions))
+}
+
+// ---------------------------------------------------------------------------
 // A plan the whole set passes, so the tests above vary one thing at a time.
 // ---------------------------------------------------------------------------
 
@@ -363,12 +453,16 @@ fn clean_plan() -> PlanShape {
 
 /// `params`, with the two soft caps set to whatever a case needs.
 fn params_capped(bands: u32, rows: u32) -> PublishRuleParams {
+    // Declares `eu` for [`params`]' reason: these cases are about the soft caps,
+    // and a plan refused for its region would report a violation beside the
+    // advisory they assert on.
     PublishRuleParams::new(
         CustomIntervalBounds::new(366, 24),
         DescriptorSetComplete::default(),
         Some("half_up".to_owned()),
         SoftSizeCaps::new(bands, rows),
     )
+    .with_declared_regions(declared(&["eu"]))
 }
 
 fn advisories(report: &crate::domain::validation::ValidationReport) -> Vec<String> {

@@ -202,6 +202,12 @@ async fn harness_with(registry: Arc<RegistryDouble>) -> Harness {
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
+    // The tenant declares the regions its rows sell in. `inst-tx-region` is
+    // registered in the Foundation rule set and C2 is fail-closed, so a publish
+    // by a tenant with an empty region taxonomy is refused — which is correct,
+    // and which every fixture here would otherwise trip on a rule none of them
+    // is about.
+    common::declare_fixture_regions(&provider, TENANT).await;
     let publish = PublishService::new(
         provider.clone(),
         &LimitsConfig::default(),
@@ -930,6 +936,12 @@ async fn registry_absence_stops_the_publish_and_writes_nothing() {
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
+    // The tenant declares the regions its rows sell in. `inst-tx-region` is
+    // registered in the Foundation rule set and C2 is fail-closed, so a publish
+    // by a tenant with an empty region taxonomy is refused — which is correct,
+    // and which every fixture here would otherwise trip on a rule none of them
+    // is about.
+    common::declare_fixture_regions(&provider, TENANT).await;
     let h = Harness {
         plans: PlanRepo::new(provider.clone()),
         shapes: PlanShapeRepo::new(provider.clone()),

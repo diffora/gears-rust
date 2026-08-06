@@ -127,6 +127,7 @@ use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, pla
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::rules::price_row_rules;
 use crate::domain::scope_key::{PriceEligibility, Region};
+use crate::domain::taxonomy::RegionsDeclared;
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
 
 /// A published row resolves neither its own `rounding_policy_ref` nor a tenant
@@ -224,6 +225,7 @@ pub struct PublishRuleParams {
     default_rounding_policy: Option<String>,
     size_caps: SoftSizeCaps,
     referencing_markets: Vec<ReferencingMarket>,
+    declared_regions: BTreeSet<Region>,
 }
 
 /// One market of one **bundle that references this plan as a component**, and the
@@ -284,6 +286,7 @@ impl PublishRuleParams {
             default_rounding_policy,
             size_caps,
             referencing_markets: Vec::new(),
+            declared_regions: BTreeSet::new(),
         }
     }
 
@@ -298,6 +301,24 @@ impl PublishRuleParams {
     #[must_use]
     pub fn with_referencing_markets(mut self, markets: Vec<ReferencingMarket>) -> Self {
         self.referencing_markets = markets;
+        self
+    }
+
+    /// Attach the tenant's **active** region universe (`inst-tx-region`).
+    ///
+    /// A second call rather than a sixth parameter on [`Self::new`], for
+    /// [`Self::with_referencing_markets`]' reason — but the empty set means
+    /// something different here and it is the **fail-closed** meaning, not "no
+    /// constraint": a tenant who has declared no region publishes no row at all
+    /// (C2). That asymmetry is why this is documented rather than mirrored.
+    ///
+    /// It follows that every caller assembling a real publish **must** call this.
+    /// A caller who forgets gets the empty set and refuses everything, which is
+    /// the safe direction to fail and is loud immediately — the opposite default
+    /// would let the rule pass silently for a tenant whose taxonomy nobody read.
+    #[must_use]
+    pub fn with_declared_regions(mut self, regions: BTreeSet<Region>) -> Self {
+        self.declared_regions = regions;
         self
     }
 
@@ -391,6 +412,19 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         .with_rule(Box::new(NoUnjudgedPrimitive))
         .with_rule(Box::new(BundleMarketBasisUnmixed {
             markets: params.referencing_markets.clone(),
+        }))
+        // `inst-tx-region` (Slice 4). **Registered here, in the Foundation's own
+        // set, rather than called from a slice seam** — this module's doc gives
+        // the reason and it is the same one `BundleMarketBasisUnmixed` cites: a
+        // rule bolted on at a call site is the "whichever slice happens to load
+        // first" outcome §4.2 keeps the base set out of.
+        //
+        // It belongs to the base set rather than to a Slice-4-only pipeline
+        // because `region` is a **scope-key axis**: every publish of every plan
+        // has one on every row, so there is no publish this rule does not apply
+        // to.
+        .with_rule(Box::new(RegionsDeclared {
+            declared: params.declared_regions.clone(),
         }))
 }
 
