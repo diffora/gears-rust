@@ -216,11 +216,20 @@ impl Trigger {
     /// A path rather than a slice number, so a reader greps once. **A trigger with
     /// no owning slice is a trigger with no owner**, and this being a total
     /// `match` over a closed enum is what makes that unrepresentable.
+    ///
+    /// Totality is not the same property as truth, and four of these arms named a
+    /// file that does not exist until 2026-08-06: `04-market-tax.md` (the document
+    /// is `04-currency-tax.md`) and `09-overlays-groups.md` (it is
+    /// `09-price-overlays.md`, and the groups half named in the old spelling was
+    /// never a separate document). Both were plausible names, which is exactly why
+    /// the roster test that guarded this asserted the string's *shape* and passed
+    /// over them; it now opens the file —
+    /// `triggers_tests::every_trigger_names_a_design_document_that_opens`.
     #[must_use]
     pub const fn owning_slice(self) -> &'static str {
         match self {
             Self::GrandfatherHorizonTightening => "design/01-foundation.md",
-            Self::GaGateClearingRepublish => "design/04-market-tax.md",
+            Self::GaGateClearingRepublish => "design/04-currency-tax.md",
             Self::HistoricalImport
             | Self::ThresholdPolicyDiff
             | Self::NoComputableRowDelta
@@ -231,7 +240,7 @@ impl Trigger {
             Self::BundleComposition | Self::RevenueShareChange => "design/08-bundles.md",
             Self::ImmediateMembershipReresolution
             | Self::BulkGroupMove
-            | Self::PriceOverlayMutation => "design/09-overlays-groups.md",
+            | Self::PriceOverlayMutation => "design/09-price-overlays.md",
             Self::PrepaidGateClearingRepublish | Self::GrantNonPriceField => {
                 "design/10-advanced-primitives.md"
             }

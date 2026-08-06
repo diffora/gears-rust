@@ -62,20 +62,39 @@ fn row(currency: &str, amount: i64) -> PriceRecord {
 // The roster
 // ---------------------------------------------------------------------------
 
-/// Every registered trigger has an owning slice. **A trigger with no slice is a
-/// trigger with no owner**, and a `match` over a closed enum is what makes that
-/// unrepresentable — so what this asserts is that the path is a real one and not a
-/// placeholder.
+/// Every registered trigger has an owning slice, **and the document opens**.
+///
+/// `owning_slice`'s own doc gives the field one purpose — *"a path rather than a
+/// slice number, so a reader greps once"* — and a path that greps to nothing
+/// serves it no better than a slice number would.
+///
+/// **This assertion used to be that the string was well formed**: `starts_with
+///("design/")` and `contains(".md")`, under a doc claiming it asserted "the path is
+/// a real one and not a placeholder". It asserted no such thing, and the gap was not
+/// theoretical — it passed green over **two** wrong paths across **four** of the
+/// eighteen triggers (`design/04-market-tax.md`, whose file is `04-currency-tax.md`,
+/// and `design/09-overlays-groups.md`, whose file is `09-price-overlays.md`). A
+/// shape check cannot tell a document from a plausible name for one, so this opens
+/// the file instead.
+///
+/// The docs live one directory up from the crate, which is why the base is
+/// `CARGO_MANIFEST_DIR/..` and not a relative path: a test's working directory is
+/// the *workspace* root under one runner and the crate root under another, and a
+/// relative path would make this assertion answer differently depending on how it
+/// was invoked.
 #[test]
-fn every_trigger_names_its_slice() {
+fn every_trigger_names_a_design_document_that_opens() {
+    let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs");
     for trigger in Trigger::ALL {
         let slice = trigger.owning_slice();
-        // A path into the design set, not a slice number: the assertion is that
-        // the owner is a document a reader can open. `contains` rather than
-        // `ends_with` only because the extension check is a lint here.
         assert!(
             slice.starts_with("design/") && slice.contains(".md"),
             "{trigger:?} must name the document that owns its subject, got {slice}"
+        );
+        let path = docs.join(slice);
+        assert!(
+            path.is_file(),
+            "{trigger:?} names {slice}, which is not a file in the design set"
         );
     }
 }
