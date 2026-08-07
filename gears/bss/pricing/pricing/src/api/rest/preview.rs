@@ -402,13 +402,25 @@ fn market_rows<'a>(
 /// has a monthly price.
 ///
 /// **Banded money is a property of the model, not of the charge kind**, and this
-/// doc said otherwise until D-244's fallback was found quoting a trial row.
-/// [`PriceRow::is_usage`](crate::domain::price_row::PriceRow::is_usage) reads
-/// `charge_kind`; [`PriceRow::is_tiered`](crate::domain::price_row::PriceRow::is_tiered)
-/// — *"is the kind one whose money lives in tier bands?"* — reads `model_kind`,
-/// and the two are independent. A `recurring` + `graduated` row is not a usage row
-/// and still has no single amount, which is precisely the row the old naming
-/// predicate failed to name.
+/// doc conflated them: [`PriceRow::is_usage`](crate::domain::price_row::PriceRow::is_usage)
+/// reads `charge_kind` while
+/// [`PriceRow::is_tiered`](crate::domain::price_row::PriceRow::is_tiered) reads
+/// `model_kind`. The sentence that stood here said *"a **usage** row's money lives
+/// in its tier bands and its `amountMinor` is NULL by rule"*, and **the false half
+/// is the usage one**: `per_unit` is legal on a usage row and keeps its money in
+/// `amount_minor`, so a usage row's amount is not NULL by any rule.
+///
+/// **The mirror claim — that a terminal `recurring` row may price in bands — was
+/// asserted here and is false**, which is why the naming predicate no longer asks
+/// about the money without that being a bug fix. `inst-mk-chargekind` (D-18) is
+/// registered in `price_row_rules()` and refuses `graduated`/`volume`/`package` on
+/// a `recurring` row (`MODEL_KIND_CHARGEKIND_MISMATCH`; §3 puts tiered per-seat
+/// pricing in Future scope in the same sentence), and `AMOUNT_PLACEMENT_INVALID`
+/// refuses `flat`/`per_unit` — the only kinds a non-usage row may carry — with an
+/// absent `amount_minor`. **Every publishable terminal recurring row therefore has
+/// an amount**, and the conjunct this predicate dropped could never have excluded
+/// one. Dropping it is a simplification: the name is about the scope key, and the
+/// money is a different question.
 ///
 /// **D-244 names the row**: the *terminal phase's* `all_subscriptions`
 /// **recurring** row. §2 used to say "the catalog base list price" as though a
