@@ -37,6 +37,7 @@ use bss_pricing::api::rest::approvals::{
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
+use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
 use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
 use bss_pricing::api::rest::preview::PLAN_PREVIEW;
@@ -313,6 +314,7 @@ fn census() -> Vec<Route> {
         },
     ];
     rows.extend(retirement_routes());
+    rows.extend(migration_routes());
     rows.extend(overlay_routes());
     rows.extend(config_routes());
     rows
@@ -401,6 +403,43 @@ fn retirement_routes() -> Vec<Route> {
         action: actions::RETIRE,
         mutating: true,
     }]
+}
+
+/// Slice 11's migration plane (§5).
+///
+/// Three rows and deliberately not five. `POST .../start` and `.../complete` are
+/// specified (D-65) and their storage half is built, but they are **not mounted**:
+/// `/start` must run D-36's execution-time re-resolution and that has no input in
+/// this system, so a mounted `/start` would hand Subscriptions an exclusion set
+/// computed from nothing. A census row for an unmounted route would fail the
+/// registered-vs-census equality above, which is the census doing its job.
+///
+/// The `DELETE` is `plan x migrate` rather than a delete-shaped grant because it
+/// **cancels**: D-34 rescoped it and the row is never removed.
+fn migration_routes() -> Vec<Route> {
+    vec![
+        Route {
+            method: "POST",
+            path: MIGRATIONS,
+            resource_type: labels::PLAN,
+            action: actions::MIGRATE,
+            mutating: true,
+        },
+        Route {
+            method: "GET",
+            path: MIGRATION_BY_ID,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "DELETE",
+            path: MIGRATION_BY_ID,
+            resource_type: labels::PLAN,
+            action: actions::MIGRATE,
+            mutating: true,
+        },
+    ]
 }
 
 fn overlay_routes() -> Vec<Route> {
@@ -583,6 +622,15 @@ fn drive(
         .replace("{windowId}", &seeded.window.to_string())
         .replace("{bundleId}", &seeded.bundle.to_string())
         .replace("{overlayId}", &seeded.overlay.to_string())
+        // **Not a seeded id, and it does not need to be.** Both migration item
+        // routes ask the PDP *before* they read the row, so a schedule that does
+        // not exist still drives the gate — which is the only thing this file
+        // asserts about them. Seeding one would add a fixture whose absence
+        // nothing here could detect. A well-formed UUID is required all the same:
+        // `Path<Uuid>` rejects a malformed segment with a 400 that never reaches
+        // a gate, which is exactly what the four properties below reddened with
+        // before this line existed.
+        .replace("{migrationId}", "00000000-0000-4000-8000-000000000fa1")
         // The taxonomy class is a **resource selector**, not a seeded id: any of
         // the four addressable segments drives the same handler through the same
         // gate. `brand` is used because it is the one Slice 9's overlay scope
@@ -860,6 +908,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::retirement::router(
+                Arc::clone(&harness.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::migrations::router(
                 Arc::clone(&harness.governance),
                 &openapi,
             ))

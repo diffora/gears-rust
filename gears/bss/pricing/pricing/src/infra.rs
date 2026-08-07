@@ -10,6 +10,7 @@ pub mod fixture_gate;
 pub mod idempotent;
 pub mod jobs;
 pub mod metrics;
+pub mod migration;
 pub mod overlay_publish;
 pub mod publish;
 pub mod read_model;

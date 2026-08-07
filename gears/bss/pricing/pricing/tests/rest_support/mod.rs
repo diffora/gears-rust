@@ -422,6 +422,12 @@ impl Harness {
                 db.clone(),
                 Arc::clone(&registry) as Arc<_>,
             ),
+            // Slice 11's migration plane. Requests no `CatalogVersion`, so it
+            // takes no registry - only the limits its policy reader is bound to.
+            migrations: bss_pricing::infra::migration::MigrationService::new(
+                db.clone(),
+                &LimitsConfig::default(),
+            ),
             publish: PublishService::new(
                 db.clone(),
                 &LimitsConfig::default(),
@@ -562,6 +568,10 @@ impl Harness {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::retirement::router(
+                Arc::clone(&self.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::migrations::router(
                 Arc::clone(&self.governance),
                 &openapi,
             ))

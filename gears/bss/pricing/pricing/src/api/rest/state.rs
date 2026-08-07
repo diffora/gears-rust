@@ -170,6 +170,14 @@ pub struct GovernanceState {
     /// (`<plan_id>/retirement/<revision>`), which is what keeps its handle apart
     /// from theirs.
     pub retirements: crate::infra::retirement::RetirementService,
+    /// The `MigrationScheduler` of Slice 11 §1.7 — schedule, read and cancel a
+    /// plan migration (`inst-ms-api`, `inst-mg-cancel`, D-34).
+    ///
+    /// Requests **no** `CatalogVersion`, unlike its five neighbours above: a
+    /// migration schedule mutates no plan content and projects no subject, so
+    /// there is nothing for a consumer to pin. It emits a schedule and
+    /// Subscriptions executes it.
+    pub migrations: crate::infra::migration::MigrationService,
     /// The at-most-once gate the `POST …/windows` claims under (D-191).
     ///
     /// Here as well as on [`AuthoringState`] rather than instead of it: the two planes
