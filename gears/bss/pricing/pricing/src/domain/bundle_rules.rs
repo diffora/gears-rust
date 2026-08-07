@@ -30,17 +30,28 @@
 //! question the read already settled. [`CoverageRow`] carries only what the rules
 //! compare, which is what keeps the two from drifting.
 //!
-//! # What Slice 4 still owes this module
+//! # Slice 4's debt to this module, and how it was paid
 //!
 //! `inst-bc-coverage` says the **currency** axis delegates to Slice 4's
 //! `CurrencyBindingChecker` (case ii) while the `region` axis is this
-//! validator's own extension of the same rule. That checker **does not exist in
-//! this crate yet** — nothing declares it and nothing implements it — so the
-//! currency half is checked here, on the same market walk as the region half.
-//! When Slice 4 lands it, the currency arm of [`check_coverage`] is what has to
-//! delegate; leaving the walk uniform until then is the honest shape, and
-//! writing a delegation to an absent type would have been a comment pretending
-//! to be a call.
+//! validator's own extension of the same rule. That checker did not exist when
+//! this walk was written, so both axes were checked here and the delegation was
+//! reported as owed (D-211).
+//!
+//! Slice 4 landed it, and the delegation is now made — **to the predicate, not
+//! to the walk**, and the distinction is the whole of what D-211 buys. D-95
+//! moved case (i) from *currency* to the `(currency, region)` **pair**, so there
+//! is no currency axis left to hand over on its own: what the two planes can
+//! honestly share is the question *which sold markets is this thing not covering*,
+//! which is [`crate::domain::currency_binding::uncovered_pairs`]. The rule stays
+//! here — which markets are sold, which rows count, what the violation says —
+//! and only the set difference is shared.
+//!
+//! Sharing it changed an answer rather than merely relocating one:
+//! `composition.markets` is a `Vec` off the request body with no deduplication
+//! anywhere on the route, so the old `.any()` walk reported a repeated pair once
+//! per repetition. A set difference reports it once
+//! ([`a_market_named_twice_is_reported_once`](bundle_rules_tests)).
 //!
 //! # `inst-bc-sellability` is not here
 //!
@@ -59,6 +70,7 @@ use crate::domain::bundle::{
     PriceBasis, RESIDUAL_OVER_TOLERANCE, REVSHARE_BASIS_UNSUPPORTED, REVSHARE_UNBALANCED,
     RevShareGroup, check_basis_admits_rev_share, reconcile,
 };
+use crate::domain::currency_binding::{Market, uncovered_pairs};
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
 use crate::domain::scope_key::Region;
@@ -278,24 +290,30 @@ fn check_components(composition: &BundleComposition, report: &mut ValidationRepo
 /// `inst-bc-coverage` + `inst-bc-fail`: every component covers every sold market,
 /// and a failure names both.
 fn check_coverage(composition: &BundleComposition, report: &mut ValidationReport) {
+    // D-211's shared predicate, hoisted once: the sold set is a property of the
+    // composition and re-deriving it per component would be the second answer
+    // this delegation exists to prevent.
+    let sold: BTreeSet<Market> = composition.markets.iter().cloned().collect();
     for component in &composition.components {
-        for (currency, region) in &composition.markets {
-            let covered = component
-                .rows
-                .iter()
-                .any(|row| &row.currency == currency && &row.region == region);
-            if !covered {
-                report.violate(
-                    CURRENCY_NOT_COVERED,
-                    component.component_plan_id.to_string(),
-                    format!(
-                        "component plan {} has no covering published row for ({}, {})",
-                        component.component_plan_id,
-                        currency.as_str(),
-                        region.as_str()
-                    ),
-                );
-            }
+        let covered: BTreeSet<Market> = component
+            .rows
+            .iter()
+            .map(|row| (row.currency.clone(), row.region.clone()))
+            .collect();
+        // Ordered by the set difference rather than by the request's market
+        // order, which is the honest direction: two callers listing one market
+        // set in two orders describe one composition and should read one report.
+        for (currency, region) in uncovered_pairs(&sold, &covered) {
+            report.violate(
+                CURRENCY_NOT_COVERED,
+                component.component_plan_id.to_string(),
+                format!(
+                    "component plan {} has no covering published row for ({}, {})",
+                    component.component_plan_id,
+                    currency.as_str(),
+                    region.as_str()
+                ),
+            );
         }
     }
 }

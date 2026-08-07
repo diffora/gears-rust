@@ -167,6 +167,43 @@ fn a_component_missing_a_sold_market_blocks_publish_naming_both() {
     );
 }
 
+/// A market named twice is one authoring mistake, and the report says so once.
+///
+/// **Reachable, not defensive**: `markets` arrives from the publish request body
+/// and `bundles::markets_of` maps it without deduplicating, so a caller repeating
+/// a pair reaches this rule. The joint walk this used to be asked `.any()` per
+/// listed pair and therefore reported the same missing market once per
+/// repetition, per component — N violations for one row nobody authored.
+///
+/// The deduplication is not a filter added here. It comes from `uncovered_pairs`
+/// being a **set** difference, which is the predicate D-211 makes these two
+/// planes share: the add-on arm has always answered over sets, and this is the
+/// bundle arm arriving at the same answer by the same route rather than by a
+/// second implementation that agrees today.
+#[test]
+fn a_market_named_twice_is_reported_once() {
+    let mut c = composition(
+        PriceBasis::SumOfParts,
+        vec![component(1, vec![row(&eur(), &de(), true)])],
+    );
+    c.markets.push((usd(), us()));
+    c.markets.push((usd(), us()));
+
+    let report = validate(&c);
+
+    let uncovered: Vec<_> = report
+        .violations
+        .iter()
+        .filter(|v| v.code == CURRENCY_NOT_COVERED)
+        .collect();
+    assert_eq!(
+        uncovered.len(),
+        1,
+        "one missing market, one violation — got {}",
+        uncovered.len()
+    );
+}
+
 /// Two components, two markets, both covered — the AC's two-vendor case.
 #[test]
 fn every_component_covering_every_market_publishes() {
