@@ -310,6 +310,14 @@ impl From<DomainError> for CanonicalError {
             D::WindowNotCancellable(detail) => PlanResource::aborted(detail)
                 .with_reason("WINDOW_NOT_CANCELLABLE")
                 .create(),
+            // `inst-re-references`, 409 in §5's own words. The conflict class for
+            // `TaxonomyValueInUse`'s reason and it is the same fact one plane
+            // over: what refused the retirement is a bundle or an add-on
+            // override the caller's own request never named, and going to look
+            // at the enumerated referrers is the whole remedy.
+            D::RetirePlanReferenced(detail) => PlanResource::aborted(detail)
+                .with_reason(crate::domain::retirement::RETIRE_PLAN_REFERENCED)
+                .create(),
 
             // -- PermissionDenied (403) -- the two audited authority refusals.
             //

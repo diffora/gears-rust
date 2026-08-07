@@ -373,6 +373,26 @@ pub enum DomainError {
     /// a spelling rather than inventing one.
     #[error("taxonomy value in use: {0}")]
     TaxonomyValueInUse(String),
+    /// A plan cannot retire while something composes or overrides it
+    /// (`11-lifecycle.md` §5, `inst-re-references`, **409**).
+    ///
+    /// A conflict for [`DomainError::TaxonomyValueInUse`]'s reason, and it is the
+    /// same shape of fact one plane over: nothing the caller presented was wrong,
+    /// and what refused the retirement is a **bundle** or an **add-on override**
+    /// their own request never named. The refusal therefore enumerates the
+    /// referrers — the remediation is to re-compose or retire a *named* referrer
+    /// first, which is unreachable from a refusal that only says "referenced".
+    ///
+    /// Only the two **blocking** reference classes reach it. A plan listing the
+    /// retiree in `allowedChangeTargets` (D-24) and an overlay targeting it
+    /// (D-31) are enumerated as warnings and never raise this: the first goes
+    /// inert because Subscriptions re-checks lifecycle state at change time, and
+    /// the second stays deliberately evaluable for in-flight subscribers.
+    ///
+    /// The code is **§5's**, not minted here: `RETIRE_PLAN_REFERENCED` is in the
+    /// design set's problem-response list.
+    #[error("retire plan referenced: {0}")]
+    RetirePlanReferenced(String),
     /// A price row naming a `region` the tenant's taxonomy does not declare
     /// active (`04-currency-tax.md` §2, §5, `inst-mc-region`, **422 → 400**).
     ///
