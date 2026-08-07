@@ -151,6 +151,112 @@ fn each_currency_binding_case_counts_separately() {
     );
 }
 
+/// A coverage report carrying one or more blocks, as the bundle walk leaves it.
+fn blocked_report(blocks: usize) -> ValidationReport {
+    let mut report = ValidationReport::default();
+    for n in 0..blocks {
+        report.violate(
+            CURRENCY_NOT_COVERED,
+            format!("component-{n}"),
+            "no covering published row".to_owned(),
+        );
+    }
+    report
+}
+
+/// The bundle cases are chosen by the composition's **basis**, never by the
+/// violation's code (`T-17`, cases (ii) and (iii)).
+///
+/// The code cannot choose: `bundle_rules` and `currency_binding` raise the same
+/// `CURRENCY_NOT_COVERED` string, so a derivation scanning it would label a
+/// bundle's fault `required_addon` — invisibly, because the refusal an operator
+/// sees would still be correct. **Both bases are exercised**, because one alone
+/// cannot tell "reads the basis" from "hard-codes a case".
+#[test]
+fn the_bundle_binding_case_comes_from_the_basis_and_not_from_the_code() {
+    let h = MetricsHarness::new();
+    let m = h.metrics();
+
+    report_bundle_coverage_metrics(&m, PriceBasis::SumOfParts, &blocked_report(1));
+    report_bundle_coverage_metrics(&m, PriceBasis::OwnPrice, &blocked_report(1));
+    h.force_flush();
+
+    assert_eq!(
+        h.counter_value(
+            "pricing_currency_binding_blocks_total",
+            &[("case", "bundle_sum_of_parts")]
+        ),
+        1
+    );
+    assert_eq!(
+        h.counter_value(
+            "pricing_currency_binding_blocks_total",
+            &[("case", "bundle_own_price")]
+        ),
+        1
+    );
+    assert_eq!(
+        h.counter_value(
+            "pricing_currency_binding_blocks_total",
+            &[("case", "required_addon")]
+        ),
+        0,
+        "case (i) is the plan plane's and nothing here may wear its label"
+    );
+}
+
+/// One rule run is one count, however many components missed a market.
+///
+/// §10 labels this `case`, and a bundle whose three components all miss one
+/// market is one composition mistake. Paired with the control below, this is
+/// what separates "counts runs" from "counts violations".
+#[test]
+fn a_bundle_blocked_on_three_components_counts_once() {
+    let h = MetricsHarness::new();
+    let m = h.metrics();
+
+    report_bundle_coverage_metrics(&m, PriceBasis::SumOfParts, &blocked_report(3));
+    h.force_flush();
+
+    assert_eq!(
+        h.counter_value(
+            "pricing_currency_binding_blocks_total",
+            &[("case", "bundle_sum_of_parts")]
+        ),
+        1
+    );
+}
+
+/// A publishable composition counts nothing.
+///
+/// The control the two cases above need: without it both would pass against a
+/// derivation that emitted on every rule run regardless of the verdict, which is
+/// a counter measuring publishes rather than blocks.
+#[test]
+fn a_bundle_that_covers_every_market_counts_nothing() {
+    let h = MetricsHarness::new();
+    let m = h.metrics();
+
+    report_bundle_coverage_metrics(&m, PriceBasis::SumOfParts, &blocked_report(0));
+    report_bundle_coverage_metrics(&m, PriceBasis::OwnPrice, &blocked_report(0));
+    h.force_flush();
+
+    assert_eq!(
+        h.counter_value(
+            "pricing_currency_binding_blocks_total",
+            &[("case", "bundle_sum_of_parts")]
+        ),
+        0
+    );
+    assert_eq!(
+        h.counter_value(
+            "pricing_currency_binding_blocks_total",
+            &[("case", "bundle_own_price")]
+        ),
+        0
+    );
+}
+
 /// The GA gauge reports the **latest** backlog, not a running total.
 ///
 /// The question C3 poses is how many markets are gated *now*; the number falls

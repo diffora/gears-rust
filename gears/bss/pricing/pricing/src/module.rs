@@ -577,6 +577,20 @@ impl Gear for BssPricingGear {
         // submit opens a unit (D-50) and the governance surface decides it; two
         // services over one provider would be two transaction owners for one table.
         let approvals = ApprovalService::new(db.clone());
+        // The OTel-backed metrics port. Built once per process and shared: the
+        // adapter caches its instruments, and a second build would look them up
+        // again on a path that is only reporting.
+        //
+        // A **no-op until the host installs a meter provider**, so this is safe
+        // to construct unconditionally — a missing exporter can never be the
+        // reason a publish fails.
+        //
+        // **Built here rather than beside the publish engine**, which is where it
+        // stood: the bundle service takes it too (`T-17` cases (ii)/(iii)) and is
+        // constructed with the authoring state above that point. One binding, two
+        // consumers, and the ordering is the only reason it moved.
+        let metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort> =
+            Arc::new(crate::infra::metrics::PricingMetricsMeter::new());
         let authoring_api = Arc::new(AuthoringState {
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
@@ -585,7 +599,8 @@ impl Gear for BssPricingGear {
             // Slice 8's two: the composition store, and the seam that assembles
             // a composition for the pure rules to judge.
             bundles: BundleRepo::new(db.clone()),
-            bundle_service: crate::infra::bundle::BundleService::new(db.clone()),
+            bundle_service: crate::infra::bundle::BundleService::new(db.clone())
+                .with_metrics(Arc::clone(&metrics)),
             // Slice 9's overlay store. Here and not on `GovernanceState`
             // because it requests no `CatalogVersion`, which is the criterion
             // that split the two.
@@ -605,16 +620,6 @@ impl Gear for BssPricingGear {
         // engine stays the only **requester** of a `CatalogVersion`, and the
         // warm sweep is a second **reader**, asking only what a handle the
         // commit already obtained resolved to.
-        // The OTel-backed metrics port. Built once per process and shared: the
-        // adapter caches its instruments, and a second build would look them up
-        // again on a path that is only reporting.
-        //
-        // A **no-op until the host installs a meter provider**, so this is safe
-        // to construct unconditionally — a missing exporter can never be the
-        // reason a publish fails.
-        let metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort> =
-            Arc::new(crate::infra::metrics::PricingMetricsMeter::new());
-
         let publish = PublishService::new(
             db.clone(),
             &config.limits,

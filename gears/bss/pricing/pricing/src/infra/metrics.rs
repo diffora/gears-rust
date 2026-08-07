@@ -25,6 +25,8 @@ use std::collections::BTreeSet;
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Gauge, Meter};
 
+use crate::domain::bundle::PriceBasis;
+use crate::domain::bundle_rules::CURRENCY_NOT_COVERED;
 use crate::domain::currency_binding::uncovered_required_addons;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
@@ -34,6 +36,7 @@ use crate::domain::ports::metrics::{
 use crate::domain::publish::rules::PublishRuleParams;
 use crate::domain::scope_key::{PriceEligibility, Region};
 use crate::domain::tax_display::{TAX_ENGINE_GA, is_not_sellable_ga};
+use crate::domain::validation::ValidationReport;
 
 /// Meter / instrumentation scope name — the gear's own name.
 pub(crate) const METER_NAME: &str = "bss-pricing";
@@ -151,6 +154,49 @@ impl PricingMetricsPort for PricingMetricsMeter {
             ],
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The bundle plane's two cases of the currency-binding counter.
+// ---------------------------------------------------------------------------
+
+/// Report §10's currency-binding counter for the **bundle** cases, (ii) and (iii).
+///
+/// **The case comes from the composition's declared `basis`** — the bundle
+/// plane's own verdict on what it is — and not from the violation's code.
+/// [`report_market_metrics`] below says why that matters: `bundle_rules` and
+/// `currency_binding` raise the same `CURRENCY_NOT_COVERED` string, so anything
+/// choosing a label by scanning codes labels all three cases as case (i), and
+/// does it invisibly, because the refusal an operator sees stays correct.
+///
+/// **The *presence* of a block is read from the report, and that is safe here in
+/// a way it is not there.** This report is `bundle_rules::validate`'s alone and
+/// `check_coverage` is the only rule in it that raises this code, so within this
+/// plane the code is unambiguous. Re-deriving coverage from the composition
+/// instead would be a second answer to a question the walk has just settled —
+/// exactly the drift D-211's shared predicate was adopted to end.
+///
+/// Emitting cannot fail and cannot block: the port is a no-op until the host
+/// wires an exporter.
+pub fn report_bundle_coverage_metrics(
+    metrics: &dyn PricingMetricsPort,
+    basis: PriceBasis,
+    report: &ValidationReport,
+) {
+    // One per rule run, not per offending component: §10 labels this `case`, and
+    // a bundle whose three components all miss a market is one composition
+    // mistake rather than three.
+    if !report
+        .violations
+        .iter()
+        .any(|violation| violation.code == CURRENCY_NOT_COVERED)
+    {
+        return;
+    }
+    metrics.currency_binding_block(match basis {
+        PriceBasis::SumOfParts => CurrencyBindingCase::BundleSumOfParts,
+        PriceBasis::OwnPrice => CurrencyBindingCase::BundleOwnPrice,
+    });
 }
 
 // ---------------------------------------------------------------------------

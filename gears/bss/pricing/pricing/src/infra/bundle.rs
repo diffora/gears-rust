@@ -43,6 +43,7 @@
 //! `> 0` would refuse every component in the catalogue.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
@@ -105,6 +106,7 @@ pub fn rev_share_change_set() -> ChangeSet {
 pub struct BundleService {
     db: DBProvider<DbError>,
     bundles: BundleRepo,
+    metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
 }
 
 impl BundleService {
@@ -114,6 +116,9 @@ impl BundleService {
         Self {
             db: db.clone(),
             bundles: BundleRepo::new(db),
+            // The safe default, for `PublishService::new`'s reason: a service
+            // built without one reports nothing rather than failing to build.
+            metrics: Arc::new(crate::domain::ports::metrics::NoopPricingMetrics),
         }
     }
 
@@ -204,7 +209,35 @@ impl BundleService {
         let composition = self
             .assemble(scope, tenant_id, plan_id, revision, markets)
             .await?;
-        Ok(validate(&composition))
+        let report = validate(&composition);
+        // §10's counter, cases (ii) and (iii) (`T-17`). **One run, not two**, and
+        // that is a real difference from the plan plane: `report_market_metrics`
+        // is called from a pre-check *and* a commit because the publish route's
+        // approved arm reaches the commit without pre-checking. The bundle
+        // publish has no such arm — `bundles::publish_bundle` calls this and then
+        // `publish_composition`, in that order, always — so counting here counts
+        // every block exactly once.
+        crate::infra::metrics::report_bundle_coverage_metrics(
+            &*self.metrics,
+            composition.basis,
+            &report,
+        );
+        Ok(report)
+    }
+
+    /// Attach the metrics port (`T-17`).
+    ///
+    /// A **second call** rather than a parameter on [`Self::new`], for
+    /// `PublishService::with_metrics`' reason and to the same effect: every
+    /// existing caller has nothing to say to it, and the no-op [`Self::new`]
+    /// installs is exactly what a test harness means.
+    #[must_use]
+    pub fn with_metrics(
+        mut self,
+        metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
+    ) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Normalise the revision's rev-share onto its absorbers and emit
