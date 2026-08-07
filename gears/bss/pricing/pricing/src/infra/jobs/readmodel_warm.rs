@@ -69,12 +69,17 @@
 //! `pricing.catalogversion.commit_overdue` (§3.6) and
 //! `pricing.readmodel.pin_eligibility_overdue` (§4.4) are the two Critical
 //! alarms the design set names **by string**, and both names are taken from it
-//! rather than invented. What is invented is nothing: **this gear has no
-//! metrics or alarm facility at all** — the sibling ledger has
-//! `infra/metrics.rs` and an event publisher with an alarm catalogue, and this
-//! crate has neither — so a `tracing::error!` under the named string is the
-//! whole of it. **Reported as a gap**, not stubbed behind a trait with no
-//! implementation.
+//! rather than invented.
+//!
+//! **The sentence that stood here said this gear has no metrics or alarm
+//! facility at all, and Slice 4 falsified it.** `domain/ports/metrics.rs` and
+//! `infra/metrics.rs` now carry the same port-and-adapter pair the sibling
+//! ledger has, with a `PricingAlarm` roster. These two names are still a
+//! `tracing::error!` under the named string — so what was *a missing facility*
+//! is now **two Critical alarms sitting off a plane that exists**, which is a
+//! smaller gap and a different one. Recorded as D-238 rather than wired here:
+//! the roster's own rule is that a slice adds its alarms when it wires them,
+//! and these two belong to whoever owns this plane's observability.
 //!
 //! # The degraded mark has no home, and none is invented
 //!
@@ -866,10 +871,29 @@ impl ReadModelWarmJob {
     /// correlation id would attribute a sweep's observation to a request that
     /// did not make it.
     ///
-    /// Only `plan` subjects are marked. The other three kinds have no store in
-    /// this gear, so no publish unit here can have produced one, and the
-    /// projector refuses them by name rather than this pass inventing an event
-    /// for a subject that cannot exist.
+    /// Only `plan` subjects are marked, and **not because the others cannot
+    /// occur** — that was this comment's reason and D-234 falsified it. The
+    /// projector dispatches `price_overlay` and `overlay_index` (only
+    /// `group_membership` is still refused by name), an overlay publish writes
+    /// one ref row per subject, and `list_pending_for_tenant` carries no
+    /// subject-kind predicate — so those rows do reach this method, and are
+    /// refused here rather than never arriving.
+    ///
+    /// **The reason is what the event is** (D-237). `PlanPublishDegraded` names
+    /// a `plan_id` and is addressed to a consumer of that plan; what it adds
+    /// over `commit_overdue` is which of two waits is failing, not which
+    /// subject. The subject-generic hazard — *this tenant's pin frontier is not
+    /// advancing* — is already carried by `pin_eligibility_overdue`, whose
+    /// predicate reads tenant and age and never subject kind, and a version is
+    /// incomplete exactly while it holds a pending ref, so an unwarmed overlay
+    /// holds the frontier exactly as a plan does. Nothing a consumer could act
+    /// on is lost with it: the frontier does not advance past an incomplete
+    /// version, so no pin ever resolves one whose overlay is unwarmed — the
+    /// overlay has simply not taken effect, which is the safe reading.
+    ///
+    /// `sqlite_read_model::an_overlay_subjects_stuck_warm_raises_the_frontier_alarm_and_no_degraded_event`
+    /// is that argument as a case, and it asserts **both** halves: the silence
+    /// alone would also pass against a pass that alarmed on nothing at all.
     async fn mark_degraded(
         &self,
         row: &PendingVersionRow,

@@ -2,10 +2,11 @@
 //!
 //! One thing, and it is the one the design set names by string: the two alarm
 //! constants. §3.6 and §4.4 spell them, an operator's runbook greps for them,
-//! and nothing else in this crate would notice a typo — the alarms have no
-//! sink, so the string *is* the artifact. Everything else the pass does is a
-//! statement about rows in four tables and is proved in
-//! `tests/sqlite_read_model.rs`.
+//! and nothing else in this crate would notice a typo — these two are **not on
+//! the `PricingAlarm` roster** Slice 4 opened (D-238), so the string is still
+//! the whole artifact. Everything else the pass does is a statement about rows
+//! in four tables and is proved in `tests/sqlite_read_model.rs` — including
+//! D-237's, which is why the plan-only degraded mark is not asserted here.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -14,8 +15,9 @@ use super::{ALARM_COMMIT_OVERDUE, ALARM_PIN_ELIGIBILITY_OVERDUE, SweepReport};
 #[test]
 fn the_two_alarm_names_are_the_ones_the_design_set_spells() {
     // Asserted against literals rather than derived, for `CatalogEvent::as_str`'s
-    // reason: these are the strings an operator's runbook matches on, and this
-    // gear has no alarm facility for a second spelling to fail against.
+    // reason: these are the strings an operator's runbook matches on, and until
+    // D-238 puts them on the roster there is no alarm the gear raises for a
+    // second spelling to fail against.
     assert_eq!(
         ALARM_COMMIT_OVERDUE,
         "pricing.catalogversion.commit_overdue"

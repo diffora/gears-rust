@@ -2161,6 +2161,74 @@ async fn seed_observed_but_unwarm(
     "pend-stuck".to_owned()
 }
 
+/// The same stuck state on an **overlay** subject (D-234's plane).
+async fn seed_observed_but_unwarm_overlay(
+    h: &Harness,
+    version: u64,
+    requested_at: DateTime<Utc>,
+) -> String {
+    let conn = h.provider.conn().expect("conn");
+    catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope,
+        PendingVersionRow::for_subject(
+            TENANT,
+            "pend-overlay".to_owned(),
+            &SubjectRef::PriceOverlay(Uuid::new_v4()),
+            Some(0),
+            Some(LifecycleState::Published),
+            requested_at,
+        ),
+    )
+    .await
+    .expect("record the stuck overlay subject");
+    h.registry.commit("pend-overlay", version);
+    "pend-overlay".to_owned()
+}
+
+#[tokio::test]
+async fn an_overlay_subjects_stuck_warm_raises_the_frontier_alarm_and_no_degraded_event() {
+    // **D-237's argument, as a case rather than as a paragraph.** `mark_degraded`
+    // refuses every non-plan subject, and since D-234 the projector genuinely
+    // dispatches overlay subjects — so the refusal is a real silence on a real
+    // state, and the question is whether that silence is a hole.
+    //
+    // It is not, and this is what says so: `PlanPublishDegraded` carries a
+    // `planId` and is addressed to consumers of that plan; the subject-generic
+    // hazard — *this tenant's pins are not advancing* — is carried by
+    // `pin_eligibility_overdue`, whose predicate reads tenant and age and never
+    // subject kind. A version is incomplete exactly while it holds a pending ref,
+    // so the overlay row holds the frontier for the whole tenant.
+    //
+    // Both halves are asserted, because either alone would pass against the bug:
+    // the silence alone would also pass if nothing alarmed at all.
+    let h = harness().await;
+    let _pending = seed_observed_but_unwarm_overlay(&h, 5, at_min(12, 1)).await;
+
+    sweep(&h, at(13)).await;
+    let outside = sweep(&h, at(13) + chrono::Duration::seconds(5)).await;
+
+    assert_eq!(
+        outside.degraded_emitted, 0,
+        "the plan-shaped event stays silent for a subject that has no plan"
+    );
+    assert!(
+        degraded_events(&h).await.is_empty(),
+        "and nothing reached the outbox under a payload it could not fill"
+    );
+    assert_eq!(
+        outside.pin_eligibility_overdue, 1,
+        "while the alarm that does cover it speaks - this is the half that makes \
+         the silence acceptable rather than a hole"
+    );
+    assert_eq!(
+        frontier_version(&h).await,
+        None,
+        "and the frontier it holds has not advanced, so no consumer can pin a \
+         version whose overlay is unwarmed"
+    );
+}
+
 /// A ref's recorded commit observation.
 async fn observed_at(h: &Harness, pending_ref: &str) -> Option<DateTime<Utc>> {
     refs(h)
