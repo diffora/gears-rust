@@ -214,6 +214,59 @@ impl OverlayIndexShard {
     }
 }
 
+impl TryFrom<&crate::domain::overlay::ScopeSelector> for OverlayIndexShard {
+    type Error = DomainError;
+
+    /// The shard an overlay's authored scope files it under (D-112, D-133).
+    ///
+    /// **Where the two spellings of one concept meet.**
+    /// [`ScopeSelector`](crate::domain::overlay::ScopeSelector) is the authoring
+    /// vocabulary and its class carries a `Global` variant; this type is the
+    /// shard vocabulary and does not, because the classless scope is a variant
+    /// of the *shard* rather than a class with no value. Every projection of an
+    /// overlay passes through here, so a class added to one enum and not the
+    /// other stops compiling at this `match` instead of silently filing
+    /// overlays under a shard nothing reads.
+    ///
+    /// **Fallible for one input no path can stage**, and written rather than
+    /// assumed away for the reason `api::rest::publish::authorization_of` gives
+    /// for its own unreachable refusal: `ScopeSelector::scoped` refuses a
+    /// `Global` class with a value, and the store's biconditional
+    /// `chk_pricing_price_overlay_scope_value` refuses it physically — but the
+    /// variant's fields are constructible directly, and both other answers are
+    /// wrong. Coercing to [`Self::Global`] drops the value and files a scoped
+    /// overlay where **every** payer context matches it; panicking puts an
+    /// `unreachable!()` on a value a route can hold.
+    ///
+    /// # Errors
+    /// [`DomainError::InvalidRequest`] for a classless class carrying a value —
+    /// an invariant breach rather than anything a caller did.
+    fn try_from(selector: &crate::domain::overlay::ScopeSelector) -> Result<Self, Self::Error> {
+        use crate::domain::overlay::ScopeClass;
+
+        let Some(value) = selector.value() else {
+            return Ok(Self::Global);
+        };
+        // No rest pattern: a seventh authoring class does not compile until it
+        // has said which shard it belongs to.
+        let class = match selector.class() {
+            ScopeClass::Region => OverlayScopeClass::Region,
+            ScopeClass::Brand => OverlayScopeClass::Brand,
+            ScopeClass::OrgTier => OverlayScopeClass::OrgTier,
+            ScopeClass::Partner => OverlayScopeClass::Partner,
+            ScopeClass::CustomerGroup => OverlayScopeClass::CustomerGroup,
+            ScopeClass::Global => {
+                return Err(DomainError::InvalidRequest(format!(
+                    "overlay scope is classless and carries the value {value}; the classless \
+                     scope has no value, and filing this under the global shard would make \
+                     every payer context match it"
+                )));
+            }
+        };
+        Self::scoped(class, value.as_str())
+    }
+}
+
 impl fmt::Display for OverlayIndexShard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.scope_class(), self.scope_value())

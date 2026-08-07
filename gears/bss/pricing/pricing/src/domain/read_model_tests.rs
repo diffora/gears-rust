@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use super::{GLOBAL_SCOPE, OverlayIndexShard, OverlayScopeClass, SubjectKind, SubjectRef};
 use crate::domain::error::DomainError;
+use crate::domain::overlay::{ScopeClass, ScopeSelector, ScopeValue};
 
 #[test]
 fn the_subject_kind_tokens_are_the_persisted_ones() {
@@ -122,4 +123,73 @@ fn a_plan_and_an_overlay_with_the_same_uuid_are_different_subjects() {
     let id = Uuid::from_u128(9);
 
     assert_ne!(SubjectRef::Plan(id), SubjectRef::PriceOverlay(id));
+}
+
+// ---------------------------------------------------------------------------
+// The authoring plane's scope, read as a shard key (D-234).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_valued_scope_class_maps_to_its_own_shard() {
+    // The two enums are one concept spelled twice — `domain::overlay::ScopeClass`
+    // is the authoring vocabulary and carries `Global`, `OverlayScopeClass` is
+    // the shard vocabulary and does not, because the classless scope is the
+    // shard's own variant. This is where they meet, so it is where a class added
+    // to one and not the other has to fail.
+    let cases = [
+        (ScopeClass::Region, OverlayScopeClass::Region),
+        (ScopeClass::Brand, OverlayScopeClass::Brand),
+        (ScopeClass::OrgTier, OverlayScopeClass::OrgTier),
+        (ScopeClass::Partner, OverlayScopeClass::Partner),
+        (ScopeClass::CustomerGroup, OverlayScopeClass::CustomerGroup),
+    ];
+    for (authored, expected) in cases {
+        let selector = ScopeSelector::scoped(
+            authored,
+            ScopeValue::new("eu-west").expect("a non-blank value"),
+        )
+        .expect("a valued class takes a value");
+
+        let shard = OverlayIndexShard::try_from(&selector).expect("a valued selector is a shard");
+
+        assert_eq!(
+            shard,
+            OverlayIndexShard::Scoped {
+                class: expected,
+                value: "eu-west".to_owned(),
+            },
+            "{authored} must shard as {expected}"
+        );
+    }
+}
+
+#[test]
+fn the_classless_scope_maps_to_the_classless_shard() {
+    let shard = OverlayIndexShard::try_from(&ScopeSelector::Global).expect("the classless scope");
+
+    assert_eq!(shard, OverlayIndexShard::Global);
+    assert_eq!(shard.scope_class(), GLOBAL_SCOPE);
+    assert_eq!(shard.scope_value(), GLOBAL_SCOPE);
+}
+
+#[test]
+fn a_classless_class_carrying_a_value_is_refused_rather_than_coerced() {
+    // `ScopeSelector::scoped` refuses this and the store's biconditional
+    // `chk_pricing_price_overlay_scope_value` refuses it too, so no path through
+    // this gear can stage it — which is exactly why the conversion is fallible
+    // and this case is constructed directly rather than assumed away.
+    //
+    // The two wrong answers it exists to prevent: coercing to the classless
+    // shard, which silently drops a value and files a scoped overlay under
+    // `global` where every payer matches it; and panicking, on a value a route
+    // can hold.
+    let forged = ScopeSelector::Scoped {
+        class: ScopeClass::Global,
+        value: ScopeValue::new("acme").expect("a non-blank value"),
+    };
+
+    assert!(matches!(
+        OverlayIndexShard::try_from(&forged),
+        Err(DomainError::InvalidRequest(_))
+    ));
 }

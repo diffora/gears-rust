@@ -160,6 +160,7 @@ use uuid::Uuid;
 
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
+use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
 use crate::domain::plan_shape::{
     AddonRule, BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
@@ -168,6 +169,7 @@ use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
     QuantitySource, TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
+use crate::domain::read_model::OverlayIndexShard;
 use crate::domain::scope_key::{Meter, PlanId, ScopeKey};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
@@ -246,6 +248,164 @@ pub const PROJECTED_WINDOW_STATES: &[WindowState] = &[
 /// customer-visible sentence frozen in one language, for every version already
 /// stamped, is irreversible — bought for a convenience obtainable at render time.
 pub const CROSS_BOUNDARY_CHANGE_POLICY: &str = "cancel_plus_new";
+
+/// The overlay-document content of one `CatalogVersion` (D-91, D-112).
+///
+/// **It never re-projects the targeted plans.** `SubjectKind::PriceOverlay`'s own
+/// doc states the reason — Tariffs joins overlays to base rows at evaluation — so a
+/// `global`-scope overlay commit writes one row rather than a tenant's worth.
+///
+/// Composed from [`OverlayRevision`] rather than restating its ten fields, which is
+/// [`PlanSubjectDelta`]'s principle applied to a type that already exists: the
+/// approval unit pins exactly this value (D-225), so the delta and the pin cannot
+/// describe the revision differently.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlaySubjectDelta {
+    /// The revision this version freezes — the one the publish unit judged, read
+    /// back from the revision its `pricing_catalog_version_ref` row pinned.
+    pub content: OverlayRevision,
+}
+
+impl OverlaySubjectDelta {
+    /// The payload one `price_overlay` delta row carries.
+    ///
+    /// # The pattern is a guard
+    ///
+    /// The `let OverlayRevision { .. }` below has **no rest pattern**, so a field
+    /// added to the revision does not compile here (E0027) until it is named. The
+    /// payload is the only thing a consumer ever sees, and this is what stops a
+    /// field reaching the store and not the wire.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        let OverlayRevision {
+            price_overlay_id,
+            revision,
+            lifecycle_state,
+            scope,
+            precedence,
+            interval,
+            tax_basis,
+            disclosure,
+            target_ref,
+            lines,
+        } = &self.content;
+
+        json!({
+            "priceOverlayId": price_overlay_id,
+            "revision": revision,
+            "lifecycleState": lifecycle_state.as_str(),
+            // The scope is rendered as the shard key's two halves rather than as
+            // a nested object, so an index entry and a document agree on the
+            // spelling a consumer matches a payer context against.
+            "scopeClass": scope.class().as_str(),
+            "scopeValue": if scope.value().is_some() {
+                JsonValue::String(scope.stored_value().to_owned())
+            } else {
+                JsonValue::String(crate::domain::read_model::GLOBAL_SCOPE.to_owned())
+            },
+            "precedence": precedence,
+            "effectiveFrom": interval.from,
+            "effectiveTo": interval.to,
+            "taxBasis": tax_basis.as_str(),
+            "disclosure": disclosure.as_str(),
+            "targetPlans": target_ref.plans.iter().map(|plan| plan.get()).collect::<Vec<_>>(),
+            "lines": lines.iter().map(overlay_line_value).collect::<Vec<_>>(),
+            "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
+        })
+    }
+}
+
+/// One adjustment line, as the frozen payload carries it.
+fn overlay_line_value(line: &OverlayLine) -> JsonValue {
+    json!({
+        "lineId": line.line_id,
+        "planId": line.key.plan_id().map(PlanId::get),
+        "targetSku": line.key.target_sku().map(TargetSku::as_str),
+        "cohort": line.key.cohort(),
+        "kind": line.adjustment.kind(),
+        "magnitudeKind": line.adjustment.magnitude_kind(),
+        "percentBp": line.adjustment.percent_bp(),
+        "amounts": line.adjustment.amounts().map(|set| {
+            set.iter()
+                .map(|(currency, minor)| json!({ "currency": currency.as_str(), "minor": minor }))
+                .collect::<Vec<_>>()
+        }),
+    })
+}
+
+/// One overlay's entry in a shard (D-112 as D-133 narrowed it).
+///
+/// `(effective interval, precedence)` beside the id, which is §7's list exactly:
+/// the scope is the **shard key** since D-133, so repeating it per entry would be
+/// a second place for it to disagree with the row it is filed under.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlayIndexEntry {
+    /// Which overlay.
+    pub price_overlay_id: Uuid,
+    /// Its own `[effectiveFrom, effectiveTo)`.
+    pub interval: OverlayInterval,
+    /// Its precedence, the first key of the stack order.
+    pub precedence: i32,
+}
+
+/// One `overlay_index` shard as one `CatalogVersion` freezes it (D-112, D-133).
+///
+/// **The access path evaluation has and per-subject resolution cannot give.**
+/// Resolution answers "overlay X at pin V"; evaluation needs the *set*, and the
+/// delta store is keyed by subject, so without this the only route was a
+/// `DISTINCT subject_ref` scan across years of retained overlay deltas on the
+/// order-time path.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlayIndexDelta {
+    /// Which shard — `subject_ref` on the row.
+    pub shard: OverlayIndexShard,
+    /// The overlays live at this version, in **no assumed order**: [`to_value`]
+    /// sorts them.
+    ///
+    /// [`to_value`]: OverlayIndexDelta::to_value
+    pub entries: Vec<OverlayIndexEntry>,
+}
+
+impl OverlayIndexDelta {
+    /// The payload one `overlay_index` delta row carries.
+    ///
+    /// **Sorted here rather than trusted from the caller.** The payload is
+    /// INSERT-only on the seven-year horizon, so its byte order is part of what
+    /// the version says; taken in the store's row order, two projections of one
+    /// set would be two payloads. The order is `inst-plv-class-tiebreak`'s total
+    /// order with its middle key dropped — `precedence`, then overlay id —
+    /// because inside one shard the class is constant by construction.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        let Self { shard, entries } = self;
+        let mut ordered: Vec<&OverlayIndexEntry> = entries.iter().collect();
+        ordered.sort_by(|a, b| {
+            a.precedence
+                .cmp(&b.precedence)
+                .then_with(|| a.price_overlay_id.cmp(&b.price_overlay_id))
+        });
+
+        json!({
+            "scopeClass": shard.scope_class(),
+            "scopeValue": shard.scope_value(),
+            "overlays": ordered
+                .into_iter()
+                .map(|entry| {
+                    json!({
+                        "priceOverlayId": entry.price_overlay_id,
+                        "effectiveFrom": entry.interval.from,
+                        "effectiveTo": entry.interval.to,
+                        "precedence": entry.precedence,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
+        })
+    }
+}
 
 /// The plan-subject content of one `CatalogVersion`.
 ///

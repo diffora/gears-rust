@@ -14,17 +14,23 @@ use chrono::{TimeZone, Utc};
 use serde_json::json;
 
 use super::{
-    CROSS_BOUNDARY_CHANGE_POLICY, PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta,
+    CROSS_BOUNDARY_CHANGE_POLICY, OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta,
+    PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::overlay::{
+    Adjustment, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle, OverlayLine,
+    OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
+};
 use crate::domain::plan_shape::{
     BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
+use crate::domain::read_model::OverlayIndexShard;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
@@ -493,4 +499,141 @@ fn open_ended_and_uncovered_are_two_different_payload_answers() {
 #[test]
 fn a_plan_with_no_windows_still_renders_the_key() {
     assert_eq!(shape_only().to_value().get("windows"), Some(&json!([])));
+}
+
+// ---------------------------------------------------------------------------
+// The overlay plane's two subjects (D-112, D-133, D-234).
+// ---------------------------------------------------------------------------
+
+fn overlay_revision() -> OverlayRevision {
+    OverlayRevision {
+        price_overlay_id: uuid::Uuid::from_u128(0x0_1e_a1),
+        revision: 2,
+        lifecycle_state: OverlayLifecycle::Published,
+        scope: ScopeSelector::scoped(
+            ScopeClass::Partner,
+            ScopeValue::new("acme").expect("a value"),
+        )
+        .expect("a valued class"),
+        precedence: 40,
+        interval: OverlayInterval {
+            from: Some(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap()),
+            to: None,
+        },
+        tax_basis: TaxBasis::Exclusive,
+        disclosure: Disclosure::Restricted,
+        target_ref: TargetRef {
+            plans: vec![PlanId::new(uuid::Uuid::from_u128(0x_91_a0))],
+        },
+        lines: vec![OverlayLine {
+            line_id: uuid::Uuid::from_u128(0x_11_e1),
+            key: LineKey::for_plan(PlanId::new(uuid::Uuid::from_u128(0x_91_a0))),
+            adjustment: Adjustment::Discount(Magnitude::PercentBp(1500)),
+        }],
+    }
+}
+
+#[test]
+fn an_overlay_subject_delta_renders_every_field_of_the_revision_it_froze() {
+    // The wire keys are the contract, exactly as they are for the plan subject:
+    // a delta is written once, frozen on the seven-year horizon, and read by a
+    // consumer that has only the JSON.
+    let value = OverlaySubjectDelta {
+        content: overlay_revision(),
+    }
+    .to_value();
+
+    assert_eq!(
+        value
+            .get("priceOverlayId")
+            .and_then(serde_json::Value::as_str),
+        Some(uuid::Uuid::from_u128(0x0_1e_a1).to_string().as_str())
+    );
+    assert_eq!(value.get("revision"), Some(&json!(2)));
+    assert_eq!(value.get("lifecycleState"), Some(&json!("published")));
+    assert_eq!(value.get("scopeClass"), Some(&json!("partner")));
+    assert_eq!(value.get("scopeValue"), Some(&json!("acme")));
+    assert_eq!(value.get("precedence"), Some(&json!(40)));
+    assert_eq!(value.get("taxBasis"), Some(&json!("exclusive")));
+    assert_eq!(value.get("disclosure"), Some(&json!("restricted")));
+    assert_eq!(
+        value.get("effectiveTo"),
+        Some(&json!(null)),
+        "open-ended renders the key with null, never omits it"
+    );
+    let lines = value
+        .get("lines")
+        .and_then(serde_json::Value::as_array)
+        .expect("lines");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].get("kind"), Some(&json!("discount")));
+}
+
+#[test]
+fn an_overlay_index_shard_orders_its_entries_by_precedence_then_id() {
+    // The payload is frozen and INSERT-only, so its order is part of what one
+    // version says. `inst-plv-class-tiebreak` names the total order
+    // `precedence -> class order -> overlay id`; inside one shard the class is
+    // constant by construction, so what remains is precedence then id.
+    //
+    // Rendered in an order derived from the store's row order instead, two
+    // projections of one set would be two payloads.
+    let low = uuid::Uuid::from_u128(0x_a1);
+    let high = uuid::Uuid::from_u128(0x_b2);
+    let delta = OverlayIndexDelta {
+        shard: OverlayIndexShard::Global,
+        entries: vec![
+            OverlayIndexEntry {
+                price_overlay_id: high,
+                interval: OverlayInterval::default(),
+                precedence: 10,
+            },
+            OverlayIndexEntry {
+                price_overlay_id: low,
+                interval: OverlayInterval::default(),
+                precedence: 40,
+            },
+            OverlayIndexEntry {
+                price_overlay_id: low,
+                interval: OverlayInterval::default(),
+                precedence: 10,
+            },
+        ],
+    };
+
+    let value = delta.to_value();
+    assert_eq!(value.get("scopeClass"), Some(&json!("global")));
+    assert_eq!(value.get("scopeValue"), Some(&json!("global")));
+    let ids: Vec<&str> = value
+        .get("overlays")
+        .and_then(serde_json::Value::as_array)
+        .expect("overlays")
+        .iter()
+        .map(|entry| {
+            entry
+                .get("priceOverlayId")
+                .and_then(serde_json::Value::as_str)
+                .expect("id")
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        vec![low.to_string(), high.to_string(), low.to_string()],
+        "precedence 10 before 40, and inside precedence 10 the smaller id first"
+    );
+}
+
+#[test]
+fn an_empty_shard_renders_the_key_rather_than_omitting_it() {
+    // The same claim the plan subject's empty window array makes: a shard with
+    // no live overlay is a statement, and a missing key is not one. It is also
+    // the reachable case - a revision moving its scope value rewrites the shard
+    // it left, and that shard may now be empty.
+    let value = OverlayIndexDelta {
+        shard: OverlayIndexShard::Global,
+        entries: Vec::new(),
+    }
+    .to_value();
+
+    assert_eq!(value.get("overlays"), Some(&json!([])));
 }
