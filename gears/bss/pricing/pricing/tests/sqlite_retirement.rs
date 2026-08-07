@@ -259,3 +259,260 @@ async fn the_refusal_reaches_a_caller_as_a_lifecycle_answer_and_not_a_storage_fa
         "{domain:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `inst-re-references` — what refers to the plan, read from the store.
+// ---------------------------------------------------------------------------
+
+/// A bundle plan carrying `component` in its **current published** revision.
+///
+/// Composition is authored on the draft and then published, because that is the
+/// only state `infra::retirement::references` counts (D-212's narrowing): a
+/// draft revision's component set is nobody's truth.
+async fn published_bundle_on(
+    plans: &PlanRepo,
+    bundles: &bss_pricing::infra::storage::repo::BundleRepo,
+    bundle_plan: PlanId,
+    component: PlanId,
+) -> Uuid {
+    let created = plans
+        .create_draft(&scope(), new_draft(bundle_plan))
+        .await
+        .expect("create the bundle plan draft");
+    let bundle_id = bundles
+        .create(
+            &scope(),
+            bss_pricing::infra::storage::repo::NewBundle {
+                bundle_id: Uuid::now_v7(),
+                tenant_id: TENANT,
+                plan_id: bundle_plan,
+                price_basis: bss_pricing::domain::bundle::PriceBasis::SumOfParts,
+                invoice_itemization: bss_pricing::domain::bundle::InvoiceItemization::Aggregate,
+            },
+            stamp(),
+        )
+        .await
+        .expect("create the bundle");
+    bundles
+        .replace_composition(
+            &scope(),
+            TENANT,
+            bundle_plan,
+            created.revision,
+            created.row_version,
+            bss_pricing::infra::storage::repo::CompositionDraft {
+                components: vec![bss_pricing::infra::storage::repo::BundleComponentDraft {
+                    component_plan_id: component.get(),
+                    included_sku_id: Uuid::from_u128(0x5_c2),
+                    min_qty: None,
+                    max_qty: None,
+                }],
+                rev_share_groups: Vec::new(),
+            },
+            stamp(),
+        )
+        .await
+        .expect("author the composition");
+    bundle_id
+}
+
+/// Publish one revision of a plan through the sanctioned path.
+async fn publish_revision_of(
+    repo: &PlanRepo,
+    provider: &DBProvider<DbError>,
+    plan_id: PlanId,
+    revision: u64,
+) {
+    let draft = repo
+        .find_revision(&scope(), TENANT, plan_id, revision)
+        .await
+        .expect("read")
+        .expect("the revision to publish");
+    let (_, published) = provider
+        .db()
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                plan_repo::publish_revision(
+                    txn,
+                    &scope(),
+                    TENANT,
+                    plan_id,
+                    revision,
+                    draft.row_version,
+                )
+                .await
+                .map(|_| ())
+            })
+        })
+        .await;
+    published.expect("publish the revision");
+}
+
+fn stamp() -> bss_pricing::domain::audit::AuditStamp {
+    bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: Uuid::from_u128(0xac_11),
+        recorded_at: at(12),
+        correlation_id: CORRELATION,
+    }
+}
+
+#[tokio::test]
+async fn a_plan_nothing_references_reports_an_empty_report() {
+    let (repo, provider) = harness().await;
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1b0));
+    published_plan(&repo, &provider, plan_id).await;
+
+    let report = bss_pricing::infra::retirement::references(
+        &provider.conn().expect("conn"),
+        &scope(),
+        TENANT,
+        plan_id,
+    )
+    .await
+    .expect("read the references");
+
+    assert!(report.blocking.is_empty());
+    assert!(report.ensure_retirable(plan_id.get()).is_ok());
+}
+
+#[tokio::test]
+async fn a_component_of_a_published_bundle_blocks_the_retirement() {
+    let (repo, provider) = harness().await;
+    let bundles = bss_pricing::infra::storage::repo::BundleRepo::new(provider.clone());
+    let component = PlanId::new(Uuid::from_u128(0x9_1b1));
+    let bundle_plan = PlanId::new(Uuid::from_u128(0x9_1b2));
+    published_plan(&repo, &provider, component).await;
+
+    let bundle_id = published_bundle_on(&repo, &bundles, bundle_plan, component).await;
+    // Published, so the composition becomes the one consumers resolve against.
+    publish_revision_of(&repo, &provider, bundle_plan, 0).await;
+
+    let report = bss_pricing::infra::retirement::references(
+        &provider.conn().expect("conn"),
+        &scope(),
+        TENANT,
+        component,
+    )
+    .await
+    .expect("read the references");
+
+    assert_eq!(report.blocking.len(), 1, "{report:?}");
+    assert_eq!(report.blocking[0].1.referrer_id, bundle_id);
+    let err = report
+        .ensure_retirable(component.get())
+        .expect_err("a bundle component may not retire");
+    assert!(err.to_string().contains("bundle component"), "{err}");
+}
+
+#[tokio::test]
+async fn a_component_only_an_unpublished_bundle_plan_names_does_not_block() {
+    // The bundle plan never published at all, so it has no current revision and
+    // nothing resolves its composition.
+    let (repo, provider) = harness().await;
+    let bundles = bss_pricing::infra::storage::repo::BundleRepo::new(provider.clone());
+    let component = PlanId::new(Uuid::from_u128(0x9_1b3));
+    let bundle_plan = PlanId::new(Uuid::from_u128(0x9_1b4));
+    published_plan(&repo, &provider, component).await;
+
+    // Authored, and deliberately **not** published.
+    published_bundle_on(&repo, &bundles, bundle_plan, component).await;
+
+    let report = bss_pricing::infra::retirement::references(
+        &provider.conn().expect("conn"),
+        &scope(),
+        TENANT,
+        component,
+    )
+    .await
+    .expect("read the references");
+
+    assert!(
+        report.blocking.is_empty(),
+        "a composition nobody resolves is not a reference: {report:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_component_the_bundles_current_revision_dropped_does_not_block() {
+    // **D-212's narrowing, and the only case that reaches it.** The membership
+    // row for revision 0 survives - `pricing_bundle_component` is revision-scoped
+    // and revision 0 is frozen, not deleted - while the revision consumers
+    // actually resolve, 1, no longer lists the component. A read that probed the
+    // index and stopped would still block the retirement here.
+    //
+    // Its sibling above cannot reach this branch: a bundle plan with no current
+    // revision at all is filtered one step earlier, by `current_revision`
+    // answering `None`. Written down because the first version of this file
+    // asserted the narrowing through that sibling, and deleting the narrowing
+    // reddened nothing.
+    let (repo, provider) = harness().await;
+    let bundles = bss_pricing::infra::storage::repo::BundleRepo::new(provider.clone());
+    let component = PlanId::new(Uuid::from_u128(0x9_1b6));
+    let bundle_plan = PlanId::new(Uuid::from_u128(0x9_1b7));
+    published_plan(&repo, &provider, component).await;
+    published_bundle_on(&repo, &bundles, bundle_plan, component).await;
+    publish_revision_of(&repo, &provider, bundle_plan, 0).await;
+
+    // Revision 0 is current and names the component: it blocks.
+    let before = bss_pricing::infra::retirement::references(
+        &provider.conn().expect("conn"),
+        &scope(),
+        TENANT,
+        component,
+    )
+    .await
+    .expect("read");
+    assert_eq!(before.blocking.len(), 1, "the seed must reach the state");
+
+    // Revision 1 drops it.
+    let successor = repo
+        .open_revision(&scope(), TENANT, bundle_plan, stamp())
+        .await
+        .expect("open the successor revision");
+    bundles
+        .replace_composition(
+            &scope(),
+            TENANT,
+            bundle_plan,
+            successor.revision,
+            successor.row_version,
+            bss_pricing::infra::storage::repo::CompositionDraft::default(),
+            stamp(),
+        )
+        .await
+        .expect("drop the component");
+    publish_revision_of(&repo, &provider, bundle_plan, successor.revision).await;
+
+    let after = bss_pricing::infra::retirement::references(
+        &provider.conn().expect("conn"),
+        &scope(),
+        TENANT,
+        component,
+    )
+    .await
+    .expect("read");
+    assert!(
+        after.blocking.is_empty(),
+        "revision 0's frozen membership row is not the composition consumers resolve: {after:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_plan_with_no_price_rows_has_no_add_on_override_referrers() {
+    // The add-on probe is keyed by the retiring plan's **price ids**, so a plan
+    // that prices nothing short-circuits before the second query. Asserted
+    // because the short-circuit is what keeps the common case at one probe.
+    let (repo, provider) = harness().await;
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1b5));
+    published_plan(&repo, &provider, plan_id).await;
+
+    let report = bss_pricing::infra::retirement::references(
+        &provider.conn().expect("conn"),
+        &scope(),
+        TENANT,
+        plan_id,
+    )
+    .await
+    .expect("read the references");
+    assert!(report.blocking.is_empty());
+}

@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod overlay_publish;
 pub mod publish;
 pub mod read_model;
+pub mod retirement;
 pub mod storage;
 pub mod supersession;
 pub mod threshold;
