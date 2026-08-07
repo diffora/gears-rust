@@ -464,10 +464,16 @@ async fn an_approved_cutover_announces_two_window_schedules_and_no_second_price_
         vec![
             "PriceCreated".to_owned(),
             "PriceCreated".to_owned(),
+            "PriceUpdated".to_owned(),
             "PriceWindowScheduled".to_owned(),
             "PriceWindowScheduled".to_owned(),
         ],
-        "two creations at compose, two schedules at commit, and no second PriceCreated"
+        "two creations at compose, then the succession announcement and two schedules at commit, \
+         and no second PriceCreated. **This census caught D-218's change**: it transcribes the \
+         list rather than deriving it, so adding the event reddened here first and the line had to \
+         be extended deliberately. `PriceUpdated` precedes the window events because that is the \
+         order `infra::supersession` emits the same pair in, and D-218's whole argument is that \
+         the two acts announce one transition"
     );
 
     // **The payloads, because the names alone assert nothing about them** — a probe
@@ -488,6 +494,94 @@ async fn an_approved_cutover_announces_two_window_schedules_and_no_second_price_
             && announced.contains(&receipt.copy_price_id),
         "each event names the row whose window it is: {announced:?}"
     );
+}
+
+/// D-218: the cutover announces the succession, and the payload names both sides.
+///
+/// The names alone assert nothing — the census one test up would stay green if the
+/// payload named the wrong row, or carried the predecessor's key as the successor's.
+/// What makes this event worth emitting is precisely the pair of ids, because a
+/// consumer's reason to read it is *stop resolving the row this replaces*.
+#[tokio::test]
+async fn the_cutover_announces_the_succession_and_names_the_row_it_replaces() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let key = key_of(plan_id, &seeded);
+    let floor = outbox_floor(&h).await;
+
+    let opened = cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("compose opens the unit");
+    approve(&h, pending(&opened).approval.approval_id).await;
+    let committed = cut_over(&h, request_of(&key, 12_000), SUBMITTER)
+        .await
+        .expect("the approved cutover commits");
+    let receipt = receipt(&committed);
+
+    let payload = price_updated_payload(&h, floor).await;
+
+    assert_eq!(
+        payload["priceId"]
+            .as_str()
+            .and_then(|id| Uuid::parse_str(id).ok()),
+        Some(receipt.successor_price_id),
+        "the event is about the row that became current on the key"
+    );
+    assert_eq!(
+        payload["supersedesPriceId"]
+            .as_str()
+            .and_then(|id| Uuid::parse_str(id).ok()),
+        Some(receipt.predecessor_price_id),
+        "and it names the row it replaced. The field is not optional, and a cutover's successor \
+         arrives as a client-authored row ref, so this transaction is the only place holding both \
+         sides without a lookup"
+    );
+    assert_eq!(
+        payload["scopeKey"].as_str(),
+        Some(key.to_string().as_str()),
+        "the key is the predecessor's own: a cutover lands on the occupied key, which is what \
+         makes it the same transition a supersession announces (D-127)"
+    );
+    assert_eq!(
+        payload["changeover"]
+            .as_str()
+            .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+            .map(|at| at.with_timezone(&Utc)),
+        Some(cutover_at()),
+        "coverage hands over at the cutover instant, not at the request's"
+    );
+    assert!(
+        payload["pendingVersionRef"]
+            .as_str()
+            .is_some_and(|r| !r.is_empty()),
+        "and it carries the pending handle, since the version does not exist yet (D-47)"
+    );
+}
+
+/// The one `PriceUpdated` payload enqueued after `floor`.
+async fn price_updated_payload(h: &Harness, floor: i64) -> serde_json::Value {
+    use bss_pricing::infra::storage::entity::outbox;
+    use sea_orm::Order;
+    let conn = h.db.conn().expect("conn");
+    let rows = outbox::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(outbox::Column::TenantId.eq(h.tenant))
+                .add(outbox::Column::Seq.gt(floor))
+                .add(outbox::Column::EventName.eq("PriceUpdated")),
+        )
+        .order_by(outbox::Column::Seq, Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the outbox");
+    assert_eq!(
+        rows.len(),
+        1,
+        "exactly one succession announcement per cutover"
+    );
+    rows[0].payload.clone()
 }
 
 /// The `(priceId, effectiveFrom, effectiveTo)` of every `PriceWindowScheduled`

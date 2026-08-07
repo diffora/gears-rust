@@ -38,8 +38,9 @@ use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::approval_repo::{self, ApprovalRecord};
 use crate::infra::storage::repo::window_repo::{NewWindow, WindowRecord};
 use crate::infra::storage::repo::{
-    NewOutboxEvent, NewPriceDraft, PendingVersionRow, PriceWindowTransitionPayload,
-    catalog_version_ref_repo, outbox_repo, plan_repo, price_repo, window_repo,
+    NewOutboxEvent, NewPriceDraft, PendingVersionRow, PriceUpdatedPayload,
+    PriceWindowTransitionPayload, catalog_version_ref_repo, outbox_repo, plan_repo, price_repo,
+    window_repo,
 };
 use crate::infra::storage::repo_failure;
 use crate::infra::window::VerdictJson;
@@ -792,6 +793,41 @@ pub async fn cutover_in(
     //     what keeps them out of a collision with any other `PriceWindowScheduled` on
     //     the same window: the subject is the act, and two cutovers of one key at two
     //     instants are two acts.
+    // `PriceUpdated` for the successor, which this act announced to nobody until
+    // D-218 (2026-08-07). The transition being announced is the **same** transition
+    // `infra::supersession` announces — a row landing on an occupied published
+    // canonical scope key and flipping its predecessor `published → superseded` —
+    // and D-127 already binds both producers of it to one guard, on the ground that
+    // the guard follows the key rather than the mechanism. A consumer that learned
+    // "stop resolving the row this replaces" from a supersession learned nothing
+    // from a cutover, so its correctness depended on which act moved the row. That
+    // is the coupling D-100 removed on the truth side and this removes on the wire.
+    //
+    // The predecessor is `context.predecessor.price_id` rather than a column read:
+    // a cutover's successor arrives as a **client-authored row ref**, so this
+    // transaction is the only place that holds both sides of the link without a
+    // lookup. `pending.pending_ref` is borrowed here and moved into the receipt
+    // below, which is why this sits before the `Ok`.
+    outbox_repo::enqueue(
+        txn,
+        scope,
+        NewOutboxEvent::price_updated(
+            tenant_id,
+            &PriceUpdatedPayload {
+                plan_id: context.plan_id,
+                price_id: successor.price_id,
+                scope_key: request.predecessor_key.to_string(),
+                supersedes_price_id: context.predecessor.price_id,
+                changeover: request.cutover_at,
+                pending_version_ref: pending.pending_ref.clone(),
+                correlation_id: stamp.correlation_id,
+            },
+            now,
+        ),
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
     let act = format!("cutover/{}", request.cutover_at.to_rfc3339());
     for (window, price_id) in [
         (&written.successor_window, successor.price_id),
