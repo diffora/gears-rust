@@ -370,6 +370,90 @@ const EXPECTED_CHECKS: &[&str] = &[
 /// built inside the accessor until Slice 8's nine triggers pushed that function
 /// past the line cap. Nothing about it was ever computed: the digests are
 /// literals that a legitimate change to a trigger re-pins here, deliberately.
+/// Every table's primary key, `(table, "col, col")`, ordered by table name.
+///
+/// **Seeded from the live schema once (D-236) and then hand-checked**, because a
+/// roster taken from the code's own output pins whatever the code does, bug
+/// included. Four keys are named by a decision and were each read back against the
+/// migration that declares them rather than against the schema this census reads:
+/// `pricing_catalog_version_ref` widened to carry the subject beside the handle
+/// (`m20260802_000036`, the change D-236 is about — every other roster passed it
+/// unchanged); `pricing_read_model`'s matching four-part key
+/// (`m20260802_000003`); `pricing_price_overlay_line`'s `(line_id,
+/// overlay_revision)` (`m20260802_000033`, D-42's line container); and
+/// `pricing_plan`'s `(plan_id, revision)` (`m20260802_000001`, the revision
+/// identity D-145 makes a name rather than a counter). The rest were read for
+/// shape: every revision-scoped child carries its parent's revision, every
+/// tenant-scoped config table is keyed by tenant, and `coord_leases` is `coord`'s
+/// own table spliced in for the warm re-drive.
+///
+/// **A table whose key is empty gets a line saying so**, not a gap. The silence
+/// D-236 names is a key absent from the census, so absence must be spelled.
+const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
+    ("coord_leases", "key"),
+    ("pricing_approval", "approval_id"),
+    ("pricing_approval_key", "approval_id, scope_key"),
+    ("pricing_approval_threshold", "tenant_id, version, currency"),
+    ("pricing_approval_threshold_tombstone", "tenant_id, version"),
+    ("pricing_audit_log", "tenant_id, chain_id, seq"),
+    ("pricing_brand_taxonomy", "tenant_id, value"),
+    ("pricing_bundle", "bundle_id"),
+    (
+        "pricing_bundle_component",
+        "bundle_id, plan_revision, component_plan_id",
+    ),
+    (
+        "pricing_bundle_revshare",
+        "bundle_id, plan_revision, vendor_sku_id, party",
+    ),
+    (
+        "pricing_bundle_revshare_group",
+        "bundle_id, plan_revision, vendor_sku_id",
+    ),
+    (
+        "pricing_catalog_version_ref",
+        "tenant_id, pending_ref, subject_kind, subject_ref",
+    ),
+    (
+        "pricing_idempotency_dedup",
+        "tenant_id, operation, client_key",
+    ),
+    ("pricing_operator_flag", "tenant_id, subject_ref, flag"),
+    ("pricing_org_tier_taxonomy", "tenant_id, value"),
+    ("pricing_outbox", "outbox_id"),
+    ("pricing_partner_taxonomy", "tenant_id, value"),
+    ("pricing_pin_frontier", "tenant_id"),
+    ("pricing_plan", "plan_id, revision"),
+    (
+        "pricing_plan_addon_rule",
+        "plan_id, plan_revision, addon_sku_id",
+    ),
+    ("pricing_plan_descriptor_set", "plan_id, plan_revision"),
+    ("pricing_plan_phase", "phase_id, plan_revision"),
+    ("pricing_policy_object", "tenant_id"),
+    ("pricing_price", "price_id"),
+    ("pricing_price_overlay", "price_overlay_id, revision"),
+    ("pricing_price_overlay_line", "line_id, overlay_revision"),
+    (
+        "pricing_price_overlay_line_amount",
+        "line_id, overlay_revision, currency",
+    ),
+    ("pricing_price_tier_band", "band_id"),
+    ("pricing_price_window", "window_id"),
+    (
+        "pricing_read_model",
+        "tenant_id, catalog_version, subject_kind, subject_ref",
+    ),
+    ("pricing_region_taxonomy", "tenant_id, value"),
+];
+
+fn expected_primary_keys() -> Vec<(String, String)> {
+    EXPECTED_PRIMARY_KEYS
+        .iter()
+        .map(|(table, columns)| ((*table).to_owned(), (*columns).to_owned()))
+        .collect()
+}
+
 const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_approval_born_submitted",
@@ -695,6 +779,40 @@ async fn checks_of(conn: &sea_orm::DatabaseConnection) -> Vec<String> {
     names
 }
 
+/// Every table's primary key, as `(table, "col, col")`.
+///
+/// `PRAGMA table_info`'s `pk` is the **1-based position within the key**, not a
+/// boolean, so the columns are ordered by it rather than by their position in the
+/// table. A composite key read in declaration order instead of key order is a
+/// different key, and this census would then pass a real change.
+async fn primary_keys_of(conn: &sea_orm::DatabaseConnection) -> Vec<(String, String)> {
+    let tables = objects_of(conn, "table").await;
+    let mut keys: Vec<(String, String)> = Vec::new();
+    for table in tables {
+        let rows = conn
+            .query_all(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                format!("PRAGMA table_info({table})"),
+            ))
+            .await
+            .unwrap_or_else(|e| panic!("table_info for {table}: {e}"));
+        let mut parts: Vec<(i32, String)> = Vec::new();
+        for row in rows {
+            let position: i32 = row.try_get("", "pk").expect("the `pk` ordinal");
+            if position > 0 {
+                parts.push((position, row.try_get("", "name").expect("the column name")));
+            }
+        }
+        parts.sort_by_key(|(position, _)| *position);
+        let columns: Vec<String> = parts.into_iter().map(|(_, name)| name).collect();
+        // A table with no declared key is recorded as such rather than skipped: the
+        // silence D-236 is about is a key that is *absent* from the census, so an
+        // empty key must be a line here and not a gap.
+        keys.push((table, columns.join(", ")));
+    }
+    keys
+}
+
 /// A stable, dependency-free digest of one string — FNV-1a, 64-bit.
 ///
 /// **Not a security primitive and deliberately not `sha2`** (DE0708 bans it in this
@@ -927,6 +1045,14 @@ async fn the_chain_creates_every_trigger_and_every_index() {
         checks_of(&conn).await,
         EXPECTED_CHECKS,
         "the CHECK census: `SQLite` had none, and two migrations re-type whole table bodies by hand"
+    );
+    assert_eq!(
+        primary_keys_of(&conn).await,
+        expected_primary_keys(),
+        "the primary-key census (D-236): `m20260802_000036` changed the physical identity of a \
+         truth-linkage table on the seven-year horizon and every other roster passed unchanged. A \
+         key is the one piece of DDL whose loss shows up first as a duplicate row in a table whose \
+         whole contract is that it has none"
     );
     assert_eq!(
         trigger_bodies(&conn).await,
@@ -1169,6 +1295,13 @@ async fn down_then_up_round_trips() {
         checks_of(&conn).await,
         EXPECTED_CHECKS,
         "the re-up must restore every CHECK"
+    );
+    assert_eq!(
+        primary_keys_of(&conn).await,
+        expected_primary_keys(),
+        "the re-up must restore every primary key. This is the direction D-236 names as equally \
+         silent: a rebuild that restates a table and drops a key column, which no \
+         `sqlite_rebuild!` expansion was checked for before this roster existed"
     );
     assert_eq!(
         trigger_bodies(&conn).await,

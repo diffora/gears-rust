@@ -155,6 +155,22 @@ const CHECKS_SQL: &str = "SELECT co.conname AS v FROM pg_constraint co \
      WHERE n.nspname = 'bss' AND co.contype = 'c' ORDER BY 1";
 const PARTIAL_INDEXES_SQL: &str = "SELECT indexname AS v FROM pg_indexes \
      WHERE schemaname = 'bss' AND indexdef LIKE '%WHERE%' ORDER BY 1";
+/// Every table's primary key as `table: col, col` (D-236).
+///
+/// `unnest(conkey) WITH ORDINALITY` is what makes this a mirror of the `SQLite`
+/// side rather than a near-miss: `conkey` is the key's **own** column order, and
+/// aggregating without it would sort by `attnum` — the order the columns were
+/// declared in — so a composite key rearranged into a different key would read
+/// identical on both engines.
+const PRIMARY_KEYS_SQL: &str = "SELECT c.relname || ': ' \
+     || string_agg(a.attname, ', ' ORDER BY k.ord) AS v \
+     FROM pg_constraint co \
+     JOIN pg_class c ON c.oid = co.conrelid \
+     JOIN pg_namespace n ON n.oid = c.relnamespace \
+     CROSS JOIN LATERAL unnest(co.conkey) WITH ORDINALITY AS k(attnum, ord) \
+     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum \
+     WHERE n.nspname = 'bss' AND co.contype = 'p' \
+     GROUP BY c.relname ORDER BY c.relname";
 
 /// The PL/pgSQL functions the chain declares — the objects the `SQLite` mirror
 /// cannot carry at all, since it has no procedural language.
@@ -250,6 +266,43 @@ const EXPECTED_PARTIAL_INDEXES: &[&str] = &[
 /// while the roster below held eighty entries — the file's own opening denounces
 /// exactly that shape and had already deleted one number ten lines above. A count
 /// beside a roster is one fact with two spellings and only the roster stays true.
+/// Seeded from the live server once and hand-checked against the declaring
+/// migrations (D-236) — see the `SQLite` roster's note for which four were read
+/// back that way and why a roster taken from the code's own output pins the bug.
+const EXPECTED_PRIMARY_KEYS: &[&str] = &[
+    "coord_leases: key",
+    "pricing_approval: approval_id",
+    "pricing_approval_key: approval_id, scope_key",
+    "pricing_approval_threshold: tenant_id, version, currency",
+    "pricing_approval_threshold_tombstone: tenant_id, version",
+    "pricing_audit_log: tenant_id, chain_id, seq",
+    "pricing_brand_taxonomy: tenant_id, value",
+    "pricing_bundle: bundle_id",
+    "pricing_bundle_component: bundle_id, plan_revision, component_plan_id",
+    "pricing_bundle_revshare: bundle_id, plan_revision, vendor_sku_id, party",
+    "pricing_bundle_revshare_group: bundle_id, plan_revision, vendor_sku_id",
+    "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
+    "pricing_idempotency_dedup: tenant_id, operation, client_key",
+    "pricing_operator_flag: tenant_id, subject_ref, flag",
+    "pricing_org_tier_taxonomy: tenant_id, value",
+    "pricing_outbox: outbox_id",
+    "pricing_partner_taxonomy: tenant_id, value",
+    "pricing_pin_frontier: tenant_id",
+    "pricing_plan: plan_id, revision",
+    "pricing_plan_addon_rule: plan_id, plan_revision, addon_sku_id",
+    "pricing_plan_descriptor_set: plan_id, plan_revision",
+    "pricing_plan_phase: phase_id, plan_revision",
+    "pricing_policy_object: tenant_id",
+    "pricing_price: price_id",
+    "pricing_price_overlay: price_overlay_id, revision",
+    "pricing_price_overlay_line: line_id, overlay_revision",
+    "pricing_price_overlay_line_amount: line_id, overlay_revision, currency",
+    "pricing_price_tier_band: band_id",
+    "pricing_price_window: window_id",
+    "pricing_read_model: tenant_id, catalog_version, subject_kind, subject_ref",
+    "pricing_region_taxonomy: tenant_id, value",
+];
+
 const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_approval_approver",
     "chk_pricing_approval_decided_at",
@@ -515,6 +568,24 @@ async fn every_declared_trigger_function_and_trigger_reaches_the_server() {
     let (conn, _guard) = applied().await;
     assert_eq!(names(&conn, FUNCTIONS_SQL).await, EXPECTED_FUNCTIONS);
     assert_eq!(names(&conn, TRIGGERS_SQL).await, EXPECTED_TRIGGERS);
+}
+
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_table_key_reaches_the_server_with_the_columns_and_the_order_it_was_declared_in() {
+    // The Postgres half of D-236's roster. The `SQLite` half is on the fast tier on
+    // purpose: D-236's own finding is that the pin which caught `m20260802_000036`
+    // was `#[ignore]`d behind Docker, so a run without it reported a clean change —
+    // "one premise duplicated across tiers breaks in instalments", arriving from the
+    // direction where the premise lived on *one* tier only. This half exists because
+    // the two engines declare these keys in separate statements and could drift.
+    let (conn, _guard) = applied().await;
+    assert_eq!(
+        names(&conn, PRIMARY_KEYS_SQL).await,
+        EXPECTED_PRIMARY_KEYS,
+        "a primary key that lost a column, gained one, or reordered: the one piece of DDL whose \
+         loss first shows up as a duplicate row in a table whose whole contract is that it has none"
+    );
 }
 
 #[tokio::test]
