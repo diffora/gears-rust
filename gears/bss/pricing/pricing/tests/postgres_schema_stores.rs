@@ -812,7 +812,7 @@ async fn a_policy_object_stores_with_every_optional_left_absent() {
         &policy(
             TENANT_B,
             &[
-                ("tax_display_mode", "'tax_inclusive'"),
+                ("tax_display_policy_mode", "'warn'"),
                 ("default_rounding_policy_ref", "'half_up/2'"),
                 ("enforced_migration_notice_days", "90"),
                 ("max_tier_bands_per_row", "100"),
@@ -826,19 +826,45 @@ async fn a_policy_object_stores_with_every_optional_left_absent() {
     .await;
 }
 
-/// The two tokens the tax-display policy has.
+/// The two tokens C4's tax-display **policy** has.
+///
+/// This case stood on `tax_display_mode` until D-240 retired that column
+/// (`m20260802_000041`), and it moves here rather than going with it: the
+/// retired column had a dedicated refusal case while
+/// `tax_display_policy_mode` — the switch §6 actually declares — was pinned by
+/// **name only**, in the two migration-roster censuses. Deleting the case with
+/// the column would have left the surviving switch's token set unproven on
+/// either engine.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
-async fn a_tax_display_mode_outside_the_two_is_refused() {
+async fn a_tax_display_policy_mode_outside_the_two_is_refused() {
     let conn = applied().await;
-    for mode in ["'gross'", "'TAX_INCLUSIVE'", "'net'"] {
+    for mode in ["'gross'", "'FAIL_CLOSED'", "'strict'"] {
         must_be_rejected(
             &conn,
-            &policy(TENANT, &[("tax_display_mode", mode)]),
-            "chk_pricing_policy_object_tax_display",
+            &policy(TENANT, &[("tax_display_policy_mode", mode)]),
+            "chk_pricing_policy_object_tax_display_policy",
         )
         .await;
     }
+}
+
+/// D-240: the retired column is not a column any more.
+///
+/// Postgres drops the CHECK naming it along with it, so the refusal here is the
+/// parser's rather than a constraint's — which is the point. A case asserting
+/// only that the CHECK is gone would pass equally against a column left behind
+/// unguarded.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_retired_tax_display_mode_is_no_longer_a_column() {
+    let conn = applied().await;
+    must_be_rejected(
+        &conn,
+        &policy(TENANT, &[("tax_display_mode", "'tax_inclusive'")]),
+        "tax_display_mode",
+    )
+    .await;
 }
 
 // `a_threshold_missing_half_of_itself_is_refused` and
@@ -973,7 +999,7 @@ async fn one_tenant_has_one_policy_object() {
     must_succeed(&conn, &policy(TENANT, &[])).await;
     must_be_rejected(
         &conn,
-        &policy(TENANT, &[("tax_display_mode", "'tax_inclusive'")]),
+        &policy(TENANT, &[("tax_display_policy_mode", "'warn'")]),
         "pricing_policy_object_pkey",
     )
     .await;

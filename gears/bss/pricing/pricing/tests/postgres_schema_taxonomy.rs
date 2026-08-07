@@ -194,30 +194,34 @@ async fn a_blank_value_is_refused() {
     }
 }
 
-/// A whitespace-only value is **admitted**, and that is measured rather than
-/// assumed.
+/// A whitespace-only value is refused too — D-242 (`m20260802_000042`).
 ///
-/// The constraint is `length(value) > 0`, which `'   '` satisfies. This case
-/// began life asserting a refusal — the module doc's own argument seemed to
-/// require one, since the `CHECK` exists so *"nothing else may render"* the
-/// classless sentinel — and the assertion was **wrong**: the statement lands on
-/// both engines. It is pinned as it actually behaves, because a suite asserting
-/// a guard the schema does not have is a suite that will be "fixed" by weakening
-/// something real.
+/// This case is the inversion of a measurement. It stood here asserting that
+/// `'   '` was **admitted**, because `length(value) > 0` is satisfied by it and
+/// the statement landed on both engines; it was pinned as it behaved rather than
+/// as the module doc's argument suggested, precisely so the gap would be visible
+/// instead of assumed shut. D-242 closes the gap, so the pin inverts.
 ///
-/// **What the gap costs is not a forged sentinel.** `pricing_price_overlay`
-/// renders the classless scope as the empty string exactly, and `'   '` is not
-/// that, so `inst-plv-scope` is unaffected. The exposure is one level over:
-/// `ScopeValue::new` **trims** before it decides and therefore refuses `'   '`,
-/// so `TaxonomyRepo::list` maps such a row to `RepoError::CorruptRow` — and a
-/// single direct write of a whitespace value makes that class's whole `GET`
-/// fail, for every value in it. Register entry `T-6`.
+/// **The hole closed is not the one the constraint was written for**, and the
+/// distinction is worth keeping: `pricing_price_overlay` renders the classless
+/// scope as the empty string *exactly*, so `'   '` was never that sentinel and
+/// `inst-plv-scope` was never at risk. The exposure was one level over.
+/// `ScopeValue::new` **trims** before it decides and so refuses `'   '`, which
+/// made `TaxonomyRepo::list` map such a row to `RepoError::CorruptRow` — one
+/// whitespace value, written directly, failed `GET` for **every** value in that
+/// class, and `PUT` could not round-trip a list it could not read. Tightening to
+/// `length(btrim(value)) > 0` is what makes the store agree with the domain type.
 #[tokio::test]
 #[ignore = "needs Docker"]
-async fn a_whitespace_only_value_is_admitted_by_the_length_check() {
+async fn a_whitespace_only_value_is_refused() {
     let conn = applied().await;
     for table in TAXONOMIES {
-        must_succeed(&conn, &insert(table, TENANT, "   ", "active")).await;
+        must_be_rejected(
+            &conn,
+            &insert(table, TENANT, "   ", "active"),
+            &format!("chk_{table}_value_present"),
+        )
+        .await;
     }
 }
 

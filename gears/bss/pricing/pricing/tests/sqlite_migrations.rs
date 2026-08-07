@@ -293,10 +293,12 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_policy_object_interval_months_cap",
     "chk_pricing_policy_object_notice_floor",
     "chk_pricing_policy_object_price_row_cap",
-    "chk_pricing_policy_object_tax_display",
-    // Slice 4's C4 switch (`m20260802_000038`). Its neighbour above is a
-    // different fact under an adjacent name — that one is a display *basis*
-    // default, this one the fail-closed *enforcement* mode section 6 declares.
+    // Slice 4's C4 switch (`m20260802_000038`), and since D-240
+    // (`m20260802_000041`) the only tax-display constraint on this table.
+    // `chk_pricing_policy_object_tax_display` stood above it until then, holding
+    // a display *basis* default under a name section 6 spends on this
+    // fail-closed *enforcement* mode; retiring it is what makes the name
+    // unambiguous rather than merely adjacent.
     "chk_pricing_policy_object_tax_display_policy",
     "chk_pricing_policy_object_tier_band_cap",
     "chk_pricing_price_aggregation_function",
@@ -1297,4 +1299,79 @@ async fn the_ref_table_records_the_commit_observation_and_pairs_it_with_nothing(
             .contains("commit_observed_at"),
         "and pair it with nothing - no CHECK may mention it: {ddl}"
     );
+}
+
+/// D-240: `tax_display_mode` is retired, and the rebuild that retires it kept
+/// everything else `pricing_policy_object` carries.
+///
+/// The column is dropped by a create-copy-drop-rename, because `SQLite` refuses
+/// to drop a column a CHECK names. That makes the *retained* half the assertion
+/// that matters: a rebuild silently omitting an arm is the failure this shape
+/// has, and it is invisible to a case that only checks the column is gone. So
+/// every surviving column and every surviving CHECK is named here rather than
+/// counted — a count passes against a rebuild that dropped one arm and grew
+/// another.
+///
+/// `tax_display_policy_mode` is listed among them deliberately. It is the
+/// column the rebuild is most likely to lose: `m20260802_000038` added it with
+/// a plain `ALTER TABLE … ADD COLUMN` **after** `m20260802_000018` last restated
+/// this table, so a rebuild written from `000018`'s text alone — the natural
+/// mistake, and the one the brief for this work flagged first — would drop C4's
+/// fail-closed switch and still look complete.
+#[tokio::test]
+async fn the_retired_tax_display_mode_leaves_every_other_policy_column_standing() {
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    let ddl = table_sql(&conn, "pricing_policy_object").await;
+
+    assert!(
+        !ddl.contains("tax_display_mode"),
+        "D-240 retires the column, so no arm of the table may still name it: {ddl}"
+    );
+    assert!(
+        !ddl.contains("chk_pricing_policy_object_tax_display CHECK"),
+        "and the CHECK that guarded it goes with it: {ddl}"
+    );
+
+    for column in [
+        "tenant_id",
+        "default_rounding_policy_ref",
+        "enforced_migration_notice_days",
+        "max_tier_bands_per_row",
+        "max_price_rows_per_plan",
+        "max_custom_interval_days",
+        "max_custom_interval_months",
+        "additional_required_descriptors",
+        "updated_at_utc",
+        "updated_by",
+        "tax_display_policy_mode",
+    ] {
+        assert!(
+            ddl.contains(column),
+            "the rebuild must carry `{column}` across: {ddl}"
+        );
+    }
+
+    for check in [
+        "chk_pricing_policy_object_notice_floor",
+        "chk_pricing_policy_object_tier_band_cap",
+        "chk_pricing_policy_object_price_row_cap",
+        "chk_pricing_policy_object_interval_days_cap",
+        "chk_pricing_policy_object_interval_months_cap",
+        "chk_pricing_policy_object_tax_display_policy",
+    ] {
+        assert!(
+            ddl.contains(check),
+            "the rebuild must carry `{check}` across: {ddl}"
+        );
+    }
 }

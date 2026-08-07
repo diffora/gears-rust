@@ -152,6 +152,32 @@ async fn a_blank_value_is_refused() {
     }
 }
 
+/// And so is a value that is only whitespace — D-242 (`m20260802_000042`).
+///
+/// A separate case rather than another value in the loop above, because it
+/// closes a **different** hole and the two would otherwise read as one. The
+/// empty string is the classless sentinel `pricing_price_overlay` renders, and
+/// `'   '` is not that sentinel, so nothing here was forgeable. What `'   '`
+/// broke is one level over: `ScopeValue::new` trims before deciding, so the
+/// domain refused a row the store had admitted, and `TaxonomyRepo::list` mapped
+/// it to `RepoError::CorruptRow` — one such row failed `GET` for every value in
+/// its class, with `PUT` unable to round-trip a list it could not read.
+///
+/// This is the engine parity half: the admission was measured on **both**
+/// engines, so the tightening is pinned on both.
+#[tokio::test]
+async fn a_whitespace_only_value_is_refused() {
+    let conn = migrated_db().await;
+    for table in TAXONOMIES {
+        must_be_rejected(
+            &conn,
+            &insert(table, TENANT, "   ", "active"),
+            &format!("chk_{table}_value_present"),
+        )
+        .await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The two columns that are the region's alone (D-01).
 // ---------------------------------------------------------------------------

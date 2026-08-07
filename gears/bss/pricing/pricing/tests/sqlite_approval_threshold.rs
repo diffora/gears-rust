@@ -258,13 +258,18 @@ async fn the_policy_objects_old_threshold_pair_is_gone_and_the_rebuild_kept_the_
         &format!("INSERT INTO pricing_policy_object (tenant_id, updated_by) VALUES ('{TENANT}', '{ACTOR}')"),
     )
     .await;
+    // The witness was `tax_display_mode` until D-240 retired it
+    // (`m20260802_000041`). `tax_display_policy_mode` replaces it and is the
+    // better one: this case asserts that *this* rebuild kept the defaults, and
+    // the column it now reads is one a **later** rebuild had to carry across, so
+    // the assertion covers both restatements of the table rather than one.
     assert_eq!(
         scalar(
             &conn,
-            "SELECT tax_display_mode AS v FROM pricing_policy_object",
+            "SELECT tax_display_policy_mode AS v FROM pricing_policy_object",
         )
         .await,
-        "tax_exclusive",
+        "fail_closed",
         "the rebuild must keep the fail-safe default"
     );
     assert_eq!(
