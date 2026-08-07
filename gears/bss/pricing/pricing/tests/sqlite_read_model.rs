@@ -3519,3 +3519,43 @@ async fn a_commit_whose_content_moved_since_the_approval_is_refused() {
         "and no registry handle was orphaned by the refusal"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `inst-bt-frozen` (Slice 6) — Billing's sole deferral input survives the
+// publish, byte for byte.
+// ---------------------------------------------------------------------------
+
+/// The authored `billingTiming` reaches a consumer unchanged.
+///
+/// `inst-bt-frozen` says Billing derives its deferral policy from the frozen
+/// value "never from heuristics", which is a statement about the whole path —
+/// draft column, publish, snapshot, projection, delta row — and no unit test
+/// over the renderer can make it: the renderer is handed a `PriceRecord` some
+/// other layer built. This walks the real one.
+///
+/// Appended at the end of this file rather than filed beside the other payload
+/// cases: a second strand is in this tree, and an append is the one edit that
+/// cannot collide with a regrouping.
+#[tokio::test]
+async fn a_recurring_rows_billing_timing_is_frozen_into_the_delta_as_authored() {
+    let h = harness().await;
+    let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    h.registry.commit(&pending, 1);
+
+    sweep(&h, at(13)).await;
+
+    let rows = deltas(&h).await;
+    assert_eq!(rows.len(), 1);
+    let prices = rows[0]
+        .payload
+        .get("prices")
+        .and_then(serde_json::Value::as_array)
+        .expect("the delta carries the version's price rows");
+    assert_eq!(prices.len(), 1);
+    assert_eq!(
+        prices[0].get("billingTiming"),
+        Some(&serde_json::json!("advance")),
+        "the value `flat_row` authored, unnormalised: {:?}",
+        prices[0]
+    );
+}
