@@ -620,13 +620,21 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         "trg_pricing_price_flip_whitelist",
         6_864_967_922_611_899_704_u64,
     ),
-    // Re-pinned by `m20260802_000040` (`T-18`): the `WHEN` gained
-    // `tax_category_ref` and `resolved_tax_category`. **Exactly one digest moved
-    // in this roster**, which is the evidence the whole-trigger restatement lost
-    // nothing — the other sixty-six matched byte for byte.
+    // Re-pinned twice, and the note is kept whole because the second re-pin
+    // rests on the first one's evidence.
+    //
+    // `m20260802_000040` (`T-18`): the `WHEN` gained `tax_category_ref` and
+    // `resolved_tax_category` (digest `6_213_418_472_074_147_039`).
+    //
+    // `m20260802_000051` (Slice 6): it gained `billing_anchor_policy`,
+    // `anchor_day`, `proration_basis` and `credit_on_downgrade`. **Exactly one
+    // digest moved in this roster on each occasion** — the other sixty-six
+    // matched byte for byte — which is the evidence a whole-trigger restatement
+    // lost nothing, and the only evidence there is, since neither engine has an
+    // incremental form for this check.
     (
         "trg_pricing_price_frozen_columns",
-        6_213_418_472_074_147_039_u64,
+        15_497_072_427_694_831_591_u64,
     ),
     (
         "trg_pricing_price_grandfather_monotonic",

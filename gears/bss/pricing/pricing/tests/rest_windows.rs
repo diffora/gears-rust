@@ -19,6 +19,7 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::windows::PLAN_COVERAGE;
 use bss_pricing::domain::approval::ApprovalState;
 use bss_pricing::domain::audit::{AuditStamp, AuditSubjectKind};
+use bss_pricing::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::repo::window_repo::{NewWindow, schedule};
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
@@ -2296,6 +2297,8 @@ fn delta_of(
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(MinorAmount::new(1_200).expect("a non-negative amount"));
     PlanSubjectDelta {
+        entitlement_grants: EntitlementGrants::default(),
+        change_contract: PlanChangeContract::default(),
         plan_id: PlanId::new(plan_id),
         revision: 0,
         lifecycle_state: LifecycleState::Published,
@@ -2319,6 +2322,7 @@ fn delta_of(
             tax_inclusive: false,
             tax_category_ref: None,
             billing_timing: None,
+            proration_contract: None,
             rounding_policy_ref: None,
             grandfather_until: None,
             supersedes_price_id: None,

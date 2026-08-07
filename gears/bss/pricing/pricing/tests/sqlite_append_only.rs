@@ -136,6 +136,28 @@ async fn a_published_price_row_is_immutable_in_content() {
     )
     .await;
 
+    // Slice 6's four (`m20260802_000051`), on this tier for the reason the two
+    // above are: the exhaustive Postgres loop is behind Docker, and D-236 is the
+    // record of what a premise living on one tier only costs.
+    //
+    // `credit_on_downgrade` is the sharpest of the four -- it is what a
+    // downgrade's credit is computed from, and all four are inside the approval
+    // content pin at `v6`, so a published row whose proration contract moved
+    // would diverge from the pin that approved it, silently and for money.
+    for column in [
+        "billing_anchor_policy = 'subscription_start'",
+        "anchor_day = 9",
+        "proration_basis = 'by_second'",
+        "credit_on_downgrade = 1",
+    ] {
+        must_be_rejected(
+            &conn,
+            &format!("UPDATE pricing_price SET {column} WHERE price_id = '{PUBLISHED}'"),
+            "price, scope, model and entity-tag columns are immutable",
+        )
+        .await;
+    }
+
     let amount = scalar(
         &conn,
         &format!("SELECT CAST(amount_minor AS TEXT) AS v FROM pricing_price WHERE price_id = '{PUBLISHED}'"),

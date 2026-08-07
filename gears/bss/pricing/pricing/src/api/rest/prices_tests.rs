@@ -12,6 +12,7 @@ use super::{
     IncludedAllowanceView, PriceContentView, PriceRowView, TierBandView, band_of, content_of,
 };
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::PriceRecord;
@@ -43,6 +44,7 @@ fn record(bands: Vec<TierBand>) -> PriceRecord {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: None,
+        proration_contract: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,
@@ -131,6 +133,10 @@ fn clean_view() -> PriceContentView {
         tax_inclusive: Some(false),
         tax_category_ref: None,
         billing_timing: None,
+        billing_anchor_policy: None,
+        anchor_day: None,
+        proration_basis: None,
+        credit_on_downgrade: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,
@@ -250,4 +256,122 @@ fn the_view_names_the_rows_own_version_and_its_whole_key() {
         serde_json::json!("usage")
     );
     assert!(rendered["scope_key"]["cohort"].is_null(), "{rendered}");
+}
+
+// ---------------------------------------------------------------------------
+// The proration input contract at the boundary (`inst-pi-required`, §6).
+// ---------------------------------------------------------------------------
+
+/// A whole contract on the view.
+fn with_contract(policy: &str, day: Option<u8>, basis: &str, credit: bool) -> PriceContentView {
+    PriceContentView {
+        billing_anchor_policy: Some(policy.to_owned()),
+        anchor_day: day,
+        proration_basis: Some(basis.to_owned()),
+        credit_on_downgrade: Some(credit),
+        ..clean_view()
+    }
+}
+
+#[test]
+fn a_whole_contract_reads_into_the_domain_value() {
+    let content = content_of(&with_contract(
+        "fixed_day",
+        Some(15),
+        "calendar_days_30",
+        true,
+    ))
+    .expect("a well-formed contract converts");
+
+    let contract = content
+        .proration_contract
+        .expect("the four fields produce one contract");
+    assert_eq!(
+        contract.billing_anchor_policy,
+        BillingAnchorPolicy::FixedDay(AnchorDay::new(15).expect("a day of the month"))
+    );
+    assert_eq!(contract.proration_basis, ProrationBasis::CalendarDays30);
+    assert!(contract.credit_on_downgrade);
+}
+
+/// Absence of the whole set is not this surface's refusal: a draft is allowed
+/// to be unfinished, and `inst-pi-required` is what judges it at publish.
+#[test]
+fn an_absent_contract_leaves_the_draft_unfinished_rather_than_refused() {
+    let content = content_of(&clean_view()).expect("an unfinished draft converts");
+    assert!(content.proration_contract.is_none());
+}
+
+/// Two of three is a caller mistake this surface can name. Letting it through
+/// would reach the publish rules as a *missing* contract and lose which field
+/// the caller forgot.
+#[test]
+fn a_partial_contract_is_refused_naming_the_set() {
+    let partial = PriceContentView {
+        billing_anchor_policy: Some("calendar_month".to_owned()),
+        proration_basis: Some("by_second".to_owned()),
+        credit_on_downgrade: None,
+        ..clean_view()
+    };
+
+    let refusal = content_of(&partial).expect_err("two of three is not a contract");
+
+    assert!(
+        format!("{refusal:?}").contains("must be sent together"),
+        "{refusal:?}"
+    );
+}
+
+/// The pairing, in both directions — the states [`BillingAnchorPolicy`] cannot
+/// hold have to be refused here rather than silently dropped.
+#[test]
+fn the_anchor_day_pairing_is_refused_in_both_directions() {
+    let day_without_fixed = with_contract("calendar_month", Some(9), "by_second", false);
+    assert!(
+        format!(
+            "{:?}",
+            content_of(&day_without_fixed).expect_err("a day beside calendar_month")
+        )
+        .contains("only authorable beside a fixed_day anchor")
+    );
+
+    let fixed_without_day = with_contract("fixed_day", None, "by_second", false);
+    assert!(
+        format!(
+            "{:?}",
+            content_of(&fixed_without_day).expect_err("a fixed_day with no day")
+        )
+        .contains("required beside a fixed_day anchor")
+    );
+}
+
+/// A day the calendar has no room for is refused, and the message says why the
+/// bound is 31 rather than 28 (K2's last-of-month clamp).
+#[test]
+fn an_anchor_day_outside_the_month_is_refused() {
+    for day in [0_u8, 32] {
+        let refusal = content_of(&with_contract("fixed_day", Some(day), "by_second", false))
+            .expect_err("outside 1..=31");
+        assert!(
+            format!("{refusal:?}").contains("between 1 and 31"),
+            "{refusal:?}"
+        );
+    }
+}
+
+/// K1's set is closed, and a token outside it is named against the set rather
+/// than stored — the enum-drift class this slice owns the enum to kill.
+#[test]
+fn a_basis_outside_the_canonical_set_is_refused_naming_the_set() {
+    let refusal = content_of(&with_contract(
+        "calendar_month",
+        None,
+        "calendar_days_31",
+        false,
+    ))
+    .expect_err("not one of K1's five");
+
+    let rendered = format!("{refusal:?}");
+    assert!(rendered.contains("calendar_days_actual"), "{rendered}");
+    assert!(rendered.contains("by_second"), "{rendered}");
 }

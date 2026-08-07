@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::{StoredDelta, sellability_facts};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
@@ -69,6 +70,7 @@ fn row_on(scope_key: ScopeKey) -> PriceRecord {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: None,
+        proration_contract: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,
@@ -143,6 +145,8 @@ fn populated() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        entitlement_grants: EntitlementGrants::default(),
+        change_contract: PlanChangeContract::default(),
         prices: vec![
             row_on(everyone.clone()),
             row_on(generation.clone()),
@@ -259,11 +263,26 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
     /// Every member it deliberately does not.
     const IGNORED: &[&str] = &[
         "addonRules",
+        // Slice 6's plan-change contract. **Ignored deliberately**: the six
+        // sellability predicates ask whether a thing may be *sold*, and these
+        // three say where a subscription may *move* once sold. A plan offering
+        // no self-service change is perfectly sellable, and one offering it is
+        // not thereby sellable — so reading them here would make an
+        // authorization fact decide a sellability one.
+        "allowedChangeTargets",
         "billingCycle",
+        "comparabilityRank",
         "crossBoundaryChangePolicy",
         "descriptorSet",
+        // Slice 6's entitlement grant set and its materialized map. **Ignored
+        // deliberately**, for the change contract's reason one line up: the six
+        // predicates ask whether a thing may be *sold*, and these say what a
+        // subscriber may *use* once it is. A plan granting nothing is still
+        // sellable.
+        "entitlementGrants",
         "evaluationPolicyVersion",
         "invoiceGroupingKey",
+        "phaseGrantMap",
         "phases",
         "planTier",
         "planTierOverride",
@@ -271,6 +290,7 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         "purchaseMinQty",
         "revision",
         "skuId",
+        "usageCounterOnPlanChange",
     ];
 
     let payload = populated().to_value();

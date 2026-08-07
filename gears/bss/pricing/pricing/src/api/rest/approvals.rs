@@ -89,7 +89,10 @@ use crate::api::rest::preconditions;
 use crate::api::rest::prices::{PriceRowView, ScopeKeyView};
 use crate::api::rest::state::GovernanceState;
 use crate::api::rest::windows::WindowIntervalView;
+use std::collections::BTreeMap;
+
 use crate::domain::approval::{ApprovalState, DecisionBy};
+use crate::domain::contracts::{EntitlementGrants, GrantSet, PlanChangeContract};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{
     MaterialityReason, MaterialityVerdict, ThresholdBasis, ThresholdEntry, ThresholdVersion,
@@ -255,6 +258,81 @@ impl From<&ApprovalRecord> for ApprovalView {
     }
 }
 
+/// The entitlement grant set as a reviewer sees it (Slice 6, §6, D-41).
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct EntitlementGrantsView {
+    /// The `PlanTier` policy the set resolved from, when it resolved from one.
+    pub plan_tier_ref: Option<String>,
+    /// The plan-level `featureFlag` entries.
+    pub feature_flags: BTreeMap<String, bool>,
+    /// The plan-level `quotaKey` entries.
+    pub quotas: BTreeMap<String, i64>,
+    /// The authored per-phase sets, keyed by `phaseId`. **The authored ones, not
+    /// the materialized map**: what a reviewer signs is what an author wrote,
+    /// and the complete map is derived from it at projection.
+    pub per_phase: BTreeMap<Uuid, GrantSetView>,
+}
+
+/// One grant set on the wire.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct GrantSetView {
+    /// `featureFlag: bool` entries.
+    pub feature_flags: BTreeMap<String, bool>,
+    /// `quotaKey: value` entries.
+    pub quotas: BTreeMap<String, i64>,
+}
+
+impl From<&GrantSet> for GrantSetView {
+    fn from(set: &GrantSet) -> Self {
+        Self {
+            feature_flags: set.feature_flags.clone(),
+            quotas: set.quotas.clone(),
+        }
+    }
+}
+
+impl From<&EntitlementGrants> for EntitlementGrantsView {
+    fn from(grants: &EntitlementGrants) -> Self {
+        Self {
+            plan_tier_ref: grants.plan_tier_ref.clone(),
+            feature_flags: grants.plan_level.feature_flags.clone(),
+            quotas: grants.plan_level.quotas.clone(),
+            per_phase: grants
+                .per_phase
+                .iter()
+                .map(|(id, set)| (*id, GrantSetView::from(set)))
+                .collect(),
+        }
+    }
+}
+
+/// The plan-change contract as a reviewer sees it (Slice 6, §6).
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PlanChangeContractView {
+    /// The explicit published `planId`s a self-service change may travel to.
+    /// **Absent means no self-service change** (`inst-pc-failsafe`), which is a
+    /// value with a reading and not a missing field; an empty list is an author
+    /// who stated the set and left it empty, and the two are kept apart.
+    pub allowed_change_targets: Option<Vec<Uuid>>,
+    /// The tenant-wide comparability rank (K4).
+    pub comparability_rank: Option<i32>,
+    /// `reset` | `carry` — D-113's tier-`Q` continuity flag.
+    pub usage_counter_on_plan_change: String,
+}
+
+impl From<&PlanChangeContract> for PlanChangeContractView {
+    fn from(contract: &PlanChangeContract) -> Self {
+        Self {
+            allowed_change_targets: contract.allowed_change_targets.clone(),
+            comparability_rank: contract.comparability_rank,
+            usage_counter_on_plan_change: contract.usage_counter_on_plan_change.as_str().to_owned(),
+        }
+    }
+}
+
 /// Exactly the plan content the pin hashes.
 ///
 /// Every member is a field `content_pin::put_plan_shape` frames, and the two
@@ -299,6 +377,21 @@ pub struct PinnedContentView {
     pub descriptor_set: Option<DescriptorSetView>,
     /// The candidate row set this publish would produce.
     pub rows: Vec<PriceRowView>,
+    /// The plan-change contract this revision would publish (Slice 6, §6).
+    ///
+    /// **Shown because it is pinned.** The pin's module doc argues that showing
+    /// a reviewer content their signature does not cover is the wrong direction;
+    /// the mirror of that argument is that content the signature *does* cover
+    /// must be on the document. An edge list decides who may move where, so a
+    /// reviewer approving it unseen is approving an authorization change they
+    /// were never shown.
+    /// The entitlement grant set this revision would publish (Slice 6, §6).
+    ///
+    /// Shown for the change contract's reason: it is pinned, so a reviewer's
+    /// signature covers it, and a signature over unseen entitlements is one the
+    /// reviewer did not give.
+    pub entitlement_grants: EntitlementGrantsView,
+    pub change_contract: PlanChangeContractView,
     /// The window plane the pin covers, one entry per canonical scope key.
     ///
     /// Hashed since 2026-08-04 and shown here from the same day, for the reason
@@ -374,6 +467,8 @@ impl From<&PlanShape> for PinnedContentView {
             addon_rules,
             descriptor_set,
             rows,
+            entitlement_grants,
+            change_contract,
             windows,
             // Outside the digest, so outside this document: showing a reviewer
             // content their signature does not cover is what the pin's module doc
@@ -407,6 +502,8 @@ impl From<&PlanShape> for PinnedContentView {
                 .collect(),
             descriptor_set: descriptor_set.clone().map(DescriptorSetView::from),
             rows: rows.iter().map(PriceRowView::from).collect(),
+            entitlement_grants: EntitlementGrantsView::from(entitlement_grants),
+            change_contract: PlanChangeContractView::from(change_contract),
             windows: windows.iter().map(PinnedWindowsView::from).collect(),
         }
     }

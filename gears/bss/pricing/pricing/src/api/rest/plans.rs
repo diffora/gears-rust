@@ -27,6 +27,8 @@
 //! discriminator a consumer matches on, not the status. No route here declares a
 //! 422 response.
 
+use std::collections::BTreeMap;
+
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -49,6 +51,9 @@ use crate::api::rest::preconditions::{self, RevisionTag};
 use crate::api::rest::state::AuthoringState;
 use crate::domain::audit::AuditStamp;
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{
+    EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
+};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
@@ -385,6 +390,67 @@ pub struct PlanShapeRequest {
     pub available_from: Option<DateTime<Utc>>,
     /// End of the availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// The entitlement grant set (Slice 6, §6, D-41): the plan-level feature
+    /// flags and quotas, the `PlanTier` they resolved from when they did, and
+    /// any per-phase sets keyed by `phaseId`.
+    ///
+    /// Sent **whole or not at all**, for the change contract's reason below.
+    pub entitlement_grants: Option<EntitlementGrantsRequest>,
+    /// The plan-change contract (Slice 6, §6): the published `planId`s a
+    /// self-service change may travel to, the comparability rank that
+    /// classifies one, and D-113's tier-`Q` continuity flag.
+    ///
+    /// Sent **whole or not at all**, which is the shape
+    /// [`PlanShapePatch::change_contract`] gives it: K4 ties the rank to whether
+    /// the edge list names anyone, so a caller able to move one member alone
+    /// could express a state no publish accepts.
+    pub change_contract: Option<PlanChangeContractRequest>,
+}
+
+/// The entitlement grant set on the wire.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct EntitlementGrantsRequest {
+    /// The `PlanTier` policy this set resolved from, when it did. Carried for
+    /// auditability beside the resolved set, never instead of it
+    /// (`inst-gs-resolved`).
+    pub plan_tier_ref: Option<String>,
+    /// Plan-level `featureFlag: bool` entries.
+    pub feature_flags: Option<BTreeMap<String, bool>>,
+    /// Plan-level `quotaKey: value` entries.
+    pub quotas: Option<BTreeMap<String, i64>>,
+    /// Optional per-phase sets, keyed by `phaseId` (D-41). Every key is checked
+    /// against the plan's own phase schedule at publish, not here.
+    pub per_phase: Option<BTreeMap<Uuid, GrantSetRequest>>,
+}
+
+/// One grant set on the wire.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct GrantSetRequest {
+    /// `featureFlag: bool` entries.
+    pub feature_flags: Option<BTreeMap<String, bool>>,
+    /// `quotaKey: value` entries.
+    pub quotas: Option<BTreeMap<String, i64>>,
+}
+
+/// The plan-change contract on the wire.
+///
+/// `request, response` rather than `request`, because
+/// [`PlanShapeRequest`] is both and a member of a response DTO has to be
+/// serializable too.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct PlanChangeContractRequest {
+    /// Explicit published `planId`s. **Omit the field entirely** to state the
+    /// fail-safe — no self-service change (`inst-pc-failsafe`) — which is not
+    /// the same as sending an empty list.
+    pub allowed_change_targets: Option<Vec<Uuid>>,
+    /// The tenant-wide comparability rank (K4).
+    pub comparability_rank: Option<i32>,
+    /// `reset` (default) | `carry`. Omitted is `reset`, which is D-113's
+    /// ratified default and the safe direction.
+    pub usage_counter_on_plan_change: Option<String>,
 }
 
 /// A `PATCH` body: **exactly one** of the four facets S2 §5 names.
@@ -1352,6 +1418,75 @@ fn shape_patch(body: &PlanShapeRequest) -> Result<PlanShapePatch, DomainError> {
         invoice_grouping_key: body.invoice_grouping_key.clone(),
         available_from: body.available_from,
         available_to: body.available_to,
+        entitlement_grants: body.entitlement_grants.as_ref().map(read_grants),
+        change_contract: body
+            .change_contract
+            .as_ref()
+            .map(read_change_contract)
+            .transpose()?,
+    })
+}
+
+/// Read the wire grant set into the domain value.
+///
+/// Nothing is refused here: the shape carries no closed vocabulary, and the one
+/// check the design states — that every per-phase key names a phase of the
+/// plan's own schedule — is a publish rule (`inst-gs-perphase`), because the
+/// phase schedule is a *different* facet of the same revision and a `PATCH` may
+/// legitimately arrive before it.
+fn read_grants(request: &EntitlementGrantsRequest) -> EntitlementGrants {
+    EntitlementGrants {
+        plan_tier_ref: request.plan_tier_ref.clone(),
+        plan_level: GrantSet {
+            feature_flags: request.feature_flags.clone().unwrap_or_default(),
+            quotas: request.quotas.clone().unwrap_or_default(),
+        },
+        per_phase: request
+            .per_phase
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, set)| {
+                (
+                    id,
+                    GrantSet {
+                        feature_flags: set.feature_flags.unwrap_or_default(),
+                        quotas: set.quotas.unwrap_or_default(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Read the wire plan-change contract into the domain value.
+///
+/// The only thing refused here is a token outside D-113's pair. The edge list
+/// and the rank are judged at **publish** rather than at this boundary, because
+/// a draft is allowed to be unfinished and because `inst-pc-targets` needs the
+/// published-plan lookup this surface does not hold — the same division
+/// `inst-pi-required` draws for the proration set.
+fn read_change_contract(
+    request: &PlanChangeContractRequest,
+) -> Result<PlanChangeContract, DomainError> {
+    Ok(PlanChangeContract {
+        allowed_change_targets: request.allowed_change_targets.clone(),
+        comparability_rank: request.comparability_rank,
+        usage_counter_on_plan_change: match request.usage_counter_on_plan_change.as_deref() {
+            // Omitted is D-113's ratified default, not a missing field: absence
+            // **is** `reset`, so there is nothing to refuse.
+            None => UsageCounterOnPlanChange::Reset,
+            Some(token) => UsageCounterOnPlanChange::ALL
+                .iter()
+                .copied()
+                .find(|candidate| candidate.as_str() == token)
+                .ok_or_else(|| {
+                    DomainError::InvalidRequest(format!(
+                        "change_contract.usage_counter_on_plan_change `{token}` is not one of \
+                         reset, carry"
+                    ))
+                })?,
+        },
     })
 }
 

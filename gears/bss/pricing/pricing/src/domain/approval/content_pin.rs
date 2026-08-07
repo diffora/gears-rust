@@ -347,7 +347,52 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// pending policy unit to record a re-freeze of content those units are not about —
 /// which is the argument for two counters, applied in the other direction from the
 /// `v3` note above.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v5\x1f";
+/// # `v6`: Slice 6's proration contract joined the row's framing (2026-08-07)
+///
+/// The `v4` case again, and for the same reason it was a bump rather than a
+/// standing tag: [`put_price_record`] gained a framed field, so every preimage
+/// containing a price row produces different bytes. The contract is **authored
+/// draft content** — a `PATCH` on an open draft moves it — which is precisely
+/// `tax_category_ref`'s argument for being in the pin at all: a reviewer who
+/// approved a plan anchoring on the 1st and a commit that publishes one
+/// anchoring on signup day, with every digest equal, is the re-verification hole
+/// this preimage exists to close. It is also the field a downgrade's credit is
+/// computed from (`inst-pi-credit-source`), so the money consequence of the hole
+/// is direct.
+///
+/// The **deployed-world** paragraph applies verbatim once more: this needs
+/// pending approvals drained before it ships, and it is an edit today only
+/// because nothing durable holds a `v5` digest either.
+/// # `v7`: Slice 6's plan-change contract joined the plan's framing (2026-08-07)
+///
+/// The third re-freeze of this counter and the same case as `v4` and `v6`:
+/// [`put_plan_shape`] gained framed fields, so **every** preimage produces
+/// different bytes, not only those carrying a price row. The contract is
+/// authored content a `PATCH` moves, and unlike the two before it the hole it
+/// closes is an **authorization** one rather than a billing one — an edge list
+/// decides who may move where, so a reviewer who approved a plan changeable only
+/// to `standard` and a commit publishing one changeable to `enterprise`, with
+/// every digest equal, is the same re-verification hole with a different
+/// consequence.
+///
+/// **`v6` and `v7` collapse for anyone deploying**, because nothing durable held
+/// a `v6` digest either: both landed in the same unshipped series. They are two
+/// bumps rather than one because each records a distinct re-freeze, and a
+/// counter that skipped one would leave a later reader unable to tell which
+/// change moved the bytes.
+/// # `v8`: the entitlement grant set joined the same framing (2026-08-07)
+///
+/// `v7`'s case again, one field over, and the consequence is a third kind:
+/// `v4` closed a billing hole, `v6` a money one, `v7` an authorization one, and
+/// this closes an **entitlement** one — a reviewer who approved a trial capped
+/// at 20 cloudlets and a commit publishing one capped at 20 000.
+///
+/// **`v6`, `v7` and `v8` all collapse for anyone deploying**: nothing durable
+/// held any of them, and all three landed in one unshipped series. They are
+/// three bumps rather than one because each records a distinct re-freeze, and a
+/// counter that skipped any would leave a later reader unable to tell which
+/// change moved the bytes.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v8\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -561,6 +606,20 @@ fn put_amount_set(buf: &mut Vec<u8>, amounts: &AmountSet) {
     }
 }
 
+/// One grant set: the flags, then the quotas, each behind its count.
+fn put_grant_set(buf: &mut Vec<u8>, set: &crate::domain::contracts::GrantSet) {
+    put_u64(buf, count_of(set.feature_flags.len()));
+    for (key, on) in &set.feature_flags {
+        put_str(buf, key);
+        put_bool(buf, *on);
+    }
+    put_u64(buf, count_of(set.quotas.len()));
+    for (key, value) in &set.quotas {
+        put_str(buf, key);
+        put_i64(buf, *value);
+    }
+}
+
 fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     let PlanShape {
         plan_id,
@@ -579,6 +638,8 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         addon_rules,
         descriptor_set,
         rows,
+        entitlement_grants,
+        change_contract,
         windows,
         // Not hashed; the module doc argues both, and the first one is the
         // difference between a pin that can ever verify and one that cannot.
@@ -598,6 +659,57 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_opt_u64(buf, *purchase_min_qty);
     put_opt_u64(buf, *purchase_max_qty);
     put_opt_str(buf, invoice_grouping_key.as_deref());
+
+    // Slice 6's plan-change contract. **In the pin because a `PATCH` moves it**,
+    // and because an edge list is what decides who may move where -- a reviewer
+    // who approved a plan changeable only to `standard` and a commit that
+    // publishes one changeable to `enterprise`, with every digest equal, is the
+    // re-verification hole `sku_id`'s own note describes, with an authorization
+    // consequence rather than a billing one.
+    //
+    // Framed **unconditionally and member by member**, per `put_scope_key`'s
+    // rule about ambiguous runs. The edge list's `None` and its empty vector are
+    // framed **differently** -- a leading `bool` then the count -- because
+    // `inst-pc-failsafe` gives them different meanings and a preimage that
+    // collapsed them would let a plan leave self-service change without moving
+    // its digest.
+    // Slice 6's entitlement grant set. **In the pin because a `PATCH` moves it
+    // and because it decides what a subscriber may use** -- a reviewer who
+    // approved a trial capped at 20 cloudlets and a commit that publishes one
+    // capped at 20 000, with every digest equal, is `sku_id`'s re-verification
+    // hole with an entitlement consequence.
+    //
+    // Every map is framed with its **count** first, per `put_descriptor_set`'s
+    // rule: without one, two adjacent collections can be re-split, and a plan
+    // with two feature flags and no quota would pin identically to one with one
+    // of each. `BTreeMap` is what makes the order deterministic across replicas.
+    put_opt_str(buf, entitlement_grants.plan_tier_ref.as_deref());
+    put_grant_set(buf, &entitlement_grants.plan_level);
+    put_u64(buf, count_of(entitlement_grants.per_phase.len()));
+    for (phase_id, set) in &entitlement_grants.per_phase {
+        put_uuid(buf, *phase_id);
+        put_grant_set(buf, set);
+    }
+
+    match &change_contract.allowed_change_targets {
+        None => put_bool(buf, false),
+        Some(targets) => {
+            put_bool(buf, true);
+            let mut ordered: Vec<&uuid::Uuid> = targets.iter().collect();
+            ordered.sort_unstable();
+            put_u64(buf, count_of(ordered.len()));
+            for target in ordered {
+                put_uuid(buf, *target);
+            }
+        }
+    }
+    put_opt_u64(
+        buf,
+        change_contract
+            .comparability_rank
+            .map(|rank| rank.cast_unsigned().into()),
+    );
+    put_str(buf, change_contract.usage_counter_on_plan_change.as_str());
 
     let mut ordered_phases: Vec<&PlanPhase> = phases.phases().iter().collect();
     ordered_phases.sort_unstable_by_key(|phase| (phase.ordinal, phase.phase_id.get()));
@@ -810,6 +922,7 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
         tax_inclusive,
         tax_category_ref,
         billing_timing,
+        proration_contract,
         rounding_policy_ref,
         grandfather_until,
         supersedes_price_id,
@@ -829,6 +942,32 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
     // equal, is exactly the re-verification hole `sku_id`'s own note describes.
     put_opt_str(buf, tax_category_ref.as_deref());
     put_opt_str(buf, billing_timing.as_deref());
+    // The proration contract, framed **unconditionally** and field by field --
+    // `put_scope_key`'s rule: a conditional field count is how two adjacent
+    // fields become one ambiguous run. An absent contract frames the same
+    // number of members as a present one, with the empty token and `0`, so an
+    // absent contract and one anchoring `calendar_month` on day 0 cannot
+    // collide.
+    put_str(
+        buf,
+        proration_contract.map_or("", |c| c.billing_anchor_policy.as_str()),
+    );
+    put_u64(
+        buf,
+        u64::from(
+            proration_contract
+                .and_then(|c| c.billing_anchor_policy.anchor_day())
+                .map_or(0, crate::domain::contracts::AnchorDay::get),
+        ),
+    );
+    put_str(
+        buf,
+        proration_contract.map_or("", |c| c.proration_basis.as_str()),
+    );
+    put_bool(
+        buf,
+        proration_contract.is_some_and(|c| c.credit_on_downgrade),
+    );
     put_opt_str(buf, rounding_policy_ref.as_deref());
     put_opt_instant(buf, *grandfather_until);
     put_opt_uuid(buf, *supersedes_price_id);

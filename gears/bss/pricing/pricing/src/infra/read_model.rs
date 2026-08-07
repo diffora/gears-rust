@@ -963,6 +963,8 @@ async fn project_plan_subject(
         )
         .await
         .map_err(|e| repo_failure(&e))?,
+        entitlement_grants: current.entitlement_grants,
+        change_contract: current.change_contract,
         prices,
         tax_projection,
         windows,

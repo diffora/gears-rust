@@ -51,8 +51,19 @@
 //! - **The registry `sellable` flag** per offered SKU (D-46) — predicate (6).
 //!   It is the registry's fact, frozen per version registry-side, and the
 //!   registry gear has no code in this repository.
-//! - **The grant set and the materialized phase-to-grant map** (Slice 6, D-41).
-//!   `pricing_plan_grant` does not exist here.
+//! - ~~**The grant set and the materialized phase-to-grant map** (Slice 6,
+//!   D-41)~~ — **landed 2026-08-07 and struck.** [`PlanSubjectDelta::entitlement_grants`]
+//!   carries the authored set and `phaseGrantMap` carries the complete map, so a
+//!   consumer resolves the active phase at `t` by one lookup.
+//!
+//!   The struck line also named the wrong store, and the correction matters more
+//!   than the strike: it said *"`pricing_plan_grant` does not exist here"*, but
+//!   that table is **Slice 10's** (D-52) and holds D-43's prepaid **credit**
+//!   grant — a different object with a different lifecycle. The Slice-6
+//!   entitlement grant set is a column, `pricing_plan.entitlement_grants`
+//!   (`m20260802_000053`), which is what its own §6 declares. A reader who took
+//!   the old line at face value would have built a Slice-6 requirement inside a
+//!   Slice-10 aggregate.
 //!
 //! The Slice-6 **cross-boundary contract** was on that list as an unstampable
 //! pair and is not on it any more: [`CROSS_BOUNDARY_CHANGE_POLICY`] is stamped on
@@ -135,10 +146,33 @@
 //! presentation. **None of them is rostered, so the roster does not move and
 //! `ep-1` stands.**
 //!
-//! D-162's named example is not landed here either: `usage_counter_on_plan_change`
-//! **does not exist in this crate** — there is no column, no field and no
-//! writer for it anywhere — so it cannot join a roster from this module. The
-//! slice that lands the field lands the bump with it.
+//! D-162's named example **is landed now** (Slice 6, 2026-08-07), and the
+//! paragraph that said it "does not exist in this crate — there is no column, no
+//! field and no writer for it anywhere" is corrected rather than deleted,
+//! because a premise resting on a fact that has changed is one a later reader
+//! will believe for the wrong reason. `usage_counter_on_plan_change` is a column
+//! (`m20260802_000052`), a field of [`PlanChangeContract`], written by
+//! `plan_repo` and rendered into this payload as `usageCounterOnPlanChange`.
+//!
+//! **The bump D-162 owes is therefore due, and this strand cannot make it.**
+//! D-162 clause (5) makes the roster *what replaying the log in
+//! `01-foundation.md` §4.4 produces*, and
+//! [`evaluation_policy_tests`](crate::domain::evaluation_policy) reads that block
+//! with `include_str!` — so [`EVALUATION_POLICY_GENERATION`] cannot move to
+//! `ep-2` without the document gaining the line
+//! `ep-2  D-113  + usage_counter_on_plan_change`. `docs/**` belongs to the main
+//! session, so the change is handed back as a register item instead of made
+//! here.
+//!
+//! **Nothing reddens meanwhile, and that is the hazard rather than the
+//! comfort.** The guard's exhaustive classification runs over
+//! [`PriceRow`](crate::domain::price_row::PriceRow) alone, so a plan-scoped
+//! roster member is invisible to it — which is exactly what D-162 warns of: *"a
+//! slice that lands it and leaves the roster alone leaves the generation
+//! claiming more than it covers."* Until the log line lands, `ep-1` claims a
+//! field set that no longer describes what a snapshot freezes, and two snapshots
+//! stamped `ep-1` may have been frozen under different evaluation semantics —
+//! the one thing the generation exists to make impossible.
 //!
 //! The D-162 guard's **reach** is decided here too, and it stays where it is.
 //! [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)
@@ -160,6 +194,9 @@ use serde_json::{Value as JsonValue, json};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::domain::contracts::{
+    EntitlementGrants, GrantSet, PlanChangeContract, published_billing_timing,
+};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
@@ -458,6 +495,17 @@ pub struct PlanSubjectDelta {
     pub addon_rules: Vec<AddonRule>,
     /// The revision's billing descriptor set (D-83).
     pub descriptor_set: Option<DescriptorSet>,
+    /// The entitlement grant set this revision publishes (Slice 6, §6, D-41),
+    /// as authored. The **materialized** `phase → grant-set` map is derived from
+    /// it and the phase chain at render time.
+    pub entitlement_grants: EntitlementGrants,
+    /// The plan-change contract this revision publishes (Slice 6, §6).
+    ///
+    /// **A projected plan-subject field**, because it is what a consumer reads to
+    /// know whether a self-service change is offered at all — and
+    /// `inst-pc-failsafe` makes its *absence* the fail-safe answer rather than an
+    /// unknown, which only holds if the field is part of the contract.
+    pub change_contract: PlanChangeContract,
     /// The price rows the version freezes, drawn from [`PROJECTED_ROW_STATES`].
     pub prices: Vec<PriceRecord>,
     /// The **derived** tax facts each projected row carries: D-154's resolved
@@ -580,6 +628,8 @@ impl PlanSubjectDelta {
             phases,
             addon_rules,
             descriptor_set,
+            entitlement_grants,
+            change_contract,
             prices,
             tax_projection,
             windows,
@@ -602,6 +652,35 @@ impl PlanSubjectDelta {
             "phases": phases.iter().map(phase_value).collect::<Vec<_>>(),
             "addonRules": addon_rules.iter().map(addon_rule_value).collect::<Vec<_>>(),
             "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
+            // The plan-change contract (`inst-pc-targets` / `inst-pc-rank` /
+            // `inst-pc-counter-carry`). `allowedChangeTargets` renders `null`
+            // when the plan states none, and that null **is** the answer: absence
+            // means no self-service change (`inst-pc-failsafe`), never "unknown"
+            // — which is why an empty array is a different payload and a
+            // different fact.
+            //
+            // No `inPlace` / `cancelPlusNew` classification is stamped. D-93
+            // moved it to change time in Subscriptions, computed from both plans'
+            // published facts at the pinned version; a stamped value here could
+            // never be re-computed, because a target's publish warms only its own
+            // delta (D-86/D-91) and the source's revision is immutable. What is
+            // published is the input (`inst-pc-boundary`).
+            // The grant set, and the **complete** map beside it
+            // (`inst-gs-perphase`). `entitlementGrants` is what the author
+            // wrote; `phaseGrantMap` is every phase of the schedule mapped to
+            // its effective set, so Subscriptions resolves the active phase at
+            // `t` by one lookup and never merges fallbacks at runtime. Both,
+            // because `inst-gs-resolved` wants the reference kept for
+            // auditability beside the set that is actually read.
+            "entitlementGrants": grants_value(entitlement_grants),
+            "phaseGrantMap": entitlement_grants
+                .phase_map(phases)
+                .iter()
+                .map(|(id, set)| (id.to_string(), grant_set_value(set)))
+                .collect::<serde_json::Map<_, _>>(),
+            "allowedChangeTargets": change_contract.allowed_change_targets,
+            "comparabilityRank": change_contract.comparability_rank,
+            "usageCounterOnPlanChange": change_contract.usage_counter_on_plan_change.as_str(),
             "prices": prices
                 .iter()
                 .map(|record| price_value(record, tax_projection.get(&record.price_id)))
@@ -615,6 +694,28 @@ impl PlanSubjectDelta {
             "crossBoundaryChangePolicy": CROSS_BOUNDARY_CHANGE_POLICY,
         })
     }
+}
+
+/// The authored grant set, whole.
+fn grants_value(grants: &EntitlementGrants) -> JsonValue {
+    json!({
+        "planTierRef": grants.plan_tier_ref,
+        "featureFlags": grants.plan_level.feature_flags,
+        "quotas": grants.plan_level.quotas,
+        "perPhase": grants
+            .per_phase
+            .iter()
+            .map(|(id, set)| (id.to_string(), grant_set_value(set)))
+            .collect::<serde_json::Map<_, _>>(),
+    })
+}
+
+/// One grant set: the §17.6 shape, flags and quotas.
+fn grant_set_value(set: &GrantSet) -> JsonValue {
+    json!({
+        "featureFlags": set.feature_flags,
+        "quotas": set.quotas,
+    })
 }
 
 /// The recurring frequency, token and interval together.
@@ -725,6 +826,7 @@ fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValu
         tax_inclusive,
         tax_category_ref,
         billing_timing,
+        proration_contract,
         rounding_policy_ref,
         grandfather_until,
         supersedes_price_id,
@@ -751,7 +853,28 @@ fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValu
         // bare `bool` — see its own line.
         "resolvedTaxCategory": tax.and_then(|t| t.resolved_tax_category.clone()),
         "notSellableGa": tax.is_some_and(|t| t.not_sellable_ga),
-        "billingTiming": billing_timing,
+        // The **published** timing, not the column: on every kind but
+        // `recurring` it is a constant the author never gave (`inst-bt-usage`),
+        // and Billing consumes the field per line. A payload that rendered the
+        // raw column would hand a hybrid's usage line a `null` for Billing to
+        // interpret, which is the heuristic `inst-bt-frozen` forbids.
+        "billingTiming": published_billing_timing(
+            scope_key.charge_kind(),
+            billing_timing.as_deref(),
+        ),
+        // The proration input contract (`inst-pi-required`), flat beside the
+        // row's own keys for `row_value`'s reason: it is what a consumer
+        // computes from, and a nesting level no document declares would be a
+        // wire structure invented here. `anchorDay` renders only under the
+        // policy that has one -- the pairing is structural in the domain, and a
+        // payload that carried a null beside `calendar_month` would invite a
+        // consumer to read it as "unset" rather than "not applicable".
+        "billingAnchorPolicy": proration_contract.map(|c| c.billing_anchor_policy.as_str()),
+        "anchorDay": proration_contract
+            .and_then(|c| c.billing_anchor_policy.anchor_day())
+            .map(super::contracts::AnchorDay::get),
+        "prorationBasis": proration_contract.map(|c| c.proration_basis.as_str()),
+        "creditOnDowngrade": proration_contract.map(|c| c.credit_on_downgrade),
         "roundingPolicyRef": rounding_policy_ref,
         "grandfatherUntil": grandfather_until,
         "supersedesPriceId": supersedes_price_id,

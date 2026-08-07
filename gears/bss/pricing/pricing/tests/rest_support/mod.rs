@@ -38,6 +38,7 @@ use bss_pricing::api::rest::frontier::ApiState as FrontierState;
 use bss_pricing::api::rest::state::{AuthoringState, GovernanceState};
 use bss_pricing::config::LimitsConfig;
 use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::CurrencyCode;
 use bss_pricing::domain::money::MinorAmount;
@@ -1261,6 +1262,16 @@ pub async fn seed_price(harness: &Harness, plan_id: Uuid, region: &str) -> Price
                     tax_inclusive: false,
                     tax_category_ref: None,
                     billing_timing: None,
+                    // Stated, because this is a **recurring** row and Slice 6's
+                    // `inst-pi-required` makes the three proration inputs mandatory on one.
+                    // A fixture that asserts a clean publish needs a row publishable in every
+                    // respect but the one under judgement, and a row with no proration
+                    // contract is not.
+                    proration_contract: Some(ProrationContract {
+                        billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+                        proration_basis: ProrationBasis::CalendarDaysActual,
+                        credit_on_downgrade: false,
+                    }),
                     rounding_policy_ref: None,
                     grandfather_until: None,
                     supersedes_price_id: None,
@@ -1573,6 +1584,16 @@ pub fn publishable_row() -> PriceContentAlias {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        // Stated, because this is a **recurring** row and Slice 6's
+        // `inst-pi-required` makes the three proration inputs mandatory on one.
+        // A fixture that asserts a clean publish needs a row publishable in every
+        // respect but the one under judgement, and a row with no proration
+        // contract is not.
+        proration_contract: Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        }),
         // Its own policy, so the Foundation's rounding rule resolves without a
         // tenant policy row.
         rounding_policy_ref: Some("half_up".to_owned()),

@@ -44,6 +44,7 @@ use bss_pricing::domain::audit::{
 };
 use bss_pricing::domain::bundle::{InvoiceItemization, PriceBasis};
 use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use bss_pricing::domain::lifecycle::LifecycleState;
@@ -262,6 +263,16 @@ fn flat_row() -> PriceContent {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        // Stated, because this is a **recurring** row and Slice 6's
+        // `inst-pi-required` makes the three proration inputs mandatory on one.
+        // A fixture that asserts a clean publish needs a row publishable in every
+        // respect but the one under judgement, and a row with no proration
+        // contract is not.
+        proration_contract: Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        }),
         // Its own policy, so the Foundation's rounding rule resolves without a
         // tenant policy row.
         rounding_policy_ref: Some("half_up".to_owned()),

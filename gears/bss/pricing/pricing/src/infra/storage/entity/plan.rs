@@ -10,6 +10,7 @@
 //! content that cannot change needs no new entity tag.
 
 use chrono::{DateTime, Utc};
+use sea_orm::JsonValue;
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
@@ -50,6 +51,24 @@ pub struct Model {
     pub purchase_max_qty: Option<i64>,
     /// The Billing invoice-layout hint (D-96). NULL or empty means no grouping.
     pub invoice_grouping_key: Option<String>,
+    /// The §17.6 grant set as authored (D-41, `m20260802_000053`): the
+    /// plan-level flags and quotas, the `PlanTier` it resolved from when it did,
+    /// and any per-phase sets. **Not** `pricing_plan_grant`, which is Slice 10's
+    /// table for D-43's prepaid credit grant; see the migration's own doc.
+    pub entitlement_grants: Option<JsonValue>,
+    // --- plan-change contract, Slice 6 (`m20260802_000052`) ---
+    /// A JSON array of explicit published `planId`s. NULL is the fail-safe and
+    /// means **no self-service change** (`inst-pc-failsafe`) -- never any-to-any
+    /// and never "unknown". `jsonb` on Postgres, `text` on `SQLite`, which is
+    /// `included_allowance`'s convention.
+    pub allowed_change_targets: Option<JsonValue>,
+    /// The tenant-wide comparability scale (K4). Higher is an upgrade, lower a
+    /// downgrade, equal a switch.
+    pub comparability_rank: Option<i32>,
+    /// `reset` | `carry` -- D-113's tier-`Q` continuity flag, read by Rating off
+    /// the **target** plan's frozen snapshot. NULL reads as `reset`, which is
+    /// the ratified default and the safe direction.
+    pub usage_counter_on_plan_change: Option<String>,
     /// `draft` | `abandoned` | `published` | `superseded` | `retired`.
     /// `CHECK`-constrained to those five; the legal edges between them are
     /// `domain::lifecycle::LifecycleState`.

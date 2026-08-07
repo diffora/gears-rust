@@ -72,6 +72,7 @@ fn row(price_id: u128, currency: &str, region: &str, eligibility: PriceEligibili
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: None,
+        proration_contract: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,

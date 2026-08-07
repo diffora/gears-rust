@@ -67,6 +67,7 @@ fn row(
         tax_inclusive,
         tax_category_ref: category.map(ToOwned::to_owned),
         billing_timing: None,
+        proration_contract: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,

@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::{AmountMove, RowDelta, row_delta};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::PriceRecord;
@@ -42,6 +43,7 @@ fn record(row: PriceRow) -> PriceRecord {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        proration_contract: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,
@@ -412,5 +414,110 @@ fn a_percent_basis_against_a_zero_baseline_computes_nothing() {
         ten_percent.reaches_percent(1001),
         Some(false),
         "and is below 10.01%"
+    );
+}
+
+/// D-115's three remaining row-contract entries, each on its own — one case
+/// cannot tell an implemented arm from a missing one, which is why the
+/// `billingTiming` test above already splits its three.
+///
+/// The failure each closes is the same shape: a supersession that moves only the
+/// proration contract moves **no amount**, so without an arm here it is
+/// classified immaterial and publishes with no second principal ever seeing it.
+/// `credit_on_downgrade` is the sharpest — it decides whether a downgrading
+/// subscriber is refunded at all.
+#[test]
+fn each_proration_contract_field_has_no_computable_delta_on_its_own() {
+    let baseline = {
+        let mut row = flat(1000);
+        row.proration_contract = Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        });
+        row
+    };
+
+    for (moved, field) in [
+        (
+            ProrationContract {
+                billing_anchor_policy: BillingAnchorPolicy::SubscriptionStart,
+                proration_basis: ProrationBasis::CalendarDaysActual,
+                credit_on_downgrade: false,
+            },
+            "billing_anchor_policy",
+        ),
+        (
+            ProrationContract {
+                billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+                proration_basis: ProrationBasis::BySecond,
+                credit_on_downgrade: false,
+            },
+            "prorationBasis",
+        ),
+        (
+            ProrationContract {
+                billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+                proration_basis: ProrationBasis::CalendarDaysActual,
+                credit_on_downgrade: true,
+            },
+            "credit_on_downgrade",
+        ),
+    ] {
+        let mut current = baseline.clone();
+        current.proration_contract = Some(moved);
+        assert_eq!(
+            row_delta(&current, &baseline),
+            RowDelta::NotComputable(field)
+        );
+    }
+}
+
+/// A `fixed_day` anchor that moves only its **day** is a different anchor. The
+/// policy token is equal on both sides, so an arm comparing tokens rather than
+/// the whole policy would call this immaterial and publish a moved cycle clock.
+#[test]
+fn a_fixed_day_anchor_moving_only_its_day_is_still_a_contract_change() {
+    let anchored = |day: u8| {
+        let mut row = flat(1000);
+        row.proration_contract = Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::FixedDay(
+                AnchorDay::new(day).expect("a day of the month"),
+            ),
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        });
+        row
+    };
+
+    assert_eq!(
+        row_delta(&anchored(15), &anchored(1)),
+        RowDelta::NotComputable("billing_anchor_policy")
+    );
+}
+
+/// Gaining or losing the whole set is a move in either direction: the set is
+/// required on a recurring row, so a row that stopped carrying it is a row whose
+/// consumer contract changed.
+#[test]
+fn gaining_or_losing_the_contract_is_a_change_in_either_direction() {
+    let with = {
+        let mut row = flat(1000);
+        row.proration_contract = Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        });
+        row
+    };
+    let without = flat(1000);
+
+    assert_eq!(
+        row_delta(&with, &without),
+        RowDelta::NotComputable("billing_anchor_policy")
+    );
+    assert_eq!(
+        row_delta(&without, &with),
+        RowDelta::NotComputable("billing_anchor_policy")
     );
 }

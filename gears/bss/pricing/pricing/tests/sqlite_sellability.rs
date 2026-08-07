@@ -15,6 +15,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use bss_pricing::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::CurrencyCode;
 use bss_pricing::domain::plan_shape::Frequency;
@@ -90,6 +91,7 @@ fn row() -> PriceRecord {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: None,
+        proration_contract: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,
@@ -120,6 +122,8 @@ fn delta_covering(coverage_to: Option<DateTime<Utc>>) -> PlanSubjectDelta {
         phases: Vec::new(),
         addon_rules: Vec::new(),
         descriptor_set: None,
+        entitlement_grants: EntitlementGrants::default(),
+        change_contract: PlanChangeContract::default(),
         prices: vec![row()],
         tax_projection: BTreeMap::new(),
         windows: vec![KeyWindows {

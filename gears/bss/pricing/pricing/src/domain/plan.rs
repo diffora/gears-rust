@@ -30,6 +30,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan_shape::{BillingCycle, Frequency};
 use crate::domain::scope_key::PlanId;
@@ -116,6 +117,16 @@ pub struct PlanRevision {
     pub available_from: Option<DateTime<Utc>>,
     /// End of the plan's availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// The entitlement grant set this revision publishes (Slice 6, §6, D-41).
+    ///
+    /// Revision-scoped like every other plan column (D-83).
+    pub entitlement_grants: EntitlementGrants,
+    /// The plan-change contract this revision publishes (Slice 6, §6).
+    ///
+    /// Revision-scoped like every other plan column (D-83): an edge list is
+    /// authored content, a change to it is a plan mutation, and Slice 5's
+    /// materiality applies to it (`inst-pc-governed`).
+    pub change_contract: PlanChangeContract,
     /// Where this revision stands.
     ///
     /// `draft` is the only state whose content may still change
@@ -205,6 +216,27 @@ pub struct PlanShapePatch {
     pub available_from: Option<DateTime<Utc>>,
     /// Move the end of the availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// Replace the entitlement grant set wholesale (Slice 6, §6, D-41).
+    ///
+    /// Wholesale for [`PlanShapePatch::change_contract`]'s reason: the
+    /// plan-level set, the `PlanTier` reference and the per-phase map are one
+    /// authored fact, and a per-member encoding could express a per-phase entry
+    /// with no plan-level set to fall back to.
+    pub entitlement_grants: Option<EntitlementGrants>,
+    /// Replace the plan-change contract wholesale (Slice 6, §6).
+    ///
+    /// **Wholesale, not per member**, and this is the one field of the patch
+    /// that is not independent of its neighbours — the reason `PriceContent` is
+    /// not a patch at all. K4 ties `comparability_rank` to whether
+    /// `allowed_change_targets` names anyone, so a per-member encoding could
+    /// express "drop the rank, keep the edges", which is a state no publish
+    /// accepts and which the caller cannot have meant. Submitting the contract
+    /// it wants makes every intermediate state unrepresentable.
+    ///
+    /// The double `Option` a "clear this" would need is the same G3 non-goal
+    /// this type's own doc records: to leave self-service change, send a
+    /// contract whose `allowed_change_targets` is `None`.
+    pub change_contract: Option<PlanChangeContract>,
 }
 
 #[cfg(test)]

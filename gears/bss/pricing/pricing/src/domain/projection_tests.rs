@@ -19,6 +19,7 @@ use super::{
     PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta, RowTaxProjection,
 };
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -76,6 +77,8 @@ fn shape_only() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        entitlement_grants: EntitlementGrants::default(),
+        change_contract: PlanChangeContract::default(),
         prices: Vec::new(),
         tax_projection: BTreeMap::new(),
         windows: Vec::new(),
@@ -105,6 +108,7 @@ fn graduated_row() -> PriceRecord {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: None,
+        proration_contract: None,
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
         supersedes_price_id: None,
@@ -208,6 +212,82 @@ fn the_payload_carries_the_declared_generation_and_this_file_does_not_spell_it()
         shape_only().to_value().get("evaluationPolicyVersion"),
         Some(&json!(EVALUATION_POLICY_GENERATION))
     );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-bt-usage` — the timing a non-recurring row does not author.
+// ---------------------------------------------------------------------------
+
+/// One row of `kind`, carrying whatever timing it was handed.
+fn row_of_kind(kind: ChargeKind, authored: Option<&str>) -> PriceRecord {
+    let mut record = graduated_row();
+    record.row = PriceRow::new(kind, Some(ModelKind::Flat));
+    record.row.amount_minor = Some(MinorAmount::new(1000).expect("a non-negative amount"));
+    record.scope_key = ScopeKey::new(
+        plan_id(),
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("eu").expect("a non-blank region"),
+        terminal_phase(),
+        PriceEligibility::AllSubscriptions,
+        kind,
+        Cohort::None,
+    )
+    .expect("the class pairs with cohort none");
+    record.billing_timing = authored.map(ToOwned::to_owned);
+    record
+}
+
+/// The projected `billingTiming` of the delta's single row.
+fn projected_timing(record: PriceRecord) -> serde_json::Value {
+    let delta = PlanSubjectDelta {
+        prices: vec![record],
+        ..shape_only()
+    };
+    delta.to_value()["prices"][0]["billingTiming"].clone()
+}
+
+/// A usage row is implicitly `arrears` and a one-time row implicitly `advance`
+/// — projected constants, never authored, so Billing reads the same field on
+/// every line of a hybrid instead of a null it has to interpret.
+#[test]
+fn a_non_recurring_row_projects_its_constant_timing() {
+    assert_eq!(
+        projected_timing(row_of_kind(ChargeKind::Usage, None)),
+        json!("arrears")
+    );
+    assert_eq!(
+        projected_timing(row_of_kind(ChargeKind::OneTime, None)),
+        json!("advance")
+    );
+    assert_eq!(
+        projected_timing(row_of_kind(ChargeKind::OneTimeSetup, None)),
+        json!("advance")
+    );
+}
+
+/// The constant is a **projection**, not a default: a value that reached the
+/// column on a non-recurring row does not get to speak for it. Anything else
+/// would make `inst-bt-usage` a defaultable field, and Billing's deferral would
+/// depend on whether an author had typed into a column the design says is not
+/// theirs.
+#[test]
+fn an_authored_value_on_a_non_recurring_row_does_not_displace_the_constant() {
+    assert_eq!(
+        projected_timing(row_of_kind(ChargeKind::Usage, Some("advance"))),
+        json!("arrears")
+    );
+}
+
+/// The recurring row is the only one that authors the field, and it projects
+/// exactly what it authored — `inst-bt-required` guarantees there is one.
+#[test]
+fn a_recurring_row_projects_exactly_what_it_authored() {
+    for timing in ["advance", "arrears"] {
+        assert_eq!(
+            projected_timing(row_of_kind(ChargeKind::Recurring, Some(timing))),
+            json!(timing)
+        );
+    }
 }
 
 #[test]
@@ -751,5 +831,68 @@ fn the_ga_flag_is_carried_per_row_and_not_across_the_plan() {
     assert_eq!(
         value["prices"][1]["notSellableGa"], false,
         "the sibling market stays sellable"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-rc-ids` (Slice 6) — the three ids every downstream artifact resolves by.
+// ---------------------------------------------------------------------------
+
+/// `{skuId, planId, priceId}` are exposed on every projected artifact.
+///
+/// §3 step 1 says the ids are "stable … never re-used across revisions", and
+/// that half is **structural**: `pricing_price` is append-only and a price id is
+/// caller-supplied at creation, so no writer in this gear can re-use one
+/// (Foundation §4.3). What is *not* structural, and is what this asserts, is that
+/// all three actually reach the payload — Rating resolves by the triple, and an
+/// artifact missing any leg of it is one no consumer can key on, however stable
+/// the ids themselves are.
+#[test]
+fn every_projected_artifact_carries_the_resolution_triple() {
+    let delta = PlanSubjectDelta {
+        prices: vec![graduated_row()],
+        ..shape_only()
+    };
+    let value = delta.to_value();
+
+    assert_eq!(value.get("planId"), Some(&json!(plan_id().get())));
+    assert_eq!(
+        value.get("skuId"),
+        Some(&json!(uuid::Uuid::from_u128(0x5_c1))),
+        "the SKU leg is on the plan subject, not repeated per row"
+    );
+    for price in value["prices"].as_array().expect("the rows") {
+        assert!(
+            price.get("priceId").is_some_and(|id| !id.is_null()),
+            "every row carries its own id: {price}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `inst-cr-return` (Slice 6) — the frozen set is stable for the pinned version.
+// ---------------------------------------------------------------------------
+
+/// The same delta renders byte-identically twice.
+///
+/// §2 step 3 promises a consumer "the frozen contract set, **stable** for the
+/// pinned version", and a renderer with any non-deterministic member would break
+/// that silently: the delta is written once into an INSERT-only store, but a
+/// consumer re-reading it and a replay re-deriving it must agree. The hazard is
+/// real and specific — `HashMap` iteration is seeded per process, so the grant
+/// set's two maps and the per-phase map would each render in a different order in
+/// two replicas. They are `BTreeMap` for exactly this reason, and this is what
+/// says so.
+#[test]
+fn a_pinned_versions_contract_set_renders_identically_twice() {
+    let delta = PlanSubjectDelta {
+        prices: vec![graduated_row()],
+        ..shape_only()
+    };
+
+    assert_eq!(
+        delta.to_value().to_string(),
+        delta.to_value().to_string(),
+        "the same subject renders the same bytes"
     );
 }

@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::preview::PLAN_PREVIEW;
+use bss_pricing::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use chrono::{DateTime, TimeZone, Utc};
 use rest_support::{Harness, body_json, request};
 use uuid::Uuid;
@@ -86,6 +87,8 @@ fn delta_of(
     let price_id = Uuid::from_u128(0xb_0001);
 
     let mut delta = PlanSubjectDelta {
+        entitlement_grants: EntitlementGrants::default(),
+        change_contract: PlanChangeContract::default(),
         plan_id: PlanId::new(plan_id),
         revision: 0,
         lifecycle_state: LifecycleState::Published,
@@ -113,6 +116,7 @@ fn delta_of(
         tax_inclusive,
         tax_category_ref: None,
         billing_timing: None,
+        proration_contract: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,
@@ -442,6 +446,7 @@ fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDe
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: None,
+        proration_contract: None,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,
@@ -561,6 +566,7 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
             tax_inclusive: false,
             tax_category_ref: None,
             billing_timing: None,
+            proration_contract: None,
             rounding_policy_ref: None,
             grandfather_until: None,
             supersedes_price_id: None,

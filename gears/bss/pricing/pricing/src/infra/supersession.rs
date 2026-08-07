@@ -564,7 +564,17 @@ impl SupersessionService {
             .db()
             .in_transaction::<SupersessionOutcome, DomainError, _>(move |txn| {
                 Box::pin(async move {
-                    supersede_in(
+                    // Boxed a second time on purpose, and it became necessary at a
+                    // **merge** rather than in either branch that caused it:
+                    // `clippy::large_futures` was clean on Slice 6's tree and on
+                    // this one, and fired at 16648 bytes once they were combined.
+                    // Slice 6's four proration columns widened `PriceRow`, and this
+                    // future holds one across every await — so the size is the sum
+                    // of two changes neither of which was over the line alone.
+                    // `infra::cutover` reached the same shape one plane over, for
+                    // the same reason and with the same cost: one allocation per
+                    // act, against that size on every task's stack.
+                    Box::pin(supersede_in(
                         txn,
                         &registry,
                         &ctx,
@@ -573,7 +583,7 @@ impl SupersessionService {
                         &request,
                         verdict_json,
                         stamp,
-                    )
+                    ))
                     .await
                 })
             })
@@ -1252,6 +1262,7 @@ fn successor_candidate(
         tax_inclusive: authored.tax_inclusive,
         tax_category_ref: authored.tax_category_ref.clone(),
         billing_timing: authored.billing_timing,
+        proration_contract: authored.proration_contract,
         rounding_policy_ref: authored.rounding_policy_ref,
         grandfather_until: authored.grandfather_until,
         supersedes_price_id: authored.supersedes_price_id,

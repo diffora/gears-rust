@@ -48,6 +48,10 @@ use super::{OVERLAY_PIN_DOMAIN_SEP, overlay_content_hash};
 use super::{content_hash, threshold_content_hash};
 use crate::domain::audit::hex32;
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{
+    AnchorDay, BillingAnchorPolicy, GrantSet, ProrationBasis, ProrationContract,
+    UsageCounterOnPlanChange,
+};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -144,6 +148,7 @@ fn maximal_record(seed: u128) -> PriceRecord {
         tax_inclusive: true,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        proration_contract: None,
         rounding_policy_ref: Some("half-up".to_owned()),
         grandfather_until: Some(at(20)),
         supersedes_price_id: Some(Uuid::from_u128(0xdead)),
@@ -201,6 +206,20 @@ fn maximal_rule(seed: u128) -> AddonRule {
         price_override_ref: Some(Uuid::from_u128(0xbeef)),
         depends_on: vec![Uuid::from_u128(0x0a), Uuid::from_u128(0x0b)],
         conflicts_with: vec![Uuid::from_u128(0x0c)],
+    }
+}
+
+/// One proration contract, spelled in one place so the table above moves
+/// exactly one member per row.
+fn contract(
+    billing_anchor_policy: BillingAnchorPolicy,
+    proration_basis: ProrationBasis,
+    credit_on_downgrade: bool,
+) -> ProrationContract {
+    ProrationContract {
+        billing_anchor_policy,
+        proration_basis,
+        credit_on_downgrade,
     }
 }
 
@@ -265,6 +284,7 @@ fn mutators() -> Vec<Mutator> {
     all.extend(child_mutators());
     all.extend(window_mutators());
     all.extend(row_mutators());
+    all.extend(plan_contract_mutators());
     all
 }
 
@@ -472,6 +492,46 @@ fn row_mutators() -> Vec<Mutator> {
         ("record.billing_timing", |s| {
             s.rows[0].billing_timing = Some("arrears".to_owned());
         }),
+        // Slice 6's proration contract, one entry per member: the whole point
+        // of framing it is that a reviewer who approved one anchor cannot have a
+        // commit publish another with the digest equal, and a table that moved
+        // the value wholesale would pass while three of the four members went
+        // unframed.
+        ("record.proration_contract (present vs absent)", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            ));
+        }),
+        ("record.proration_contract.billing_anchor_policy", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::SubscriptionStart,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            ));
+        }),
+        ("record.proration_contract.anchor_day", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::FixedDay(AnchorDay::new(28).expect("a day of the month")),
+                ProrationBasis::CalendarDaysActual,
+                false,
+            ));
+        }),
+        ("record.proration_contract.proration_basis", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::BySecond,
+                false,
+            ));
+        }),
+        ("record.proration_contract.credit_on_downgrade", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::CalendarDaysActual,
+                true,
+            ));
+        }),
         ("record.rounding_policy_ref", |s| {
             s.rows[0].rounding_policy_ref = Some("half-even".to_owned());
         }),
@@ -609,6 +669,61 @@ fn row_mutators() -> Vec<Mutator> {
                 quantity: 1_000,
                 rollover_policy: RolloverPolicy::None,
             });
+        }),
+    ]
+}
+
+/// Slice 6's **plan-level** contract mutators, split out of [`row_mutators`].
+///
+/// A second table rather than four more entries in the first, because
+/// `clippy::too_many_lines` caps that one at 200 and it was at the edge — and
+/// because these four move a field of the [`PlanShape`] itself rather than of a
+/// row it carries, which is the same seam the two tables already sit either side
+/// of.
+fn plan_contract_mutators() -> Vec<Mutator> {
+    vec![
+        // Slice 6's plan-change contract, member by member. The edge list's
+        // `None` and its empty vector are separate entries on purpose: the pin
+        // frames them differently because `inst-pc-failsafe` gives them
+        // different meanings, and a preimage that collapsed them would let a
+        // plan leave self-service change without moving its digest.
+        (
+            "shape.change_contract.allowed_change_targets (none vs empty)",
+            |s| {
+                s.change_contract.allowed_change_targets = Some(Vec::new());
+            },
+        ),
+        (
+            "shape.change_contract.allowed_change_targets (one edge)",
+            |s| {
+                s.change_contract.allowed_change_targets = Some(vec![Uuid::from_u128(0xed_9e)]);
+            },
+        ),
+        ("shape.entitlement_grants.plan_tier_ref", |s| {
+            s.entitlement_grants.plan_tier_ref = Some("gold".to_owned());
+        }),
+        ("shape.entitlement_grants.plan_level.feature_flags", |s| {
+            s.entitlement_grants
+                .plan_level
+                .feature_flags
+                .insert("sso".to_owned(), true);
+        }),
+        ("shape.entitlement_grants.plan_level.quotas", |s| {
+            s.entitlement_grants
+                .plan_level
+                .quotas
+                .insert("cloudlets".to_owned(), 20);
+        }),
+        ("shape.entitlement_grants.per_phase", |s| {
+            s.entitlement_grants
+                .per_phase
+                .insert(uuid::Uuid::from_u128(0xf1), GrantSet::default());
+        }),
+        ("shape.change_contract.comparability_rank", |s| {
+            s.change_contract.comparability_rank = Some(42);
+        }),
+        ("shape.change_contract.usage_counter_on_plan_change", |s| {
+            s.change_contract.usage_counter_on_plan_change = UsageCounterOnPlanChange::Carry;
         }),
     ]
 }
@@ -910,7 +1025,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "9f725d3709582b263a0fd9e265dfd29f0caed91db23b5cb3cc2cdf44d69a4897"
+        "d60b5ac694e7a100fc1958e72c963d9bf595d6df336d723c1f09f2dd924b820d"
     );
 }
 
@@ -1071,7 +1186,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v5\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v8\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

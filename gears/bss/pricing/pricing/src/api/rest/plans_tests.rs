@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::PlanView;
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanRevision;
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency};
@@ -33,6 +34,8 @@ fn revision(plan_id: PlanId) -> PlanRevision {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        entitlement_grants: EntitlementGrants::default(),
+        change_contract: PlanChangeContract::default(),
         lifecycle_state: LifecycleState::Draft,
         created_by: Uuid::from_u128(0xac_12),
         created_at_utc: Utc.with_ymd_and_hms(2026, 8, 3, 9, 0, 0).unwrap(),

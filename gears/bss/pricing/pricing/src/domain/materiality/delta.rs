@@ -41,14 +41,19 @@
 //! `billing_anchor_policy`, `credit_on_downgrade`, `tax_inclusive`/
 //! `tax_category_ref` and `quantity_source`. Three of those are on
 //! [`PriceRecord`] and [`PriceRow`] and are compared here.
-//! **`prorationBasis`, `billing_anchor_policy` and `credit_on_downgrade` have no
-//! column in this gear** — `price_row.rs`'s own module doc records
-//! `proration_basis` as one of the corpus fields "not Slice-3-owned", and
-//! `plan_rules.rs:54` records `billing_anchor_policy` as a Slice-6 column. A
-//! comparison over a field no row carries would be a rule with no operand, so
-//! those three are named rather than written — the same "no token without a
-//! writer" discipline D-158 and D-175 apply to the audit vocabulary. The slice
-//! that adds each column adds its arm below.
+//! **`prorationBasis`, `billing_anchor_policy` and `credit_on_downgrade` had no
+//! column in this gear until 2026-08-07**, and the paragraph is corrected rather
+//! than deleted because its argument is what made the absence legitimate: a
+//! comparison over a field no row carries is a rule with no operand, so the three
+//! were named rather than written — the same "no token without a writer"
+//! discipline D-158 and D-175 apply to the audit vocabulary — and it closed
+//! *"the slice that adds each column adds its arm below"*.
+//!
+//! **Slice 6 is that slice.** `m20260802_000050` gives all three an operand
+//! through `PriceRecord::proration_contract`, and [`contract_change`] compares
+//! them member by member. Member by member rather than as one contract verdict,
+//! because D-115 registers three entries and an author told "the proration
+//! contract moved" still has to find which of three fields did it.
 //!
 //! **`tax_category_ref` was the fourth and no longer is**, which makes it a
 //! different case from the three above rather than one more of them. Slice 4
@@ -207,6 +212,36 @@ fn contract_change(current: &PriceRecord, baseline: &PriceRecord) -> Option<&'st
     }
     if current.row.quantity_source != baseline.row.quantity_source {
         return Some("quantity_source");
+    }
+    // D-115's three remaining row-contract fields, written now that Slice 6's
+    // `m20260802_000050` gives them operands. They are reported **member by
+    // member** rather than as one `proration_contract` verdict, because D-115
+    // registers three entries and an author told "the proration contract moved"
+    // still has to find which of three fields did.
+    //
+    // Absent-vs-present counts as a change in either direction: the whole set is
+    // required on a recurring row (`inst-pi-required`), so a row that gained or
+    // lost it is a row whose consumer contract moved.
+    let anchors = (
+        current.proration_contract.map(|c| c.billing_anchor_policy),
+        baseline.proration_contract.map(|c| c.billing_anchor_policy),
+    );
+    if anchors.0 != anchors.1 {
+        return Some("billing_anchor_policy");
+    }
+    let bases = (
+        current.proration_contract.map(|c| c.proration_basis),
+        baseline.proration_contract.map(|c| c.proration_basis),
+    );
+    if bases.0 != bases.1 {
+        return Some("prorationBasis");
+    }
+    let credits = (
+        current.proration_contract.map(|c| c.credit_on_downgrade),
+        baseline.proration_contract.map(|c| c.credit_on_downgrade),
+    );
+    if credits.0 != credits.1 {
+        return Some("credit_on_downgrade");
     }
     None
 }

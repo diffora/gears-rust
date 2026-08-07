@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bss_pricing::config::{JobsConfig, LimitsConfig};
 use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::overlay::{
@@ -351,6 +352,16 @@ fn flat_row() -> PriceContent {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        // Stated, because this is a **recurring** row and Slice 6's
+        // `inst-pi-required` makes the three proration inputs mandatory on one.
+        // A fixture that asserts a clean publish needs a row publishable in every
+        // respect but the one under judgement, and a row with no proration
+        // contract is not.
+        proration_contract: Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        }),
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
         supersedes_price_id: None,
@@ -3605,4 +3616,111 @@ async fn a_commit_whose_content_moved_since_the_approval_is_refused() {
         refs(&h).await.is_empty(),
         "and no registry handle was orphaned by the refusal"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-bt-frozen` (Slice 6) — Billing's sole deferral input survives the
+// publish, byte for byte.
+// ---------------------------------------------------------------------------
+
+/// The authored `billingTiming` reaches a consumer unchanged.
+///
+/// `inst-bt-frozen` says Billing derives its deferral policy from the frozen
+/// value "never from heuristics", which is a statement about the whole path —
+/// draft column, publish, snapshot, projection, delta row — and no unit test
+/// over the renderer can make it: the renderer is handed a `PriceRecord` some
+/// other layer built. This walks the real one.
+///
+/// Appended at the end of this file rather than filed beside the other payload
+/// cases: a second strand is in this tree, and an append is the one edit that
+/// cannot collide with a regrouping.
+#[tokio::test]
+async fn a_recurring_rows_billing_timing_is_frozen_into_the_delta_as_authored() {
+    let h = harness().await;
+    let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    h.registry.commit(&pending, 1);
+
+    sweep(&h, at(13)).await;
+
+    let rows = deltas(&h).await;
+    assert_eq!(rows.len(), 1);
+    let prices = rows[0]
+        .payload
+        .get("prices")
+        .and_then(serde_json::Value::as_array)
+        .expect("the delta carries the version's price rows");
+    assert_eq!(prices.len(), 1);
+    assert_eq!(
+        prices[0].get("billingTiming"),
+        Some(&serde_json::json!("advance")),
+        "the value `flat_row` authored, unnormalised: {:?}",
+        prices[0]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-cr-resolve` / `inst-cr-return` (Slice 6) — resolving the contract set
+// through the pin, and getting the same answer twice.
+// ---------------------------------------------------------------------------
+
+/// A consumer that pins a committed `CatalogVersion` reads the contract fields
+/// exactly as published, and reads the same thing on a second pass.
+///
+/// This is §2's flow end to end and the half no unit test reaches: `inst-cr-resolve`
+/// is about resolving *through* `pricingSnapshotRef` — the frontier, the ref row
+/// and the delta together — and `inst-cr-return` is about the answer being stable
+/// for that pin. A renderer test can assert determinism of one value; only the
+/// store can say that the version a consumer pins is the version they get back.
+///
+/// The second sweep is the point of the second read: a re-run of the projector
+/// over an already-warm version must not move a byte, or "stable for the pinned
+/// version" would hold only until the next sweep.
+#[tokio::test]
+async fn a_pinned_version_resolves_the_same_contract_set_on_every_read() {
+    let h = harness().await;
+    let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    h.registry.commit(&pending, 1);
+
+    sweep(&h, at(13)).await;
+    let first = deltas(&h).await;
+    assert_eq!(first.len(), 1);
+
+    // The version a consumer would pin.
+    assert_eq!(frontier_version(&h).await, Some(1));
+
+    // A second pass over an already-warm version.
+    sweep(&h, at(14)).await;
+    let second = deltas(&h).await;
+
+    assert_eq!(
+        second.len(),
+        1,
+        "no second delta was written for one version"
+    );
+    assert_eq!(
+        first[0].payload, second[0].payload,
+        "the frozen contract set is stable for the pinned version"
+    );
+
+    // And the contract fields are actually in it, rather than the assertion above
+    // holding vacuously over a payload that carries none of them.
+    let payload = &second[0].payload;
+    for key in [
+        "crossBoundaryChangePolicy",
+        "allowedChangeTargets",
+        "usageCounterOnPlanChange",
+        "entitlementGrants",
+        "phaseGrantMap",
+    ] {
+        assert!(
+            payload.get(key).is_some(),
+            "the resolved version carries {key}: {payload:?}"
+        );
+    }
+    let prices = payload["prices"].as_array().expect("the version's rows");
+    for row in prices {
+        for key in ["billingTiming", "prorationBasis", "billingAnchorPolicy"] {
+            assert!(row.get(key).is_some(), "a row carries {key}: {row}");
+        }
+    }
 }
