@@ -197,8 +197,11 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # 47 until the 2026-08-03 G4 plan-shape docs wave (D-149…D-154), which
     # rewrote the four Slice-2 algorithms and Slice 4's tax steps — where eight
     # of nine paid-down codes are raised — and named each in the rule that
-    # raises it; notes beside the list.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 38
+    # raises it; notes beside the list. 38 until the 2026-08-07 D-237…D-246 wave
+    # (BRAND_UNKNOWN — D-239 struck the declaration itself, the first member ever
+    # paid down that way rather than by naming the code in its raising rule);
+    # note beside the list, and REGENERATE.md entry 23.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 37
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

@@ -861,6 +861,52 @@ separately-justified commit — never a way to make a failing change look green.
     and a docs wave is the wrong place to change a scorer, least of all on the sample that exposed
     it. Per-id record beside `PINNED_TRIAGE_PRICING` and `PINNED_JUDGE_CALLS`.
 
+23. **2026-08-07, twenty-third capture — after the D-237…D-246 docs wave.** Document movement
+    only, no checker change. Ten register entries from the Slice-4 owner round (the currency/tax
+    strand's owed register plus D-238's two Critical alarms and D-246's gated-market gauge), and
+    one correction to D-239 written *because of this run*.
+
+    **Live findings unchanged at 2** (both rating-side, untouched). **Suppressed 59 → 58**: one
+    pinned `P3/code-unreferenced` member paid down, `BRAND_UNKNOWN` / `design/04-currency-tax.md`,
+    **and it is the first member in the pin's history removed by deleting the declaration rather
+    than by naming the code in the rule that raises it.** D-239 splits the taxonomy refusal by
+    *surface* rather than by class, so §5 no longer declares the per-class trio and
+    `inst-tx-brand` answers `SCOPE_VALUE_UNKNOWN` for every taxonomy-backed class. That is the
+    honest resolution of this finding's own claim — the debt said "declared, and nothing raises
+    it", and the fix was to stop declaring it. Hand-checked: the token now appears nowhere in
+    `gears/bss/pricing/docs` except the D-239 entry recording the strike, which declares nothing.
+
+    **A prediction was made before the run and it was wrong, which is why this paragraph exists.**
+    The predicted drop was **three** — the three codes D-239 strikes. The actual drop is **one**.
+    `PARTNER_UNKNOWN` and `ORG_TIER_UNKNOWN` were declared in the same §5 block *and* named in
+    `inst-tx-brand`'s prose, so P3 saw them referenced and they were never pinned. D-239's entry
+    had asserted that "spec-check's `code-unreferenced` debt for the three is correct"; it was
+    correct for one, and the entry is corrected in the register rather than quietly edited.
+    Entry 15 above warns that a bare mention can *pay* a pin with no rule raising the code; this
+    is its mirror — **a bare mention can also keep a code out of the debt it belongs in.** Same
+    fact about P3 in both directions: it counts references, and a reference is not a rule.
+
+    **The triage pin did not move at all** — `test_pricing_triage_histogram_is_pinned` runs
+    `--gear gears/bss/pricing/docs` against the live corpus and passes unchanged (3 / 5 / 59 / 10,
+    judged 69, total 77). After entries 12–22 each recorded movement, a ten-entry wave moving
+    nothing is worth stating plainly rather than assuming a mistake.
+
+    **No line number moved either, and that is a defect rather than a virtue — the finding of this
+    capture.** Every previous multi-entry wave shifted all 21 `P1/propagation-missing` anchors
+    uniformly, one line per status-board row it added. This one shifted none, because its whole
+    80-line diff sits at `DECISIONS.md:2150`, below the deepest anchor (677). Chasing that
+    anomaly found the cause: **the status board stopped being maintained at D-193.** It carries
+    193 rows; the register carries 246 entries; **53 consecutive decisions, D-194 … D-246, have no
+    board row**, and no board row lacks an entry — a clean stop, not corruption. It last grew in
+    `9230dccc6`, the phase-4 close wave that is entry 22's subject. Nothing checks this: the board
+    is not an invariant P1, P2 or P3 knows about, so it went stale for eight waves in silence.
+
+    Deliberately **not fixed in this capture**, and the reason is mechanical rather than
+    reluctant: 53 rows land above line 632, which would shift all 21 anchors and force a second
+    re-capture in the same commit, conflating a pin payment with a bulk renumber. Two slice
+    strands are also in flight and will hand back decisions of their own, so a backfill now is a
+    backfill done twice. Recorded here as owed work with its cost stated.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

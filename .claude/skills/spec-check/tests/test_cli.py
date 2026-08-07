@@ -80,10 +80,20 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # such corrections and the two codes deliberately left pinned
     # (PLANTIER_MISSING, SETUP_ROW_INVALID) are itemised beside the pinned list.
     # Live findings unchanged at 2 — both rating-side, untouched by this wave.
+    # 2/58 since the 2026-08-07 D-237…D-246 wave: one pinned member,
+    # BRAND_UNKNOWN / design/04, paid down by D-239 — and it is the first member
+    # ever removed by *deleting the declaration* rather than by naming the code
+    # in the rule that raises it, which is the correct resolution for a code the
+    # design set had stopped wanting. Debt is now 21 propagation gaps + 37
+    # unreferenced codes. Note beside the pinned list, and see REGENERATE.md
+    # entry 23 for why the same edit struck two further codes that were never
+    # pinned (both were named in `inst-tx-brand`'s prose, so P3 saw them
+    # referenced) — D-239's own claim that the debt covered "the three" was
+    # wrong and has been corrected in the register.
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
     assert len(payload["findings"]) == 2
-    assert payload["known_debt_suppressed"] == 59
+    assert payload["known_debt_suppressed"] == 58
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

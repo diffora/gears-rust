@@ -285,13 +285,33 @@ def _check_error_codes(corpus, codes_declared=None):
 #:   `PLANTIER_MISSING` and `SETUP_ROW_INVALID` sit in the same Slice-2 blocks
 #:   and are **deliberately left pinned**: no rule of this wave raises either, so
 #:   naming them would have been tuning the documents to the measurement.
+#:
+#: - **One removed 2026-08-07, by D-239 (`e620f2ace`), and it is the first member
+#:   ever paid down by *deleting the declaration* rather than by naming the code
+#:   in the rule that raises it.** `BRAND_UNKNOWN` / design/04 — D-239 splits the
+#:   taxonomy refusal by **surface** rather than by class, so `04-currency-tax.md`
+#:   §5 no longer declares the per-class trio at all and `inst-tx-brand` answers
+#:   `SCOPE_VALUE_UNKNOWN` for every taxonomy-backed class. That is the honest
+#:   resolution of this finding's own claim: the debt said "declared, and nothing
+#:   raises it", and the fix was to stop declaring it. Hand-checked in the working
+#:   tree — the token now appears nowhere in `gears/bss/pricing/docs` except the
+#:   D-239 register entry recording the strike, which declares nothing.
+#:
+#:   **Two codes struck in the same edit were never pinned, and the reason is
+#:   worth carrying.** `PARTNER_UNKNOWN` and `ORG_TIER_UNKNOWN` were declared in
+#:   the same §5 block *and* named in `inst-tx-brand`'s prose, so P3 saw them
+#:   referenced; only `BRAND_UNKNOWN` was declared without any rule naming it.
+#:   D-239's entry originally asserted the debt covered "the three" and has been
+#:   corrected. Entry 15 of `REGENERATE.md` warns that a bare mention can *pay* a
+#:   pin without any rule raising the code; this is its mirror — a bare mention
+#:   can also **keep a code out of the debt it belongs in**. Both are the same
+#:   fact about P3: it counts references, and a reference is not a rule.
 PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "ADDON_OVERRIDE_UNRESOLVED", "design/02-plan-definition.md"),
     ("pricing", "APPROVAL_ROLE_REQUIRED", "design/05-governance.md"),
     ("pricing", "AVAILABILITY_OUTSIDE_COVERAGE", "design/07-pricewindow-linkage.md"),
     ("pricing", "BACKDATE_GRANT_REQUIRED", "design/05-governance.md"),
     ("pricing", "BASIS_MISSING", "design/08-bundles.md"),
-    ("pricing", "BRAND_UNKNOWN", "design/04-currency-tax.md"),
     ("pricing", "BULK_ROW_CONFLICT", "design/12-operator-efficiency.md"),
     ("pricing", "CHANGE_TARGET_UNPUBLISHED", "design/06-consumer-contracts.md"),
     ("pricing", "CLONE_SOURCE_NOT_FOUND", "design/12-operator-efficiency.md"),

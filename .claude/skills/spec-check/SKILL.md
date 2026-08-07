@@ -50,21 +50,28 @@ silently widens its own corpus is unreproducible from its output.
 Both channels are needed, measured 2026-07-30: pricing cites **no** foreign id at all
 (its cross-gear dependency is bare `SEAMS M10`-style rows with no gear name) and is found
 only by link; rating has no outbound links and is found only by id; ledger is genuinely
-standalone on both. `--gear gears/bss/pricing/docs --auto-context` takes the 4 spurious
-`seam-undefined` to 0. Opt-in, because loading more gears changes what resolves — on the
-three-gear invocation above it would additionally pull `products` in through rating's
-citations and move the frozen oracles.
+standalone on both. `--gear gears/bss/pricing/docs --auto-context` takes pricing-alone's
+**14** findings — the 8 spurious `seam-undefined` and the 6
+`propagation-target-not-loaded`, both itemised below — to **0**. Opt-in, because loading
+more gears changes what resolves — on the three-gear invocation above it would additionally
+pull `products` in through rating's citations and move the frozen oracles.
 
 **Otherwise pass every related gear by hand, not just the one under review.** Two checks are
 cross-gear: P1 resolves a `SEAMS <id>` propagation target against whichever
 loaded gear actually defines that seam row, and P3 resolves instruction-id
 declarations across the whole loaded set. Run alone, a gear's honest cross-gear
-citations become findings against it. Measured on the live corpus as it stands,
-pricing alone reports 4 `P1/seam-undefined` — D-44 `SEAMS M10`, D-46 `SEAMS RG3`,
-D-60 `SEAMS M12` and D-65 `SEAMS SUB-P7`, every one of them a row that does
-exist: in rating's `SEAMS.md` for the first three, subscriptions' for the fourth.
-Rating alone reports 7 `P3/inst-dangling`, subscriptions alone 1. All 12
+citations become findings against it. Re-measured 2026-08-07, pricing
+alone reports **8** `P1/seam-undefined` — D-44 `SEAMS M10`, D-46 `SEAMS RG3`, D-60
+`SEAMS M12`, D-65 `SEAMS SUB-P7`, D-79 `SEAMS SUB-P8`, D-80 `SEAMS SUB-P5`, D-93
+`SEAMS SUB-P1` and D-94 `SEAMS SUB-P5` — every one of them a row that does exist:
+in rating's `SEAMS.md` for the first three, subscriptions' for the rest. Rating
+alone reports **10** `P3/inst-dangling`, subscriptions alone **4**. All 22
 disappear when the three gears are loaded together. Honest, but useless.
+
+(This paragraph said 4 / 7 / 1 / 12 until 2026-08-07. The seam count moved 6 → 8
+back on 2026-07-31 and `REGENERATE.md` entry 3 recorded it; the correction never
+reached here. Numbers in prose go stale silently — re-measure before quoting any
+of them.)
 
 `P1/propagation-target-not-loaded` is the same class for a *file* target no loaded
 gear provides. Since 2026-07-31 a register may cite one **explicitly** as
@@ -142,11 +149,17 @@ Two lines at the end matter as much as the findings:
 
 - `N finding(s)` — the live set.
 - `N known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt
-  to see them` — pinned, accepted debt (23 propagation gaps + 50 unreferenced
-  error codes = 73 since 2026-07-31; two members left the 2026-07-29 pin of
-  24 + 51, hand-checked, notes beside each pinned list), withheld by default. The
-  three-gear invocation above currently prints `7` and `73` (it printed `15` and
-  `75` until the 2026-07-30 slice-review findings were fixed on 2026-07-31).
+  to see them` — pinned, accepted debt (**21** propagation gaps + **37**
+  unreferenced error codes = **58** as of 2026-08-07; the 2026-07-29 pin was
+  24 + 51, and every member that has left since was hand-checked with a note
+  beside its list), withheld by default. The three-gear invocation above
+  currently prints **`2`** and **`58`**.
+
+  Do not quote those two numbers from here without re-running: this line has read
+  `15`/`75`, `7`/`73`, `7`/`69`, `6`/`68`, `5`/`68`, `2`/`59` and now `2`/`58`.
+  `tests/oracles/REGENERATE.md` is the authority on what moved and why — it
+  carries one numbered entry per capture, and the numbers here are a convenience
+  copy that has twice gone stale behind it.
 
 Several invariants report **their own coverage** rather than staying silent when
 they cannot read something. These are not defects in the documents; they say what
