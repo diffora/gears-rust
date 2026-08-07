@@ -454,6 +454,125 @@ fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDe
     delta
 }
 
+/// A trial phase beside the steady state: the preview quotes **the steady state**
+/// (D-244).
+///
+/// §2 used to say "the catalog base list price" as though a market had one, and
+/// this handler picked the first non-usage row carrying an amount with ties broken
+/// on `priceId` — deterministic and, as `T-12` recorded, arbitrary. **The fixture
+/// is built so the arbitrary answer is the wrong one**: the trial row's id sorts
+/// first, so the old selection quoted a prospective purchaser 1.00 for a plan that
+/// charges 12.00 from the second month.
+///
+/// Terminality is read from `convertsToPhaseId` being null and never from `kind`,
+/// because C-4 exists because those two were once conflated.
+#[tokio::test]
+async fn a_market_with_a_trial_phase_quotes_the_terminal_phases_row() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let delta = trial_and_steady_delta(plan_id);
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={REGION}")),
+            None,
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["amount_minor"], 1_200,
+        "the steady state is what a purchaser is charged first; the trial row's \
+         id sorts ahead of it and used to win"
+    );
+}
+
+/// One market, two recurring rows on two phases: a trial that converts, and the
+/// terminal phase it converts into.
+fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDelta {
+    use bss_pricing::domain::concurrency::RowVersion;
+    use bss_pricing::domain::lifecycle::LifecycleState;
+    use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+    use bss_pricing::domain::plan_shape::{PhaseKind, PlanPhase};
+    use bss_pricing::domain::price_record::PriceRecord;
+    use bss_pricing::domain::price_row::{ModelKind, PriceRow};
+    use bss_pricing::domain::scope_key::{
+        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    };
+
+    let mut delta = delta_of(
+        plan_id,
+        CURRENCY,
+        REGION,
+        false,
+        Some("standard"),
+        false,
+        false,
+    );
+
+    let trial_phase = PhaseId::new(Uuid::from_u128(0x7_41a1));
+    // The chain, and terminality is **structural**: the steady state converts to
+    // nothing. `kind` is deliberately not what says so.
+    delta.phases = vec![
+        PlanPhase {
+            phase_id: trial_phase,
+            kind: PhaseKind::Trial,
+            ordinal: 0,
+            converts_to_phase_id: Some(rest_support::seeded_phase()),
+            phase_duration_days: Some(14),
+            display_trial_days: Some(14),
+        },
+        PlanPhase {
+            phase_id: rest_support::seeded_phase(),
+            kind: PhaseKind::Evergreen,
+            ordinal: 1,
+            converts_to_phase_id: None,
+            phase_duration_days: None,
+            display_trial_days: None,
+        },
+    ];
+
+    let trial_key = ScopeKey::new(
+        PlanId::new(plan_id),
+        CurrencyCode::new(CURRENCY).expect("three letters"),
+        Region::new(REGION).expect("a non-blank region"),
+        trial_phase,
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("the class pairs with cohort none");
+
+    let mut trial_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    trial_row.amount_minor = Some(MinorAmount::new(100).expect("a non-negative amount"));
+
+    delta.prices.insert(
+        0,
+        PriceRecord {
+            // Sorts **before** the steady-state row's `0xb_0001`, which is the
+            // whole point of the fixture.
+            price_id: Uuid::from_u128(0xa_0001),
+            scope_key: trial_key,
+            row: trial_row,
+            tax_inclusive: false,
+            tax_category_ref: None,
+            billing_timing: None,
+            rounding_policy_ref: None,
+            grandfather_until: None,
+            supersedes_price_id: None,
+            lifecycle_state: LifecycleState::Published,
+            created_by: Uuid::from_u128(0xac_10),
+            created_at_utc: at(),
+            row_version: RowVersion::new(0),
+        },
+    );
+    delta
+}
+
 /// **A repriced market quotes the successor, never the superseded predecessor.**
 ///
 /// Found by review and, at first, *fixed without a test* — the probe removing the

@@ -319,7 +319,7 @@ async fn preview_plan_price(
     };
 
     let rows = market_rows(&delta.payload, currency.as_str(), region.as_str());
-    let row = base_amount_row(&rows).ok_or_else(absent)?;
+    let row = base_amount_row(&rows, terminal_phase_id(&delta.payload)).ok_or_else(absent)?;
 
     Ok(Json(PreviewView {
         plan_id: plan_id.get(),
@@ -401,16 +401,43 @@ fn market_rows<'a>(
 /// rule, so a preview taking whichever row sorted first answers `null` for a
 /// hybrid plan that plainly has a monthly price.
 ///
-/// So the non-usage rows are the candidates, and among them the one carrying an
-/// amount. Ties break on `priceId` — **deterministic and deliberately arbitrary**:
-/// §2 says "the catalog base list price" as though a market had one, and a plan
-/// with a trial-phase row beside a full-price row has two. Which of those a
-/// prospective purchaser should be quoted is a question the design set does not
-/// answer, so this picks reproducibly rather than plausibly, and register entry
-/// `T-12` carries the ambiguity.
-fn base_amount_row<'a>(rows: &[&'a serde_json::Value]) -> Option<&'a serde_json::Value> {
+/// **D-244 names the row**: the *terminal phase's* `all_subscriptions`
+/// **recurring** row. §2 used to say "the catalog base list price" as though a
+/// market had one, and this picked the first non-usage row carrying an amount,
+/// ties broken on `priceId` — deterministic and, as `T-12` recorded, arbitrary. A
+/// plan with a trial-phase row beside a full-price row had two candidates and was
+/// quoted whichever `priceId` sorted first.
+///
+/// The owner's ruling is that a prospective purchaser should see **the row they
+/// would actually be charged first**, which is the steady state a trial converts
+/// into rather than the trial. Terminality is structural — a phase whose
+/// `convertsToPhaseId` is null — and never `kind`, because C-4 exists precisely
+/// because those two were once conflated.
+///
+/// **A preference, not a filter**, and the fallbacks below are the reason. A
+/// market may have no phase chain in its payload, no recurring row, or no
+/// `amountMinor` at all — a usage-priced market has a price, it just lives in the
+/// tier bands. Filtering instead of preferring made such a market answer 404, as
+/// though the plan did not sell there.
+fn base_amount_row<'a>(
+    rows: &[&'a serde_json::Value],
+    terminal_phase: Option<&str>,
+) -> Option<&'a serde_json::Value> {
     let mut ordered: Vec<&'a serde_json::Value> = rows.to_vec();
     ordered.sort_by_key(|row| row["priceId"].as_str().unwrap_or_default().to_owned());
+
+    let named = terminal_phase.and_then(|phase| {
+        ordered.iter().copied().find(|row| {
+            row["scopeKey"]["phase"] == phase
+                && row["scopeKey"]["priceEligibility"] == "all_subscriptions"
+                && row["scopeKey"]["chargeKind"] == "recurring"
+                && !row["amountMinor"].is_null()
+        })
+    });
+    if named.is_some() {
+        return named;
+    }
+
     ordered
         .iter()
         .copied()
@@ -423,6 +450,25 @@ fn base_amount_row<'a>(rows: &[&'a serde_json::Value]) -> Option<&'a serde_json:
         // reddened nothing, and reasoning about *why* showed the exclusion was
         // doing something it was not meant to.
         .or_else(|| ordered.first().copied())
+}
+
+/// The phase a plan converts *into* and never out of — D-244's referent.
+///
+/// **Structural, not a `kind`.** `PlanPhase::converts_to_phase_id == None` *is*
+/// terminality, and C-4 exists because that was once conflated with
+/// `kind = evergreen`, which let a `trial`-terminal chain through. Reading the
+/// projected `convertsToPhaseId` keeps this on the same definition the domain
+/// enforces rather than on a second one.
+///
+/// Answers `None` for a payload with no phase array — a delta frozen before
+/// phases were projected — and the selection then falls back, which is the
+/// honest direction: a market with no readable phase chain still has a price.
+fn terminal_phase_id(payload: &serde_json::Value) -> Option<&str> {
+    payload["phases"]
+        .as_array()?
+        .iter()
+        .find(|phase| phase["convertsToPhaseId"].is_null())
+        .and_then(|phase| phase["phaseId"].as_str())
 }
 
 /// Both query parameters, parsed and non-blank.

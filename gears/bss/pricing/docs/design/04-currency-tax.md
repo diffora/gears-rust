@@ -172,7 +172,7 @@ and bundles (Slice 8) build on.
 **Actor**: `cpt-cf-bss-pricing-actor-partner`, `cpt-cf-bss-pricing-actor-finance-manager` (requires the catalog-preview read grant, Slice 5 — an **extra assignment** beyond the FinanceManager role: the default role matrix does not carry `plan × preview`)
 
 **Success Scenarios**:
-- Returns the catalog **base list price** for a `(region, currency)`: amount, `taxInclusive` flag, tier summary, `displayTrialDays`, with an explicit disclaimer that Contract/`PriceOverlays` apply at purchase (Tariffs evaluates)
+- Returns the catalog **base list price** for a `(region, currency)`: amount, `taxInclusive` flag, tier summary, `displayTrialDays`, with an explicit disclaimer that Contract/`PriceOverlays` apply at purchase (Tariffs evaluates). **Which row that is, named (D-244):** the **terminal phase's `all_subscriptions` recurring** row. One `(currency, region)` legitimately holds many — `phase`, `chargeKind`, `meter` and `dimensionKey` are all scope-key axes — so a plan with a trial-phase row beside its steady-state row has two candidates, and this clause used to leave the choice to the implementation's tie-break. The audience is prospective purchasers, so the honest answer is the row they would actually be charged first: the steady state a trial converts *into*, not the trial. Terminality is **structural** — the phase whose `convertsToPhaseId` is null — and never `kind`, for C-4's reason. A market with no such row still previews: a usage-priced market's money lives in its tier bands, so the naming is a **preference, not a filter**
 
 **Error Scenarios**:
 - No row for the requested `(currency, region)` → `PRICE_ROW_ABSENT` (404, fail closed — no FX)
