@@ -205,12 +205,32 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 5,
-    "suspicious:multi-region": 59,
+    "anchored:no-account": 7,
+    "suspicious:multi-region": 58,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 10,
+    "suspicious:weak-coverage": 9,
     "covered:strong": 0,
 }
+#: Moved 2026-08-08 (was 5 / 59 / 10) by the **D-251/D-252/D-234 propagation wave** — the
+#: `EQUAL_PRECEDENCE_CROSS_CLASS_TIE` catalogue entry in `design/09` §5, the D-251 and D-252
+#: accounts in `design/11` §3 and §5, and four in-line corrections in `DECISIONS.md`. Two movers,
+#: **both into `anchored:no-account` and both by the document-frequency mechanism this file has
+#: now recorded three times**, not by any account being weakened:
+#:   - `fr-scheduled-migration`, `multi-region` -> `no-account`. Its two accounts —
+#:     `DECISIONS.md:25-36` and `design/11-lifecycle.md:193-204` — both scored **0.603** against
+#:     `SCORE_THRESHOLD = 0.6` and fell under it together. Neither window was edited by this wave.
+#:   - `fr-supersession`, `weak-coverage` -> `no-account`. Its single account,
+#:     `design/01-foundation.md:541-552`, scored **0.602**. Its document was not edited either,
+#:     and this is the *second* time this requirement has moved on this mechanism (see the
+#:     2026-08-05 note beside `PINNED_JUDGE_CALLS`, where the same account scored exactly 0.600).
+#: The control is that every surviving `id-anchor` score in both neighbourhoods rose by ~0.002 in
+#: the same run (0.141 -> 0.143, 0.157 -> 0.159, 0.111 -> 0.112): `DF_CUTOFF` is computed per
+#: corpus and never curated, so adding windows anywhere re-weights every term, and three regions
+#: sitting 0.002-0.003 above a hard floor changed side. **What this keeps showing is a property of
+#: the corpus, not of the wave**: pricing has requirements whose entire account rests within
+#: 0.003 of the selection threshold, so any docs wave in any of the three gears can silently
+#: reclassify them. Recorded rather than tuned — moving the threshold to hold these two would
+#: re-open the distribution knee the constant was measured at.
 #: Moved 2026-08-06 (was 4 / 10 above, i.e. `anchored:no-account` 4 and `weak-coverage` 11) by the
 #: **Slice 9 overlay merge docs wave** — D-219…D-233 in `DECISIONS.md`, plus their citations in
 #: S9 §3/§5/§6 and S8 `inst-ba-material`. Total requirements unchanged at 77; the judged count
@@ -1124,7 +1144,13 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 69, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 67, "ledger": 17}
+#: pricing 69 -> 67 on the 2026-08-08 **D-251/D-252/D-234 propagation wave**. Two movers,
+#: `fr-scheduled-migration` and `fr-supersession`, both leaving the judged set for
+#: `anchored:no-account` — the full control is recorded beside `PINNED_TRIAGE_PRICING` above and
+#: it is document-frequency movement over regions no edit of this wave touched, not ladder drift.
+#: `fr-supersession` is here for the second time on the same mechanism; see the 2026-08-05 note
+#: below, where its one account scored exactly 0.600 and this time 0.602.
 #: pricing 70 -> 69 on the 2026-08-06 **Slice 9 overlay merge docs wave**. One mover,
 #: `fr-event-contract`, leaving the judged set for `anchored:no-account` — the full control is
 #: recorded beside `PINNED_TRIAGE_PRICING` above and it is document-frequency movement over a

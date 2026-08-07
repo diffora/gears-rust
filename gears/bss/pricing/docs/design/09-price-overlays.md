@@ -258,7 +258,12 @@ amount-based **line** missing a value for a currency its target scope sells, D-0
 `MEMBERSHIP_CONFLICT` (409 — the enrollment's interval overlaps the payer's membership in
 another group; use the move operation — D-09). Warnings: `FIXED_LINE_DISCARDS_STACK` (a
 `fixed` line that is not the lowest-precedence layer able to match its target — `fixed`
-replaces the running amount and therefore voids the layers below it; D-138).
+replaces the running amount and therefore voids the layers below it; D-138),
+`EQUAL_PRECEDENCE_CROSS_CLASS_TIE` (an overlay in another class holding the **same**
+`precedence` and reaching plans this one also reaches — step 3a's cross-class tie; one warning per
+tying overlay, naming it, its class, the plans both reach and which side the class order puts
+beneath. Nothing is refused: `precedence` is unique only within a class, so the tie is legal and
+the break deterministic — D-220 clause 1 / D-230, built 2026-08-07).
 
 **Three refusals this slice makes had no code here (D-222, 2026-08-06):** `SCOPE_VALUE_UNKNOWN`
 (422 — an `inst-plv-scope` value outside its declared universe), `OVERLAY_HAS_NO_LINE` (422 — D-42
