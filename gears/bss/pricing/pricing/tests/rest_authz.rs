@@ -938,6 +938,26 @@ async fn the_census_covers_every_route_the_routers_register() {
 /// check that the merge is correct — only that the name appears — which is exactly
 /// the guarantee needed: it forces an author who adds a router to visit all four,
 /// and the censuses then do the rest.
+///
+/// # It keys on the function, not the module, and that was a repair
+///
+/// The scan used to select a file by `pub fn router(` and then look for
+/// `rest::{module}::router(`. **One needle per module** — so a file's *second*
+/// router was never given one, and `overlays::governance_router` (D-234's publish
+/// route, the one mounted on `GovernanceState` apart from its siblings) was
+/// outside the guard entirely. `api::rest::windows`' module doc had already
+/// spelled out the rule this violates — *"a router named anything else is
+/// precisely the hole this exists to close. One module, one router, one census
+/// entry"* — and `windows` moved its whole module rather than grow a second
+/// router for exactly that reason. `overlays` grew one anyway.
+///
+/// Nothing was broken when this was found: all four sites did merge it. But the
+/// forcing function could not have told anyone otherwise, and the next second
+/// router — mounted in `module.rs` alone, absent from `census()` and from
+/// `registered_paths`, so the set-equality check compares two sets that both lack
+/// it — would reproduce 2026-08-04 exactly, with every guard green. So the scan
+/// now enumerates **every** `pub fn …router(` in each file and needles each by its
+/// own name.
 #[test]
 fn every_mounted_router_is_merged_into_both_censuses() {
     let mounts = [
@@ -948,34 +968,57 @@ fn every_mounted_router_is_merged_into_both_censuses() {
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    let mut routers: Vec<String> = Vec::new();
+    // `(module, function)`, because a module may declare more than one router and
+    // the pair is what a mount site names. Keying on the module alone is the bug
+    // this scan carried: see the doc above.
+    let mut routers: Vec<(String, String)> = Vec::new();
     for path in rest_sources() {
         let text = std::fs::read_to_string(&path).expect("a readable REST source");
-        if !text.contains("pub fn router(") {
-            continue;
-        }
         let module = path
             .file_stem()
             .and_then(|s| s.to_str())
             .expect("a named source file");
         // `src/api/rest.rs` itself declares no router; every other file that does
         // is named for its module.
-        routers.push(module.to_owned());
+        for line in text.lines() {
+            let Some(after) = line.trim_start().strip_prefix("pub fn ") else {
+                continue;
+            };
+            // Stop at whichever comes first, so a future `router<S>(…)` is read as
+            // `router` rather than silently skipped.
+            let name = after
+                .split(['(', '<'])
+                .next()
+                .unwrap_or_default()
+                .trim_end();
+            if !name.ends_with("router") {
+                continue;
+            }
+            routers.push((module.to_owned(), name.to_owned()));
+        }
     }
     routers.sort();
     assert!(
         routers.len() >= 5,
         "the scan found {routers:?}, which is fewer routers than this gear has had since phase 3 - the scan is broken, not the layer"
     );
+    // A module with two routers is the case this scan exists to cover, so the
+    // *pairs* must be distinct while the module names need not be.
+    let distinct: std::collections::BTreeSet<&(String, String)> = routers.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        routers.len(),
+        "the scan found the same (module, router) twice, which means the parse is wrong: {routers:?}"
+    );
 
-    for module in &routers {
-        let needle = format!("rest::{module}::router(");
+    for (module, function) in &routers {
+        let needle = format!("rest::{module}::{function}(");
         for mount in mounts {
             let text = std::fs::read_to_string(root.join(mount))
                 .unwrap_or_else(|e| panic!("read {mount}: {e}"));
             assert!(
                 text.contains(&needle),
-                "{mount} does not merge the `{module}` router: `{needle}` appears nowhere in it, so every census and every gate property built there is blind to its routes"
+                "{mount} does not merge the `{module}::{function}` router: `{needle}` appears nowhere in it, so every census and every gate property built there is blind to its routes"
             );
         }
     }
