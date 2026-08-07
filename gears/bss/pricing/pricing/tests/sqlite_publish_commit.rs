@@ -1794,11 +1794,92 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     // flips the plan's current revision to `retired`, after which no plane above
     // can publish anything on it. Driven here so the census sees the `retire`
     // record without every earlier driver having to work around a dead plan.
+    // **Before retirement**, and the position is load-bearing for the same reason
+    // retirement is last: a migration is scheduled *off* a plan that must still be
+    // published, and retirement flips it to `retired` permanently.
+    drive_the_migration_plane(h).await;
     drive_the_retirement_plane(h).await;
 
     let mut rows = audit_rows(h).await;
     rows.sort_by_key(|row| row.seq);
     rows
+}
+
+/// The migration plane — the writer of the `migrate` action (Slice 11).
+///
+/// It is here for `drive_the_threshold_policy_plane`'s stated reason: this file
+/// owns the **vocabulary** property, and a token whose writer is never driven is
+/// indistinguishable from a token with no writer. Adding `AuditAction::Migrate`
+/// without this function fails `every_declared_action_has_a_production_writer`,
+/// which is the direction D-158 asks the guard to fail in — and it did fail that
+/// way when the variant landed, which is how this function came to exist.
+///
+/// **A migration needs a published target that is not the source**, so this seeds
+/// a second plan and publishes its revision through the repository rather than
+/// through the publish engine. That is deliberate and the shortcut is bounded:
+/// what the scheduler asks of a target is its `lifecycle_state` and its price
+/// rows, and a target with no rows is a legitimate shape here — no subscription
+/// can be enumerated in this gear, so no boundary delta can be computed against
+/// it either. Driving the whole engine for the target would prove the engine, not
+/// the migration.
+///
+/// Unlike retirement this opens **no approval unit**: §5 types migration
+/// scheduling `plan x migrate` and `inst-mat-registered` registers no migration
+/// trigger, so the schedule commits on one principal and the record carries no
+/// `approval_ref`.
+async fn drive_the_migration_plane(h: &Harness) {
+    let target = PlanId::new(Uuid::from_u128(0x_7a_46_e7));
+    let mut draft = new_plan_draft();
+    draft.plan_id = target;
+    draft.created_at_utc = at(17);
+    let created = h
+        .plans
+        .create_draft(&h.scope, draft)
+        .await
+        .expect("create the target draft");
+
+    let (_, published) = h
+        .provider
+        .db()
+        .in_transaction::<(), bss_pricing::infra::storage::RepoError, _>({
+            let scope = h.scope.clone();
+            move |txn| {
+                Box::pin(async move {
+                    bss_pricing::infra::storage::repo::plan_repo::publish_revision(
+                        txn,
+                        &scope,
+                        TENANT,
+                        target,
+                        created.revision,
+                        created.row_version,
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            }
+        })
+        .await;
+    published.expect("publish the target revision");
+
+    let migrations = bss_pricing::infra::migration::MigrationService::new(
+        h.provider.clone(),
+        &bss_pricing::config::LimitsConfig::default(),
+    );
+    migrations
+        .schedule(
+            &h.scope,
+            TENANT,
+            bss_pricing::infra::migration::ScheduleRequest {
+                migration_id: Uuid::now_v7(),
+                source_plan_id: plan_id(),
+                target_plan_id: target,
+                effective_at: at(17) + chrono::Duration::days(120),
+                scope_json: serde_json::json!({ "kind": "all" }),
+            },
+            stamp_of(ACTOR, at(17)),
+        )
+        .await
+        .expect("the migration schedules");
 }
 
 /// The retirement plane — the writer of the `retire` action (D-128, Slice 11).
@@ -1942,11 +2023,22 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
         .filter(|row| row.chain_id == overlay_chain)
         .cloned()
         .collect();
+    // **Four since Slice 11's migration plane**, and the move is the partition
+    // working rather than a misfiling. `drive_the_migration_plane` seeds a second
+    // plan to migrate *onto* — a migration's target must be a published plan that
+    // is not the source — and that plan's own `create` record is a fourth
+    // aggregate. The migration record itself is filed on the **source** plan's
+    // chain, which is what an auditor asking "what happened to this plan" needs;
+    // naming the target's chain here is what keeps "and none to a fifth" true.
+    let migration_target_rows = rows
+        .iter()
+        .filter(|row| row.chain_id == Uuid::from_u128(0x_7a_46_e7))
+        .count();
     assert_eq!(
-        plan_rows.len() + policy_rows.len() + overlay_rows.len(),
+        plan_rows.len() + policy_rows.len() + overlay_rows.len() + migration_target_rows,
         rows.len(),
-        "every driven record belongs to one of the three aggregates, and none to a \
-         fourth chain nobody named"
+        "every driven record belongs to one of the four aggregates, and none to a \
+         fifth chain nobody named"
     );
     assert_eq!(
         policy_rows.len(),

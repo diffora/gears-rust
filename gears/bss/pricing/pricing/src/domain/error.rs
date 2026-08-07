@@ -393,6 +393,81 @@ pub enum DomainError {
     /// design set's problem-response list.
     #[error("retire plan referenced: {0}")]
     RetirePlanReferenced(String),
+    /// A plan cannot retire while a scheduled migration still targets it
+    /// (`11-lifecycle.md` §2, §5, **409**).
+    ///
+    /// [`DomainError::RetirePlanReferenced`]'s sibling and a conflict for the
+    /// same reason: the caller's request named nothing wrong, and what refuses it
+    /// is a schedule pointing *at* this plan as the place subscribers are about
+    /// to be moved to. Retiring it would leave that migration aimed at a plan
+    /// that can no longer be sold, so the remedy is to cancel the migration or
+    /// let it complete first — which is why the refusal names it.
+    ///
+    /// Only a **live** schedule refuses: `scheduled` and `in_progress`. A
+    /// `completed` or `cancelled` run is history and moves nobody.
+    ///
+    /// The code is **§5's**, not minted here.
+    #[error("retire target of migration: {0}")]
+    RetireTargetOfMigration(String),
+    /// A migration's target is not a published plan (`11-lifecycle.md` §2, §3,
+    /// §5, `inst-mg-target`, **422 → 400**).
+    ///
+    /// An invalid argument rather than a conflict: the caller named a target and
+    /// the target is the wrong kind of thing, so there is one field to correct.
+    /// A `draft` target has no consumer-resolvable content to migrate onto and a
+    /// `retired` one cannot take new subscribers at all, so both are refused by
+    /// the same predicate — a migration may only land subscribers somewhere they
+    /// could have subscribed directly.
+    ///
+    /// The code is **§5's**, not minted here.
+    #[error("migration target invalid: {0}")]
+    MigrationTargetInvalid(String),
+    /// A migration's `effectiveAt` is closer than the tenant's configured notice
+    /// period (`11-lifecycle.md` §3, §5, `inst-mg-target`, D-49, **422 → 400**).
+    ///
+    /// A precondition failure naming one field. **There is no silent override**:
+    /// D-49 lets a tenant raise the notice period and never lower it below the
+    /// 60-day floor, so an emergency shorter migration requires an explicit
+    /// audited policy change first (itself material, the D-10 pattern) rather
+    /// than a flag on this request. The refusal therefore reports the configured
+    /// period and the earliest admissible instant, because the operator's next
+    /// act is to pick a later date or to go and change the policy.
+    ///
+    /// The code is **§5's**, not minted here.
+    #[error("migration notice too short: {0}")]
+    MigrationNoticeTooShort(String),
+    /// A migration carries unresolved blocking deltas (`11-lifecycle.md` §2, §5,
+    /// `inst-ms-deltas`, **422 → 400**).
+    ///
+    /// The deltas are **enumerated**, for [`DomainError::RetirePlanReferenced`]'s
+    /// reason: "this migration is blocked" is not an actionable sentence when the
+    /// remedy is to change the target, scope a named subscription out, or fix a
+    /// named add-on. Contract-locked subscriptions are **not** in this set — they
+    /// are excluded and reported rather than blocking (`inst-md-locks`,
+    /// `inst-cl-exclude`), because the lock is never broken and never needs the
+    /// operator to resolve anything.
+    ///
+    /// An unresolved blocking delta **never persists a schedule** (§7), so this
+    /// refusal counts a rejection rather than leaving a waiting record behind.
+    ///
+    /// The code is **§5's**, not minted here.
+    #[error("migration blocked: {0}")]
+    MigrationBlocked(String),
+    /// A cancel was asked of a migration that has already completed
+    /// (`11-lifecycle.md` §3, §4, §5, `inst-mg-cancel`,
+    /// `inst-mst-cancel-inflight`, D-34, **409**).
+    ///
+    /// A conflict on mutable state: the request was well-formed and the caller's
+    /// authority sufficient, but the run finished before the cancel arrived.
+    ///
+    /// **The code is `MIGRATION_COMPLETED` and deliberately not the pre-D-34
+    /// `MIGRATION_ALREADY_EFFECTIVE`.** D-34 rescoped the cancel so that an
+    /// `in_progress` run *is* cancellable — the stop-the-bleeding control — which
+    /// left the old code naming the wrong fact: "already effective" describes
+    /// every run past its effective date, and most of those can still be stopped.
+    /// Only a **completed** one cannot, so the code names completion.
+    #[error("migration completed: {0}")]
+    MigrationCompleted(String),
     /// A price row naming a `region` the tenant's taxonomy does not declare
     /// active (`04-currency-tax.md` §2, §5, `inst-mc-region`, **422 → 400**).
     ///

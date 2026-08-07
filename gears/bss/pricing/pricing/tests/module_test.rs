@@ -73,6 +73,8 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
     use bss_pricing::api::rest::frontier::FRONTIER;
+    use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
+    use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
     use bss_pricing::api::rest::overlays::{
         PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS,
     };
@@ -147,6 +149,15 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("POST", PLAN_SUPERSESSIONS),
         ("POST", PLAN_CUTOVERS),
         ("POST", PLAN_RETIRE),
+        // Slice 11's migration plane. `DELETE` is a **cancel** (D-34): the row
+        // flips to `cancelled` and is never removed, because an executor
+        // re-reading the schedule must tell a cancelled run from an absent one.
+        ("POST", MIGRATIONS),
+        ("GET", MIGRATION_BY_ID),
+        ("DELETE", MIGRATION_BY_ID),
+        // D-102's read surface. The only route in the gear whose authz object
+        // (`plan`) differs from its path object (a subscription).
+        ("GET", MIGRATED_ORIGIN_SNAPSHOT),
         // Slice 5's entrance: the publish mount and the approval surface.
         ("POST", PLAN_PUBLISH),
         ("GET", APPROVALS),
@@ -256,6 +267,15 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
             ),
         ),
+        // Slice 11's migration plane. Requests no `CatalogVersion`, so it
+        // takes no registry - only the limits its policy reader is bound to.
+        migrations: bss_pricing::infra::migration::MigrationService::new(
+            db.clone(),
+            &LimitsConfig::default(),
+        ),
+        // Slice 11's synthesis half. No registry and no limits: it freezes a
+        // payload nothing can look up (D-87).
+        synthesis: bss_pricing::infra::synthesis::SynthesisService::new(db.clone()),
         publish: PublishService::new(
             db,
             &LimitsConfig::default(),
@@ -315,6 +335,14 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::retirement::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::migrations::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::migrated_origin_snapshots::router(
                 Arc::clone(&governance),
                 &openapi,
             ))

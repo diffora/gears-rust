@@ -217,6 +217,31 @@ impl NewOutboxEvent {
         }
     }
 
+    /// The `PlanMigrationScheduled` event of one migration schedule
+    /// (`inst-ms-emit`, M2).
+    ///
+    /// The aggregate is the **source plan**, not the migration: `PlanRetired` and
+    /// this event are the two things that can happen to a plan being sunset, and
+    /// the `(tenantId, aggregateId)` ordering rule is what keeps a consumer from
+    /// seeing the retirement before the migration that was supposed to move its
+    /// subscribers off. A migration-keyed stream would order them independently.
+    #[must_use]
+    pub fn plan_migration_scheduled(
+        tenant_id: Uuid,
+        payload: &PlanMigrationScheduledPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.source_plan_id.get(),
+            event: CatalogEvent::PlanMigrationScheduled,
+            payload: payload.to_value(),
+            dedup_key: plan_migration_scheduled_dedup_key(payload.migration_id),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
     /// The `PlanPublishDegraded` event of one publish whose subject has not
     /// warmed.
     ///
@@ -488,6 +513,91 @@ impl PlanRetiredPayload {
             "correlationId": self.correlation_id,
         })
     }
+}
+
+/// The `PlanMigrationScheduled` payload — what Subscriptions needs to create
+/// effective-dated `PlanLink`s (`inst-ms-emit`, `inst-mg-idem`, `inst-mg-boundary`,
+/// M2, D-39).
+///
+/// The catalog emits; Subscriptions executes. Nothing here is a subscription's
+/// state, because the catalog holds none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanMigrationScheduledPayload {
+    /// The client-supplied schedule id, and **the idempotency key**: M2's dedup
+    /// contract is `(migration_id, subscription)` and the consumer enforces it,
+    /// so the id has to ride the event rather than be derivable from it.
+    pub migration_id: Uuid,
+    /// The retiring side.
+    pub source_plan_id: PlanId,
+    /// The source revision the schedule was computed against.
+    pub source_revision: u64,
+    /// The published target.
+    pub target_plan_id: PlanId,
+    /// When the migration takes effect.
+    pub effective_at: DateTime<Utc>,
+    /// `all`, or the subscription filter the operator scoped it to.
+    pub scope: JsonValue,
+    /// The subscriptions excluded from the run — contract-locked, and never
+    /// broken (`inst-cl-exclude`). Carried on the event because the executor must
+    /// honour it, and because an empty list here would otherwise be
+    /// indistinguishable from "no exclusions were computed".
+    pub excluded_subscription_refs: Vec<Uuid>,
+    /// Whether the lock registry could be asked at all (`inst-cl-source`).
+    ///
+    /// `true` says every subscription above is excluded because nobody could be
+    /// asked rather than because Contracts named it — the fail-closed posture,
+    /// which the absent registry makes this system's only case. A consumer that
+    /// ignored this could read "everyone is contract-locked" as a fact about
+    /// contracts.
+    pub exclusions_unresolved: bool,
+    /// **D-39, on the contract rather than in the consumer's head**: a migrated
+    /// subscription enters the target's first **non-trial** phase. A migration
+    /// never grants a new `trial`; entering an `intro` phase is allowed. Carried
+    /// here because §3 step 2 puts the entry-phase rule on this event, and
+    /// Subscriptions is what places the subscription.
+    pub entry_phase_is_first_non_trial: bool,
+    /// The correlation id of the causing request.
+    pub correlation_id: Uuid,
+}
+
+impl PlanMigrationScheduledPayload {
+    /// Render the payload for its `jsonb` column.
+    ///
+    /// `json!` rather than a derive, for [`PlanPublishedPayload::to_value`]'s
+    /// stated reason.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "migrationId": self.migration_id,
+            "sourcePlanId": self.source_plan_id.get(),
+            "sourceRevision": self.source_revision,
+            "targetPlanId": self.target_plan_id.get(),
+            "effectiveAt": self.effective_at,
+            "scope": self.scope,
+            "excludedSubscriptionRefs": self.excluded_subscription_refs,
+            "exclusionsUnresolved": self.exclusions_unresolved,
+            "entryPhaseIsFirstNonTrial": self.entry_phase_is_first_non_trial,
+            "dedupContract": "(migrationId, subscription)",
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// What makes a repeat of one migration schedule the same event.
+///
+/// **The `migration_id` alone**, and deliberately not the effective date or the
+/// scope: `inst-ms-api` makes the create idempotent on that id, so a retried
+/// schedule is the *same* schedule and must not enqueue a second event.
+/// `inst-mg-idem`'s re-trigger rides the same key for the same reason — the
+/// consumer's own dedup is `(migration_id, subscription)`, and a second event
+/// carrying a second key would defeat it before it was ever consulted.
+#[must_use]
+pub fn plan_migration_scheduled_dedup_key(migration_id: Uuid) -> String {
+    format!(
+        "{}/{}",
+        CatalogEvent::PlanMigrationScheduled.as_str(),
+        migration_id
+    )
 }
 
 /// What makes a repeat of one plan's retirement the same event.

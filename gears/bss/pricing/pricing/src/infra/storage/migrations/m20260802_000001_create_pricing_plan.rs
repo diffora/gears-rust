@@ -16,7 +16,7 @@
 //! flipped to the terminal `abandoned` state rather than deleted, so no DELETE
 //! is permitted on this table at all — not even of a draft. Deleting one
 //! returned `max(revision)` to its previous value, the next opened draft minted
-//! the **same** number, and `(plan_id, revision)` — the name the grant table is
+//! the **same** number, and `(plan_id, revision)` — the name the grant table would be
 //! keyed by, every revision-scoped child copies under, and the audit trail
 //! records — then denoted two different rows over a plan's lifetime, under which
 //! a stale entity tag passes its precondition against the wrong one.

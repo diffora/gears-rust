@@ -75,6 +75,8 @@ pub mod m20260802_000039_add_pricing_price_resolved_tax_category;
 pub mod m20260802_000040_guard_pricing_price_tax_columns;
 pub mod m20260802_000041_retire_pricing_policy_object_tax_display_mode;
 pub mod m20260802_000042_tighten_taxonomy_value_present_check;
+pub mod m20260802_000043_create_pricing_migration;
+pub mod m20260802_000044_create_pricing_snapshot_provenance;
 pub mod m20260802_000050_add_pricing_price_proration_contract;
 pub mod m20260802_000051_guard_pricing_price_proration_columns;
 pub mod m20260802_000052_add_pricing_plan_change_contract;
@@ -199,6 +201,16 @@ impl MigratorTrait for Migrator {
             // of the four, which is why each rebuild is written from its
             // creating migration rather than from a later one.
             Box::new(m20260802_000042_tighten_taxonomy_value_present_check::Migration),
+            // Slice 11's migration plane: the schedule row and its Section 4 state
+            // machine. It creates a table nothing else in the chain touches, so it
+            // restates nothing and sorts anywhere after the plans it references by
+            // id - which is every position, since it carries no foreign key (see
+            // its module doc for why neither plan reference is expressible as one).
+            Box::new(m20260802_000043_create_pricing_migration::Migration),
+            // Slice 11's synthesis half: the `migrated-origin` record. Like the
+            // table above it restates nothing and carries no foreign key, so its
+            // position in the chain is free.
+            Box::new(m20260802_000044_create_pricing_snapshot_provenance::Migration),
             // Slice 6's proration input contract: four columns on `pricing_price`
             // (`inst-pi-required`). Plain `ALTER`s, so they sort anywhere after
             // `000002` creates the table; the number is this strand's allotted

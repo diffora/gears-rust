@@ -757,6 +757,14 @@ impl Gear for BssPricingGear {
                 db.clone(),
                 Arc::clone(&catalog_version_registry),
             ),
+            // **Not** a seventh requester of the registry `Arc`, and the exception
+            // is worth stating: a migration schedule changes no plan content, so
+            // no version is requested and no subject is re-projected. What it
+            // needs instead is the tenant policy reader, for D-49's notice period.
+            migrations: crate::infra::migration::MigrationService::new(db.clone(), &config.limits),
+            // Neither a registry requester nor a policy reader: synthesis freezes
+            // a payload nothing can look up, which is the whole of D-87.
+            synthesis: crate::infra::synthesis::SynthesisService::new(db.clone()),
             // The window `POST`'s at-most-once gate (D-191), under the **same** TTL the
             // authoring plane's claims expire on: the expiry is a deployment knob about
             // how long a client key is honoured, and two windows for it would mean one
@@ -920,6 +928,14 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::retirement::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::migrations::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::migrated_origin_snapshots::router(
                 Arc::clone(&rt.governance_api),
                 openapi,
             ))

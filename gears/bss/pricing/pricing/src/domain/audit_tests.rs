@@ -62,6 +62,7 @@ fn the_persisted_tokens_are_asserted_against_literals() {
     assert_eq!(AuditAction::Withdraw.as_str(), "withdraw");
     assert_eq!(AuditAction::Deny.as_str(), "deny");
     assert_eq!(AuditAction::Retire.as_str(), "retire");
+    assert_eq!(AuditAction::Migrate.as_str(), "migrate");
     assert_eq!(AuditSubjectKind::PlanRevision.as_str(), "plan_revision");
     assert_eq!(AuditSubjectKind::PriceUnit.as_str(), "price_unit");
     assert_eq!(AuditSubjectKind::Window.as_str(), "window");
@@ -81,6 +82,7 @@ fn the_persisted_tokens_are_asserted_against_literals() {
             AuditAction::Withdraw,
             AuditAction::Deny,
             AuditAction::Retire,
+            AuditAction::Migrate,
         ]
     );
     assert_eq!(

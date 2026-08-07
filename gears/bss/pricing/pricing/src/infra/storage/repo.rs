@@ -43,6 +43,7 @@ pub mod audit_repo;
 pub mod bundle_repo;
 pub mod catalog_version_ref_repo;
 pub mod idempotency_repo;
+pub mod migration_repo;
 pub mod outbox_repo;
 pub mod overlay_repo;
 pub mod pin_frontier_repo;
@@ -51,6 +52,7 @@ pub mod plan_shape_repo;
 pub mod policy_repo;
 pub mod price_repo;
 pub mod read_model_repo;
+pub mod synthesis_repo;
 pub mod taxonomy_repo;
 pub mod threshold_repo;
 pub mod window_repo;
@@ -67,9 +69,10 @@ pub use bundle_repo::{
 };
 pub use catalog_version_ref_repo::PendingVersionRow;
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
+pub use migration_repo::{MigrationRecord, NewMigration};
 pub use outbox_repo::{
-    NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload, PlanRetiredPayload,
-    PriceUpdatedPayload, PriceWindowTransitionPayload,
+    NewOutboxEvent, PlanMigrationScheduledPayload, PlanPublishDegradedPayload,
+    PlanPublishedPayload, PlanRetiredPayload, PriceUpdatedPayload, PriceWindowTransitionPayload,
 };
 pub use overlay_repo::{NewOverlay, OverlayRecord, OverlayRepo};
 pub use pin_frontier_repo::PinFrontierRepo;
@@ -78,6 +81,7 @@ pub use plan_shape_repo::PlanShapeRepo;
 pub use policy_repo::{AuthoringPolicy, PolicyObjectRepo};
 pub use price_repo::{NewPriceDraft, PriceRepo};
 pub use read_model_repo::NewDelta;
+pub use synthesis_repo::{NewProvenance, ProvenanceRecord};
 pub use threshold_repo::{StoredVersion, ThresholdEntryRow};
 pub use window_repo::{NewWindow, WindowRecord};
 

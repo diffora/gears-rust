@@ -194,6 +194,9 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_bundle_component_append_only",
     "pricing_bundle_revshare_append_only",
     "pricing_bundle_revshare_group_append_only",
+    // Slice 11. One PL/pgSQL function carrying the five arms the SQLite mirror
+    // spells as five triggers.
+    "pricing_migration_append_only",
     "pricing_plan_addon_rule_append_only",
     "pricing_plan_append_only",
     "pricing_plan_descriptor_set_append_only",
@@ -206,6 +209,9 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_price_tier_band_kind",
     "pricing_price_tier_band_parent_kind",
     "pricing_price_window_append_only",
+    // Slice 11. Two unconditional arms in one function: a migrated-origin
+    // snapshot is frozen, so no UPDATE is sanctioned at all.
+    "pricing_snapshot_provenance_frozen",
 ];
 
 /// The triggers those functions are bound to, one per function.
@@ -221,6 +227,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_bundle_component_append_only",
     "trg_pricing_bundle_revshare_append_only",
     "trg_pricing_bundle_revshare_group_append_only",
+    "trg_pricing_migration_append_only",
     "trg_pricing_plan_addon_rule_append_only",
     "trg_pricing_plan_append_only",
     "trg_pricing_plan_descriptor_set_append_only",
@@ -233,6 +240,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_tier_band_kind",
     "trg_pricing_price_tier_band_parent_kind",
     "trg_pricing_price_window_append_only",
+    "trg_pricing_snapshot_provenance_frozen",
 ];
 
 /// The partial indexes — the `WHERE`-carrying ones, where the predicate *is* the
@@ -283,6 +291,10 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_bundle_revshare_group: bundle_id, plan_revision, vendor_sku_id",
     "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
     "pricing_idempotency_dedup: tenant_id, operation, client_key",
+    // Read back from `m20260802_000043`'s own DDL rather than from the live
+    // server: client-supplied (`inst-ms-api`, M2), so the idempotency key and the
+    // primary key are one column.
+    "pricing_migration: migration_id",
     "pricing_operator_flag: tenant_id, subject_ref, flag",
     "pricing_org_tier_taxonomy: tenant_id, value",
     "pricing_outbox: outbox_id",
@@ -301,6 +313,8 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_price_window: window_id",
     "pricing_read_model: tenant_id, catalog_version, subject_kind, subject_ref",
     "pricing_region_taxonomy: tenant_id, value",
+    // Read back from `m20260802_000044`'s own DDL rather than from the live server.
+    "pricing_snapshot_provenance: provenance_id",
 ];
 
 const EXPECTED_CHECKS: &[&str] = &[
@@ -338,6 +352,19 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_catalog_version_ref_version",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
+    // Slice 11, the same twelve the SQLite mirror carries, name for name.
+    "chk_pricing_migration_announced_before_effective",
+    "chk_pricing_migration_cancelled_at",
+    "chk_pricing_migration_cancelled_order",
+    "chk_pricing_migration_completed_at",
+    "chk_pricing_migration_completed_order",
+    "chk_pricing_migration_distinct_plans",
+    "chk_pricing_migration_exclusion_snapshot",
+    "chk_pricing_migration_scheduled_unstarted",
+    "chk_pricing_migration_source_revision",
+    "chk_pricing_migration_started_order",
+    "chk_pricing_migration_started_required",
+    "chk_pricing_migration_state",
     "chk_pricing_operator_flag_name",
     "chk_pricing_org_tier_taxonomy_state",
     "chk_pricing_org_tier_taxonomy_value_present",
@@ -434,6 +461,10 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_read_model_warm_marker",
     "chk_pricing_region_taxonomy_state",
     "chk_pricing_region_taxonomy_value_present",
+    "chk_pricing_snapshot_provenance_payload",
+    "chk_pricing_snapshot_provenance_resolved",
+    "chk_pricing_snapshot_provenance_revision",
+    "chk_pricing_snapshot_provenance_trigger",
 ];
 
 // ---------------------------------------------------------------------------

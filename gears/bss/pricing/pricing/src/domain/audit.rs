@@ -164,6 +164,15 @@
 //!   declared it and nothing wrote it — and `crate::infra::retirement` is now
 //!   its writer, inside the flip's own transaction (D-128, Slice 11).
 //!
+//!   **`migrate` never sat here, and lands with its writer.** It is minted by
+//!   Slice 11's migration plane rather than inherited from S5 §6's list, so the
+//!   one-token-one-writer rule is satisfied by construction:
+//!   `crate::infra::migration` writes it inside the schedule's and the cancel's
+//!   own transactions. S5 §6 enumerates `migrate` as an **authz action** on the
+//!   `plan` resource; whether its audit-token list should name it too is in the
+//!   Slice 11 hand-back's documentation register, because that list is `docs/`
+//!   and not this module's to extend.
+//!
 //! `approve`, `reject` and `deny` **are** declared, and this list is where they
 //! stopped being owed. It once said of the first two that "their writer is the
 //! approval trail that threads an `AuditStamp` through `approval_repo` — which
@@ -280,6 +289,24 @@ pub enum AuditAction {
     /// retirement writes both records: this one for the plan, `abandon` for the
     /// draft revision D-145 tombstones alongside it.
     Retire,
+    /// A migration was **scheduled or cancelled** (`inst-ms-api`,
+    /// `inst-mst-cancel`, `inst-mst-cancel-inflight`, D-34, Slice 11).
+    ///
+    /// **One token for both acts, deliberately.** The schedule and its
+    /// cancellation are two transitions of one `pricing_migration` row, and the
+    /// record's `before_state`/`after_state` carry the schedule's `state` —
+    /// so an auditor reads which transition happened from the states rather
+    /// than from a second verb. Splitting them would put the state machine in
+    /// the token vocabulary as well as in the row, which is the duplication
+    /// [`AuditAction::Retire`]'s note argues against one act over.
+    ///
+    /// Distinct from [`AuditAction::Retire`] though the two are usually paired
+    /// (§3 step 4 recommends a retirement pair with a migration schedule): what
+    /// an auditor needs to separate is the act that stopped the plan selling
+    /// from the act that offered its subscribers somewhere to go. Distinct from
+    /// [`AuditAction::Update`] because a migration mutates no plan content at
+    /// all — the catalog emits a schedule and Subscriptions executes it.
+    Migrate,
 }
 
 impl AuditAction {
@@ -301,6 +328,7 @@ impl AuditAction {
         Self::Withdraw,
         Self::Deny,
         Self::Retire,
+        Self::Migrate,
     ];
 
     /// The persisted `action` token.
@@ -318,6 +346,7 @@ impl AuditAction {
             Self::Withdraw => "withdraw",
             Self::Deny => "deny",
             Self::Retire => "retire",
+            Self::Migrate => "migrate",
         }
     }
 }

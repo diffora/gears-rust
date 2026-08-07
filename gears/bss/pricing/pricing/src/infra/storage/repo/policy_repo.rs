@@ -69,6 +69,7 @@ use uuid::Uuid;
 
 use crate::config::LimitsConfig;
 use crate::domain::audit::AuditStamp;
+use crate::domain::migration::{NOTICE_FLOOR_DAYS, NoticePeriod};
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete};
 use crate::domain::tax_display::TaxDisplayPolicy;
 use crate::infra::storage::entity::policy_object;
@@ -96,6 +97,7 @@ pub struct AuthoringPolicy {
     additional_required_descriptors: Vec<String>,
     default_rounding_policy_ref: Option<String>,
     tax_display_policy_mode: String,
+    enforced_migration_notice_days: i64,
 }
 
 impl AuthoringPolicy {
@@ -126,6 +128,11 @@ impl AuthoringPolicy {
             // so. There is no deployment knob here for the same reason there is
             // none for the rounding default.
             tax_display_policy_mode: TaxDisplayPolicy::FailClosed.as_str().to_owned(),
+            // D-49's floor, which is what a tenant with no policy row is governed
+            // by. Not a deployment knob: the floor is the ratified minimum notice
+            // a subscriber is owed, and a deployment able to lower it would be
+            // able to lower it for tenants who never asked.
+            enforced_migration_notice_days: NOTICE_FLOOR_DAYS,
         }
     }
 
@@ -204,6 +211,22 @@ impl AuthoringPolicy {
                 self.tax_display_policy_mode
             ))
         })
+    }
+
+    /// The tenant's enforced-migration notice period (D-49, M5, `inst-mg-target`).
+    ///
+    /// Resolved through [`NoticePeriod::resolved`], so a stored value below the
+    /// 60-day floor is **raised** rather than honoured. That is not defensive
+    /// duplication of `chk_pricing_policy_object_notice_floor`: the `CHECK`
+    /// governs what may be *written*, and a row predating it — or one restored
+    /// around it — would otherwise hand a shorter notice to the one caller whose
+    /// whole job is to enforce the longer one. Unlike
+    /// [`AuthoringPolicy::tax_display_policy`] this does not surface a
+    /// `CorruptRow`, because unlike a token outside a `CHECK`'s enumeration an
+    /// out-of-range integer has a safe reading, and it is this one.
+    #[must_use]
+    pub const fn migration_notice_period(&self) -> NoticePeriod {
+        NoticePeriod::resolved(self.enforced_migration_notice_days)
     }
 }
 
@@ -318,6 +341,7 @@ impl PolicyObjectRepo {
             // `AuthoringPolicy::default_rounding_policy_ref`.
             default_rounding_policy_ref: row.default_rounding_policy_ref,
             tax_display_policy_mode: row.tax_display_policy_mode,
+            enforced_migration_notice_days: i64::from(row.enforced_migration_notice_days),
         })
     }
 }
