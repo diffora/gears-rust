@@ -92,8 +92,8 @@ use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
-    PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy, TierAggregationWindow, TierBand,
-    TierQualificationWindow, model_kind_wire,
+    MinQtyUsageFallback, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy,
+    TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
@@ -299,6 +299,15 @@ pub struct PriceContentView {
     pub reserved_rate_minor: Option<i64>,
     /// What the reservation reserves: `consumption | capacity` (`inst-rv-attrs`).
     pub reservation_flavor: Option<String>,
+    /// The order-time purchase floor (`inst-ft-typed`).
+    pub min_qty_purchase: Option<u64>,
+    /// The eligibility usage floor (`inst-ft-typed`).
+    pub min_qty_usage: Option<u64>,
+    /// What happens beneath the usage floor; launch: `exception`
+    /// (`inst-ft-fallback`).
+    pub min_qty_usage_fallback: Option<String>,
+    /// The external discount instrument (`inst-dr-referential`).
+    pub discount_ref: Option<String>,
     /// Whether the authored amounts are tax-inclusive. Absent is `false`.
     pub tax_inclusive: Option<bool>,
     /// The row's tax category (D-110) — the **source of truth**, and the only
@@ -355,6 +364,10 @@ impl From<&PriceRecord> for PriceContentView {
             }),
             reserved_rate_minor: row.reserved_rate_minor.map(MinorAmount::get),
             reservation_flavor: row.reservation_flavor.map(|f| f.as_str().to_owned()),
+            min_qty_purchase: row.min_qty_purchase,
+            min_qty_usage: row.min_qty_usage,
+            min_qty_usage_fallback: row.min_qty_usage_fallback.map(|f| f.as_str().to_owned()),
+            discount_ref: row.discount_ref.clone(),
             tax_inclusive: Some(record.tax_inclusive),
             tax_category_ref: record.tax_category_ref.clone(),
             billing_timing: record.billing_timing.clone(),
@@ -1117,6 +1130,15 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
             price_repo::RESERVATION_FLAVORS,
             ReservationFlavor::as_str,
         )?,
+        min_qty_purchase: view.min_qty_purchase,
+        min_qty_usage: view.min_qty_usage,
+        min_qty_usage_fallback: optional_token(
+            "content.min_qty_usage_fallback",
+            view.min_qty_usage_fallback.as_deref(),
+            price_repo::MIN_QTY_USAGE_FALLBACKS,
+            MinQtyUsageFallback::as_str,
+        )?,
+        discount_ref: view.discount_ref.clone(),
     };
     Ok(PriceContent {
         row,

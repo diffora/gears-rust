@@ -90,7 +90,7 @@ use crate::domain::price_row::PriceRow;
 /// It is the gear's constant rather than a per-publish value — every publish of
 /// one generation stamps the same string — and it moves only with the log in
 /// `design/01-foundation.md` §4.4, whose last entry it must equal.
-pub const EVALUATION_POLICY_GENERATION: &str = "ep-3";
+pub const EVALUATION_POLICY_GENERATION: &str = "ep-4";
 
 /// Every field of [`PriceRow`], sorted into the evaluation-policy roster and out
 /// of it.
@@ -136,6 +136,10 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
         included_allowance: _,
         reserved_rate_minor: _,
         reservation_flavor: _,
+        min_qty_purchase: _,
+        min_qty_usage: _,
+        min_qty_usage_fallback: _,
+        discount_ref: _,
     } = row;
 
     let roster = vec![
@@ -149,6 +153,8 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
         "max_hold_granules",
         "included_allowance",
         "reservation_flavor",
+        "min_qty_usage",
+        "min_qty_usage_fallback",
     ];
     let outside = vec![
         "charge_kind",
@@ -160,6 +166,8 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
         "meter",
         "dimension_key",
         "reserved_rate_minor",
+        "min_qty_purchase",
+        "discount_ref",
     ];
 
     (roster, outside)

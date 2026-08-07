@@ -67,8 +67,8 @@ use crate::domain::plan_shape::{
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
-    ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy, TierAggregationWindow,
-    TierBand, TierQualificationWindow,
+    MinQtyUsageFallback, ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy,
+    TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
@@ -139,6 +139,10 @@ fn maximal_row() -> PriceRow {
         }),
         reserved_rate_minor: Some(money(250)),
         reservation_flavor: Some(ReservationFlavor::Capacity),
+        min_qty_purchase: Some(10),
+        min_qty_usage: Some(20),
+        min_qty_usage_fallback: Some(MinQtyUsageFallback::Exception),
+        discount_ref: Some("promo/spring".to_owned()),
     }
 }
 
@@ -286,6 +290,7 @@ fn mutators() -> Vec<Mutator> {
     all.extend(child_mutators());
     all.extend(window_mutators());
     all.extend(row_mutators());
+    all.extend(slice10_row_mutators());
     all.extend(plan_contract_mutators());
     all
 }
@@ -672,6 +677,15 @@ fn row_mutators() -> Vec<Mutator> {
                 rollover_policy: RolloverPolicy::None,
             });
         }),
+    ]
+}
+
+/// The Slice-10 mutators, split out because `row_mutators` outgrew the 200-line
+/// cap when they arrived — the same split `plan_level_mutators` /
+/// `child_mutators` / `window_mutators` already make. One list per family keeps
+/// the reason a field is pinned next to the field.
+fn slice10_row_mutators() -> Vec<Mutator> {
+    vec![
         // The Slice-10 reservation pair (`v9`). Both halves get a mutator: the
         // rate because it is the money a reviewer approves, and the flavor
         // because flipping it moves the charge (`inst-rv-tier-q` vs
@@ -688,6 +702,29 @@ fn row_mutators() -> Vec<Mutator> {
         }),
         ("row.reservation_flavor -> None", |s| {
             s.rows[0].row.reservation_flavor = None;
+        }),
+        // The typed floors and the discount hook (`v10`). Each moves a distinct
+        // consequence: who may buy (`min_qty_purchase`), what is billable
+        // (`min_qty_usage`), what happens below the floor
+        // (`min_qty_usage_fallback`), and which instrument discounts the line
+        // (`discount_ref`).
+        ("row.min_qty_purchase", |s| {
+            s.rows[0].row.min_qty_purchase = Some(11);
+        }),
+        ("row.min_qty_purchase -> None", |s| {
+            s.rows[0].row.min_qty_purchase = None;
+        }),
+        ("row.min_qty_usage", |s| {
+            s.rows[0].row.min_qty_usage = Some(21);
+        }),
+        ("row.min_qty_usage_fallback -> None", |s| {
+            s.rows[0].row.min_qty_usage_fallback = None;
+        }),
+        ("row.discount_ref", |s| {
+            s.rows[0].row.discount_ref = Some("promo/autumn".to_owned());
+        }),
+        ("row.discount_ref -> None", |s| {
+            s.rows[0].row.discount_ref = None;
         }),
     ]
 }
@@ -1047,6 +1084,14 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   miss. `row.reserved_rate_minor` and `row.reservation_flavor` in the mutator
 ///   table are those properties; this is their byte vector.
 ///
+/// - `v9` -> `v10`, on **2026-08-08**, in the same group: `min_qty_purchase`,
+///   `min_qty_usage`, `min_qty_usage_fallback` and `discount_ref` joined
+///   `put_price_row`. Four holes of four different kinds -- who may buy, what is
+///   billable, what happens below the floor, and which instrument discounts the
+///   line -- and all four authored content a `PATCH` moves. The four
+///   `row.min_qty_*` / `row.discount_ref` mutators are those properties; this is
+///   their byte vector.
+///
 /// What makes any of them an edit rather than a migration today is on
 /// [`CONTENT_PIN_DOMAIN_SEP`](super::CONTENT_PIN_DOMAIN_SEP): this gear is not
 /// deployed, so no durable row holds a `v1` or a `v2` digest. That argument expires
@@ -1055,7 +1100,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "8aad68ea3c78cde25ca4648965851ae456c94555f68df3982a1a9c50c0dbca00"
+        "6ad210681e97cb764625b18710aab0d49d01746ae0c9647d60d6481c2080ef1c"
     );
 }
 
@@ -1216,7 +1261,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v9\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v10\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

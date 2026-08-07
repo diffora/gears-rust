@@ -712,14 +712,20 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     // (digest `15_497_072_427_694_831_591`).
     //
     // `m20260802_000055` (Slice 10): it gained `reserved_rate_minor` and
-    // `reservation_flavor` — the other **71** of this roster's 72 entries
-    // matched byte for byte. **Exactly one digest moved in this roster on each
-    // occasion**, which is the evidence a whole-trigger restatement lost
-    // nothing, and the only evidence there is, since neither engine has an
-    // incremental form for this check.
+    // `reservation_flavor` (digest `12_168_221_688_212_379_341`). The count in
+    // this comment read "71 of 72" for one commit and was wrong: the roster has
+    // **74** entries, and a `grep` for the entries at line start missed the two
+    // `cargo fmt` had folded onto one line. A filtered count is not a census.
+    //
+    // `m20260802_000057` (Slice 10): it gained `min_qty_purchase`,
+    // `min_qty_usage`, `min_qty_usage_fallback` and `discount_ref` — the other
+    // **73** of this roster's 74 entries matched byte for byte. **Exactly one
+    // digest moved in this roster on each occasion**, which is the evidence a
+    // whole-trigger restatement lost nothing, and the only evidence there is,
+    // since neither engine has an incremental form for this check.
     (
         "trg_pricing_price_frozen_columns",
-        12_168_221_688_212_379_341_u64,
+        13_930_095_509_110_238_239_u64,
     ),
     (
         "trg_pricing_price_grandfather_monotonic",

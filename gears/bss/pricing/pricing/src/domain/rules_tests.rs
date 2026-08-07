@@ -57,6 +57,8 @@ fn the_pipeline_registers_every_row_local_instruction() {
             "inst-la-granularity",
             "inst-la-maxhold",
             "inst-rv-attrs",
+            "inst-ft-fallback",
+            "inst-ft-warn",
         ]
     );
     assert_eq!(

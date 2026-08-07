@@ -116,8 +116,8 @@ use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
-    ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy, TierAggregationWindow,
-    TierBand, TierQualificationWindow, model_kind_wire,
+    MinQtyUsageFallback, ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy,
+    TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
@@ -199,6 +199,8 @@ pub const TIER_QUALIFICATION_WINDOWS: &[TierQualificationWindow] = &[
 /// What a reservation reserves (`inst-rv-attrs`, S10).
 pub const RESERVATION_FLAVORS: &[ReservationFlavor] =
     &[ReservationFlavor::Consumption, ReservationFlavor::Capacity];
+/// What a `usage` floor does with below-floor usage (`inst-ft-fallback`, S10).
+pub const MIN_QTY_USAGE_FALLBACKS: &[MinQtyUsageFallback] = &[MinQtyUsageFallback::Exception];
 /// How the in-window `Q` is derived (D-44).
 pub const AGGREGATION_FUNCTIONS: &[AggregationFunction] = &[
     AggregationFunction::Sum,
@@ -2379,6 +2381,10 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
         included_allowance: Set(row.included_allowance.map(allowance_json)),
         reserved_rate_minor: Set(row.reserved_rate_minor.map(MinorAmount::get)),
         reservation_flavor: Set(row.reservation_flavor.map(|f| f.as_str().to_owned())),
+        min_qty_purchase: Set(stored_count("min_qty_purchase", row.min_qty_purchase)?),
+        min_qty_usage: Set(stored_count("min_qty_usage", row.min_qty_usage)?),
+        min_qty_usage_fallback: Set(row.min_qty_usage_fallback.map(|f| f.as_str().to_owned())),
+        discount_ref: Set(row.discount_ref.clone()),
         rounding_policy_ref: Set(content.rounding_policy_ref.clone()),
         grandfather_until: Set(content.grandfather_until),
         supersedes_price_id: Set(content.supersedes_price_id),
@@ -2825,6 +2831,22 @@ fn content_assignments(model: &price::ActiveModel) -> Vec<(price::Column, Value)
             model.reservation_flavor.clone().into_value(),
         ),
         (
+            price::Column::MinQtyPurchase,
+            model.min_qty_purchase.clone().into_value(),
+        ),
+        (
+            price::Column::MinQtyUsage,
+            model.min_qty_usage.clone().into_value(),
+        ),
+        (
+            price::Column::MinQtyUsageFallback,
+            model.min_qty_usage_fallback.clone().into_value(),
+        ),
+        (
+            price::Column::DiscountRef,
+            model.discount_ref.clone().into_value(),
+        ),
+        (
             price::Column::RoundingPolicyRef,
             model.rounding_policy_ref.clone().into_value(),
         ),
@@ -3113,6 +3135,15 @@ fn to_price_row(
             RESERVATION_FLAVORS,
             ReservationFlavor::as_str,
         )?,
+        min_qty_purchase: read_count("pricing_price.min_qty_purchase", row.min_qty_purchase)?,
+        min_qty_usage: read_count("pricing_price.min_qty_usage", row.min_qty_usage)?,
+        min_qty_usage_fallback: read_optional(
+            "pricing_price.min_qty_usage_fallback",
+            row.min_qty_usage_fallback.as_deref(),
+            MIN_QTY_USAGE_FALLBACKS,
+            MinQtyUsageFallback::as_str,
+        )?,
+        discount_ref: row.discount_ref.clone(),
     })
 }
 

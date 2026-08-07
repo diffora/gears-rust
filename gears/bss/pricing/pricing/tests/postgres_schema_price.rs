@@ -999,7 +999,7 @@ async fn a_metered_line_and_a_meterless_one_are_two_keys() {
 
 /// Every column the whitelist freezes, one UPDATE each.
 ///
-/// Forty columns, and the loop is the point: a whitelist maintained by hand
+/// Forty-four columns, and the loop is the point: a whitelist maintained by hand
 /// rots one forgotten `OR` at a time, and a test that moved only `amount_minor`
 /// would stay green while `included_allowance` or `row_version` quietly became
 /// mutable on a frozen row. The trigger is `BEFORE`, so it answers ahead of every
@@ -1058,6 +1058,15 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         // moves money per covered granule, away from the pin that approved it.
         "reserved_rate_minor = 250".to_owned(),
         "reservation_flavor = 'capacity'".to_owned(),
+        // Slice 10's typed floors and discount hook (`m20260802_000057`).
+        // `min_qty_purchase` decides who may buy, `min_qty_usage` what is
+        // billable, the fallback what happens beneath it, and `discount_ref`
+        // which instrument discounts the line -- four different consequences of
+        // one writer moving a published row.
+        "min_qty_purchase = 10".to_owned(),
+        "min_qty_usage = 20".to_owned(),
+        "min_qty_usage_fallback = 'exception'".to_owned(),
+        "discount_ref = 'promo/spring'".to_owned(),
         "rounding_policy_ref = 'policy/1'".to_owned(),
         format!("supersedes_price_id = '{OTHER}'"),
         "created_by = '99999999-9999-9999-9999-999999999999'".to_owned(),
@@ -1066,11 +1075,11 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
     ];
     assert_eq!(
         moves.len(),
-        40,
-        "the whitelist has forty columns; a shorter list here is a column nobody \
-         is testing -- it was 34 here against 38 in the guard until 2026-08-08, \
-         when Slice 10 added its two and the four Slice-6 proration columns \
-         turned out never to have been added at all"
+        44,
+        "the whitelist has forty-four columns; a shorter list here is a column \
+         nobody is testing -- it was 34 here against 38 in the guard until \
+         2026-08-08, when Slice 10 added its six and the four Slice-6 proration \
+         columns turned out never to have been added at all"
     );
 
     for change in &moves {

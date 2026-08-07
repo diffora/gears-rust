@@ -232,6 +232,41 @@ impl fmt::Display for ReservationFlavor {
     }
 }
 
+/// What a `usage` floor does with below-floor usage (`inst-ft-fallback`).
+///
+/// **One variant at launch, and that is the decision rather than a placeholder.**
+/// The design set could have left the behaviour implicit and had every row mean
+/// `exception`; `inst-ft-fallback` says instead that "the fallback is authored,
+/// not implied", so an author declares it and it freezes in the snapshot. The
+/// value of a one-variant enum is what happens when the second lands: every
+/// already-published row already says which behaviour it chose, and none of them
+/// silently inherits a new default.
+///
+/// Richer fallbacks -- an alternative row, for instance -- are a named Future.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MinQtyUsageFallback {
+    /// Fail closed into the rating exception path: visible and resolvable, never
+    /// silently zero-rated and never silently charged.
+    Exception,
+}
+
+impl MinQtyUsageFallback {
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exception => "exception",
+        }
+    }
+}
+
+impl fmt::Display for MinQtyUsageFallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// How `Q` is derived from the measures in the window (D-44).
 ///
 /// [`AggregationFunction::Sum`] is the **default**: a row that authors nothing
@@ -541,6 +576,33 @@ pub struct PriceRow {
     /// quantity leaves the on-demand tier counter (`inst-rv-tier-q`) or never
     /// enters it (`inst-rv-level`), which is quantity derivation.
     pub reservation_flavor: Option<ReservationFlavor>,
+    /// The **purchase** floor: Subscriptions rejects an order below it rather
+    /// than silently zeroing (`inst-ft-typed`).
+    ///
+    /// Outside the evaluation-policy roster: it is a permission -- whether the
+    /// order may be placed at all -- and decides nothing about how a rated line
+    /// is derived.
+    pub min_qty_purchase: Option<u64>,
+    /// The **usage** floor: below-floor usage is ineligible and fails closed
+    /// (`inst-ft-typed`).
+    ///
+    /// **In** the roster. It decides what quantity is billable, which is
+    /// quantity derivation.
+    pub min_qty_usage: Option<u64>,
+    /// What happens beneath [`Self::min_qty_usage`]; REQUIRED when it is set
+    /// (`inst-ft-fallback`).
+    ///
+    /// **In** the roster, with its floor: the two are one evaluation rule read
+    /// in two fields.
+    pub min_qty_usage_fallback: Option<MinQtyUsageFallback>,
+    /// The optional reference to an external discount instrument
+    /// (`inst-dr-referential`).
+    ///
+    /// Outside the roster. Promotions owns the instrument and Promotions/Tariffs
+    /// evaluate it; this gear validates that it resolves and persists it
+    /// (`inst-dr-boundary`), so it changes nothing about how *this* row derives
+    /// a quantity or selects a rate.
+    pub discount_ref: Option<String>,
 }
 
 impl PriceRow {
@@ -571,6 +633,10 @@ impl PriceRow {
             included_allowance: None,
             reserved_rate_minor: None,
             reservation_flavor: None,
+            min_qty_purchase: None,
+            min_qty_usage: None,
+            min_qty_usage_fallback: None,
+            discount_ref: None,
         }
     }
 

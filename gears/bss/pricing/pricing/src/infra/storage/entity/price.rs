@@ -133,6 +133,16 @@ pub struct Model {
     /// `CHECK` on either engine -- see `m20260802_000054` for why the vocabulary
     /// lives in the domain enum and the pairing in a publish rule.
     pub reservation_flavor: Option<String>,
+    /// The order-time purchase floor (`inst-ft-typed`); Subscriptions enforces.
+    pub min_qty_purchase: Option<i64>,
+    /// The eligibility usage floor (`inst-ft-typed`); Tariffs/Rating enforces.
+    pub min_qty_usage: Option<i64>,
+    /// What happens beneath `min_qty_usage`; REQUIRED with it at publish
+    /// (`inst-ft-fallback`). Launch vocabulary is one value, `exception`.
+    pub min_qty_usage_fallback: Option<String>,
+    /// The external discount instrument (`inst-dr-referential`). Opaque here:
+    /// Promotions owns it and this gear only checks that it resolves.
+    pub discount_ref: Option<String>,
     /// The named rounding-policy id resolved at publish (row-level, else the
     /// tenant default, else `ROUNDING_POLICY_UNRESOLVED`).
     pub rounding_policy_ref: Option<String>,

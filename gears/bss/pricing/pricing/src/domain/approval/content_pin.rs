@@ -217,9 +217,9 @@ use crate::domain::plan_shape::{
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
-    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
-    QuantitySource, ReservationFlavor, TierAggregationWindow, TierBand, TierQualificationWindow,
-    model_kind_wire,
+    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance,
+    MinQtyUsageFallback, PriceRow, QuantitySource, ReservationFlavor, TierAggregationWindow,
+    TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{Meter, PhaseId, PlanId, ScopeKey};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
@@ -410,7 +410,22 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// rather than one for the reason `v8` states — each records a distinct
 /// re-freeze, and a counter that skipped any would leave a later reader unable
 /// to tell which change moved the bytes.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v9\x1f";
+/// # `v10`: Slice 10's typed floors and discount hook joined it (2026-08-08)
+///
+/// `v9`'s case, four fields over and in one group with it. Each closes a
+/// distinct hole: `min_qty_purchase` decides who may buy the plan at all,
+/// `min_qty_usage` decides what quantity is billable, `min_qty_usage_fallback`
+/// decides whether below-floor usage becomes a rating exception or nothing, and
+/// `discount_ref` names the instrument that discounts the line. All four are
+/// authored draft content a `PATCH` moves, so all four were mutable between
+/// submit and approve with every digest equal.
+///
+/// **`v6` through `v10` all collapse for anyone deploying**: nothing durable
+/// held any of them, and all five landed in one unshipped series. They are five
+/// bumps rather than one for `v8`'s reason -- each records a distinct re-freeze,
+/// and a counter that skipped any would leave a later reader unable to tell
+/// which change moved the bytes.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v10\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1052,6 +1067,10 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
         included_allowance,
         reserved_rate_minor,
         reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
     } = row;
     put_str(buf, charge_kind.as_str());
     put_opt_str(buf, model_kind.map(model_kind_wire));
@@ -1112,6 +1131,15 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
     // pair would make the two half-states frame alike.
     put_opt_i64(buf, reserved_rate_minor.map(MinorAmount::get));
     put_opt_str(buf, reservation_flavor.map(ReservationFlavor::as_str));
+
+    // The typed floors and the discount hook (`inst-ft-typed`,
+    // `inst-ft-fallback`, `inst-dr-referential`). Four independent optional
+    // fields: the floors are distinct facts (`inst-ft-both` permits both on one
+    // row) and the fallback is a third, so nothing here is a pair.
+    put_opt_u64(buf, *min_qty_purchase);
+    put_opt_u64(buf, *min_qty_usage);
+    put_opt_str(buf, min_qty_usage_fallback.map(MinQtyUsageFallback::as_str));
+    put_opt_str(buf, discount_ref.as_deref());
 }
 
 fn put_tier_band(buf: &mut Vec<u8>, band: &TierBand) {

@@ -189,6 +189,18 @@ pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
         // rather than passed through.
         reserved_rate_minor: optional_amount(snapshot.reserved_rate_minor, "reserved_rate_minor")?,
         reservation_flavor: snapshot.reservation_flavor.map(reservation_flavor),
+        // **The corpus has no counterpart for any of these four**, and that is a
+        // statement about the corpus rather than a mapping shortcut. The typed
+        // floors and the `discountRef` hook are enforced entirely downstream --
+        // Subscriptions at order time, Tariffs/Rating at eligibility, Promotions
+        // for the instrument -- so no joint fixture between this catalog and
+        // Rating pins a number that depends on them, and `reject_unrepresentable`
+        // has nothing to decline. If a case ever authors one, `Snapshot` gains
+        // the field first and this mapping follows it.
+        min_qty_purchase: None,
+        min_qty_usage: None,
+        min_qty_usage_fallback: None,
+        discount_ref: None,
     })
 }
 
