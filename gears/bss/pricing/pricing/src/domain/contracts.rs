@@ -82,6 +82,43 @@ fn is_recurring(charge_kind: ChargeKind) -> bool {
     matches!(charge_kind, ChargeKind::Recurring)
 }
 
+/// The `billingTiming` a row **publishes**, which on every kind but `recurring`
+/// is a constant the author never gave (`inst-bt-usage`).
+///
+/// Usage is implicitly `arrears` — its quantity is not known until the period
+/// closes — and a one-time or setup row is charged at the event, which is
+/// `advance`. A hybrid therefore publishes `advance` on its base line and
+/// `arrears` on its usage line, which is the mix `inst-bt-usage` sanctions and
+/// the reason `inst-pi-uniform` exempts this field from market uniformity.
+///
+/// **The constant wins over anything in the column**, and that is the point: it
+/// is a projection, not a default. Were an authored value allowed to displace
+/// it, Billing's deferral on a usage line would depend on whether someone had
+/// typed into a column the design says is not theirs to author — and no rule
+/// would report the difference, because there is nothing to report about a
+/// field that is not authored. Slice 2 already refuses the value outright on a
+/// setup row (`inst-cs-setup`, `SETUP_ROW_INVALID`); this closes the same gap
+/// on the read side for every non-recurring kind at once.
+///
+/// The tokens are the **stored** spelling (`advance` / `arrears`), which is what
+/// `chk_pricing_price_billing_timing` admits and what a recurring row already
+/// projects. See this module's note in the hand-back on the design set's
+/// `in_advance` / `in_arrears` prose.
+#[must_use]
+pub fn published_billing_timing(charge_kind: ChargeKind, authored: Option<&str>) -> Option<&str> {
+    match charge_kind {
+        ChargeKind::Recurring => authored,
+        ChargeKind::Usage => Some(BILLING_TIMING_ARREARS),
+        ChargeKind::OneTime | ChargeKind::OneTimeSetup => Some(BILLING_TIMING_ADVANCE),
+    }
+}
+
+/// Charged at the start of the period it covers.
+pub const BILLING_TIMING_ADVANCE: &str = "advance";
+
+/// Charged after the period it covers has closed.
+pub const BILLING_TIMING_ARREARS: &str = "arrears";
+
 #[cfg(test)]
 #[path = "contracts_tests.rs"]
 mod contracts_tests;

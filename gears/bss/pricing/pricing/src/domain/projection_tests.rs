@@ -210,6 +210,82 @@ fn the_payload_carries_the_declared_generation_and_this_file_does_not_spell_it()
     );
 }
 
+// ---------------------------------------------------------------------------
+// `inst-bt-usage` — the timing a non-recurring row does not author.
+// ---------------------------------------------------------------------------
+
+/// One row of `kind`, carrying whatever timing it was handed.
+fn row_of_kind(kind: ChargeKind, authored: Option<&str>) -> PriceRecord {
+    let mut record = graduated_row();
+    record.row = PriceRow::new(kind, Some(ModelKind::Flat));
+    record.row.amount_minor = Some(MinorAmount::new(1000).expect("a non-negative amount"));
+    record.scope_key = ScopeKey::new(
+        plan_id(),
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("eu").expect("a non-blank region"),
+        terminal_phase(),
+        PriceEligibility::AllSubscriptions,
+        kind,
+        Cohort::None,
+    )
+    .expect("the class pairs with cohort none");
+    record.billing_timing = authored.map(ToOwned::to_owned);
+    record
+}
+
+/// The projected `billingTiming` of the delta's single row.
+fn projected_timing(record: PriceRecord) -> serde_json::Value {
+    let delta = PlanSubjectDelta {
+        prices: vec![record],
+        ..shape_only()
+    };
+    delta.to_value()["prices"][0]["billingTiming"].clone()
+}
+
+/// A usage row is implicitly `arrears` and a one-time row implicitly `advance`
+/// — projected constants, never authored, so Billing reads the same field on
+/// every line of a hybrid instead of a null it has to interpret.
+#[test]
+fn a_non_recurring_row_projects_its_constant_timing() {
+    assert_eq!(
+        projected_timing(row_of_kind(ChargeKind::Usage, None)),
+        json!("arrears")
+    );
+    assert_eq!(
+        projected_timing(row_of_kind(ChargeKind::OneTime, None)),
+        json!("advance")
+    );
+    assert_eq!(
+        projected_timing(row_of_kind(ChargeKind::OneTimeSetup, None)),
+        json!("advance")
+    );
+}
+
+/// The constant is a **projection**, not a default: a value that reached the
+/// column on a non-recurring row does not get to speak for it. Anything else
+/// would make `inst-bt-usage` a defaultable field, and Billing's deferral would
+/// depend on whether an author had typed into a column the design says is not
+/// theirs.
+#[test]
+fn an_authored_value_on_a_non_recurring_row_does_not_displace_the_constant() {
+    assert_eq!(
+        projected_timing(row_of_kind(ChargeKind::Usage, Some("advance"))),
+        json!("arrears")
+    );
+}
+
+/// The recurring row is the only one that authors the field, and it projects
+/// exactly what it authored — `inst-bt-required` guarantees there is one.
+#[test]
+fn a_recurring_row_projects_exactly_what_it_authored() {
+    for timing in ["advance", "arrears"] {
+        assert_eq!(
+            projected_timing(row_of_kind(ChargeKind::Recurring, Some(timing))),
+            json!(timing)
+        );
+    }
+}
+
 #[test]
 fn every_plan_subject_carries_the_cross_boundary_marker_and_no_warning_text() {
     // D-169 clause (1). The marker is a launch-constant, tenant-wide value on

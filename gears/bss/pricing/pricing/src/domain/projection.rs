@@ -160,6 +160,7 @@ use serde_json::{Value as JsonValue, json};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::domain::contracts::published_billing_timing;
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
@@ -751,7 +752,15 @@ fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValu
         // bare `bool` — see its own line.
         "resolvedTaxCategory": tax.and_then(|t| t.resolved_tax_category.clone()),
         "notSellableGa": tax.is_some_and(|t| t.not_sellable_ga),
-        "billingTiming": billing_timing,
+        // The **published** timing, not the column: on every kind but
+        // `recurring` it is a constant the author never gave (`inst-bt-usage`),
+        // and Billing consumes the field per line. A payload that rendered the
+        // raw column would hand a hybrid's usage line a `null` for Billing to
+        // interpret, which is the heuristic `inst-bt-frozen` forbids.
+        "billingTiming": published_billing_timing(
+            scope_key.charge_kind(),
+            billing_timing.as_deref(),
+        ),
         "roundingPolicyRef": rounding_policy_ref,
         "grandfatherUntil": grandfather_until,
         "supersedesPriceId": supersedes_price_id,
