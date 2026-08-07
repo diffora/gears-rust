@@ -1110,7 +1110,7 @@ The roster, the fields deliberately outside it, and the generation log are decla
 this block is normative — the gear's guard reads it:
 
 ```text
-evaluation-policy-generation: ep-1
+evaluation-policy-generation: ep-2
 
 log:
   ep-1  D-162  + model_kind
@@ -1122,6 +1122,7 @@ log:
   ep-1  D-162  + aggregation_granularity
   ep-1  D-162  + max_hold_granules
   ep-1  D-162  + included_allowance
+  ep-2  D-113  + usage_counter_on_plan_change
 
 outside:
   charge_kind          identity - scope-key axis 7
@@ -1132,6 +1133,8 @@ outside:
   package_price_minor  money - D-122's "legitimate price lever"
   quantity_source      quantity origin, not quantity derivation
   manual_quantity      quantity origin, not quantity derivation
+  allowed_change_targets  permission - whether a self-service change may happen
+  comparability_rank      proration sign, computed by Subscriptions
 ```
 
 The log is **append-only and replayed**: the roster is what applying its `+` and `-` operations

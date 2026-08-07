@@ -55,7 +55,7 @@
 //! `inst-ac-gate` / `inst-tt-forbidden` / `inst-tt-window-pair` /
 //! `inst-tt-zero-band` / `inst-tt-fixture` state, and not the allowance compile
 //! (`inst-ac-band`, `inst-ac-marker`, `inst-ac-carry`) that gives the declaration
-//! its meaning. So `ep-1` tells a consumer these two fields are part of the set an
+//! its meaning. So the generation stamp tells a consumer these two fields are part of the set an
 //! evaluator reads, and nothing in this gear judges either value or honours the
 //! allowance.
 //!
@@ -77,6 +77,7 @@
 //! members remaining modelled fields rather than silently ignored ones (D-174
 //! clause 1).
 
+use crate::domain::contracts::PlanChangeContract;
 use crate::domain::price_row::PriceRow;
 
 /// The evaluation-policy generation this gear stamps.
@@ -89,7 +90,7 @@ use crate::domain::price_row::PriceRow;
 /// It is the gear's constant rather than a per-publish value — every publish of
 /// one generation stamps the same string — and it moves only with the log in
 /// `design/01-foundation.md` §4.4, whose last entry it must equal.
-pub const EVALUATION_POLICY_GENERATION: &str = "ep-1";
+pub const EVALUATION_POLICY_GENERATION: &str = "ep-2";
 
 /// Every field of [`PriceRow`], sorted into the evaluation-policy roster and out
 /// of it.
@@ -156,6 +157,46 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
         "meter",
         "dimension_key",
     ];
+
+    (roster, outside)
+}
+
+/// The same partition over the **plan-scoped** contract, added by D-113's field.
+///
+/// # Why a second function rather than a wider first one
+///
+/// D-162 built the guard around [`PriceRow`] because every rostered field was a
+/// row field, and it warned in the same breath that *"a slice that lands \[a
+/// plan-scoped member\] and leaves the roster alone leaves the generation claiming
+/// more than it covers."* Slice 6 landed exactly that: `usage_counter_on_plan_change`
+/// is frozen with the snapshot — D-113 exists because two gears were already reading
+/// it *"from the pinned snapshot"* while no gear defined it — so it is evaluation
+/// policy by the roster's own test, and it is not on a row.
+///
+/// The exhaustive destructure is what makes either function worth having, and it
+/// cannot span two structs: a pattern that misses a new field must fail to compile.
+/// So the roster is the **union** of the two partitions, and each struct keeps its
+/// own arm.
+///
+/// # Why only one of the three is rostered
+///
+/// `allowed_change_targets` is a permission — whether a self-service change may
+/// happen at all — and `comparability_rank` drives the proration sign Subscriptions
+/// computes. Neither changes how a rated line is evaluated, which is the roster's
+/// subject; both are consumer-contract inputs that a snapshot carries for other
+/// reasons.
+#[must_use]
+pub fn partition_plan_fields(
+    contract: &PlanChangeContract,
+) -> (Vec<&'static str>, Vec<&'static str>) {
+    let PlanChangeContract {
+        allowed_change_targets: _,
+        comparability_rank: _,
+        usage_counter_on_plan_change: _,
+    } = contract;
+
+    let roster = vec!["usage_counter_on_plan_change"];
+    let outside = vec!["allowed_change_targets", "comparability_rank"];
 
     (roster, outside)
 }

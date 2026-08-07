@@ -741,7 +741,7 @@ fn the_horizon_finding_appears_in_the_same_report_as_another_rows_violation() {
 }
 
 #[test]
-fn the_row_type_gained_no_field_and_the_evaluation_policy_roster_did_not_move() {
+fn the_row_type_gained_no_field_and_the_generation_moved_only_for_a_rostered_one() {
     // D-162's boundary, asserted rather than trusted. `grandfather_until` lives
     // on `PriceRecord`; reaching it by widening `PriceRow` would move a field
     // across the roster boundary and imply a generation bump for something that
@@ -758,8 +758,11 @@ fn the_row_type_gained_no_field_and_the_evaluation_policy_roster_did_not_move() 
     );
     assert_eq!(
         crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION,
-        "ep-1",
-        "so the generation stands"
+        "ep-2",
+        "the generation moved to `ep-2` for `usage_counter_on_plan_change` (D-113, Slice 6), \
+         which is a plan-scoped field a snapshot freezes, and **not** for anything on the row. \
+         This assertion is transcribed rather than derived, so a bump has to be argued for here \
+         as well as in the document"
     );
 }
 

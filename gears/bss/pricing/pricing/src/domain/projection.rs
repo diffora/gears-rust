@@ -90,7 +90,7 @@
 //! Mount that route and the freeze is live **with no further code change and no
 //! gate that would notice**.
 //!
-//! Both fields also sit in the `ep-1` roster
+//! Both fields also sit in the `ep-2` roster
 //! ([`crate::domain::evaluation_policy`]), which says the opposite of a warning:
 //! it tells a consumer both are part of the field set an evaluator reads.
 //!
@@ -144,7 +144,7 @@
 //! purchase, not a rate; `invoice_grouping_key` is a Billing layout hint (D-96);
 //! the phase set, the add-on rules and the descriptor set are composition and
 //! presentation. **None of them is rostered, so the roster does not move and
-//! `ep-1` stands.**
+//! `ep-2` stands.**
 //!
 //! D-162's named example **is landed now** (Slice 6, 2026-08-07), and the
 //! paragraph that said it "does not exist in this crate — there is no column, no
@@ -154,25 +154,26 @@
 //! (`m20260802_000052`), a field of [`PlanChangeContract`], written by
 //! `plan_repo` and rendered into this payload as `usageCounterOnPlanChange`.
 //!
-//! **The bump D-162 owes is therefore due, and this strand cannot make it.**
-//! D-162 clause (5) makes the roster *what replaying the log in
-//! `01-foundation.md` §4.4 produces*, and
-//! [`evaluation_policy_tests`](crate::domain::evaluation_policy) reads that block
-//! with `include_str!` — so [`EVALUATION_POLICY_GENERATION`] cannot move to
-//! `ep-2` without the document gaining the line
-//! `ep-2  D-113  + usage_counter_on_plan_change`. `docs/**` belongs to the main
-//! session, so the change is handed back as a register item instead of made
-//! here.
+//! **The bump D-162 owed is made: the generation is `ep-2`** (main session,
+//! 2026-08-07, on the register item this strand handed back). The document's log
+//! gained `ep-2  D-113  + usage_counter_on_plan_change`, and
+//! [`EVALUATION_POLICY_GENERATION`] followed it rather than the other way round —
+//! D-162 clause (5) makes the roster *what replaying that log produces*, and
+//! [`evaluation_policy_tests`](crate::domain::evaluation_policy) reads the block
+//! with `include_str!`.
 //!
-//! **Nothing reddens meanwhile, and that is the hazard rather than the
-//! comfort.** The guard's exhaustive classification runs over
+//! **It cost more than a line, and the reason is the hazard this paragraph used
+//! to describe.** The guard's exhaustive classification ran over
 //! [`PriceRow`](crate::domain::price_row::PriceRow) alone, so a plan-scoped
-//! roster member is invisible to it — which is exactly what D-162 warns of: *"a
-//! slice that lands it and leaves the roster alone leaves the generation
-//! claiming more than it covers."* Until the log line lands, `ep-1` claims a
-//! field set that no longer describes what a snapshot freezes, and two snapshots
-//! stamped `ep-1` may have been frozen under different evaluation semantics —
-//! the one thing the generation exists to make impossible.
+//! roster member was invisible to it — exactly what D-162 warns of: *"a slice
+//! that lands it and leaves the roster alone leaves the generation claiming more
+//! than it covers."* Appending the log line therefore made the document's roster
+//! disagree with the crate's, which is the test failing **as designed**. The
+//! mechanism was widened instead of the document being trimmed to fit it:
+//! `partition_plan_fields` is a second exhaustive destructure over
+//! [`PlanChangeContract`], the roster is the **union** of the two, and each
+//! struct keeps its own arm — because a pattern that misses a new field must
+//! fail to compile, and one pattern cannot span two structs.
 //!
 //! The D-162 guard's **reach** is decided here too, and it stays where it is.
 //! [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)

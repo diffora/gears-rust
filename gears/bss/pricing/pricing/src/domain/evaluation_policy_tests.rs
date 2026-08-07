@@ -28,7 +28,8 @@
 
 use std::collections::BTreeSet;
 
-use super::{EVALUATION_POLICY_GENERATION, partition_row_fields};
+use super::{EVALUATION_POLICY_GENERATION, partition_plan_fields, partition_row_fields};
+use crate::domain::contracts::{PlanChangeContract, UsageCounterOnPlanChange};
 use crate::domain::price_row::PriceRow;
 use crate::domain::scope_key::ChargeKind;
 
@@ -49,6 +50,15 @@ const BLOCK_ANCHOR: &str = "evaluation-policy-generation:";
 /// A row whose only purpose is to give the exhaustive pattern something to
 /// match — the partition is a statement about the *shape* of a price row and
 /// never about a value in one.
+/// Any plan-change contract: the partition reads the **shape**, never the values.
+fn any_plan_contract() -> PlanChangeContract {
+    PlanChangeContract {
+        allowed_change_targets: None,
+        comparability_rank: None,
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Reset,
+    }
+}
+
 fn any_row() -> PriceRow {
     PriceRow {
         charge_kind: ChargeKind::Recurring,
@@ -200,11 +210,17 @@ fn replayed_roster(block: &DeclaredBlock) -> BTreeSet<String> {
 #[test]
 fn the_roster_is_the_documents_roster() {
     let block = declared_block();
-    let (roster, _) = partition_row_fields(&any_row());
+    // The **union** of both partitions since `ep-2`: the roster outgrew `PriceRow`
+    // when Slice 6 landed `usage_counter_on_plan_change`, which a snapshot freezes
+    // and no row carries. Each struct keeps its own exhaustive destructure, because
+    // that is the part that fails to compile when a field is added.
+    let (row_roster, _) = partition_row_fields(&any_row());
+    let (plan_roster, _) = partition_plan_fields(&any_plan_contract());
 
     assert_eq!(
-        roster
+        row_roster
             .iter()
+            .chain(plan_roster.iter())
             .map(|f| (*f).to_owned())
             .collect::<BTreeSet<_>>(),
         replayed_roster(&block),
@@ -217,11 +233,13 @@ fn the_roster_is_the_documents_roster() {
 #[test]
 fn the_out_of_roster_set_is_the_documents() {
     let block = declared_block();
-    let (_, outside) = partition_row_fields(&any_row());
+    let (_, row_outside) = partition_row_fields(&any_row());
+    let (_, plan_outside) = partition_plan_fields(&any_plan_contract());
 
     assert_eq!(
-        outside
+        row_outside
             .iter()
+            .chain(plan_outside.iter())
             .map(|f| (*f).to_owned())
             .collect::<BTreeSet<_>>(),
         block.outside,
@@ -244,6 +262,18 @@ fn every_field_of_the_row_is_classified_exactly_once() {
         17,
         "a field is classified twice or named twice"
     );
+}
+
+#[test]
+fn every_field_of_the_plan_contract_is_classified_exactly_once() {
+    let (roster, outside) = partition_plan_fields(&any_plan_contract());
+
+    // Stated, not derived, for `every_field_of_the_row_is_classified_exactly_once`'s
+    // reason: the destructure growing an arm without these lists growing is a
+    // failure here rather than a silent omission from both.
+    assert_eq!(roster.len() + outside.len(), 3);
+    let union: BTreeSet<&str> = roster.iter().chain(outside.iter()).copied().collect();
+    assert_eq!(union.len(), 3, "a field is classified twice or named twice");
 }
 
 #[test]
