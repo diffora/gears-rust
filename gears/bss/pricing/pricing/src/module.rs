@@ -672,6 +672,12 @@ impl Gear for BssPricingGear {
                 db.clone(),
                 Arc::clone(&catalog_version_registry),
             ),
+            // The **sixth** (D-128): retirement is a publish unit, so it requests
+            // a version too. The argument has not had to change once.
+            retirements: crate::infra::retirement::RetirementService::new(
+                db.clone(),
+                Arc::clone(&catalog_version_registry),
+            ),
             // The window `POST`'s at-most-once gate (D-191), under the **same** TTL the
             // authoring plane's claims expire on: the expiry is a deployment knob about
             // how long a client key is honoured, and two windows for it would mean one
@@ -831,6 +837,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::cutovers::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::retirement::router(
                 Arc::clone(&rt.governance_api),
                 openapi,
             ))

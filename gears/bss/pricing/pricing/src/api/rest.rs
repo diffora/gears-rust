@@ -18,6 +18,7 @@ pub mod preconditions;
 pub mod preview;
 pub mod prices;
 pub mod publish;
+pub mod retirement;
 pub mod state;
 pub mod supersessions;
 pub mod tax_display_policy;

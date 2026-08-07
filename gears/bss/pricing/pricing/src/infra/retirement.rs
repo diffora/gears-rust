@@ -315,6 +315,14 @@ pub enum RetirementOutcome {
 }
 
 /// The `RetirementOrchestrator` of §1.7.
+///
+/// `Clone` because [`crate::api::rest::state::GovernanceState`] is, and both of
+/// its fields are handles rather than state: a `DBProvider` and the one registry
+/// `Arc`. Cloning the service is two refcount bumps and gives a second reader of
+/// the same provider — never a second incrementer of `CatalogVersion`, which is
+/// the invariant `infra::publish` states and which holds here because the `Arc`
+/// is shared rather than rebuilt.
+#[derive(Clone)]
 pub struct RetirementService {
     db: DBProvider<DbError>,
     registry: Arc<dyn CatalogVersionRegistryV1>,

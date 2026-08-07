@@ -418,6 +418,10 @@ impl Harness {
                 db.clone(),
                 Arc::clone(&registry) as Arc<_>,
             ),
+            retirements: bss_pricing::infra::retirement::RetirementService::new(
+                db.clone(),
+                Arc::clone(&registry) as Arc<_>,
+            ),
             publish: PublishService::new(
                 db.clone(),
                 &LimitsConfig::default(),
@@ -554,6 +558,10 @@ impl Harness {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::cutovers::router(
+                Arc::clone(&self.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::retirement::router(
                 Arc::clone(&self.governance),
                 &openapi,
             ))
