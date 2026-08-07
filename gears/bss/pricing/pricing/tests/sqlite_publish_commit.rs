@@ -1779,10 +1779,79 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     drive_the_threshold_policy_plane(h).await;
     drive_the_window_plane(h).await;
     drive_the_overlay_plane(h).await;
+    // **Last, and the position is load-bearing.** Retirement is terminal: it
+    // flips the plan's current revision to `retired`, after which no plane above
+    // can publish anything on it. Driven here so the census sees the `retire`
+    // record without every earlier driver having to work around a dead plan.
+    drive_the_retirement_plane(h).await;
 
     let mut rows = audit_rows(h).await;
     rows.sort_by_key(|row| row.seq);
     rows
+}
+
+/// The retirement plane — the writer of the `retire` action (D-128, Slice 11).
+///
+/// It takes **two** calls, and that is the property rather than an inconvenience:
+/// retirement is a registered always-material trigger (D-109), so the first call
+/// can only open a unit, and no threshold policy can make it do otherwise. The
+/// commit happens on the second call, after an **independent** approver has
+/// decided - which is also what makes the record this census reads carry an
+/// `approval_ref`.
+///
+/// A driver that reached past `RetirementService` into `plan_repo` would flip the
+/// row and leave this census green with no audit record in the store at all,
+/// which is the failure mode `drive_the_window_plane` records one plane over.
+async fn drive_the_retirement_plane(h: &Harness) {
+    let approvals = ApprovalService::new(h.provider.clone());
+    let retirements = bss_pricing::infra::retirement::RetirementService::new(
+        h.provider.clone(),
+        Arc::clone(&h.registry) as Arc<_>,
+    );
+
+    let opened = retirements
+        .retire(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            plan_id(),
+            bss_pricing::api::rest::windows::verdict_json,
+            stamp_of(ACTOR, at(16)),
+        )
+        .await
+        .expect("compose the retirement");
+    let bss_pricing::infra::retirement::RetirementOutcome::SubmittedForApproval(pending) = opened
+    else {
+        panic!("a retirement may not commit on one principal (D-109)");
+    };
+
+    decide_one(
+        h,
+        &approvals,
+        pending.approval.approval_id,
+        DecisionBy::Approve(APPROVER),
+        None,
+    )
+    .await;
+
+    let committed = retirements
+        .retire(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            plan_id(),
+            bss_pricing::api::rest::windows::verdict_json,
+            stamp_of(ACTOR, at(17)),
+        )
+        .await
+        .expect("commit the retirement");
+    assert!(
+        matches!(
+            committed,
+            bss_pricing::infra::retirement::RetirementOutcome::Retired(_)
+        ),
+        "an approved retirement commits"
+    );
 }
 
 #[tokio::test]

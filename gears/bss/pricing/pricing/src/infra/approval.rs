@@ -1622,6 +1622,45 @@ pub(crate) async fn open_policy_unit(
 /// reviewer their approval record was missing when it is sitting in front of
 /// them. Every other assembly failure is still an error — a storage fault is not
 /// a mismatch.
+/// Does this subject ref name a **retirement** unit?
+///
+/// Matched on the act segment `retirement_unit_ref` writes. A retirement's
+/// subject is the plan's current published revision, so its pin re-derives the
+/// way a window's does rather than the way a draft's does.
+fn is_retirement_unit(subject_ref: &str) -> bool {
+    subject_ref
+        .split_once('/')
+        .is_some_and(|(_, rest)| rest.starts_with("retirement/"))
+}
+
+/// The shape of the plan **as it currently stands** — the assembly every unit
+/// whose subject is a published fact re-derives under.
+///
+/// Extracted rather than copied into a third arm: three hand-maintained copies of
+/// one resolution is how the `price_unit` arm came to disagree with the `window`
+/// arm in the first place.
+async fn current_revision_shape(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    now: DateTime<Utc>,
+) -> Result<Option<PinnedSubject>, DomainError> {
+    let Some(revision) = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+    else {
+        return Ok(None);
+    };
+    match crate::infra::publish::assemble_from(runner, scope, tenant_id, plan_id, revision, now)
+        .await
+    {
+        Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
+        Err(DomainError::NotFound { .. }) => Ok(None),
+        Err(other) => Err(other),
+    }
+}
+
 async fn re_derive(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1645,6 +1684,31 @@ async fn re_derive(
     match record.subject_kind {
         AuditSubjectKind::PlanRevision => {
             let plan_id = plan_of(record)?;
+            // **A retirement unit carries this kind and resolves the other way**,
+            // and the distinction is the same one the two arms below are already
+            // built on: what decides the assembly is not the subject *kind* but
+            // whether the subject is a draft being reviewed or a fact about the
+            // plan as it currently stands. A retirement reviews a **published**
+            // revision - it is the act of ending it - so a plan with no open
+            // draft would assemble to `NotFound`, `content_matches_pin` would
+            // answer `false`, and every retirement unit would be openable and
+            // never approvable.
+            //
+            // That is the **third** instance of this defect in this function:
+            // the window arm records it, the `price_unit` arm records finding it
+            // again on 2026-08-06 with "nothing caught it because no test
+            // decided a supersession unit", and this one was caught by
+            // `sqlite_publish_commit`'s `every_declared_action_has_a_production_
+            // writer` - a census that *drives* every audited path rather than
+            // grepping for it, so the unapprovable unit surfaced the moment a
+            // retirement had to actually commit.
+            //
+            // Discriminated on the subject ref rather than on a new subject kind
+            // because the kind is right: the thing being decided **is** a plan
+            // revision, and `pricing_audit_log` should say so.
+            if is_retirement_unit(&record.subject_ref) {
+                return current_revision_shape(runner, scope, tenant_id, plan_id, now).await;
+            }
             match crate::infra::publish::assemble(runner, scope, tenant_id, plan_id, now).await {
                 Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
                 Err(DomainError::NotFound { .. }) => Ok(None),
@@ -1671,21 +1735,7 @@ async fn re_derive(
         // fact about a plan as it currently stands.
         AuditSubjectKind::PriceUnit | AuditSubjectKind::Window => {
             let plan_id = plan_of(record)?;
-            let Some(revision) = plan_repo::load_current(runner, scope, tenant_id, plan_id)
-                .await
-                .map_err(|e| repo_failure(&e))?
-            else {
-                return Ok(None);
-            };
-            match crate::infra::publish::assemble_from(
-                runner, scope, tenant_id, plan_id, revision, now,
-            )
-            .await
-            {
-                Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
-                Err(DomainError::NotFound { .. }) => Ok(None),
-                Err(other) => Err(other),
-            }
+            current_revision_shape(runner, scope, tenant_id, plan_id, now).await
         }
         // The proposed version's own rows, read back from the store that holds
         // them. It cannot move — `pricing_approval_threshold` refuses every UPDATE
