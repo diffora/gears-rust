@@ -698,6 +698,13 @@ async fn registered_paths() -> Vec<String> {
                 Arc::clone(&harness.state),
                 &openapi,
             ))
+            // The submit route publishes (D-234), so it is mounted on the
+            // governance state apart from its authoring siblings. It is in this
+            // census because the census is about paths, and the path did not move.
+            .merge(bss_pricing::api::rest::overlays::governance_router(
+                Arc::clone(&harness.governance),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::bundles::router(
                 Arc::clone(&harness.state),
                 &openapi,

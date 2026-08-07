@@ -619,6 +619,14 @@ impl Gear for BssPricingGear {
             prices: PriceRepo::new(db.clone()),
             approvals,
             publish,
+            overlays: crate::infra::storage::repo::OverlayRepo::new(db.clone()),
+            // The **fifth** requester of the one registry `Arc` (D-234). Five
+            // requesters is still one incrementer, and the argument is
+            // `api::rest::state`'s.
+            overlay_publish: crate::infra::overlay_publish::OverlayPublishService::new(
+                db.clone(),
+                Arc::clone(&catalog_version_registry),
+            ),
             // The same registry `Arc` the engine holds. Two requesters of one
             // registry, never two incrementers — `api::rest::state`'s module doc
             // carries the argument and the correction it replaces.
@@ -766,6 +774,13 @@ impl RestApiCapability for BssPricingGear {
             ))
             .merge(crate::api::rest::overlays::router(
                 Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            // The submit route is mounted apart from its siblings and on the
+            // **governance** state, because it publishes (D-234). See
+            // `api::rest::state::GovernanceState::overlay_publish`.
+            .merge(crate::api::rest::overlays::governance_router(
+                Arc::clone(&rt.governance_api),
                 openapi,
             ))
             .merge(crate::api::rest::windows::router(

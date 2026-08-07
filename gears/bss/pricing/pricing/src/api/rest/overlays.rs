@@ -65,7 +65,7 @@ use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
-use crate::api::rest::state::AuthoringState;
+use crate::api::rest::state::{AuthoringState, GovernanceState};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict};
@@ -81,6 +81,17 @@ use crate::domain::scope_key::PlanId;
 use crate::infra::storage::repo::{NewOverlay, OverlayRecord};
 
 const TAG: &str = "BSS Pricing Overlays";
+
+/// The wire token for the submit arm — `api::rest::publish`'s, so a client's
+/// `match` does not depend on which plane it called.
+const OUTCOME_SUBMITTED: &str = crate::api::rest::publish::OUTCOME_SUBMITTED;
+
+/// The wire token for the publish arm.
+const OUTCOME_PUBLISHED: &str = "published";
+
+/// The materiality reason an overlay act always carries (D-50), for the arm that
+/// reads it back off a **stored** verdict rather than evaluating one.
+const OVERLAY_ACT_REASON: &str = "alwaysMaterialTrigger";
 
 /// `POST` — author an overlay draft; `GET` — list them.
 pub const PRICE_OVERLAYS: &str = "/bss-pricing/v1/price-overlays";
@@ -256,6 +267,20 @@ pub struct SubmitAcceptedView {
     pub price_overlay_id: Uuid,
     /// The revision submitted.
     pub revision: u64,
+    /// What the call did: `submitted_for_approval` (202) | `published` (200).
+    ///
+    /// One response type across both statuses rather than two schemas on one
+    /// operation — `PublishOutcomeView`'s arrangement one plane over, and its
+    /// reason: a generated client has one thing to deserialize and reads this
+    /// field to know which arm it got.
+    pub outcome: String,
+    /// The registry's **pending** handle, on the publish arm only.
+    ///
+    /// Not a `CatalogVersion`, and it must not be pinned as one: the commit
+    /// requests an assignment and `CatalogVersionPublished` resolves it, so a
+    /// consumer treating this as a version would be resolving against an
+    /// addressability that does not exist yet.
+    pub pending_version_ref: Option<String>,
     /// Why this submit is material. **Always** `alwaysMaterialTrigger` (D-50):
     /// an overlay line has no per-currency baseline to threshold, so the G1
     /// no-delta rule applies and no threshold can make it immaterial. Stated in
@@ -697,7 +722,7 @@ async fn replace_lines(
 }
 
 async fn submit_overlay(
-    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(state): Extension<Arc<GovernanceState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     extension_correlation: Option<Extension<CorrelationId>>,
@@ -752,6 +777,7 @@ async fn submit_overlay(
     // `inst-pl-validate`: the whole rule set, aggregate, over the world as it
     // stands **now**. §4.2 runs the same set again inside the publish commit,
     // because the world moves between the two.
+    let content_for_pin = record.content();
     let world = state
         .overlays
         .world_for(&scope, tenant, &record)
@@ -787,6 +813,58 @@ async fn submit_overlay(
         return Err(DomainError::ValidationFailed(report).into());
     }
 
+    // `inst-pl-commit`'s **second** half (D-06, D-234): a second person has
+    // already seen exactly this content, so this call is the publish rather than
+    // the submit. `POST …/plans/{planId}/publish`'s shape one plane over, and its
+    // reason — S9 §5 spells this route as "Submit the draft … **then the D-06
+    // publish unit**", so the two acts are one route by the design set's own
+    // arrangement rather than by convenience.
+    //
+    // Matched on the content and not merely on the subject: an approval whose
+    // subject moved after the decision covers content that no longer exists, so
+    // answering with it would refuse the publish at the commit's own pin check
+    // for the rest of the overlay's life. See `approval_repo::find_approved_for_content`.
+    let subject_ref = crate::infra::storage::repo::audit_repo::overlay_revision_ref(
+        price_overlay_id,
+        record.revision,
+    );
+    let pin = crate::domain::approval::content_pin::overlay_content_hash(&content_for_pin);
+    if let Some(approved) = state
+        .approvals
+        .approved_unit(&scope, tenant, &subject_ref, &pin)
+        .await?
+    {
+        let authorization =
+            crate::api::rest::publish::authorization_of(&approved).map_err(CanonicalError::from)?;
+        let receipt = state
+            .overlay_publish
+            .commit(
+                &ctx,
+                &scope,
+                tenant,
+                crate::domain::publish::OverlayPublishUnit::new(price_overlay_id, record.revision),
+                authorization,
+                audit_stamp(&ctx, Utc::now(), correlation),
+            )
+            .await?;
+        return Ok((
+            StatusCode::OK,
+            Json(SubmitAcceptedView {
+                price_overlay_id,
+                revision: record.revision,
+                outcome: OUTCOME_PUBLISHED.to_owned(),
+                pending_version_ref: Some(receipt.pending_ref),
+                materiality: ApprovalView::from(&approved)
+                    .materiality
+                    .and_then(|view| view.reason)
+                    .unwrap_or_else(|| OVERLAY_ACT_REASON.to_owned()),
+                approval: Some(ApprovalView::from(&approved)),
+                warnings: Vec::new(),
+            }),
+        )
+            .into_response());
+    }
+
     // `inst-pl-commit`'s first half (D-50, D-225): the submit opens the
     // always-material Slice 5 approval unit. It runs **inside a transaction**, which
     // is `approval_repo::open`'s requirement rather than this route's preference —
@@ -816,6 +894,8 @@ async fn submit_overlay(
         Json(SubmitAcceptedView {
             price_overlay_id,
             revision: record.revision,
+            outcome: OUTCOME_SUBMITTED.to_owned(),
+            pending_version_ref: None,
             materiality: reason,
             approval: Some(ApprovalView::from(&opened)),
             warnings: report
@@ -1047,6 +1127,31 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(router, openapi);
 
+    router
+        .layer(Extension(state))
+        // D-178's edge, carried with the routes rather than at the merge, so a
+        // surface reachable without it cannot build an `AuditStamp`.
+        .layer(axum::middleware::from_fn(
+            crate::api::rest::correlation::establish,
+        ))
+}
+
+/// Mount the overlay **submit** route, on the governance state.
+///
+/// # Why this one route is mounted apart from its siblings
+///
+/// It has two acts, and the second requests a `CatalogVersion`.
+/// [`GovernanceState`]'s own criterion — which of the two states may request one —
+/// is what put the overlay routes on [`AuthoringState`] when the submit had a
+/// single act and requested none; gaining the publish arm (D-234) is exactly the
+/// condition that criterion names. So the route moved rather than the criterion
+/// bending, and it joins the plan plane's identical two-act route
+/// (`POST …/plans/{planId}/publish`), which has always been here.
+///
+/// **The path does not change**, so no §5 table row and no authz catalog row
+/// moves: the routers are merged and the URL is what a client sees.
+pub fn governance_router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = Router::new();
     OperationBuilder::post(PRICE_OVERLAY_SUBMIT)
         .operation_id("bss_pricing.submit_price_overlay")
         .summary("Submit a PriceOverlay draft revision")

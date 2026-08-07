@@ -106,6 +106,23 @@ pub struct GovernanceState {
     pub approvals: ApprovalService,
     /// The publish engine. Its `commit` is the act an approval authorizes.
     pub publish: PublishService,
+    /// Slice 9's overlay store, on **this** state since D-234's route arm.
+    ///
+    /// It is also on [`AuthoringState`], and the duplication is deliberate rather
+    /// than sloppy: the authoring routes author drafts and the submit route
+    /// publishes them, and a repository is a handle on a provider rather than
+    /// state, so two holders is two readers of one store.
+    pub overlays: OverlayRepo,
+    /// The overlay plane's publish commit (D-234).
+    ///
+    /// **This is why the submit route moved here.** This state's own criterion —
+    /// which of the two may request a `CatalogVersion` — is what put the overlay
+    /// routes on `AuthoringState` in the first place, when the submit had one act
+    /// and requested none. Gaining the publish arm is exactly the condition the
+    /// criterion names, so the route moved rather than the criterion bending; the
+    /// plan plane's identical two-act route (`api::rest::publish`) has always been
+    /// here. It is the **fifth** requester of the one registry `Arc`.
+    pub overlay_publish: crate::infra::overlay_publish::OverlayPublishService,
     /// The window mutation workflow — the three §5 surfaces, each a publish unit
     /// (D-99).
     ///

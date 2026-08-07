@@ -375,6 +375,11 @@ impl Harness {
             plans: PlanRepo::new(db.clone()),
             prices: PriceRepo::new(db.clone()),
             approvals,
+            overlays: bss_pricing::infra::storage::repo::OverlayRepo::new(db.clone()),
+            overlay_publish: bss_pricing::infra::overlay_publish::OverlayPublishService::new(
+                db.clone(),
+                Arc::clone(&registry) as Arc<_>,
+            ),
             windows: WindowService::new(db.clone(), Arc::clone(&registry) as Arc<_>),
             supersessions: bss_pricing::infra::supersession::SupersessionService::new(
                 db.clone(),
@@ -472,6 +477,12 @@ impl Harness {
             ))
             .merge(bss_pricing::api::rest::overlays::router(
                 Arc::clone(&self.state),
+                &openapi,
+            ))
+            // The submit route publishes (D-234) and is mounted on the
+            // governance state, apart from its authoring siblings.
+            .merge(bss_pricing::api::rest::overlays::governance_router(
+                Arc::clone(&self.governance),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::bundles::router(

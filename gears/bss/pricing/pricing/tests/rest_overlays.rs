@@ -941,3 +941,95 @@ async fn a_rejected_unit_leaves_the_overlay_untouched_and_it_submits_again() {
         .await;
     assert_eq!(again.status(), StatusCode::ACCEPTED);
 }
+
+// ---------------------------------------------------------------------------
+// The second act: publish (D-234).
+// ---------------------------------------------------------------------------
+
+/// A second principal approves the unit, through the service.
+///
+/// Not through `POST …/approvals/{id}/approve`: this case is about the **publish
+/// arm**, and routing the decision as well would make a failure ambiguous between
+/// the two surfaces. The approval route has its own suite.
+async fn approve(harness: &Harness, approval_id: &str) {
+    use std::collections::BTreeSet;
+    let approver = Uuid::from_u128(0xa9_9a);
+    harness
+        .governance
+        .approvals
+        .decide(
+            &toolkit_db::secure::AccessScope::allow_all(),
+            harness.tenant,
+            bss_pricing::infra::approval::DecideRequest {
+                approval_id: Uuid::parse_str(approval_id).expect("an approval id"),
+                decision: bss_pricing::domain::approval::DecisionBy::Approve(approver),
+                reason: None,
+                approver_regions: bss_pricing::infra::approval::RegionGrant::Explicit(
+                    BTreeSet::new(),
+                ),
+                stamp: bss_pricing::domain::audit::AuditStamp {
+                    actor_principal_id: approver,
+                    recorded_at: chrono::Utc::now(),
+                    correlation_id: Uuid::now_v7(),
+                },
+            },
+        )
+        .await
+        .expect("a second principal approves the unit");
+}
+
+/// The submit route's two acts, driven through the real edge.
+///
+/// S9 §5 spells this route as *"Submit the draft — always-material Slice 5
+/// approval unit (D-50), **then the D-06 publish unit**"*, so the two acts are one
+/// route by the design set's own arrangement.
+///
+/// The first call opens the unit and answers **202**. The second, once a second
+/// principal has approved *this content*, commits and answers **200** carrying the
+/// registry's pending handle. Matching on the content and not merely on the
+/// subject is what keeps the route out of a dead end: an approval whose subject
+/// moved after the decision covers content that no longer exists.
+#[tokio::test]
+async fn an_approved_overlay_publishes_on_the_second_call_to_the_same_route() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+
+    // Act one: the submit.
+    let response = harness
+        .allowed()
+        .send(request(
+            "POST",
+            &submit_path(overlay),
+            Some(serde_json::json!({ "revision": 0 })),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let opened = body_json(response).await;
+    assert_eq!(opened["outcome"], "submitted_for_approval");
+    assert_eq!(opened["pending_version_ref"], serde_json::Value::Null);
+    let approval_id = opened["approval"]["approval_id"]
+        .as_str()
+        .expect("the unit is named on the wire (D-225)")
+        .to_owned();
+
+    // A second principal decides it.
+    approve(&harness, &approval_id).await;
+
+    // Act two: the same route, the same body, and now it publishes.
+    let response = harness
+        .allowed()
+        .send(request(
+            "POST",
+            &submit_path(overlay),
+            Some(serde_json::json!({ "revision": 0 })),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let published = body_json(response).await;
+    assert_eq!(published["outcome"], "published");
+    assert!(
+        published["pending_version_ref"].is_string(),
+        "the receipt names the registry handle, which is not a CatalogVersion: {published}"
+    );
+}
