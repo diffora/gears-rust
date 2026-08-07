@@ -491,6 +491,84 @@ async fn a_market_with_a_trial_phase_quotes_the_terminal_phases_row() {
     );
 }
 
+/// The named row wins **even when its money is in tier bands**, and the trial row
+/// still never does.
+///
+/// # The gap this closes
+///
+/// D-244's naming predicate carried a fourth conjunct — `amountMinor` non-null —
+/// so a terminal row whose price lives in bands was *not named*, and selection
+/// fell through to "the first non-usage row carrying an amount". On this shape
+/// that is the **trial** row: the exact outcome D-244 was minted to prevent,
+/// reached through the fallback instead of the rule.
+///
+/// The shape is ordinary, and the two predicates that make it so are the domain's
+/// own: `PriceRow::is_usage` reads `charge_kind`, while `PriceRow::is_tiered` —
+/// *"is the kind one whose money lives in tier bands?"* — reads `model_kind`.
+/// They are **independent**. A `Recurring` + `Graduated` row is therefore not a
+/// usage row, has a null `amountMinor`, and prices a perfectly normal per-seat
+/// monthly tier table. The old fallback's `chargeKind != "usage"` test was
+/// standing in for "money is in the bands" and does not mean it.
+///
+/// So the quote is the named row with **no amount and a band count**, which is
+/// what §2's tier summary is for: `PreviewView` already carries `amount_minor` as
+/// an `Option` and `tier_band_count` beside it, so saying "this is your row and
+/// it is tiered" needed no new field.
+#[tokio::test]
+async fn a_tiered_terminal_row_is_still_the_quoted_row_and_the_trial_is_not() {
+    use bss_pricing::domain::money::MinorAmount;
+    use bss_pricing::domain::price_row::{ModelKind, TierBand};
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let mut delta = trial_and_steady_delta(plan_id);
+
+    // The steady state reprices into bands: same phase, same eligibility, still
+    // `recurring` — only the model and the money move.
+    let steady = delta
+        .prices
+        .iter_mut()
+        .find(|record| record.scope_key.phase() == rest_support::seeded_phase())
+        .expect("the fixture seeds a terminal-phase row");
+    steady.row.model_kind = Some(ModelKind::Graduated);
+    steady.row.amount_minor = None;
+    steady.row.bands = vec![
+        TierBand::closed(0, 10, MinorAmount::new(900).expect("a non-negative amount")),
+        TierBand::open(10, MinorAmount::new(700).expect("a non-negative amount")),
+    ];
+
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={REGION}")),
+            None,
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+
+    // The assertion that carries the defect: 100 is the trial row, and it is the
+    // answer the fallback gave.
+    assert_ne!(
+        body["amount_minor"], 100,
+        "the trial row must never be quoted: the terminal phase's row exists, and \
+         a tiered row is not a reason to cross a phase boundary"
+    );
+    assert!(
+        body["amount_minor"].is_null(),
+        "a tiered row has no single amount, and saying so is the honest quote: {}",
+        body["amount_minor"]
+    );
+    assert_eq!(
+        body["tier_band_count"], 2,
+        "and the tier summary is what carries the price instead"
+    );
+}
+
 /// One market, two recurring rows on two phases: a trial that converts, and the
 /// terminal phase it converts into.
 fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDelta {

@@ -397,9 +397,18 @@ fn market_rows<'a>(
 ///
 /// One market legitimately holds many rows — `phase`, `chargeKind`, `meter` and
 /// `dimensionKey` are all scope-key axes — and they are not interchangeable. A
-/// **usage** row's money lives in its tier bands and its `amountMinor` is NULL by
-/// rule, so a preview taking whichever row sorted first answers `null` for a
-/// hybrid plan that plainly has a monthly price.
+/// row whose money lives in its tier bands has a NULL `amountMinor`, so a preview
+/// taking whichever row sorted first answers `null` for a hybrid plan that plainly
+/// has a monthly price.
+///
+/// **Banded money is a property of the model, not of the charge kind**, and this
+/// doc said otherwise until D-244's fallback was found quoting a trial row.
+/// [`PriceRow::is_usage`](crate::domain::price_row::PriceRow::is_usage) reads
+/// `charge_kind`; [`PriceRow::is_tiered`](crate::domain::price_row::PriceRow::is_tiered)
+/// — *"is the kind one whose money lives in tier bands?"* — reads `model_kind`,
+/// and the two are independent. A `recurring` + `graduated` row is not a usage row
+/// and still has no single amount, which is precisely the row the old naming
+/// predicate failed to name.
 ///
 /// **D-244 names the row**: the *terminal phase's* `all_subscriptions`
 /// **recurring** row. §2 used to say "the catalog base list price" as though a
@@ -426,12 +435,15 @@ fn base_amount_row<'a>(
     let mut ordered: Vec<&'a serde_json::Value> = rows.to_vec();
     ordered.sort_by_key(|row| row["priceId"].as_str().unwrap_or_default().to_owned());
 
+    // The naming is the scope key and **nothing about the money**. Whether the row
+    // carries a single `amountMinor` or prices in bands is a different question,
+    // and asking it here is what let a *trial* row be quoted: a tiered terminal
+    // row failed the name and the fallback below then crossed the phase boundary.
     let named = terminal_phase.and_then(|phase| {
         ordered.iter().copied().find(|row| {
             row["scopeKey"]["phase"] == phase
                 && row["scopeKey"]["priceEligibility"] == "all_subscriptions"
                 && row["scopeKey"]["chargeKind"] == "recurring"
-                && !row["amountMinor"].is_null()
         })
     });
     if named.is_some() {
