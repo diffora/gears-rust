@@ -73,6 +73,7 @@ pub mod m20260802_000037_add_pricing_price_tax_category_ref;
 pub mod m20260802_000038_add_pricing_policy_object_tax_display_policy;
 pub mod m20260802_000039_add_pricing_price_resolved_tax_category;
 pub mod m20260802_000040_guard_pricing_price_tax_columns;
+pub mod m20260802_000041_retire_pricing_policy_object_tax_display_mode;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -181,6 +182,11 @@ impl MigratorTrait for Migrator {
             // has to sort after both `ALTER`s that create them — a trigger
             // naming a column the table does not have yet does not create.
             Box::new(m20260802_000040_guard_pricing_price_tax_columns::Migration),
+            // `D-240`: `tax_display_mode` is retired. It rebuilds
+            // `pricing_policy_object` on `SQLite`, so it sorts after every
+            // migration that puts anything on that table — `000038`'s column is
+            // the one it restates that `m20260802_000018`'s rebuild did not have.
+            Box::new(m20260802_000041_retire_pricing_policy_object_tax_display_mode::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

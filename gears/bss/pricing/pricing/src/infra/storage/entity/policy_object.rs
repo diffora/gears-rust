@@ -36,15 +36,6 @@ use uuid::Uuid;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
-    /// `tax_inclusive` | `tax_exclusive`.
-    ///
-    /// **Nothing in this crate reads it**, and `01-foundation.md` never declares
-    /// it — §3.7's policy-object cell lists the caps, the rounding default, the
-    /// notice period and the descriptor extension, and no tax column. It is not
-    /// C4's switch; that is [`Model::tax_display_policy_mode`] below, which
-    /// carries a different value set entirely. Register `T-2` holds the question
-    /// of whether this one is retired.
-    pub tax_display_mode: String,
     /// `fail_closed` (default) | `warn` — C4's enforcement mode over the two
     /// incomplete-basis arms of `inst-td-policy` (§6, `m20260802_000038`).
     ///

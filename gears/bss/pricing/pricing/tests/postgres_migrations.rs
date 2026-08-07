@@ -311,10 +311,12 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_policy_object_interval_months_cap",
     "chk_pricing_policy_object_notice_floor",
     "chk_pricing_policy_object_price_row_cap",
-    "chk_pricing_policy_object_tax_display",
-    // Slice 4's C4 switch (`m20260802_000038`). Its neighbour above is a
-    // different fact under an adjacent name — that one is a display *basis*
-    // default, this one the fail-closed *enforcement* mode section 6 declares.
+    // Slice 4's C4 switch (`m20260802_000038`), and since D-240
+    // (`m20260802_000041`) the only tax-display constraint on this table.
+    // `chk_pricing_policy_object_tax_display` stood above it until then, holding
+    // a display *basis* default under a name section 6 spends on this
+    // fail-closed *enforcement* mode; retiring it is what makes the name
+    // unambiguous rather than merely adjacent.
     "chk_pricing_policy_object_tax_display_policy",
     // `chk_pricing_policy_object_threshold` and its `_non_negative` sibling are
     // deliberately absent: `m20260802_000018` dropped the two columns they guarded
