@@ -14,7 +14,7 @@
 use chrono::{TimeZone, Utc};
 use uuid::Uuid;
 
-use super::{outstanding_subjects, plan_subject_of};
+use super::{ProjectedSubject, outstanding_subjects, subject_of};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
@@ -77,18 +77,22 @@ fn the_warm_set_is_matched_on_the_kind_as_well_as_the_reference() {
 }
 
 #[test]
-fn a_subject_kind_this_gear_cannot_have_written_is_refused_by_name() {
+fn a_subject_kind_this_projector_cannot_build_is_refused_by_name() {
     // Refused rather than skipped. A skipped subject holds its version
     // incomplete, and therefore holds the frontier, forever with nothing saying
     // why - which is the failure mode the materialized frontier makes silent.
+    //
+    // **`PriceOverlay` left this list with D-234** and the case is narrower for
+    // it: the overlay document is projected now, so a list still naming it would
+    // be asserting a refusal the code no longer makes. What remains is the index
+    // shard, whose derivation is owed, and membership, which has no store.
     for subject in [
-        SubjectRef::PriceOverlay(Uuid::from_u128(1)),
         SubjectRef::OverlayIndex(OverlayIndexShard::Global),
         SubjectRef::GroupMembership(Uuid::from_u128(2)),
     ] {
         let kind = subject.kind();
-        let refusal = plan_subject_of(&ref_row("pend-x", &subject))
-            .expect_err("no store in this gear can have written that subject");
+        let refusal = subject_of(&ref_row("pend-x", &subject))
+            .expect_err("this projector can build no delta for that subject");
         match refusal {
             DomainError::Internal(message) => assert!(
                 message.contains(kind.as_str()),
@@ -107,18 +111,26 @@ fn a_plan_subject_whose_reference_is_not_a_plan_id_is_refused() {
     let mut row = ref_row("pend-x", &SubjectRef::Plan(Uuid::from_u128(1)));
     row.subject_ref = "not-a-uuid".to_owned();
 
-    let refusal = plan_subject_of(&row).expect_err("a plan subject is keyed by a plan id");
+    let refusal = subject_of(&row).expect_err("a plan subject is keyed by a plan id");
     assert!(matches!(refusal, DomainError::Internal(_)), "{refusal:?}");
 }
 
 #[test]
 fn a_plan_subject_resolves_to_its_plan() {
     let id = Uuid::from_u128(0x9_1a4);
-    let (plan_id, revision, state) = plan_subject_of(&ref_row("pend-a", &SubjectRef::Plan(id)))
+    let resolved = subject_of(&ref_row("pend-a", &SubjectRef::Plan(id)))
         .expect("a plan subject names a plan, the revision its publish judged, and its state");
+    let ProjectedSubject::Plan {
+        plan_id,
+        revision,
+        lifecycle_state,
+    } = resolved
+    else {
+        panic!("a plan ref resolves to a plan subject");
+    };
     assert_eq!(plan_id.get(), id);
     assert_eq!(revision, 0);
-    assert_eq!(state, LifecycleState::Published);
+    assert_eq!(lifecycle_state, LifecycleState::Published);
 }
 
 #[test]
@@ -130,7 +142,7 @@ fn a_plan_subject_with_no_pinned_lifecycle_state_is_refused_rather_than_read_liv
     let mut row = ref_row("pend-x", &SubjectRef::Plan(Uuid::from_u128(1)));
     row.subject_lifecycle_state = None;
 
-    let refusal = plan_subject_of(&row).expect_err("a plan subject pins the state it judged");
+    let refusal = subject_of(&row).expect_err("a plan subject pins the state it judged");
     match refusal {
         DomainError::Internal(message) => assert!(
             message.contains("no lifecycle state"),
@@ -149,7 +161,7 @@ fn a_plan_subject_with_no_pinned_revision_is_refused_rather_than_defaulted() {
     let mut row = ref_row("pend-x", &SubjectRef::Plan(Uuid::from_u128(1)));
     row.subject_revision = None;
 
-    let refusal = plan_subject_of(&row).expect_err("a plan subject pins the revision it judged");
+    let refusal = subject_of(&row).expect_err("a plan subject pins the revision it judged");
     match refusal {
         DomainError::Internal(message) => assert!(
             message.contains("no revision"),

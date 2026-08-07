@@ -196,14 +196,16 @@ use uuid::Uuid;
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_record::PriceRecord;
-use crate::domain::projection::{PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta};
+use crate::domain::projection::{
+    OverlaySubjectDelta, PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta,
+};
 use crate::domain::read_model::{SubjectKind, SubjectRef};
 use crate::domain::scope_key::PlanId;
 use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
 use crate::infra::storage::repo::{
-    NewDelta, PendingVersionRow, catalog_version_ref_repo, pin_frontier_repo, plan_repo,
-    plan_shape_repo, price_repo, read_model_repo, window_repo,
+    NewDelta, PendingVersionRow, catalog_version_ref_repo, overlay_repo, pin_frontier_repo,
+    plan_repo, plan_shape_repo, price_repo, read_model_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -444,7 +446,7 @@ impl ReadModelProjector {
             .db()
             .in_transaction::<Option<CatalogVersion>, DomainError, _>(move |txn| {
                 Box::pin(async move {
-                    let (plan_id, revision, lifecycle_state) = plan_subject_of(&subject)?;
+                    let projected = subject_of(&subject)?;
                     refuse_projection_below_frontier(
                         txn,
                         &scope,
@@ -463,23 +465,52 @@ impl ReadModelProjector {
                     .await
                     .map_err(|e| repo_failure(&e))?;
 
-                    let delta = project_plan_subject(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        plan_id,
-                        revision,
-                        lifecycle_state,
-                    )
-                    .await?;
+                    // One transaction, one subject, whichever plane it is on.
+                    // The two arms differ only in what they read and render;
+                    // everything around them - the frontier refusal, the
+                    // finalize, the completeness decision - is the same, which
+                    // is what makes an overlay publish a publish rather than a
+                    // second mechanism.
+                    let (subject_ref, payload) = match projected {
+                        ProjectedSubject::Plan {
+                            plan_id,
+                            revision,
+                            lifecycle_state,
+                        } => {
+                            let delta = project_plan_subject(
+                                txn,
+                                &scope,
+                                tenant_id,
+                                plan_id,
+                                revision,
+                                lifecycle_state,
+                            )
+                            .await?;
+                            (SubjectRef::Plan(plan_id.get()), delta.to_value())
+                        }
+                        ProjectedSubject::Overlay {
+                            price_overlay_id,
+                            revision,
+                        } => {
+                            let delta = project_overlay_subject(
+                                txn,
+                                &scope,
+                                tenant_id,
+                                price_overlay_id,
+                                revision,
+                            )
+                            .await?;
+                            (SubjectRef::PriceOverlay(price_overlay_id), delta.to_value())
+                        }
+                    };
                     read_model_repo::project_subject(
                         txn,
                         &scope,
                         NewDelta {
                             tenant_id,
                             catalog_version,
-                            subject: SubjectRef::Plan(plan_id.get()),
-                            payload: delta.to_value(),
+                            subject: subject_ref,
+                            payload,
                             projected_at: now,
                         },
                     )
@@ -608,68 +639,165 @@ fn outstanding_subjects(
         .collect()
 }
 
-/// The plan a ref row names, refusing every other subject kind.
+/// What a ref row's subject columns name, resolved into something projectable.
 ///
-/// **The reason is a missing projector, not a missing store**, and this doc said
-/// the second until 2026-08-06. It read "`PriceOverlay`, `OverlayIndex` and
-/// `GroupMembership` have **no store in this gear**" — which stopped being true
-/// of the overlay plane when Slice 9 landed `pricing_price_overlay` and its
-/// lines, and a reader checking the claim by grepping for the table would have
-/// found it and concluded the refusal was stale. What is actually absent is the
-/// projection: nothing here builds an overlay delta or an index shard, so a ref
-/// carrying one of those kinds is a subject **this function** cannot answer for.
-/// `GroupMembership` still has no store either.
+/// **The refusal is what keeps a version honest.** A subject silently unprojected
+/// holds its version incomplete, and therefore holds the frontier, forever with
+/// nothing saying why — so an unanswerable kind is refused *by name* rather than
+/// skipped.
 ///
-/// It is refused naming the kind rather than skipped: a subject silently
-/// unprojected holds the version incomplete, and therefore holds the frontier,
-/// forever with nothing saying why.
+/// **The reason a kind is unanswerable is a missing projector, not a missing
+/// store**, and this doc said the second until 2026-08-06. It read
+/// "`PriceOverlay`, `OverlayIndex` and `GroupMembership` have **no store in this
+/// gear**" — which stopped being true of the overlay plane when Slice 9 landed
+/// `pricing_price_overlay`, so a reader checking the claim by grepping for the
+/// table would have found it and read the refusal as stale.
+///
+/// Today `Plan` and `PriceOverlay` are answerable. `OverlayIndex` is **owed and
+/// named as owed**: its store is the same overlay plane, and what it needs is the
+/// derivation, not a table. `GroupMembership` has no store at all.
+#[derive(Debug)]
+enum ProjectedSubject {
+    /// A plan, at the revision and lifecycle state its publish judged.
+    Plan {
+        /// Which plan.
+        plan_id: PlanId,
+        /// The revision the ref pinned.
+        revision: u64,
+        /// The state that revision was in when the publish judged it.
+        lifecycle_state: LifecycleState,
+    },
+    /// An overlay document, at the revision its publish judged.
+    ///
+    /// **No lifecycle state, unlike the plan arm**, and the asymmetry is a
+    /// decision rather than an omission. D-128 pins a plan's state because
+    /// sellability predicate (4) reads it at the pin and the row's own state keeps
+    /// moving (`published -> superseded` at the next revision's commit). An
+    /// overlay revision's state is carried **inside the document** it freezes —
+    /// `OverlayRevision::lifecycle_state`, read from the pinned revision row,
+    /// which is itself immutable once published — so pinning it a second time on
+    /// the ref would be two places for one fact to disagree.
+    Overlay {
+        /// Which overlay.
+        price_overlay_id: Uuid,
+        /// The revision the ref pinned.
+        revision: u64,
+    },
+}
+
+/// Read a ref row's subject columns, refusing what this projector cannot answer.
 ///
 /// # Errors
-/// [`DomainError::Internal`] naming the kind, or naming the reference that is
-/// not the `plan_id` a `plan` subject is keyed by.
-fn plan_subject_of(
-    subject: &PendingVersionRow,
-) -> Result<(PlanId, u64, LifecycleState), DomainError> {
-    if subject.subject_kind != SubjectKind::Plan {
-        return Err(DomainError::Internal(format!(
-            "bss-pricing: catalog version ref {} names subject kind {}, which has no store in \
-             this gear and therefore no publish unit that could have written it",
-            subject.pending_ref, subject.subject_kind
-        )));
+/// [`DomainError::Internal`] naming the kind this gear cannot project, or naming
+/// a reference that is not the identifier its kind is keyed by, or a revisioned
+/// subject arriving with no revision. There is no other class: every input here
+/// comes from this gear's own tables, so a refusal is an invariant breach and
+/// never a caller mistake.
+fn subject_of(subject: &PendingVersionRow) -> Result<ProjectedSubject, DomainError> {
+    match subject.subject_kind {
+        SubjectKind::Plan => {
+            let plan_id = subject_uuid(subject, "plan").map(PlanId::new)?;
+            Ok(ProjectedSubject::Plan {
+                plan_id,
+                revision: pinned_revision(subject, &plan_id.to_string())?,
+                // Likewise the state that revision was in when its publish
+                // judged it. The row's own state keeps moving after the commit
+                // and before the warm, and `superseded` is a value D-128 does
+                // not contemplate for a projected subject at all.
+                lifecycle_state: subject.subject_lifecycle_state.ok_or_else(|| {
+                    DomainError::Internal(format!(
+                        "bss-pricing: catalog version ref {} names plan subject {plan_id} and no \
+                         lifecycle state; sellability predicate (4) reads that field at the pin, \
+                         and the row's own state has moved on since",
+                        subject.pending_ref
+                    ))
+                })?,
+            })
+        }
+        SubjectKind::PriceOverlay => {
+            let price_overlay_id = subject_uuid(subject, "price overlay")?;
+            Ok(ProjectedSubject::Overlay {
+                price_overlay_id,
+                revision: pinned_revision(subject, &price_overlay_id.to_string())?,
+            })
+        }
+        kind @ (SubjectKind::OverlayIndex | SubjectKind::GroupMembership) => {
+            Err(DomainError::Internal(format!(
+                "bss-pricing: catalog version ref {} names subject kind {kind}, which this \
+                 projector cannot yet build a delta for; the overlay document arm landed with \
+                 D-234 and the index shard's derivation is owed beside it",
+                subject.pending_ref
+            )))
+        }
     }
-    let plan_id = Uuid::parse_str(&subject.subject_ref)
-        .map(PlanId::new)
-        .map_err(|e| {
+}
+
+/// The subject reference as the `Uuid` its kind is keyed by.
+fn subject_uuid(subject: &PendingVersionRow, what: &str) -> Result<Uuid, DomainError> {
+    Uuid::parse_str(&subject.subject_ref).map_err(|e| {
+        DomainError::Internal(format!(
+            "bss-pricing: catalog version ref {} names {what} subject {}, which is not a {what} \
+             id: {e}",
+            subject.pending_ref, subject.subject_ref
+        ))
+    })
+}
+
+/// The revision the publish judged.
+///
+/// Refused rather than defaulted to whatever is current. A default here is a
+/// guess about which content a frozen version froze, and the guess is wrong
+/// exactly when a second publish beat the warm — the case the column was added
+/// for.
+fn pinned_revision(subject: &PendingVersionRow, id: &str) -> Result<u64, DomainError> {
+    subject.subject_revision.ok_or_else(|| {
+        DomainError::Internal(format!(
+            "bss-pricing: catalog version ref {} names subject {id} and no revision; the \
+             revision the publish judged is what a frozen version freezes",
+            subject.pending_ref
+        ))
+    })
+}
+
+/// Build one overlay document's delta from the revision its ref pinned.
+///
+/// **The pinned revision, never the current one**, for the reason
+/// [`project_plan_subject`] gives at length one plane over: the projector arrives
+/// up to D-47's five-minute batching maximum after the commit, so reading "the
+/// overlay's published revision" would freeze content this version's publish
+/// never judged — permanently, on an INSERT-only row.
+///
+/// The revision row is immutable once published, so its content needs no second
+/// pinning; that is why this reads the row for everything, including the
+/// lifecycle state, where the plan arm reads the ref for its state.
+///
+/// A pinned revision that is not there is an **internal fault**, not an empty
+/// delta — D-128's rule, and an empty overlay document is exactly the shape it
+/// exists to prevent.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the pinned revision is absent, or on a storage
+/// failure.
+async fn project_overlay_subject(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_overlay_id: Uuid,
+    revision: u64,
+) -> Result<OverlaySubjectDelta, DomainError> {
+    let record = overlay_repo::load_on(runner, scope, tenant_id, price_overlay_id, revision)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| {
             DomainError::Internal(format!(
-                "bss-pricing: catalog version ref {} names plan subject {}, which is not a plan \
-                 id: {e}",
-                subject.pending_ref, subject.subject_ref
+                "bss-pricing: price overlay {price_overlay_id} revision {revision} is a subject \
+                 of a committed catalog version and is not there; projecting an empty overlay \
+                 document is what D-128 exists to prevent"
             ))
         })?;
-    // Refused rather than defaulted to the current revision. A default here is
-    // a guess about which content a frozen version froze, and the guess is
-    // wrong exactly when a second publish beat the warm - the case the column
-    // was added for.
-    let revision = subject.subject_revision.ok_or_else(|| {
-        DomainError::Internal(format!(
-            "bss-pricing: catalog version ref {} names plan subject {plan_id} and no revision; \
-             the revision the publish judged is what a frozen version freezes",
-            subject.pending_ref
-        ))
-    })?;
-    // Likewise the state that revision was in when its publish judged it. The
-    // row's own state keeps moving after the commit and before the warm, and
-    // `superseded` is a value D-128 does not contemplate for a projected
-    // subject at all.
-    let lifecycle_state = subject.subject_lifecycle_state.ok_or_else(|| {
-        DomainError::Internal(format!(
-            "bss-pricing: catalog version ref {} names plan subject {plan_id} revision \
-             {revision} and no lifecycle state; sellability predicate (4) reads that field at \
-             the pin, and the row's own state has moved on since",
-            subject.pending_ref
-        ))
-    })?;
-    Ok((plan_id, revision, lifecycle_state))
+    Ok(OverlaySubjectDelta {
+        content: record.content(),
+    })
 }
 
 /// Build one plan subject's delta from the truth rows, through the caller's

@@ -29,6 +29,10 @@ use bss_pricing::config::{JobsConfig, LimitsConfig};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+use bss_pricing::domain::overlay::{
+    Adjustment, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLine, ScopeClass,
+    ScopeSelector, ScopeValue, TargetRef, TaxBasis,
+};
 use bss_pricing::domain::plan::PlanShapePatch;
 use bss_pricing::domain::plan_shape::{
     BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
@@ -49,6 +53,7 @@ use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{catalog_version_ref, outbox, plan, price, read_model};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
+use bss_pricing::infra::storage::repo::overlay_repo::{NewOverlay, OverlayRepo};
 use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 use bss_pricing::infra::storage::repo::{
     NewPlanDraft, NewPriceDraft, PendingVersionRow, PinFrontierRepo, PlanRepo, PlanShapeRepo,
@@ -679,15 +684,17 @@ async fn a_resolved_plan_subjects_delta_stamps_the_cross_boundary_marker() {
 }
 
 #[tokio::test]
-async fn a_non_plan_subject_carries_neither_half_because_it_has_no_delta_at_all() {
-    // The contract is per D-91's keying: `crossBoundaryChangePolicy` lives on a
-    // `plan` subject row, and the other three kinds have no store in this gear -
-    // so the projector refuses them by name rather than writing a delta with a
-    // marker and nothing else in it.
+async fn an_overlay_ref_naming_an_overlay_that_is_not_there_is_an_internal_fault() {
+    // **This case's reason changed with D-234 and its name and comment changed
+    // with it.** It used to read "the other three kinds have no store in this
+    // gear - so the projector refuses them by name", and it passed on that
+    // ground. The overlay plane has had a store since Slice 9 and a projector
+    // since D-234, so what fails here now is not the kind: it is a ref pinning a
+    // revision that is not in the table.
     //
-    // That refusal is what makes "no non-plan subject carries the marker" true by
-    // construction rather than by a renderer remembering: `PlanSubjectDelta` is
-    // the crate's only delta renderer.
+    // Left failing rather than deleted, because the outcome it asserts is the
+    // one D-128 requires - an empty document is worse than a loud fault, and a
+    // consumer resolving an overlay at a pin must never receive a shell.
     let h = harness().await;
     let conn = h.provider.conn().expect("conn");
     catalog_version_ref_repo::record_pending(
@@ -710,11 +717,155 @@ async fn a_non_plan_subject_carries_neither_half_because_it_has_no_delta_at_all(
 
     assert_eq!(
         report.subjects_failed, 1,
-        "the overlay subject is refused by name"
+        "a pinned revision that is not there is a fault, not an empty delta"
     );
     assert!(
         deltas(&h).await.is_empty(),
-        "so there is no row for a marker to be on"
+        "and nothing was written for it"
+    );
+}
+
+#[tokio::test]
+async fn a_subject_kind_this_projector_cannot_build_is_still_refused_by_name() {
+    // The half of the old case that is still about the **kind**. `overlay_index`
+    // has a store - the same overlay plane - and no derivation yet, and
+    // `group_membership` has no store at all; both are refused by name rather
+    // than skipped, because a subject silently unprojected holds its version
+    // incomplete and therefore holds the frontier, forever, with nothing saying
+    // why.
+    //
+    // This is the case that reddens when the index arm lands, which is the point
+    // of writing it: it is the marker for the group that finishes D-234.
+    let h = harness().await;
+    let conn = h.provider.conn().expect("conn");
+    catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope,
+        PendingVersionRow::for_subject(
+            TENANT,
+            "pend-shard".to_owned(),
+            &SubjectRef::OverlayIndex(OverlayIndexShard::Global),
+            None,
+            None,
+            at_min(12, 0),
+        ),
+    )
+    .await
+    .expect("record an index shard's ref");
+    h.registry.commit("pend-shard", 4);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.subjects_failed, 1);
+    assert!(deltas(&h).await.is_empty());
+}
+
+/// A published overlay of one tenant, scoped `partner/acme`, with one line.
+///
+/// Written through the repository rather than by SQL so the row set is the one a
+/// real publish leaves — three tables, the revision flip and its audit record.
+async fn seed_published_overlay(h: &Harness, precedence: i32) -> Uuid {
+    let overlays = OverlayRepo::new(h.provider.clone());
+    let price_overlay_id = Uuid::new_v4();
+    overlays
+        .create(
+            &h.scope,
+            NewOverlay {
+                price_overlay_id,
+                tenant_id: TENANT,
+                scope: ScopeSelector::scoped(
+                    ScopeClass::Partner,
+                    ScopeValue::new("acme").expect("a value"),
+                )
+                .expect("a valued class"),
+                precedence,
+                interval: OverlayInterval {
+                    from: Some(at(9)),
+                    to: None,
+                },
+                tax_basis: TaxBasis::Exclusive,
+                disclosure: Disclosure::Restricted,
+                target_ref: TargetRef::default(),
+            },
+            vec![OverlayLine {
+                line_id: Uuid::new_v4(),
+                key: LineKey::list_default(),
+                adjustment: Adjustment::Discount(Magnitude::PercentBp(1500)),
+            }],
+            stamp_of(ACTOR, at_min(11, 0)),
+        )
+        .await
+        .expect("author the draft");
+    overlays
+        .publish_revision(
+            &h.scope,
+            TENANT,
+            price_overlay_id,
+            0,
+            stamp_of(ACTOR, at_min(11, 1)),
+        )
+        .await
+        .expect("publish revision 0");
+    price_overlay_id
+}
+
+#[tokio::test]
+async fn a_published_overlay_subject_projects_its_document() {
+    // D-234's projection half for the document subject. Until it landed, the
+    // projector refused every non-plan kind by name and an approved overlay was
+    // approved and unpublished.
+    //
+    // The delta is read from the revision the ref **pinned**, not from whatever
+    // revision is current when the sweep arrives - the plan subject's own D-128
+    // rule, and reachable here for the same reason: the registry batches at up to
+    // five minutes and a second overlay revision inside that window would
+    // otherwise freeze content this version's publish never judged.
+    let h = harness().await;
+    let price_overlay_id = seed_published_overlay(&h, 40).await;
+    let conn = h.provider.conn().expect("conn");
+    catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope,
+        PendingVersionRow::for_subject(
+            TENANT,
+            "pend-overlay-doc".to_owned(),
+            &SubjectRef::PriceOverlay(price_overlay_id),
+            Some(0),
+            Some(LifecycleState::Published),
+            at_min(12, 0),
+        ),
+    )
+    .await
+    .expect("record the document subject's ref");
+    h.registry.commit("pend-overlay-doc", 4);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.subjects_failed, 0);
+    assert_eq!(report.subjects_projected, 1);
+    let rows = deltas(&h).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].subject_kind, "price_overlay");
+    assert_eq!(rows[0].subject_ref, price_overlay_id.to_string());
+    assert_eq!(rows[0].catalog_version, 4);
+    assert_eq!(
+        rows[0].payload.get("scopeClass"),
+        Some(&serde_json::json!("partner")),
+        "{:?}",
+        rows[0].payload
+    );
+    assert_eq!(
+        rows[0].payload.get("precedence"),
+        Some(&serde_json::json!(40))
+    );
+    assert_eq!(
+        rows[0]
+            .payload
+            .get("lines")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "the document carries its lines - it is what a consumer resolves"
     );
 }
 
