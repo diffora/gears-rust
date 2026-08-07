@@ -197,9 +197,10 @@ use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::projection::{
-    OverlaySubjectDelta, PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta,
+    OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta, PROJECTED_ROW_STATES,
+    PROJECTED_WINDOW_STATES, PlanSubjectDelta,
 };
-use crate::domain::read_model::{SubjectKind, SubjectRef};
+use crate::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
 use crate::domain::scope_key::PlanId;
 use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
@@ -502,6 +503,18 @@ impl ReadModelProjector {
                             .await?;
                             (SubjectRef::PriceOverlay(price_overlay_id), delta.to_value())
                         }
+                        ProjectedSubject::OverlayIndex { shard } => {
+                            let delta = project_overlay_index_subject(
+                                txn,
+                                &scope,
+                                tenant_id,
+                                catalog_version,
+                                &siblings,
+                                shard.clone(),
+                            )
+                            .await?;
+                            (SubjectRef::OverlayIndex(shard), delta.to_value())
+                        }
                     };
                     read_model_repo::project_subject(
                         txn,
@@ -683,6 +696,16 @@ enum ProjectedSubject {
         /// The revision the ref pinned.
         revision: u64,
     },
+    /// One `overlay_index` shard, whose content is **derived** rather than
+    /// pinned (D-112, D-133).
+    ///
+    /// No revision and no lifecycle state, because a shard is not a revisioned
+    /// thing: it is the set of overlays live at this version, and what pins it is
+    /// the version itself. See [`project_overlay_index_subject`].
+    OverlayIndex {
+        /// Which shard.
+        shard: OverlayIndexShard,
+    },
 }
 
 /// Read a ref row's subject columns, refusing what this projector cannot answer.
@@ -721,14 +744,20 @@ fn subject_of(subject: &PendingVersionRow) -> Result<ProjectedSubject, DomainErr
                 revision: pinned_revision(subject, &price_overlay_id.to_string())?,
             })
         }
-        kind @ (SubjectKind::OverlayIndex | SubjectKind::GroupMembership) => {
-            Err(DomainError::Internal(format!(
-                "bss-pricing: catalog version ref {} names subject kind {kind}, which this \
-                 projector cannot yet build a delta for; the overlay document arm landed with \
-                 D-234 and the index shard's derivation is owed beside it",
-                subject.pending_ref
-            )))
-        }
+        SubjectKind::OverlayIndex => Ok(ProjectedSubject::OverlayIndex {
+            shard: OverlayIndexShard::parse(&subject.subject_ref).map_err(|e| {
+                DomainError::Internal(format!(
+                    "bss-pricing: catalog version ref {} names overlay index subject {}, which \
+                     is not a shard key: {e}",
+                    subject.pending_ref, subject.subject_ref
+                ))
+            })?,
+        }),
+        kind @ SubjectKind::GroupMembership => Err(DomainError::Internal(format!(
+            "bss-pricing: catalog version ref {} names subject kind {kind}, which has no store \
+             in this gear and therefore no publish unit that could have written it",
+            subject.pending_ref
+        ))),
     }
 }
 
@@ -900,6 +929,114 @@ async fn project_plan_subject(
         prices,
         windows,
     })
+}
+
+/// Build one `overlay_index` shard from the overlays live **at this version**.
+///
+/// # Derived, not pinned, and the derivation is the decision
+///
+/// S9 §7 requires the index to enumerate *"every scope-matching overlay **live at
+/// V**"*, and pairs it with one per-subject document read per matching overlay.
+/// Read from the overlay table — "what is published now" — a second overlay
+/// publishing inside D-47's five-minute batching window would land in the
+/// *earlier* version's shard, and a consumer pinned at `V` would enumerate an
+/// overlay whose document has no delta at or below `V`. The document read the
+/// same sentence prescribes then finds nothing. That is §4.4's "current revision
+/// is the wrong source" defect a third time, and permanent, on an INSERT-only
+/// row.
+///
+/// So the set comes from `pricing_catalog_version_ref`, at each overlay's
+/// **greatest** ref at or below `V` — Foundation §4.4's greatest-completed-≤-pin
+/// rule, applied to choose which revision the *index* speaks of.
+///
+/// **The version's own refs are counted even though they are not finalized yet**,
+/// and this is the clause the whole thing turns on. The two subjects of one
+/// overlay publish are projected in two transactions, so a shard derived from
+/// committed refs alone would omit **its own sibling** whenever the shard was
+/// projected first — and ordering the subjects would not fix it, because a
+/// document whose projection failed would leave the shard warm, wrong and never
+/// re-derived. `siblings` is the same union [`version_is_complete`] makes, for
+/// the same reason.
+///
+/// **This is also what gives D-133's two-shard case with no special case.** A
+/// revision that moves its scope value appears under whichever shard its
+/// greatest-≤-`V` revision names, so it leaves the old shard and joins the new
+/// one at the version that moved it — and both shards are subjects of that
+/// publish, so both are re-derived.
+///
+/// **D-133's horizon is absent, and it is the same absence D-121's is.** The
+/// module doc's premise 1 carries the argument in full and this shares it rather
+/// than stating a second one: `H` has no producer in this tree, and the set it
+/// would bound is the tenant's live overlays rather than an accumulation, because
+/// an overlay revision leaves the index only by being superseded by its own
+/// successor — which replaces it in the set rather than adding to it.
+///
+/// # Errors
+/// [`DomainError::Internal`] when a listed overlay's pinned revision is not
+/// there, when a stored scope cannot be read as a shard key, or on a storage
+/// failure.
+async fn project_overlay_index_subject(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version: CatalogVersion,
+    siblings: &[PendingVersionRow],
+    shard: OverlayIndexShard,
+) -> Result<OverlayIndexDelta, DomainError> {
+    let mut live = catalog_version_ref_repo::overlay_revisions_at_or_below(
+        runner,
+        scope,
+        tenant_id,
+        catalog_version,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    // The refs of *this* version, which carry no version in storage until their
+    // own transaction finalizes them. They are at `V` by definition - that is
+    // what the pass resolved them to - so they win over anything older.
+    for sibling in siblings {
+        if sibling.subject_kind != SubjectKind::PriceOverlay {
+            continue;
+        }
+        let (Ok(price_overlay_id), Some(revision)) = (
+            Uuid::parse_str(&sibling.subject_ref),
+            sibling.subject_revision,
+        ) else {
+            return Err(DomainError::Internal(format!(
+                "bss-pricing: catalog version ref {} names a price overlay subject this \
+                 projector cannot read: {} at revision {:?}",
+                sibling.pending_ref, sibling.subject_ref, sibling.subject_revision
+            )));
+        };
+        live.insert(price_overlay_id, revision);
+    }
+
+    let mut entries = Vec::new();
+    for (price_overlay_id, revision) in live {
+        let record = overlay_repo::load_on(runner, scope, tenant_id, price_overlay_id, revision)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| {
+                DomainError::Internal(format!(
+                    "bss-pricing: price overlay {price_overlay_id} revision {revision} is named \
+                     by a catalog version ref and is not there; the index would enumerate an \
+                     overlay no document read can resolve"
+                ))
+            })?;
+        // Which shard this revision belongs to is a property of the revision,
+        // not of the overlay: a revision that moved the scope value files the
+        // overlay elsewhere from this version on.
+        if OverlayIndexShard::try_from(&record.scope)? != shard {
+            continue;
+        }
+        entries.push(OverlayIndexEntry {
+            price_overlay_id,
+            interval: record.interval,
+            precedence: record.precedence,
+        });
+    }
+    Ok(OverlayIndexDelta { shard, entries })
 }
 
 /// The plan's window facts as the delta freezes them (D-99, D-121).

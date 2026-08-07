@@ -78,6 +78,8 @@
 //!   as inventing a code. `find` therefore still has no caller outside the
 //!   commit and the sweep, which is the honest state and not an oversight.
 
+use std::collections::BTreeMap;
+
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
@@ -616,6 +618,106 @@ pub async fn list_at_version(
         .await
         .map_err(|e| RepoError::Db(format!("list catalog version refs at a version: {e}")))?;
     rows.into_iter().map(to_domain).collect()
+}
+
+/// Every overlay this tenant had published **at or below** `catalog_version`,
+/// each at the revision its greatest such publish pinned (D-234).
+///
+/// # This is the `overlay_index` shard's source, and the reason it is the ref
+/// table rather than the overlay table
+///
+/// S9 §7 requires the index to enumerate *"every scope-matching overlay **live at
+/// V**"*, and pairs it with one per-subject document read per matching overlay.
+/// The overlay table answers a different question — what is published **now** —
+/// and the projector arrives up to D-47's five-minute batching maximum after the
+/// commit. Read from the overlay table, a second overlay publishing inside that
+/// window would land in the *earlier* version's frozen shard, and a consumer
+/// pinned at `V` would enumerate an overlay whose document has no delta at or
+/// below `V`. That is permanent: a delta is INSERT-only on the seven-year
+/// horizon.
+///
+/// **The greatest ref, not any ref.** An overlay that published revisions 0 and 1
+/// has two refs, and at a `V` between them the shard must speak of revision 0 —
+/// which is Foundation §4.4's own greatest-completed-≤-pin rule, applied to
+/// choose which revision the *index* describes rather than which delta a reader
+/// resolves. It also gives D-133's "two shards when a revision moves the scope
+/// value" with no special case: the overlay appears in whichever shard its
+/// greatest-≤-`V` revision names, so it leaves the old shard and joins the new
+/// one at the version that moved it.
+///
+/// **Committed refs only.** A pending ref carries no version, so it belongs to no
+/// `V` yet; the caller adds the refs of the version it is *currently* projecting,
+/// which is the same union [`version_subjects`](crate::infra::read_model) makes
+/// and for the same reason — those rows are not finalized yet and this query
+/// cannot see them.
+///
+/// # The `<= V` bound is the correct rule and **nothing currently exercises it**
+///
+/// Stated as a premise rather than left to be assumed, because a probe found it:
+/// removing the bound entirely reddens no test. What keeps a *later* version's
+/// overlays out of this set today is not the bound but the `IS NOT NULL` filter
+/// beside it — a version is projected while every later version's refs are still
+/// **pending**, since the sweep groups by version and walks them ascending. And a
+/// version cannot normally be projected *after* a later one has committed either:
+/// D-114's prefix closure means the frontier would already have passed it, and
+/// [`refuse_projection_below_frontier`](crate::infra::read_model) refuses that
+/// loudly.
+///
+/// So the bound is defence rather than the load-bearing guard, and it stays for
+/// the reason it is written: it says what the rule *is*. The two mechanisms that
+/// enforce it today are incidental to this query, and a change to either — a
+/// sweep that projected versions out of order, a re-drive reaching a version
+/// below a committed sibling — would make this bound the only thing standing
+/// between a frozen shard and an overlay from the future.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] on a stored token outside its `CHECK`.
+pub async fn overlay_revisions_at_or_below(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version: CatalogVersion,
+) -> Result<BTreeMap<Uuid, u64>, RepoError> {
+    let target = stored_version(catalog_version)?;
+    let rows = catalog_version_ref::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(catalog_version_ref::Column::TenantId.eq(tenant_id))
+                .add(
+                    catalog_version_ref::Column::SubjectKind.eq(SubjectKind::PriceOverlay.as_str()),
+                )
+                .add(catalog_version_ref::Column::CatalogVersion.is_not_null())
+                .add(catalog_version_ref::Column::CatalogVersion.lte(target)),
+        )
+        // Ascending, so the fold below keeps the **greatest** ref of each overlay
+        // by simply letting later rows win.
+        .order_by(catalog_version_ref::Column::CatalogVersion, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list overlay refs at or below a version: {e}")))?;
+
+    let mut latest = BTreeMap::new();
+    for row in rows {
+        let entry = to_domain(row)?;
+        let Ok(price_overlay_id) = Uuid::parse_str(&entry.subject_ref) else {
+            return Err(RepoError::CorruptRow(format!(
+                "pricing_catalog_version_ref names price overlay subject {}, which is not an \
+                 overlay id",
+                entry.subject_ref
+            )));
+        };
+        let Some(revision) = entry.subject_revision else {
+            return Err(RepoError::CorruptRow(format!(
+                "pricing_catalog_version_ref names price overlay subject {price_overlay_id} and \
+                 no revision; the revision the publish judged is what the index speaks of"
+            )));
+        };
+        latest.insert(price_overlay_id, revision);
+    }
+    Ok(latest)
 }
 
 /// The tenant's smallest committed version strictly above `frontier` — or its

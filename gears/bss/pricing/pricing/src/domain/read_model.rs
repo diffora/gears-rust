@@ -192,6 +192,48 @@ impl OverlayIndexShard {
         })
     }
 
+    /// Read a shard back from its persisted rendering.
+    ///
+    /// The inverse of [`Display`](std::fmt::Display), and it has to exist: the
+    /// rendering **is** `subject_ref` on a ref row and on a delta row, so the
+    /// projector reads a shard back from a string it wrote. A rendering with no
+    /// parse would make the write and read sides of one column two conventions.
+    ///
+    /// **Split once, on the first separator.** A scope value is
+    /// operator-authored and may contain a `/` — `partner/ac/me` is a reachable
+    /// key — and a naive split would read it as class `partner`, value `ac`: a
+    /// *different* shard, silently, filing the overlay where nothing reads it.
+    /// The class never contains a separator, so the first one is the boundary.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::InvalidRequest`] for a key with no separator, an unknown
+    /// class, a blank value, or the `global` sentinel carrying a value — the last
+    /// because the classless shard is a variant rather than a class, so
+    /// `global/acme` names nothing this type can be.
+    pub fn parse(raw: &str) -> Result<Self, DomainError> {
+        let unknown = || {
+            DomainError::InvalidRequest(format!(
+                "{raw} is not an overlay index shard key: expected `<scope class>/<value>` or \
+                 `{GLOBAL_SCOPE}/{GLOBAL_SCOPE}`"
+            ))
+        };
+        let (class, value) = raw.split_once('/').ok_or_else(unknown)?;
+        if class == GLOBAL_SCOPE {
+            // The sentinel is repeated on both halves by construction, so a
+            // `global` class with anything else is not a shard this type has.
+            return (value == GLOBAL_SCOPE)
+                .then_some(Self::Global)
+                .ok_or_else(unknown);
+        }
+        let class = OverlayScopeClass::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == class)
+            .ok_or_else(unknown)?;
+        Self::scoped(class, value)
+    }
+
     /// The persisted `scope_class` component, including the `global` sentinel.
     #[must_use]
     pub const fn scope_class(&self) -> &'static str {

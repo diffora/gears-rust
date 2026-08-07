@@ -17,7 +17,7 @@ use uuid::Uuid;
 use super::{ProjectedSubject, outstanding_subjects, subject_of};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
+use crate::domain::read_model::{SubjectKind, SubjectRef};
 use crate::infra::storage::repo::PendingVersionRow;
 
 fn ref_row(handle: &str, subject: &SubjectRef) -> PendingVersionRow {
@@ -82,24 +82,21 @@ fn a_subject_kind_this_projector_cannot_build_is_refused_by_name() {
     // incomplete, and therefore holds the frontier, forever with nothing saying
     // why - which is the failure mode the materialized frontier makes silent.
     //
-    // **`PriceOverlay` left this list with D-234** and the case is narrower for
-    // it: the overlay document is projected now, so a list still naming it would
-    // be asserting a refusal the code no longer makes. What remains is the index
-    // shard, whose derivation is owed, and membership, which has no store.
-    for subject in [
-        SubjectRef::OverlayIndex(OverlayIndexShard::Global),
-        SubjectRef::GroupMembership(Uuid::from_u128(2)),
-    ] {
-        let kind = subject.kind();
-        let refusal = subject_of(&ref_row("pend-x", &subject))
-            .expect_err("this projector can build no delta for that subject");
-        match refusal {
-            DomainError::Internal(message) => assert!(
-                message.contains(kind.as_str()),
-                "the refusal must name the kind, got: {message}"
-            ),
-            other => panic!("expected an internal fault, got {other:?}"),
-        }
+    // **`PriceOverlay` left this list when the document arm landed, and
+    // `OverlayIndex` when the shard arm did.** The list shrinks as the projector
+    // grows, which is the point: a list still naming a projectable kind would be
+    // asserting a refusal the code no longer makes. What remains is membership,
+    // refused for the older and simpler reason - it has no store at all.
+    let subject = SubjectRef::GroupMembership(Uuid::from_u128(2));
+    let kind = subject.kind();
+    let refusal = subject_of(&ref_row("pend-x", &subject))
+        .expect_err("this projector can build no delta for that subject");
+    match refusal {
+        DomainError::Internal(message) => assert!(
+            message.contains(kind.as_str()),
+            "the refusal must name the kind, got: {message}"
+        ),
+        other => panic!("expected an internal fault, got {other:?}"),
     }
 }
 

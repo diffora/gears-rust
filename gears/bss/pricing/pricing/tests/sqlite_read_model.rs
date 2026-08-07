@@ -40,7 +40,9 @@ use bss_pricing::domain::plan_shape::{
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
-use bss_pricing::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
+use bss_pricing::domain::read_model::{
+    OverlayIndexShard, OverlayScopeClass, SubjectKind, SubjectRef,
+};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
@@ -726,16 +728,16 @@ async fn an_overlay_ref_naming_an_overlay_that_is_not_there_is_an_internal_fault
 }
 
 #[tokio::test]
-async fn a_subject_kind_this_projector_cannot_build_is_still_refused_by_name() {
-    // The half of the old case that is still about the **kind**. `overlay_index`
-    // has a store - the same overlay plane - and no derivation yet, and
-    // `group_membership` has no store at all; both are refused by name rather
-    // than skipped, because a subject silently unprojected holds its version
-    // incomplete and therefore holds the frontier, forever, with nothing saying
-    // why.
+async fn a_subject_kind_with_no_store_in_this_gear_is_still_refused_by_name() {
+    // **`overlay_index` left this case when its arm landed**, which is what the
+    // case was written to do: it named both unbuildable kinds and reddened the
+    // moment one became buildable, instead of quietly asserting a refusal the
+    // code no longer makes.
     //
-    // This is the case that reddens when the index arm lands, which is the point
-    // of writing it: it is the marker for the group that finishes D-234.
+    // `group_membership` is what remains, and it is refused for the older and
+    // simpler reason - no store at all. Refused rather than skipped, because a
+    // subject silently unprojected holds its version incomplete and therefore
+    // holds the frontier, forever, with nothing saying why.
     let h = harness().await;
     let conn = h.provider.conn().expect("conn");
     catalog_version_ref_repo::record_pending(
@@ -743,16 +745,16 @@ async fn a_subject_kind_this_projector_cannot_build_is_still_refused_by_name() {
         &h.scope,
         PendingVersionRow::for_subject(
             TENANT,
-            "pend-shard".to_owned(),
-            &SubjectRef::OverlayIndex(OverlayIndexShard::Global),
+            "pend-membership".to_owned(),
+            &SubjectRef::GroupMembership(Uuid::new_v4()),
             None,
             None,
             at_min(12, 0),
         ),
     )
     .await
-    .expect("record an index shard's ref");
-    h.registry.commit("pend-shard", 4);
+    .expect("record a membership subject's ref");
+    h.registry.commit("pend-membership", 4);
 
     let report = sweep(&h, at(13)).await;
 
@@ -867,6 +869,186 @@ async fn a_published_overlay_subject_projects_its_document() {
         Some(1),
         "the document carries its lines - it is what a consumer resolves"
     );
+}
+
+/// Record both subjects of one overlay publish against one handle.
+async fn record_overlay_unit(h: &Harness, handle: &str, price_overlay_id: Uuid, revision: u64) {
+    let conn = h.provider.conn().expect("conn");
+    for subject in [
+        SubjectRef::PriceOverlay(price_overlay_id),
+        SubjectRef::OverlayIndex(
+            OverlayIndexShard::scoped(OverlayScopeClass::Partner, "acme").expect("a valued shard"),
+        ),
+    ] {
+        let revisioned = matches!(subject, SubjectRef::PriceOverlay(_));
+        catalog_version_ref_repo::record_pending(
+            &conn,
+            &h.scope,
+            PendingVersionRow::for_subject(
+                TENANT,
+                handle.to_owned(),
+                &subject,
+                revisioned.then_some(revision),
+                revisioned.then_some(LifecycleState::Published),
+                at_min(12, 0),
+            ),
+        )
+        .await
+        .expect("both subjects of the one act");
+    }
+}
+
+#[tokio::test]
+async fn an_overlay_publish_projects_its_shard_listing_the_overlay_it_published() {
+    // D-112's enumeration access path, and the case the whole multi-subject unit
+    // exists for: per-subject resolution answers "overlay X at pin V", evaluation
+    // needs the *set*, and S9 sec 7 requires that set to be every scope-matching
+    // overlay **live at V**.
+    //
+    // The shard must list the overlay **this same act published**, and that is
+    // the ordering hazard: the two subjects are projected in two transactions, so
+    // a shard derived from committed refs alone would omit its own sibling
+    // whenever the shard happened to be projected first. The derivation therefore
+    // counts the refs of *this version* the pass is holding, exactly as
+    // `version_is_complete` does.
+    let h = harness().await;
+    let price_overlay_id = seed_published_overlay(&h, 40).await;
+    record_overlay_unit(&h, "pend-unit", price_overlay_id, 0).await;
+    h.registry.commit("pend-unit", 4);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.subjects_failed, 0);
+    assert_eq!(report.subjects_projected, 2, "the document and its shard");
+    let rows = deltas(&h).await;
+    let shard = rows
+        .iter()
+        .find(|row| row.subject_kind == "overlay_index")
+        .expect("the shard delta");
+    assert_eq!(shard.subject_ref, "partner/acme");
+    let listed = shard
+        .payload
+        .get("overlays")
+        .and_then(serde_json::Value::as_array)
+        .expect("overlays");
+    assert_eq!(listed.len(), 1, "{:?}", shard.payload);
+    assert_eq!(
+        listed[0].get("priceOverlayId"),
+        Some(&serde_json::json!(price_overlay_id))
+    );
+    assert_eq!(listed[0].get("precedence"), Some(&serde_json::json!(40)));
+}
+
+#[tokio::test]
+async fn a_shard_projected_before_its_own_document_still_lists_it() {
+    // **The ordering-independence, and it needs forcing to be tested at all.**
+    // The two subjects of one act are projected in two transactions, and
+    // `list_pending_for_tenant` orders by `requested_at` then `pending_ref` -
+    // which for one act ties on both, because the commit writes both refs at one
+    // instant. So the order is arbitrary in production and merely *happened* to
+    // put the document first in the case above; that case therefore proves
+    // nothing about this property, which is what a probe showed by not reddening.
+    //
+    // Here the shard is requested first, so it is projected first. Derived from
+    // committed refs alone it would omit its own sibling - the overlay this very
+    // act published - and the omission would be permanent, because the shard is
+    // warm and only the document gets re-driven.
+    let h = harness().await;
+    let price_overlay_id = seed_published_overlay(&h, 40).await;
+    let conn = h.provider.conn().expect("conn");
+    for (subject, requested_at) in [
+        (
+            SubjectRef::OverlayIndex(
+                OverlayIndexShard::scoped(OverlayScopeClass::Partner, "acme")
+                    .expect("a valued shard"),
+            ),
+            at_min(12, 0),
+        ),
+        (SubjectRef::PriceOverlay(price_overlay_id), at_min(12, 1)),
+    ] {
+        let revisioned = matches!(subject, SubjectRef::PriceOverlay(_));
+        catalog_version_ref_repo::record_pending(
+            &conn,
+            &h.scope,
+            PendingVersionRow::for_subject(
+                TENANT,
+                "pend-shard-first".to_owned(),
+                &subject,
+                revisioned.then_some(0),
+                revisioned.then_some(LifecycleState::Published),
+                requested_at,
+            ),
+        )
+        .await
+        .expect("both subjects, the shard requested first");
+    }
+    h.registry.commit("pend-shard-first", 4);
+
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.subjects_failed, 0);
+    let rows = deltas(&h).await;
+    let shard = rows
+        .iter()
+        .find(|row| row.subject_kind == "overlay_index")
+        .expect("the shard delta");
+    assert_eq!(
+        shard
+            .payload
+            .get("overlays")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "the shard must list the overlay its own act published: {:?}",
+        shard.payload
+    );
+}
+
+#[tokio::test]
+async fn a_shard_does_not_list_an_overlay_published_into_a_later_version() {
+    // The half that makes the shard a statement about **V** rather than about the
+    // moment the projector arrived. The registry batches at up to five minutes
+    // (D-47), so a second overlay publishing inside that window is ordinary - and
+    // read from truth at projection time it would land in the *earlier* version's
+    // frozen shard, which is INSERT-only on the seven-year horizon.
+    //
+    // A consumer pinned at V4 would then enumerate an overlay whose document has
+    // no delta at or below V4, and the per-subject document read S9 sec 7
+    // prescribes in the same sentence would find nothing.
+    //
+    // **What this case does NOT prove**, found by probing it: removing the `<= V`
+    // bound from the query leaves it green. When V4 is projected, V5's refs are
+    // still pending and the `IS NOT NULL` filter excludes them on its own. So this
+    // asserts the outcome and not the mechanism - see
+    // `overlay_revisions_at_or_below`, where the premise is written down.
+    let h = harness().await;
+    let first = seed_published_overlay(&h, 40).await;
+    let second = seed_published_overlay(&h, 50).await;
+    record_overlay_unit(&h, "pend-v4", first, 0).await;
+    record_overlay_unit(&h, "pend-v5", second, 0).await;
+    h.registry.commit("pend-v4", 4);
+    h.registry.commit("pend-v5", 5);
+
+    sweep(&h, at(13)).await;
+
+    let rows = deltas(&h).await;
+    let shard_at = |version: i64| {
+        rows.iter()
+            .find(|row| row.subject_kind == "overlay_index" && row.catalog_version == version)
+            .unwrap_or_else(|| panic!("the shard delta at V{version}"))
+            .payload
+            .get("overlays")
+            .and_then(serde_json::Value::as_array)
+            .expect("overlays")
+            .len()
+    };
+
+    assert_eq!(
+        shard_at(4),
+        1,
+        "V4 knows only the overlay published into it"
+    );
+    assert_eq!(shard_at(5), 2, "V5 knows both");
 }
 
 // ---------------------------------------------------------------------------

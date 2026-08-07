@@ -193,3 +193,51 @@ fn a_classless_class_carrying_a_value_is_refused_rather_than_coerced() {
         Err(DomainError::InvalidRequest(_))
     ));
 }
+
+#[test]
+fn every_shard_round_trips_through_its_persisted_rendering() {
+    // `subject_ref` on a ref row and on a delta row **is** this rendering, so the
+    // projector reads a shard back from a string it wrote. A rendering with no
+    // parse would mean the write side and the read side of one column were two
+    // conventions, which is what `SubjectKind::parse` exists to prevent one field
+    // over.
+    let mut shards = vec![OverlayIndexShard::Global];
+    for class in OverlayScopeClass::ALL {
+        shards.push(OverlayIndexShard::scoped(*class, "eu-west").expect("a valued shard"));
+    }
+    for shard in shards {
+        assert_eq!(
+            OverlayIndexShard::parse(&shard.to_string()).expect("its own rendering parses"),
+            shard
+        );
+    }
+}
+
+#[test]
+fn a_scope_value_containing_the_separator_still_round_trips() {
+    // The rendering joins on `/` and a scope value is operator-authored, so a
+    // value carrying a slash is reachable. Split naively, `partner/ac/me` would
+    // parse as class `partner`, value `ac` — a **different shard**, silently, and
+    // the overlay would be filed where nothing reads it.
+    let shard =
+        OverlayIndexShard::scoped(OverlayScopeClass::Partner, "ac/me").expect("a valued shard");
+
+    assert_eq!(shard.to_string(), "partner/ac/me");
+    assert_eq!(
+        OverlayIndexShard::parse("partner/ac/me").expect("parses"),
+        shard
+    );
+}
+
+#[test]
+fn an_unparsable_shard_key_fails_closed() {
+    for raw in ["", "partner", "nosuchclass/acme", "global/acme"] {
+        assert!(
+            matches!(
+                OverlayIndexShard::parse(raw),
+                Err(DomainError::InvalidRequest(_))
+            ),
+            "{raw} must not parse"
+        );
+    }
+}
