@@ -46,6 +46,7 @@ use bss_pricing::domain::plan_shape::Frequency;
 use bss_pricing::domain::plan_shape::{
     AddonRule, BillingCycle, DescriptorSet, PhaseKind, PlanPhase,
 };
+use bss_pricing::domain::ports::metrics::PricingMetricsPort;
 use bss_pricing::domain::price_record::PriceContent as PriceContentAlias;
 use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
 use bss_pricing::domain::price_row::PriceRow;
@@ -54,6 +55,7 @@ use bss_pricing::domain::scope_key::{
 };
 use bss_pricing::infra::approval::ApprovalService;
 use bss_pricing::infra::fixture_gate::FixtureGate;
+use bss_pricing::infra::metrics::test_harness::MetricsHarness;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::entity::{approval, audit_log, catalog_version_ref, outbox, plan};
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -333,6 +335,12 @@ pub struct Harness {
     pub state: Arc<AuthoringState>,
     /// The state the approval routes and the publish mount are built over.
     pub governance: Arc<GovernanceState>,
+    /// What the routes under this harness reported about themselves.
+    ///
+    /// Read through [`Self::force_flush`] first — the reader is periodic, so an
+    /// assertion made without flushing reads zero for every instrument and
+    /// passes whenever it expected zero.
+    pub metrics: MetricsHarness,
     /// The state the read-only frontier route is built over.
     ///
     /// Mounted here — rather than left to `tests/rest_frontier.rs`'s own
@@ -382,6 +390,13 @@ impl Harness {
         // `Arc` and `PublishUnitKind::request_token` keeps the two units' handles
         // apart, so the fault was the harness's alone.
         let registry = Arc::new(RegistryDouble::default());
+        // **The real adapter over a private exporter**, not the no-op: a suite
+        // that held `NoopPricingMetrics` could assert a route answered and learn
+        // nothing about whether it reported, which is exactly the claim a
+        // dashboard depends on. Private to this harness, so one suite's counter
+        // can never decide another's assertion.
+        let metrics_harness = MetricsHarness::new();
+        let metrics: Arc<dyn PricingMetricsPort> = Arc::new(metrics_harness.metrics());
         let governance = Arc::new(GovernanceState {
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
@@ -401,7 +416,8 @@ impl Harness {
                 &LimitsConfig::default(),
                 FixtureGate::load(&committed_registry_path()),
                 Arc::clone(&registry) as Arc<_>,
-            ),
+            )
+            .with_metrics(Arc::clone(&metrics)),
             thresholds: bss_pricing::infra::threshold::ThresholdService::new(db.clone()),
             // The window `POST`'s gate (D-191), under the production default TTL: a
             // harness with a different expiry would make the replay tests pass or fail
@@ -409,6 +425,7 @@ impl Harness {
             idempotency: bss_pricing::infra::storage::repo::IdempotencyGate::new(
                 LimitsConfig::default().idempotency_key_ttl(),
             ),
+            metrics: Arc::clone(&metrics),
         });
         let frontier = Arc::new(FrontierState {
             pin_frontier: PinFrontierRepo::new(db.clone()),
@@ -431,6 +448,7 @@ impl Harness {
             other: Uuid::now_v7(),
             state,
             governance,
+            metrics: metrics_harness,
             frontier,
             registry,
         }

@@ -600,12 +600,23 @@ impl Gear for BssPricingGear {
         // engine stays the only **requester** of a `CatalogVersion`, and the
         // warm sweep is a second **reader**, asking only what a handle the
         // commit already obtained resolved to.
+        // The OTel-backed metrics port. Built once per process and shared: the
+        // adapter caches its instruments, and a second build would look them up
+        // again on a path that is only reporting.
+        //
+        // A **no-op until the host installs a meter provider**, so this is safe
+        // to construct unconditionally — a missing exporter can never be the
+        // reason a publish fails.
+        let metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort> =
+            Arc::new(crate::infra::metrics::PricingMetricsMeter::new());
+
         let publish = PublishService::new(
             db.clone(),
             &config.limits,
             fixture_gate,
             Arc::clone(&catalog_version_registry),
-        );
+        )
+        .with_metrics(Arc::clone(&metrics));
 
         // The governance surface's state, and the publish engine's **only**
         // holder. It sat on `PricingRuntime` behind a `dead_code` allow for two
@@ -640,6 +651,7 @@ impl Gear for BssPricingGear {
             // caller's retry is protected on one surface and not on another.
             idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
             thresholds: crate::infra::threshold::ThresholdService::new(db.clone()),
+            metrics: Arc::clone(&metrics),
         });
 
         self.runtime.store(Some(Arc::new(PricingRuntime {

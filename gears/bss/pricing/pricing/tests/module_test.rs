@@ -214,6 +214,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             LimitsConfig::default().idempotency_key_ttl(),
         ),
         thresholds: bss_pricing::infra::threshold::ThresholdService::new(db.clone()),
+        // The no-op, for the same reason as the gate above: this test builds the
+        // router to census its paths and sends no request, so there is nothing
+        // to report.
+        metrics: Arc::new(bss_pricing::domain::ports::metrics::NoopPricingMetrics),
         plans: PlanRepo::new(db.clone()),
         prices: PriceRepo::new(db.clone()),
         approvals: ApprovalService::new(db.clone()),

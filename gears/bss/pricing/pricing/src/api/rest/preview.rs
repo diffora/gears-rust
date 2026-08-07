@@ -65,6 +65,7 @@ use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::state::GovernanceState;
 use crate::domain::error::DomainError;
 use crate::domain::money::CurrencyCode;
+use crate::domain::ports::metrics::PreviewFailClosed;
 use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::storage::repo::{pin_frontier_repo, read_model_repo};
@@ -236,7 +237,14 @@ async fn preview_plan_price(
     // than that their query is malformed — the ordering `schedule_window` argues
     // for its own parameters and `rest_authz`'s catalogued-pair property depends
     // on.
-    let (currency, region) = market_of(&query)?;
+    let (currency, region) = market_of(&query).inspect_err(|_| {
+        // The caller named no market. Counted because it is a distinct
+        // remediation from "nobody authored that row" — this one is a client
+        // fault and needs no catalog change.
+        state
+            .metrics
+            .preview_failclosed(PreviewFailClosed::MarketNotNamed);
+    })?;
     let tenant = ctx.subject_tenant_id();
 
     let conn = state
@@ -244,7 +252,22 @@ async fn preview_plan_price(
         .conn()
         .map_err(|e| CanonicalError::from(DomainError::Internal(format!("preview conn: {e}"))))?;
 
+    // **Two constructors, one wire answer.** Both are `404 PRICE_ROW_ABSENT` —
+    // §5 declares one code — but they are different facts to an operator: a
+    // market nobody authored, versus a tenant that has published nothing at all.
+    // The counter is where that distinction lives, so the constructors are
+    // separate purely to keep each `return` counting the reason it means.
+    let unpublished = || {
+        CanonicalError::from(DomainError::PriceRowAbsent(format!(
+            "plan {plan_id} has no published catalog version, so there is no price to preview \
+             on {}/{region} or on any other market",
+            currency.as_str()
+        )))
+    };
     let absent = || {
+        state
+            .metrics
+            .preview_failclosed(PreviewFailClosed::MarketAbsent);
         CanonicalError::from(DomainError::PriceRowAbsent(format!(
             "plan {plan_id} publishes no price row on {}/{region}. The catalog performs no FX \
              and has no base-currency fallback, so an absent market is an absent price rather \
@@ -261,7 +284,14 @@ async fn preview_plan_price(
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?
     else {
-        return Err(absent());
+        // **A different reason from an absent market**, though the caller sees
+        // the same 404: this tenant has published nothing at all, so no row of
+        // any market exists. An operator seeing this series climb has a
+        // different job from one seeing `market_absent` climb.
+        state
+            .metrics
+            .preview_failclosed(PreviewFailClosed::NoPublishedVersion);
+        return Err(unpublished());
     };
     let Some(delta) = read_model_repo::delta_at(
         &conn,
@@ -273,7 +303,10 @@ async fn preview_plan_price(
     .await
     .map_err(|e| CanonicalError::from(repo_failure(&e)))?
     else {
-        return Err(absent());
+        state
+            .metrics
+            .preview_failclosed(PreviewFailClosed::NoPublishedVersion);
+        return Err(unpublished());
     };
 
     let rows = market_rows(&delta.payload, currency.as_str(), region.as_str());

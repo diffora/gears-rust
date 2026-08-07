@@ -153,4 +153,12 @@ pub struct GovernanceState {
     /// `approvals` writes. It requests no `CatalogVersion`, so it does not bear on
     /// the split's own criterion either way.
     pub thresholds: crate::infra::threshold::ThresholdService,
+    /// What the catalog reports about itself (`T-17`).
+    ///
+    /// Here rather than on [`AuthoringState`] because the two surfaces that
+    /// report today are governance-plane reads — the base-price preview's
+    /// fail-closed counter and the publish path's currency-binding and GA-gate
+    /// instruments. A later slice reporting from an authoring route adds the
+    /// field there; the port is the same one.
+    pub metrics: std::sync::Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
 }

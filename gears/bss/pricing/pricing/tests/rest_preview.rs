@@ -745,3 +745,142 @@ async fn a_ga_gated_row_is_previewable_and_says_so() {
     assert_eq!(body["not_sellable_ga"], true);
     assert_eq!(body["tax_inclusive"], true);
 }
+
+// ---------------------------------------------------------------------------
+// What the refusals report (§10, `pricing_preview_failclosed_total`).
+// ---------------------------------------------------------------------------
+
+const FAILCLOSED: &str = "pricing_preview_failclosed_total";
+
+/// **The two 404s that share one wire code are two different series.**
+///
+/// `PRICE_ROW_ABSENT` is the code for both "nobody authored that market" and
+/// "this tenant has published nothing", because §5 declares one code — and the
+/// remediations are opposite: one is a catalog gap somebody fills, the other is a
+/// tenant that has never published. An operator watching a single `failclosed`
+/// count would learn the preview is refusing without learning whose job it is.
+///
+/// Asserted **through the router**, so what is proven is that a real refusal
+/// reported a real series, not that the adapter can increment its own counter.
+#[tokio::test]
+async fn an_unsold_market_and_an_unpublished_tenant_report_different_reasons() {
+    let h = Harness::new().await;
+    let plan_id = seeded(&h).await;
+
+    // A market the plan does not sell, on a tenant that has published.
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency=JPY&region={REGION}")),
+            None,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    h.metrics.force_flush();
+
+    assert_eq!(
+        h.metrics
+            .counter_value(FAILCLOSED, &[("reason", "market_absent")]),
+        1
+    );
+    assert_eq!(
+        h.metrics
+            .counter_value(FAILCLOSED, &[("reason", "no_published_version")]),
+        0,
+        "a tenant that has published is not an unpublished tenant"
+    );
+}
+
+/// A tenant that has published nothing reports `no_published_version`, and does
+/// **not** report the market as absent.
+#[tokio::test]
+async fn a_tenant_with_no_published_version_reports_that_and_not_an_absent_market() {
+    let h = Harness::new().await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(
+                Uuid::now_v7(),
+                &format!("currency={CURRENCY}&region={REGION}"),
+            ),
+            None,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    h.metrics.force_flush();
+
+    assert_eq!(
+        h.metrics
+            .counter_value(FAILCLOSED, &[("reason", "no_published_version")]),
+        1
+    );
+    assert_eq!(
+        h.metrics
+            .counter_value(FAILCLOSED, &[("reason", "market_absent")]),
+        0,
+        "nothing is published, so no market of it can be the absent one"
+    );
+}
+
+/// **A preview that answered reports nothing.**
+///
+/// The negative control the other two rest on: a route that counted every
+/// request would satisfy both of them and would report a healthy catalog as
+/// permanently failing closed.
+#[tokio::test]
+async fn a_successful_preview_counts_no_refusal() {
+    let h = Harness::new().await;
+    let plan_id = seeded(&h).await;
+
+    let response = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={REGION}")),
+            None,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    h.metrics.force_flush();
+
+    for reason in ["market_absent", "no_published_version", "market_not_named"] {
+        assert_eq!(
+            h.metrics.counter_value(FAILCLOSED, &[("reason", reason)]),
+            0,
+            "a preview that answered must report no {reason} refusal"
+        );
+    }
+}
+
+/// A request naming **no market** is a client fault, and a series of its own.
+///
+/// It needs no catalog change at all, which is what separates it from the other
+/// two — and it is counted after the authorization gate, so a caller without the
+/// grant is told that rather than that their query is malformed.
+#[tokio::test]
+async fn a_request_naming_no_market_reports_a_client_fault() {
+    let h = Harness::new().await;
+    let plan_id = seeded(&h).await;
+
+    let response = h
+        .allowed()
+        .send(request("GET", &preview_path(plan_id, "region=EU"), None))
+        .await;
+    assert_ne!(response.status(), StatusCode::OK);
+    h.metrics.force_flush();
+
+    assert_eq!(
+        h.metrics
+            .counter_value(FAILCLOSED, &[("reason", "market_not_named")]),
+        1
+    );
+    assert_eq!(
+        h.metrics
+            .counter_value(FAILCLOSED, &[("reason", "market_absent")]),
+        0,
+        "a malformed query is not an unauthored market"
+    );
+}

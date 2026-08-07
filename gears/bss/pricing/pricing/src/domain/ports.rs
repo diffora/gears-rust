@@ -8,6 +8,8 @@
 //! implement it without depending on this crate; this module is where the
 //! engine resolves it.
 
+pub mod metrics;
+
 pub use bss_pricing_sdk::catalog_version_registry::{
     CatalogVersionRegistryError, CatalogVersionRegistryV1, PendingVersionRef,
     UnconfiguredCatalogVersionRegistryV1,

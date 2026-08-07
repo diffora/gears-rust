@@ -161,21 +161,7 @@ impl ValidationRule<PlanShape> for RequiredAddonsCoverMarkets {
     }
 
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
-        let sold = sold_markets(subject);
-        if sold.is_empty() {
-            // A plan with no candidate row sells nothing, so nothing has to be
-            // covered. Reported as no finding rather than as "everything is
-            // uncovered", which is what an empty-domain rule answers if it walks
-            // the components instead of the markets.
-            return;
-        }
-
-        for addon in mandatory_closure(subject) {
-            let covered = self.coverage.markets_of(addon);
-            let missing = uncovered_pairs(&sold, &covered);
-            if missing.is_empty() {
-                continue;
-            }
+        for (addon, missing) in uncovered_required_addons(subject, &self.coverage) {
             // §5 requires the refusal to name the component **and** the market.
             // Both, and every missing market rather than the first: an operator
             // authoring rows for a plan at C1's 20-currency floor otherwise
@@ -197,6 +183,40 @@ impl ValidationRule<PlanShape> for RequiredAddonsCoverMarkets {
             );
         }
     }
+}
+
+/// Case (i)'s verdict: every mandatory add-on that misses a market this plan
+/// sells, with the markets it misses.
+///
+/// **The one place the verdict is computed**, called by the rule that refuses on
+/// it and by the publish path that counts it
+/// (`pricing_currency_binding_blocks_total{case="required_addon"}`). Two readers
+/// deriving it separately is how a metric comes to disagree with the refusal it
+/// claims to count — and here the disagreement would be invisible, because
+/// `bundle_rules` raises the **same code string** for cases (ii) and (iii), so a
+/// counter scanning the report by code would label a bundle's fault
+/// `required_addon`.
+///
+/// Empty for a plan with no candidate row: it sells nothing, so nothing has to be
+/// covered. Reported as no finding rather than as "everything is uncovered",
+/// which is what an empty-domain check answers if it walks the components instead
+/// of the markets.
+#[must_use]
+pub fn uncovered_required_addons(
+    shape: &PlanShape,
+    coverage: &AddonCoverage,
+) -> Vec<(Uuid, Vec<Market>)> {
+    let sold = sold_markets(shape);
+    if sold.is_empty() {
+        return Vec::new();
+    }
+    mandatory_closure(shape)
+        .into_iter()
+        .filter_map(|addon| {
+            let missing = uncovered_pairs(&sold, &coverage.markets_of(addon));
+            (!missing.is_empty()).then_some((addon, missing))
+        })
+        .collect()
 }
 
 /// Every add-on that is mandatory at order time: the `depends_on` closure of the

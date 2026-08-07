@@ -139,6 +139,9 @@ pub struct PublishService {
     /// asking what a handle **this** engine already obtained resolved to. One
     /// requester, two readers.
     registry: Arc<dyn CatalogVersionRegistryV1>,
+    /// What this path reports about itself (`T-17`); a no-op unless the
+    /// gear lifecycle attached one.
+    metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
 }
 
 impl PublishService {
@@ -156,7 +159,26 @@ impl PublishService {
             policies,
             fixture_gate: gate,
             registry,
+            // The safe default: a service built without one reports nothing
+            // rather than failing to build. `with_metrics` is what production
+            // hands it.
+            metrics: Arc::new(crate::domain::ports::metrics::NoopPricingMetrics),
         }
+    }
+
+    /// Attach the metrics port (`T-17`).
+    ///
+    /// A **second call** rather than a fifth parameter on [`Self::new`], for
+    /// `PublishRuleParams::with_referencing_markets`' reason: every existing
+    /// caller has nothing to say to it, and the no-op [`Self::new`] already
+    /// installs is exactly what they mean.
+    #[must_use]
+    pub fn with_metrics(
+        mut self,
+        metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
+    ) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// §4.2 step 2 — validate a plan's open draft revision without touching it.
@@ -198,6 +220,7 @@ impl PublishService {
         let shape = assemble(&conn, scope, tenant_id, plan_id, now).await?;
         let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape).await?;
         let report = run_publish_rules(&shape, &params);
+        crate::infra::metrics::report_market_metrics(&*self.metrics, &shape, &params);
         check_fixtures(&self.fixture_gate, &shape)?;
         Ok(report)
     }

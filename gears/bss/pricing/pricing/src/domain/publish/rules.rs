@@ -362,6 +362,16 @@ impl PublishRuleParams {
         &self.region_readiness
     }
 
+    /// The resolved add-on coverage, for a reader that is not a rule.
+    ///
+    /// A reader beside [`Self::region_readiness`]: the publish path counts
+    /// `inst-cb-addon`'s blocks (`T-17`) and has to ask the same question the
+    /// rule asks, from the same handed-in facts, rather than re-deriving it.
+    #[must_use]
+    pub const fn addon_coverage(&self) -> &AddonCoverage {
+        &self.addon_coverage
+    }
+
     /// Attach the resolved coverage of this plan's add-ons (`inst-cb-addon`).
     #[must_use]
     pub fn with_addon_coverage(mut self, coverage: AddonCoverage) -> Self {
