@@ -106,7 +106,7 @@ use crate::domain::overlay::{
     Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
     OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku, TaxBasis,
 };
-use crate::domain::overlay_rules::{OverlayWorld, PublishedLineInterval};
+use crate::domain::overlay_rules::{CrossClassTie, OverlayWorld, PublishedLineInterval};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
@@ -1437,7 +1437,7 @@ impl OverlayRepo {
     ///   the plan row" and nothing richer. A line naming any other SKU is
     ///   refused `OVERLAY_LINE_TARGET_UNKNOWN`, which is the fail-closed
     ///   direction; when the registry lands, this is the read that widens.
-    /// * **`lower_precedence_matchers`** is D-138's warning domain, and it is
+    /// * **`layers_beneath`** is D-138's warning domain, and it is
     ///   computed under the reading D-138's own words state — *"the
     ///   lowest-precedence layer able to match its target"*, i.e. numerically
     ///   lower. §F.1 leaves the stack's **sort direction** undecided, and under
@@ -1472,7 +1472,8 @@ impl OverlayRepo {
             published_cohorts: markets.cohorts,
             precedence_holder: overlays.precedence_holder,
             interval_holders: overlays.interval_holders,
-            lower_precedence_matchers: overlays.lower_precedence_matchers,
+            layers_beneath: overlays.layers_beneath,
+            cross_class_ties: overlays.cross_class_ties,
         })
     }
 }
@@ -1592,7 +1593,8 @@ async fn price_facts(
 struct OverlayFacts {
     precedence_holder: Option<Uuid>,
     interval_holders: Vec<PublishedLineInterval>,
-    lower_precedence_matchers: BTreeSet<PlanId>,
+    layers_beneath: BTreeSet<PlanId>,
+    cross_class_ties: Vec<CrossClassTie>,
 }
 
 /// The precedence slot, the collision domain and D-138's lower layers.
@@ -1624,7 +1626,8 @@ async fn overlay_facts(
     let mut facts = OverlayFacts {
         precedence_holder: None,
         interval_holders: Vec::new(),
-        lower_precedence_matchers: BTreeSet::new(),
+        layers_beneath: BTreeSet::new(),
+        cross_class_ties: Vec::new(),
     };
     for row in published {
         if row.price_overlay_id == candidate.price_overlay_id {
@@ -1645,8 +1648,22 @@ async fn overlay_facts(
                 key: line.key.clone(),
                 interval: record.interval,
             });
-            if record.precedence < candidate.precedence {
-                collect_lower_layer(&mut facts.lower_precedence_matchers, &record, line);
+            // **Beneath is the total order, not the integer** (D-220 clause 1,
+            // settled by D-249's ascending direction): a strictly lower
+            // precedence, **or** an equal precedence with a lower class, since
+            // `precedence` is unique only within a class. Collecting only the
+            // first is why a `fixed` line discarding an equal-precedence
+            // lower-class layer was silently not warned.
+            let beneath = record.precedence < candidate.precedence
+                || (record.precedence == candidate.precedence
+                    && record.scope.class() < candidate.scope.class());
+            if beneath {
+                collect_lower_layer(&mut facts.layers_beneath, &record, line);
+            }
+            if record.precedence == candidate.precedence
+                && record.scope.class() != candidate.scope.class()
+            {
+                collect_cross_class_tie(&mut facts.cross_class_ties, &record, line);
             }
         }
     }
@@ -1658,6 +1675,38 @@ async fn overlay_facts(
 ///
 /// A list-default line matches **every** target of its own overlay, so it
 /// contributes that whole set rather than one plan.
+/// The tie one published line of a **different** class at the same precedence
+/// forms with the candidate (D-230).
+///
+/// One entry per tying overlay, its plan set accumulated across that overlay's
+/// lines: the operator's question is *which overlay ties with mine*, so a second
+/// line of the same overlay widens the plan list rather than adding a row.
+fn collect_cross_class_tie(
+    into: &mut Vec<CrossClassTie>,
+    holder: &OverlayRecord,
+    line: &OverlayLine,
+) {
+    let mut plans = BTreeSet::new();
+    match line.key.plan_id() {
+        Some(plan_id) => {
+            plans.insert(plan_id);
+        }
+        None => plans.extend(holder.target_ref.plans.iter().copied()),
+    }
+    if let Some(existing) = into
+        .iter_mut()
+        .find(|t| t.price_overlay_id == holder.price_overlay_id)
+    {
+        existing.plans.extend(plans);
+    } else {
+        into.push(CrossClassTie {
+            price_overlay_id: holder.price_overlay_id,
+            class: holder.scope.class(),
+            plans,
+        });
+    }
+}
+
 fn collect_lower_layer(into: &mut BTreeSet<PlanId>, holder: &OverlayRecord, line: &OverlayLine) {
     match line.key.plan_id() {
         Some(plan_id) => {

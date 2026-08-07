@@ -806,6 +806,91 @@ async fn seed_plan(provider: &DBProvider<DbError>, plan_id: PlanId, revision: i6
 /// This is the case that was missing. The domain test hand-built a world with the
 /// plan in **both** sets — a state the schema cannot produce — so it stayed green
 /// while `plan_facts` put a retired plan in neither.
+///
+/// The same trap was walked into again on 2026-08-07 for D-220's first clause, and
+/// the case below is the repair: a domain test setting `layers_beneath` by hand
+/// says nothing about whether `overlay_facts` ever puts an equal-precedence
+/// **D-220's first clause and D-230, at the seam that decides them.**
+///
+/// `precedence` is unique only *within* a class, so two overlays of different
+/// classes may hold the same integer. Under D-249's ascending order the lower
+/// class is **beneath**, so a `fixed` in the higher class discards it — and the
+/// world collected only *strictly* lower precedences, so that discard was silently
+/// not warned. The tie itself is what D-230 asks be surfaced.
+///
+/// Both halves are asserted here rather than in the domain, because both are
+/// answers `overlay_facts` produces and a hand-built world cannot testify about.
+#[tokio::test]
+async fn an_equal_precedence_lower_class_overlay_is_beneath_and_ties() {
+    let provider = provider().await;
+    seed_plan(&provider, plan(1), 0, "published").await;
+    let repo = OverlayRepo::new(provider);
+    let scope = AccessScope::allow_all();
+
+    // A **region**-scoped overlay at precedence 10, published: a lower class than
+    // the candidate's brand, on the same integer.
+    let other = Uuid::from_u128(0xAAAA_BBBB);
+    let mut lower = new_overlay(other, 10);
+    lower.scope = ScopeSelector::scoped(
+        ScopeClass::Region,
+        ScopeValue::new("eu-west").expect("a value"),
+    )
+    .expect("region is not global");
+    repo.create(
+        &scope,
+        lower,
+        vec![percent_line(
+            Uuid::from_u128(0xCCCC_0009),
+            LineKey::for_plan(plan(1)),
+            500,
+        )],
+        stamp(),
+    )
+    .await
+    .expect("the region overlay is created");
+    repo.publish_revision(&scope, TENANT, other, 0, stamp())
+        .await
+        .expect("it publishes");
+
+    // The candidate: brand-scoped, same precedence.
+    repo.create(
+        &scope,
+        new_overlay(OVERLAY, 10),
+        vec![percent_line(LINE_A, LineKey::for_plan(plan(1)), 1000)],
+        stamp(),
+    )
+    .await
+    .expect("the candidate is created");
+    let record = repo
+        .load(&scope, TENANT, OVERLAY, 0)
+        .await
+        .expect("the read succeeds")
+        .expect("revision 0 exists");
+
+    let world = repo
+        .world_for(&scope, TENANT, &record)
+        .await
+        .expect("the world assembles");
+
+    assert!(
+        world.layers_beneath.contains(&plan(1)),
+        "an equal precedence with a lower class is beneath under D-249's ascending \
+         order, and collecting only strictly-lower precedences is what made D-138's \
+         warning miss it"
+    );
+    let tie = world
+        .cross_class_ties
+        .iter()
+        .find(|t| t.price_overlay_id == other)
+        .expect("the tie is reported to the author (D-230)");
+    assert_eq!(tie.class, ScopeClass::Region);
+    assert!(
+        tie.plans.contains(&plan(1)),
+        "and names the plan both reach"
+    );
+}
+
+/// lower-class layer in it, which is the whole of what D-220 fixed.
 #[tokio::test]
 async fn a_retired_target_is_still_a_published_target_and_is_flagged() {
     let provider = provider().await;

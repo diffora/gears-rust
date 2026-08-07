@@ -62,9 +62,11 @@ use crate::domain::scope_key::{PlanId, PriceEligibility};
 ///
 /// **It is a rank, not a direction.** The class order breaks ties *inside* a
 /// stack and never filters an overlay out — overlay application is stack-all,
-/// never single-winner (`inst-plv-class-tiebreak`). Whether the stack is walked
-/// from the low end or the high end is undecided (§F.1) and is not expressed by
-/// this type.
+/// never single-winner (`inst-plv-class-tiebreak`). The stack is walked
+/// **ascending** since D-249 (2026-08-07) — lowest `precedence` first, most
+/// specific last — which this type expresses exactly: the derived `Ord` ranks
+/// least-specific lowest, so a class that sorts below another is applied before
+/// it and is the one a `fixed` layer discards.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScopeClass {

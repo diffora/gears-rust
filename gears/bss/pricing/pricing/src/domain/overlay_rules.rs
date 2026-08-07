@@ -79,8 +79,8 @@ use uuid::Uuid;
 
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::{
-    Adjustment, Disclosure, LineKey, OverlayInterval, OverlayLine, ScopeSelector, TargetRef,
-    TargetSku, TaxBasis,
+    Adjustment, Disclosure, LineKey, OverlayInterval, OverlayLine, ScopeClass, ScopeSelector,
+    TargetRef, TargetSku, TaxBasis,
 };
 use crate::domain::scope_key::PlanId;
 use crate::domain::validation::ValidationReport;
@@ -158,9 +158,23 @@ pub const OVERLAY_INTERVAL_INVALID: &str = "OVERLAY_INTERVAL_INVALID";
 /// **Warning.** A `fixed` line that is not the lowest-precedence layer able to
 /// match its target: it silently voids the layers below it (§5, D-138).
 ///
-/// Read the module doc before trusting this one — its condition inverts with
-/// §F.1's undecided sort direction.
+/// **Its condition is settled as of D-249** (2026-08-07): the stack is applied
+/// **ascending**, so a `fixed` layer discards everything at a lower position in
+/// the total order and this warning fires in the direction D-138 wrote it for.
+/// Until that decision the condition was not merely uncertain but *inverted*
+/// under the other reading, which is why D-220 flagged it rather than letting it
+/// stand.
 pub const FIXED_LINE_DISCARDS_STACK: &str = "FIXED_LINE_DISCARDS_STACK";
+
+/// **Warning.** Two published overlays of **different** classes hold the same
+/// `precedence` and reach a common plan, so the class order — not the author —
+/// decides which is beneath (`inst-plv-class-tiebreak`, D-230).
+///
+/// The tie is **legal** and the break is deterministic; nothing is refused. What
+/// the warning buys is that the operator sees the tie before relying on it,
+/// because `precedence` is unique only within a class and an author reading two
+/// overlays at "the same precedence" has no reason to expect one to win.
+pub const EQUAL_PRECEDENCE_CROSS_CLASS_TIE: &str = "EQUAL_PRECEDENCE_CROSS_CLASS_TIE";
 
 /// **Warning.** A published overlay targets a retired plan: dangling-and-flagged
 /// (D-31), remediation is to end or retarget the overlay.
@@ -228,9 +242,40 @@ pub struct OverlayWorld {
     pub precedence_holder: Option<Uuid>,
     /// Other overlays' published line intervals.
     pub interval_holders: Vec<PublishedLineInterval>,
-    /// The plans for which some published overlay at a **strictly lower**
-    /// precedence carries a matching line — D-138's warning domain.
-    pub lower_precedence_matchers: BTreeSet<PlanId>,
+    /// The plans for which some published overlay sits **beneath** this
+    /// candidate in the stack — D-138's warning domain.
+    ///
+    /// Renamed from `layers_beneath` by D-220/D-249 (2026-08-07),
+    /// because that name became false: "beneath" is the **total** order
+    /// `precedence → class order → overlay id` read ascending (D-249), so it is
+    /// a strictly lower precedence **or** an equal precedence with a lower
+    /// class. `precedence` is unique only *within* a class, so the second case
+    /// is reachable and trips no duplicate refusal — and collecting only the
+    /// first is why a `fixed` line discarding an equal-precedence lower-class
+    /// layer was silently **not** warned (D-220's first clause).
+    pub layers_beneath: BTreeSet<PlanId>,
+    /// Published overlays of a **different** class holding this candidate's
+    /// precedence, with the plans they overlap on (`inst-plv-class-tiebreak`,
+    /// D-230).
+    ///
+    /// Distinct from [`Self::layers_beneath`] on purpose: that one answers *what
+    /// a `fixed` discards*, this one answers *where the class order is deciding
+    /// something the author may not have intended*. A tie is legal and broken
+    /// deterministically; the warning exists so the operator sees it before
+    /// relying on the break, which is what D-230 asks for.
+    pub cross_class_ties: Vec<CrossClassTie>,
+}
+
+/// One published overlay tying with the candidate on precedence across classes.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrossClassTie {
+    /// The tying overlay.
+    pub price_overlay_id: Uuid,
+    /// Its class — the tie-break's other side.
+    pub class: ScopeClass,
+    /// The plans both reach.
+    pub plans: BTreeSet<PlanId>,
 }
 
 /// One overlay revision as an author submits it, plus the world it is judged in.
@@ -454,6 +499,9 @@ fn check_adjustment(candidate: &OverlayCandidate, report: &mut ValidationReport)
         check_currency_coverage(candidate, line, report);
         check_replacement(candidate, line, report);
     }
+    // Once per candidate, not per line: the tie is between two **overlays**, and
+    // the class order that breaks it is the same for every line either carries.
+    check_cross_class_tie(candidate, report);
 }
 
 /// **Every rule that needs no world at all** — the authoring edge's entry point.
@@ -701,7 +749,7 @@ fn check_replacement(
         .map_or_else(|| candidate.target_ref.plans.clone(), |plan| vec![plan]);
     let discarded: Vec<String> = targets
         .into_iter()
-        .filter(|plan| candidate.world.lower_precedence_matchers.contains(plan))
+        .filter(|plan| candidate.world.layers_beneath.contains(plan))
         .map(|plan| plan.to_string())
         .collect();
     if discarded.is_empty() {
@@ -718,6 +766,47 @@ fn check_replacement(
             discarded.join(", ")
         ),
     );
+}
+
+/// `inst-plv-class-tiebreak` (D-230): the operator sees a cross-class tie before
+/// relying on the break.
+///
+/// One warning per tying overlay rather than per plan: the operator's question is
+/// *which overlay ties with mine*, and a plan list inside one message answers it
+/// where one message per plan would bury it.
+///
+/// Nothing is refused. `precedence` is unique only **within** a class, so the tie
+/// is legal, and the class order breaks it deterministically — the warning exists
+/// because an author reading two overlays at "the same precedence" has no reason
+/// to expect one to be beneath the other.
+fn check_cross_class_tie(candidate: &OverlayCandidate, report: &mut ValidationReport) {
+    for tie in &candidate.world.cross_class_ties {
+        if tie.plans.is_empty() {
+            continue;
+        }
+        let plans: Vec<String> = tie.plans.iter().map(ToString::to_string).collect();
+        let (beneath, above) = if tie.class < candidate.scope.class() {
+            (tie.class, candidate.scope.class())
+        } else {
+            (candidate.scope.class(), tie.class)
+        };
+        report.warn(
+            EQUAL_PRECEDENCE_CROSS_CLASS_TIE,
+            tie.price_overlay_id.to_string(),
+            format!(
+                "overlay {} holds precedence {} in class {} and reaches {}; the class order \
+                 decides the stack position, putting {} beneath {} (inst-plv-class-tiebreak). \
+                 The tie is legal and the break deterministic — this says so before you rely \
+                 on it",
+                tie.price_overlay_id,
+                candidate.precedence,
+                tie.class.as_str(),
+                plans.join(", "),
+                beneath.as_str(),
+                above.as_str(),
+            ),
+        );
+    }
 }
 
 /// `inst-plv-precedence` (L2): unique within one scope class, among published

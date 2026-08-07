@@ -68,7 +68,8 @@ fn ordinary_world() -> OverlayWorld {
         published_cohorts: BTreeMap::new(),
         precedence_holder: None,
         interval_holders: Vec::new(),
-        lower_precedence_matchers: BTreeSet::new(),
+        layers_beneath: BTreeSet::new(),
+        cross_class_ties: Vec::new(),
     }
 }
 
@@ -97,6 +98,17 @@ fn codes(report: &ValidationReport) -> Vec<&str> {
 
 fn warnings(report: &ValidationReport) -> Vec<&str> {
     report.warnings.iter().map(|w| w.code.as_str()).collect()
+}
+
+/// The same, for a **warning** — they live in their own collection, which is why
+/// `detail_for` cannot serve both and a test reaching for the wrong one gets `""`
+/// rather than a failure that says so.
+fn warning_detail_for<'a>(report: &'a ValidationReport, code: &str) -> &'a str {
+    report
+        .warnings
+        .iter()
+        .find(|w| w.code == code)
+        .map_or("", |w| w.detail.as_str())
 }
 
 /// The report names the code **and** says which line, which is what §5 requires
@@ -449,7 +461,7 @@ fn the_list_default_lines_coverage_domain_is_every_target() {
 #[test]
 fn a_fixed_line_over_a_lower_layer_warns_and_does_not_block() {
     let mut candidate = ordinary_candidate();
-    candidate.world.lower_precedence_matchers = [plan(1)].into_iter().collect();
+    candidate.world.layers_beneath = [plan(1)].into_iter().collect();
     candidate.lines = vec![OverlayLine {
         line_id: Uuid::from_u128(0x2006),
         key: LineKey::for_plan(plan(1)),
@@ -465,6 +477,79 @@ fn a_fixed_line_over_a_lower_layer_warns_and_does_not_block() {
     assert_eq!(warnings(&report), vec![FIXED_LINE_DISCARDS_STACK]);
 }
 
+/// **D-230**: a cross-class tie is warned, and it is not a refusal.
+///
+/// `precedence` is unique only *within* a class, so this pair is legal and the
+/// class order breaks it deterministically. The warning exists because an author
+/// reading two overlays at "the same precedence" has no reason to expect one to
+/// be beneath the other.
+#[test]
+fn an_equal_precedence_cross_class_pair_warns_and_names_which_is_beneath() {
+    let mut candidate = ordinary_candidate();
+    let tying = Uuid::from_u128(0x2100);
+    candidate.world.cross_class_ties = vec![CrossClassTie {
+        price_overlay_id: tying,
+        class: ScopeClass::Region,
+        plans: [plan(1)].into_iter().collect(),
+    }];
+
+    let report = validate(&candidate);
+
+    assert!(
+        report.is_publishable(),
+        "the tie is legal — got {:?}",
+        codes(&report)
+    );
+    assert_eq!(warnings(&report), vec![EQUAL_PRECEDENCE_CROSS_CLASS_TIE]);
+    let detail = warning_detail_for(&report, EQUAL_PRECEDENCE_CROSS_CLASS_TIE);
+    assert!(
+        detail.contains(&tying.to_string()),
+        "names the tying overlay"
+    );
+    assert!(
+        detail.contains("region") && detail.contains("beneath"),
+        "and says which side the class order puts beneath: {detail}"
+    );
+}
+
+/// No tie, no warning — the control without which the case above would also pass
+/// against a rule that warned unconditionally.
+#[test]
+fn no_cross_class_tie_warns_at_all() {
+    let candidate = ordinary_candidate();
+
+    assert!(warnings(&validate(&candidate)).is_empty());
+}
+
+/// The predicate reads `layers_beneath` and nothing narrower — **and that is all
+/// this case can say.**
+///
+/// It sets the world by hand, so it would pass whether or not `overlay_facts` ever
+/// puts an equal-precedence lower-class layer in that set, which is the whole of
+/// what D-220's first clause fixed. Written as a coverage claim for it first; the
+/// probe that narrowed the repo back reddened **nothing**, which is what said so.
+/// The claim now lives where it can be tested —
+/// `sqlite_overlay_repo::an_equal_precedence_lower_class_overlay_is_beneath_and_ties`
+/// — and this stays as the predicate's own case, which is worth having and is not
+/// the same thing.
+#[test]
+fn the_replacement_warning_reads_every_layer_beneath_not_only_lower_precedence_ones() {
+    let mut candidate = ordinary_candidate();
+    candidate.world.layers_beneath = [plan(1)].into_iter().collect();
+    candidate.lines = vec![OverlayLine {
+        line_id: Uuid::from_u128(0x2007),
+        key: LineKey::for_plan(plan(1)),
+        adjustment: Adjustment::Fixed(AmountSet::new([(eur(), 5000)])),
+    }];
+
+    assert_eq!(
+        warnings(&validate(&candidate)),
+        vec![FIXED_LINE_DISCARDS_STACK],
+        "the predicate reads `layers_beneath`, which since D-220/D-249 carries the \
+         equal-precedence lower-class case as well as the strictly-lower one"
+    );
+}
+
 /// A `fixed` line that **is** the lowest matching layer warns not at all, and a
 /// `markup` over a lower layer never warns — only a replacement voids anything.
 #[test]
@@ -478,7 +563,7 @@ fn only_a_fixed_line_that_is_not_the_lowest_layer_warns() {
     assert!(warnings(&validate(&candidate)).is_empty());
 
     let mut candidate = ordinary_candidate();
-    candidate.world.lower_precedence_matchers = [plan(1)].into_iter().collect();
+    candidate.world.layers_beneath = [plan(1)].into_iter().collect();
     assert!(
         warnings(&validate(&candidate)).is_empty(),
         "a discount does not discard the layers beneath it"
