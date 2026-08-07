@@ -88,6 +88,9 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_price_overlay",
     "pricing_price_overlay_line",
     "pricing_price_overlay_line_amount",
+    // Slice 11's migration plane: one scheduled plan migration and its section 4
+    // state machine.
+    "pricing_migration",
     "coord_leases",
 ];
 
@@ -125,6 +128,14 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_bundle_revshare_no_delete",
     "trg_pricing_bundle_revshare_no_insert",
     "trg_pricing_bundle_revshare_no_update",
+    // Slice 11. Five arms, mirroring the one Postgres function: the DELETE ban,
+    // the terminal-row ban, the frozen-column whitelist, section 4's edges, and
+    // D-65's replay guard on the persisted exclusion set.
+    "trg_pricing_migration_exclusion_replay",
+    "trg_pricing_migration_flip_whitelist",
+    "trg_pricing_migration_frozen_columns",
+    "trg_pricing_migration_immutable_history",
+    "trg_pricing_migration_no_delete",
     "trg_pricing_plan_addon_rule_no_delete",
     "trg_pricing_plan_addon_rule_no_insert",
     "trg_pricing_plan_addon_rule_no_update",
@@ -190,6 +201,10 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_bundle_tenant",
     "idx_pricing_catalog_version_ref_version",
     "idx_pricing_idempotency_dedup_created",
+    "idx_pricing_migration_due",
+    "idx_pricing_migration_source",
+    "idx_pricing_migration_target",
+    "idx_pricing_migration_tenant",
     "idx_pricing_operator_flag_by_flag",
     "idx_pricing_outbox_undrained",
     "idx_pricing_plan_addon_rule_revision",
@@ -267,6 +282,22 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_catalog_version_ref_version",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
+    // Slice 11. The two implications that carry section 4's reachable set
+    // (`cancelled` is reachable both started and unstarted, so `started_at` is
+    // deliberately not a biconditional), the two that are, D-65's co-nullable
+    // exclusion set, D-49's row-local half, and three ordering rules.
+    "chk_pricing_migration_announced_before_effective",
+    "chk_pricing_migration_cancelled_at",
+    "chk_pricing_migration_cancelled_order",
+    "chk_pricing_migration_completed_at",
+    "chk_pricing_migration_completed_order",
+    "chk_pricing_migration_distinct_plans",
+    "chk_pricing_migration_exclusion_snapshot",
+    "chk_pricing_migration_scheduled_unstarted",
+    "chk_pricing_migration_source_revision",
+    "chk_pricing_migration_started_order",
+    "chk_pricing_migration_started_required",
+    "chk_pricing_migration_state",
     "chk_pricing_operator_flag_name",
     "chk_pricing_org_tier_taxonomy_state",
     "chk_pricing_org_tier_taxonomy_value_present",
@@ -418,6 +449,10 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "pricing_idempotency_dedup",
         "tenant_id, operation, client_key",
     ),
+    // Client-supplied (`inst-ms-api`, M2): the idempotency key and the primary
+    // key are one column, read back from `m20260802_000043`'s own DDL rather
+    // than from the schema the census queries.
+    ("pricing_migration", "migration_id"),
     ("pricing_operator_flag", "tenant_id, subject_ref, flag"),
     ("pricing_org_tier_taxonomy", "tenant_id, value"),
     ("pricing_outbox", "outbox_id"),
@@ -562,6 +597,32 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_bundle_revshare_no_update",
         12_884_963_950_550_849_015_u64,
+    ),
+    // Slice 11's five arms. Each digest is the stored body's, which is the only
+    // place a digest can come from; what was checked against `m20260802_000043`
+    // itself is the **content** each one pins - the DDL text of all five was
+    // diffed against the trigger SQL `sqlite_master` holds, so the digests below
+    // pin the migration's own statements rather than whatever the chain happened
+    // to produce.
+    (
+        "trg_pricing_migration_exclusion_replay",
+        9_285_572_797_681_964_741_u64,
+    ),
+    (
+        "trg_pricing_migration_flip_whitelist",
+        8_032_921_964_833_177_687_u64,
+    ),
+    (
+        "trg_pricing_migration_frozen_columns",
+        3_679_481_201_681_159_361_u64,
+    ),
+    (
+        "trg_pricing_migration_immutable_history",
+        7_463_691_635_803_712_952_u64,
+    ),
+    (
+        "trg_pricing_migration_no_delete",
+        759_106_875_609_865_220_u64,
     ),
     (
         "trg_pricing_plan_addon_rule_no_delete",
