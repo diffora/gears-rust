@@ -273,6 +273,40 @@ fn a_contract_field_change_has_no_computable_delta() {
     );
 }
 
+/// `tax_category_ref` moves what a subscriber is billed and moves no amount.
+///
+/// **Its own case rather than a fourth line in the one above**, because the arm
+/// it asserts was *missing* while that case stood green: those three were the
+/// whole registered set this crate carried until Slice 4 added the column, and a
+/// case that merely grew a line would have recorded the arm's arrival without
+/// recording that it had been absent (`T-14`). D-48 makes `taxCategory` one of
+/// the five descriptor elements Billing countersigns, so a supersession moving
+/// only this field is exactly the change a second principal should see.
+#[test]
+fn a_tax_category_change_has_no_computable_delta() {
+    let mut current = flat(1000);
+    current.tax_category_ref = Some("reduced".to_owned());
+
+    assert_eq!(
+        row_delta(&current, &flat(1000)),
+        RowDelta::NotComputable("tax_category_ref")
+    );
+
+    // The same move from the other side, and it is not the same fact restated:
+    // `None` is *the row states none*, which D-154 resolves against the region's
+    // default at publish. Dropping an authored category hands the row to a
+    // default that a taxonomy edit can change afterwards — so the direction that
+    // looks like "clearing a field" is the one with the wider blast radius.
+    let mut cleared = flat(1000);
+    cleared.tax_category_ref = None;
+    let mut baseline = flat(1000);
+    baseline.tax_category_ref = Some("standard".to_owned());
+    assert_eq!(
+        row_delta(&cleared, &baseline),
+        RowDelta::NotComputable("tax_category_ref")
+    );
+}
+
 /// A `flat` row becoming `graduated` has no operand in common with its
 /// predecessor: `amount_minor` is NULL by construction on the successor.
 #[test]

@@ -196,6 +196,15 @@ fn contract_change(current: &PriceRecord, baseline: &PriceRecord) -> Option<&'st
     if current.tax_inclusive != baseline.tax_inclusive {
         return Some("tax_inclusive");
     }
+    // Beside `tax_inclusive` because D-115 registers the two as one entry, and
+    // after it because a row that moved both is described by the basis it is
+    // billed on before the category it is billed under. `None` is *the row states
+    // none* and not "no category" (D-154 resolves it against the region default
+    // at publish), so either direction of the move is a change to what Billing
+    // countersigns.
+    if current.tax_category_ref != baseline.tax_category_ref {
+        return Some("tax_category_ref");
+    }
     if current.row.quantity_source != baseline.row.quantity_source {
         return Some("quantity_source");
     }
