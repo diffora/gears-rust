@@ -1024,3 +1024,44 @@ fn two_referencing_bundles_are_each_named() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// `inst-rc-union` (Slice 6) — the contract that the checks are run.
+// ---------------------------------------------------------------------------
+
+/// Every rule the rating-compatibility union names is registered on the publish
+/// path.
+///
+/// This is what `inst-rc-union` actually promises Rating: not a second opinion
+/// on any of these — that would be a second registration, free to disagree with
+/// the rule that owns it — but that the checks **run** when a plan publishes. The
+/// only thing that can break the promise is a rule quietly leaving a pipeline,
+/// and that is exactly what this catches.
+///
+/// The names are read off the pipelines rather than the aggregate report,
+/// because a rule that is registered and finds nothing is still registered, and
+/// a report-based census could only see rules that happened to fire.
+#[test]
+fn every_rule_the_rating_compatibility_union_names_is_registered() {
+    use crate::domain::contracts::RATING_COMPAT_UNION;
+
+    let params = params(Some("half_up"));
+    let mut registered: Vec<&'static str> = crate::domain::rules::price_row_rules().rule_names();
+    registered.extend(super::foundation_plan_rules(&params).rule_names());
+    registered.extend(
+        crate::domain::plan_rules::plan_shape_rules(params.interval_bounds, params.descriptors)
+            .rule_names(),
+    );
+
+    let missing: Vec<&&str> = RATING_COMPAT_UNION
+        .iter()
+        .filter(|id| !registered.contains(id))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "the rating-compatibility union names rules the publish path does not run: {missing:?}. \
+         Either a rule left a pipeline, or the roster in `domain::contracts` names one that was \
+         never there"
+    );
+}

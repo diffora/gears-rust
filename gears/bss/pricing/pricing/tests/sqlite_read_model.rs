@@ -3570,3 +3570,70 @@ async fn a_recurring_rows_billing_timing_is_frozen_into_the_delta_as_authored() 
         prices[0]
     );
 }
+
+// ---------------------------------------------------------------------------
+// `inst-cr-resolve` / `inst-cr-return` (Slice 6) — resolving the contract set
+// through the pin, and getting the same answer twice.
+// ---------------------------------------------------------------------------
+
+/// A consumer that pins a committed `CatalogVersion` reads the contract fields
+/// exactly as published, and reads the same thing on a second pass.
+///
+/// This is §2's flow end to end and the half no unit test reaches: `inst-cr-resolve`
+/// is about resolving *through* `pricingSnapshotRef` — the frontier, the ref row
+/// and the delta together — and `inst-cr-return` is about the answer being stable
+/// for that pin. A renderer test can assert determinism of one value; only the
+/// store can say that the version a consumer pins is the version they get back.
+///
+/// The second sweep is the point of the second read: a re-run of the projector
+/// over an already-warm version must not move a byte, or "stable for the pinned
+/// version" would hold only until the next sweep.
+#[tokio::test]
+async fn a_pinned_version_resolves_the_same_contract_set_on_every_read() {
+    let h = harness().await;
+    let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    h.registry.commit(&pending, 1);
+
+    sweep(&h, at(13)).await;
+    let first = deltas(&h).await;
+    assert_eq!(first.len(), 1);
+
+    // The version a consumer would pin.
+    assert_eq!(frontier_version(&h).await, Some(1));
+
+    // A second pass over an already-warm version.
+    sweep(&h, at(14)).await;
+    let second = deltas(&h).await;
+
+    assert_eq!(
+        second.len(),
+        1,
+        "no second delta was written for one version"
+    );
+    assert_eq!(
+        first[0].payload, second[0].payload,
+        "the frozen contract set is stable for the pinned version"
+    );
+
+    // And the contract fields are actually in it, rather than the assertion above
+    // holding vacuously over a payload that carries none of them.
+    let payload = &second[0].payload;
+    for key in [
+        "crossBoundaryChangePolicy",
+        "allowedChangeTargets",
+        "usageCounterOnPlanChange",
+        "entitlementGrants",
+        "phaseGrantMap",
+    ] {
+        assert!(
+            payload.get(key).is_some(),
+            "the resolved version carries {key}: {payload:?}"
+        );
+    }
+    let prices = payload["prices"].as_array().expect("the version's rows");
+    for row in prices {
+        for key in ["billingTiming", "prorationBasis", "billingAnchorPolicy"] {
+            assert!(row.get(key).is_some(), "a row carries {key}: {row}");
+        }
+    }
+}

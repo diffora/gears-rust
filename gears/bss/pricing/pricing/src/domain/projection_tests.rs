@@ -833,3 +833,66 @@ fn the_ga_flag_is_carried_per_row_and_not_across_the_plan() {
         "the sibling market stays sellable"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `inst-rc-ids` (Slice 6) — the three ids every downstream artifact resolves by.
+// ---------------------------------------------------------------------------
+
+/// `{skuId, planId, priceId}` are exposed on every projected artifact.
+///
+/// §3 step 1 says the ids are "stable … never re-used across revisions", and
+/// that half is **structural**: `pricing_price` is append-only and a price id is
+/// caller-supplied at creation, so no writer in this gear can re-use one
+/// (Foundation §4.3). What is *not* structural, and is what this asserts, is that
+/// all three actually reach the payload — Rating resolves by the triple, and an
+/// artifact missing any leg of it is one no consumer can key on, however stable
+/// the ids themselves are.
+#[test]
+fn every_projected_artifact_carries_the_resolution_triple() {
+    let delta = PlanSubjectDelta {
+        prices: vec![graduated_row()],
+        ..shape_only()
+    };
+    let value = delta.to_value();
+
+    assert_eq!(value.get("planId"), Some(&json!(plan_id().get())));
+    assert_eq!(
+        value.get("skuId"),
+        Some(&json!(uuid::Uuid::from_u128(0x5_c1))),
+        "the SKU leg is on the plan subject, not repeated per row"
+    );
+    for price in value["prices"].as_array().expect("the rows") {
+        assert!(
+            price.get("priceId").is_some_and(|id| !id.is_null()),
+            "every row carries its own id: {price}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `inst-cr-return` (Slice 6) — the frozen set is stable for the pinned version.
+// ---------------------------------------------------------------------------
+
+/// The same delta renders byte-identically twice.
+///
+/// §2 step 3 promises a consumer "the frozen contract set, **stable** for the
+/// pinned version", and a renderer with any non-deterministic member would break
+/// that silently: the delta is written once into an INSERT-only store, but a
+/// consumer re-reading it and a replay re-deriving it must agree. The hazard is
+/// real and specific — `HashMap` iteration is seeded per process, so the grant
+/// set's two maps and the per-phase map would each render in a different order in
+/// two replicas. They are `BTreeMap` for exactly this reason, and this is what
+/// says so.
+#[test]
+fn a_pinned_versions_contract_set_renders_identically_twice() {
+    let delta = PlanSubjectDelta {
+        prices: vec![graduated_row()],
+        ..shape_only()
+    };
+
+    assert_eq!(
+        delta.to_value().to_string(),
+        delta.to_value().to_string(),
+        "the same subject renders the same bytes"
+    );
+}

@@ -1076,3 +1076,56 @@ impl ValidationRule<PlanShape> for GrantSetPhasesKnown {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The rating compatibility contract (§3 Rating Compatibility Contract, §8).
+// ---------------------------------------------------------------------------
+
+/// The rules `inst-rc-union` asserts a publish runs, by instruction id.
+///
+/// §3 step 2 is explicit that this bundle **delegates**: it "asserts the
+/// **union**" of the owning slices' registered rules and its enumeration is
+/// "illustrative", with exhaustiveness left to those slices. So this is not a
+/// rule and mints no code — it is the union written down once, and
+/// [`crate::domain::publish`]'s own test asserts the aggregate pipeline actually
+/// carries every member.
+///
+/// # Why a roster and not a rule
+///
+/// A rule re-checking what thirteen other rules already check would be a second
+/// registration of each — free to disagree with the one that owns it, which is
+/// the exact hazard `price_record.rs` cites for keeping `billing_timing` a
+/// `String`. What the contract actually promises Rating is that the checks *are
+/// run on the publish path*, and the only thing that can break that promise is a
+/// rule quietly leaving the pipeline. A roster compared against
+/// [`ValidationPipeline::rule_names`](crate::domain::validation::ValidationPipeline::rule_names)
+/// catches precisely that and nothing else.
+///
+/// # What each member answers, in §3 step 2's own order
+///
+/// `modelKind` + `quantitySource` + `packageSize`/`packagePrice` (Slice 3);
+/// `tierAggregationWindow`/`billingGranularity` on usage rows (Slice 3);
+/// `aggregationFunction`/`aggregationGranularity`/`maxHoldGranules` on non-`sum`
+/// rows (Slice 3, D-44); meter injectivity and the descriptor set (Slice 2).
+///
+/// **`tierQualificationWindow` (Slice 10, D-40) is named by §3 step 2 and is
+/// absent from this roster**, because the rule that would judge it does not
+/// exist: `api::rest::prices::refuse_unlanded_primitives` refuses the field at
+/// the boundary instead, and a roster entry for an unregistered rule would make
+/// this census fail on a gap Slice 10 owns rather than on a rule that left.
+pub const RATING_COMPAT_UNION: &[&str] = &[
+    // Slice 3, the row plane.
+    "inst-mk-explicit",
+    "inst-mk-required",
+    "inst-mk-forbidden",
+    "inst-mk-chargekind",
+    "inst-pk-fields",
+    "inst-pk-window",
+    "inst-tb-window",
+    "inst-la-fields",
+    "inst-la-granularity",
+    "inst-la-maxhold",
+    // Slice 2, the plan plane.
+    "inst-cmp-injective",
+    "inst-ds-required",
+];
