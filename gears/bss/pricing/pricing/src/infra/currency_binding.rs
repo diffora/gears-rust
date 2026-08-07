@@ -129,18 +129,44 @@ pub async fn addon_coverage(
         .await
         .map_err(|e| RepoError::Db(format!("read add-on coverage rows: {e}")))?;
 
-    let mut by_addon: CoverageBySku = BTreeMap::new();
+    // Per **plan**, then intersected per SKU — see below.
+    let mut by_plan: BTreeMap<Uuid, BTreeSet<Market>> = BTreeMap::new();
     for row in rows {
-        let Some(sku) = plan_to_sku.get(&row.plan_id).copied() else {
+        if !plan_to_sku.contains_key(&row.plan_id) {
             continue;
-        };
+        }
         let currency = CurrencyCode::new(&row.currency).map_err(|e| {
             RepoError::CorruptRow(format!("pricing_price.currency `{}`: {e}", row.currency))
         })?;
         let region = Region::new(&row.region).map_err(|e| {
             RepoError::CorruptRow(format!("pricing_price.region `{}`: {e}", row.region))
         })?;
-        by_addon.entry(sku).or_default().insert((currency, region));
+        by_plan
+            .entry(row.plan_id)
+            .or_default()
+            .insert((currency, region));
+    }
+
+    // **The intersection across plans sharing a SKU, not the union.**
+    //
+    // Nothing in the schema makes a SKU's plan unique, and an order resolves the
+    // add-on to **one** plan revision — not to the set. Under a union, SKU `S`
+    // sold by plan A (EUR/eu only) and plan B (USD/us only) covers both, a base
+    // plan selling both publishes clean, and a subscription bound to EUR/eu that
+    // resolves `S` through plan B dies at order assembly with an unresolvable
+    // line. That is the D-95 failure `inst-cb-addon` exists to prevent, reached
+    // through the SKU-resolution door. Found by review; register `T-15`.
+    //
+    // A plan carrying **no** covering row contributes an empty set and therefore
+    // empties the intersection, which is the fail-closed reading: an add-on one
+    // of whose plans sells nowhere is one an order may resolve to nowhere.
+    let mut by_addon: CoverageBySku = BTreeMap::new();
+    for (plan_id, sku) in &plan_to_sku {
+        let markets = by_plan.get(plan_id).cloned().unwrap_or_default();
+        by_addon
+            .entry(*sku)
+            .and_modify(|held| *held = held.intersection(&markets).cloned().collect())
+            .or_insert(markets);
     }
     Ok(AddonCoverage::new(by_addon))
 }
