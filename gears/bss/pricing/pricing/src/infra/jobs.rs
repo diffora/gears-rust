@@ -36,5 +36,6 @@
 //! [`SecurityContext::anonymous`](toolkit_security::SecurityContext::anonymous),
 //! and **narrow to `AccessScope::for_tenant` before any per-tenant write**.
 
+pub mod gated_markets;
 pub mod readmodel_warm;
 pub mod window_activation;

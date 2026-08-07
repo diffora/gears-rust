@@ -69,6 +69,12 @@ const WARM_LEASE_KEY: &str = "bss-pricing:readmodel-warm";
 /// and a window boundary would then wait on a registry that is not answering.
 const WINDOW_ACTIVATION_LEASE_KEY: &str = "bss-pricing:window-activation";
 
+/// The gated-market refresher's lease. Per gear and per pass, for
+/// [`WARM_LEASE_KEY`]'s reason: the value is catalog-wide, so one replica reading it
+/// is the whole answer and every other replica reading it concurrently is the same
+/// scan run N times for one number.
+const GATED_MARKETS_LEASE_KEY: &str = "bss-pricing:gated-markets";
+
 /// Per-process state built by [`Gear::init`] and read by
 /// [`RestApiCapability::register_rest`] and [`BssPricingGear::serve`].
 pub(crate) struct PricingRuntime {
@@ -139,7 +145,7 @@ impl Default for BssPricingGear {
 impl BssPricingGear {
     /// Lifecycle entry (`stateful` capability).
     ///
-    /// Two tickers, spawned below and both joined — `crate::infra::jobs` says what
+    /// Three tickers, spawned below and all joined — `crate::infra::jobs` says what
     /// each is for and why neither waits on the other. Neither is optional, for two
     /// different reasons: the publish commit leaves a **pending** `CatalogVersion`
     /// handle and no version, so without the warm re-drive nothing ever resolves it,
@@ -168,10 +174,11 @@ impl BssPricingGear {
         let tasks = cancel.child_token();
         let warm = Self::spawn_warm_ticker(Arc::clone(&rt), tasks.clone());
         let activation = Self::spawn_activation_ticker(Arc::clone(&rt), tasks.clone());
+        let gated = Self::spawn_gated_markets_ticker(Arc::clone(&rt), tasks.clone());
 
         cancel.cancelled().await;
         tasks.cancel();
-        Self::stop(warm, activation).await;
+        Self::stop(warm, activation, gated).await;
         Ok(())
     }
 
@@ -186,9 +193,14 @@ impl BssPricingGear {
     /// frees itself at the TTL, so a shutdown that abandoned the second handle
     /// would leave a task writing to a database the process is closing — the one
     /// state a `stop_timeout` cannot help with.
-    async fn stop(warm: tokio::task::JoinHandle<()>, activation: tokio::task::JoinHandle<()>) {
+    async fn stop(
+        warm: tokio::task::JoinHandle<()>,
+        activation: tokio::task::JoinHandle<()>,
+        gated: tokio::task::JoinHandle<()>,
+    ) {
         Self::join_ticker(warm, "readmodel-warm").await;
         Self::join_ticker(activation, "window-activation").await;
+        Self::join_ticker(gated, "gated-markets").await;
         info!("bss-pricing: lifecycle cancelled");
     }
 
@@ -373,6 +385,73 @@ impl BssPricingGear {
                 }
             }
         })
+    }
+
+    /// The gated-market gauge's refresher (D-246's missing half, on D-250's tick).
+    ///
+    /// **The third ticker, and unlike the other two it is not load-bearing for
+    /// correctness** — the gear serves every request without it. What it costs to
+    /// omit is observability: `pricing_tax_not_sellable_ga` is an observable gauge
+    /// over a cached value, and with nothing refreshing the cache the exporter
+    /// reports `0` forever while markets are gated, which is §7's alarm silently
+    /// never firing. That is why it is spawned here rather than left to a caller.
+    fn spawn_gated_markets_ticker(
+        rt: Arc<PricingRuntime>,
+        token: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(rt.config.jobs.gated_markets_interval());
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let lease = coord::LeaseManager::new(rt.db.db());
+            let job = crate::infra::jobs::gated_markets::GatedMarketsJob::new(
+                rt.db.clone(),
+                Arc::clone(&rt.metrics),
+                rt.config.jobs.clone(),
+            );
+            loop {
+                tokio::select! {
+                    biased;
+                    () = token.cancelled() => break,
+                    _ = iv.tick() => {
+                        Self::gated_markets_pass(
+                            &lease,
+                            &job,
+                            rt.config.jobs.gated_markets_interval(),
+                        )
+                        .await;
+                    }
+                }
+            }
+        })
+    }
+
+    /// One leased refresh. Extracted so the ticker stays a ticker.
+    ///
+    /// A failed pass is logged and nothing is published — `GatedMarketsJob::run_once`
+    /// documents why that is the safe direction, and the next tick tries again.
+    async fn gated_markets_pass(
+        lease: &coord::LeaseManager,
+        job: &crate::infra::jobs::gated_markets::GatedMarketsJob,
+        ttl: std::time::Duration,
+    ) {
+        let Some(guard) = Self::take_lease(lease, GATED_MARKETS_LEASE_KEY, ttl).await else {
+            return;
+        };
+        match job.run_once().await {
+            Ok(report) => {
+                tracing::debug!(
+                    gated_markets = report.gated_markets,
+                    "bss-pricing: gated-market gauge refreshed"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "bss-pricing: gated-market refresh failed; the gauge keeps its previous value"
+                );
+            }
+        }
+        drop(guard);
     }
 
     /// One leased activation pass. Extracted so the ticker stays a ticker.

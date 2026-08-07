@@ -187,6 +187,21 @@ pub struct JobsConfig {
     /// 5s sweep would spend twelve passes a minute reading an index for rows that
     /// are almost never there.
     pub window_activation_tick_secs: u64,
+    /// How often the gated-market gauge is refreshed (D-250). Default 60s.
+    ///
+    /// Taken from `window_activation_tick_secs`'s reasoning rather than chosen:
+    /// a periodic sweep an order of magnitude inside the bound its subject moves
+    /// on cannot be what makes the value late, and a 5s tick would spend twelve
+    /// passes a minute on work that almost never finds a change. The argument is
+    /// stronger here than for windows — a changeover is bounded by D-47's
+    /// five-minute authoring floor, while a market gated on tax-category
+    /// readiness moves when an operator declares a category or the future Tax
+    /// Engine answers, which the PRD's risk table sizes in **months**.
+    ///
+    /// **Do not tighten this.** The read is `price_repo::gated_markets`, a
+    /// catalog-wide scan rather than the index probe the window sweep runs, and
+    /// the value feeds §7's alarm on a condition an operator resolves in days.
+    pub gated_markets_tick_secs: u64,
 }
 
 impl Default for JobsConfig {
@@ -199,6 +214,7 @@ impl Default for JobsConfig {
             pending_tenants_per_pass: 250,
             window_activation_overdue_secs: 300,
             window_activation_tick_secs: 60,
+            gated_markets_tick_secs: 60,
         }
     }
 }
@@ -226,6 +242,12 @@ impl JobsConfig {
     #[must_use]
     pub const fn window_activation_interval(&self) -> Duration {
         Duration::from_secs(self.window_activation_tick_secs)
+    }
+
+    /// The gated-market gauge's refresh interval (D-250).
+    #[must_use]
+    pub const fn gated_markets_interval(&self) -> Duration {
+        Duration::from_secs(self.gated_markets_tick_secs)
     }
 
     /// The window activation/expiry overdue threshold — the Warn alarm's age
@@ -277,6 +299,11 @@ impl JobsConfig {
         if self.window_activation_tick_secs == 0 {
             return Err(ConfigError::ZeroInterval {
                 field: "jobs.window_activation_tick_secs",
+            });
+        }
+        if self.gated_markets_tick_secs == 0 {
+            return Err(ConfigError::ZeroInterval {
+                field: "jobs.gated_markets_tick_secs",
             });
         }
         // Zero here is not "alarm immediately", it is "alarm on every window the

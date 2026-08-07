@@ -4010,6 +4010,67 @@ fn tax_inclusive_flat() -> PriceContent {
 /// The backlog counts **markets**, deduplicated, and excludes everything a
 /// re-publish could never clear (D-246).
 ///
+/// D-246/D-250: the refresher publishes the catalog-wide count to the gauge.
+///
+/// It lives here rather than beside the job because the seeding does: every row is
+/// written through `create_draft` and flipped, so the catalog the job reads is one
+/// the gear could actually produce. The job's own module tests what it owns without
+/// a catalog — that a failed read publishes nothing, and that the tick is the
+/// configured one — and deliberately builds no `ActiveModel` by hand.
+#[tokio::test]
+async fn the_refresher_publishes_the_catalog_wide_gated_market_count() {
+    use bss_pricing::config::JobsConfig;
+    use bss_pricing::domain::ports::metrics::{
+        CurrencyBindingCase, PreviewFailClosed, PricingAlarm, PricingMetricsPort,
+    };
+    use bss_pricing::infra::jobs::gated_markets::GatedMarketsJob;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    #[derive(Default)]
+    struct Recording(AtomicI64);
+    impl PricingMetricsPort for Recording {
+        fn preview_failclosed(&self, _reason: PreviewFailClosed) {}
+        fn currency_binding_block(&self, _case: CurrencyBindingCase) {}
+        fn tax_not_sellable_ga(&self, count: i64) {
+            self.0.store(count, Ordering::Relaxed);
+        }
+        fn alarm(&self, _alarm: PricingAlarm) {}
+    }
+
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let metrics = Arc::new(Recording::default());
+    let job = GatedMarketsJob::new(
+        provider.clone(),
+        Arc::clone(&metrics) as Arc<dyn PricingMetricsPort>,
+        JobsConfig::default(),
+    );
+
+    // Two published tax-inclusive rows on one market, and a third on another: the
+    // count dedups, so the gauge must read 2 rather than 3.
+    for (n, key) in [
+        (0xd3_01_u128, market_key("EU")),
+        (0xd3_02, new_subscriptions_key(ChargeKind::Recurring)),
+        (0xd3_03, market_key("US")),
+    ] {
+        let price_id = Uuid::from_u128(n);
+        repo.create_draft(&scope, tenant(), draft(price_id, key, tax_inclusive_flat()))
+            .await
+            .expect("create");
+        flip_state(&provider, &scope, price_id, LifecycleState::Published).await;
+    }
+
+    let report = job.run_once().await.expect("the pass reads");
+
+    assert_eq!(report.gated_markets, 2, "three rows, two markets");
+    assert_eq!(
+        metrics.0.load(Ordering::Relaxed),
+        2,
+        "and the gauge carries what the pass read, not a per-plan contribution"
+    );
+}
+
 /// Every exclusion here is a separate seeded row rather than a clause in a
 /// comment, because the count is a single number and a wrong one is
 /// indistinguishable from a right one without saying which rows it is made of.
