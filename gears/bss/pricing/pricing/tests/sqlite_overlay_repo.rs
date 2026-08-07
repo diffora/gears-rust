@@ -45,9 +45,14 @@ const LINE_B: Uuid = Uuid::from_u128(0xCCCC_0002);
 
 /// Declare the `acme` brand in one state.
 ///
-/// Written through the entity rather than the repository because the taxonomy's
-/// **authoring** surface is Slice 4's and is not built — this strand builds the
-/// table and the read `inst-plv-scope` makes of it, and says so.
+/// Written through the entity rather than the repository, and the reason has
+/// changed. The sentence that stood here said Slice 4's **authoring** surface
+/// "is not built"; it is, since that slice merged — `TaxonomyRepo` and
+/// `PUT /config/taxonomies/{class}`. This case still seeds through the entity
+/// deliberately: what it exercises is the overlay repository's *read* of the
+/// taxonomy, and seeding through the authoring surface would make it depend on
+/// that surface's own rules — the retire guard, the `If-Match` — none of which
+/// this case is about.
 async fn declare_brand(provider: &DBProvider<DbError>, state: &str) {
     let conn = provider.conn().expect("a connection");
     let row = brand_taxonomy::ActiveModel {

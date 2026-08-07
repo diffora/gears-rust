@@ -35,21 +35,30 @@
 //! a `manual_quantity` of 10 → 1000 multiplies the charge while moving no amount
 //! at all. [`super::evaluate`] is where that mapping is made.
 //!
-//! # Four of D-115's row contract fields are not columns this crate carries
+//! # Three of D-115's row contract fields are not columns this crate carries
 //!
 //! The registered set is `billingTiming`, `prorationBasis`,
 //! `billing_anchor_policy`, `credit_on_downgrade`, `tax_inclusive`/
 //! `tax_category_ref` and `quantity_source`. Three of those are on
 //! [`PriceRecord`] and [`PriceRow`] and are compared here.
-//! **`prorationBasis`, `billing_anchor_policy`, `credit_on_downgrade` and
-//! `tax_category_ref` have no column in this gear** — `price_row.rs`'s own module
-//! doc records `proration_basis` as one of the corpus fields "not Slice-3-owned",
-//! `plan_rules.rs:54` records `billing_anchor_policy` as a Slice-6 column, and
-//! `descriptor_set.rs` records `tax_category_ref` as unchecked here. A comparison
-//! over a field no row carries would be a rule with no operand, so those four are
-//! named rather than written — the same "no token without a writer" discipline
-//! D-158 and D-175 apply to the audit vocabulary. The slice that adds each column
-//! adds its arm below.
+//! **`prorationBasis`, `billing_anchor_policy` and `credit_on_downgrade` have no
+//! column in this gear** — `price_row.rs`'s own module doc records
+//! `proration_basis` as one of the corpus fields "not Slice-3-owned", and
+//! `plan_rules.rs:54` records `billing_anchor_policy` as a Slice-6 column. A
+//! comparison over a field no row carries would be a rule with no operand, so
+//! those three are named rather than written — the same "no token without a
+//! writer" discipline D-158 and D-175 apply to the audit vocabulary. The slice
+//! that adds each column adds its arm below.
+//!
+//! **`tax_category_ref` was the fourth and no longer is**, which makes it a
+//! different case from the three above rather than one more of them. Slice 4
+//! added the column (`m20260802_000037`), so the operand exists — and **no arm
+//! compares it**, so a supersession changing only a row's tax category is still
+//! classified immaterial. That is not the "no column, so no rule" argument this
+//! heading makes; it is a rule with an operand and no comparison, and it is owed
+//! rather than declined (`T-14`). D-48 makes `taxCategory` one of the five
+//! elements Billing countersigns, so a change to it that no second principal sees
+//! is the case materiality exists for.
 
 use toolkit_macros::domain_model;
 
