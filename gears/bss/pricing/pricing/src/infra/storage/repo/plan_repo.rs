@@ -1868,3 +1868,84 @@ pub(super) fn read_token<T: Copy>(
         .find(|candidate| render(*candidate) == token)
         .ok_or_else(|| RepoError::CorruptRow(format!("{column} holds {token}")))
 }
+
+/// Flip the plan's **current published revision** to `retired`
+/// (`inst-rt-cancel`, `inst-rt-event`, D-90, D-128).
+///
+/// The one flip in this module that mints no new row and consumes no revision
+/// number: retirement is a state transition on the revision the plan already
+/// stands at. D-90 makes that revision unique by construction — the partial
+/// `uq_pricing_plan_current` index spans `('published','retired')` — so there is
+/// exactly one row to move and no choice of target to get wrong.
+///
+/// **The predicate is the guard.** `lifecycle_state = 'published'` rides inside
+/// the compare-and-swap rather than being checked ahead of it, for
+/// [`publish_revision`]'s reason: a check made before the statement is a check
+/// a concurrent writer can move behind. The caller asks
+/// [`crate::domain::lifecycle::LifecycleState::can_transition`] first anyway —
+/// not as the guard, but so an operator retiring an already-retired plan is told
+/// which state it is in rather than reading a contention refusal for a race that
+/// never happened.
+///
+/// **The entity tag stays where it is, and that is the store's rule rather than
+/// a choice made here.** `trg_pricing_plan_frozen_columns` (and Postgres'
+/// `pricing_plan_append_only`) freeze every content column the moment a row
+/// leaves `draft`, and `row_version` is on that whitelist — so the **only**
+/// update a published row admits is the bare `lifecycle_state` flip. A first
+/// draft of this function bumped the tag alongside the flip and every case in
+/// `tests/sqlite_retirement.rs` reddened on `(code: 1811) revision is frozen`,
+/// which is a driver refusal and not an assertion: the guard was there and the
+/// premise was wrong. [`supersede_current`] one screen up had already said so —
+/// *"leaving its entity tag where it is"* — for the same reason on the same
+/// table.
+///
+/// No `expected: RowVersion` either. §5 keys this act **per revision** and
+/// offers no `If-Match`; the state predicate is the stronger precondition
+/// anyway, because it is the transition itself that may happen only once, and it
+/// stays true under a concurrent price-row edit that would move a tag without
+/// touching what retirement is about.
+///
+/// # Errors
+/// [`RepoError::ConcurrentMutation`] when no published row answered the swap —
+/// another retirement or a supersession took the current-revision slot first;
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when the revision number has no column
+/// representation, or the flipped row cannot be read back.
+pub async fn retire_revision(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<PlanRevision, RepoError> {
+    let Some(number) = stored_revision(revision) else {
+        return Err(RepoError::CorruptRow(format!(
+            "plan {plan_id} stands at a revision {revision} no column can address"
+        )));
+    };
+    let result = plan::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            plan::Column::LifecycleState,
+            Expr::value(LifecycleState::Retired.as_str()),
+        )
+        .filter(
+            Condition::all()
+                .add(plan::Column::TenantId.eq(tenant_id))
+                .add(plan::Column::PlanId.eq(plan_id.get()))
+                .add(plan::Column::Revision.eq(number))
+                .add(plan::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+        )
+        .exec(txn)
+        .await
+        .map_err(|e| contention_or_db(&e, &format!("plan {plan_id}"), "retire plan revision"))?;
+    if result.rows_affected == 0 {
+        return Err(RepoError::ConcurrentMutation {
+            aggregate: format!("plan {plan_id}"),
+        });
+    }
+    load_revision(txn, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))
+}

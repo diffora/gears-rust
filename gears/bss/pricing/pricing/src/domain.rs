@@ -31,6 +31,7 @@ pub mod price_row;
 pub mod projection;
 pub mod publish;
 pub mod read_model;
+pub mod retirement;
 pub mod rules;
 pub mod scope_key;
 pub mod sellability;

@@ -1,0 +1,718 @@
+//! What refers to a plan, read for the retirement guard (`inst-re-references`).
+//!
+//! `domain::retirement::ReferenceReport` decides whether a retirement may
+//! proceed; this module is where the report's contents come from. The split is
+//! the usual one — the judgement is a pure function with cases of its own, and
+//! the reads are here because they are queries against a world the domain layer
+//! may not know about.
+//!
+//! # Two blocking classes, and the narrowing that makes them true
+//!
+//! **Bundle components** ride `idx_pricing_bundle_component_plan`
+//! (`(tenant_id, component_plan_id)`), the index `m20260802_000025` added for
+//! exactly this shape of question — `infra::bundle::referencing_markets` asks its
+//! forward half. Only a bundle's **current published revision** counts, for
+//! D-212's reason restated one direction over: `pricing_bundle_component` is
+//! revision-scoped, so one plan may appear in several revisions of one bundle,
+//! and a draft revision's component set is nobody's truth yet. Blocking a
+//! retirement on a composition no consumer can resolve would refuse an operator
+//! an act nothing depends on.
+//!
+//! **Add-on price-override targets** are the `pricing_plan_addon_rule` rows whose
+//! `price_override_ref` names a **price row of the retiring plan**. The column
+//! holds a price id rather than a plan id, so the question is asked in two steps:
+//! the retiring plan's price ids, then the rules pointing at any of them. Same
+//! revision narrowing, same reason.
+//!
+//! # What this module deliberately cannot see, and it is not an omission
+//!
+//! **`allowedChangeTargets` (D-24) has no store in this gear.** Nothing persists
+//! it — no column, no table, no projection — so the warning class
+//! `WarningReferenceKind::AllowedChangeTarget` exists in the domain vocabulary
+//! and has no producer here. That is reported rather than smoothed over: the
+//! alternative is a dry-run that silently claims no plan lists the retiree as a
+//! change target when the truth is that nobody ever wrote it down. The class
+//! stays in the domain type because the refusal it belongs to is decided, and a
+//! producer landing later needs no change to the judgement.
+//!
+//! **Overlay targets (D-31) are not read here either.** `pricing_price_overlay`
+//! carries them inside a `jsonb` `target_ref` of shape `{"plans": [...]}`, which
+//! is answerable only by scanning the tenant's published overlays and matching in
+//! Rust — a different cost profile from the two indexed probes above, and one
+//! that belongs with the surface that decides how much of it to pay. Also
+//! reported.
+//!
+//! Both absences are **warnings**, never blocks, so nothing this module cannot
+//! see can make a retirement wrongly succeed: the two classes it does read are
+//! exactly the two that refuse.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use serde_json::Value as JsonValue;
+use toolkit_db::secure::{AccessScope, DBRunner, DbTx, SecureEntityExt};
+use toolkit_db::{DBProvider, DbError};
+use toolkit_security::SecurityContext;
+use uuid::Uuid;
+
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::error::DomainError;
+use crate::domain::lifecycle::LifecycleState;
+use crate::domain::materiality::triggers::Trigger;
+use crate::domain::materiality::{self, ChangeSet};
+use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
+use crate::domain::read_model::SubjectRef;
+use crate::domain::retirement::{
+    BlockingReferenceKind, PlanReference, PresenceMap, ReferenceReport, ScheduledWindow,
+    WindowVerdict, dispose_windows,
+};
+use crate::domain::scope_key::PlanId;
+use crate::domain::window::WindowState;
+use crate::infra::approval::retirement_unit_ref;
+use crate::infra::publish::assemble_from;
+use crate::infra::storage::RepoError;
+use crate::infra::storage::entity::{bundle, bundle_component, plan_addon_rule};
+use crate::infra::storage::repo::approval_repo::{self, ApprovalRecord};
+use crate::infra::storage::repo::audit_repo::NewAuditEntry;
+use crate::infra::storage::repo::{
+    NewOutboxEvent, PendingVersionRow, PlanRetiredPayload, audit_repo, catalog_version_ref_repo,
+    outbox_repo, plan_repo, price_repo, window_repo,
+};
+use crate::infra::storage::repo_failure;
+use crate::infra::window::VerdictJson;
+
+/// Everything that refers to `plan_id`, in the two weights
+/// `inst-re-references` gives them.
+///
+/// The report is built even when it is empty — a retirement of a plan nothing
+/// refers to costs two index probes returning no rows, which is the common case
+/// by a wide margin, and the dry-run needs the empty report to say so.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+/// when a revision number has no column representation.
+pub async fn references(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<ReferenceReport, RepoError> {
+    let mut blocking = Vec::new();
+    for reference in referencing_bundles(runner, scope, tenant_id, plan_id).await? {
+        blocking.push((BlockingReferenceKind::BundleComponent, reference));
+    }
+    for reference in referencing_addon_overrides(runner, scope, tenant_id, plan_id).await? {
+        blocking.push((BlockingReferenceKind::AddOnPriceOverrideTarget, reference));
+    }
+    Ok(ReferenceReport {
+        blocking,
+        // See the module doc: neither warning class has a producer in this gear.
+        warnings: Vec::new(),
+    })
+}
+
+/// The bundles whose **current published revision** lists this plan as a
+/// component.
+async fn referencing_bundles(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    component_plan_id: PlanId,
+) -> Result<Vec<PlanReference>, RepoError> {
+    let memberships = bundle_component::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle_component::Column::TenantId.eq(tenant_id))
+                .add(bundle_component::Column::ComponentPlanId.eq(component_plan_id.get())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read bundles referencing a retiring plan: {e}")))?;
+
+    let bundle_ids: BTreeSet<Uuid> = memberships.iter().map(|row| row.bundle_id).collect();
+    let mut found = Vec::new();
+    for bundle_id in bundle_ids {
+        let Some(record) = bundle_row(runner, scope, tenant_id, bundle_id).await? else {
+            continue;
+        };
+        let Some(revision) = current_revision(runner, scope, tenant_id, record.plan_id).await?
+        else {
+            continue;
+        };
+        if !memberships
+            .iter()
+            .any(|row| row.bundle_id == bundle_id && row.plan_revision == revision)
+        {
+            // A component of some *other* revision of that bundle, not of the
+            // one consumers resolve against.
+            continue;
+        }
+        found.push(PlanReference {
+            referrer_id: bundle_id,
+            // The bundle's own plan, because that is the thing an operator goes
+            // and edits: `pricing_bundle` carries no display name, and a bare
+            // bundle id names nothing they can open.
+            referrer_label: format!("bundle on plan {}", record.plan_id),
+        });
+    }
+    Ok(found)
+}
+
+/// The plans whose current published revision carries an add-on rule overriding
+/// a **price row of the retiring plan**.
+async fn referencing_addon_overrides(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<Vec<PlanReference>, RepoError> {
+    let price_ids: Vec<Uuid> =
+        price_repo::load_scope_keys_for_plan(runner, scope, tenant_id, plan_id)
+            .await?
+            .into_iter()
+            .map(|(price_id, _key)| price_id)
+            .collect();
+    if price_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let rules = plan_addon_rule::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(plan_addon_rule::Column::TenantId.eq(tenant_id))
+                .add(plan_addon_rule::Column::PriceOverrideRef.is_in(price_ids)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read add-on overrides of a retiring plan: {e}")))?;
+
+    let mut found = Vec::new();
+    let mut seen: BTreeSet<Uuid> = BTreeSet::new();
+    for rule in rules {
+        // The rule's **own** plan is the referrer. A rule on the retiring plan
+        // itself is not a reference to anything: retiring a plan whose add-on
+        // overrides one of its own rows refuses nothing.
+        if rule.plan_id == plan_id.get() || !seen.insert(rule.plan_id) {
+            continue;
+        }
+        let Some(revision) = current_revision(runner, scope, tenant_id, rule.plan_id).await? else {
+            continue;
+        };
+        if rule.plan_revision != revision {
+            continue;
+        }
+        found.push(PlanReference {
+            referrer_id: rule.plan_id,
+            referrer_label: format!("plan {}", rule.plan_id),
+        });
+    }
+    Ok(found)
+}
+
+/// The referring plan's current revision, as the child tables store it.
+async fn current_revision(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: Uuid,
+) -> Result<Option<i64>, RepoError> {
+    let Some(current) =
+        plan_repo::load_current(runner, scope, tenant_id, PlanId::new(plan_id)).await?
+    else {
+        return Ok(None);
+    };
+    i64::try_from(current.revision).map(Some).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "plan {plan_id} stands at revision {}, which no column can address",
+            current.revision
+        ))
+    })
+}
+
+/// Read one bundle header.
+async fn bundle_row(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    bundle_id: Uuid,
+) -> Result<Option<bundle::Model>, RepoError> {
+    bundle::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle::Column::TenantId.eq(tenant_id))
+                .add(bundle::Column::BundleId.eq(bundle_id)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read a referencing bundle: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// The orchestrator (`inst-rt-api`, `inst-rt-cancel`, `inst-rt-event`,
+// `inst-rt-return`, `inst-re-block`, `inst-re-warn`, `inst-re-governed`).
+// ---------------------------------------------------------------------------
+
+/// What a dry-run answers, and what the confirm screen renders
+/// (`inst-rt-api`, `inst-re-warn`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetirementPreview {
+    /// The plan this would retire.
+    pub plan_id: PlanId,
+    /// The revision the flip targets — the plan's current published one.
+    pub revision: u64,
+    /// Every not-yet-active window, cancelled or kept **and why**. Kept windows
+    /// are labelled distinctly because `inst-re-cancelflow` requires it: an
+    /// operator shown a bare count cannot tell a plan whose coverage is being
+    /// preserved from one whose coverage is being torn down.
+    pub windows: Vec<WindowVerdict>,
+    /// What refers to the plan, in both weights.
+    pub references: ReferenceReport,
+    /// Whether the presence lane answered at all. `true` is D-182's case and
+    /// therefore this system's only one, and it is on the preview so the screen
+    /// can say "kept because nobody could be asked" rather than implying a
+    /// subscriber was found on every key.
+    pub presence_unresolved: bool,
+}
+
+/// What a confirmed retirement answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetirementReceipt {
+    /// The plan that retired.
+    pub plan_id: PlanId,
+    /// The revision that flipped.
+    pub revision: u64,
+    /// The registry's pending handle (D-128: retirement is a publish unit).
+    pub pending_version_ref: String,
+    /// The windows the cancellation flow was invoked on.
+    pub cancelled_window_ids: Vec<Uuid>,
+    /// The audit sequence the record landed at.
+    pub audit_seq: u64,
+}
+
+/// A retirement waiting on an independent second principal (D-109).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetirementPending {
+    /// What the reviewer is deciding about.
+    pub preview: RetirementPreview,
+    /// The unit itself.
+    pub approval: ApprovalRecord,
+}
+
+/// Committed, or opened for review.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RetirementOutcome {
+    /// The flip committed.
+    Retired(Box<RetirementReceipt>),
+    /// A second principal has to decide first — always, for a retirement.
+    SubmittedForApproval(Box<RetirementPending>),
+}
+
+/// The `RetirementOrchestrator` of §1.7.
+///
+/// `Clone` because [`crate::api::rest::state::GovernanceState`] is, and both of
+/// its fields are handles rather than state: a `DBProvider` and the one registry
+/// `Arc`. Cloning the service is two refcount bumps and gives a second reader of
+/// the same provider — never a second incrementer of `CatalogVersion`, which is
+/// the invariant `infra::publish` states and which holds here because the `Arc`
+/// is shared rather than rebuilt.
+#[derive(Clone)]
+pub struct RetirementService {
+    db: DBProvider<DbError>,
+    registry: Arc<dyn CatalogVersionRegistryV1>,
+}
+
+impl RetirementService {
+    /// Build the workflow over one provider and the resolved registry.
+    ///
+    /// The **same** registry `Arc` every other requester holds; what keeps their
+    /// handles apart is the request id's distinct first segment.
+    #[must_use]
+    pub const fn new(db: DBProvider<DbError>, registry: Arc<dyn CatalogVersionRegistryV1>) -> Self {
+        Self { db, registry }
+    }
+
+    /// The dry-run (`inst-rt-api` clause 1, `inst-re-warn`).
+    ///
+    /// Reads and decides; writes nothing, requests no version, opens no unit.
+    /// It is the screen an approver reads **before** deciding, which D-61's
+    /// reviewability invariant requires and which `plan × read` already covers.
+    ///
+    /// # Errors
+    /// [`DomainError::NotFound`] when the plan has no current revision;
+    /// [`DomainError::LifecycleForbidden`] when that revision is not one a
+    /// retirement may leave; [`DomainError::Internal`] on a storage failure.
+    pub async fn preview(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+    ) -> Result<RetirementPreview, DomainError> {
+        let conn = self.db.conn().map_err(|e| {
+            DomainError::Internal(format!("bss-pricing: retirement preview connection: {e}"))
+        })?;
+        compose_preview(&conn, scope, tenant_id, plan_id).await
+    }
+
+    /// The confirm (`inst-rt-cancel`, `inst-rt-event`, `inst-rt-return`).
+    ///
+    /// The whole act in **one** transaction of this service's own. See
+    /// [`retire_in`] for the order and why each step is where it is.
+    ///
+    /// # Errors
+    /// [`retire_in`]'s, exactly.
+    pub async fn retire(
+        &self,
+        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        verdict_json: VerdictJson,
+        stamp: AuditStamp,
+    ) -> Result<RetirementOutcome, DomainError> {
+        let ctx = ctx.clone();
+        let scope = scope.clone();
+        let registry = Arc::clone(&self.registry);
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<RetirementOutcome, DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    // Boxed a second time for `infra::cutover::cut_over`'s reason:
+                    // the orchestrator's future carries a whole `PlanShape` and a
+                    // preview across its awaits, and `clippy::large_futures` is
+                    // what says so.
+                    Box::pin(retire_in(
+                        txn,
+                        &registry,
+                        &ctx,
+                        &scope,
+                        tenant_id,
+                        plan_id,
+                        verdict_json,
+                        stamp,
+                    ))
+                    .await
+                })
+            })
+            .await;
+        outcome.map_err(|err| {
+            err.into_domain(|infra| {
+                DomainError::Internal(format!("bss-pricing: retirement transaction: {infra}"))
+            })
+        })
+    }
+}
+
+/// Read every fact the retirement judgement needs, and decide.
+///
+/// Shared by the dry-run and the confirm **deliberately**: a preview computed by
+/// different code from the commit is a preview an operator can approve and then
+/// watch do something else.
+async fn compose_preview(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<RetirementPreview, DomainError> {
+    let current = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "current plan revision".to_owned(),
+            id: plan_id.to_string(),
+        })?;
+    // Asked of the state machine rather than matched on `Published`, so the one
+    // refused edge that has its own words keeps them: a plan already retired is
+    // told so, and never that "something is in the way".
+    if !current
+        .lifecycle_state
+        .can_transition(LifecycleState::Retired)
+    {
+        return Err(DomainError::LifecycleForbidden(format!(
+            "plan {plan_id} stands at a {} revision; only a published revision retires",
+            current.lifecycle_state
+        )));
+    }
+
+    let references = references(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+
+    // Only **not-yet-active** windows are candidates. An active window runs to
+    // its natural end for the in-flight subscribers this slice preserves
+    // coverage for, so it is not a member of the input set at all.
+    let scheduled: Vec<ScheduledWindow> =
+        window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .into_iter()
+            .filter(|w| w.state == WindowState::Scheduled)
+            .map(|w| ScheduledWindow {
+                window_id: w.window_id,
+                price_id: w.price_id,
+            })
+            .collect();
+
+    // **One call, a presence map** (D-131) — and in this system the call has no
+    // callee. D-182 makes the absent D-79 lane D-131's fail-closed case, so every
+    // key reads occupied and every window is kept. This is the whole of the
+    // lane's integration: when a client lands it produces a
+    // `PresenceMap::resolved` here and nothing below changes.
+    let presence = PresenceMap::fail_closed();
+    let windows = dispose_windows(&scheduled, &presence);
+
+    Ok(RetirementPreview {
+        plan_id,
+        revision: current.revision,
+        windows,
+        references,
+        presence_unresolved: presence.is_fail_closed(),
+    })
+}
+
+/// One retirement, composed and committed or composed and submitted, in the
+/// caller's transaction.
+///
+/// # The order, and why each step is where it is
+///
+/// 1. **Compose** — the same read-and-decide the dry-run runs, inside the
+///    transaction that writes, so nothing an operator approved can have moved
+///    behind the decision.
+/// 2. **Refuse on a blocking reference** (`inst-re-references`) before anything
+///    else. It is permanent for this world state and names an act the operator
+///    must perform first, so asking a reviewer to decide a retirement that
+///    cannot commit would waste the one thing D-109 is spending: a second
+///    principal's attention.
+/// 3. **An approved unit decides before the evaluator is asked**, the
+///    supersession's rule and for its reason.
+/// 4. **The verdict is fixed** — `inst-mat-registered` registers
+///    [`Trigger::PlanRetirement`] (D-109), so no threshold policy is read and
+///    none could change the answer. Retirement is material because of what it
+///    **is**: irreversible, sales-stopping, and cancelling on every unoccupied
+///    key at once — which is exactly the act D-62 made two-person for a *single*
+///    window.
+/// 5. **The registry request**, fail closed, after every refusal (D-156).
+/// 6. **The flip**, then the windows, then the ref, the event and the record.
+///
+/// # What this function does **not** do, and it is not an oversight
+///
+/// **It does not abandon the plan's open draft revision.** `inst-rt-cancel`
+/// requires that (D-145) and it is owed. `PlanRepo::abandon_draft` opens a
+/// transaction of its own, so calling it here would nest one; the honest fix is
+/// to extract its body into an `_on` form the way this file's neighbours are
+/// factored, which is a refactor of a shared repository better made deliberately
+/// than as a side effect. The gap is **inert rather than unsound**: a retired
+/// plan can never publish, and `publish_revision`'s
+/// `refuse_unpublishable_predecessor` refuses the draft's publish with
+/// `PLAN_RETIRED_NO_SUCCESSOR` — so what survives is a draft nobody can ship,
+/// holding a revision number, rather than a path to publishing on a retired
+/// plan. Reported in the hand-back.
+///
+/// # Errors
+/// [`DomainError::RetirePlanReferenced`] on a blocking reference;
+/// [`DomainError::LifecycleForbidden`] when the plan is not at a published
+/// revision; [`DomainError::PendingChangeUnitExists`] when a unit is already
+/// open; [`DomainError::CatalogVersionUnavailable`] when the registry cannot be
+/// reached; [`DomainError::Internal`] on a storage failure.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "`cutover_in`'s argument list, minus the request: the transaction, the registry, the \
+              security context, the scope, the tenant, the plan, the verdict renderer and the \
+              stamp. Every one is a different authority and none is derivable from the others"
+)]
+pub async fn retire_in(
+    txn: &DbTx<'_>,
+    registry: &Arc<dyn CatalogVersionRegistryV1>,
+    ctx: &SecurityContext,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    verdict_json: VerdictJson,
+    stamp: AuditStamp,
+) -> Result<RetirementOutcome, DomainError> {
+    let now = stamp.recorded_at;
+
+    // 1. and 2.
+    let preview = compose_preview(txn, scope, tenant_id, plan_id).await?;
+    preview.references.ensure_retirable(plan_id.get())?;
+    let revision = preview.revision;
+
+    // 3. The approved unit, resolved against the same subject a submit opens.
+    let current = plan_repo::load_current(txn, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "current plan revision".to_owned(),
+            id: plan_id.to_string(),
+        })?;
+    let shape = assemble_from(txn, scope, tenant_id, plan_id, current, now).await?;
+    let subject_ref = retirement_unit_ref(plan_id, revision);
+    let authorization =
+        crate::infra::approval::authorizing_unit(txn, scope, tenant_id, &shape, &subject_ref)
+            .await?;
+
+    // 4. Fixed, and read from the act.
+    let verdict = materiality::evaluate(
+        &ChangeSet::of_act(Trigger::PlanRetirement, std::iter::empty()),
+        None,
+        None,
+    );
+
+    if authorization.is_none() {
+        // This act's own pending unit — answered before anything is staged,
+        // because the answer is that nothing more should be. A retry of a
+        // retirement under review must find that unit rather than open a second.
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(txn, scope, tenant_id, &subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Ok(RetirementOutcome::SubmittedForApproval(Box::new(
+                RetirementPending {
+                    preview,
+                    approval: held,
+                },
+            )));
+        }
+        let record = crate::infra::approval::ApprovalService::submit_retirement_on(
+            txn,
+            scope,
+            tenant_id,
+            plan_id,
+            Uuid::now_v7(),
+            verdict_json(&verdict)?,
+            stamp,
+        )
+        .await?;
+        return Ok(RetirementOutcome::SubmittedForApproval(Box::new(
+            RetirementPending {
+                preview,
+                approval: record,
+            },
+        )));
+    }
+
+    // 5. Addressability, fail closed, after every refusal and before the writes.
+    let pending = registry
+        .request_version(ctx, &retirement_request_id(tenant_id, &subject_ref))
+        .await
+        .map_err(|e| registry_failure(&e))?;
+
+    // 6. The flip.
+    let retired = plan_repo::retire_revision(txn, scope, tenant_id, plan_id, revision)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+
+    // The windows Slice 7's cancellation flow is **invoked** on — never marked
+    // invalid, so each emits `PriceWindowCancelled` and drives its cache
+    // eviction. Under D-182 this list is empty and the loop is what makes that a
+    // measured fact rather than a missing feature.
+    let mut cancelled_window_ids = Vec::new();
+    for verdict in preview.windows.iter().filter(|v| v.is_cancelled()) {
+        window_repo::transition(
+            txn,
+            scope,
+            tenant_id,
+            verdict.window_id,
+            WindowState::Cancelled,
+            now,
+            stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+        cancelled_window_ids.push(verdict.window_id);
+    }
+
+    // The subject the projector re-freezes, carrying the state the flip
+    // produced: D-128's whole point is that `lifecycle_state` must be evaluable
+    // from the **pinned** read model, and predicate (4) reads it there.
+    catalog_version_ref_repo::record_pending(
+        txn,
+        scope,
+        PendingVersionRow::for_subject(
+            tenant_id,
+            pending.pending_ref.clone(),
+            &SubjectRef::Plan(plan_id.get()),
+            Some(revision),
+            Some(retired.lifecycle_state),
+            now,
+        ),
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    outbox_repo::enqueue(
+        txn,
+        scope,
+        NewOutboxEvent::plan_retired(
+            tenant_id,
+            &PlanRetiredPayload {
+                plan_id,
+                revision,
+                pending_version_ref: pending.pending_ref.clone(),
+                cancelled_window_ids: cancelled_window_ids.clone(),
+                correlation_id: stamp.correlation_id,
+            },
+            now,
+        ),
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    let seq = audit_repo::append(
+        txn,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            chain_id: audit_repo::plan_chain(plan_id),
+            recorded_at: now,
+            actor_principal_id: stamp.actor_principal_id,
+            action: AuditAction::Retire,
+            subject_kind: AuditSubjectKind::PlanRevision,
+            subject_ref: audit_repo::plan_revision_ref(plan_id, revision),
+            before_state: Some(retirement_state(LifecycleState::Published, None)),
+            after_state: Some(retirement_state(
+                retired.lifecycle_state,
+                Some(&pending.pending_ref),
+            )),
+            approval_ref: authorization.as_ref().map(|record| record.approval_id),
+            correlation_id: stamp.correlation_id,
+        },
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    Ok(RetirementOutcome::Retired(Box::new(RetirementReceipt {
+        plan_id,
+        revision,
+        pending_version_ref: pending.pending_ref,
+        cancelled_window_ids,
+        audit_seq: seq,
+    })))
+}
+
+/// The registry request id of one retirement.
+///
+/// Derived rather than random, so a retry of the same retirement is handed the
+/// same pending handle instead of stranding a second one.
+fn retirement_request_id(tenant_id: Uuid, subject_ref: &str) -> String {
+    format!("{tenant_id}/{subject_ref}")
+}
+
+/// The before/after state an audit record carries for a retirement.
+fn retirement_state(state: LifecycleState, pending_ref: Option<&str>) -> JsonValue {
+    match pending_ref {
+        Some(pending) => serde_json::json!({
+            "lifecycleState": state.as_str(),
+            "pendingVersionRef": pending,
+        }),
+        None => serde_json::json!({ "lifecycleState": state.as_str() }),
+    }
+}

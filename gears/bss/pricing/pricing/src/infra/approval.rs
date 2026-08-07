@@ -1037,6 +1037,85 @@ impl ApprovalService {
     ///
     /// # Errors
     /// [`DomainError::Internal`] on a storage failure.
+    /// Open the **retirement** unit inside the caller's transaction
+    /// (`inst-re-governed`, D-109).
+    ///
+    /// [`Self::submit_window_mutation_on`]'s shape, with two differences worth
+    /// stating rather than leaving to be inferred.
+    ///
+    /// **The subject is the act, not the revision.** A retirement pinned under
+    /// `plan_revision_ref` would let an approve taken for a *publish* of that
+    /// revision authorize the retirement of the plan, which is the strongest
+    /// possible confusion of two units: one ships a change, the other ends the
+    /// plan and cannot be undone. [`retirement_unit_ref`] names the act and the
+    /// revision it stands at, so a retry of the retirement finds its own unit and
+    /// nothing else does.
+    ///
+    /// **It holds no scope key.** `inst-co-single-pending`'s register is about
+    /// units that stage a row on a key; retirement stages nothing and moves no
+    /// price row, so there is no key to hold and holding one would refuse an
+    /// unrelated window mutation for the duration of a review.
+    ///
+    /// The content pin is the plan shape's, exactly as every other unit over a
+    /// plan takes it: what a reviewer of a retirement is shown is the plan they
+    /// are ending.
+    ///
+    /// # Errors
+    /// [`DomainError::PendingChangeUnitExists`] when a unit is already open over
+    /// this retirement; whatever `assemble_from` refuses; [`DomainError::NotFound`]
+    /// when the plan has no current revision; [`DomainError::Internal`] on a
+    /// storage failure.
+    pub async fn submit_retirement_on(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let now = stamp.recorded_at;
+        let current = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "current plan revision".to_owned(),
+                id: plan_id.to_string(),
+            })?;
+        // The revision is read here rather than taken as a parameter: the caller
+        // composed against this very transaction, so a passed one could only ever
+        // agree - and a parameter that can only agree is one that can be passed
+        // wrong.
+        let revision = current.revision;
+        let shape =
+            crate::infra::publish::assemble_from(runner, scope, tenant_id, plan_id, current, now)
+                .await?;
+        let subject_ref = retirement_unit_ref(plan_id, revision);
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, &subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "plan {plan_id}: approval {} is still submitted over its retirement; decide it, \
+                 or withdraw it to free the subject",
+                held.approval_id
+            )));
+        }
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref,
+            subject_kind: AuditSubjectKind::PlanRevision,
+            content_hash: content_hash(&shape).to_vec(),
+            materiality,
+            held_keys: BTreeSet::new(),
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
     pub async fn list(
         &self,
         scope: &AccessScope,
@@ -1543,6 +1622,45 @@ pub(crate) async fn open_policy_unit(
 /// reviewer their approval record was missing when it is sitting in front of
 /// them. Every other assembly failure is still an error — a storage fault is not
 /// a mismatch.
+/// Does this subject ref name a **retirement** unit?
+///
+/// Matched on the act segment `retirement_unit_ref` writes. A retirement's
+/// subject is the plan's current published revision, so its pin re-derives the
+/// way a window's does rather than the way a draft's does.
+fn is_retirement_unit(subject_ref: &str) -> bool {
+    subject_ref
+        .split_once('/')
+        .is_some_and(|(_, rest)| rest.starts_with("retirement/"))
+}
+
+/// The shape of the plan **as it currently stands** — the assembly every unit
+/// whose subject is a published fact re-derives under.
+///
+/// Extracted rather than copied into a third arm: three hand-maintained copies of
+/// one resolution is how the `price_unit` arm came to disagree with the `window`
+/// arm in the first place.
+async fn current_revision_shape(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    now: DateTime<Utc>,
+) -> Result<Option<PinnedSubject>, DomainError> {
+    let Some(revision) = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+    else {
+        return Ok(None);
+    };
+    match crate::infra::publish::assemble_from(runner, scope, tenant_id, plan_id, revision, now)
+        .await
+    {
+        Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
+        Err(DomainError::NotFound { .. }) => Ok(None),
+        Err(other) => Err(other),
+    }
+}
+
 async fn re_derive(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1566,6 +1684,31 @@ async fn re_derive(
     match record.subject_kind {
         AuditSubjectKind::PlanRevision => {
             let plan_id = plan_of(record)?;
+            // **A retirement unit carries this kind and resolves the other way**,
+            // and the distinction is the same one the two arms below are already
+            // built on: what decides the assembly is not the subject *kind* but
+            // whether the subject is a draft being reviewed or a fact about the
+            // plan as it currently stands. A retirement reviews a **published**
+            // revision - it is the act of ending it - so a plan with no open
+            // draft would assemble to `NotFound`, `content_matches_pin` would
+            // answer `false`, and every retirement unit would be openable and
+            // never approvable.
+            //
+            // That is the **third** instance of this defect in this function:
+            // the window arm records it, the `price_unit` arm records finding it
+            // again on 2026-08-06 with "nothing caught it because no test
+            // decided a supersession unit", and this one was caught by
+            // `sqlite_publish_commit`'s `every_declared_action_has_a_production_
+            // writer` - a census that *drives* every audited path rather than
+            // grepping for it, so the unapprovable unit surfaced the moment a
+            // retirement had to actually commit.
+            //
+            // Discriminated on the subject ref rather than on a new subject kind
+            // because the kind is right: the thing being decided **is** a plan
+            // revision, and `pricing_audit_log` should say so.
+            if is_retirement_unit(&record.subject_ref) {
+                return current_revision_shape(runner, scope, tenant_id, plan_id, now).await;
+            }
             match crate::infra::publish::assemble(runner, scope, tenant_id, plan_id, now).await {
                 Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
                 Err(DomainError::NotFound { .. }) => Ok(None),
@@ -1592,21 +1735,7 @@ async fn re_derive(
         // fact about a plan as it currently stands.
         AuditSubjectKind::PriceUnit | AuditSubjectKind::Window => {
             let plan_id = plan_of(record)?;
-            let Some(revision) = plan_repo::load_current(runner, scope, tenant_id, plan_id)
-                .await
-                .map_err(|e| repo_failure(&e))?
-            else {
-                return Ok(None);
-            };
-            match crate::infra::publish::assemble_from(
-                runner, scope, tenant_id, plan_id, revision, now,
-            )
-            .await
-            {
-                Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),
-                Err(DomainError::NotFound { .. }) => Ok(None),
-                Err(other) => Err(other),
-            }
+            current_revision_shape(runner, scope, tenant_id, plan_id, now).await
         }
         // The proposed version's own rows, read back from the store that holds
         // them. It cannot move — `pricing_approval_threshold` refuses every UPDATE
@@ -1904,6 +2033,29 @@ fn plan_of(record: &ApprovalRecord) -> Result<PlanId, DomainError> {
 /// mutation's own transaction, so a failure here rolls the mutation back with
 /// it — which is the answer: a mutation that could not void the approval it
 /// invalidated must not commit, or a reviewer approves content that moved.
+/// The subject a retirement unit is opened under (`inst-re-governed`).
+///
+/// The **act** and the revision it stands at, never the revision alone: a unit
+/// keyed on the revision would be satisfied by an approve given for that
+/// revision's publish, so the second principal D-109 requires could be one who
+/// only ever agreed to ship a change.
+///
+/// Deterministic, so a retry of the retirement resolves the unit an earlier
+/// attempt opened rather than opening a second one.
+///
+/// **The plan id comes first, and that is a store invariant rather than a
+/// style.** [`approval_repo::subject_plan`] parses the aggregate off the head of
+/// every `subject_ref` — the column's `CHECK`s admit any text, so a ref shaped
+/// otherwise is not refused at write time and instead reads back as a
+/// `CorruptRow` later. A first draft of this function put the act first and both
+/// orchestrator cases failed on exactly that, from inside the approval plane
+/// rather than on an assertion. [`crate::infra::cutover::cutover_unit_ref`]
+/// already had the shape right: `<plan_id>/<act>/<discriminator>`.
+#[must_use]
+pub fn retirement_unit_ref(plan_id: PlanId, revision: u64) -> String {
+    format!("{}/retirement/{revision}", plan_id.get())
+}
+
 pub async fn void_pending_units_of(
     runner: &impl DBRunner,
     scope: &AccessScope,

@@ -80,6 +80,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::preview::PLAN_PREVIEW;
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+    use bss_pricing::api::rest::retirement::PLAN_RETIRE;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
     use bss_pricing::api::rest::taxonomies::TAXONOMY;
@@ -145,6 +146,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // `api::rest::supersessions`.
         ("POST", PLAN_SUPERSESSIONS),
         ("POST", PLAN_CUTOVERS),
+        ("POST", PLAN_RETIRE),
         // Slice 5's entrance: the publish mount and the approval surface.
         ("POST", PLAN_PUBLISH),
         ("GET", APPROVALS),
@@ -248,6 +250,12 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
             ),
         ),
+        retirements: bss_pricing::infra::retirement::RetirementService::new(
+            db.clone(),
+            Arc::new(
+                bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
+            ),
+        ),
         publish: PublishService::new(
             db,
             &LimitsConfig::default(),
@@ -303,6 +311,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::cutovers::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::retirement::router(
                 Arc::clone(&governance),
                 &openapi,
             ))

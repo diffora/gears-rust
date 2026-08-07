@@ -42,6 +42,7 @@ use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
 use bss_pricing::api::rest::preview::PLAN_PREVIEW;
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+use bss_pricing::api::rest::retirement::PLAN_RETIRE;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
 use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
 use bss_pricing::api::rest::taxonomies::TAXONOMY;
@@ -311,6 +312,7 @@ fn census() -> Vec<Route> {
             mutating: true,
         },
     ];
+    rows.extend(retirement_routes());
     rows.extend(overlay_routes());
     rows.extend(config_routes());
     rows
@@ -383,6 +385,24 @@ fn config_routes() -> Vec<Route> {
 /// A function per slice would be the wrong shape — the census is one roster and
 /// the properties below range over all of it — but one extraction at the point
 /// the cap bit is honest, and the roster is still `census()`.
+/// Slice 11's retirement surface — a function of its own for `overlay_routes`'
+/// reason, which is that `census` has a line budget and a slice's routes are the
+/// natural unit to lift out of it.
+///
+/// **The one route in this census whose action is neither `write` nor
+/// `publish`.** `plan × retire` exists so that holding the authority to change a
+/// plan is not holding the authority to end it: the flip is irreversible, it
+/// stops all new sales, and the plan can never publish again to correct it.
+fn retirement_routes() -> Vec<Route> {
+    vec![Route {
+        method: "POST",
+        path: PLAN_RETIRE,
+        resource_type: labels::PLAN,
+        action: actions::RETIRE,
+        mutating: true,
+    }]
+}
+
 fn overlay_routes() -> Vec<Route> {
     vec![
         // Slice 9's overlay half. All four are `price_overlay` x its own action
@@ -697,6 +717,17 @@ fn drive(
             })),
             vec![],
         ),
+        // The retirement probe rides the **dry-run** arm, which is the default and
+        // the one this census wants: what is under test is the gate, and a probe
+        // that confirmed would open an approval unit over an irreversible act for
+        // every principal the matrix walks.
+        ("POST", PLAN_RETIRE) => (
+            Some(serde_json::json!({
+                "dry_run": true,
+                "reason_code": "authz-probe"
+            })),
+            vec![],
+        ),
         ("PATCH", PRICE_WINDOW) => (
             Some(serde_json::json!({ "effective_to": "2099-06-01T00:00:00Z" })),
             vec![("if-match", "\"0\"")],
@@ -825,6 +856,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::cutovers::router(
+                Arc::clone(&harness.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::retirement::router(
                 Arc::clone(&harness.governance),
                 &openapi,
             ))

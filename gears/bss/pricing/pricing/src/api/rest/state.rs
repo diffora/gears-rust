@@ -160,6 +160,16 @@ pub struct GovernanceState {
     /// `cutover/…` here, from `infra::cutover`'s own builder for
     /// `unit_request_id`'s reason.
     pub cutovers: crate::infra::cutover::CutoverService,
+    /// The retirement orchestrator — `POST …/plans/{planId}/retire` (D-128,
+    /// Slice 11), the plan's terminal flip.
+    ///
+    /// The **sixth** requester of the one registry `Arc`, and the argument above
+    /// scales once more without amendment: retirement is a publish unit, so it
+    /// requests a version like the five before it and invents none. Its request
+    /// id's first segment is the retirement's own subject
+    /// (`<plan_id>/retirement/<revision>`), which is what keeps its handle apart
+    /// from theirs.
+    pub retirements: crate::infra::retirement::RetirementService,
     /// The at-most-once gate the `POST …/windows` claims under (D-191).
     ///
     /// Here as well as on [`AuthoringState`] rather than instead of it: the two planes

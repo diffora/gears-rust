@@ -68,8 +68,8 @@ pub use bundle_repo::{
 pub use catalog_version_ref_repo::PendingVersionRow;
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
 pub use outbox_repo::{
-    NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload, PriceUpdatedPayload,
-    PriceWindowTransitionPayload,
+    NewOutboxEvent, PlanPublishDegradedPayload, PlanPublishedPayload, PlanRetiredPayload,
+    PriceUpdatedPayload, PriceWindowTransitionPayload,
 };
 pub use overlay_repo::{NewOverlay, OverlayRecord, OverlayRepo};
 pub use pin_frontier_repo::PinFrontierRepo;

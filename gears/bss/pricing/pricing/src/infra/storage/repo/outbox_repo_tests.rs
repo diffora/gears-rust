@@ -256,3 +256,78 @@ fn the_constructor_fixes_the_name_the_aggregate_and_the_key() {
     assert_eq!(event.correlation_id, CORRELATION);
     assert_eq!(event.enqueued_at, at);
 }
+
+// ---------------------------------------------------------------------------
+// `PlanRetired` (`inst-rt-event`, D-128).
+// ---------------------------------------------------------------------------
+
+fn retired_payload() -> super::PlanRetiredPayload {
+    super::PlanRetiredPayload {
+        plan_id: PlanId::new(PLAN),
+        revision: 2,
+        pending_version_ref: "pend-9".to_owned(),
+        cancelled_window_ids: vec![WINDOW],
+        correlation_id: CORRELATION,
+    }
+}
+
+#[test]
+fn the_retirement_constructor_fixes_the_name_the_aggregate_and_the_key() {
+    let at = Utc.with_ymd_and_hms(2026, 8, 7, 9, 0, 0).unwrap();
+    let event = NewOutboxEvent::plan_retired(TENANT, &retired_payload(), at);
+
+    assert_eq!(event.event, CatalogEvent::PlanRetired);
+    // The **plan**, not a stream of its own: a consumer that saw `PlanRetired`
+    // out of order against the `PlanPublished` it follows would evict a plan it
+    // had never warmed.
+    assert_eq!(event.aggregate_id, PLAN, "ordering is per plan");
+    assert_eq!(
+        event.dedup_key,
+        super::plan_retired_dedup_key(PlanId::new(PLAN), 2)
+    );
+    assert_eq!(event.correlation_id, CORRELATION);
+    assert_eq!(event.enqueued_at, at);
+}
+
+#[test]
+fn a_retirement_and_a_publish_of_one_revision_are_different_events() {
+    // Both are keyed `(plan, revision)` and a shared prefix would make the
+    // retirement of revision 2 dedup against the publish of revision 2 - one
+    // aggregate, one dedup index, and the second write silently dropped. The
+    // event name is what keeps them apart.
+    let plan = PlanId::new(PLAN);
+    assert_ne!(
+        super::plan_retired_dedup_key(plan, 2),
+        plan_published_dedup_key(plan, 2)
+    );
+    assert!(super::plan_retired_dedup_key(plan, 2).starts_with("PlanRetired/"));
+}
+
+#[test]
+fn the_retirement_payload_renders_the_wire_keys() {
+    assert_eq!(
+        retired_payload().to_value(),
+        serde_json::json!({
+            "planId": PLAN,
+            "revision": 2,
+            "pendingVersionRef": "pend-9",
+            "cancelledWindowIds": [WINDOW],
+            "correlationId": CORRELATION,
+        })
+    );
+}
+
+#[test]
+fn an_empty_cancellation_list_renders_as_an_empty_array_not_as_a_missing_key() {
+    // D-182's fail-closed posture makes the empty list this system's only case,
+    // so it is the one a consumer will actually parse. A missing key and an
+    // empty array are different things to a consumer that iterates.
+    let payload = super::PlanRetiredPayload {
+        cancelled_window_ids: Vec::new(),
+        ..retired_payload()
+    };
+    assert_eq!(
+        payload.to_value().get("cancelledWindowIds"),
+        Some(&serde_json::json!([]))
+    );
+}

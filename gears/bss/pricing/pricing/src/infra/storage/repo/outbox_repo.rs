@@ -191,6 +191,32 @@ impl NewOutboxEvent {
         }
     }
 
+    /// The `PlanRetired` event of one retirement (`inst-rt-event`).
+    ///
+    /// A named constructor for [`NewOutboxEvent::plan_published`]'s reason: the
+    /// event name, the aggregate and the dedup key are not the caller's to
+    /// choose. The aggregate is the **plan**, so the retirement is ordered with
+    /// that plan's other events under the `(tenantId, aggregateId)` rule — which
+    /// matters more here than anywhere else in this file, because a consumer
+    /// that saw `PlanRetired` before the `PlanPublished` it follows would evict
+    /// a plan it had never warmed.
+    #[must_use]
+    pub fn plan_retired(
+        tenant_id: Uuid,
+        payload: &PlanRetiredPayload,
+        enqueued_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            tenant_id,
+            aggregate_id: payload.plan_id.get(),
+            event: CatalogEvent::PlanRetired,
+            payload: payload.to_value(),
+            dedup_key: plan_retired_dedup_key(payload.plan_id, payload.revision),
+            correlation_id: payload.correlation_id,
+            enqueued_at,
+        }
+    }
+
     /// The `PlanPublishDegraded` event of one publish whose subject has not
     /// warmed.
     ///
@@ -406,6 +432,74 @@ pub fn plan_published_dedup_key(plan_id: PlanId, revision: u64) -> String {
     format!(
         "{}/{}/{}",
         CatalogEvent::PlanPublished.as_str(),
+        plan_id,
+        revision
+    )
+}
+
+/// The `PlanRetired` payload (`inst-rt-event`, D-128).
+///
+/// Shaped as [`PlanPublishedPayload`] is and for its reason: §7 freezes the
+/// **name** `PlanRetired` and declares nothing about the field list, so the keys
+/// below are this module's, written once so a later document has something
+/// concrete to contradict.
+///
+/// It carries the **pending** version ref for the same reason `PlanPublished`
+/// does. Retirement is a publish unit: the commit requests a handle, the
+/// registry batches, and the version does not exist yet — so a consumer handed a
+/// committed number here would be reading one this gear invented.
+///
+/// **No `priceIds`.** A retirement moves no price row: it flips the plan's
+/// revision and, where D-51 lets it, cancels windows — and a cancelled window
+/// announces itself as `PriceWindowCancelled` on its own aggregate. A price-id
+/// list here would name rows this act did not touch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanRetiredPayload {
+    /// The plan that retired.
+    pub plan_id: PlanId,
+    /// The revision that flipped — the plan's current one, which stays current
+    /// (D-90, and `uq_pricing_plan_current` spans `retired`).
+    pub revision: u64,
+    /// The registry's pending handle.
+    pub pending_version_ref: String,
+    /// The windows the cancellation flow was invoked on. Empty whenever the
+    /// D-79 presence lane could not answer, which D-182 makes this system's
+    /// only case — the fail-closed posture keeps every window, so a consumer
+    /// reading an empty list is reading "nothing was torn down", not "nothing
+    /// was there".
+    pub cancelled_window_ids: Vec<Uuid>,
+    /// The correlation id of the causing request.
+    pub correlation_id: Uuid,
+}
+
+impl PlanRetiredPayload {
+    /// Render the payload for its `jsonb` column.
+    ///
+    /// `json!` rather than a derive, for [`PlanPublishedPayload::to_value`]'s
+    /// stated reason: the wire vocabulary is spelled in one place and is visibly
+    /// not the Rust field names.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        json!({
+            "planId": self.plan_id.get(),
+            "revision": self.revision,
+            "pendingVersionRef": self.pending_version_ref,
+            "cancelledWindowIds": self.cancelled_window_ids,
+            "correlationId": self.correlation_id,
+        })
+    }
+}
+
+/// What makes a repeat of one plan's retirement the same event.
+///
+/// The plan and the revision it retired at. A plan retires **once** — the state
+/// machine has no `retired -> published` edge — so this is the act's own
+/// identity, exactly as [`plan_published_dedup_key`] is the publish's.
+#[must_use]
+pub fn plan_retired_dedup_key(plan_id: PlanId, revision: u64) -> String {
+    format!(
+        "{}/{}/{}",
+        CatalogEvent::PlanRetired.as_str(),
         plan_id,
         revision
     )
