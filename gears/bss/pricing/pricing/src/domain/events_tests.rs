@@ -23,6 +23,7 @@ const FROZEN_WIRE_NAMES: &[&str] = &[
     "PriceWindowActivated",
     "PriceWindowExpired",
     "PriceWindowCancelled",
+    "PriceOverlayPublished",
 ];
 
 #[test]
@@ -36,11 +37,15 @@ fn the_wire_names_are_exactly_the_frozen_strings() {
 }
 
 #[test]
-fn the_set_is_thirteen_names_and_no_more() {
+fn the_set_is_fourteen_names_and_no_more() {
     // Adding a name is a contract change and has to be argued for, so the
-    // count is asserted rather than left to follow the enum.
-    assert_eq!(CatalogEvent::ALL.len(), 13);
-    assert_eq!(FROZEN_WIRE_NAMES.len(), 13);
+    // count is asserted rather than left to follow the enum. It was 13 until
+    // 2026-08-07: D-248 adds `PriceOverlayPublished`, the one projected subject
+    // the set was missing. This census is what made that an argued change rather
+    // than a module minting wire surface for itself — and the name is frozen in
+    // `chk_pricing_outbox_event_name` too, so `m20260802_000060` moves with it.
+    assert_eq!(CatalogEvent::ALL.len(), 14);
+    assert_eq!(FROZEN_WIRE_NAMES.len(), 14);
 }
 
 #[test]

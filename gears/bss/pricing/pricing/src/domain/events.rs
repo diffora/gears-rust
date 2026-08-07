@@ -59,6 +59,11 @@ pub enum CatalogEvent {
     PriceWindowExpired,
     /// A scheduled `PriceWindow` was cancelled before activation.
     PriceWindowCancelled,
+    /// An overlay revision published, and with it the `overlay_index` shard it
+    /// sits in (D-248, 2026-08-07). The fourteenth name, and the only one whose
+    /// aggregate is **not** a plan: an overlay is tenant-scoped and may target no
+    /// plan at all, so there is no plan stream to order it within.
+    PriceOverlayPublished,
 }
 
 impl CatalogEvent {
@@ -77,6 +82,7 @@ impl CatalogEvent {
         Self::PriceWindowActivated,
         Self::PriceWindowExpired,
         Self::PriceWindowCancelled,
+        Self::PriceOverlayPublished,
     ];
 
     /// The wire event name. Frozen.
@@ -96,6 +102,7 @@ impl CatalogEvent {
             Self::PriceWindowActivated => "PriceWindowActivated",
             Self::PriceWindowExpired => "PriceWindowExpired",
             Self::PriceWindowCancelled => "PriceWindowCancelled",
+            Self::PriceOverlayPublished => "PriceOverlayPublished",
         }
     }
 }

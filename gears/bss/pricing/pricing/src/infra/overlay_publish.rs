@@ -34,14 +34,19 @@
 //! index shard at or below it still did not list it. `m20260802_000036` widened
 //! the ref table's key so one handle can carry them.
 //!
-//! # What this deliberately does not do
+//! # The announcement, and why it was absent
 //!
-//! **No outbox event.** The frozen `CatalogEvent` set names none for an overlay
-//! publish — it carries `PlanPublished`, `PlanRetired`, `BundleUpdated` and the
-//! price/window names, and nothing overlay-shaped. A **wire event is the design
-//! set's to declare** (D-218's posture, one plane over), so minting one here would
-//! be inventing surface, the same discipline as inventing a wire code. Stated so
-//! the absence reads as deferred rather than forgotten.
+//! `PriceOverlayPublished` (D-248) is emitted at step 6, aggregated on the **overlay
+//! id**. Until then this module carried a paragraph headed *"No outbox event"*,
+//! arguing that the frozen `CatalogEvent` set named nothing overlay-shaped and that
+//! **a wire event is the design set's to declare** (D-218's posture, one plane over),
+//! so minting one here would be inventing surface — the same discipline as inventing
+//! a wire code. That was right, and it is why the name arrived as a decision
+//! extending `fr-event-contract` to fourteen rather than as a literal in this file.
+//! The set turned out to be frozen in the **schema** as well, so it also cost
+//! `m20260802_000060`.
+//!
+//! # What this deliberately does not do
 //!
 //! **No second validation run.** §4.2's second run re-validates *state* against a
 //! world that moved between approval and commit, and the overlay plane's rule set
@@ -60,11 +65,15 @@ use uuid::Uuid;
 use crate::domain::approval::content_pin::overlay_content_hash;
 use crate::domain::audit::AuditStamp;
 use crate::domain::error::DomainError;
+use crate::domain::events::CatalogEvent;
 use crate::domain::overlay::OverlayLifecycle;
+use crate::domain::overlay::ScopeValue;
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
 use crate::domain::publish::{OverlayPublishUnit, PublishAuthorization};
 use crate::domain::read_model::{OverlayIndexShard, SubjectRef};
-use crate::infra::storage::repo::{PendingVersionRow, audit_repo, catalog_version_ref_repo};
+use crate::infra::storage::repo::{
+    NewOutboxEvent, PendingVersionRow, audit_repo, catalog_version_ref_repo, outbox_repo,
+};
 use crate::infra::storage::repo::{approval_repo, overlay_repo};
 use crate::infra::storage::repo_failure;
 
@@ -245,7 +254,53 @@ impl OverlayPublishService {
                         .map_err(|e| repo_failure(&e))?;
                     }
 
-                    // 6. The units this publish did not consume.
+                    // 6. The announcement (D-248). Every other projected
+                    // subject that moves says so on the wire — a plan publish, a
+                    // bundle, a price, a window — and until this line an overlay
+                    // publish moved **two** projected subjects and announced
+                    // neither, so a consumer learned that everything underneath the
+                    // overlay layer had changed and never that the layer had.
+                    //
+                    // **The aggregate is the overlay, not a plan**, which is the one
+                    // place this differs from `BundleUpdated`: a bundle rides a plan
+                    // revision, while an overlay is tenant-scoped and may target no
+                    // plan at all, so there is no plan stream to order it within.
+                    // Per-overlay is also the right granularity — two revisions of
+                    // one overlay must not be observed out of order, and two
+                    // different overlays have no ordering relationship to keep.
+                    outbox_repo::enqueue(
+                        txn,
+                        &scope,
+                        NewOutboxEvent {
+                            tenant_id,
+                            aggregate_id: price_overlay_id,
+                            event: CatalogEvent::PriceOverlayPublished,
+                            payload: serde_json::json!({
+                                "priceOverlayId": price_overlay_id,
+                                "revision": revision,
+                                // The `overlay_index` shard key (D-112), so a
+                                // consumer knows which index document to re-read
+                                // without a lookup.
+                                "scopeClass": record.scope.class().as_str(),
+                                "scopeValue": record.scope.value().map(ScopeValue::as_str),
+                                "precedence": record.precedence,
+                                // Pending, for `PlanPublishedPayload`'s reason: the
+                                // version does not exist yet and will not until the
+                                // registry batches (D-47).
+                                "pendingVersionRef": pending.pending_ref.clone(),
+                                "correlationId": stamp.correlation_id,
+                            }),
+                            dedup_key: format!(
+                                "PriceOverlayPublished:{price_overlay_id}:{revision}"
+                            ),
+                            correlation_id: stamp.correlation_id,
+                            enqueued_at: stamp.recorded_at,
+                        },
+                    )
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+
+                    // 7. The units this publish did not consume.
                     approval_repo::void_pending_for_subject(
                         txn,
                         &scope,

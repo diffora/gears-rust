@@ -1195,7 +1195,13 @@ const OUTBOX_1: &str = "66666666-0000-0000-0000-000000000001";
 const OUTBOX_2: &str = "66666666-0000-0000-0000-000000000002";
 const CORRELATION: &str = "77777777-0000-0000-0000-000000000001";
 
-/// Thirteen names, the same set as `domain::events::CatalogEvent`.
+/// Fourteen names, the same set as `domain::events::CatalogEvent`.
+///
+/// Thirteen until 2026-08-07. `PriceOverlayPublished` (D-248) joins here and in
+/// `chk_pricing_outbox_event_name` (`m20260802_000060`) together — this roster and
+/// that constraint are the pair that made the addition a migration rather than an
+/// enum edit, and `every_frozen_event_name_is_enqueueable` below is what pins them
+/// to each other by driving every name into the table.
 const EVENT_NAMES: &[&str] = &[
     "PlanCreated",
     "PlanUpdated",
@@ -1210,6 +1216,7 @@ const EVENT_NAMES: &[&str] = &[
     "PriceWindowActivated",
     "PriceWindowExpired",
     "PriceWindowCancelled",
+    "PriceOverlayPublished",
 ];
 
 fn outbox(id: &str, overrides: &[(&str, &str)]) -> String {
@@ -1232,7 +1239,7 @@ fn outbox(id: &str, overrides: &[(&str, &str)]) -> String {
 /// The frozen event-name set, from the accepting side.
 ///
 /// A name here is a contract a consumer is entitled to keep receiving forever, so
-/// all thirteen are exercised: a suite that only enqueued `PlanPublished` would
+/// all fourteen are exercised: a suite that only enqueued `PlanPublished` would
 /// leave twelve of the admitted set unproved and would stay green against a
 /// constraint narrowed to one name.
 #[tokio::test]
@@ -1255,8 +1262,8 @@ async fn every_frozen_event_name_is_enqueueable() {
     }
     assert_eq!(
         EVENT_NAMES.len(),
-        13,
-        "the constraint pins thirteen names; a shorter list here is a name \
+        14,
+        "the constraint pins fourteen names; a shorter list here is a name \
          nobody is testing"
     );
 }
@@ -1265,7 +1272,7 @@ async fn every_frozen_event_name_is_enqueueable() {
 /// to.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
-async fn an_event_name_outside_the_frozen_thirteen_is_refused() {
+async fn an_event_name_outside_the_frozen_fourteen_is_refused() {
     let conn = applied().await;
     for name in ["'PlanDeleted'", "'planPublished'", "'PriceRetired'"] {
         must_be_rejected(

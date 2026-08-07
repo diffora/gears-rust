@@ -603,6 +603,93 @@ async fn degraded_events(h: &Harness) -> Vec<outbox::Model> {
         .expect("read the outbox")
 }
 
+/// D-248: an overlay publish announces itself, and the payload names the shard.
+///
+/// Until 2026-08-07 this act moved **two** projected subjects — the overlay and its
+/// `overlay_index` shard (D-112) — and announced neither, so a consumer polling the
+/// outbox learned that plans, prices, bundles and windows had moved and never that
+/// the overlay layer applied on top of them had. The name is the fourteenth in
+/// `fr-event-contract`'s set and arrived as a decision rather than as a literal in
+/// `infra::overlay_publish`, which is the discipline that module was observing when
+/// it declined to mint one for itself.
+#[tokio::test]
+async fn an_overlay_publish_announces_itself_and_names_the_shard_it_moved() {
+    let h = harness().await;
+    let overlays = OverlayRepo::new(h.provider.clone());
+    let price_overlay_id = seed_draft_overlay(&h, 40).await;
+    let record = overlays
+        .load(&h.scope, TENANT, price_overlay_id, 0)
+        .await
+        .expect("load")
+        .expect("the draft");
+    let pin = bss_pricing::domain::approval::content_pin::overlay_content_hash(&record.content());
+
+    let receipt = overlay_publish(&h)
+        .commit(
+            &ctx_of(TENANT),
+            &h.scope,
+            TENANT,
+            OverlayPublishUnit::new(price_overlay_id, 0),
+            PublishAuthorization::approved(Uuid::new_v4(), ACTOR, Uuid::from_u128(0xbb), pin),
+            stamp_of(ACTOR, at_min(12, 0)),
+        )
+        .await
+        .expect("an approved overlay publishes");
+
+    let events = events_named(&h, "PriceOverlayPublished").await;
+    assert_eq!(
+        events.len(),
+        1,
+        "exactly one announcement per published revision"
+    );
+    let event = &events[0];
+
+    assert_eq!(
+        event.aggregate_id, price_overlay_id,
+        "the aggregate is the overlay, not a plan. An overlay is tenant-scoped and may target no \
+         plan at all, so there is no plan stream to order it within"
+    );
+    assert_eq!(
+        event.dedup_key,
+        format!("PriceOverlayPublished:{price_overlay_id}:0"),
+        "a revision publishes once, so the key is revision-scoped like BundleUpdated's"
+    );
+
+    let payload = &event.payload;
+    assert_eq!(
+        payload["priceOverlayId"]
+            .as_str()
+            .and_then(|id| Uuid::parse_str(id).ok()),
+        Some(price_overlay_id)
+    );
+    assert_eq!(payload["revision"].as_u64(), Some(0));
+    assert_eq!(
+        payload["scopeClass"].as_str(),
+        Some("partner"),
+        "the shard key, so a consumer knows which index document to re-read (D-112)"
+    );
+    assert_eq!(payload["scopeValue"].as_str(), Some("acme"));
+    assert_eq!(payload["precedence"].as_i64(), Some(40));
+    assert_eq!(
+        payload["pendingVersionRef"].as_str(),
+        Some(receipt.pending_ref.as_str()),
+        "pending, because the version does not exist yet and will not until the registry batches \
+         (D-47)"
+    );
+}
+
+/// Every outbox row of one event name, for this harness's tenant.
+async fn events_named(h: &Harness, name: &str) -> Vec<outbox::Model> {
+    let conn = h.provider.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&h.scope)
+        .filter(Condition::all().add(outbox::Column::EventName.eq(name)))
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+}
+
 async fn frontier_version(h: &Harness) -> Option<u64> {
     frontier_version_of(h, TENANT).await
 }
