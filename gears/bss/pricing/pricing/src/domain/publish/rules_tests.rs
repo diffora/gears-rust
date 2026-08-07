@@ -120,7 +120,14 @@ fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>)
         row,
         tax_inclusive: false,
         tax_category_ref: None,
-        billing_timing: None,
+        // Stated, because this is a **recurring** row and Slice 6's
+        // `inst-bt-required` makes the field mandatory on one. Every test in
+        // this file that asserts an *empty* report needs a row that is
+        // publishable in every respect but the one under judgement, and a row
+        // whose `billingTiming` is absent is not — the fixture was a recurring
+        // row no publish would have accepted, which nothing measured while the
+        // rule had no code.
+        billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: rounding.map(ToOwned::to_owned),
         grandfather_until: None,
         supersedes_price_id: None,
@@ -278,6 +285,23 @@ fn the_aggregate_runs_the_slice_seven_coverage_set() {
         codes(&report),
         [crate::domain::coverage::WINDOW_COVERAGE_MISSING],
         "the aggregate carries the coverage set, and the covered fixture proves the finding is the window's absence and not the plan's"
+    );
+}
+
+/// The aggregate carries Slice 6's set, and the clean fixture proves the
+/// finding is the absent field and not something else the plan is missing.
+#[test]
+fn the_aggregate_runs_the_slice_six_consumer_contract_set() {
+    let mut untimed = clean_plan();
+    for record in &mut untimed.rows {
+        record.billing_timing = None;
+    }
+
+    let report = run_publish_rules(&untimed, &params(Some("half_up")));
+
+    assert_eq!(
+        codes(&report),
+        [crate::domain::contracts::BILLING_TIMING_MISSING]
     );
 }
 

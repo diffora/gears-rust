@@ -121,6 +121,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
+use crate::domain::contracts::consumer_contract_rules;
 use crate::domain::coverage::window_coverage_rules;
 use crate::domain::currency_binding::{AddonCoverage, RequiredAddonsCoverMarkets};
 use crate::domain::money::CurrencyCode;
@@ -446,6 +447,15 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
     }
     report.absorb(foundation_plan_rules(params).run(shape));
     report.absorb(plan_shape_rules(params.interval_bounds, params.descriptors.clone()).run(shape));
+    // Slice 6's consumer contracts, after both plan-level sets and before the
+    // coverage set, for the reading order this module's doc fixes. A contract
+    // field is a statement about a row that *is* a row — Slice 3 answers that —
+    // and about a plan whose shape holds — Slice 2 answers that — so a report
+    // naming an absent `billingTiming` ahead of the news that the row is not a
+    // row reads back to front. It stays ahead of `window_coverage_rules` for the
+    // same doc's reason: coverage is a statement about a key's window plane and
+    // reads last.
+    report.absorb(consumer_contract_rules().run(shape));
     report.absorb(window_coverage_rules().run(shape));
     report
 }

@@ -10,6 +10,7 @@ pub mod bundle;
 pub mod bundle_rules;
 pub mod bundle_sellability;
 pub mod concurrency;
+pub mod contracts;
 pub mod coverage;
 pub mod currency_binding;
 pub mod cutover;
