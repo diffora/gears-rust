@@ -141,10 +141,17 @@ fn every_kind_has_earned_its_publish_half() {
 }
 
 #[test]
-fn a_declined_case_is_reported_as_undecidable_not_as_a_verdict() {
-    // Failing rather than guessing is the sanctioned answer to a snapshot the
-    // row shape cannot hold, and it must stay distinguishable from a rejection:
-    // an `EvalError` says the gear has no opinion, a `Rejected` says it has one.
+fn the_reserved_case_is_answered_rather_than_declined_since_slice_10() {
+    // **This case was `declined_until = "slice-10-advanced-primitives"`.** The
+    // marker existed because `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` is Slice
+    // 10's code while the only row shape was Slice 3's, which could hold neither
+    // `reservedRate` nor `reservationFlavor` -- so no subject could reach the
+    // rule to agree or disagree with it, and the honest answer was "undecidable".
+    //
+    // Slice 10 landed the pair and `domain::rules::reservation`, the marker came
+    // out of the case file, and this asserts the thing the marker stood in for:
+    // the gear now **answers** the case, and answers it with D-53's code rather
+    // than with some other rejection that would happen to be red-free.
     let report = validator::publish_report(&corpus());
 
     let reserved = report
@@ -153,33 +160,32 @@ fn a_declined_case_is_reported_as_undecidable_not_as_a_verdict() {
         .find(|o| o.case_id == "consumption-on-level-rejected")
         .expect("the reserved publish case is in the corpus");
 
+    let answer = validator::describe_answer(&reserved.actual);
     assert!(
-        validator::describe_answer(&reserved.actual).starts_with("undecidable"),
-        "a Slice-10 snapshot must be declined, not judged against a Slice-3 row"
+        !answer.starts_with("undecidable"),
+        "the pair is representable since Slice 10; the gear owes this case a verdict: {answer}"
+    );
+    assert!(
+        answer.contains("LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN"),
+        "and the verdict must be D-53's refusal rather than any other rejection: {answer}"
     );
 }
 
 #[test]
-fn the_undecidable_case_is_the_corpuss_own_declaration_and_earns_nothing() {
-    // The decline is anticipated because the **corpus** says the case is
-    // authored against a slice nothing has built -- not because the gear was
-    // allowed to skip a case it found inconvenient. That distinction is the
-    // whole of why the marker lives in the case file.
-    //
-    // Note what it does not do: `graduated` still earns its publish half, from
-    // the three Slice-3 cases it does answer. A Slice-10 rule the gear cannot
-    // reach is not evidence against Slice-3 rules it reproduces exactly.
+fn the_corpus_now_declines_nothing_and_nothing_is_stale() {
+    // The other half. `declined()` was a one-element list for as long as the
+    // reservation pair was unrepresentable; it is empty now, and
+    // `stale_declines()` -- a case the corpus calls unanswerable that the gear
+    // answers correctly -- must stay at zero, which is what catches a marker
+    // left behind after its slice lands.
     let report = validator::publish_report(&corpus());
 
     let declined: Vec<&str> = report.declined().map(|o| o.case_id.as_str()).collect();
-    assert_eq!(declined, vec!["consumption-on-level-rejected"]);
-
-    assert_eq!(
-        report.stale_declines().count(),
-        0,
-        "the gear answered a case the corpus calls unanswerable; the declaration is stale \
-         and the case owes the registry its evidence again"
+    assert!(
+        declined.is_empty(),
+        "no case is authored against an unbuilt slice any more: {declined:?}"
     );
+    assert_eq!(report.stale_declines().count(), 0);
     assert!(
         validator::publish_report(&corpus())
             .earned_kinds()

@@ -81,6 +81,8 @@ pub mod m20260802_000050_add_pricing_price_proration_contract;
 pub mod m20260802_000051_guard_pricing_price_proration_columns;
 pub mod m20260802_000052_add_pricing_plan_change_contract;
 pub mod m20260802_000053_add_pricing_plan_entitlement_grants;
+pub mod m20260802_000054_add_pricing_price_reservation;
+pub mod m20260802_000055_guard_pricing_price_reservation_columns;
 pub mod m20260802_000060_add_price_overlay_published_event_name;
 
 use sea_orm::{ConnectionTrait, Statement};
@@ -229,6 +231,15 @@ impl MigratorTrait for Migrator {
             // prepaid credit grant, a different object; see this migration's
             // own doc.
             Box::new(m20260802_000053_add_pricing_plan_entitlement_grants::Migration),
+            // Slice 10's reserved-capacity attributes: two columns on
+            // `pricing_price` (`inst-rv-attrs`, A1). Plain `ALTER`s, so they sort
+            // anywhere after `000002`; the number is this strand's allotted range
+            // (`000054`-`000059`), disjoint from the concurrent D-231 work's.
+            Box::new(m20260802_000054_add_pricing_price_reservation::Migration),
+            // The guard restatement for the two columns `000054` adds --
+            // `000051`'s shape, and after them for `000051`'s reason: a trigger
+            // naming a column that does not exist yet does not create.
+            Box::new(m20260802_000055_guard_pricing_price_reservation_columns::Migration),
             Box::new(m20260802_000060_add_price_overlay_published_event_name::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work

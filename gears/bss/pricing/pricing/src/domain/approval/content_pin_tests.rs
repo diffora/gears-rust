@@ -67,8 +67,8 @@ use crate::domain::plan_shape::{
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
-    ModelKind, PriceRow, QuantitySource, RolloverPolicy, TierAggregationWindow, TierBand,
-    TierQualificationWindow,
+    ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy, TierAggregationWindow,
+    TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
@@ -137,6 +137,8 @@ fn maximal_row() -> PriceRow {
             quantity: 1_000,
             rollover_policy: RolloverPolicy::Carry,
         }),
+        reserved_rate_minor: Some(money(250)),
+        reservation_flavor: Some(ReservationFlavor::Capacity),
     }
 }
 
@@ -670,6 +672,23 @@ fn row_mutators() -> Vec<Mutator> {
                 rollover_policy: RolloverPolicy::None,
             });
         }),
+        // The Slice-10 reservation pair (`v9`). Both halves get a mutator: the
+        // rate because it is the money a reviewer approves, and the flavor
+        // because flipping it moves the charge (`inst-rv-tier-q` vs
+        // `inst-rv-level`) without moving the rate -- which is exactly the
+        // mutation a rate-only pin would miss.
+        ("row.reserved_rate_minor", |s| {
+            s.rows[0].row.reserved_rate_minor = Some(money(251));
+        }),
+        ("row.reserved_rate_minor -> None", |s| {
+            s.rows[0].row.reserved_rate_minor = None;
+        }),
+        ("row.reservation_flavor", |s| {
+            s.rows[0].row.reservation_flavor = Some(ReservationFlavor::Consumption);
+        }),
+        ("row.reservation_flavor -> None", |s| {
+            s.rows[0].row.reservation_flavor = None;
+        }),
     ]
 }
 
@@ -1017,6 +1036,17 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   matched on every digest. `record.tax_category_ref` in the mutator table is
 ///   that property; this is its byte vector.
 ///
+/// - `v8` -> `v9`, on **2026-08-08**, when Slice 10's `reserved_rate_minor` and
+///   `reservation_flavor` joined `put_price_row`. A hole again rather than a
+///   boundary, and the most direct money one this table offers: the pair is
+///   authored draft content a `PATCH` moves, so a reviewer who approved a
+///   reserved rate of 250 and a commit that publishes 100 matched on every
+///   digest. The flavor travels with it because flipping `capacity` to
+///   `consumption` moves the charge (`inst-rv-tier-q` against `inst-rv-level`)
+///   **without moving the rate**, which is the mutation a rate-only pin would
+///   miss. `row.reserved_rate_minor` and `row.reservation_flavor` in the mutator
+///   table are those properties; this is their byte vector.
+///
 /// What makes any of them an edit rather than a migration today is on
 /// [`CONTENT_PIN_DOMAIN_SEP`](super::CONTENT_PIN_DOMAIN_SEP): this gear is not
 /// deployed, so no durable row holds a `v1` or a `v2` digest. That argument expires
@@ -1025,7 +1055,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "d60b5ac694e7a100fc1958e72c963d9bf595d6df336d723c1f09f2dd924b820d"
+        "8aad68ea3c78cde25ca4648965851ae456c94555f68df3982a1a9c50c0dbca00"
     );
 }
 
@@ -1186,7 +1216,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v8\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v9\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

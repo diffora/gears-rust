@@ -130,6 +130,8 @@ fn clean_view() -> PriceContentView {
         aggregation_granularity: None,
         max_hold_granules: None,
         included_allowance: None,
+        reserved_rate_minor: None,
+        reservation_flavor: None,
         tax_inclusive: Some(false),
         tax_category_ref: None,
         billing_timing: None,

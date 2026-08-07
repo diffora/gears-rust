@@ -126,6 +126,13 @@ pub struct Model {
     /// returns it and nothing more, because the D-129 supersession guard reads
     /// it and a round trip that dropped it would report "nothing changed".
     pub included_allowance: Option<JsonValue>,
+    /// The reserved rate, in the row's currency (`inst-rv-attrs`). A `bigint`
+    /// like every other money column on this row.
+    pub reserved_rate_minor: Option<i64>,
+    /// `consumption | capacity`; present iff `reserved_rate_minor` is. No column
+    /// `CHECK` on either engine -- see `m20260802_000054` for why the vocabulary
+    /// lives in the domain enum and the pairing in a publish rule.
+    pub reservation_flavor: Option<String>,
     /// The named rounding-policy id resolved at publish (row-level, else the
     /// tenant default, else `ROUNDING_POLICY_UNRESOLVED`).
     pub rounding_policy_ref: Option<String>,

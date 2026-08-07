@@ -1,4 +1,5 @@
-//! Tests for the Slice-3 rule registration.
+//! Tests for the row-local rule registration (Slice 3's set, plus Slice 10's
+//! `inst-rv-attrs` since 2026-08-08).
 
 use bss_fixtures::ModelKind;
 
@@ -27,10 +28,18 @@ fn graduated_usage() -> PriceRow {
 }
 
 #[test]
-fn the_pipeline_registers_every_slice_three_row_local_instruction() {
+fn the_pipeline_registers_every_row_local_instruction() {
     // The instruction ids are the design set's own names; the registration list
     // is what makes a missing rule visible as an absent id rather than as a row
     // that quietly publishes.
+    //
+    // **It stopped being a Slice-3-only list on 2026-08-08.** `inst-rv-attrs` is
+    // Slice 10's, and it is registered here rather than in the Foundation plan
+    // set because a reservation is judged against one row and nothing else --
+    // D-21's test for the save-time set -- and because the joint corpus reaches
+    // this pipeline and never assembles a `PlanShape`. The test was renamed with
+    // it: a roster whose name says "slice three" is a roster a later slice
+    // hesitates to extend.
     assert_eq!(
         price_row_rules().rule_names(),
         vec![
@@ -47,6 +56,7 @@ fn the_pipeline_registers_every_slice_three_row_local_instruction() {
             "inst-la-fields",
             "inst-la-granularity",
             "inst-la-maxhold",
+            "inst-rv-attrs",
         ]
     );
     assert_eq!(

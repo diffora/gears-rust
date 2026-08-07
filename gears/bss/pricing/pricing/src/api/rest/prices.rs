@@ -92,7 +92,7 @@ use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
-    PriceRow, QuantitySource, RolloverPolicy, TierAggregationWindow, TierBand,
+    PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy, TierAggregationWindow, TierBand,
     TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{
@@ -295,6 +295,10 @@ pub struct PriceContentView {
     pub max_hold_granules: Option<u64>,
     /// The plan-scoped included allowance (D-45).
     pub included_allowance: Option<IncludedAllowanceView>,
+    /// The reserved rate, in the row's currency (`inst-rv-attrs`).
+    pub reserved_rate_minor: Option<i64>,
+    /// What the reservation reserves: `consumption | capacity` (`inst-rv-attrs`).
+    pub reservation_flavor: Option<String>,
     /// Whether the authored amounts are tax-inclusive. Absent is `false`.
     pub tax_inclusive: Option<bool>,
     /// The row's tax category (D-110) — the **source of truth**, and the only
@@ -349,6 +353,8 @@ impl From<&PriceRecord> for PriceContentView {
                     rollover_policy: allowance.rollover_policy.as_str().to_owned(),
                 }
             }),
+            reserved_rate_minor: row.reserved_rate_minor.map(MinorAmount::get),
+            reservation_flavor: row.reservation_flavor.map(|f| f.as_str().to_owned()),
             tax_inclusive: Some(record.tax_inclusive),
             tax_category_ref: record.tax_category_ref.clone(),
             billing_timing: record.billing_timing.clone(),
@@ -1104,6 +1110,13 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
                 })
             })
             .transpose()?,
+        reserved_rate_minor: amount("content.reserved_rate_minor", view.reserved_rate_minor)?,
+        reservation_flavor: optional_token(
+            "content.reservation_flavor",
+            view.reservation_flavor.as_deref(),
+            price_repo::RESERVATION_FLAVORS,
+            ReservationFlavor::as_str,
+        )?,
     };
     Ok(PriceContent {
         row,

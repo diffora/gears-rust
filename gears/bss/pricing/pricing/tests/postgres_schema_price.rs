@@ -999,7 +999,7 @@ async fn a_metered_line_and_a_meterless_one_are_two_keys() {
 
 /// Every column the whitelist freezes, one UPDATE each.
 ///
-/// Thirty-four columns, and the loop is the point: a whitelist maintained by hand
+/// Forty columns, and the loop is the point: a whitelist maintained by hand
 /// rots one forgotten `OR` at a time, and a test that moved only `amount_minor`
 /// would stay green while `included_allowance` or `row_version` quietly became
 /// mutable on a frozen row. The trigger is `BEFORE`, so it answers ahead of every
@@ -1032,6 +1032,14 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         "tax_category_ref = 'reduced'".to_owned(),
         "resolved_tax_category = 'standard'".to_owned(),
         "billing_timing = 'advance'".to_owned(),
+        // Slice 6's proration contract. `m20260802_000051` put all four in the
+        // guard and **none of them here**, so for two days the whitelist froze
+        // four columns nothing tested -- the exact rot this loop's own comment
+        // describes, found while Slice 10 extended the same list.
+        "billing_anchor_policy = 'fixed_day'".to_owned(),
+        "anchor_day = 15".to_owned(),
+        "proration_basis = 'by_second'".to_owned(),
+        "credit_on_downgrade = true".to_owned(),
         "quantity_source = 'manual'".to_owned(),
         "manual_quantity = 5".to_owned(),
         "package_size = 10".to_owned(),
@@ -1045,6 +1053,11 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         "tier_qualification_window = 'current'".to_owned(),
         "max_hold_granules = 3".to_owned(),
         "included_allowance = '{\"units\": 100}'::jsonb".to_owned(),
+        // Slice 10's reservation pair (`m20260802_000055`). The rate is the
+        // sharpest case on this table: a writer moving it on a published row
+        // moves money per covered granule, away from the pin that approved it.
+        "reserved_rate_minor = 250".to_owned(),
+        "reservation_flavor = 'capacity'".to_owned(),
         "rounding_policy_ref = 'policy/1'".to_owned(),
         format!("supersedes_price_id = '{OTHER}'"),
         "created_by = '99999999-9999-9999-9999-999999999999'".to_owned(),
@@ -1053,9 +1066,11 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
     ];
     assert_eq!(
         moves.len(),
-        34,
-        "the whitelist has thirty-four columns; a shorter list here is a column \
-         nobody is testing"
+        40,
+        "the whitelist has forty columns; a shorter list here is a column nobody \
+         is testing -- it was 34 here against 38 in the guard until 2026-08-08, \
+         when Slice 10 added its two and the four Slice-6 proration columns \
+         turned out never to have been added at all"
     );
 
     for change in &moves {

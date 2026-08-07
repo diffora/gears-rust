@@ -116,8 +116,8 @@ use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
-    ModelKind, PriceRow, QuantitySource, RolloverPolicy, TierAggregationWindow, TierBand,
-    TierQualificationWindow, model_kind_wire,
+    ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy, TierAggregationWindow,
+    TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
@@ -196,6 +196,9 @@ pub const TIER_QUALIFICATION_WINDOWS: &[TierQualificationWindow] = &[
     TierQualificationWindow::Current,
     TierQualificationWindow::TrailingPeriod,
 ];
+/// What a reservation reserves (`inst-rv-attrs`, S10).
+pub const RESERVATION_FLAVORS: &[ReservationFlavor] =
+    &[ReservationFlavor::Consumption, ReservationFlavor::Capacity];
 /// How the in-window `Q` is derived (D-44).
 pub const AGGREGATION_FUNCTIONS: &[AggregationFunction] = &[
     AggregationFunction::Sum,
@@ -2374,6 +2377,8 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
             .map(|w| w.as_str().to_owned())),
         max_hold_granules: Set(stored_count("max_hold_granules", row.max_hold_granules)?),
         included_allowance: Set(row.included_allowance.map(allowance_json)),
+        reserved_rate_minor: Set(row.reserved_rate_minor.map(MinorAmount::get)),
+        reservation_flavor: Set(row.reservation_flavor.map(|f| f.as_str().to_owned())),
         rounding_policy_ref: Set(content.rounding_policy_ref.clone()),
         grandfather_until: Set(content.grandfather_until),
         supersedes_price_id: Set(content.supersedes_price_id),
@@ -2812,6 +2817,14 @@ fn content_assignments(model: &price::ActiveModel) -> Vec<(price::Column, Value)
             model.included_allowance.clone().into_value(),
         ),
         (
+            price::Column::ReservedRateMinor,
+            model.reserved_rate_minor.clone().into_value(),
+        ),
+        (
+            price::Column::ReservationFlavor,
+            model.reservation_flavor.clone().into_value(),
+        ),
+        (
             price::Column::RoundingPolicyRef,
             model.rounding_policy_ref.clone().into_value(),
         ),
@@ -3090,6 +3103,16 @@ fn to_price_row(
             .as_ref()
             .map(read_allowance)
             .transpose()?,
+        reserved_rate_minor: read_amount(
+            "pricing_price.reserved_rate_minor",
+            row.reserved_rate_minor,
+        )?,
+        reservation_flavor: read_optional(
+            "pricing_price.reservation_flavor",
+            row.reservation_flavor.as_deref(),
+            RESERVATION_FLAVORS,
+            ReservationFlavor::as_str,
+        )?,
     })
 }
 

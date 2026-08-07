@@ -21,6 +21,25 @@
 //! corpus's standing invariant is that no evaluator, and no gear's rule set,
 //! reaches it.
 //!
+//! ## The one row that is *supposed* to be refused
+//!
+//! A publish case asserting `rejected` with a **row-local** code specifies a
+//! successor the catalog must refuse — refusing it is the whole content of the
+//! case. So for such a case the successor is permitted to carry **exactly that
+//! code and nothing else**; every other violation on it, and every violation on
+//! the predecessor, is a finding as before.
+//!
+//! The invariant read as universal until 2026-08-08 only because every
+//! `rejected` case in the corpus rejected through the **pair** guard, which this
+//! test does not run — so no successor had ever legitimately failed the row
+//! rules. Slice 10's `consumption-on-level-rejected` is the first that does
+//! (`LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` is a row rule), and it exposed the
+//! unstated premise rather than breaking the invariant. Narrowing to "exactly
+//! the asserted code" rather than "any violation on a rejected case" is what
+//! keeps the test's teeth: a successor that fails for a *different* reason is
+//! still specifying an impossible row, and is still the way five
+//! `supersession-continuity` pairs once sat green-looking.
+//!
 //! ## Why the shape rules and not the whole validator
 //!
 //! The row-shape pipeline is asked of **one row**; the publish validator is
@@ -51,7 +70,7 @@
 #[path = "../examples/regen_registry/validator.rs"]
 mod validator;
 
-use bss_fixtures::{Case, Corpus, Snapshot};
+use bss_fixtures::{Case, Corpus, PublishVerdict, Snapshot};
 use bss_pricing::domain::rules::price_row_rules;
 
 /// The snapshots a case carries, each labelled as it reads in a failure line.
@@ -66,6 +85,25 @@ fn snapshots(case: &Case) -> Vec<(&'static str, &Snapshot)> {
         Case::Evaluation(c) => vec![("snapshot", &c.snapshot)],
         Case::Publish(c) => vec![("predecessor", &c.predecessor), ("successor", &c.successor)],
     }
+}
+
+/// The code a case asserts its **successor** is refused under, if it asserts a
+/// refusal at all.
+///
+/// `None` for an evaluation case, for a publish case expecting `accepted`, and
+/// for the predecessor side of any case -- see the module doc's section on the
+/// one row that is supposed to be refused.
+fn asserted_refusal(case: &Case, side: &str) -> Option<String> {
+    if side != "successor" {
+        return None;
+    }
+    let Case::Publish(c) = case else {
+        return None;
+    };
+    c.assert.iter().find_map(|a| match &a.expect {
+        PublishVerdict::Rejected { error_code } => Some(error_code.clone()),
+        PublishVerdict::Accepted => None,
+    })
 }
 
 #[test]
@@ -86,7 +124,13 @@ fn every_snapshot_in_the_corpus_describes_a_publishable_row() {
                     continue;
                 }
             };
+            let expected_refusal = asserted_refusal(case, side);
             for violation in rules.run(&row).violations {
+                if expected_refusal.as_deref() == Some(violation.code.as_str()) {
+                    // The case exists to specify this refusal. Any *other*
+                    // violation on the same row still lands below.
+                    continue;
+                }
                 findings.push(format!(
                     "{id} [{side}]: {code} -- {detail}",
                     id = case.id(),

@@ -2,22 +2,13 @@ family         = "reserved"
 id             = "consumption-on-level-rejected"
 kind           = "publish"
 provenance     = ["inst-rv-level", "D-53", "D-68"]
-declined_until = "slice-10-advanced-primitives"
-
-# `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` is Slice 10's code. `reservedRate`
-# and `reservationFlavor` are Slice-10 fields, and the only price-row shape that
-# exists today is Slice 3's, which has nowhere to put either - so no subject can
-# reach this rule to agree or disagree with it. `declined_until` says exactly
-# that, and says it in the corpus rather than in a subject: this is the
-# `trailing-tier` reading at case granularity, where an unbuilt slice reads as
-# **declined**, never as green and never as absent.
-#
-# What it does NOT do is soften the case. The verdict below stays authored and
-# stays checked. A subject that answers `accepted`, or rejects under some other
-# code, is red exactly as it was before - only an honest "I cannot represent
-# this row" is the anticipated answer. And a subject that answers it *correctly*
-# makes this line stale, which the runner reports: the day Slice 10 lands, this
-# field comes out and the case starts earning its evidence again.
+# **`declined_until = "slice-10-advanced-primitives"` came out on 2026-08-08**,
+# when Slice 10 landed `reserved_rate_minor` / `reservation_flavor` on the row
+# and `domain::rules::reservation` landed the three rules that judge them. The
+# line said no subject could reach `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN`
+# because no price-row shape could hold either field; that is no longer true, so
+# by its own terms the case "starts earning its evidence again". Nothing about
+# the verdict below changed - it was authored and checked throughout.
 #
 # On a non-`sum` row the tier-counter exclusion has no single meaning: Q is a
 # sum of per-granule folds of a level, and "subtract the reserved quantity"

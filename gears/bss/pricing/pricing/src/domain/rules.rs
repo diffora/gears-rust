@@ -26,6 +26,7 @@
 pub mod level_aggregation;
 pub mod model_kind;
 pub mod package;
+pub mod reservation;
 pub mod supersession;
 pub mod tier_bands;
 
@@ -136,6 +137,11 @@ pub fn price_row_rules() -> ValidationPipeline<PriceRow> {
         .with_rule(Box::new(level_aggregation::LevelFields))
         .with_rule(Box::new(level_aggregation::LevelGranularityPairing))
         .with_rule(Box::new(level_aggregation::LevelMaxHold))
+        // Slice 10's reservation set (`inst-rv-attrs` / `inst-rv-usage` /
+        // `inst-rv-level`). Row-local by construction -- see that module's doc
+        // for why they are here rather than in the Foundation plan set, and for
+        // what the corpus could not reach while they were not.
+        .with_rule(Box::new(reservation::ReservationWellFormed))
 }
 
 /// The supersession unit guard, as a pipeline over a predecessor/successor pair.

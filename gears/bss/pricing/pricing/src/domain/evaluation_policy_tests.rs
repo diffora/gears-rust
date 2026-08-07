@@ -78,6 +78,8 @@ fn any_row() -> PriceRow {
         aggregation_granularity: None,
         max_hold_granules: None,
         included_allowance: None,
+        reserved_rate_minor: None,
+        reservation_flavor: None,
     }
 }
 
@@ -252,14 +254,15 @@ fn the_out_of_roster_set_is_the_documents() {
 fn every_field_of_the_row_is_classified_exactly_once() {
     let (roster, outside) = partition_row_fields(&any_row());
 
-    // 17 is not derived from the struct: it is stated, so that the pattern in
+    // 19 is not derived from the struct: it is stated, so that the pattern in
     // `partition_row_fields` growing an arm without the returned lists growing
-    // is a failure here rather than a silent omission from both.
-    assert_eq!(roster.len() + outside.len(), 17);
+    // is a failure here rather than a silent omission from both. It was 17
+    // before Slice 10's `reserved_rate_minor` / `reservation_flavor`.
+    assert_eq!(roster.len() + outside.len(), 19);
     let union: BTreeSet<&str> = roster.iter().chain(outside.iter()).copied().collect();
     assert_eq!(
         union.len(),
-        17,
+        19,
         "a field is classified twice or named twice"
     );
 }

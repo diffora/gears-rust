@@ -758,11 +758,16 @@ fn the_row_type_gained_no_field_and_the_generation_moved_only_for_a_rostered_one
     );
     assert_eq!(
         crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION,
-        "ep-2",
-        "the generation moved to `ep-2` for `usage_counter_on_plan_change` (D-113, Slice 6), \
-         which is a plan-scoped field a snapshot freezes, and **not** for anything on the row. \
-         This assertion is transcribed rather than derived, so a bump has to be argued for here \
-         as well as in the document"
+        "ep-3",
+        "the generation moved to `ep-2` for `usage_counter_on_plan_change` (D-113, Slice 6), a \
+         plan-scoped field a snapshot freezes, and to `ep-3` for `reservation_flavor` (D-53, \
+         Slice 10) -- the argument for the second bump: the flavor decides whether the reserved \
+         quantity leaves the on-demand tier counter (`inst-rv-tier-q`) or never enters it \
+         (`inst-rv-level`), which is quantity derivation and therefore evaluation policy by the \
+         roster's own test. Its partner `reserved_rate_minor` is money and is filed outside, so \
+         it moved no generation. Neither is `grandfather_until`, which is still on no row at \
+         all. This assertion is transcribed rather than derived, so a bump has to be argued for \
+         here as well as in the document"
     );
 }
 
