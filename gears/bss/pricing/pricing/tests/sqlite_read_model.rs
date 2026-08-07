@@ -39,7 +39,7 @@ use bss_pricing::domain::plan_shape::{
 };
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
-use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
+use bss_pricing::domain::publish::{OverlayPublishUnit, PlanPublishUnit, PublishAuthorization};
 use bss_pricing::domain::read_model::{
     OverlayIndexShard, OverlayScopeClass, SubjectKind, SubjectRef,
 };
@@ -50,6 +50,7 @@ use bss_pricing::domain::window::{WindowInterval, WindowState};
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::jobs::readmodel_warm::{ReadModelWarmJob, SweepReport};
 use bss_pricing::infra::jobs::window_activation::WindowActivationJob;
+use bss_pricing::infra::overlay_publish::OverlayPublishService;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{catalog_version_ref, outbox, plan, price, read_model};
@@ -760,6 +761,50 @@ async fn a_subject_kind_with_no_store_in_this_gear_is_still_refused_by_name() {
 
     assert_eq!(report.subjects_failed, 1);
     assert!(deltas(&h).await.is_empty());
+}
+
+/// The overlay publish service over this harness's provider and registry.
+fn overlay_publish(h: &Harness) -> OverlayPublishService {
+    OverlayPublishService::new(
+        h.provider.clone(),
+        Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>,
+    )
+}
+
+/// A **draft** overlay of one tenant, scoped `partner/acme`, with one line.
+async fn seed_draft_overlay(h: &Harness, precedence: i32) -> Uuid {
+    let overlays = OverlayRepo::new(h.provider.clone());
+    let price_overlay_id = Uuid::new_v4();
+    overlays
+        .create(
+            &h.scope,
+            NewOverlay {
+                price_overlay_id,
+                tenant_id: TENANT,
+                scope: ScopeSelector::scoped(
+                    ScopeClass::Partner,
+                    ScopeValue::new("acme").expect("a value"),
+                )
+                .expect("a valued class"),
+                precedence,
+                interval: OverlayInterval {
+                    from: Some(at(9)),
+                    to: None,
+                },
+                tax_basis: TaxBasis::Exclusive,
+                disclosure: Disclosure::Restricted,
+                target_ref: TargetRef::default(),
+            },
+            vec![OverlayLine {
+                line_id: Uuid::new_v4(),
+                key: LineKey::list_default(),
+                adjustment: Adjustment::Discount(Magnitude::PercentBp(1500)),
+            }],
+            stamp_of(ACTOR, at_min(11, 0)),
+        )
+        .await
+        .expect("author the draft");
+    price_overlay_id
 }
 
 /// A published overlay of one tenant, scoped `partner/acme`, with one line.
@@ -3252,4 +3297,121 @@ async fn an_activation_re_projects_nothing_and_the_frozen_delta_answers_anyway()
          consumer's answer never depended on it"
     );
     assert!(after.covers(window_at(11)));
+}
+
+// ---------------------------------------------------------------------------
+// D-234's commit: the surface that writes an overlay's refs.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_approved_overlay_commit_records_both_subjects_and_the_sweep_projects_them() {
+    // The whole pipeline end to end, and the first case in which nothing is
+    // recorded by hand: the commit requests the handle, flips the revision and
+    // writes **both** ref rows, and the sweep then warms both subjects.
+    //
+    // Until this existed, every projection case in this file staged its own refs,
+    // so the projector was proved and the thing that feeds it was not.
+    let h = harness().await;
+    let overlays = OverlayRepo::new(h.provider.clone());
+    let price_overlay_id = seed_draft_overlay(&h, 40).await;
+    let record = overlays
+        .load(&h.scope, TENANT, price_overlay_id, 0)
+        .await
+        .expect("load")
+        .expect("the draft");
+    let pin = bss_pricing::domain::approval::content_pin::overlay_content_hash(&record.content());
+
+    let receipt = overlay_publish(&h)
+        .commit(
+            &ctx_of(TENANT),
+            &h.scope,
+            TENANT,
+            OverlayPublishUnit::new(price_overlay_id, 0),
+            PublishAuthorization::approved(Uuid::new_v4(), ACTOR, Uuid::from_u128(0xbb), pin),
+            stamp_of(ACTOR, at_min(12, 0)),
+        )
+        .await
+        .expect("an approved overlay publishes");
+
+    // The revision really is published, and both subjects have a ref on one
+    // handle - one act, one registry assignment.
+    assert_eq!(
+        overlays
+            .load(&h.scope, TENANT, price_overlay_id, 0)
+            .await
+            .expect("load")
+            .expect("the revision")
+            .lifecycle_state,
+        bss_pricing::domain::overlay::OverlayLifecycle::Published
+    );
+    let refs = refs(&h).await;
+    assert_eq!(refs.len(), 2, "{refs:?}");
+    assert!(
+        refs.iter()
+            .all(|row| row.pending_ref == receipt.pending_ref)
+    );
+
+    h.registry.commit(&receipt.pending_ref, 4);
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(report.subjects_failed, 0);
+    assert_eq!(report.subjects_projected, 2);
+    let rows = deltas(&h).await;
+    assert!(rows.iter().any(|row| row.subject_kind == "price_overlay"));
+    let shard = rows
+        .iter()
+        .find(|row| row.subject_kind == "overlay_index")
+        .expect("the shard delta");
+    assert_eq!(shard.subject_ref, "partner/acme");
+    assert_eq!(
+        shard
+            .payload
+            .get("overlays")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn a_commit_whose_content_moved_since_the_approval_is_refused() {
+    // `inst-ap-pin` scopes the TOCTOU void to a `submitted` record, so an
+    // approved unit survives a mutation of its own subject and the
+    // approve-to-commit window is real. The pin is therefore re-derived **inside
+    // the commit's transaction**, exactly as the plan plane does it: a check made
+    // before the transaction opened is a check the world can move behind.
+    //
+    // Without it, a second person's approval of one overlay would authorize
+    // publishing a different one.
+    let h = harness().await;
+    let price_overlay_id = seed_draft_overlay(&h, 40).await;
+
+    let refusal = overlay_publish(&h)
+        .commit(
+            &ctx_of(TENANT),
+            &h.scope,
+            TENANT,
+            OverlayPublishUnit::new(price_overlay_id, 0),
+            PublishAuthorization::approved(
+                Uuid::new_v4(),
+                ACTOR,
+                Uuid::from_u128(0xbb),
+                [0_u8; 32],
+            ),
+            stamp_of(ACTOR, at_min(12, 0)),
+        )
+        .await
+        .expect_err("content that is not what was approved");
+
+    assert!(
+        matches!(
+            refusal,
+            bss_pricing::domain::error::DomainError::ApprovalContentMismatch(_)
+        ),
+        "{refusal:?}"
+    );
+    assert!(
+        refs(&h).await.is_empty(),
+        "and no registry handle was orphaned by the refusal"
+    );
 }

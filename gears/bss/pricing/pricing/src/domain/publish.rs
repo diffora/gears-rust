@@ -446,6 +446,40 @@ impl PublishReceipt {
     }
 }
 
+/// One overlay publish unit — the overlay plane's analogue of
+/// [`PlanPublishUnit`], and **deliberately not a value of it** (D-234).
+///
+/// That type is plan-shaped in every field: a plan id, one of its revisions, and
+/// a kind discriminator whose variants are plan acts. An overlay has no plan, so
+/// an overlay publish unit cannot be a value of it, and `inst-pl-commit`'s second
+/// half is a new pipeline rather than a third constructor. Giving the overlay
+/// plane its own unit type is what makes that a statement in the type system
+/// instead of a paragraph somebody has to find.
+///
+/// It carries no kind discriminator. `PlanPublishUnit` needs one because a plan
+/// revision can be published by several different acts — content, a D-99 window
+/// mutation — which would otherwise present one registry request id; an overlay
+/// revision publishes exactly once, through one act.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayPublishUnit {
+    /// The overlay being published.
+    pub price_overlay_id: Uuid,
+    /// The revision this act freezes.
+    pub revision: u64,
+}
+
+impl OverlayPublishUnit {
+    /// The unit over one overlay revision.
+    #[must_use]
+    pub const fn new(price_overlay_id: Uuid, revision: u64) -> Self {
+        Self {
+            price_overlay_id,
+            revision,
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "publish_tests.rs"]
 mod publish_tests;

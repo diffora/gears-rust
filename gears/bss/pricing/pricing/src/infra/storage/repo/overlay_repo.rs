@@ -499,6 +499,17 @@ impl OverlayRepo {
     /// [`RepoError::NotFound`] when the revision is not an open draft;
     /// [`RepoError::OverlayPrecedenceHeld`] when the index refuses the flip;
     /// [`RepoError::Db`] on a scope or storage failure.
+    /// Publish a draft revision and supersede its predecessor, **in one commit**.
+    ///
+    /// §6 requires the pair to be atomic, and the partial precedence index makes
+    /// the intermediate state unreachable rather than merely wrong: two
+    /// published revisions of one overlay on one `(class, precedence)` is
+    /// exactly what that index refuses.
+    ///
+    /// # Errors
+    /// [`RepoError::NotFound`] when the revision is not an open draft;
+    /// [`RepoError::OverlayPrecedenceHeld`] when the index refuses the flip;
+    /// [`RepoError::Db`] on a scope or storage failure.
     pub async fn publish_revision(
         &self,
         scope: &AccessScope,
@@ -513,90 +524,8 @@ impl OverlayRepo {
             .db()
             .in_transaction::<(), RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    let Ok(number) = i64::try_from(revision) else {
-                        return Err(RepoError::NotFound {
-                            subject: "price overlay revision".to_owned(),
-                            id: format!("{price_overlay_id}/{revision}"),
-                        });
-                    };
-                    // **The target is proved publishable before anything is
-                    // written.** Without this read the predecessor's demotion is
-                    // issued first and only then does the target turn out not to
-                    // be a draft — a write issued on the way to saying no. The
-                    // transaction rolls it back, so it was never a live defect; it
-                    // is the ordering `PlanRepo::publish` explicitly rejects for
-                    // this same operation, and matching it costs one read.
-                    if revision_in_state(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        price_overlay_id,
-                        OverlayLifecycle::Draft,
-                    )
-                    .await?
-                    .is_none_or(|draft| draft.revision != number)
-                    {
-                        return Err(RepoError::NotFound {
-                            subject: "open draft price overlay revision".to_owned(),
-                            id: format!("{price_overlay_id}/{revision}"),
-                        });
-                    }
-
-                    // The predecessor next: publishing before superseding would
-                    // put two published revisions on one `(class, precedence)`
-                    // for the length of one statement, which the partial index
-                    // refuses outright — and the predecessor is found **by
-                    // state**, so a lookup after the flip finds the row just
-                    // published.
-                    if let Some(predecessor) = revision_in_state(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        price_overlay_id,
-                        OverlayLifecycle::Published,
-                    )
-                    .await?
-                    {
-                        flip(
-                            txn,
-                            &scope,
-                            tenant_id,
-                            price_overlay_id,
-                            predecessor.revision,
-                            OverlayLifecycle::Superseded,
-                        )
-                        .await?;
-                    }
-                    let moved = flip(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        price_overlay_id,
-                        number,
-                        OverlayLifecycle::Published,
-                    )
-                    .await?;
-                    if moved == 0 {
-                        return Err(RepoError::NotFound {
-                            subject: "open draft price overlay revision".to_owned(),
-                            id: format!("{price_overlay_id}/{revision}"),
-                        });
-                    }
-                    // **One record for the pair**, not two. The supersession is not
-                    // a second act: §6 requires the flip and the publish to be one
-                    // commit, so a trail carrying them separately would show a state
-                    // the store cannot be in.
-                    record_overlay_mutation(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        price_overlay_id,
-                        number,
-                        AuditAction::Publish,
-                        stamp,
-                    )
-                    .await?;
-                    Ok(())
+                    publish_revision_on(txn, &scope, tenant_id, price_overlay_id, revision, stamp)
+                        .await
                 })
             })
             .await;
@@ -859,6 +788,142 @@ async fn record_overlay_mutation(
     )
     .await
     .map(|_| ())
+}
+
+/// The **published** revision of one overlay, on a **runner**.
+///
+/// [`OverlayRepo::current`]'s body, lifted for [`load_on`]'s reason. D-234's
+/// publish commit is the caller, and it needs this **before** its own flip: after
+/// it, the predecessor stands `superseded` and the index shard it is leaving
+/// (D-133's "two when a revision moves the scope value") would have to be
+/// reconstructed from a state that has already moved.
+///
+/// # Errors
+/// As [`OverlayRepo::load`].
+pub(crate) async fn current_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_overlay_id: Uuid,
+) -> Result<Option<OverlayRecord>, RepoError> {
+    let Some(row) = revision_in_state(
+        runner,
+        scope,
+        tenant_id,
+        price_overlay_id,
+        OverlayLifecycle::Published,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let lines = read_lines(runner, scope, price_overlay_id, tenant_id, row.revision).await?;
+    record_of(&row, lines).map(Some)
+}
+
+/// Publish a draft revision and supersede its predecessor, on a **runner**.
+///
+/// [`OverlayRepo::publish_revision`]'s body, lifted for the same reason
+/// [`load_on`] was: a caller already inside a transaction needs it. D-234's
+/// overlay publish commit is that caller, and for it the lifting is not a
+/// convenience — the flip has to share one transaction with the registry handle,
+/// the `pricing_catalog_version_ref` rows and the audit record, or a crash
+/// between them leaves a published overlay no version ever projects.
+///
+/// # Errors
+/// As [`OverlayRepo::publish_revision`].
+pub(crate) async fn publish_revision_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_overlay_id: Uuid,
+    revision: u64,
+    stamp: AuditStamp,
+) -> Result<(), RepoError> {
+    let Ok(number) = i64::try_from(revision) else {
+        return Err(RepoError::NotFound {
+            subject: "price overlay revision".to_owned(),
+            id: format!("{price_overlay_id}/{revision}"),
+        });
+    };
+    // **The target is proved publishable before anything is
+    // written.** Without this read the predecessor's demotion is
+    // issued first and only then does the target turn out not to
+    // be a draft — a write issued on the way to saying no. The
+    // transaction rolls it back, so it was never a live defect; it
+    // is the ordering `PlanRepo::publish` explicitly rejects for
+    // this same operation, and matching it costs one read.
+    if revision_in_state(
+        runner,
+        scope,
+        tenant_id,
+        price_overlay_id,
+        OverlayLifecycle::Draft,
+    )
+    .await?
+    .is_none_or(|draft| draft.revision != number)
+    {
+        return Err(RepoError::NotFound {
+            subject: "open draft price overlay revision".to_owned(),
+            id: format!("{price_overlay_id}/{revision}"),
+        });
+    }
+
+    // The predecessor next: publishing before superseding would
+    // put two published revisions on one `(class, precedence)`
+    // for the length of one statement, which the partial index
+    // refuses outright — and the predecessor is found **by
+    // state**, so a lookup after the flip finds the row just
+    // published.
+    if let Some(predecessor) = revision_in_state(
+        runner,
+        scope,
+        tenant_id,
+        price_overlay_id,
+        OverlayLifecycle::Published,
+    )
+    .await?
+    {
+        flip(
+            runner,
+            scope,
+            tenant_id,
+            price_overlay_id,
+            predecessor.revision,
+            OverlayLifecycle::Superseded,
+        )
+        .await?;
+    }
+    let moved = flip(
+        runner,
+        scope,
+        tenant_id,
+        price_overlay_id,
+        number,
+        OverlayLifecycle::Published,
+    )
+    .await?;
+    if moved == 0 {
+        return Err(RepoError::NotFound {
+            subject: "open draft price overlay revision".to_owned(),
+            id: format!("{price_overlay_id}/{revision}"),
+        });
+    }
+    // **One record for the pair**, not two. The supersession is not
+    // a second act: §6 requires the flip and the publish to be one
+    // commit, so a trail carrying them separately would show a state
+    // the store cannot be in.
+    record_overlay_mutation(
+        runner,
+        scope,
+        tenant_id,
+        price_overlay_id,
+        number,
+        AuditAction::Publish,
+        stamp,
+    )
+    .await?;
+    Ok(())
 }
 
 /// One overlay revision, read on a **runner** rather than a provider.
