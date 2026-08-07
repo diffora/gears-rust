@@ -396,6 +396,22 @@ exactly **one** shard (two when a revision moves the overlay's scope value), and
 read per matching overlay. D-91's "one row per publish unit" property holds; it becomes two. Membership needs no analogue: it
 resolves by `subject_ref = payer` directly.
 
+**Where the shard's content comes from (normative, D-235, 2026-08-07).** The paragraph above
+states the requirement — the set live **at V** — and never the mechanism, and the obvious
+implementation gets it wrong: read from the overlay table, which answers *what is published
+now*, a second overlay publishing inside D-47's five-minute batching window lands in the
+**earlier** version's frozen shard, and a consumer pinned at V then enumerates an overlay whose
+document has no delta at or below V — so the per-subject document read this same paragraph
+prescribes finds nothing. The shard is therefore derived from the **publish-ref linkage**
+(`pricing_catalog_version_ref`, S1 §3.7): every overlay holding a `price_overlay` ref at
+`catalog_version ≤ V`, taken at its **greatest** such ref, carrying the scope, precedence and
+interval of the revision that ref pinned. That is the greatest-completed-≤-pin rule (S1 §4.4)
+applied to choose which revision the *index* speaks of, and it yields the "two shards when a
+revision moves the scope value" case above with no special rule. The refs of the version being
+projected count even before they are finalized, because one publish unit's two subjects are
+projected in two transactions in an order nothing fixes — a shard derived from committed refs
+alone would omit the very overlay its own act published.
+
 Membership changes are audited mutations. Alarms:
 `pricing.segment.membership_renewal_backlog` (Info — memberships ended/changed whose
 subscriptions have not yet re-resolved at renewal; expected steady-state visibility),
