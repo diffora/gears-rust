@@ -245,13 +245,27 @@ pub trait PricingMetricsPort: Send + Sync + 'static {
     /// mistake rather than four.
     fn currency_binding_block(&self, case: CurrencyBindingCase);
 
-    /// The live count of published tax-inclusive rows awaiting Tax Engine GA
-    /// (`pricing_tax_not_sellable_ga`, §10 — the gauge §7's Info alarm watches).
+    /// Publish the **catalog-wide** count of markets carrying published
+    /// tax-inclusive rows, which are not sellable until Tax Engine GA
+    /// (`pricing_tax_not_sellable_ga`, §10).
     ///
     /// A **gauge**, observed rather than accumulated: the question is how many
     /// markets are gated *now*, and the number falls when the engine GAs and the
     /// affected plans re-publish. A counter would only ever rise and would answer
     /// "how many were ever gated", which is not the backlog anyone is managing.
+    ///
+    /// **Publishes rather than records** (D-246), and the caller has to mean it:
+    /// the adapter's instrument is an *observable* gauge, so this stores the value
+    /// for the exporter's next collection instead of emitting a point. A caller
+    /// that knows only its own plan's contribution must **not** call this — that
+    /// was the `[C]` `8c5e10075` removed, where an un-dimensioned series became
+    /// last-writer-wins across every plan and tenant and one tax-exclusive plan
+    /// cleared §7's alarm over five markets that stayed gated. The only honest
+    /// caller is one holding the whole catalog's answer;
+    /// `price_repo::gated_markets` is how that answer is obtained.
+    ///
+    /// §7's Info alarm rides the **counter** rather than this, for the same
+    /// reason: a counter is well defined from one plan and this is not.
     fn tax_not_sellable_ga(&self, count: i64);
 
     /// One alarm firing (`pricing_alarm_total{alarm,severity}`).

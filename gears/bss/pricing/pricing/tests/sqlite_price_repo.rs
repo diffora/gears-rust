@@ -3955,3 +3955,161 @@ async fn the_cross_plane_commit_moves_three_windows_and_three_rows_together() {
     assert_eq!(state(successor.0).await, LifecycleState::Published);
     assert_eq!(state(copy.0).await, LifecycleState::Published);
 }
+
+// ---------------------------------------------------------------------------
+// D-246 — the catalog-wide GA backlog.
+// ---------------------------------------------------------------------------
+
+/// A publishable market key on one region, everything else held constant.
+fn market_key(region: &str) -> ScopeKey {
+    ScopeKey::new(
+        plan(),
+        CurrencyCode::new("USD").expect("three letters"),
+        Region::new(region).expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("all_subscriptions pairs with cohort none")
+}
+
+/// A grandfathered generation's key **on a market of its own**.
+///
+/// The market matters and the first version of the case got it wrong: seeding
+/// the frozen generation on `EU`, which two live rows already gate, made the
+/// exclusion unobservable — removing it from the query changed no count, so the
+/// clause was asserted by a fixture that could not reach the state it claimed to
+/// cover. Found by a probe that reddened **nothing**.
+fn grandfathered_market_key(region: &str, cutover: DateTime<Utc>) -> ScopeKey {
+    ScopeKey::new(
+        plan(),
+        CurrencyCode::new("USD").expect("three letters"),
+        Region::new(region).expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::ExistingGrandfathered,
+        ChargeKind::Recurring,
+        Cohort::Generation(cutover),
+    )
+    .expect("existing_grandfathered pairs with a generation")
+}
+
+/// The flat recurring shape, priced **tax-inclusive** — the gated one.
+fn tax_inclusive_flat() -> PriceContent {
+    let mut content = flat_content();
+    content.tax_inclusive = true;
+    content
+}
+
+/// The backlog counts **markets**, deduplicated, and excludes everything a
+/// re-publish could never clear (D-246).
+///
+/// Every exclusion here is a separate seeded row rather than a clause in a
+/// comment, because the count is a single number and a wrong one is
+/// indistinguishable from a right one without saying which rows it is made of.
+#[tokio::test]
+async fn the_gated_market_count_dedups_markets_and_excludes_what_cannot_be_cleared() {
+    use bss_pricing::infra::storage::repo::price_repo;
+
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let all = AccessScope::allow_all();
+    let conn = provider.conn().expect("conn");
+
+    // A real zero before anything is published — the control without which every
+    // assertion below would also pass against a count that always answered 0.
+    assert_eq!(
+        price_repo::gated_markets(&conn, &all)
+            .await
+            .expect("count an empty catalog"),
+        0
+    );
+
+    // Two published tax-inclusive rows on **one** market: `all_subscriptions`
+    // and `new_subscriptions_only` are different keys and the same market.
+    for (n, key) in [
+        (0xd2_01_u128, market_key("EU")),
+        (0xd2_02, new_subscriptions_key(ChargeKind::Recurring)),
+    ] {
+        let price_id = Uuid::from_u128(n);
+        repo.create_draft(&scope, tenant(), draft(price_id, key, tax_inclusive_flat()))
+            .await
+            .expect("create");
+        flip_state(&provider, &scope, price_id, LifecycleState::Published).await;
+    }
+    assert_eq!(
+        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        1,
+        "two rows on one market are one market"
+    );
+
+    // A second market.
+    let second = Uuid::from_u128(0xd2_03);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(second, market_key("US"), tax_inclusive_flat()),
+    )
+    .await
+    .expect("create");
+    flip_state(&provider, &scope, second, LifecycleState::Published).await;
+    assert_eq!(
+        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        2
+    );
+
+    // Three rows that must **not** count, seeded one at a time so a regression
+    // names which exclusion broke.
+    //
+    // A grandfathered generation: immutable, MUST NOT be superseded, so a market
+    // reached only through one can never be un-gated by re-publishing (ADR-0002).
+    let frozen = Uuid::from_u128(0xd2_04);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            frozen,
+            grandfathered_market_key("GF", at(9)),
+            tax_inclusive_flat(),
+        ),
+    )
+    .await
+    .expect("create");
+    flip_state(&provider, &scope, frozen, LifecycleState::Published).await;
+    assert_eq!(
+        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        2,
+        "a grandfathered generation is in no backlog any action can clear"
+    );
+
+    // Tax-**exclusive**: sellable today, so not gated at all.
+    let exclusive = Uuid::from_u128(0xd2_05);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(exclusive, market_key("AP"), flat_content()),
+    )
+    .await
+    .expect("create");
+    flip_state(&provider, &scope, exclusive, LifecycleState::Published).await;
+    assert_eq!(
+        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        2,
+        "the gate is on the tax basis, and this row does not carry it"
+    );
+
+    // A draft: nothing is published on that market, so nothing is gated on it.
+    let unpublished = Uuid::from_u128(0xd2_06);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(unpublished, market_key("LA"), tax_inclusive_flat()),
+    )
+    .await
+    .expect("create");
+    assert_eq!(
+        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        2,
+        "a draft has published nothing and gates nothing"
+    );
+}

@@ -93,7 +93,7 @@
 //! than taking it over, which is `inst-pr-return`'s save-time duplicate check and
 //! is what keeps one draft per key the most the two doors admit between them.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
@@ -1486,6 +1486,74 @@ async fn load_page(
 
 // ---------------------------------------------------------------------------
 // Statements.
+
+/// D-246: the catalog-wide GA backlog — **how many tenant-markets are gated now**.
+///
+/// # Why this reads the truth store and not the read model
+///
+/// D-246 assumed the read model. Measured, that is the wrong source and a much
+/// harder one. The predicate is
+/// `is_not_sellable_ga(row, TAX_ENGINE_GA) == row.tax_inclusive && !TAX_ENGINE_GA`,
+/// and `TAX_ENGINE_GA` is a compile-time `false` — so a gated market is exactly a
+/// market carrying a **published, non-grandfathered, tax-inclusive** row, which is
+/// a statement about `pricing_price` and nothing else. The read model merely
+/// projects it, so reading there would add the projector's lag and a
+/// per-subject greatest-completed-≤-frontier walk (D-86, D-114) for a number the
+/// store answers directly.
+///
+/// # Distinct over `(tenant, currency, region)`, and the tenant is part of it
+///
+/// §10's series is un-dimensioned, so this is one number for the process. A
+/// market belongs to a tenant — two tenants gating `EUR/EU` are two markets
+/// somebody has to act on, not one — so the tenant is part of the key rather
+/// than collapsed out of it. Within one tenant this is the same dedup
+/// `report_market_metrics` performs per plan, one level up.
+///
+/// Grandfathered generations are excluded for `sold_markets`' reason (ADR-0002):
+/// a market reached only through a frozen generation can never be un-gated by
+/// re-publishing, so counting it would put a market in a backlog no action can
+/// clear.
+///
+/// **Cross-tenant by construction**, so the caller passes the scope that admits
+/// it — `pin_frontier_repo::list_all`'s arrangement, and for its reason: a
+/// per-tenant read cannot answer a catalog-wide question.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn gated_markets(runner: &impl DBRunner, scope: &AccessScope) -> Result<i64, RepoError> {
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
+                .add(price::Column::TaxInclusive.eq(true))
+                .add(
+                    price::Column::PriceEligibility
+                        .ne(PriceEligibility::ExistingGrandfathered.as_str()),
+                ),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read gated rows: {e}")))?;
+
+    // **Deduplicated here rather than by the database**, and the reason is the
+    // scoping wrapper rather than preference: `SecureSelect` exposes `all`,
+    // `one`, `count` and `filter` and deliberately no `select_only` / `distinct`,
+    // because a projection that dropped the scope columns would be a read the
+    // scope can no longer be checked against. So the rows come back whole and the
+    // set is built here. The cost is bounded by the thing being measured — the
+    // gated rows *are* the backlog — and this runs on a refresher's cadence, never
+    // on a publish or a read path.
+    let markets: BTreeSet<(Uuid, String, String)> = rows
+        .into_iter()
+        .map(|row| (row.tenant_id, row.currency, row.region))
+        .collect();
+
+    i64::try_from(markets.len())
+        .map_err(|_| RepoError::Db("gated market count exceeds i64".to_owned()))
+}
+
 // ---------------------------------------------------------------------------
 
 /// Read one row by identity, scoped.

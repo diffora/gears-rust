@@ -22,8 +22,11 @@
 
 use std::collections::BTreeSet;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+
 use opentelemetry::KeyValue;
-use opentelemetry::metrics::{Counter, Gauge, Meter};
+use opentelemetry::metrics::{Counter, Meter, ObservableGauge};
 
 use crate::domain::bundle::PriceBasis;
 use crate::domain::bundle_rules::CURRENCY_NOT_COVERED;
@@ -68,7 +71,35 @@ const PRICING_ALARM: &str = "pricing_alarm_total";
 pub struct PricingMetricsMeter {
     preview_failclosed: Counter<u64>,
     currency_binding_blocks: Counter<u64>,
-    tax_not_sellable_ga: Gauge<i64>,
+    /// The GA backlog, held as a cell the **observable** gauge reads at
+    /// collection rather than as a value a caller records (D-246).
+    ///
+    /// A synchronous `Gauge` was the wrong instrument for this quantity and the
+    /// review that found it named the shape: `pricing_tax_not_sellable_ga` is
+    /// **catalog-wide** — how many markets are gated *now* — and every path that
+    /// could record it is per-plan. On one un-dimensioned series that is
+    /// last-writer-wins across every plan and tenant in the process, so a
+    /// tax-exclusive plan checked after one gating five markets writes `0` and
+    /// clears §7's alarm while those five stay gated. The per-plan write was
+    /// removed for that reason (`8c5e10075`) and **nothing replaced it**, which
+    /// left the instrument declared and unwritten.
+    ///
+    /// An observable gauge is the shape in which the quantity is honest: the
+    /// exporter asks, and one answer is given for the whole catalog. What it
+    /// cannot do is read a database — `opentelemetry`'s callback is
+    /// `Box<dyn Fn(..) + Send + Sync>`, **synchronous**, and the crate requires
+    /// it to *"complete in a finite amount of time"*. So the callback reads this
+    /// cell, which satisfies that by construction, and
+    /// [`PricingMetricsPort::tax_not_sellable_ga`] is what fills it.
+    gated_markets: Arc<AtomicI64>,
+    /// Held only to keep the instrument registered.
+    ///
+    /// An `ObservableGauge` unregisters its callback when dropped, so a builder
+    /// whose handle is discarded produces an instrument that exports nothing —
+    /// and silently, since no call site ever touches it. Named with a leading
+    /// underscore because it is never read, and kept because dropping it would
+    /// be the bug.
+    _tax_not_sellable_ga: ObservableGauge<i64>,
     alarm: Counter<u64>,
 }
 
@@ -91,6 +122,10 @@ impl PricingMetricsMeter {
     /// Build from a specific meter — the seam the in-memory harness uses.
     #[must_use]
     pub fn from_meter(meter: &Meter) -> Self {
+        let gated_markets = Arc::new(AtomicI64::new(0));
+        // Cloned into the callback, which outlives this call and is invoked by
+        // the exporter's collection rather than by anything here.
+        let observed = Arc::clone(&gated_markets);
         Self {
             preview_failclosed: meter
                 .u64_counter(PRICING_PREVIEW_FAILCLOSED)
@@ -107,12 +142,17 @@ impl PricingMetricsMeter {
                      enumerated case.",
                 )
                 .build(),
-            tax_not_sellable_ga: meter
-                .i64_gauge(PRICING_TAX_NOT_SELLABLE_GA)
+            gated_markets,
+            _tax_not_sellable_ga: meter
+                .i64_observable_gauge(PRICING_TAX_NOT_SELLABLE_GA)
                 .with_description(
-                    "Published tax-inclusive price rows flagged not-sellable until Tax \
-                     Engine GA, counted per market.",
+                    "Markets carrying published tax-inclusive price rows, which are not \
+                     sellable until Tax Engine GA. Catalog-wide and read at collection: the \
+                     value is the whole backlog, not one plan's contribution to it.",
                 )
+                .with_callback(move |observer| {
+                    observer.observe(observed.load(Ordering::Relaxed), &[]);
+                })
                 .build(),
             alarm: meter
                 .u64_counter(PRICING_ALARM)
@@ -140,7 +180,12 @@ impl PricingMetricsPort for PricingMetricsMeter {
     }
 
     fn tax_not_sellable_ga(&self, count: i64) {
-        self.tax_not_sellable_ga.record(count, &[]);
+        // **Stores rather than records**, and the difference is the whole of
+        // D-246: nothing here reaches an exporter. The value sits until the
+        // exporter's next collection asks the callback for it, so two refreshes
+        // between collections cost one observation and the series carries the
+        // latest catalog-wide answer instead of whichever caller wrote last.
+        self.gated_markets.store(count, Ordering::Relaxed);
     }
 
     fn alarm(&self, alarm: PricingAlarm) {
