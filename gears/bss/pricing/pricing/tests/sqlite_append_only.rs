@@ -107,6 +107,34 @@ async fn a_published_price_row_is_immutable_in_content() {
         "price, scope, model and entity-tag columns are immutable",
     )
     .await;
+    // The two tax columns (`T-18`, `m20260802_000040`), and they are here on the
+    // **fast** tier deliberately. Postgres has the exhaustive thirty-four-column
+    // loop, but it is `#[ignore]`d behind Docker — and D-236 is the record of what
+    // that costs: a premise living on one tier only means a run without Docker
+    // reports a clean change through a guard that stopped guarding.
+    //
+    // `tax_category_ref` is the sharper of the two: it is authored draft content,
+    // D-48 makes it one of the five descriptor elements Billing countersigns, and
+    // since the pin moved to `v5` it is inside the approval content hash — so a
+    // published row whose category moved would diverge from the pin that approved
+    // it.
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE pricing_price SET tax_category_ref = 'reduced' WHERE price_id = '{PUBLISHED}'"
+        ),
+        "price, scope, model and entity-tag columns are immutable",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE pricing_price SET resolved_tax_category = 'standard' \
+             WHERE price_id = '{PUBLISHED}'"
+        ),
+        "price, scope, model and entity-tag columns are immutable",
+    )
+    .await;
 
     let amount = scalar(
         &conn,

@@ -999,7 +999,7 @@ async fn a_metered_line_and_a_meterless_one_are_two_keys() {
 
 /// Every column the whitelist freezes, one UPDATE each.
 ///
-/// Thirty-two columns, and the loop is the point: a whitelist maintained by hand
+/// Thirty-four columns, and the loop is the point: a whitelist maintained by hand
 /// rots one forgotten `OR` at a time, and a test that moved only `amount_minor`
 /// would stay green while `included_allowance` or `row_version` quietly became
 /// mutable on a frozen row. The trigger is `BEFORE`, so it answers ahead of every
@@ -1029,6 +1029,8 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         "amount_minor = 2000".to_owned(),
         "model_kind = 'per_unit'".to_owned(),
         "tax_inclusive = true".to_owned(),
+        "tax_category_ref = 'reduced'".to_owned(),
+        "resolved_tax_category = 'standard'".to_owned(),
         "billing_timing = 'advance'".to_owned(),
         "quantity_source = 'manual'".to_owned(),
         "manual_quantity = 5".to_owned(),
@@ -1051,8 +1053,8 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
     ];
     assert_eq!(
         moves.len(),
-        32,
-        "the whitelist has thirty-two columns; a shorter list here is a column \
+        34,
+        "the whitelist has thirty-four columns; a shorter list here is a column \
          nobody is testing"
     );
 

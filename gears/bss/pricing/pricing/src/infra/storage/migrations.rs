@@ -72,6 +72,7 @@ pub mod m20260802_000036_widen_pricing_catalog_version_ref_subject_key;
 pub mod m20260802_000037_add_pricing_price_tax_category_ref;
 pub mod m20260802_000038_add_pricing_policy_object_tax_display_policy;
 pub mod m20260802_000039_add_pricing_price_resolved_tax_category;
+pub mod m20260802_000040_guard_pricing_price_tax_columns;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -176,6 +177,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000037_add_pricing_price_tax_category_ref::Migration),
             Box::new(m20260802_000038_add_pricing_policy_object_tax_display_policy::Migration),
             Box::new(m20260802_000039_add_pricing_price_resolved_tax_category::Migration),
+            // `T-18`: the frozen-column guard gains the two tax columns, and it
+            // has to sort after both `ALTER`s that create them — a trigger
+            // naming a column the table does not have yet does not create.
+            Box::new(m20260802_000040_guard_pricing_price_tax_columns::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),
