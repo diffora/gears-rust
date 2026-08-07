@@ -1037,6 +1037,85 @@ impl ApprovalService {
     ///
     /// # Errors
     /// [`DomainError::Internal`] on a storage failure.
+    /// Open the **retirement** unit inside the caller's transaction
+    /// (`inst-re-governed`, D-109).
+    ///
+    /// [`Self::submit_window_mutation_on`]'s shape, with two differences worth
+    /// stating rather than leaving to be inferred.
+    ///
+    /// **The subject is the act, not the revision.** A retirement pinned under
+    /// `plan_revision_ref` would let an approve taken for a *publish* of that
+    /// revision authorize the retirement of the plan, which is the strongest
+    /// possible confusion of two units: one ships a change, the other ends the
+    /// plan and cannot be undone. [`retirement_unit_ref`] names the act and the
+    /// revision it stands at, so a retry of the retirement finds its own unit and
+    /// nothing else does.
+    ///
+    /// **It holds no scope key.** `inst-co-single-pending`'s register is about
+    /// units that stage a row on a key; retirement stages nothing and moves no
+    /// price row, so there is no key to hold and holding one would refuse an
+    /// unrelated window mutation for the duration of a review.
+    ///
+    /// The content pin is the plan shape's, exactly as every other unit over a
+    /// plan takes it: what a reviewer of a retirement is shown is the plan they
+    /// are ending.
+    ///
+    /// # Errors
+    /// [`DomainError::PendingChangeUnitExists`] when a unit is already open over
+    /// this retirement; whatever `assemble_from` refuses; [`DomainError::NotFound`]
+    /// when the plan has no current revision; [`DomainError::Internal`] on a
+    /// storage failure.
+    pub async fn submit_retirement_on(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let now = stamp.recorded_at;
+        let current = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "current plan revision".to_owned(),
+                id: plan_id.to_string(),
+            })?;
+        // The revision is read here rather than taken as a parameter: the caller
+        // composed against this very transaction, so a passed one could only ever
+        // agree - and a parameter that can only agree is one that can be passed
+        // wrong.
+        let revision = current.revision;
+        let shape =
+            crate::infra::publish::assemble_from(runner, scope, tenant_id, plan_id, current, now)
+                .await?;
+        let subject_ref = retirement_unit_ref(plan_id, revision);
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, &subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "plan {plan_id}: approval {} is still submitted over its retirement; decide it, \
+                 or withdraw it to free the subject",
+                held.approval_id
+            )));
+        }
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref,
+            subject_kind: AuditSubjectKind::PlanRevision,
+            content_hash: content_hash(&shape).to_vec(),
+            materiality,
+            held_keys: BTreeSet::new(),
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
     pub async fn list(
         &self,
         scope: &AccessScope,
@@ -1904,6 +1983,29 @@ fn plan_of(record: &ApprovalRecord) -> Result<PlanId, DomainError> {
 /// mutation's own transaction, so a failure here rolls the mutation back with
 /// it — which is the answer: a mutation that could not void the approval it
 /// invalidated must not commit, or a reviewer approves content that moved.
+/// The subject a retirement unit is opened under (`inst-re-governed`).
+///
+/// The **act** and the revision it stands at, never the revision alone: a unit
+/// keyed on the revision would be satisfied by an approve given for that
+/// revision's publish, so the second principal D-109 requires could be one who
+/// only ever agreed to ship a change.
+///
+/// Deterministic, so a retry of the retirement resolves the unit an earlier
+/// attempt opened rather than opening a second one.
+///
+/// **The plan id comes first, and that is a store invariant rather than a
+/// style.** [`approval_repo::subject_plan`] parses the aggregate off the head of
+/// every `subject_ref` — the column's `CHECK`s admit any text, so a ref shaped
+/// otherwise is not refused at write time and instead reads back as a
+/// `CorruptRow` later. A first draft of this function put the act first and both
+/// orchestrator cases failed on exactly that, from inside the approval plane
+/// rather than on an assertion. [`crate::infra::cutover::cutover_unit_ref`]
+/// already had the shape right: `<plan_id>/<act>/<discriminator>`.
+#[must_use]
+pub fn retirement_unit_ref(plan_id: PlanId, revision: u64) -> String {
+    format!("{}/retirement/{revision}", plan_id.get())
+}
+
 pub async fn void_pending_units_of(
     runner: &impl DBRunner,
     scope: &AccessScope,
