@@ -49,7 +49,8 @@ use super::{content_hash, threshold_content_hash};
 use crate::domain::audit::hex32;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{
-    AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract, UsageCounterOnPlanChange,
+    AnchorDay, BillingAnchorPolicy, GrantSet, ProrationBasis, ProrationContract,
+    UsageCounterOnPlanChange,
 };
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
@@ -698,6 +699,26 @@ fn plan_contract_mutators() -> Vec<Mutator> {
                 s.change_contract.allowed_change_targets = Some(vec![Uuid::from_u128(0xed_9e)]);
             },
         ),
+        ("shape.entitlement_grants.plan_tier_ref", |s| {
+            s.entitlement_grants.plan_tier_ref = Some("gold".to_owned());
+        }),
+        ("shape.entitlement_grants.plan_level.feature_flags", |s| {
+            s.entitlement_grants
+                .plan_level
+                .feature_flags
+                .insert("sso".to_owned(), true);
+        }),
+        ("shape.entitlement_grants.plan_level.quotas", |s| {
+            s.entitlement_grants
+                .plan_level
+                .quotas
+                .insert("cloudlets".to_owned(), 20);
+        }),
+        ("shape.entitlement_grants.per_phase", |s| {
+            s.entitlement_grants
+                .per_phase
+                .insert(uuid::Uuid::from_u128(0xf1), GrantSet::default());
+        }),
         ("shape.change_contract.comparability_rank", |s| {
             s.change_contract.comparability_rank = Some(42);
         }),
@@ -1004,7 +1025,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "ebcb1a28486cddaa7507cb2fc1e0c49d799091f7fb22f286e236c52651142ce2"
+        "d60b5ac694e7a100fc1958e72c963d9bf595d6df336d723c1f09f2dd924b820d"
     );
 }
 
@@ -1165,7 +1186,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v7\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v8\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

@@ -27,7 +27,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::money::CurrencyCode;
-use crate::domain::plan_shape::PlanShape;
+use crate::domain::plan_shape::{PlanPhase, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PriceEligibility, Region};
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
@@ -507,6 +507,7 @@ pub fn consumer_contract_rules(index: &ChangeTargetIndex) -> ValidationPipeline<
         .with_rule(Box::new(ChangeGraphAuthorable {
             index: index.clone(),
         }))
+        .with_rule(Box::new(GrantSetPhasesKnown))
 }
 
 /// The `(currency, region)` pair D-123 scopes uniformity to. Named because the
@@ -877,6 +878,201 @@ impl ValidationRule<PlanShape> for ChangeGraphAuthorable {
                     ),
                 );
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The entitlement grant set (§3 Entitlement Grant Set, §6, D-41).
+// ---------------------------------------------------------------------------
+
+/// A per-phase grant-set key names no phase of the plan's schedule, or a
+/// non-phased plan authors one at all (§5, `inst-gs-perphase`, D-41, D-19).
+pub const GRANT_SET_PHASE_UNKNOWN: &str = "GRANT_SET_PHASE_UNKNOWN";
+
+/// One grant set as §17.6 shapes it (`inst-gs-shape`): feature flags and quotas.
+///
+/// **Semantics are not defined here** — §3 step 2 says so in as many words.
+/// Subscriptions consumes these as Entitlements; the catalog's whole obligation
+/// is to publish the pair of maps and freeze them.
+///
+/// Two maps rather than one of a sum type, because they are two different
+/// questions with two different value spaces: a feature is on or off, a quota is
+/// a number. A single map keyed by name would let `"seats": true` and
+/// `"sso": 40` past the type, and neither has a reading downstream.
+///
+/// `BTreeMap` rather than `HashMap` throughout, for the reason `put_descriptor_set`
+/// gives: the projection and the content pin both render this, and a
+/// randomly-seeded iteration order would make one plan pin two different ways in
+/// two replicas.
+#[domain_model]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GrantSet {
+    /// `featureFlag: bool` entries.
+    pub feature_flags: BTreeMap<String, bool>,
+    /// `quotaKey: value` entries.
+    pub quotas: BTreeMap<String, i64>,
+}
+
+impl GrantSet {
+    /// Does this set state anything at all?
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.feature_flags.is_empty() && self.quotas.is_empty()
+    }
+}
+
+/// What a plan revision publishes about entitlements (§6, D-41).
+///
+/// # The `PlanTier` reference is carried **beside** the resolved set, not
+/// instead of it
+///
+/// `inst-gs-resolved` requires both: the resolved set so Subscriptions'
+/// provisioning does not re-derive from the taxonomy at runtime, and the
+/// reference so the resolution is auditable. Carrying only the reference would
+/// make every provisioning read depend on a taxonomy that D-27 says can change
+/// after publish — which is the drift `grants_divergent` exists to flag, turned
+/// from a signal into a silent retro-change.
+#[domain_model]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntitlementGrants {
+    /// The `PlanTier` policy this set resolved from, when it was resolved from
+    /// one. Auditability only — nothing reads it to derive entitlements.
+    pub plan_tier_ref: Option<String>,
+    /// The plan-level set: what applies to a phase with no entry of its own.
+    pub plan_level: GrantSet,
+    /// Optional per-phase sets, keyed by `phaseId` (D-41).
+    pub per_phase: BTreeMap<Uuid, GrantSet>,
+}
+
+impl EntitlementGrants {
+    /// Has anything been authored at all?
+    #[must_use]
+    pub fn is_absent(&self) -> bool {
+        self.plan_tier_ref.is_none() && self.plan_level.is_empty() && self.per_phase.is_empty()
+    }
+
+    /// The **complete** `phase → grant-set` map this revision publishes
+    /// (`inst-gs-perphase`).
+    ///
+    /// Every phase of `schedule` maps to its effective set: the authored
+    /// per-phase entry where one exists, else the plan-level set. Materialized
+    /// at publish rather than resolved at read, so Subscriptions answers "what
+    /// is granted in the active phase at `t`" with **one lookup** and never
+    /// merges fallbacks at runtime — the `phase → price` map's own shape, and the
+    /// reason it is a map at all rather than a pair of fields a consumer joins.
+    ///
+    /// An **unphased** plan produces an empty map rather than a one-entry one:
+    /// its grant set is the plan-level set, which is already published beside
+    /// this, and a map with one synthetic key would invite a consumer to key off
+    /// a phase D-19 makes implicit.
+    #[must_use]
+    pub fn phase_map(&self, schedule: &[PlanPhase]) -> BTreeMap<Uuid, GrantSet> {
+        if schedule.len() < 2 {
+            return BTreeMap::new();
+        }
+        schedule
+            .iter()
+            .map(|phase| {
+                let id = phase.phase_id.get();
+                let set = self
+                    .per_phase
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| self.plan_level.clone());
+                (id, set)
+            })
+            .collect()
+    }
+}
+
+/// Per-phase grant-set keys name phases the plan actually has
+/// (`inst-gs-perphase`, D-41, D-19).
+///
+/// Two refusals under one code, because §5 gives them one:
+///
+/// - a key naming no phase of this plan's schedule — a dangling `phaseId`, which
+///   would publish a map entry no `phase` scope-key axis value can ever select;
+/// - **any** per-phase entry on a **non-phased** plan, which D-19 defines as one
+///   whose schedule is only the implicit terminal phase. An entry keyed to that
+///   sole phase fails too: it must be authored as the plan-level set, or the
+///   plan would publish the same fact twice with nothing saying which wins.
+///
+/// # What this rule does **not** check
+///
+/// The referential half — that each feature, quota or `PlanTier` policy is
+/// **defined in the registry** (`inst-gs-referential`, `GRANT_REF_UNDEFINED`) —
+/// is absent, and it is absent for `PLANTIER_DIVERGENT`'s reason rather than by
+/// oversight: this gear **has no registry client at all**
+/// ([`crate::domain::ports`] holds the `CatalogVersion` registry and nothing
+/// else), so the rule has no world to check against. Registering it over an
+/// empty lookup would either refuse every grant set ever authored or pass every
+/// one — and a rule that always passes is indistinguishable from a rule that
+/// holds. Named here rather than written, exactly as
+/// [`plan_rules`](crate::domain::plan_rules) names `SKU_NOT_PUBLISHED` and the
+/// divergence half of `PLANTIER_MISSING`.
+///
+/// **`inst-gs-drift` is absent for the same reason, one layer out.** D-27 has
+/// the catalog consume the registry's *tier-policy-change signal* and flag every
+/// affected published plan `grants_divergent` in `pricing_operator_flag` (D-85),
+/// with the `pricing.contracts.grants_divergent` alarm beside it. The store
+/// exists — `m20260802_000007` created it — and the **signal does not**: there is
+/// no registry client to receive it and no inbound seam that could carry it. A
+/// flag written on no signal would be an operator remediation prompt for a drift
+/// nobody detected, which is worse than the gap, and D-85 is explicit that the
+/// flag must never ride the versioned read model instead. Named here so the
+/// slice that lands the registry seam lands this with it.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GrantSetPhasesKnown;
+
+impl ValidationRule<PlanShape> for GrantSetPhasesKnown {
+    fn name(&self) -> &'static str {
+        "inst-gs-perphase"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        let grants = &subject.entitlement_grants;
+        if grants.per_phase.is_empty() {
+            return;
+        }
+        let schedule = subject.phases.phases();
+        // D-19: a schedule of one is the implicit terminal phase, which makes
+        // the plan **non-phased**. Checked before the per-key walk so the
+        // refusal can say which of the two failures it is -- an author told
+        // "unknown phase" about a phase their plan does have would go looking
+        // for a typo that is not there.
+        if schedule.len() < 2 {
+            for phase_id in grants.per_phase.keys() {
+                report.violate(
+                    GRANT_SET_PHASE_UNKNOWN,
+                    subject.plan_id.get().to_string(),
+                    format!(
+                        "this plan is non-phased -- its schedule is only the D-19 implicit \
+                         terminal phase -- so it may author no per-phase grant set, including \
+                         the one keyed {phase_id} to that sole phase. Author it as the \
+                         plan-level set instead, or the plan publishes one fact twice with \
+                         nothing saying which wins (inst-gs-perphase, D-41)"
+                    ),
+                );
+            }
+            return;
+        }
+
+        let known: BTreeSet<Uuid> = schedule.iter().map(|p| p.phase_id.get()).collect();
+        for phase_id in grants.per_phase.keys() {
+            if known.contains(phase_id) {
+                continue;
+            }
+            report.violate(
+                GRANT_SET_PHASE_UNKNOWN,
+                subject.plan_id.get().to_string(),
+                format!(
+                    "the per-phase grant set is keyed {phase_id}, which names no phase of this \
+                     plan's schedule. The entry would publish into a map no value of the phase \
+                     scope-key axis can ever select (inst-gs-perphase, D-41)"
+                ),
+            );
         }
     }
 }

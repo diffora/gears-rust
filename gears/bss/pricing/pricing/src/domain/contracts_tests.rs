@@ -2,6 +2,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
@@ -15,10 +17,11 @@ use super::{
     CHANGE_TARGET_UNPUBLISHED, COMPARABILITY_RANK_REQUIRED, COMPARABILITY_RANK_REVOKED,
     ChangeGraphAuthorable, ChangeTargetIndex, PlanChangeContract, UsageCounterOnPlanChange,
 };
+use super::{EntitlementGrants, GRANT_SET_PHASE_UNKNOWN, GrantSet, GrantSetPhasesKnown};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
-use crate::domain::plan_shape::PlanShape;
+use crate::domain::plan_shape::{PhaseGraph, PhaseKind, PlanPhase, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::PriceRow;
 use crate::domain::scope_key::{
@@ -837,4 +840,178 @@ fn every_dangling_target_is_named() {
         [CHANGE_TARGET_UNPUBLISHED, CHANGE_TARGET_UNPUBLISHED],
         "two dangling edges are two findings, both of them this code"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-gs-perphase` / `inst-gs-shape` (§3 Entitlement Grant Set, §5, D-41, D-19).
+// ---------------------------------------------------------------------------
+
+fn phase(n: u128, ordinal: i32, converts_to: Option<u128>) -> PlanPhase {
+    PlanPhase {
+        phase_id: PhaseId::new(Uuid::from_u128(n)),
+        kind: if converts_to.is_some() {
+            PhaseKind::Trial
+        } else {
+            PhaseKind::Evergreen
+        },
+        ordinal,
+        converts_to_phase_id: converts_to.map(|c| PhaseId::new(Uuid::from_u128(c))),
+        phase_duration_days: converts_to.map(|_| 14),
+        display_trial_days: None,
+    }
+}
+
+fn quota(key: &str, value: i64) -> GrantSet {
+    GrantSet {
+        feature_flags: BTreeMap::new(),
+        quotas: [(key.to_owned(), value)].into_iter().collect(),
+    }
+}
+
+/// A plan with `schedule` and `grants`.
+fn granted(schedule: Vec<PlanPhase>, grants: EntitlementGrants) -> PlanShape {
+    let mut shape = PlanShape::new(plan(), 1, now());
+    shape.phases = PhaseGraph::new(schedule);
+    shape.entitlement_grants = grants;
+    shape
+}
+
+/// The two-phase schedule D-41's own example uses: a trial converting to
+/// evergreen.
+fn phased() -> Vec<PlanPhase> {
+    vec![phase(0xa1, 0, Some(0xa2)), phase(0xa2, 1, None)]
+}
+
+#[test]
+fn the_grant_phase_code_is_the_designs_verbatim() {
+    assert_eq!(GRANT_SET_PHASE_UNKNOWN, "GRANT_SET_PHASE_UNKNOWN");
+}
+
+#[test]
+fn a_per_phase_key_naming_no_phase_fails_publish_naming_the_key() {
+    let grants = EntitlementGrants {
+        per_phase: [(Uuid::from_u128(0xdead), quota("cloudlets", 20))]
+            .into_iter()
+            .collect(),
+        ..EntitlementGrants::default()
+    };
+
+    let report = run(&GrantSetPhasesKnown, &granted(phased(), grants));
+
+    assert_eq!(codes(&report), [GRANT_SET_PHASE_UNKNOWN]);
+    assert!(
+        report.violations[0]
+            .detail
+            .contains(&Uuid::from_u128(0xdead).to_string()),
+        "{}",
+        report.violations[0].detail
+    );
+}
+
+/// D-41's own scenario: tighter quotas in the trial than in the evergreen phase.
+#[test]
+fn a_per_phase_entry_on_a_phase_of_the_schedule_publishes() {
+    let grants = EntitlementGrants {
+        plan_level: quota("cloudlets", 1000),
+        per_phase: [(Uuid::from_u128(0xa1), quota("cloudlets", 20))]
+            .into_iter()
+            .collect(),
+        ..EntitlementGrants::default()
+    };
+
+    assert!(codes(&run(&GrantSetPhasesKnown, &granted(phased(), grants))).is_empty());
+}
+
+/// D-19: a plan whose schedule is only the implicit terminal phase is
+/// **non-phased**, and an entry keyed to that sole phase fails too — it must be
+/// authored as the plan-level set, or the plan publishes one fact twice with
+/// nothing saying which wins.
+#[test]
+fn any_per_phase_entry_on_a_non_phased_plan_fails_including_one_on_its_own_phase() {
+    let sole = vec![phase(0xa1, 0, None)];
+    let grants = EntitlementGrants {
+        per_phase: [(Uuid::from_u128(0xa1), quota("cloudlets", 20))]
+            .into_iter()
+            .collect(),
+        ..EntitlementGrants::default()
+    };
+
+    let report = run(&GrantSetPhasesKnown, &granted(sole, grants));
+
+    assert_eq!(codes(&report), [GRANT_SET_PHASE_UNKNOWN]);
+    assert!(
+        report.violations[0].detail.contains("non-phased"),
+        "the refusal says which of the two it is: {}",
+        report.violations[0].detail
+    );
+}
+
+#[test]
+fn a_plan_authoring_no_per_phase_entries_is_not_this_rules_business() {
+    for schedule in [vec![phase(0xa1, 0, None)], phased()] {
+        let grants = EntitlementGrants {
+            plan_level: quota("cloudlets", 1000),
+            ..EntitlementGrants::default()
+        };
+        assert!(codes(&run(&GrantSetPhasesKnown, &granted(schedule, grants))).is_empty());
+    }
+}
+
+#[test]
+fn every_dangling_phase_key_is_reported() {
+    let grants = EntitlementGrants {
+        per_phase: [
+            (Uuid::from_u128(0xdead), quota("a", 1)),
+            (Uuid::from_u128(0xbeef), quota("b", 2)),
+        ]
+        .into_iter()
+        .collect(),
+        ..EntitlementGrants::default()
+    };
+
+    assert_eq!(
+        codes(&run(&GrantSetPhasesKnown, &granted(phased(), grants))),
+        [GRANT_SET_PHASE_UNKNOWN, GRANT_SET_PHASE_UNKNOWN]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The materialized `phase -> grant-set` map (`inst-gs-perphase`, `inst-gs-resolved`).
+// ---------------------------------------------------------------------------
+
+/// Every phase maps to its effective set: the authored entry where one exists,
+/// the plan-level set everywhere else. Subscriptions then resolves the active
+/// phase at `t` by one lookup and never merges fallbacks at runtime.
+#[test]
+fn the_map_is_complete_and_falls_back_to_the_plan_level_set() {
+    let grants = EntitlementGrants {
+        plan_level: quota("cloudlets", 1000),
+        per_phase: [(Uuid::from_u128(0xa1), quota("cloudlets", 20))]
+            .into_iter()
+            .collect(),
+        ..EntitlementGrants::default()
+    };
+
+    let map = grants.phase_map(&phased());
+
+    assert_eq!(map.len(), 2, "every phase of the schedule is present");
+    assert_eq!(map[&Uuid::from_u128(0xa1)], quota("cloudlets", 20));
+    assert_eq!(
+        map[&Uuid::from_u128(0xa2)],
+        quota("cloudlets", 1000),
+        "the phase with no entry of its own resolves the plan-level set"
+    );
+}
+
+/// An unphased plan publishes an empty map, not a one-entry one: its grant set
+/// **is** the plan-level set, already published beside this, and a synthetic key
+/// would invite a consumer to key off a phase D-19 makes implicit.
+#[test]
+fn an_unphased_plan_publishes_no_map_rather_than_a_one_entry_one() {
+    let grants = EntitlementGrants {
+        plan_level: quota("cloudlets", 1000),
+        ..EntitlementGrants::default()
+    };
+
+    assert!(grants.phase_map(&[phase(0xa1, 0, None)]).is_empty());
 }

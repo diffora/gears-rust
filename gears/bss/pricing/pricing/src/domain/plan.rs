@@ -30,7 +30,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
-use crate::domain::contracts::PlanChangeContract;
+use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan_shape::{BillingCycle, Frequency};
 use crate::domain::scope_key::PlanId;
@@ -117,6 +117,10 @@ pub struct PlanRevision {
     pub available_from: Option<DateTime<Utc>>,
     /// End of the plan's availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// The entitlement grant set this revision publishes (Slice 6, §6, D-41).
+    ///
+    /// Revision-scoped like every other plan column (D-83).
+    pub entitlement_grants: EntitlementGrants,
     /// The plan-change contract this revision publishes (Slice 6, §6).
     ///
     /// Revision-scoped like every other plan column (D-83): an edge list is
@@ -212,6 +216,13 @@ pub struct PlanShapePatch {
     pub available_from: Option<DateTime<Utc>>,
     /// Move the end of the availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// Replace the entitlement grant set wholesale (Slice 6, §6, D-41).
+    ///
+    /// Wholesale for [`PlanShapePatch::change_contract`]'s reason: the
+    /// plan-level set, the `PlanTier` reference and the per-phase map are one
+    /// authored fact, and a per-member encoding could express a per-phase entry
+    /// with no plan-level set to fall back to.
+    pub entitlement_grants: Option<EntitlementGrants>,
     /// Replace the plan-change contract wholesale (Slice 6, §6).
     ///
     /// **Wholesale, not per member**, and this is the one field of the patch

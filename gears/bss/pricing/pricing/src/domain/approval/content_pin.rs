@@ -380,7 +380,19 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// bumps rather than one because each records a distinct re-freeze, and a
 /// counter that skipped one would leave a later reader unable to tell which
 /// change moved the bytes.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v7\x1f";
+/// # `v8`: the entitlement grant set joined the same framing (2026-08-07)
+///
+/// `v7`'s case again, one field over, and the consequence is a third kind:
+/// `v4` closed a billing hole, `v6` a money one, `v7` an authorization one, and
+/// this closes an **entitlement** one — a reviewer who approved a trial capped
+/// at 20 cloudlets and a commit publishing one capped at 20 000.
+///
+/// **`v6`, `v7` and `v8` all collapse for anyone deploying**: nothing durable
+/// held any of them, and all three landed in one unshipped series. They are
+/// three bumps rather than one because each records a distinct re-freeze, and a
+/// counter that skipped any would leave a later reader unable to tell which
+/// change moved the bytes.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v8\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -594,6 +606,20 @@ fn put_amount_set(buf: &mut Vec<u8>, amounts: &AmountSet) {
     }
 }
 
+/// One grant set: the flags, then the quotas, each behind its count.
+fn put_grant_set(buf: &mut Vec<u8>, set: &crate::domain::contracts::GrantSet) {
+    put_u64(buf, count_of(set.feature_flags.len()));
+    for (key, on) in &set.feature_flags {
+        put_str(buf, key);
+        put_bool(buf, *on);
+    }
+    put_u64(buf, count_of(set.quotas.len()));
+    for (key, value) in &set.quotas {
+        put_str(buf, key);
+        put_i64(buf, *value);
+    }
+}
+
 fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     let PlanShape {
         plan_id,
@@ -612,6 +638,7 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         addon_rules,
         descriptor_set,
         rows,
+        entitlement_grants,
         change_contract,
         windows,
         // Not hashed; the module doc argues both, and the first one is the
@@ -646,6 +673,24 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     // `inst-pc-failsafe` gives them different meanings and a preimage that
     // collapsed them would let a plan leave self-service change without moving
     // its digest.
+    // Slice 6's entitlement grant set. **In the pin because a `PATCH` moves it
+    // and because it decides what a subscriber may use** -- a reviewer who
+    // approved a trial capped at 20 cloudlets and a commit that publishes one
+    // capped at 20 000, with every digest equal, is `sku_id`'s re-verification
+    // hole with an entitlement consequence.
+    //
+    // Every map is framed with its **count** first, per `put_descriptor_set`'s
+    // rule: without one, two adjacent collections can be re-split, and a plan
+    // with two feature flags and no quota would pin identically to one with one
+    // of each. `BTreeMap` is what makes the order deterministic across replicas.
+    put_opt_str(buf, entitlement_grants.plan_tier_ref.as_deref());
+    put_grant_set(buf, &entitlement_grants.plan_level);
+    put_u64(buf, count_of(entitlement_grants.per_phase.len()));
+    for (phase_id, set) in &entitlement_grants.per_phase {
+        put_uuid(buf, *phase_id);
+        put_grant_set(buf, set);
+    }
+
     match &change_contract.allowed_change_targets {
         None => put_bool(buf, false),
         Some(targets) => {

@@ -78,6 +78,7 @@ pub mod m20260802_000042_tighten_taxonomy_value_present_check;
 pub mod m20260802_000050_add_pricing_price_proration_contract;
 pub mod m20260802_000051_guard_pricing_price_proration_columns;
 pub mod m20260802_000052_add_pricing_plan_change_contract;
+pub mod m20260802_000053_add_pricing_plan_entitlement_grants;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -210,6 +211,11 @@ impl MigratorTrait for Migrator {
             // Slice 6's plan-change contract: three columns on `pricing_plan`
             // (`inst-pc-targets` / `inst-pc-rank` / `inst-pc-counter-carry`).
             Box::new(m20260802_000052_add_pricing_plan_change_contract::Migration),
+            // Slice 6's entitlement grant set (D-41). One column, not
+            // `pricing_plan_grant` -- that is Slice 10's table for D-43's
+            // prepaid credit grant, a different object; see this migration's
+            // own doc.
+            Box::new(m20260802_000053_add_pricing_plan_entitlement_grants::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

@@ -66,6 +66,8 @@
 //! [`abandon_draft`]: PlanRepo::abandon_draft
 //! [`open_revision`]: PlanRepo::open_revision
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, SimpleExpr};
@@ -78,7 +80,9 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
-use crate::domain::contracts::{PlanChangeContract, UsageCounterOnPlanChange};
+use crate::domain::contracts::{
+    EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
+};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
@@ -739,6 +743,7 @@ impl PlanRepo {
             // as a copy of the current one, and an edge list that reset itself
             // here would silently drop a plan out of self-service change on the
             // next edit of any unrelated field.
+            entitlement_grants: current.entitlement_grants,
             change_contract: current.change_contract,
             lifecycle_state: LifecycleState::Draft,
             created_by,
@@ -1025,6 +1030,7 @@ pub async fn create_draft_on(
         // self-service change (`inst-pc-failsafe`). `NewPlanDraft` deliberately
         // carries no field for it -- the contract arrives by `PATCH`, which is
         // the same door every other governed plan column uses.
+        entitlement_grants: EntitlementGrants::default(),
         change_contract: PlanChangeContract::default(),
         lifecycle_state: LifecycleState::Draft,
         created_by: draft.created_by,
@@ -1472,6 +1478,7 @@ fn revision_model(
         purchase_min_qty: Set(stored_qty("purchaseMinQty", revision.purchase_min_qty)?),
         purchase_max_qty: Set(stored_qty("purchaseMaxQty", revision.purchase_max_qty)?),
         invoice_grouping_key: Set(revision.invoice_grouping_key.clone()),
+        entitlement_grants: Set(entitlement_grants_json(&revision.entitlement_grants)),
         allowed_change_targets: Set(change_targets_json(
             revision.change_contract.allowed_change_targets.as_deref(),
         )),
@@ -1597,6 +1604,12 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
     // one on its own could leave a plan with edges and no rank -- a state no
     // publish accepts and no caller meant. `PlanShapePatch::change_contract`
     // replaces the contract wholesale precisely so this stays impossible.
+    if let Some(grants) = patch.entitlement_grants {
+        columns.push((
+            plan::Column::EntitlementGrants,
+            Expr::value(entitlement_grants_json(&grants)),
+        ));
+    }
     if let Some(contract) = patch.change_contract {
         columns.push((
             plan::Column::AllowedChangeTargets,
@@ -1667,6 +1680,109 @@ fn read_change_targets(
         })
         .collect::<Result<Vec<_>, _>>()
         .map(Some)
+}
+
+/// The grant set as the column holds it: `null` when nothing was authored.
+///
+/// `null` rather than an empty object, so "no grant set" and "an empty grant
+/// set" stay one fact rather than two spellings of one -- `EntitlementGrants`
+/// makes them the same value (`is_absent`), and writing `{}` would invite a
+/// later reader to believe the distinction exists.
+fn entitlement_grants_json(grants: &EntitlementGrants) -> Option<JsonValue> {
+    if grants.is_absent() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "planTierRef": grants.plan_tier_ref,
+        "featureFlags": grants.plan_level.feature_flags,
+        "quotas": grants.plan_level.quotas,
+        "perPhase": grants
+            .per_phase
+            .iter()
+            .map(|(id, set)| {
+                (
+                    id.to_string(),
+                    serde_json::json!({
+                        "featureFlags": set.feature_flags,
+                        "quotas": set.quotas,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>(),
+    }))
+}
+
+/// Read one grant set out of its object.
+fn read_grant_set(plan_id: Uuid, value: &JsonValue) -> Result<GrantSet, RepoError> {
+    let corrupt = |what: &str| {
+        RepoError::CorruptRow(format!("pricing_plan {plan_id}: entitlement_grants {what}"))
+    };
+    let mut set = GrantSet::default();
+    if let Some(flags) = value.get("featureFlags") {
+        let obj = flags
+            .as_object()
+            .ok_or_else(|| corrupt("featureFlags is not an object"))?;
+        for (key, on) in obj {
+            set.feature_flags.insert(
+                key.clone(),
+                on.as_bool()
+                    .ok_or_else(|| corrupt("a featureFlag is not a bool"))?,
+            );
+        }
+    }
+    if let Some(quotas) = value.get("quotas") {
+        let obj = quotas
+            .as_object()
+            .ok_or_else(|| corrupt("quotas is not an object"))?;
+        for (key, amount) in obj {
+            set.quotas.insert(
+                key.clone(),
+                amount
+                    .as_i64()
+                    .ok_or_else(|| corrupt("a quota is not an integer"))?,
+            );
+        }
+    }
+    Ok(set)
+}
+
+/// Rebuild the grant set from its column.
+///
+/// A malformed value is **corruption**, not an absent set: reading it as absent
+/// would publish a plan advertising no entitlements at all, which Subscriptions
+/// would provision against.
+fn to_entitlement_grants(row: &plan::Model) -> Result<EntitlementGrants, RepoError> {
+    let Some(value) = row.entitlement_grants.as_ref() else {
+        return Ok(EntitlementGrants::default());
+    };
+    let plan_id = row.plan_id;
+    let mut grants = EntitlementGrants {
+        plan_tier_ref: value
+            .get("planTierRef")
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned),
+        plan_level: read_grant_set(plan_id, value)?,
+        per_phase: BTreeMap::new(),
+    };
+    if let Some(per_phase) = value.get("perPhase") {
+        let obj = per_phase.as_object().ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "pricing_plan {plan_id}: entitlement_grants perPhase is not an object"
+            ))
+        })?;
+        for (key, set) in obj {
+            let phase_id = Uuid::parse_str(key).map_err(|_| {
+                RepoError::CorruptRow(format!(
+                    "pricing_plan {plan_id}: entitlement_grants perPhase is keyed {key}, which is \
+                     not a phaseId"
+                ))
+            })?;
+            grants
+                .per_phase
+                .insert(phase_id, read_grant_set(plan_id, set)?);
+        }
+    }
+    Ok(grants)
 }
 
 /// Rebuild the plan-change contract from its three columns.
@@ -1817,6 +1933,7 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
     // Read before the literal below consumes `row`, which is why this is a
     // `let` rather than an inline call.
     let change_contract = to_change_contract(&row)?;
+    let entitlement_grants = to_entitlement_grants(&row)?;
     Ok(PlanRevision {
         plan_id: PlanId::new(row.plan_id),
         revision,
@@ -1830,6 +1947,7 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
         invoice_grouping_key: row.invoice_grouping_key,
         available_from: row.available_from,
         available_to: row.available_to,
+        entitlement_grants,
         change_contract,
         lifecycle_state,
         created_by: row.created_by,

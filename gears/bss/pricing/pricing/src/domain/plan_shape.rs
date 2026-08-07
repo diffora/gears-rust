@@ -125,7 +125,7 @@ use chrono::{DateTime, Utc};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
-use crate::domain::contracts::PlanChangeContract;
+use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::money::CurrencyCode;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
@@ -665,6 +665,15 @@ pub struct PlanShape {
     pub descriptor_set: Option<DescriptorSet>,
     /// The candidate row set the publish would produce; see the module doc.
     pub rows: Vec<PriceRecord>,
+    /// The entitlement grant set this revision publishes (Slice 6, §6, D-41):
+    /// the plan-level set, the `PlanTier` it resolved from when it did, and any
+    /// per-phase sets.
+    ///
+    /// Not an `Option`, for [`PlanChangeContract`]'s reason: the default **is**
+    /// the unauthored state, so a plan that authored nothing and one that
+    /// authored the empty set are the same plan and must not validate
+    /// differently.
+    pub entitlement_grants: EntitlementGrants,
     /// The plan-change contract this revision publishes (Slice 6, §6): the
     /// edges a self-service change may travel, the comparability rank that
     /// classifies one, and D-113's tier-`Q` continuity flag.
@@ -719,6 +728,7 @@ impl PlanShape {
             addon_rules: Vec::new(),
             descriptor_set: None,
             rows: Vec::new(),
+            entitlement_grants: EntitlementGrants::default(),
             change_contract: PlanChangeContract::default(),
             windows: Vec::new(),
             baseline: None,

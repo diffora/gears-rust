@@ -51,8 +51,19 @@
 //! - **The registry `sellable` flag** per offered SKU (D-46) — predicate (6).
 //!   It is the registry's fact, frozen per version registry-side, and the
 //!   registry gear has no code in this repository.
-//! - **The grant set and the materialized phase-to-grant map** (Slice 6, D-41).
-//!   `pricing_plan_grant` does not exist here.
+//! - ~~**The grant set and the materialized phase-to-grant map** (Slice 6,
+//!   D-41)~~ — **landed 2026-08-07 and struck.** [`PlanSubjectDelta::entitlement_grants`]
+//!   carries the authored set and `phaseGrantMap` carries the complete map, so a
+//!   consumer resolves the active phase at `t` by one lookup.
+//!
+//!   The struck line also named the wrong store, and the correction matters more
+//!   than the strike: it said *"`pricing_plan_grant` does not exist here"*, but
+//!   that table is **Slice 10's** (D-52) and holds D-43's prepaid **credit**
+//!   grant — a different object with a different lifecycle. The Slice-6
+//!   entitlement grant set is a column, `pricing_plan.entitlement_grants`
+//!   (`m20260802_000053`), which is what its own §6 declares. A reader who took
+//!   the old line at face value would have built a Slice-6 requirement inside a
+//!   Slice-10 aggregate.
 //!
 //! The Slice-6 **cross-boundary contract** was on that list as an unstampable
 //! pair and is not on it any more: [`CROSS_BOUNDARY_CHANGE_POLICY`] is stamped on
@@ -183,7 +194,9 @@ use serde_json::{Value as JsonValue, json};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
-use crate::domain::contracts::{PlanChangeContract, published_billing_timing};
+use crate::domain::contracts::{
+    EntitlementGrants, GrantSet, PlanChangeContract, published_billing_timing,
+};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
@@ -482,6 +495,10 @@ pub struct PlanSubjectDelta {
     pub addon_rules: Vec<AddonRule>,
     /// The revision's billing descriptor set (D-83).
     pub descriptor_set: Option<DescriptorSet>,
+    /// The entitlement grant set this revision publishes (Slice 6, §6, D-41),
+    /// as authored. The **materialized** `phase → grant-set` map is derived from
+    /// it and the phase chain at render time.
+    pub entitlement_grants: EntitlementGrants,
     /// The plan-change contract this revision publishes (Slice 6, §6).
     ///
     /// **A projected plan-subject field**, because it is what a consumer reads to
@@ -611,6 +628,7 @@ impl PlanSubjectDelta {
             phases,
             addon_rules,
             descriptor_set,
+            entitlement_grants,
             change_contract,
             prices,
             tax_projection,
@@ -647,6 +665,19 @@ impl PlanSubjectDelta {
             // never be re-computed, because a target's publish warms only its own
             // delta (D-86/D-91) and the source's revision is immutable. What is
             // published is the input (`inst-pc-boundary`).
+            // The grant set, and the **complete** map beside it
+            // (`inst-gs-perphase`). `entitlementGrants` is what the author
+            // wrote; `phaseGrantMap` is every phase of the schedule mapped to
+            // its effective set, so Subscriptions resolves the active phase at
+            // `t` by one lookup and never merges fallbacks at runtime. Both,
+            // because `inst-gs-resolved` wants the reference kept for
+            // auditability beside the set that is actually read.
+            "entitlementGrants": grants_value(entitlement_grants),
+            "phaseGrantMap": entitlement_grants
+                .phase_map(phases)
+                .iter()
+                .map(|(id, set)| (id.to_string(), grant_set_value(set)))
+                .collect::<serde_json::Map<_, _>>(),
             "allowedChangeTargets": change_contract.allowed_change_targets,
             "comparabilityRank": change_contract.comparability_rank,
             "usageCounterOnPlanChange": change_contract.usage_counter_on_plan_change.as_str(),
@@ -663,6 +694,28 @@ impl PlanSubjectDelta {
             "crossBoundaryChangePolicy": CROSS_BOUNDARY_CHANGE_POLICY,
         })
     }
+}
+
+/// The authored grant set, whole.
+fn grants_value(grants: &EntitlementGrants) -> JsonValue {
+    json!({
+        "planTierRef": grants.plan_tier_ref,
+        "featureFlags": grants.plan_level.feature_flags,
+        "quotas": grants.plan_level.quotas,
+        "perPhase": grants
+            .per_phase
+            .iter()
+            .map(|(id, set)| (id.to_string(), grant_set_value(set)))
+            .collect::<serde_json::Map<_, _>>(),
+    })
+}
+
+/// One grant set: the §17.6 shape, flags and quotas.
+fn grant_set_value(set: &GrantSet) -> JsonValue {
+    json!({
+        "featureFlags": set.feature_flags,
+        "quotas": set.quotas,
+    })
 }
 
 /// The recurring frequency, token and interval together.

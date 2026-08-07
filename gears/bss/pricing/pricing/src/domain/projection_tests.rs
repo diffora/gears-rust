@@ -19,7 +19,7 @@ use super::{
     PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta, RowTaxProjection,
 };
 use crate::domain::concurrency::RowVersion;
-use crate::domain::contracts::PlanChangeContract;
+use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -77,6 +77,7 @@ fn shape_only() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        entitlement_grants: EntitlementGrants::default(),
         change_contract: PlanChangeContract::default(),
         prices: Vec::new(),
         tax_projection: BTreeMap::new(),

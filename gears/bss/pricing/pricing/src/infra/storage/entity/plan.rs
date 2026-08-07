@@ -51,6 +51,11 @@ pub struct Model {
     pub purchase_max_qty: Option<i64>,
     /// The Billing invoice-layout hint (D-96). NULL or empty means no grouping.
     pub invoice_grouping_key: Option<String>,
+    /// The §17.6 grant set as authored (D-41, `m20260802_000053`): the
+    /// plan-level flags and quotas, the `PlanTier` it resolved from when it did,
+    /// and any per-phase sets. **Not** `pricing_plan_grant`, which is Slice 10's
+    /// table for D-43's prepaid credit grant; see the migration's own doc.
+    pub entitlement_grants: Option<JsonValue>,
     // --- plan-change contract, Slice 6 (`m20260802_000052`) ---
     /// A JSON array of explicit published `planId`s. NULL is the fail-safe and
     /// means **no self-service change** (`inst-pc-failsafe`) -- never any-to-any

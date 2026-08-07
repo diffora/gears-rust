@@ -38,6 +38,7 @@ fn the_patch_names_eleven_columns_and_cannot_mean_clear_ten_of_them() {
         invoice_grouping_key: Some("emea-bundle".to_owned()),
         available_from: Some(Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap()),
         available_to: Some(Utc.with_ymd_and_hms(2028, 1, 1, 0, 0, 0).unwrap()),
+        entitlement_grants: Option::default(),
         change_contract: Option::default(),
     };
 

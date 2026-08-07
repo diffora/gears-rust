@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use super::{StoredDelta, sellability_facts};
 use crate::domain::concurrency::RowVersion;
-use crate::domain::contracts::PlanChangeContract;
+use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
@@ -145,6 +145,7 @@ fn populated() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        entitlement_grants: EntitlementGrants::default(),
         change_contract: PlanChangeContract::default(),
         prices: vec![
             row_on(everyone.clone()),
@@ -273,8 +274,15 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         "comparabilityRank",
         "crossBoundaryChangePolicy",
         "descriptorSet",
+        // Slice 6's entitlement grant set and its materialized map. **Ignored
+        // deliberately**, for the change contract's reason one line up: the six
+        // predicates ask whether a thing may be *sold*, and these say what a
+        // subscriber may *use* once it is. A plan granting nothing is still
+        // sellable.
+        "entitlementGrants",
         "evaluationPolicyVersion",
         "invoiceGroupingKey",
+        "phaseGrantMap",
         "phases",
         "planTier",
         "planTierOverride",

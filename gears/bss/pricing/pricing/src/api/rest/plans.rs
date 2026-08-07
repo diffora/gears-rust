@@ -27,6 +27,8 @@
 //! discriminator a consumer matches on, not the status. No route here declares a
 //! 422 response.
 
+use std::collections::BTreeMap;
+
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -49,7 +51,9 @@ use crate::api::rest::preconditions::{self, RevisionTag};
 use crate::api::rest::state::AuthoringState;
 use crate::domain::audit::AuditStamp;
 use crate::domain::concurrency::RowVersion;
-use crate::domain::contracts::{PlanChangeContract, UsageCounterOnPlanChange};
+use crate::domain::contracts::{
+    EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
+};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
@@ -386,6 +390,12 @@ pub struct PlanShapeRequest {
     pub available_from: Option<DateTime<Utc>>,
     /// End of the availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// The entitlement grant set (Slice 6, §6, D-41): the plan-level feature
+    /// flags and quotas, the `PlanTier` they resolved from when they did, and
+    /// any per-phase sets keyed by `phaseId`.
+    ///
+    /// Sent **whole or not at all**, for the change contract's reason below.
+    pub entitlement_grants: Option<EntitlementGrantsRequest>,
     /// The plan-change contract (Slice 6, §6): the published `planId`s a
     /// self-service change may travel to, the comparability rank that
     /// classifies one, and D-113's tier-`Q` continuity flag.
@@ -395,6 +405,33 @@ pub struct PlanShapeRequest {
     /// the edge list names anyone, so a caller able to move one member alone
     /// could express a state no publish accepts.
     pub change_contract: Option<PlanChangeContractRequest>,
+}
+
+/// The entitlement grant set on the wire.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct EntitlementGrantsRequest {
+    /// The `PlanTier` policy this set resolved from, when it did. Carried for
+    /// auditability beside the resolved set, never instead of it
+    /// (`inst-gs-resolved`).
+    pub plan_tier_ref: Option<String>,
+    /// Plan-level `featureFlag: bool` entries.
+    pub feature_flags: Option<BTreeMap<String, bool>>,
+    /// Plan-level `quotaKey: value` entries.
+    pub quotas: Option<BTreeMap<String, i64>>,
+    /// Optional per-phase sets, keyed by `phaseId` (D-41). Every key is checked
+    /// against the plan's own phase schedule at publish, not here.
+    pub per_phase: Option<BTreeMap<Uuid, GrantSetRequest>>,
+}
+
+/// One grant set on the wire.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct GrantSetRequest {
+    /// `featureFlag: bool` entries.
+    pub feature_flags: Option<BTreeMap<String, bool>>,
+    /// `quotaKey: value` entries.
+    pub quotas: Option<BTreeMap<String, i64>>,
 }
 
 /// The plan-change contract on the wire.
@@ -1381,12 +1418,45 @@ fn shape_patch(body: &PlanShapeRequest) -> Result<PlanShapePatch, DomainError> {
         invoice_grouping_key: body.invoice_grouping_key.clone(),
         available_from: body.available_from,
         available_to: body.available_to,
+        entitlement_grants: body.entitlement_grants.as_ref().map(read_grants),
         change_contract: body
             .change_contract
             .as_ref()
             .map(read_change_contract)
             .transpose()?,
     })
+}
+
+/// Read the wire grant set into the domain value.
+///
+/// Nothing is refused here: the shape carries no closed vocabulary, and the one
+/// check the design states — that every per-phase key names a phase of the
+/// plan's own schedule — is a publish rule (`inst-gs-perphase`), because the
+/// phase schedule is a *different* facet of the same revision and a `PATCH` may
+/// legitimately arrive before it.
+fn read_grants(request: &EntitlementGrantsRequest) -> EntitlementGrants {
+    EntitlementGrants {
+        plan_tier_ref: request.plan_tier_ref.clone(),
+        plan_level: GrantSet {
+            feature_flags: request.feature_flags.clone().unwrap_or_default(),
+            quotas: request.quotas.clone().unwrap_or_default(),
+        },
+        per_phase: request
+            .per_phase
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, set)| {
+                (
+                    id,
+                    GrantSet {
+                        feature_flags: set.feature_flags.unwrap_or_default(),
+                        quotas: set.quotas.unwrap_or_default(),
+                    },
+                )
+            })
+            .collect(),
+    }
 }
 
 /// Read the wire plan-change contract into the domain value.
