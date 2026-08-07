@@ -128,6 +128,7 @@ fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>)
         // row no publish would have accepted, which nothing measured while the
         // rule had no code.
         billing_timing: Some("advance".to_owned()),
+        proration_contract: None,
         rounding_policy_ref: rounding.map(ToOwned::to_owned),
         grandfather_until: None,
         supersedes_price_id: None,

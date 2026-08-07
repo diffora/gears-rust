@@ -20,9 +20,218 @@
 //! statement about a *set* of rows crossed with a set of markets has no
 //! row-local form at all.
 
+use std::fmt;
+
+use toolkit_macros::domain_model;
+
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::ChargeKind;
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
+
+/// The day of the month a `fixed_day` anchor lands on, 1–31.
+///
+/// A newtype rather than a bare `u8` because the range is the whole of its
+/// meaning and §6 states it as a constraint (`anchor_day BETWEEN 1 AND 31`) that
+/// no `CHECK` expresses on either engine — see
+/// [`m20260802_000050`](crate::infra::storage::migrations::m20260802_000050_add_pricing_price_proration_contract)
+/// for why. Refusing the value at construction is the stronger form of the same
+/// statement: a column can hold only what this renders.
+///
+/// **29, 30 and 31 are legal and are not a mistake.** K2 makes a day past the
+/// month's length anchor on the **last day of the month**, with the anchor day
+/// preserved across periods (31 → 28 → 31, an independent per-period clamp with
+/// no drift). Refusing them here would make February the shortest legal anchor
+/// and quietly forbid the month-end billing K2 exists to define.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AnchorDay(u8);
+
+impl AnchorDay {
+    /// The day, if it is one a month can have.
+    ///
+    /// # Errors
+    /// [`AnchorDayOutOfRange`] for `0` or anything past `31`.
+    pub const fn new(day: u8) -> Result<Self, AnchorDayOutOfRange> {
+        if day >= 1 && day <= 31 {
+            Ok(Self(day))
+        } else {
+            Err(AnchorDayOutOfRange(day))
+        }
+    }
+
+    /// The day as stored.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for AnchorDay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// An anchor day outside the 1–31 a month can offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnchorDayOutOfRange(pub u8);
+
+impl fmt::Display for AnchorDayOutOfRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "anchor_day must be between 1 and 31; got {}. A day past the \
+             month's length is legal and anchors on the last day of the month \
+             (K2), so the bound is the calendar's, not the shortest month's",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for AnchorDayOutOfRange {}
+
+/// Where a subscription's billing cycle boundary falls (K2, §6).
+///
+/// `FixedDay` **carries its day**, for the reason
+/// [`Frequency::CustomEveryN`](crate::domain::plan_shape::Frequency) carries its
+/// interval: §6 gives the policy and `anchor_day` as one fact in two columns,
+/// and the two spellings a flat pair admits — a `fixed_day` with no day, a day
+/// beside `calendar_month` — are both unpublishable. Holding them together makes
+/// the pairing structural, so `inst-pi-anchor` needs no rule for it and no
+/// engine needs a `CHECK` it cannot express.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BillingAnchorPolicy {
+    /// The first of the calendar month, UTC.
+    CalendarMonth,
+    /// The subscription's own start day, clamped per period under monthly
+    /// granular cycles (K2, D-20).
+    SubscriptionStart,
+    /// A named day of the month, clamped to the month's last day when the month
+    /// is shorter.
+    FixedDay(AnchorDay),
+}
+
+impl BillingAnchorPolicy {
+    /// The persisted / wire token, which never carries the day.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CalendarMonth => "calendar_month",
+            Self::SubscriptionStart => "subscription_start",
+            Self::FixedDay(_) => "fixed_day",
+        }
+    }
+
+    /// The day this policy anchors on, when it names one.
+    #[must_use]
+    pub const fn anchor_day(self) -> Option<AnchorDay> {
+        match self {
+            Self::FixedDay(day) => Some(day),
+            Self::CalendarMonth | Self::SubscriptionStart => None,
+        }
+    }
+}
+
+impl fmt::Display for BillingAnchorPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FixedDay(day) => write!(f, "fixed_day({day})"),
+            other => f.write_str(other.as_str()),
+        }
+    }
+}
+
+/// The canonical proration basis (K1, §6).
+///
+/// **Owned here.** K1 makes this enum the one source Tariffs adopts verbatim and
+/// Subscriptions computes from, and says any extension is a versioned contract
+/// change — so a second spelling of this set anywhere is the enum-drift failure
+/// class §1.2 exists to kill.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProrationBasis {
+    /// Days actually in the period.
+    CalendarDaysActual,
+    /// A 30-day month regardless of the calendar's.
+    CalendarDays30,
+    /// Second-granular.
+    BySecond,
+    /// No partial unit: a started unit is a whole one.
+    WholeUnit,
+    /// No proration at all.
+    None,
+}
+
+impl ProrationBasis {
+    /// K1's set, whole, for the readers that map a stored token back.
+    ///
+    /// Spelled out rather than derived so that adding a member is a change this
+    /// array records — K1 makes any extension a **versioned contract change**,
+    /// and one that slipped in without touching a declared roster is exactly the
+    /// drift `pricing.contracts.enum_drift` alarms on.
+    pub const ALL: &'static [Self] = &[
+        Self::CalendarDaysActual,
+        Self::CalendarDays30,
+        Self::BySecond,
+        Self::WholeUnit,
+        Self::None,
+    ];
+
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CalendarDaysActual => "calendar_days_actual",
+            Self::CalendarDays30 => "calendar_days_30",
+            Self::BySecond => "by_second",
+            Self::WholeUnit => "whole_unit",
+            Self::None => "none",
+        }
+    }
+
+    /// Is this the basis that computes nothing?
+    ///
+    /// Read through here rather than matched at each site: `inst-pi-credit-none`
+    /// is the only rule that cares which member this is, and a second `match`
+    /// on the variant is a second place to forget it.
+    #[must_use]
+    pub const fn is_none(self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+impl fmt::Display for ProrationBasis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The three fields a recurring row publishes for Subscriptions' proration
+/// (`inst-pi-required`), held together because they are required together.
+///
+/// One `Option<ProrationContract>` on the record rather than three independent
+/// `Option`s: §3 step 1 makes all three REQUIRED on a recurring row and absence
+/// fail publish, so the only states worth representing are "authored" and "not
+/// authored". Three loose options admit six partial states that no rule can
+/// report usefully and that the market-uniformity comparison would have to
+/// compare field by field anyway.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProrationContract {
+    /// Where the cycle boundary falls (K2).
+    pub billing_anchor_policy: BillingAnchorPolicy,
+    /// The canonical basis Subscriptions and Tariffs both read (K1).
+    pub proration_basis: ProrationBasis,
+    /// Whether a downgrade off this row is credit-eligible.
+    ///
+    /// **The governing value on a plan change is the *source* row's**, read from
+    /// the subscription's frozen snapshot — never the target's and never the
+    /// live catalog (`inst-pi-credit-source`). That is a rule about which
+    /// snapshot a downstream reader picks, so the catalog's whole obligation is
+    /// to publish the field per row and freeze it; nothing here chooses.
+    pub credit_on_downgrade: bool,
+}
 
 /// A published recurring row carries no `billingTiming`
 /// (`06-consumer-contracts.md` §3 `inst-bt-required`, §5).

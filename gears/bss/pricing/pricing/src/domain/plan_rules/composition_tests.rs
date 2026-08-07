@@ -140,6 +140,7 @@ impl Line {
             tax_inclusive: false,
             tax_category_ref: None,
             billing_timing: None,
+            proration_contract: None,
             rounding_policy_ref: None,
             grandfather_until: None,
             supersedes_price_id: None,

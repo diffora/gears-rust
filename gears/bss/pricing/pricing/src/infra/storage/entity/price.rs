@@ -75,6 +75,22 @@ pub struct Model {
     /// publish resolves it.
     pub resolved_tax_category: Option<String>,
     pub billing_timing: Option<String>,
+    // --- proration input contract, Slice 6 (`m20260802_000050`) ---
+    /// `calendar_month` | `subscription_start` | `fixed_day` (K2). The token
+    /// never carries the day; [`Model::anchor_day`] does.
+    pub billing_anchor_policy: Option<String>,
+    /// The day a `fixed_day` policy anchors on, 1–31. NULL under every other
+    /// policy — the pairing is held by the domain enum, which carries the day
+    /// inside the variant, so no state reaching these two columns can be
+    /// mismatched.
+    pub anchor_day: Option<i32>,
+    /// The canonical K1 basis, owned by this gear and adopted verbatim by
+    /// Tariffs.
+    pub proration_basis: Option<String>,
+    /// Catalog-sanctioned downgrade credit eligibility. On a plan change the
+    /// governing value is the **source** row's, read from the subscriber's
+    /// frozen snapshot (`inst-pi-credit-source`).
+    pub credit_on_downgrade: Option<bool>,
     /// `subscription_seat_count` | `manual` — where a **non-usage** `per_unit`
     /// row gets its quantity. Usage rows never carry it: the meter supplies `Q`,
     /// and an authored quantity beside a metered one would be two answers to

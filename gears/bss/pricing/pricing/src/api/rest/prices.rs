@@ -85,6 +85,7 @@ use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
 use crate::api::rest::state::AuthoringState;
+use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -302,6 +303,18 @@ pub struct PriceContentView {
     pub tax_category_ref: Option<String>,
     /// `advance` | `arrears` — Slice-6-owned, so a free string here.
     pub billing_timing: Option<String>,
+    /// Where the subscription's cycle boundary falls: `calendar_month` |
+    /// `subscription_start` | `fixed_day` (K2). Required on a recurring row
+    /// together with the two below.
+    pub billing_anchor_policy: Option<String>,
+    /// The day a `fixed_day` policy anchors on, 1–31. Refused beside any other
+    /// policy, and required beside `fixed_day`.
+    pub anchor_day: Option<u8>,
+    /// The canonical K1 basis: `calendar_days_actual` | `calendar_days_30` |
+    /// `by_second` | `whole_unit` | `none`.
+    pub proration_basis: Option<String>,
+    /// Whether a downgrade off this row is credit-eligible.
+    pub credit_on_downgrade: Option<bool>,
     /// The named rounding policy this row resolves against.
     pub rounding_policy_ref: Option<String>,
     /// The grandfathering horizon. Only an `existing_grandfathered` row may
@@ -339,6 +352,17 @@ impl From<&PriceRecord> for PriceContentView {
             tax_inclusive: Some(record.tax_inclusive),
             tax_category_ref: record.tax_category_ref.clone(),
             billing_timing: record.billing_timing.clone(),
+            billing_anchor_policy: record
+                .proration_contract
+                .map(|c| c.billing_anchor_policy.as_str().to_owned()),
+            anchor_day: record
+                .proration_contract
+                .and_then(|c| c.billing_anchor_policy.anchor_day())
+                .map(AnchorDay::get),
+            proration_basis: record
+                .proration_contract
+                .map(|c| c.proration_basis.as_str().to_owned()),
+            credit_on_downgrade: record.proration_contract.map(|c| c.credit_on_downgrade),
             rounding_policy_ref: record.rounding_policy_ref.clone(),
             grandfather_until: record.grandfather_until,
             supersedes_price_id: record.supersedes_price_id,
@@ -1098,10 +1122,108 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
             other => other.map(ToOwned::to_owned),
         },
         billing_timing: view.billing_timing.clone(),
+        proration_contract: read_proration_contract(view)?,
         rounding_policy_ref: view.rounding_policy_ref.clone(),
         grandfather_until: view.grandfather_until,
         supersedes_price_id: view.supersedes_price_id,
     })
+}
+
+/// Read the four authored proration fields into the one value that holds them
+/// (`06-consumer-contracts.md` §6, `inst-pi-required`).
+///
+/// **All three or none.** The contract is required as a set on a recurring row,
+/// so the only two states worth accepting are a whole one and an absent one; a
+/// caller sending two of three has made a mistake this surface can name, and
+/// admitting it would push a partial set at the publish rules, which report it
+/// as a missing contract and lose which field the caller forgot.
+///
+/// It is a `400` and not a publish violation for the reason every other refusal
+/// in this function is: an unreadable request is not a plan that fails to
+/// publish. Absence of the whole set is **not** refused here — that is
+/// `inst-pi-required`'s call at publish, and a draft is allowed to be
+/// unfinished.
+///
+/// The `fixed_day` pairing is enforced in both directions, because
+/// [`BillingAnchorPolicy`] cannot hold a mismatched one and this is the boundary
+/// where an unrepresentable state has to be refused rather than dropped.
+fn read_proration_contract(
+    view: &PriceContentView,
+) -> Result<Option<ProrationContract>, DomainError> {
+    let present = [
+        view.billing_anchor_policy.is_some(),
+        view.proration_basis.is_some(),
+        view.credit_on_downgrade.is_some(),
+    ];
+    if present.iter().all(|p| !p) {
+        if view.anchor_day.is_some() {
+            return Err(DomainError::InvalidRequest(
+                "content.anchor_day was sent without content.billing_anchor_policy: the day \
+                 belongs to a fixed_day anchor and means nothing on its own"
+                    .to_owned(),
+            ));
+        }
+        return Ok(None);
+    }
+    let (Some(policy_token), Some(basis_token), Some(credit_on_downgrade)) = (
+        view.billing_anchor_policy.as_deref(),
+        view.proration_basis.as_deref(),
+        view.credit_on_downgrade,
+    ) else {
+        return Err(DomainError::InvalidRequest(
+            "content.billing_anchor_policy, content.proration_basis and \
+             content.credit_on_downgrade publish as a set on a recurring row and must be sent \
+             together; omit all three to leave the draft unfinished"
+                .to_owned(),
+        ));
+    };
+
+    let billing_anchor_policy = match policy_token {
+        "calendar_month" => none_anchored(BillingAnchorPolicy::CalendarMonth, view)?,
+        "subscription_start" => none_anchored(BillingAnchorPolicy::SubscriptionStart, view)?,
+        "fixed_day" => {
+            let day = view.anchor_day.ok_or_else(|| {
+                DomainError::InvalidRequest(
+                    "content.anchor_day is required beside a fixed_day anchor".to_owned(),
+                )
+            })?;
+            BillingAnchorPolicy::FixedDay(
+                AnchorDay::new(day).map_err(|e| DomainError::InvalidRequest(e.to_string()))?,
+            )
+        }
+        other => {
+            return Err(DomainError::InvalidRequest(format!(
+                "content.billing_anchor_policy must be one of calendar_month, \
+                 subscription_start, fixed_day; got {other}"
+            )));
+        }
+    };
+
+    Ok(Some(ProrationContract {
+        billing_anchor_policy,
+        proration_basis: wire_token(
+            "content.proration_basis",
+            basis_token,
+            ProrationBasis::ALL,
+            ProrationBasis::as_str,
+        )?,
+        credit_on_downgrade,
+    }))
+}
+
+/// A policy that names no day, with the day refused if one was sent.
+fn none_anchored(
+    policy: BillingAnchorPolicy,
+    view: &PriceContentView,
+) -> Result<BillingAnchorPolicy, DomainError> {
+    if view.anchor_day.is_some() {
+        return Err(DomainError::InvalidRequest(format!(
+            "content.anchor_day is only authorable beside a fixed_day anchor; this row anchors \
+             {}",
+            policy.as_str()
+        )));
+    }
+    Ok(policy)
 }
 
 /// Refuse the two Slice-10 primitives until Slice 10 lands.

@@ -1253,6 +1253,7 @@ pub async fn seed_price(harness: &Harness, plan_id: Uuid, region: &str) -> Price
                     tax_inclusive: false,
                     tax_category_ref: None,
                     billing_timing: None,
+                    proration_contract: None,
                     rounding_policy_ref: None,
                     grandfather_until: None,
                     supersedes_price_id: None,
@@ -1565,6 +1566,7 @@ pub fn publishable_row() -> PriceContentAlias {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        proration_contract: None,
         // Its own policy, so the Foundation's rounding rule resolves without a
         // tenant policy row.
         rounding_policy_ref: Some("half_up".to_owned()),

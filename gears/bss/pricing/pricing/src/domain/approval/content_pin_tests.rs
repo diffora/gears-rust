@@ -48,6 +48,7 @@ use super::{OVERLAY_PIN_DOMAIN_SEP, overlay_content_hash};
 use super::{content_hash, threshold_content_hash};
 use crate::domain::audit::hex32;
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -144,6 +145,7 @@ fn maximal_record(seed: u128) -> PriceRecord {
         tax_inclusive: true,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        proration_contract: None,
         rounding_policy_ref: Some("half-up".to_owned()),
         grandfather_until: Some(at(20)),
         supersedes_price_id: Some(Uuid::from_u128(0xdead)),
@@ -201,6 +203,20 @@ fn maximal_rule(seed: u128) -> AddonRule {
         price_override_ref: Some(Uuid::from_u128(0xbeef)),
         depends_on: vec![Uuid::from_u128(0x0a), Uuid::from_u128(0x0b)],
         conflicts_with: vec![Uuid::from_u128(0x0c)],
+    }
+}
+
+/// One proration contract, spelled in one place so the table above moves
+/// exactly one member per row.
+fn contract(
+    billing_anchor_policy: BillingAnchorPolicy,
+    proration_basis: ProrationBasis,
+    credit_on_downgrade: bool,
+) -> ProrationContract {
+    ProrationContract {
+        billing_anchor_policy,
+        proration_basis,
+        credit_on_downgrade,
     }
 }
 
@@ -471,6 +487,46 @@ fn row_mutators() -> Vec<Mutator> {
         }),
         ("record.billing_timing", |s| {
             s.rows[0].billing_timing = Some("arrears".to_owned());
+        }),
+        // Slice 6's proration contract, one entry per member: the whole point
+        // of framing it is that a reviewer who approved one anchor cannot have a
+        // commit publish another with the digest equal, and a table that moved
+        // the value wholesale would pass while three of the four members went
+        // unframed.
+        ("record.proration_contract (present vs absent)", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            ));
+        }),
+        ("record.proration_contract.billing_anchor_policy", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::SubscriptionStart,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            ));
+        }),
+        ("record.proration_contract.anchor_day", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::FixedDay(AnchorDay::new(28).expect("a day of the month")),
+                ProrationBasis::CalendarDaysActual,
+                false,
+            ));
+        }),
+        ("record.proration_contract.proration_basis", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::BySecond,
+                false,
+            ));
+        }),
+        ("record.proration_contract.credit_on_downgrade", |s| {
+            s.rows[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::CalendarDaysActual,
+                true,
+            ));
         }),
         ("record.rounding_policy_ref", |s| {
             s.rows[0].rounding_policy_ref = Some("half-even".to_owned());
@@ -910,7 +966,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "9f725d3709582b263a0fd9e265dfd29f0caed91db23b5cb3cc2cdf44d69a4897"
+        "362e4ee46a037c2495a7f353a0038051473ca1cd1dbc9bf9dab6e97cb08a7b86"
     );
 }
 
@@ -1071,7 +1127,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v5\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v6\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

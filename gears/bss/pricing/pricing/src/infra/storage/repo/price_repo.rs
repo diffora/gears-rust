@@ -109,6 +109,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -2343,6 +2344,21 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
         tax_inclusive: Set(content.tax_inclusive),
         tax_category_ref: Set(content.tax_category_ref.clone()),
         billing_timing: Set(content.billing_timing.clone()),
+        // The four proration columns, flattened from the one domain value that
+        // holds them. `anchor_day` is read off the policy rather than carried
+        // beside it, which is what makes a `fixed_day` with no day and a day
+        // beside `calendar_month` both unreachable from here.
+        billing_anchor_policy: Set(content
+            .proration_contract
+            .map(|c| c.billing_anchor_policy.as_str().to_owned())),
+        anchor_day: Set(content
+            .proration_contract
+            .and_then(|c| c.billing_anchor_policy.anchor_day())
+            .map(|d| i32::from(d.get()))),
+        proration_basis: Set(content
+            .proration_contract
+            .map(|c| c.proration_basis.as_str().to_owned())),
+        credit_on_downgrade: Set(content.proration_contract.map(|c| c.credit_on_downgrade)),
         quantity_source: Set(row.quantity_source.map(|s| s.as_str().to_owned())),
         manual_quantity: Set(stored_count("manual_quantity", row.manual_quantity)?),
         package_size: Set(stored_count("package_size", row.package_size)?),
@@ -2449,6 +2465,7 @@ fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft,
         tax_inclusive: draft.content.tax_inclusive,
         tax_category_ref: draft.content.tax_category_ref.clone(),
         billing_timing: draft.content.billing_timing,
+        proration_contract: draft.content.proration_contract,
         rounding_policy_ref: draft.content.rounding_policy_ref,
         grandfather_until: draft.content.grandfather_until,
         supersedes_price_id: draft.content.supersedes_price_id,
@@ -2730,6 +2747,22 @@ fn content_assignments(model: &price::ActiveModel) -> Vec<(price::Column, Value)
             model.billing_timing.clone().into_value(),
         ),
         (
+            price::Column::BillingAnchorPolicy,
+            model.billing_anchor_policy.clone().into_value(),
+        ),
+        (
+            price::Column::AnchorDay,
+            model.anchor_day.clone().into_value(),
+        ),
+        (
+            price::Column::ProrationBasis,
+            model.proration_basis.clone().into_value(),
+        ),
+        (
+            price::Column::CreditOnDowngrade,
+            model.credit_on_downgrade.clone().into_value(),
+        ),
+        (
             price::Column::QuantitySource,
             model.quantity_source.clone().into_value(),
         ),
@@ -2914,6 +2947,7 @@ fn to_record(
         tax_inclusive: row.tax_inclusive,
         tax_category_ref: row.tax_category_ref.clone(),
         billing_timing: row.billing_timing.clone(),
+        proration_contract: to_proration_contract(row)?,
         rounding_policy_ref: row.rounding_policy_ref.clone(),
         grandfather_until: row.grandfather_until,
         supersedes_price_id: row.supersedes_price_id,
@@ -3133,6 +3167,87 @@ fn read_lifecycle(token: &str) -> Result<LifecycleState, RepoError> {
         LifecycleState::ALL,
         LifecycleState::as_str,
     )
+}
+
+/// Rebuild the proration contract from its four columns
+/// (`06-consumer-contracts.md` §6, `m20260802_000050`).
+///
+/// **All four or none.** The three fields are required together on a recurring
+/// row (`inst-pi-required`), so a row holding some of them is a row no writer in
+/// this crate produced: `content_model` sets the four from one `Option`, and the
+/// only other writer of `pricing_price` is the schema itself. A partial set is
+/// therefore corruption and is reported as such rather than silently read as an
+/// absent contract — which would turn a torn row into a publishable one.
+///
+/// The `anchor_day` pairing is re-established here rather than assumed, for the
+/// reason [`to_scope_key`] re-establishes the cohort biconditional: the two
+/// columns come back independently, and the domain enum will not hold a
+/// mismatched pair, so this is where a mismatch has to be caught.
+fn to_proration_contract(row: &price::Model) -> Result<Option<ProrationContract>, RepoError> {
+    let present = [
+        row.billing_anchor_policy.is_some(),
+        row.proration_basis.is_some(),
+        row.credit_on_downgrade.is_some(),
+    ];
+    if present.iter().all(|p| !p) {
+        return Ok(None);
+    }
+    let (Some(policy_token), Some(basis_token), Some(credit)) = (
+        row.billing_anchor_policy.as_deref(),
+        row.proration_basis.as_deref(),
+        row.credit_on_downgrade,
+    ) else {
+        return Err(RepoError::CorruptRow(format!(
+            "pricing_price {} holds a partial proration contract (anchor policy: {}, basis: {}, \
+             credit: {}); the three publish together or not at all",
+            row.price_id, present[0], present[1], present[2]
+        )));
+    };
+
+    let billing_anchor_policy = match policy_token {
+        "calendar_month" => BillingAnchorPolicy::CalendarMonth,
+        "subscription_start" => BillingAnchorPolicy::SubscriptionStart,
+        "fixed_day" => {
+            let day = row.anchor_day.ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "pricing_price {}: a fixed_day anchor holds no anchor_day",
+                    row.price_id
+                ))
+            })?;
+            let day = u8::try_from(day)
+                .ok()
+                .and_then(|d| AnchorDay::new(d).ok())
+                .ok_or_else(|| {
+                    RepoError::CorruptRow(format!(
+                        "pricing_price {}: anchor_day holds {day}",
+                        row.price_id
+                    ))
+                })?;
+            BillingAnchorPolicy::FixedDay(day)
+        }
+        other => {
+            return Err(RepoError::CorruptRow(format!(
+                "pricing_price.billing_anchor_policy holds {other}"
+            )));
+        }
+    };
+    if billing_anchor_policy.anchor_day().is_none() && row.anchor_day.is_some() {
+        return Err(RepoError::CorruptRow(format!(
+            "pricing_price {}: {policy_token} carries an anchor_day, which only fixed_day has",
+            row.price_id
+        )));
+    }
+
+    Ok(Some(ProrationContract {
+        billing_anchor_policy,
+        proration_basis: read_token(
+            "pricing_price.proration_basis",
+            basis_token,
+            ProrationBasis::ALL,
+            ProrationBasis::as_str,
+        )?,
+        credit_on_downgrade: credit,
+    }))
 }
 
 /// Read the entity tag back out of its `bigint` column.

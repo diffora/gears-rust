@@ -1252,6 +1252,7 @@ fn successor_candidate(
         tax_inclusive: authored.tax_inclusive,
         tax_category_ref: authored.tax_category_ref.clone(),
         billing_timing: authored.billing_timing,
+        proration_contract: authored.proration_contract,
         rounding_policy_ref: authored.rounding_policy_ref,
         grandfather_until: authored.grandfather_until,
         supersedes_price_id: authored.supersedes_price_id,

@@ -351,6 +351,7 @@ fn flat_row() -> PriceContent {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        proration_contract: None,
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
         supersedes_price_id: None,

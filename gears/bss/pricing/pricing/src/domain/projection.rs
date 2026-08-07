@@ -726,6 +726,7 @@ fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValu
         tax_inclusive,
         tax_category_ref,
         billing_timing,
+        proration_contract,
         rounding_policy_ref,
         grandfather_until,
         supersedes_price_id,
@@ -761,6 +762,19 @@ fn price_value(record: &PriceRecord, tax: Option<&RowTaxProjection>) -> JsonValu
             scope_key.charge_kind(),
             billing_timing.as_deref(),
         ),
+        // The proration input contract (`inst-pi-required`), flat beside the
+        // row's own keys for `row_value`'s reason: it is what a consumer
+        // computes from, and a nesting level no document declares would be a
+        // wire structure invented here. `anchorDay` renders only under the
+        // policy that has one -- the pairing is structural in the domain, and a
+        // payload that carried a null beside `calendar_month` would invite a
+        // consumer to read it as "unset" rather than "not applicable".
+        "billingAnchorPolicy": proration_contract.map(|c| c.billing_anchor_policy.as_str()),
+        "anchorDay": proration_contract
+            .and_then(|c| c.billing_anchor_policy.anchor_day())
+            .map(super::contracts::AnchorDay::get),
+        "prorationBasis": proration_contract.map(|c| c.proration_basis.as_str()),
+        "creditOnDowngrade": proration_contract.map(|c| c.credit_on_downgrade),
         "roundingPolicyRef": rounding_policy_ref,
         "grandfatherUntil": grandfather_until,
         "supersedesPriceId": supersedes_price_id,

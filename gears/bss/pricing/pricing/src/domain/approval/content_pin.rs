@@ -347,7 +347,23 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// pending policy unit to record a re-freeze of content those units are not about —
 /// which is the argument for two counters, applied in the other direction from the
 /// `v3` note above.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v5\x1f";
+/// # `v6`: Slice 6's proration contract joined the row's framing (2026-08-07)
+///
+/// The `v4` case again, and for the same reason it was a bump rather than a
+/// standing tag: [`put_price_record`] gained a framed field, so every preimage
+/// containing a price row produces different bytes. The contract is **authored
+/// draft content** — a `PATCH` on an open draft moves it — which is precisely
+/// `tax_category_ref`'s argument for being in the pin at all: a reviewer who
+/// approved a plan anchoring on the 1st and a commit that publishes one
+/// anchoring on signup day, with every digest equal, is the re-verification hole
+/// this preimage exists to close. It is also the field a downgrade's credit is
+/// computed from (`inst-pi-credit-source`), so the money consequence of the hole
+/// is direct.
+///
+/// The **deployed-world** paragraph applies verbatim once more: this needs
+/// pending approvals drained before it ships, and it is an edit today only
+/// because nothing durable holds a `v5` digest either.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v6\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -810,6 +826,7 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
         tax_inclusive,
         tax_category_ref,
         billing_timing,
+        proration_contract,
         rounding_policy_ref,
         grandfather_until,
         supersedes_price_id,
@@ -829,6 +846,32 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
     // equal, is exactly the re-verification hole `sku_id`'s own note describes.
     put_opt_str(buf, tax_category_ref.as_deref());
     put_opt_str(buf, billing_timing.as_deref());
+    // The proration contract, framed **unconditionally** and field by field --
+    // `put_scope_key`'s rule: a conditional field count is how two adjacent
+    // fields become one ambiguous run. An absent contract frames the same
+    // number of members as a present one, with the empty token and `0`, so an
+    // absent contract and one anchoring `calendar_month` on day 0 cannot
+    // collide.
+    put_str(
+        buf,
+        proration_contract.map_or("", |c| c.billing_anchor_policy.as_str()),
+    );
+    put_u64(
+        buf,
+        u64::from(
+            proration_contract
+                .and_then(|c| c.billing_anchor_policy.anchor_day())
+                .map_or(0, crate::domain::contracts::AnchorDay::get),
+        ),
+    );
+    put_str(
+        buf,
+        proration_contract.map_or("", |c| c.proration_basis.as_str()),
+    );
+    put_bool(
+        buf,
+        proration_contract.is_some_and(|c| c.credit_on_downgrade),
+    );
     put_opt_str(buf, rounding_policy_ref.as_deref());
     put_opt_instant(buf, *grandfather_until);
     put_opt_uuid(buf, *supersedes_price_id);

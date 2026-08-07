@@ -262,6 +262,7 @@ fn flat_row() -> PriceContent {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
+        proration_contract: None,
         // Its own policy, so the Foundation's rounding rule resolves without a
         // tenant policy row.
         rounding_policy_ref: Some("half_up".to_owned()),

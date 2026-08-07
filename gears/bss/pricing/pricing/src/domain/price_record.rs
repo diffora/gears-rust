@@ -20,6 +20,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::ProrationContract;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_row::PriceRow;
 use crate::domain::scope_key::ScopeKey;
@@ -51,6 +52,16 @@ pub struct PriceContent {
     pub tax_category_ref: Option<String>,
     /// `advance` | `arrears`, Slice-6-owned; see the module doc.
     pub billing_timing: Option<String>,
+    /// The three proration inputs Subscriptions computes from, when the row has
+    /// authored them (`inst-pi-required`).
+    ///
+    /// Unlike `billing_timing` this **is** typed here, and the difference is not
+    /// an inconsistency: the timing's rule is registered by Slice 6 and merely
+    /// *named* by Slice 2, so a second enum would be a second registration —
+    /// while the proration vocabulary has exactly one owner (K1 says the enum is
+    /// owned by Slice 6 and adopted verbatim downstream) and nothing else in the
+    /// crate can spell it. See [`crate::domain::contracts`].
+    pub proration_contract: Option<ProrationContract>,
     /// The named rounding policy this row resolves against, when one is set on
     /// the row rather than inherited from the tenant default.
     pub rounding_policy_ref: Option<String>,
@@ -94,6 +105,16 @@ pub struct PriceRecord {
     pub tax_category_ref: Option<String>,
     /// `advance` | `arrears`, Slice-6-owned; see the module doc.
     pub billing_timing: Option<String>,
+    /// The three proration inputs Subscriptions computes from, when the row has
+    /// authored them (`inst-pi-required`).
+    ///
+    /// Unlike `billing_timing` this **is** typed here, and the difference is not
+    /// an inconsistency: the timing's rule is registered by Slice 6 and merely
+    /// *named* by Slice 2, so a second enum would be a second registration —
+    /// while the proration vocabulary has exactly one owner (K1 says the enum is
+    /// owned by Slice 6 and adopted verbatim downstream) and nothing else in the
+    /// crate can spell it. See [`crate::domain::contracts`].
+    pub proration_contract: Option<ProrationContract>,
     /// The named rounding policy resolved for this row, when one is set on it.
     pub rounding_policy_ref: Option<String>,
     /// The grandfathering horizon, on a grandfathered row.
@@ -131,6 +152,7 @@ impl PriceRecord {
             tax_inclusive: self.tax_inclusive,
             tax_category_ref: self.tax_category_ref.clone(),
             billing_timing: self.billing_timing.clone(),
+            proration_contract: self.proration_contract,
             rounding_policy_ref: self.rounding_policy_ref.clone(),
             grandfather_until: self.grandfather_until,
             supersedes_price_id: self.supersedes_price_id,

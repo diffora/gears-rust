@@ -75,6 +75,7 @@ pub mod m20260802_000039_add_pricing_price_resolved_tax_category;
 pub mod m20260802_000040_guard_pricing_price_tax_columns;
 pub mod m20260802_000041_retire_pricing_policy_object_tax_display_mode;
 pub mod m20260802_000042_tighten_taxonomy_value_present_check;
+pub mod m20260802_000050_add_pricing_price_proration_contract;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -194,6 +195,11 @@ impl MigratorTrait for Migrator {
             // of the four, which is why each rebuild is written from its
             // creating migration rather than from a later one.
             Box::new(m20260802_000042_tighten_taxonomy_value_present_check::Migration),
+            // Slice 6's proration input contract: four columns on `pricing_price`
+            // (`inst-pi-required`). Plain `ALTER`s, so they sort anywhere after
+            // `000002` creates the table; the number is this strand's allotted
+            // range (`000050`-`000059`), disjoint from the concurrent strand's.
+            Box::new(m20260802_000050_add_pricing_price_proration_contract::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),
