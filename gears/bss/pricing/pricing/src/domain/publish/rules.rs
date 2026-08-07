@@ -492,10 +492,11 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         }))
         .with_rule(Box::new(MarketBasisUniform))
         // `inst-cb-addon` — case (i) of the single-currency-per-invoice binding.
-        // Cases (ii)/(iii) are the bundle plane's and are already enforced by
-        // `domain::bundle_rules::check_coverage`; D-211's delegation of that
-        // walk's **currency** arm to `currency_binding::uncovered_pairs` is owed
-        // and is not made here.
+        // Cases (ii)/(iii) are the bundle plane's and are enforced by
+        // `domain::bundle_rules::check_coverage`, which since `535ce86f3` reaches
+        // its **currency** arm through `currency_binding::uncovered_pairs` — the
+        // delegation D-211 ordered. The region arm stayed S8's. This comment said
+        // that delegation was "owed and is not made here"; it outlived the swap.
         .with_rule(Box::new(RequiredAddonsCoverMarkets {
             coverage: params.addon_coverage.clone(),
         }))

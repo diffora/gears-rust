@@ -1,15 +1,19 @@
 //! `CurrencyBindingChecker` — `design/04-currency-tax.md` §3's
 //! single-currency-per-invoice binding, case (i) (`inst-cb-addon`).
 //!
-//! # The type D-211 says does not exist
+//! # The type D-211 recorded as not existing, and the delegation it owed
 //!
 //! D-211 (2026-08-06) records that *"`CurrencyBindingChecker` is Slice 4's and
 //! **does not exist yet**, so S8's coverage walk owns **both** axes until it
 //! lands, at which point the currency arm delegates and the region arm stays
-//! S8's"*. This is the type landing. The delegation itself is **not** performed
-//! here: `domain::bundle_rules` and `infra::bundle` belong to another strand, so
-//! [`uncovered_pairs`] is exposed as the shared predicate S8's walk can call, and
-//! the swap is reported as owed rather than made.
+//! S8's"*. This is the type landing.
+//!
+//! **The delegation D-211 made conditional on that landing has since been made**
+//! (`535ce86f3`): `domain::bundle_rules` imports [`uncovered_pairs`] and calls it
+//! for the currency arm of its coverage walk, and the region arm stayed S8's,
+//! exactly as the ordering note described. This paragraph said the swap was
+//! *"reported as owed rather than made"* — true when written, false from the
+//! moment the walk delegated, and it survived that commit untouched.
 //!
 //! Cases (ii) and (iii) — `sum_of_parts` and `own_price` bundle coverage — are
 //! **already enforced**, by `bundle_rules::check_coverage`, over both axes. So
