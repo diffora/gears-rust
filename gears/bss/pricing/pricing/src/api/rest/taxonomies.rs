@@ -1,4 +1,4 @@
-//! `GET/PUT /bss-pricing/v1/config/taxonomies/{region|brand|partner|orgTier}` —
+//! `GET/PUT /bss-pricing/v1/config/taxonomies/{region|brand|partner|org_tier}` —
 //! the tenant's four scope-value universes (`design/04-currency-tax.md` §5, §6,
 //! `inst-tx-mutation`).
 //!
@@ -15,7 +15,7 @@
 //!
 //! # One route pair for four classes, and why the class is a path segment
 //!
-//! §5 writes the row as a single cell, `{region|brand|partner|orgTier}`, and the
+//! §5 writes the row as a single cell, `{region|brand|partner|org_tier}`, and the
 //! four are the same resource shape over four universes: same columns, same state
 //! machine, same guard, same gate. A route each would be four copies of one
 //! handler differing in a `match` arm, and the day a fifth class is declared
@@ -28,12 +28,15 @@
 //! its own concurrent editors. A query parameter would make them one resource
 //! with four representations, and one tag would then have to cover all four.
 //!
-//! **`orgTier` is camelCase**, which every other wire token for that class is
-//! not — `ScopeClass::as_str` renders `org_tier` and Slice 9 stores that in
-//! `pricing_price_overlay.scope_class`. §5 is the normative statement of the
-//! route and a path segment is not a JSON field, so nothing requires the two to
-//! agree; it is recorded as `T-4` so the divergence is a decision rather than a
-//! typo someone later "corrects" in the direction that breaks the route.
+//! **The segment is the token the overlay plane stores** — `TaxonomyClass::
+//! path_segment` returns `ScopeClass::as_str`, so the two cannot diverge rather
+//! than merely happening not to. §5 spelled the last class `orgTier` and this
+//! route answered to that, on the argument that §5 is the normative statement of
+//! the route and a path segment is not a JSON field. **D-241 closed it the other
+//! way**: an operator meets both spellings in one sitting, and a client generated
+//! from the `OpenAPI` document carries two names for one class. `orgTier` is
+//! refused rather than aliased, because two spellings that both route is the
+//! state in which neither is canonical.
 //!
 //! # The `PUT` carries the whole taxonomy
 //!
@@ -192,12 +195,13 @@ fn class_param() -> ParamSpec {
         location: ParamLocation::Path,
         required: true,
         description: Some(
-            "Which value universe: `region`, `brand`, `partner` or `orgTier`. Note the \
-             camelCase spelling of the last one - it is section 5's own, and it differs from \
-             the `org_tier` token the same class carries in an overlay's `scopeClass` field. \
-             `global` and `customerGroup` are deliberately not addressable: the first has no \
-             value universe, and the second's table belongs to the customer-group membership \
-             half and does not exist."
+            "Which value universe: `region`, `brand`, `partner` or `org_tier`. Each segment is \
+             the same token the class carries in an overlay's `scopeClass` field, so a \
+             generated client has one name per class (D-241); the camelCase `orgTier` section 5 \
+             used to spell is refused rather than accepted as an alias. `global` and \
+             `customerGroup` are deliberately not addressable: the first has no value universe, \
+             and the second's table belongs to the customer-group membership half and does not \
+             exist."
                 .to_owned(),
         ),
         param_type: "string".to_owned(),
@@ -430,9 +434,10 @@ fn parse_class(segment: &str) -> Result<TaxonomyClass, CanonicalError> {
     TaxonomyClass::parse_segment(segment).ok_or_else(|| {
         CanonicalError::from(DomainError::InvalidRequest(format!(
             "unknown taxonomy `{segment}`: the addressable universes are region, brand, partner \
-             and orgTier (note the camelCase). `global` has no value universe — the classless \
-             scope carries no value — and `customerGroup`'s taxonomy belongs to the \
-             customer-group membership plane and does not exist yet"
+             and org_tier — each spelled as the class's own scope token (D-241; the camelCase \
+             `orgTier` this route used to answer to is refused, not aliased). `global` has no \
+             value universe — the classless scope carries no value — and `customerGroup`'s \
+             taxonomy belongs to the customer-group membership plane and does not exist yet"
         )))
     })
 }

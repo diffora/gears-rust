@@ -194,7 +194,7 @@ and bundles (Slice 8) build on.
 
 **Steps**:
 1. [ ] - `p1` - `region` MUST be a member of the tenant's configured region taxonomy; an unknown/invalid region fails validation **before** publish - `inst-tx-region`
-2. [ ] - `p1` - `brand` is **not** a price-row field (Foundation §4.1): a brand-scoped `PriceOverlay`'s `brand` MUST be a member of the tenant's brand taxonomy, validated at save (rule owned here, exercised by Slice 9). **Generalized to every taxonomy-backed overlay scope (D-120, 2026-07-31 review fix):** a **region**-scoped overlay's value MUST be a member of the tenant's region taxonomy, and **partner**/**orgTier**-scoped values MUST be members of the tenant's `pricing_partner_taxonomy` / `pricing_org_tier_taxonomy` (§6; an unknown value fails save — `PARTNER_UNKNOWN` / `ORG_TIER_UNKNOWN`, 422) — before D-120 those two scope classes had **no declared value universe anywhere** (free-form strings on the axis that selects who receives an adjustment, the §F.2 `rounding_policy_ref` pattern) and region overlay values were never checked at all. The MVP universes are tenant-declared (the D-01 pattern); reconciliation against an external partner SoR (AMS/partner registry), when one exists, is a named Future joint item, and the payer → `(partner, orgTier)` resolution input Tariffs matches against is a registered **needs-decision** on the Tariffs contract ([`../PRD.md`](../PRD.md) §9.2) - `inst-tx-brand`
+2. [ ] - `p1` - `brand` is **not** a price-row field (Foundation §4.1): a brand-scoped `PriceOverlay`'s `brand` MUST be a member of the tenant's brand taxonomy, validated at save (rule owned here, exercised by Slice 9). **Generalized to every taxonomy-backed overlay scope (D-120, 2026-07-31 review fix):** a **region**-scoped overlay's value MUST be a member of the tenant's region taxonomy, and **partner**/**orgTier**-scoped values MUST be members of the tenant's `pricing_partner_taxonomy` / `pricing_org_tier_taxonomy` (§6; an unknown value fails save — **`SCOPE_VALUE_UNKNOWN`**, 422, for every taxonomy-backed class, since the remedy is the same one in each: declare the value in the named universe. The per-class trio this clause used to name is struck by **D-239**, which splits the two declared codes by *surface* rather than by class — `REGION_UNKNOWN` on the price-row authoring path, `SCOPE_VALUE_UNKNOWN` on the overlay scope path) — before D-120 those two scope classes had **no declared value universe anywhere** (free-form strings on the axis that selects who receives an adjustment, the §F.2 `rounding_policy_ref` pattern) and region overlay values were never checked at all. The MVP universes are tenant-declared (the D-01 pattern); reconciliation against an external partner SoR (AMS/partner registry), when one exists, is a named Future joint item, and the payer → `(partner, orgTier)` resolution input Tariffs matches against is a registered **needs-decision** on the Tariffs contract ([`../PRD.md`](../PRD.md) §9.2) - `inst-tx-brand`
 3. [ ] - `p1` - Taxonomy mutation (add/retire a region/brand/partner/orgTier value) is tenant-admin config, audited; **retiring** a value is rejected while it is referenced by an active published price row (`region`) **or an active `PriceOverlay` scope of any taxonomy-backed class** — `brand`, `region`, `partner`, `orgTier` (D-120, 2026-07-31 review fix: the guard previously enumerated price rows and brand overlays only, so a region value retired cleanly while region-scoped overlays still named it) — referential integrity over every referencing shape - `inst-tx-mutation`
 
 ### Tax Display Basis and Policy
@@ -244,13 +244,14 @@ and bundles (Slice 8) build on.
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
 | `GET` | `/bss-pricing/v1/plans/{planId}/preview` | Base-price preview per `(currency, region)`; fail closed, overlay disclaimer | — |
-| `GET/PUT` | `/bss-pricing/v1/config/taxonomies/{region\|brand\|partner\|orgTier}` | Tenant taxonomy read/update (admin, audited; partner/orgTier added by D-120) | ETag |
+| `GET/PUT` | `/bss-pricing/v1/config/taxonomies/{region\|brand\|partner\|org_tier}` | Tenant taxonomy read/update (admin, audited; partner/org_tier added by D-120). Each segment is the class's own scope token — the camelCase `orgTier` this row used to spell is refused rather than aliased (**D-241**) | ETag |
 | `GET/PUT` | `/bss-pricing/v1/config/tax-display-policy` | Tenant tax-display policy (fail-closed default) | ETag |
 
-**Problem responses (RFC 9457):** `REGION_UNKNOWN` (422), `BRAND_UNKNOWN` (422),
-`PARTNER_UNKNOWN` (422) / `ORG_TIER_UNKNOWN` (422 — an overlay scope value outside the tenant
-taxonomy; D-120), `TAXONOMY_VALUE_IN_USE` (409, on retire — any referencing shape, incl.
-region/partner/orgTier-scoped overlays), `TAX_BASIS_INCOMPLETE` (422 — per policy on the
+**Problem responses (RFC 9457):** `REGION_UNKNOWN` (422 — a **price row** naming a region
+outside the tenant taxonomy; the row's `region` is a scope-key axis and the remedy is to fix the
+row, which is why this code is the authoring path's and not the overlay path's),
+`TAXONOMY_VALUE_IN_USE` (409, on retire — any referencing shape, incl.
+region/partner/org_tier-scoped overlays), `TAX_BASIS_INCOMPLETE` (422 — per policy on the
 `ratePresent=false` arm; **unconditional** on the absent-effective-category arm, which no warn
 mode may pass, since `taxCategory` is a pinned D-48 v1 descriptor element — **D-154**),
 `TAX_BASIS_MIXED_MARKET` (422 — rows of one plan on one `(currency, region)` disagreeing on

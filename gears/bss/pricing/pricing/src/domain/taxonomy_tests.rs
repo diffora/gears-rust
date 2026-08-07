@@ -124,18 +124,28 @@ fn the_codes_are_spelled_as_section_5_spells_them() {
 // The classes.
 // ---------------------------------------------------------------------------
 
-/// §5 addresses exactly four, and `orgTier` is spelled as §5 spells it.
+/// Every class is addressed by **the same token the overlay plane stores for it**
+/// (D-241).
 ///
-/// The camelCase segment is a **recorded divergence** (register `T-4`), not an
-/// accident: every other wire token for this class is `org_tier`. Pinned here so
-/// that changing it is a decision someone has to make on purpose.
+/// The segment used to be §5's literal spelling, and `orgTier` was a recorded
+/// divergence pinned here on purpose (`T-4`) so that changing it would be a
+/// decision rather than a tidy-up. The owner made it: an `OpenAPI`-generated client
+/// carrying two spellings for one class is the cost that decides, and this gear is
+/// not deployed, so nothing breaks.
+///
+/// **The rule is enforced structurally rather than asserted here**, and this test
+/// says so instead of pretending otherwise: `path_segment` now *returns*
+/// `scope_class().as_str()`, so `segment == scope token` cannot fail and asserting
+/// it would be decoration. What is left is the part a delegation cannot carry —
+/// **the four strings that actually go on the wire**, which pin `ScopeClass`'
+/// spelling itself and would redden if that drifted under either surface.
 #[test]
-fn the_four_path_segments_are_section_5s_own_spelling() {
+fn a_class_is_addressed_by_the_token_the_overlay_plane_stores_for_it() {
     let segments: Vec<&str> = TaxonomyClass::ALL
         .iter()
         .map(|c| c.path_segment())
         .collect();
-    assert_eq!(segments, ["region", "brand", "partner", "orgTier"]);
+    assert_eq!(segments, ["region", "brand", "partner", "org_tier"]);
 }
 
 /// Every segment parses back to the class that rendered it, and nothing else
@@ -154,8 +164,10 @@ fn a_segment_round_trips_and_an_unknown_one_does_not_parse() {
     // membership half and does not exist (D-223).
     assert_eq!(TaxonomyClass::parse_segment("global"), None);
     assert_eq!(TaxonomyClass::parse_segment("customer_group"), None);
-    // And the spelling that is *not* section 5's.
-    assert_eq!(TaxonomyClass::parse_segment("org_tier"), None);
+    // And the camelCase spelling §5 used to carry, which D-241 retired: it is not
+    // an alias, because two spellings that both route is the state in which
+    // neither is canonical.
+    assert_eq!(TaxonomyClass::parse_segment("orgTier"), None);
 }
 
 /// The table map is `ScopeClass`', not a second copy of it.

@@ -31,25 +31,32 @@
 //!
 //! # The refusal codes, and the one this module deliberately does not raise
 //!
-//! §5 declares `REGION_UNKNOWN`, `BRAND_UNKNOWN`, `PARTNER_UNKNOWN`,
-//! `ORG_TIER_UNKNOWN` and `TAXONOMY_VALUE_IN_USE`. Only two of them are minted
-//! here.
+//! §5 declares `REGION_UNKNOWN` and `TAXONOMY_VALUE_IN_USE`, and both are minted
+//! here. It used to declare `BRAND_UNKNOWN`, `PARTNER_UNKNOWN` and
+//! `ORG_TIER_UNKNOWN` beside them; **D-239 struck the trio**, and the paragraph
+//! below is kept as the record of why, because the shape it describes is one this
+//! design set produces repeatedly.
 //!
 //! [`REGION_UNKNOWN`] is the **price-row** refusal and is genuinely this
 //! module's: a row's `region` is a scope-key axis, §2's flow declares the code
 //! against that flow, and the remedy is to fix the row. [`TAXONOMY_VALUE_IN_USE`]
 //! is the retire guard's and has one owner by construction.
 //!
-//! The other three are **not raised anywhere in this crate**, and that is a
-//! recorded finding rather than an omission. They name the overlay scope-value
-//! failure, which `overlay_rules` already reports as `SCOPE_VALUE_UNKNOWN` —
-//! declared for the same refusal by D-222 three days before this slice was built,
-//! in `design/09-price-overlays.md` §5. Two codes for one rejection is a decision
-//! the design set owes; raising both would make a consumer match on whichever
-//! surface happened to answer, and raising the trio *instead* would re-spell a
-//! code Slice 9 shipped. See `T-1` in the owed register. Note also that the trio
-//! is three codes for **four** classes: a region-scoped overlay value, which
-//! D-120 explicitly brought under the same rule, has no code in either list.
+//! The trio was **never raised anywhere in this crate**, and that was a recorded
+//! finding rather than an omission. It named the overlay scope-value failure,
+//! which `overlay_rules` already reports as `SCOPE_VALUE_UNKNOWN` — declared for
+//! the same refusal by D-222 three days before this slice was built, in
+//! `design/09-price-overlays.md` §5. Raising both would have made a consumer match
+//! on whichever surface happened to answer; raising the trio *instead* would have
+//! re-spelled a code Slice 9 shipped. And the trio was three codes for **four**
+//! classes: a region-scoped overlay value, which D-120 explicitly brought under
+//! the same rule, had a code in neither list.
+//!
+//! **D-239 split them by surface rather than by class**, which is why this module
+//! keeps `REGION_UNKNOWN` and gains nothing: a *price row* naming an undeclared
+//! region is a different fact from an *overlay scope* naming an undeclared value —
+//! the first is a scope-key axis whose remedy is to fix the row, the second has one
+//! remedy for all four classes, and the class rides the violation's subject.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -104,23 +111,30 @@ impl TaxonomyClass {
     /// Every addressable class, in §5's order.
     pub const ALL: &'static [Self] = &[Self::Region, Self::Brand, Self::Partner, Self::OrgTier];
 
-    /// The path segment §5 spells for this class.
+    /// The path segment this class is addressed by — **the token its overlay
+    /// scope carries** ([`ScopeClass::as_str`], and the `scope_class` column
+    /// Slice 9 stores).
     ///
-    /// **`orgTier` is camelCase and every other wire token for this class is
-    /// `org_tier`** ([`ScopeClass::as_str`], and the `scope_class` column Slice 9
-    /// stores). §5 is the normative statement of the route and a path segment is
-    /// not a JSON field, so the two are not required to agree by any rule the set
-    /// states — but an operator meets both in one sitting, so the divergence is
-    /// recorded as `T-4` rather than left to be "fixed" later in the direction
-    /// that breaks the route.
+    /// §5 spelled the last one `orgTier`, and this returned that spelling: §5 is
+    /// the normative statement of the route, a path segment is not a JSON field,
+    /// and no rule of the set required the two to agree. **D-241 closed it the
+    /// other way** — an operator meets both in one sitting and an `OpenAPI`-generated
+    /// client carries two spellings for one class, which is the cost that decided
+    /// it. The gear is not deployed, so nothing routed under the old segment.
+    ///
+    /// The old spelling is **not** accepted as an alias, deliberately: two
+    /// spellings that both route is the state in which neither is canonical, and
+    /// `rest_taxonomies::an_unaddressable_class_is_refused_naming_the_four` pins
+    /// that `orgTier` is refused rather than routed.
+    ///
+    /// Because the delegation makes *segment equals scope token* unfalsifiable,
+    /// no test asserts it — that would be decoration.
+    /// `taxonomy_tests::a_class_is_addressed_by_the_token_the_overlay_plane_stores_for_it`
+    /// pins the four literal wire strings instead, which is the part delegation
+    /// cannot carry: it catches a drift in [`ScopeClass::as_str`] itself.
     #[must_use]
-    pub const fn path_segment(self) -> &'static str {
-        match self {
-            Self::Region => "region",
-            Self::Brand => "brand",
-            Self::Partner => "partner",
-            Self::OrgTier => "orgTier",
-        }
+    pub fn path_segment(self) -> &'static str {
+        self.scope_class().as_str()
     }
 
     /// Parse a path segment back into a class.

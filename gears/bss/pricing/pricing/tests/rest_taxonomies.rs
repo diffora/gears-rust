@@ -470,7 +470,10 @@ async fn a_tag_from_another_class_does_not_satisfy_this_one() {
 async fn an_unaddressable_class_is_refused_naming_the_four() {
     let harness = Harness::new().await;
 
-    for class in ["global", "customer_group", "org_tier"] {
+    // `orgTier` joins the unaddressable list under D-241: it is the spelling §5
+    // used to carry, and it is **refused rather than aliased**, because two
+    // spellings that both route is the state in which neither is canonical.
+    for class in ["global", "customer_group", "orgTier"] {
         let response = harness
             .allowed_as(ADMIN)
             .send(request("GET", &path(class), None))
@@ -483,14 +486,20 @@ async fn an_unaddressable_class_is_refused_naming_the_four() {
     }
 }
 
-/// `orgTier` **is** addressable, in §5's own camelCase spelling.
+/// The org-tier class is addressed — and echoed — as `org_tier` (D-241).
+///
+/// **Both halves matter and the second is the one that used to be wrong**: the
+/// path segment is what an operator types, and `class` in the response body is
+/// what a client reads back. Before D-241 the segment was `orgTier` while the same
+/// class arrived as `org_tier` in an overlay's `scopeClass`, so a client generated
+/// from the `OpenAPI` document carried both spellings for one thing.
 #[tokio::test]
-async fn the_org_tier_segment_is_section_5s_camel_case() {
+async fn the_org_tier_class_is_addressed_and_echoed_as_one_token() {
     let harness = Harness::new().await;
 
-    let (body, _) = read(&harness, "orgTier").await;
+    let (body, _) = read(&harness, "org_tier").await;
 
-    assert_eq!(body["class"], "orgTier");
+    assert_eq!(body["class"], "org_tier");
 }
 
 /// The two `tax_*` markers are refused on the three non-region classes rather
