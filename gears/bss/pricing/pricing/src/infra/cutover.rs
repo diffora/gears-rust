@@ -166,6 +166,25 @@ pub async fn commit_cutover(
     plan: CutoverCommit,
     stamp: AuditStamp,
 ) -> Result<CutoverWritten, RepoError> {
+    // D-154's readiness, resolved in **this** transaction so the successor's
+    // frozen category is the one the world held when it published — the same
+    // reason `infra::publish::rule_params` resolves it there rather than letting
+    // the projector re-derive it later (`T-13`).
+    let readiness = crate::domain::tax_display::RegionTaxReadiness::new(
+        crate::infra::storage::repo::taxonomy_repo::region_readiness_map(txn, scope, tenant_id)
+            .await?
+            .into_iter()
+            .map(|(region, markers)| {
+                (
+                    region,
+                    crate::domain::tax_display::RegionReadiness {
+                        tax_category: markers.tax_category,
+                        tax_rate_present: markers.tax_rate_present,
+                    },
+                )
+            })
+            .collect(),
+    );
     price_repo::commit_cutover_rows(
         txn,
         scope,
@@ -175,6 +194,7 @@ pub async fn commit_cutover(
         plan.successor,
         plan.copy,
         plan.cutover_at(),
+        &readiness,
     )
     .await?;
 

@@ -201,9 +201,7 @@ use crate::domain::projection::{
 };
 use crate::domain::read_model::{SubjectKind, SubjectRef};
 use crate::domain::scope_key::PlanId;
-use crate::domain::tax_display::{
-    RegionReadiness, RegionTaxReadiness, TAX_ENGINE_GA, effective_category, is_not_sellable_ga,
-};
+use crate::domain::tax_display::{TAX_ENGINE_GA, is_not_sellable_ga};
 use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::storage::repo::{
     NewDelta, PendingVersionRow, catalog_version_ref_repo, pin_frontier_repo, plan_repo,
@@ -729,42 +727,36 @@ async fn project_plan_subject(
         .map_err(|e| repo_failure(&e))?;
     let windows = project_windows(runner, scope, tenant_id, plan_id, &prices).await?;
 
-    // D-154's resolved effective category and C3's GA gate — **derived here**,
-    // in the projector, because this is the layer that both holds the readiness
-    // and owns what a frozen `CatalogVersion` publishes. Resolving it anywhere
-    // later would let Billing re-derive the fallback against a region taxonomy
-    // that is tenant-declared, mutable and re-declarable at any time, which is
-    // exactly the hazard D-154 records.
-    let readiness = RegionTaxReadiness::new(
-        crate::infra::storage::repo::taxonomy_repo::region_readiness_map(runner, scope, tenant_id)
-            .await
-            .map_err(|e| repo_failure(&e))?
-            .into_iter()
-            .map(|(region, markers)| {
-                (
-                    region,
-                    RegionReadiness {
-                        tax_category: markers.tax_category,
-                        tax_rate_present: markers.tax_rate_present,
-                    },
-                )
-            })
-            .collect(),
-    );
+    // C3's GA gate, derived here — it is a function of the row and a launch
+    // constant, so there is nothing to freeze.
+    //
+    // **D-154's resolved category is NOT derived here.** It is read off
+    // `pricing_price.resolved_tax_category`, which the publish commit froze
+    // against the readiness the rule set judged the row with. Re-resolving it
+    // here was the shape review found (`T-13`): this sweep runs up to D-47's
+    // five-minute batching maximum after the commit, and the region taxonomy is
+    // a tenant-declared table anyone with `config × write` may re-declare in
+    // between — so a version could freeze a category no rule ever judged, or
+    // lose one that was present when publish passed.
+    let resolved = crate::infra::storage::repo::price_repo::resolved_tax_categories(
+        runner, scope, tenant_id, plan_id,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
     let tax_projection = prices
         .iter()
         .map(|record| {
             (
                 record.price_id,
                 RowTaxProjection {
-                    resolved_tax_category: effective_category(record, &readiness),
+                    resolved_tax_category: resolved.get(&record.price_id).cloned().flatten(),
                     // `TAX_ENGINE_GA` is a launch constant, not a column: C3
                     // makes the gate a property of the *platform's* Tax Engine
                     // status, and a per-tenant carrier would let one tenant
-                    // declare itself post-GA while the engine that has to
-                    // compute the tax does not exist. It flips in code when the
-                    // engine ships, and `inst-td-clear` makes every gated plan
-                    // re-publish to pick it up rather than flipping silently.
+                    // declare itself post-GA while the engine that computes the
+                    // tax does not exist. It flips in code when the engine ships,
+                    // and `inst-td-clear` makes every gated plan re-publish to
+                    // pick it up rather than flipping silently.
                     not_sellable_ga: is_not_sellable_ga(record, TAX_ENGINE_GA),
                 },
             )

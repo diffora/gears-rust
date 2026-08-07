@@ -93,7 +93,7 @@
 //! than taking it over, which is `inst-pr-return`'s save-time duplicate check and
 //! is what keeps one draft per key the most the two doors admit between them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
@@ -122,6 +122,7 @@ use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
     Region, ScopeKey,
 };
+use crate::domain::tax_display::RegionTaxReadiness;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{price, price_tier_band};
 use crate::infra::storage::repo::check_authored_instant;
@@ -760,12 +761,44 @@ fn tx_failure(err: TxError<RepoError>) -> RepoError {
 /// the row-count mismatch it is; [`RepoError::CorruptRow`] when a stored row
 /// cannot be read as the domain value its columns are `CHECK`-constrained to
 /// hold.
+/// Each row's **frozen** resolved tax category, by `price_id` (D-154).
+///
+/// Read rather than re-derived: the value was resolved inside the publish
+/// transaction against the readiness that judged the row, and the region taxonomy
+/// has been mutable ever since. `None` in the map is a row that has one and it is
+/// null; a row absent from the map has not published.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn resolved_tax_categories(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<BTreeMap<Uuid, Option<String>>, RepoError> {
+    Ok(price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PlanId.eq(plan_id.get())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read resolved tax categories: {e}")))?
+        .into_iter()
+        .map(|row| (row.price_id, row.resolved_tax_category))
+        .collect())
+}
+
 pub async fn publish_rows(
     txn: &DbTx<'_>,
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
     validated: &[(Uuid, RowVersion)],
+    readiness: &RegionTaxReadiness,
 ) -> Result<Vec<Uuid>, RepoError> {
     if validated.is_empty() {
         return Ok(Vec::new());
@@ -805,17 +838,58 @@ pub async fn publish_rows(
         );
     }
 
-    let result = price::Entity::update_many()
-        .secure()
-        .scope_with(scope)
-        .col_expr(
-            price::Column::LifecycleState,
-            Expr::value(LifecycleState::Published.as_str()),
-        )
-        .filter(plan_rows_in_state(tenant_id, plan_id, LifecycleState::Draft).add(identities))
-        .exec(txn)
-        .await
-        .map_err(|e| RepoError::Db(format!("publish plan price rows: {e}")))?;
+    // **D-154's effective category is resolved and frozen here**, inside the
+    // publish transaction and against the readiness the rule set judged these
+    // rows with — not in the projector, which runs up to D-47's five-minute
+    // batching maximum later and would re-derive it against a region taxonomy
+    // any `config × write` holder may have re-declared in between. That was the
+    // shape review found (`T-13`): a version could freeze a category no rule
+    // ever judged, or lose one that was present when publish passed.
+    //
+    // Grouped by resolved value rather than one statement per row: a plan's rows
+    // share very few distinct categories, so this is one or two statements where
+    // §14's 500-row soft cap would otherwise mean five hundred inside a
+    // transaction already holding the registry's network call open. `held` is the
+    // read `publish_rows` already made, so no extra round trip resolves it.
+    let mut by_category: BTreeMap<Option<String>, Vec<Uuid>> = BTreeMap::new();
+    for (price_id, _) in validated {
+        let resolved = held.get(price_id).and_then(|row| {
+            row.tax_category_ref.clone().or_else(|| {
+                readiness
+                    .of_str(&row.region)
+                    .and_then(|markers| markers.tax_category.clone())
+            })
+        });
+        by_category.entry(resolved).or_default().push(*price_id);
+    }
+
+    let mut result_rows = 0_u64;
+    for (resolved, price_ids) in by_category {
+        let mut group = Condition::any();
+        for price_id in &price_ids {
+            group = group.add(price::Column::PriceId.eq(*price_id));
+        }
+        let outcome = price::Entity::update_many()
+            .secure()
+            .scope_with(scope)
+            .col_expr(
+                price::Column::LifecycleState,
+                Expr::value(LifecycleState::Published.as_str()),
+            )
+            .col_expr(
+                price::Column::ResolvedTaxCategory,
+                Expr::value(resolved.clone()),
+            )
+            .filter(
+                plan_rows_in_state(tenant_id, plan_id, LifecycleState::Draft)
+                    .add(identities.clone())
+                    .add(group),
+            )
+            .exec(txn)
+            .await
+            .map_err(|e| RepoError::Db(format!("publish plan price rows: {e}")))?;
+        result_rows += outcome.rows_affected;
+    }
 
     // Checked rather than cast: a cast that wrapped would report a mismatched
     // set as a matching one, which is the one answer this comparison must never
@@ -826,11 +900,10 @@ pub async fn publish_rows(
             validated.len()
         ))
     })?;
-    if result.rows_affected != expected_count {
+    if result_rows != expected_count {
         return Err(RepoError::Db(format!(
-            "plan {plan_id} validated {expected_count} price rows and {} moved; \
-             a concurrent commit changed one between the check and the flip",
-            result.rows_affected
+            "plan {plan_id} validated {expected_count} price rows and {result_rows} moved; \
+             a concurrent commit changed one between the check and the flip"
         )));
     }
     Ok(validated.iter().map(|(price_id, _)| *price_id).collect())
@@ -926,10 +999,11 @@ pub async fn commit_supersession_rows(
     plan_id: PlanId,
     predecessor: Uuid,
     successor: (Uuid, RowVersion),
+    readiness: &RegionTaxReadiness,
 ) -> Result<(), RepoError> {
     refuse_mispaired(txn, scope, tenant_id, predecessor, successor.0).await?;
     supersede_row(txn, scope, tenant_id, predecessor).await?;
-    publish_rows(txn, scope, tenant_id, plan_id, &[successor]).await?;
+    publish_rows(txn, scope, tenant_id, plan_id, &[successor], readiness).await?;
     Ok(())
 }
 
@@ -1040,11 +1114,20 @@ pub async fn commit_cutover_rows(
     successor: (Uuid, RowVersion),
     copy: (Uuid, RowVersion),
     cutover_at: DateTime<Utc>,
+    readiness: &RegionTaxReadiness,
 ) -> Result<(), RepoError> {
     refuse_mispaired(txn, scope, tenant_id, predecessor, successor.0).await?;
     refuse_ungenerational(txn, scope, tenant_id, predecessor, copy.0, cutover_at).await?;
     supersede_row(txn, scope, tenant_id, predecessor).await?;
-    publish_rows(txn, scope, tenant_id, plan_id, &[successor, copy]).await?;
+    publish_rows(
+        txn,
+        scope,
+        tenant_id,
+        plan_id,
+        &[successor, copy],
+        readiness,
+    )
+    .await?;
     Ok(())
 }
 

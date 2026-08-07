@@ -54,6 +54,7 @@ use bss_pricing::domain::price_row::{
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use bss_pricing::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
 use bss_pricing::infra::storage::entity::{audit_log, price, price_tier_band};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, PriceRepo};
@@ -68,6 +69,15 @@ use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
+
+/// The readiness a fixture publishes against.
+///
+/// **Empty deliberately.** This suite is about the row plane, not D-154: an empty
+/// lookup freezes `resolved_tax_category` as NULL, which is what a row stating no
+/// category in a region declaring no default should carry.
+fn fixture_readiness() -> bss_pricing::domain::tax_display::RegionTaxReadiness {
+    bss_pricing::domain::tax_display::RegionTaxReadiness::empty()
+}
 
 /// One value for a whole test binary: these suites drive a repository or a
 /// service directly, where the value the HTTP edge would have established has
@@ -1940,14 +1950,16 @@ async fn publish_rows(
     tenant_id: Uuid,
     plan_id: PlanId,
     validated: Vec<(Uuid, RowVersion)>,
+    readiness: &RegionTaxReadiness,
 ) -> Result<Vec<Uuid>, RepoError> {
     let scope = scope.clone();
+    let readiness = readiness.clone();
     let (_, outcome) = provider
         .db()
         .in_transaction::<Vec<Uuid>, RepoError, _>(move |txn| {
             Box::pin(async move {
                 bss_pricing::infra::storage::repo::price_repo::publish_rows(
-                    txn, &scope, tenant_id, plan_id, &validated,
+                    txn, &scope, tenant_id, plan_id, &validated, &readiness,
                 )
                 .await
             })
@@ -1995,6 +2007,124 @@ async fn stored_row(
         .expect("the row is there")
 }
 
+/// A readiness declaring one region's default category.
+fn readiness_for(region: &str, category: Option<&str>) -> RegionTaxReadiness {
+    RegionTaxReadiness::new(
+        [(
+            region.to_owned(),
+            RegionReadiness {
+                tax_category: category.map(ToOwned::to_owned),
+                tax_rate_present: true,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    )
+}
+
+/// **D-154: publish resolves the effective category and freezes the result.**
+///
+/// The row states no category of its own, so the value comes from the region
+/// default — and it is written **by the publish statement**, against the
+/// readiness the rule set judged the row with.
+///
+/// This is `T-13`. It was first built resolving in the projector instead, which
+/// runs up to D-47's five-minute batching maximum later, against a region
+/// taxonomy anyone holding `config × write` may have re-declared in between: a
+/// version could freeze a category no rule ever judged, or lose one that was
+/// present when publish passed. Freezing here is what makes the value a property
+/// of the publish rather than of whenever the sweep happened to run.
+#[tokio::test]
+async fn publish_freezes_the_effective_tax_category_from_the_readiness_it_judged_with() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_00c1);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(price_id, base_key(ChargeKind::Recurring), flat_content()),
+    )
+    .await
+    .expect("author the row");
+
+    publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        vec![(price_id, RowVersion::new(0))],
+        &readiness_for(
+            base_key(ChargeKind::Recurring).region().as_str(),
+            Some("standard"),
+        ),
+    )
+    .await
+    .expect("publish");
+
+    let conn = provider.conn().expect("conn");
+    let frozen = bss_pricing::infra::storage::repo::price_repo::resolved_tax_categories(
+        &conn,
+        &scope,
+        tenant(),
+        plan(),
+    )
+    .await
+    .expect("read the frozen categories");
+
+    assert_eq!(
+        frozen.get(&price_id).cloned().flatten().as_deref(),
+        Some("standard"),
+        "the region default resolved at publish is what the row carries"
+    );
+}
+
+/// The row's **own** category wins, and is what is frozen.
+#[tokio::test]
+async fn publish_freezes_the_rows_own_category_over_the_region_default() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let price_id = Uuid::from_u128(0xb_00c2);
+    let mut content = flat_content();
+    content.tax_category_ref = Some("reduced".to_owned());
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(price_id, base_key(ChargeKind::Recurring), content),
+    )
+    .await
+    .expect("author the row");
+
+    publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        vec![(price_id, RowVersion::new(0))],
+        &readiness_for(
+            base_key(ChargeKind::Recurring).region().as_str(),
+            Some("standard"),
+        ),
+    )
+    .await
+    .expect("publish");
+
+    let conn = provider.conn().expect("conn");
+    let frozen = bss_pricing::infra::storage::repo::price_repo::resolved_tax_categories(
+        &conn,
+        &scope,
+        tenant(),
+        plan(),
+    )
+    .await
+    .expect("read");
+
+    assert_eq!(
+        frozen.get(&price_id).cloned().flatten().as_deref(),
+        Some("reduced"),
+        "D-110 makes the row the source of truth; the default is only a fallback"
+    );
+}
+
 #[tokio::test]
 async fn draft_rows_flip_and_published_rows_are_left_alone() {
     let (repo, provider) = harness().await;
@@ -2022,9 +2152,16 @@ async fn draft_rows_flip_and_published_rows_are_left_alone() {
     .expect("author the second row");
 
     let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
-    let moved = publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect("publish the plan's draft rows");
+    let moved = publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect("publish the plan's draft rows");
 
     assert_eq!(moved, vec![pending], "only the draft row moved");
     assert_eq!(
@@ -2060,9 +2197,16 @@ async fn the_published_rows_entity_tag_freezes_with_the_content_it_names() {
         .expect("author the row");
 
     let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
-    publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect("publish");
+    publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect("publish");
 
     let published = repo
         .find(&scope, tenant(), price_id)
@@ -2087,9 +2231,16 @@ async fn the_key_moves_from_the_draft_plane_index_to_the_published_plane() {
     .expect("author the row");
 
     let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
-    publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect("publish");
+    publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect("publish");
 
     // The draft-plane index (D-148) released the key as the row left `draft`,
     // and the published-plane index claimed it as the row arrived — so a second
@@ -2328,9 +2479,16 @@ async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_p
     .expect("stage the shape through the door that permits it");
 
     let validated = vec![(successor, RowVersion::new(0))];
-    let refused = publish_rows(&provider, &scope, tenant(), plan(), validated.clone())
-        .await
-        .expect_err("publishing beside a live predecessor collides on the key");
+    let refused = publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated.clone(),
+        &fixture_readiness(),
+    )
+    .await
+    .expect_err("publishing beside a live predecessor collides on the key");
     let RepoError::Db(detail) = &refused else {
         panic!("the collision arrives as a storage fault, got: {refused:?}");
     };
@@ -2341,9 +2499,16 @@ async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_p
 
     // The ordering `inst-su-commit` now states: the predecessor leaves first.
     flip_state(&provider, &scope, predecessor, LifecycleState::Superseded).await;
-    let moved = publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect("with the key free on the published plane, the flip is ordinary");
+    let moved = publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect("with the key free on the published plane, the flip is ordinary");
 
     assert_eq!(moved, vec![successor]);
     assert_eq!(
@@ -2377,6 +2542,7 @@ async fn commit_supersession_rows(
                     plan_id,
                     predecessor,
                     successor,
+                    &fixture_readiness(),
                 )
                 .await
             })
@@ -2552,9 +2718,16 @@ async fn a_plan_with_no_draft_rows_publishes_nothing_and_says_so() {
     let scope = AccessScope::for_tenant(tenant());
 
     let validated = validated_drafts(&repo, &scope, tenant(), plan()).await;
-    let moved = publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect("an empty plan is not an error");
+    let moved = publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect("an empty plan is not an error");
 
     assert!(moved.is_empty());
 }
@@ -2587,9 +2760,16 @@ async fn another_tenants_draft_rows_are_invisible_to_a_publish() {
     .expect("author theirs");
 
     let validated = validated_drafts(&repo, &mine, tenant(), plan()).await;
-    let moved = publish_rows(&provider, &mine, tenant(), plan(), validated)
-        .await
-        .expect("publish my rows");
+    let moved = publish_rows(
+        &provider,
+        &mine,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect("publish my rows");
 
     assert_eq!(moved, vec![my_row]);
     assert_eq!(
@@ -2642,9 +2822,16 @@ async fn a_row_whose_content_moved_since_validation_is_refused_by_its_own_tag() 
     .await
     .expect("edit the draft");
 
-    let refusal = publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect_err("a row that moved since validation must not publish");
+    let refusal = publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect_err("a row that moved since validation must not publish");
 
     assert!(
         matches!(refusal, RepoError::StaleRowVersion { current, submitted, .. }
@@ -2692,9 +2879,16 @@ async fn a_row_authored_after_validation_is_not_published_by_this_commit() {
     .await
     .expect("author the row nobody judged");
 
-    let moved = publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect("the validated row publishes");
+    let moved = publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect("the validated row publishes");
 
     assert_eq!(moved, vec![judged]);
     assert_eq!(
@@ -2725,9 +2919,16 @@ async fn a_row_deleted_since_validation_refuses_the_whole_publish() {
         .await
         .expect("discard one of them");
 
-    let refusal = publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect_err("a validated row that is gone must refuse the publish");
+    let refusal = publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect_err("a validated row that is gone must refuse the publish");
 
     assert!(
         matches!(refusal, RepoError::NotFound { .. }),
@@ -2785,9 +2986,16 @@ async fn a_validated_row_of_another_plan_is_caught_by_the_count() {
     // Both rows are `draft` at version 0, so both clear the pre-read; only one
     // of them belongs to the plan being published.
     let validated = vec![(mine, RowVersion::new(0)), (elsewhere, RowVersion::new(0))];
-    let refusal = publish_rows(&provider, &scope, tenant(), plan(), validated)
-        .await
-        .expect_err("a validated set naming a foreign plan's row must not report success");
+    let refusal = publish_rows(
+        &provider,
+        &scope,
+        tenant(),
+        plan(),
+        validated,
+        &fixture_readiness(),
+    )
+    .await
+    .expect_err("a validated set naming a foreign plan's row must not report success");
 
     assert!(
         refusal
@@ -3425,6 +3633,7 @@ async fn cutover_rows(
                     successor,
                     copy,
                     cutover_at,
+                    &fixture_readiness(),
                 )
                 .await
             })

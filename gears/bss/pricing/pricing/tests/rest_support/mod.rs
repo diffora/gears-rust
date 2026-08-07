@@ -80,6 +80,17 @@ use toolkit_security::{SecurityContext, pep_properties};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+/// The readiness a fixture publishes against.
+///
+/// **Empty deliberately.** These suites are about the row plane, not about
+/// D-154: an empty lookup freezes `resolved_tax_category` as NULL, which is
+/// exactly what a row stating no category in a region declaring no default
+/// should carry. The resolved value itself is asserted where it is the subject —
+/// `rest_preview` and the tax-display suites.
+fn fixture_readiness() -> bss_pricing::domain::tax_display::RegionTaxReadiness {
+    bss_pricing::domain::tax_display::RegionTaxReadiness::empty()
+}
+
 /// One value for a whole test binary: these suites drive a repository or a
 /// service directly, where the value the HTTP edge would have established has
 /// no producer. What each suite asserts *about* it is stated where it asserts
@@ -665,6 +676,7 @@ impl Harness {
                         tenant,
                         plan_id,
                         &[(price_id, RowVersion::new(0))],
+                        &fixture_readiness(),
                     )
                     .await
                 })

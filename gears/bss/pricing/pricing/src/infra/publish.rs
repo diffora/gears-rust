@@ -544,10 +544,21 @@ impl PublishService {
                     // Exactly the rows the rule set just judged, at the
                     // versions it judged them at. See `publish_rows`: a
                     // re-derived set would publish rows validated by nothing.
-                    let price_ids =
-                        price_repo::publish_rows(txn, &scope, tenant_id, unit.plan_id, &validated)
-                            .await
-                            .map_err(|e| repo_failure(&e))?;
+                    let price_ids = price_repo::publish_rows(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        unit.plan_id,
+                        &validated,
+                        // **The readiness the rule set just judged these
+                        // rows with**, not a fresh read: D-154 freezes the
+                        // result of the check that passed, so resolving
+                        // again — even here — would be a second answer to
+                        // one question.
+                        params.region_readiness(),
+                    )
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
 
                     // 4. The ref, carrying the subject G6 will project.
                     catalog_version_ref_repo::record_pending(

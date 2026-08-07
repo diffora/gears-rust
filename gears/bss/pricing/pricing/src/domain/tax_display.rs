@@ -136,6 +136,16 @@ impl RegionTaxReadiness {
         }
     }
 
+    /// One region's readiness by its stored string.
+    ///
+    /// The storage layer holds a region as a column, not a [`Region`], and
+    /// wrapping one only to look it up would be a fallible conversion on a path
+    /// that has nothing to do if it fails.
+    #[must_use]
+    pub fn of_str(&self, region: &str) -> Option<&RegionReadiness> {
+        self.by_region.get(region)
+    }
+
     /// One region's readiness, or `None` for a region nobody declared.
     #[must_use]
     pub fn of(&self, region: &Region) -> Option<&RegionReadiness> {

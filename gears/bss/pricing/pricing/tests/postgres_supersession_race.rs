@@ -79,6 +79,15 @@ use tokio::sync::Notify;
 use toolkit_db::secure::AccessScope;
 use uuid::Uuid;
 
+/// The readiness a fixture publishes against.
+///
+/// **Empty deliberately.** This suite is about the row plane, not D-154: an empty
+/// lookup freezes `resolved_tax_category` as NULL, which is what a row stating no
+/// category in a region declaring no default should carry.
+fn fixture_readiness() -> bss_pricing::domain::tax_display::RegionTaxReadiness {
+    bss_pricing::domain::tax_display::RegionTaxReadiness::empty()
+}
+
 const TEST_CORRELATION: Uuid = Uuid::from_u128(0x_c0_11_a7_30);
 const TENANT: Uuid = Uuid::from_u128(0x7e_41);
 const PREDECESSOR: Uuid = Uuid::from_u128(0xb_8001);
@@ -210,6 +219,7 @@ async fn seed(pg: &Pg) -> u64 {
                     TENANT,
                     plan_id(),
                     &[(PREDECESSOR, RowVersion::new(0))],
+                    &fixture_readiness(),
                 )
                 .await
                 .map(|_| ())
