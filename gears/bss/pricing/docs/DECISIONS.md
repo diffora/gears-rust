@@ -2168,6 +2168,59 @@ So the gap is **not a missing capability**. It is that the record says something
 - **Recommendation**: (a). The roster's own doc says a slice adds its alarms **when it wires them**, which is why they were not there — but the wiring is now one call, and a Critical that an operator can only find by grepping logs is the state the plane was opened to end. Keeping the log alongside costs nothing and is what the e2e boot without a registry reads.
 - **Decision**: owed. **Not built** — the comment is repaired to say what is now true, and this entry is the record so the gap is a decision rather than a discovery.
 
+#### D-239 [M] One refusal, two declared codes — split by **surface**, not by class (`T-1`)
+
+- **Where**: `design/04-currency-tax.md` §5 (`BRAND_UNKNOWN` / `PARTNER_UNKNOWN` / `ORG_TIER_UNKNOWN`, since D-120) versus `design/09-price-overlays.md` §5 (`SCOPE_VALUE_UNKNOWN`, D-222, three days later) — one rule, one rejection, two discriminators, and the older list is three codes for **four** classes.
+- **Decision (owner, 2026-08-07): option (3).** `REGION_UNKNOWN` stays on the **price-row authoring** path — there `region` is a scope-key axis and the remedy is to fix the row, which §2 declares independently of any overlay. `SCOPE_VALUE_UNKNOWN` is the sole code on the **overlay scope** path, where the remedy is identical for all four classes (declare the value in the named universe) and the class rides the violation's `subject`/message. **This is what the crate already raises**, so the decision is a documentation act.
+- **Propagation owed**: strike `BRAND_UNKNOWN` / `PARTNER_UNKNOWN` / `ORG_TIER_UNKNOWN` from `04-currency-tax.md` §5 and say the overlay path answers `SCOPE_VALUE_UNKNOWN`. D-222's justification stays as provenance but is annotated: it read that §2 *"names no discriminator"*, true of Slice 9's own §2 and false of the set. Until the strike lands, spec-check's `code-unreferenced` debt for the three is **correct** and must not be closed by minting tokens nothing raises.
+
+#### D-240 [M] `pricing_policy_object.tax_display_mode` is retired (`T-2`)
+
+- **Where**: `m20260802_000006_create_pricing_policy_object.rs` — `tax_display_mode text NOT NULL DEFAULT 'tax_exclusive'` under `chk_pricing_policy_object_tax_display`.
+- **Problem**: it carries a display **basis** default under the name §6 uses for an enforcement **mode**; nothing in `src/` reads it (no accessor, no domain type, no rule — only the two migrations that create it and three fixtures); and `01-foundation.md` §3.7 never declares it. Slice 4 added the column §6 actually asks for beside it (`tax_display_policy_mode`, `fail_closed | warn`, `m20260802_000038`).
+- **Decision (owner, 2026-08-07): retire it — drop the column.** An implementation invention no document requests, sitting on the name a document does request, next to the real switch. Leaving it is a second thing a reader must learn is dead.
+- **Cost, stated rather than discovered**: a **destructive** change to a Foundation-owned table, and on `SQLite` a create-copy-drop-rename rebuild that takes every trigger, index and CHECK on `pricing_policy_object` with it. `m20260802_000019` and `m20260802_000035` are the worked examples, and `sqlite_migrations` pins trigger **bodies**, so a rebuild that lost one reddens there.
+
+#### D-241 [L] The `orgTier` path segment becomes `org_tier` (`T-4`)
+
+- **Where**: `design/04-currency-tax.md` §5's `GET/PUT /bss-pricing/v1/config/taxonomies/{region|brand|partner|orgTier}` against `ScopeClass::as_str()`, which renders the same class `org_tier` on the wire and in `pricing_price_overlay.scope_class`.
+- **Decision (owner, 2026-08-07): option (2) — one spelling everywhere.** The strand recommended keeping §5 literal on the grounds that a path segment is not a JSON field and no rule of the set requires them to agree; the owner's call is that an OpenAPI-generated client carrying **both** spellings for one class is the cost that decides it, and the gear is not deployed, so nothing breaks.
+- **Propagation owed**: the route's path segment, the OpenAPI document, `rest_taxonomies.rs`' pinned paths, and §5's own spelling. Option (3) — accepting both — stays refused for the register's reason: two spellings that both work is the state in which neither is canonical.
+
+#### D-242 [L] The taxonomy `value` CHECK is tightened to reject whitespace (`T-6`)
+
+- **Where**: `m20260802_000028`…`000031` on both engines — `CHECK (length(value) > 0)` — against `ScopeValue::new`, which **trims** before deciding.
+- **Problem, measured rather than reasoned**: `'   '` has `length > 0`, so the store admits it and the domain refuses it; the insert landed on both engines. `TaxonomyRepo::list` maps a value `ScopeValue` refuses to `RepoError::CorruptRow`, so **one** whitespace row makes `GET /config/taxonomies/{class}` fail for **every** value in that class, and the only remedy is direct SQL — the `PUT` cannot round-trip a list it cannot read.
+- **Decision (owner, 2026-08-07): option (1)** — `length(btrim(value)) > 0`, four tables, both engines. It is the only one of the three that stops the bad row existing rather than coping with it, and it makes the store agree with the domain type, which is the invariant that was intended. Option (2) stays refused: a read that silently dropped values would make the next `PUT` retire them.
+- **Cost**: a `CHECK` change is a `SQLite` create-copy-drop-rename **per table** — four rebuilds, each under the roster's four censuses.
+
+#### D-243 [M] The retire guard's TOCTOU resolves on the publish-side rule, and the ordering is stated (`T-9`)
+
+- **Where**: `taxonomy_repo::apply_replace` — `list_on`, then N × `references_to`, then `write_set`, all plain `SELECT`s with no row lock inside a bare `BEGIN` (READ COMMITTED on Postgres).
+- **Problem**: nothing serialises the guard's count against a transaction concurrently creating a reference. T1 retires `eu` seeing zero published rows while T2 publishes a row in `eu`; both commit, and a published row sits on a retired region. **The entry was written while this was unreachable** — `RegionsDeclared` was registered nowhere, so a publish did not consult the taxonomy at all. `476668ad8` registered it, so the hole is now real.
+- **Decision (owner, 2026-08-07): option (3)** — accept the race and let the publish-side rule carry it. `inst-tx-region` refuses a row whose region is not `active`, so the row T2 published would be refused on its own merits at its next publish, and the race resolves to *whichever committed first wins; the loser is refused next time*. Option (1) locks a set that is large at C1's 20-currency floor and makes a config write block publishes; option (2) buys a retry, not a refusal.
+- **Owed**: the ordering must be **stated** in the design set rather than left as an emergent property, and pinned by a case — the whole reason this entry exists is so the outcome is chosen rather than discovered.
+
+#### D-244 [L] The preview quotes the terminal phase's `all_subscriptions` recurring row (`T-12`)
+
+- **Where**: `design/04-currency-tax.md` §2 — *"Returns the catalog **base list price** for a `(region, currency)`"* — against a market that legitimately holds many rows, since `phase`, `chargeKind`, `meter` and `dimensionKey` are all scope-key axes.
+- **Decision (owner, 2026-08-07): option (1)** — §2 names the row: the **terminal phase's `all_subscriptions` recurring** row. The preview's audience is prospective purchasers, so the honest answer is the row they would actually be charged first, and the set already has the vocabulary to say it. Option (2) turns a price preview into a price list and moves the question to every consumer; option (3) is what is built and the register calls it a placeholder.
+- **Propagation owed**: §2's sentence, and `infra::preview`'s selection — today "prefer a non-usage row carrying an amount, break ties on `priceId`". Determinism is not lost by the change; it stops being arbitrary.
+
+#### D-245 [M] The region taxonomy's `tax_category` is guarded against removal while a published row depends on it (`T-16`, and half of `T-13`)
+
+- **Where**: `domain/tax_display.rs` — `TaxBasisComplete` ranges over every candidate row; `MarketBasisUniform` beside it excludes `ExistingGrandfathered` before grouping (measured: `:253` versus `:336`).
+- **Problem**: an `existing_grandfathered` row published with `tax_category_ref = NULL` takes the region default; the tenant later drops that default — an unguarded column update, since the retire guard counts referencing **rows** and not **markers** — and every subsequent publish of that plan fails `TAX_BASIS_INCOMPLETE` on a row that is immutable, MUST NOT be superseded and cannot be `PATCH`ed.
+- **Decision (owner, 2026-08-07): option (2)** — guard the marker, not the rule. Extend the retire guard's shape one column over: a region's `tax_category` may not be removed while a published row resolves through it. Option (1), mirroring D-132's carve-out onto the completeness arm, was declined because the two exclusions are not the same fact — D-132 excludes a generation whose *basis* is frozen and harmless, whereas a missing *category* is a descriptor element genuinely absent from something still published.
+- **This also closes half of `T-13`**: the value can no longer vanish from under a frozen category. What it does not close is the value **changing**, which `ea8ebc29b` already handled by freezing the resolved category at the publish commit.
+
+#### D-246 [M] `pricing_tax_not_sellable_ga` becomes an observable gauge with a callback over the read model (`T-17`, bullet 1)
+
+- **Where**: `domain/ports/metrics.rs` / `infra/metrics.rs` — the instrument is declared and the adapter builds it; nothing writes it.
+- **Problem**: the declared quantity is **catalog-wide** ("how many markets are gated now") and every path in this gear is per-plan. `8c5e10075` removed the per-plan write as a `[C]`: an un-dimensioned series written per pre-check is last-writer-wins across every plan and tenant, so a tax-exclusive plan checked after one gating five markets writes `0` and clears §7's alarm while those five stay gated.
+- **Decision (owner, 2026-08-07): an observable gauge with a callback over the read model.** It is the only shape in which a catalog-wide quantity is honest — the exporter asks for the value at collection time and no publish claims to know other plans' state. A periodic job in the warm sweep was declined: it puts a catalog-wide scan on the warm path, whose whole contract is bounded per-tenant work (D-163).
+- **Unchanged by this**: §7's Info alarm stays on the **counter**, which is well-defined from one plan. **Still owed and not decided here** — `PreviewFailClosed::NoPublishedVersion` conflating "never published" with "published, not yet warmed" (splitting it needs a fact the frontier read does not return), and `pricing.tax.readiness_divergent`, declared and unraised because its reconciliation is the future Tax Engine's contract.
+
 ## F.1 Open product forks (2026-07-29) — not decided by the review
 
 These carry commercial flavour and are deliberately left for the product owner. Each is a real
