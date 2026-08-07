@@ -154,11 +154,15 @@
 //!   segments and the roll-up alike and is off the mutation path by definition;
 //!   this module gives it the primitives it will recompute with and nothing
 //!   more.
-//! - **`retire`, `backdate_import` and `policy_update`.** S5 §6 declares all
-//!   three and this gear has no writer for any of them: there is no retirement
-//!   surface (Slice 11), no `pricing_historical_price` store (`inst-bd-store`)
-//!   and no threshold-policy store (D-10). A token declared here with no writer
-//!   is indistinguishable from a record nobody writes, so they stay owed.
+//! - **`backdate_import` and `policy_update`.** S5 §6 declares both and this
+//!   gear has no writer for either: there is no `pricing_historical_price` store
+//!   (`inst-bd-store`) and no threshold-policy store (D-10). A token declared
+//!   here with no writer is indistinguishable from a record nobody writes, so
+//!   they stay owed.
+//!
+//!   **`retire` has left this list.** It sat here on exactly that rule — S5 §6
+//!   declared it and nothing wrote it — and `crate::infra::retirement` is now
+//!   its writer, inside the flip's own transaction (D-128, Slice 11).
 //!
 //! `approve`, `reject` and `deny` **are** declared, and this list is where they
 //! stopped being owed. It once said of the first two that "their writer is the
@@ -258,6 +262,24 @@ pub enum AuditAction {
     /// belongs to. Its siblings [`AuditAction::Approve`] and
     /// [`AuditAction::Reject`] record the decisions that were *taken*.
     Deny,
+    /// A published plan was **retired** — the terminal, sales-stopping flip
+    /// (`inst-rt-cancel`, `inst-rt-event`, D-128).
+    ///
+    /// **Owed to S5 §6 since this gear had a `pricing_audit_log`, and no longer
+    /// owed as of Slice 11**: the module doc's absent list named `retire` as a
+    /// token whose writer did not exist, and the rule there is one token, one
+    /// writer, landing together. The writer is `crate::infra::retirement`, inside
+    /// the transaction that performs the flip.
+    ///
+    /// Distinct from [`AuditAction::Publish`] though retirement **is** a publish
+    /// unit (D-128, running the same engine path): what an auditor needs to find
+    /// is the act that stopped the plan selling, and a trail on which retirement
+    /// rendered as one more `publish` would hide the one plan-lifecycle event
+    /// that can never be undone. Distinct from [`AuditAction::Abandon`] for the
+    /// opposite reason — that one is the *draft* revision's flip, and a single
+    /// retirement writes both records: this one for the plan, `abandon` for the
+    /// draft revision D-145 tombstones alongside it.
+    Retire,
 }
 
 impl AuditAction {
@@ -278,6 +300,7 @@ impl AuditAction {
         Self::Reject,
         Self::Withdraw,
         Self::Deny,
+        Self::Retire,
     ];
 
     /// The persisted `action` token.
@@ -294,6 +317,7 @@ impl AuditAction {
             Self::Reject => "reject",
             Self::Withdraw => "withdraw",
             Self::Deny => "deny",
+            Self::Retire => "retire",
         }
     }
 }
