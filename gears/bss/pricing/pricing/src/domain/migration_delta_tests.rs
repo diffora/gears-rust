@@ -1,0 +1,339 @@
+//! Unit cases for [`super`] — the three weights, K3's boundary, D-108's
+//! never-broken lock and the fail-closed posture an absent registry produces.
+
+use uuid::Uuid;
+
+use super::{
+    Boundary, ContractLockSet, DeltaKind, DeltaReport, SubscriptionFacts, TargetShape, analyze,
+};
+use crate::domain::error::DomainError;
+
+fn boundary(currency: &str, region: &str, frequency: &str) -> Boundary {
+    Boundary {
+        currency: currency.to_owned(),
+        region: region.to_owned(),
+        frequency: frequency.to_owned(),
+    }
+}
+
+/// A subscriber the target covers perfectly: no delta of any weight.
+fn clean(subscription_ref: Uuid) -> SubscriptionFacts {
+    SubscriptionFacts {
+        subscription_ref,
+        boundary: boundary("USD", "EU", "monthly"),
+        addon_sku_ids: Vec::new(),
+        grants: vec![("seats".to_owned(), 10)],
+        on_grandfathered_row: false,
+    }
+}
+
+fn target() -> TargetShape {
+    TargetShape {
+        covered: vec![boundary("USD", "EU", "monthly")],
+        offered_addon_sku_ids: Vec::new(),
+        required_addon_sku_ids: Vec::new(),
+        grants: vec![("seats".to_owned(), 10)],
+    }
+}
+
+fn resolved_empty() -> ContractLockSet {
+    ContractLockSet::resolved([])
+}
+
+// ---------------------------------------------------------------------------
+// The clean case, which is what gives every case below its contrast.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_subscription_the_target_covers_produces_no_delta_at_all() {
+    let report = analyze(&[clean(Uuid::now_v7())], &target(), &resolved_empty());
+
+    assert!(report.deltas.is_empty());
+    assert!(report.blocking().is_empty());
+    assert!(report.excluded().is_empty());
+    assert!(!report.locks_unresolved);
+    assert!(report.ensure_schedulable().is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// `inst-md-locks` / `inst-cl-exclude` — excluded is not blocking.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_contract_locked_subscription_is_excluded_and_does_not_block_the_schedule() {
+    // D-108: the lock is never broken, and the operator is owed nothing. A design
+    // that made locks blocking would let one contracted account veto a whole
+    // plan's consolidation.
+    let locked = Uuid::now_v7();
+    let free = Uuid::now_v7();
+    let report = analyze(
+        &[clean(locked), clean(free)],
+        &target(),
+        &ContractLockSet::resolved([locked]),
+    );
+
+    assert_eq!(report.excluded(), [locked].into_iter().collect());
+    assert!(report.blocking().is_empty());
+    assert!(
+        report.ensure_schedulable().is_ok(),
+        "a lock excludes, it never blocks"
+    );
+}
+
+#[test]
+fn a_locked_subscription_is_asked_nothing_else_so_it_cannot_block_on_a_plan_it_will_never_reach() {
+    // The short-circuit is the rule, not an optimisation: reporting an
+    // entitlement overflow on a target this subscriber will never be moved to
+    // would make the schedule blocked on a subscription it already agreed to
+    // leave alone.
+    let locked = Uuid::now_v7();
+    let mut facts = clean(locked);
+    facts.boundary = boundary("JPY", "APAC", "annual"); // uncovered
+    facts.grants = vec![("seats".to_owned(), 999)]; // overflowing
+
+    let report = analyze(&[facts], &target(), &ContractLockSet::resolved([locked]));
+
+    assert_eq!(report.deltas.len(), 1);
+    assert!(report.deltas[0].kind.is_exclusion());
+    assert!(report.blocking().is_empty());
+}
+
+#[test]
+fn an_absent_lock_registry_excludes_every_subscription_and_says_so() {
+    // `inst-cl-source`'s outage clause. There is no registry in the built system,
+    // so this is the only value the analyzer is handed today.
+    let a = Uuid::now_v7();
+    let b = Uuid::now_v7();
+    let report = analyze(
+        &[clean(a), clean(b)],
+        &target(),
+        &ContractLockSet::fail_closed(),
+    );
+
+    assert_eq!(report.excluded(), [a, b].into_iter().collect());
+    assert!(report.locks_unresolved);
+    // The distinction the operator needs: excluded because nobody could be asked,
+    // not because Contracts named them.
+    for delta in &report.deltas {
+        assert_eq!(
+            delta.kind,
+            DeltaKind::ContractLocked { unresolved: true },
+            "the report must say the exclusion was fail-closed"
+        );
+    }
+    assert!(report.ensure_schedulable().is_ok());
+}
+
+#[test]
+fn a_resolved_registry_reports_a_positive_lock_distinctly_from_a_fail_closed_one() {
+    let locked = Uuid::now_v7();
+    let report = analyze(
+        &[clean(locked)],
+        &target(),
+        &ContractLockSet::resolved([locked]),
+    );
+
+    assert_eq!(
+        report.deltas[0].kind,
+        DeltaKind::ContractLocked { unresolved: false }
+    );
+    assert!(!report.locks_unresolved);
+}
+
+// ---------------------------------------------------------------------------
+// `inst-md-boundary` — K3.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_target_missing_the_frozen_currency_region_or_frequency_blocks() {
+    // Cross-currency, cross-region and cross-frequency moves are cancel + new,
+    // never an in-place PlanLink. All three axes are the same blocking fact,
+    // which is why they travel as one value.
+    for wrong in [
+        boundary("EUR", "EU", "monthly"),
+        boundary("USD", "APAC", "monthly"),
+        boundary("USD", "EU", "annual"),
+    ] {
+        let mut facts = clean(Uuid::now_v7());
+        facts.boundary = wrong.clone();
+        let report = analyze(&[facts], &target(), &resolved_empty());
+
+        assert_eq!(
+            report.blocking().len(),
+            1,
+            "{wrong:?} should be a blocking boundary delta"
+        );
+        assert_eq!(
+            report.blocking()[0].kind,
+            DeltaKind::BoundaryUncovered { boundary: wrong }
+        );
+    }
+}
+
+#[test]
+fn a_subscriber_leaving_a_grandfathered_row_is_informational_and_never_blocking() {
+    // The operator sees the price impact before confirm; nothing is owed.
+    let mut facts = clean(Uuid::now_v7());
+    facts.on_grandfathered_row = true;
+    let report = analyze(&[facts], &target(), &resolved_empty());
+
+    assert_eq!(report.deltas.len(), 1);
+    assert_eq!(report.deltas[0].kind, DeltaKind::LeavesGrandfatheredRow);
+    assert!(!report.deltas[0].kind.is_blocking());
+    assert!(!report.deltas[0].kind.is_exclusion());
+    assert!(report.ensure_schedulable().is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// `inst-md-entitlements`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_target_granting_less_of_a_key_is_a_blocking_overflow() {
+    let mut shape = target();
+    shape.grants = vec![("seats".to_owned(), 5)];
+    let report = analyze(&[clean(Uuid::now_v7())], &shape, &resolved_empty());
+
+    assert_eq!(
+        report.blocking()[0].kind,
+        DeltaKind::EntitlementOverflow {
+            key: "seats".to_owned(),
+            source_total: 10,
+            target_total: 5,
+        }
+    );
+}
+
+#[test]
+fn a_grant_key_the_target_never_mentions_is_zero_and_not_unconstrained() {
+    // A key the target does not mention is capacity the subscriber stops having,
+    // which is exactly the overflow this delta is about.
+    let mut shape = target();
+    shape.grants = Vec::new();
+    let report = analyze(&[clean(Uuid::now_v7())], &shape, &resolved_empty());
+
+    assert_eq!(
+        report.blocking()[0].kind,
+        DeltaKind::EntitlementOverflow {
+            key: "seats".to_owned(),
+            source_total: 10,
+            target_total: 0,
+        }
+    );
+}
+
+#[test]
+fn a_target_granting_more_is_not_an_overflow() {
+    // Otherwise every generous consolidation would be blocking.
+    let mut shape = target();
+    shape.grants = vec![("seats".to_owned(), 50)];
+    let report = analyze(&[clean(Uuid::now_v7())], &shape, &resolved_empty());
+
+    assert!(report.deltas.is_empty());
+}
+
+#[test]
+fn an_equal_grant_is_not_an_overflow() {
+    // The boundary case of the comparison: strictly-less, not less-or-equal.
+    let report = analyze(&[clean(Uuid::now_v7())], &target(), &resolved_empty());
+    assert!(report.deltas.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// `inst-md-addons`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_addon_the_target_does_not_offer_blocks() {
+    let addon = Uuid::now_v7();
+    let mut facts = clean(Uuid::now_v7());
+    facts.addon_sku_ids = vec![addon];
+    let report = analyze(&[facts], &target(), &resolved_empty());
+
+    assert_eq!(
+        report.blocking()[0].kind,
+        DeltaKind::AddOnInvalidOnTarget {
+            addon_sku_id: addon
+        }
+    );
+}
+
+#[test]
+fn an_addon_the_target_requires_and_the_subscriber_lacks_blocks() {
+    let required = Uuid::now_v7();
+    let mut shape = target();
+    shape.required_addon_sku_ids = vec![required];
+    shape.offered_addon_sku_ids = vec![required];
+    let report = analyze(&[clean(Uuid::now_v7())], &shape, &resolved_empty());
+
+    assert_eq!(
+        report.blocking()[0].kind,
+        DeltaKind::AddOnMissingRequired {
+            addon_sku_id: required
+        }
+    );
+}
+
+#[test]
+fn a_subscriber_already_carrying_the_required_addon_produces_no_delta() {
+    let required = Uuid::now_v7();
+    let mut shape = target();
+    shape.required_addon_sku_ids = vec![required];
+    shape.offered_addon_sku_ids = vec![required];
+    let mut facts = clean(Uuid::now_v7());
+    facts.addon_sku_ids = vec![required];
+
+    assert!(
+        analyze(&[facts], &shape, &resolved_empty())
+            .deltas
+            .is_empty()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The refusal.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_refusal_enumerates_every_blocking_delta_because_blocked_is_not_actionable() {
+    let subscription = Uuid::now_v7();
+    let addon = Uuid::now_v7();
+    let mut facts = clean(subscription);
+    facts.boundary = boundary("JPY", "APAC", "annual");
+    facts.addon_sku_ids = vec![addon];
+
+    let report = analyze(&[facts], &target(), &resolved_empty());
+    let err = report.ensure_schedulable().unwrap_err();
+
+    let DomainError::MigrationBlocked(detail) = err else {
+        panic!("expected MigrationBlocked, got {err:?}");
+    };
+    assert!(detail.contains("boundary_uncovered"), "{detail}");
+    assert!(detail.contains("addon_invalid_on_target"), "{detail}");
+    assert!(detail.contains(&subscription.to_string()), "{detail}");
+}
+
+#[test]
+fn an_empty_report_schedules() {
+    assert!(DeltaReport::default().ensure_schedulable().is_ok());
+}
+
+#[test]
+fn one_subscription_can_carry_several_blocking_deltas_at_once() {
+    // The analyzer reports all of them rather than stopping at the first, because
+    // an operator resolving them one round trip at a time is the cost.
+    let addon = Uuid::now_v7();
+    let required = Uuid::now_v7();
+    let mut shape = target();
+    shape.grants = vec![("seats".to_owned(), 1)];
+    shape.required_addon_sku_ids = vec![required];
+    shape.offered_addon_sku_ids = vec![required];
+
+    let mut facts = clean(Uuid::now_v7());
+    facts.boundary = boundary("JPY", "APAC", "annual");
+    facts.addon_sku_ids = vec![addon];
+
+    let report = analyze(&[facts], &shape, &resolved_empty());
+    // boundary + invalid addon + missing required + entitlement overflow
+    assert_eq!(report.blocking().len(), 4);
+}

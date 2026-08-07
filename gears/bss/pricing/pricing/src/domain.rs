@@ -20,6 +20,7 @@ pub mod instant;
 pub mod lifecycle;
 pub mod materiality;
 pub mod migration;
+pub mod migration_delta;
 pub mod money;
 pub mod overlay;
 pub mod overlay_rules;
