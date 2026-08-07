@@ -93,13 +93,14 @@ use crate::domain::publish::rules::{PublishRuleParams, SoftSizeCaps, run_publish
 use crate::domain::publish::{PlanPublishUnit, PublishAuthorization, PublishReceipt};
 use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::{PhaseId, PlanId};
+use crate::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
 use crate::domain::validation::ValidationReport;
 use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::fixture_gate::{FixtureGate, Reservation};
 use crate::infra::storage::repo::{
     NewAuditEntry, NewOutboxEvent, PendingVersionRow, PlanPublishedPayload, PolicyObjectRepo,
     approval_repo, audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, plan_shape_repo,
-    price_repo, window_repo,
+    price_repo, taxonomy_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -138,6 +139,9 @@ pub struct PublishService {
     /// asking what a handle **this** engine already obtained resolved to. One
     /// requester, two readers.
     registry: Arc<dyn CatalogVersionRegistryV1>,
+    /// What this path reports about itself (`T-17`); a no-op unless the
+    /// gear lifecycle attached one.
+    metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
 }
 
 impl PublishService {
@@ -155,7 +159,26 @@ impl PublishService {
             policies,
             fixture_gate: gate,
             registry,
+            // The safe default: a service built without one reports nothing
+            // rather than failing to build. `with_metrics` is what production
+            // hands it.
+            metrics: Arc::new(crate::domain::ports::metrics::NoopPricingMetrics),
         }
+    }
+
+    /// Attach the metrics port (`T-17`).
+    ///
+    /// A **second call** rather than a fifth parameter on [`Self::new`], for
+    /// `PublishRuleParams::with_referencing_markets`' reason: every existing
+    /// caller has nothing to say to it, and the no-op [`Self::new`] already
+    /// installs is exactly what they mean.
+    #[must_use]
+    pub fn with_metrics(
+        mut self,
+        metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
+    ) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// §4.2 step 2 — validate a plan's open draft revision without touching it.
@@ -191,9 +214,13 @@ impl PublishService {
             .db
             .conn()
             .map_err(|e| DomainError::Internal(format!("bss-pricing: publish precheck: {e}")))?;
-        let params = rule_params(&self.policies, &conn, scope, tenant_id, plan_id).await?;
+        // The shape is assembled **first**, because `inst-cb-addon`'s domain is
+        // the add-on set this revision composes — the parameters are now a
+        // function of the subject, not only of the tenant.
         let shape = assemble(&conn, scope, tenant_id, plan_id, now).await?;
+        let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape).await?;
         let report = run_publish_rules(&shape, &params);
+        crate::infra::metrics::report_market_metrics(&*self.metrics, &shape, &params);
         check_fixtures(&self.fixture_gate, &shape)?;
         Ok(report)
     }
@@ -455,6 +482,9 @@ impl PublishService {
         let scope = scope.clone();
         let policies = self.policies.clone();
         let gate = self.fixture_gate.clone();
+        // Cloned beside the gate and for its reason: the transaction closure
+        // outlives the borrow of `self`.
+        let metrics = Arc::clone(&self.metrics);
         let registry = Arc::clone(&self.registry);
         let request_id = publish_request_id(tenant_id, unit);
 
@@ -465,9 +495,8 @@ impl PublishService {
                 Box::pin(async move {
                     // 1. The second run. Same assembler, same rule set, same
                     // gate - against the world as it now stands.
-                    let params =
-                        rule_params(&policies, txn, &scope, tenant_id, unit.plan_id).await?;
                     let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
+                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape).await?;
                     if shape.revision != unit.revision {
                         return Err(DomainError::NotFound {
                             subject: "open plan draft revision".to_owned(),
@@ -504,6 +533,16 @@ impl PublishService {
                     }
 
                     let report = run_publish_rules(&shape, &params);
+                    // **Reported here as well as at the pre-check, and the
+                    // commit is the more important of the two.** The route's
+                    // approved arm reaches this without a pre-check at all, and
+                    // a plan that failed its pre-check is never approved — so a
+                    // block raised *here* is one that appeared between the
+                    // reviewer's decision and the commit, which is the only kind
+                    // an operator cannot see coming. There is no double count:
+                    // the two runs are two events, and a plan blocked at
+                    // pre-check never reaches this one.
+                    crate::infra::metrics::report_market_metrics(&*metrics, &shape, &params);
                     if !report.is_publishable() {
                         return Err(DomainError::ValidationFailed(report));
                     }
@@ -541,10 +580,21 @@ impl PublishService {
                     // Exactly the rows the rule set just judged, at the
                     // versions it judged them at. See `publish_rows`: a
                     // re-derived set would publish rows validated by nothing.
-                    let price_ids =
-                        price_repo::publish_rows(txn, &scope, tenant_id, unit.plan_id, &validated)
-                            .await
-                            .map_err(|e| repo_failure(&e))?;
+                    let price_ids = price_repo::publish_rows(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        unit.plan_id,
+                        &validated,
+                        // **The readiness the rule set just judged these
+                        // rows with**, not a fresh read: D-154 freezes the
+                        // result of the check that passed, so resolving
+                        // again — even here — would be a second answer to
+                        // one question.
+                        params.region_readiness(),
+                    )
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
 
                     // 4. The ref, carrying the subject G6 will project.
                     catalog_version_ref_repo::record_pending(
@@ -794,8 +844,9 @@ async fn rule_params(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    plan_id: PlanId,
+    shape: &PlanShape,
 ) -> Result<PublishRuleParams, DomainError> {
+    let plan_id = shape.plan_id;
     let policy = policies
         .authoring_policy_on(runner, scope, tenant_id)
         .await
@@ -809,6 +860,47 @@ async fn rule_params(
     let referencing = crate::infra::bundle::referencing_markets(runner, scope, tenant_id, plan_id)
         .await
         .map_err(|e| repo_failure(&e))?;
+    // `inst-tx-region`: the tenant's **active** region universe. Resolved here,
+    // in the same pass as everything else, for the reason this function exists —
+    // the rule set runs twice on one publish and a rule reaching for storage
+    // itself could answer differently in the two runs for no authored reason.
+    //
+    // It is the `active` set, which is `overlay_repo::declares`' predicate one
+    // plane over: a value that reached `retired` must not validate a new row
+    // against itself. An empty answer is C2's fail-closed reading and not an
+    // error — a tenant who has declared no region publishes no row.
+    let declared_regions = taxonomy_repo::active_regions(runner, scope, tenant_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    // C4's `RegionTaxReadiness`, resolved in the same pass and for the same
+    // reason. One statement over the tenant's declared regions rather than one
+    // per market: a plan at C1's 20-currency floor spans as many, and twenty
+    // round trips inside the commit transaction is twenty chances to hold it
+    // open longer than it needs.
+    let readiness = RegionTaxReadiness::new(
+        taxonomy_repo::region_readiness_map(runner, scope, tenant_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .into_iter()
+            .map(|(region, markers)| {
+                (
+                    region,
+                    RegionReadiness {
+                        tax_category: markers.tax_category,
+                        tax_rate_present: markers.tax_rate_present,
+                    },
+                )
+            })
+            .collect(),
+    );
+    let tax_display_policy = policy.tax_display_policy().map_err(|e| repo_failure(&e))?;
+    // `inst-cb-addon`'s domain: what each of this plan's add-ons covers. Resolved
+    // here for the reason the markets above are — the rule is a property of other
+    // plans' published rows and the set runs twice on one publish.
+    let addon_coverage =
+        crate::infra::currency_binding::addon_coverage(runner, scope, tenant_id, shape)
+            .await
+            .map_err(|e| repo_failure(&e))?;
     Ok(PublishRuleParams::new(
         policy.interval_bounds(),
         policy.descriptor_rule(),
@@ -821,7 +913,10 @@ async fn rule_params(
             policy.max_price_rows_per_plan(),
         ),
     )
-    .with_referencing_markets(referencing))
+    .with_referencing_markets(referencing)
+    .with_declared_regions(declared_regions)
+    .with_tax_display(tax_display_policy, readiness)
+    .with_addon_coverage(addon_coverage))
 }
 
 /// The registry request id of one publish unit.

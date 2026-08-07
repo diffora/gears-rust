@@ -10,6 +10,7 @@
 use bss_pricing_sdk::CatalogVersion;
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::json;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use super::{StoredDelta, sellability_facts};
@@ -66,6 +67,7 @@ fn row_on(scope_key: ScopeKey) -> PriceRecord {
         scope_key,
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: None,
         grandfather_until: None,
@@ -146,6 +148,7 @@ fn populated() -> PlanSubjectDelta {
             row_on(generation.clone()),
             row_on(metered),
         ],
+        tax_projection: BTreeMap::new(),
         windows: vec![
             KeyWindows {
                 scope_key: everyone,

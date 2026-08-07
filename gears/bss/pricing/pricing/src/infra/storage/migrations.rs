@@ -69,6 +69,9 @@ pub mod m20260802_000033_create_pricing_price_overlay_line;
 pub mod m20260802_000034_create_pricing_price_overlay_line_amount;
 pub mod m20260802_000035_widen_pricing_approval_subject_kind_overlay;
 pub mod m20260802_000036_widen_pricing_catalog_version_ref_subject_key;
+pub mod m20260802_000037_add_pricing_price_tax_category_ref;
+pub mod m20260802_000038_add_pricing_policy_object_tax_display_policy;
+pub mod m20260802_000039_add_pricing_price_resolved_tax_category;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -161,6 +164,18 @@ impl MigratorTrait for Migrator {
             // the object it restates that `m20260802_000019` did not have to.
             Box::new(m20260802_000035_widen_pricing_approval_subject_kind_overlay::Migration),
             Box::new(m20260802_000036_widen_pricing_catalog_version_ref_subject_key::Migration),
+            // **Slice 4's three, renumbered at the merge.** They were authored
+            // `000036`…`000038` on `slice/04-currency-tax`, against a base that did
+            // not yet carry D-234's `000036` above; both strands took the next free
+            // number from the same base and landed on it. The runner orders by
+            // **name**, so two `000036`s are not a duplicate it would reject — the
+            // names differ and the tables are disjoint — but the number stops being
+            // the thing that says what runs when, which is the only job it has.
+            // Their order among themselves is unchanged, which is what keeps the
+            // column order the strand's roster suites measured.
+            Box::new(m20260802_000037_add_pricing_price_tax_category_ref::Migration),
+            Box::new(m20260802_000038_add_pricing_policy_object_tax_display_policy::Migration),
+            Box::new(m20260802_000039_add_pricing_price_resolved_tax_category::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

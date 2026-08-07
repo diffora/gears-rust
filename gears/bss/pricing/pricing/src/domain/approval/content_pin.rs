@@ -808,6 +808,7 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
         scope_key,
         row,
         tax_inclusive,
+        tax_category_ref,
         billing_timing,
         rounding_policy_ref,
         grandfather_until,
@@ -821,6 +822,12 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
     put_scope_key(buf, scope_key);
     put_price_row(buf, row);
     put_bool(buf, *tax_inclusive);
+    // **In the pin, because a `PATCH` can move it.** `tax_category_ref` is
+    // authored draft content and D-48 makes it one of the descriptor set's
+    // pinned v1 five, riding the row — so a reviewer who approved a plan billing
+    // one tax category and a commit that publishes another, with every digest
+    // equal, is exactly the re-verification hole `sku_id`'s own note describes.
+    put_opt_str(buf, tax_category_ref.as_deref());
     put_opt_str(buf, billing_timing.as_deref());
     put_opt_str(buf, rounding_policy_ref.as_deref());
     put_opt_instant(buf, *grandfather_until);

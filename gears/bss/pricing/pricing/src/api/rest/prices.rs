@@ -296,6 +296,10 @@ pub struct PriceContentView {
     pub included_allowance: Option<IncludedAllowanceView>,
     /// Whether the authored amounts are tax-inclusive. Absent is `false`.
     pub tax_inclusive: Option<bool>,
+    /// The row's tax category (D-110) — the **source of truth**, and the only
+    /// place one lives. Absent states none, and D-154 then resolves the region
+    /// taxonomy's default at publish; it is not the same as "no category".
+    pub tax_category_ref: Option<String>,
     /// `advance` | `arrears` — Slice-6-owned, so a free string here.
     pub billing_timing: Option<String>,
     /// The named rounding policy this row resolves against.
@@ -333,6 +337,7 @@ impl From<&PriceRecord> for PriceContentView {
                 }
             }),
             tax_inclusive: Some(record.tax_inclusive),
+            tax_category_ref: record.tax_category_ref.clone(),
             billing_timing: record.billing_timing.clone(),
             rounding_policy_ref: record.rounding_policy_ref.clone(),
             grandfather_until: record.grandfather_until,
@@ -603,6 +608,16 @@ async fn create_price(
     let request_hash = preconditions::request_digest(&body)?;
     let key = scope_key_of(plan_id, &body.scope_key)?;
     let content = content_of(&body.content)?;
+    // `inst-mc-region` / C2's **save** half: "membership is validated at
+    // save/publish". The publish half is `RegionsDeclared`, registered in the
+    // Foundation set; without this one an operator authored a row on a region
+    // nobody had declared, was answered 201, and learned of it at publish —
+    // possibly from a different person on a different day.
+    //
+    // Two guards in series, deliberately, and they are not redundant: the
+    // publish-time rule is what holds against a region **retired between** the
+    // save and the publish, which this check cannot see.
+    require_declared_region(&state, &scope, tenant, &key).await?;
     let now = Utc::now();
 
     let guard = GuardedRequest {
@@ -909,6 +924,44 @@ fn price_location(plan_id: PlanId, price_id: Uuid) -> String {
 // tables would be two answers to the same question.
 // ---------------------------------------------------------------------------
 
+/// Refuse a row whose `region` is not an **active** value of the tenant's region
+/// taxonomy (`inst-mc-region`, §2 step 2, C2).
+///
+/// The `active` set and not merely a declared one, which is
+/// `overlay_repo::declares`' predicate one plane over: a value that reached
+/// `retired` must not validate a new row against itself, or the retire guard
+/// would be a door that closes from only one side.
+///
+/// Reported with the **same code and the same wording** the publish-time rule
+/// uses, through `domain::taxonomy`, so an operator who meets the refusal twice
+/// meets one message. A second spelling here would be a second answer to the
+/// same question.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] carrying `REGION_UNKNOWN` when the region is
+/// not declared active; [`DomainError::Internal`] on a storage failure.
+async fn require_declared_region(
+    state: &AuthoringState,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    key: &ScopeKey,
+) -> Result<(), CanonicalError> {
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| CanonicalError::from(DomainError::Internal(format!("taxonomy conn: {e}"))))?;
+    let declared = crate::infra::storage::repo::taxonomy_repo::active_regions(&conn, scope, tenant)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    let rule = crate::domain::taxonomy::RegionsDeclared { declared };
+    if let Some(violation) = rule.violation_for(key.region()) {
+        return Err(CanonicalError::from(DomainError::RegionUnknown(
+            violation.detail,
+        )));
+    }
+    Ok(())
+}
+
 /// Build the canonical scope key from the path's plan and the body's axes.
 fn scope_key_of(plan_id: PlanId, key: &ScopeKeyRequest) -> Result<ScopeKey, DomainError> {
     ScopeKey::new(
@@ -1031,6 +1084,19 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
     Ok(PriceContent {
         row,
         tax_inclusive: view.tax_inclusive.unwrap_or(false),
+        // Blank is refused rather than stored: an empty category is a caller
+        // mistake naming one field, and letting it reach the column would make
+        // "states none" and "states the empty string" two spellings of one fact
+        // — which is the ambiguity `m20260802_000037` declines to encode.
+        tax_category_ref: match view.tax_category_ref.as_deref().map(str::trim) {
+            Some("") => {
+                return Err(DomainError::InvalidRequest(
+                    "content.tax_category_ref must not be blank: omit it to state no category,                      which resolves the region's default at publish (D-154)"
+                        .to_owned(),
+                ));
+            }
+            other => other.map(ToOwned::to_owned),
+        },
         billing_timing: view.billing_timing.clone(),
         rounding_policy_ref: view.rounding_policy_ref.clone(),
         grandfather_until: view.grandfather_until,

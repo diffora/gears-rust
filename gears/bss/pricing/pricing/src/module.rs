@@ -591,6 +591,10 @@ impl Gear for BssPricingGear {
             // that split the two.
             overlays: crate::infra::storage::repo::OverlayRepo::new(db.clone()),
             approvals: approvals.clone(),
+            // Slice 4's taxonomy store — the writer the four scope-value
+            // universes had never had, and without which a brand-scoped overlay
+            // could not be authored end to end.
+            taxonomies: crate::infra::storage::repo::taxonomy_repo::TaxonomyRepo::new(db.clone()),
             idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
         });
 
@@ -601,12 +605,23 @@ impl Gear for BssPricingGear {
         // engine stays the only **requester** of a `CatalogVersion`, and the
         // warm sweep is a second **reader**, asking only what a handle the
         // commit already obtained resolved to.
+        // The OTel-backed metrics port. Built once per process and shared: the
+        // adapter caches its instruments, and a second build would look them up
+        // again on a path that is only reporting.
+        //
+        // A **no-op until the host installs a meter provider**, so this is safe
+        // to construct unconditionally — a missing exporter can never be the
+        // reason a publish fails.
+        let metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort> =
+            Arc::new(crate::infra::metrics::PricingMetricsMeter::new());
+
         let publish = PublishService::new(
             db.clone(),
             &config.limits,
             fixture_gate,
             Arc::clone(&catalog_version_registry),
-        );
+        )
+        .with_metrics(Arc::clone(&metrics));
 
         // The governance surface's state, and the publish engine's **only**
         // holder. It sat on `PricingRuntime` behind a `dead_code` allow for two
@@ -649,6 +664,7 @@ impl Gear for BssPricingGear {
             // caller's retry is protected on one surface and not on another.
             idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
             thresholds: crate::infra::threshold::ThresholdService::new(db.clone()),
+            metrics: Arc::clone(&metrics),
         });
 
         self.runtime.store(Some(Arc::new(PricingRuntime {
@@ -783,6 +799,14 @@ impl RestApiCapability for BssPricingGear {
                 Arc::clone(&rt.governance_api),
                 openapi,
             ))
+            .merge(crate::api::rest::taxonomies::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::tax_display_policy::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
             .merge(crate::api::rest::windows::router(
                 Arc::clone(&rt.governance_api),
                 openapi,
@@ -800,6 +824,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::publish::router(
+                Arc::clone(&rt.governance_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::preview::router(
                 Arc::clone(&rt.governance_api),
                 openapi,
             ))

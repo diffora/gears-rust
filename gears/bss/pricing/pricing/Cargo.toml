@@ -7,6 +7,14 @@ description = "BSS Plan & Price Modeling gear: the catalog publish engine, Postg
 [lints]
 workspace = true
 
+[features]
+# Exposes the in-memory metrics harness (`infra::metrics::test_harness`) for
+# asserting emitted OTel instruments. Gated so `opentelemetry_sdk` never ships
+# in the release artifact; auto-enabled for `cargo test` by the
+# self-referencing dev-dependency below. The sibling ledger's arrangement, and
+# RBAC's before it.
+test-support = ["dep:opentelemetry_sdk"]
+
 [dependencies]
 bss-pricing-sdk = { workspace = true }
 
@@ -37,6 +45,16 @@ serde = { workspace = true }
 # Authz-label stub type-schemas registered at init (`authz::authz_label_type_schemas`).
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# OTel metrics seam (`infra::metrics`): literal Prometheus names, a no-op until
+# the host wires an exporter. `metrics` only — this gear emits no spans of its
+# own, and the workspace pin carries `trace` for the gears that do.
+opentelemetry = { workspace = true, features = ["metrics"] }
+# SDK only for the in-memory test harness, gated behind `test-support` via
+# `dep:opentelemetry_sdk` so it never enters the release graph.
+opentelemetry_sdk = { workspace = true, features = [
+  "metrics",
+  "testing",
+], optional = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
@@ -96,6 +114,11 @@ toolkit-macros = { workspace = true }
 toolkit-canonical-errors = { workspace = true }
 
 [dev-dependencies]
+# Re-imports the crate under test with `test-support` enabled so the metrics
+# harness is available to the in-file tests. Cargo unifies the lib-under-test
+# edge with this dev-dep edge into one `test-support = on` compilation.
+bss-pricing = { path = ".", features = ["test-support"] }
+
 # The corpus loader and case model, behind the `corpus` feature the production
 # dependency above deliberately leaves off. Only the example and the tests read
 # case files; the gear at runtime asks the registry one question and nothing

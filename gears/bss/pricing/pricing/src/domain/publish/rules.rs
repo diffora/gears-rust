@@ -122,11 +122,16 @@ use uuid::Uuid;
 
 use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
 use crate::domain::coverage::window_coverage_rules;
+use crate::domain::currency_binding::{AddonCoverage, RequiredAddonsCoverMarkets};
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::rules::price_row_rules;
 use crate::domain::scope_key::{PriceEligibility, Region};
+use crate::domain::tax_display::{
+    MarketBasisUniform, RegionTaxReadiness, TaxBasisComplete, TaxDisplayPolicy,
+};
+use crate::domain::taxonomy::RegionsDeclared;
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
 
 /// A published row resolves neither its own `rounding_policy_ref` nor a tenant
@@ -224,6 +229,10 @@ pub struct PublishRuleParams {
     default_rounding_policy: Option<String>,
     size_caps: SoftSizeCaps,
     referencing_markets: Vec<ReferencingMarket>,
+    declared_regions: BTreeSet<Region>,
+    addon_coverage: AddonCoverage,
+    tax_display_policy: TaxDisplayPolicy,
+    region_readiness: RegionTaxReadiness,
 }
 
 /// One market of one **bundle that references this plan as a component**, and the
@@ -284,6 +293,14 @@ impl PublishRuleParams {
             default_rounding_policy,
             size_caps,
             referencing_markets: Vec::new(),
+            declared_regions: BTreeSet::new(),
+            // Empty is fail-closed here too: an add-on nobody resolved covers
+            // nothing, so a required one blocks. See `AddonCoverage`.
+            addon_coverage: AddonCoverage::empty(),
+            // C4's ratified default, so a caller that says nothing gets the
+            // fail-closed rule rather than the permissive one.
+            tax_display_policy: TaxDisplayPolicy::FailClosed,
+            region_readiness: RegionTaxReadiness::empty(),
         }
     }
 
@@ -298,6 +315,67 @@ impl PublishRuleParams {
     #[must_use]
     pub fn with_referencing_markets(mut self, markets: Vec<ReferencingMarket>) -> Self {
         self.referencing_markets = markets;
+        self
+    }
+
+    /// Attach the tenant's **active** region universe (`inst-tx-region`).
+    ///
+    /// A second call rather than a sixth parameter on [`Self::new`], for
+    /// [`Self::with_referencing_markets`]' reason — but the empty set means
+    /// something different here and it is the **fail-closed** meaning, not "no
+    /// constraint": a tenant who has declared no region publishes no row at all
+    /// (C2). That asymmetry is why this is documented rather than mirrored.
+    ///
+    /// It follows that every caller assembling a real publish **must** call this.
+    /// A caller who forgets gets the empty set and refuses everything, which is
+    /// the safe direction to fail and is loud immediately — the opposite default
+    /// would let the rule pass silently for a tenant whose taxonomy nobody read.
+    #[must_use]
+    pub fn with_declared_regions(mut self, regions: BTreeSet<Region>) -> Self {
+        self.declared_regions = regions;
+        self
+    }
+
+    /// Attach C4's tax-display inputs: the tenant's enforcement mode and the
+    /// `RegionTaxReadiness` lookup (`inst-td-policy`, `inst-td-readiness`).
+    ///
+    /// The two travel together because neither is usable alone — the mode says
+    /// how to treat an incomplete basis and the readiness is what decides
+    /// whether one *is* incomplete — and a caller holding one without the other
+    /// would be a caller free to enforce a policy against an empty world, which
+    /// answers "incomplete" for every row.
+    #[must_use]
+    pub fn with_tax_display(
+        mut self,
+        policy: TaxDisplayPolicy,
+        readiness: RegionTaxReadiness,
+    ) -> Self {
+        self.tax_display_policy = policy;
+        self.region_readiness = readiness;
+        self
+    }
+
+    /// The readiness lookup, for the publish path's own projection of D-154's
+    /// resolved category.
+    #[must_use]
+    pub const fn region_readiness(&self) -> &RegionTaxReadiness {
+        &self.region_readiness
+    }
+
+    /// The resolved add-on coverage, for a reader that is not a rule.
+    ///
+    /// A reader beside [`Self::region_readiness`]: the publish path counts
+    /// `inst-cb-addon`'s blocks (`T-17`) and has to ask the same question the
+    /// rule asks, from the same handed-in facts, rather than re-deriving it.
+    #[must_use]
+    pub const fn addon_coverage(&self) -> &AddonCoverage {
+        &self.addon_coverage
+    }
+
+    /// Attach the resolved coverage of this plan's add-ons (`inst-cb-addon`).
+    #[must_use]
+    pub fn with_addon_coverage(mut self, coverage: AddonCoverage) -> Self {
+        self.addon_coverage = coverage;
         self
     }
 
@@ -391,6 +469,35 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         .with_rule(Box::new(NoUnjudgedPrimitive))
         .with_rule(Box::new(BundleMarketBasisUnmixed {
             markets: params.referencing_markets.clone(),
+        }))
+        // `inst-tx-region` (Slice 4). **Registered here, in the Foundation's own
+        // set, rather than called from a slice seam** — this module's doc gives
+        // the reason and it is the same one `BundleMarketBasisUnmixed` cites: a
+        // rule bolted on at a call site is the "whichever slice happens to load
+        // first" outcome §4.2 keeps the base set out of.
+        //
+        // It belongs to the base set rather than to a Slice-4-only pipeline
+        // because `region` is a **scope-key axis**: every publish of every plan
+        // has one on every row, so there is no publish this rule does not apply
+        // to.
+        .with_rule(Box::new(RegionsDeclared {
+            declared: params.declared_regions.clone(),
+        }))
+        // Slice 4's tax-display pair. In the Foundation set for
+        // `RegionsDeclared`'s reason: `tax_inclusive` is a column on every price
+        // row, so there is no publish these do not apply to.
+        .with_rule(Box::new(TaxBasisComplete {
+            policy: params.tax_display_policy,
+            readiness: params.region_readiness.clone(),
+        }))
+        .with_rule(Box::new(MarketBasisUniform))
+        // `inst-cb-addon` — case (i) of the single-currency-per-invoice binding.
+        // Cases (ii)/(iii) are the bundle plane's and are already enforced by
+        // `domain::bundle_rules::check_coverage`; D-211's delegation of that
+        // walk's **currency** arm to `currency_binding::uncovered_pairs` is owed
+        // and is not made here.
+        .with_rule(Box::new(RequiredAddonsCoverMarkets {
+            coverage: params.addon_coverage.clone(),
         }))
 }
 

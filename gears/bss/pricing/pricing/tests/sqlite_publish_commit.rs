@@ -59,6 +59,7 @@ use bss_pricing::domain::scope_key::{
 use bss_pricing::domain::snapshot::VersionRef;
 use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
 use bss_pricing::infra::fixture_gate::FixtureGate;
+use bss_pricing::infra::metrics::test_harness::MetricsHarness;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::entity::{
     audit_log, catalog_version_ref, outbox, pin_frontier, read_model,
@@ -181,6 +182,8 @@ fn committed_registry_path() -> PathBuf {
 }
 
 struct Harness {
+    /// What the publish path reported about itself, over a private exporter.
+    metrics: MetricsHarness,
     plans: PlanRepo,
     shapes: PlanShapeRepo,
     prices: PriceRepo,
@@ -202,13 +205,25 @@ async fn harness_with(registry: Arc<RegistryDouble>) -> Harness {
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
+    // The tenant declares the regions its rows sell in. `inst-tx-region` is
+    // registered in the Foundation rule set and C2 is fail-closed, so a publish
+    // by a tenant with an empty region taxonomy is refused — which is correct,
+    // and which every fixture here would otherwise trip on a rule none of them
+    // is about.
+    common::declare_fixture_regions(&provider, TENANT).await;
+    // The real adapter over a private exporter, not the no-op: this suite is
+    // where the **commit's** rule run is staged, and that is the run whose
+    // reporting nothing else can see.
+    let metrics_harness = MetricsHarness::new();
     let publish = PublishService::new(
         provider.clone(),
         &LimitsConfig::default(),
         FixtureGate::load(&committed_registry_path()),
         Arc::clone(&registry) as Arc<dyn CatalogVersionRegistryV1>,
-    );
+    )
+    .with_metrics(Arc::new(metrics_harness.metrics()));
     Harness {
+        metrics: metrics_harness,
         plans: PlanRepo::new(provider.clone()),
         shapes: PlanShapeRepo::new(provider.clone()),
         prices: PriceRepo::new(provider.clone()),
@@ -245,6 +260,7 @@ fn flat_row() -> PriceContent {
     PriceContent {
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         // Its own policy, so the Foundation's rounding rule resolves without a
         // tenant policy row.
@@ -930,7 +946,16 @@ async fn registry_absence_stops_the_publish_and_writes_nothing() {
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
+    // The tenant declares the regions its rows sell in. `inst-tx-region` is
+    // registered in the Foundation rule set and C2 is fail-closed, so a publish
+    // by a tenant with an empty region taxonomy is refused — which is correct,
+    // and which every fixture here would otherwise trip on a rule none of them
+    // is about.
+    common::declare_fixture_regions(&provider, TENANT).await;
     let h = Harness {
+        // Unread by this case, which is about an unconfigured registry: the
+        // publish it stages never reaches a rule run.
+        metrics: MetricsHarness::new(),
         plans: PlanRepo::new(provider.clone()),
         shapes: PlanShapeRepo::new(provider.clone()),
         prices: PriceRepo::new(provider.clone()),
@@ -2432,5 +2457,109 @@ async fn a_component_publish_agreeing_with_the_bundles_market_is_not_refused() {
     assert!(
         !codes.contains(&"BUNDLE_TAX_BASIS_MIXED".to_owned()),
         "an agreeing basis is not a mix: {codes:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The commit's rule run reports (`T-17`, §7/§10).
+// ---------------------------------------------------------------------------
+
+/// **The commit reports, and it is the run whose reporting matters most.**
+///
+/// The publish route's approved arm reaches `commit` **without** running a
+/// pre-check at all — the pre-check belongs to the submit arm — and a plan that
+/// failed its pre-check is never approved. So a finding raised by the commit's
+/// rule run is one that appeared between the reviewer's decision and the commit:
+/// exactly the kind an operator cannot see coming, and for a while the only kind
+/// this gear did not count.
+///
+/// Staged with a tax-inclusive row, whose §7 Info alarm the derivation raises off
+/// the same candidate set. `precheck` is deliberately never called, so the count
+/// asserted here can only have come from the commit — and the commit **refuses**,
+/// which is the sharper half: the report is made about what was judged, not only
+/// about what went on to publish.
+#[tokio::test]
+async fn the_commits_rule_run_reports_what_it_judged() {
+    let h = harness().await;
+    let (revision, version, _) = seed_publishable(&h).await;
+
+    // A second row on its own canonical key, tax-inclusive — so the candidate
+    // set gates a market and §7's alarm has something to say about it.
+    let gated = Uuid::from_u128(0xb_0003);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: gated,
+                scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
+                content: PriceContent {
+                    tax_inclusive: true,
+                    tax_category_ref: Some("standard".to_owned()),
+                    ..flat_row()
+                },
+                created_by: ACTOR,
+                created_at_utc: at(11),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the tax-inclusive row");
+    common::schedule_coverage_window(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        gated,
+        stamp(),
+    )
+    .await;
+
+    h.metrics.force_flush();
+    assert_eq!(
+        h.metrics.counter_value(
+            "pricing_alarm_total",
+            &[("alarm", "pricing.tax.not_sellable_ga_active")]
+        ),
+        0,
+        "nothing has judged this subject yet"
+    );
+
+    let refusal = h
+        .publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect_err("the mixed basis is refused, and that is the path under test");
+
+    // The refusal is the staged one and not something standing in for it: a
+    // tax-inclusive row beside a tax-exclusive one on `EUR/eu` is D-110's mixed
+    // market. **The reporting happens anyway**, and that is the claim — the
+    // derivation runs on the judged candidate set, before the publishability
+    // verdict decides whether the transaction lives.
+    match &refusal {
+        DomainError::ValidationFailed(report) => {
+            let codes: Vec<&str> = report.violations.iter().map(|v| v.code.as_str()).collect();
+            assert_eq!(codes, ["TAX_BASIS_MIXED_MARKET"]);
+        }
+        other => panic!("expected a validation report, got {other:?}"),
+    }
+
+    h.metrics.force_flush();
+    assert_eq!(
+        h.metrics.counter_value(
+            "pricing_alarm_total",
+            &[("alarm", "pricing.tax.not_sellable_ga_active")]
+        ),
+        1,
+        "the commit's rule run reported, with no pre-check anywhere in this case"
     );
 }

@@ -51,6 +51,7 @@ pub mod plan_shape_repo;
 pub mod policy_repo;
 pub mod price_repo;
 pub mod read_model_repo;
+pub mod taxonomy_repo;
 pub mod threshold_repo;
 pub mod window_repo;
 

@@ -287,6 +287,13 @@ async fn harness_with(jobs: JobsConfig) -> Harness {
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
+    // The tenant declares the regions its rows sell in. `inst-tx-region` is
+    // registered in the Foundation rule set and C2 is fail-closed, so a publish
+    // by a tenant with an empty region taxonomy is refused — which is correct,
+    // and which every fixture here would otherwise trip on a rule none of them
+    // is about.
+    common::declare_fixture_regions(&provider, TENANT).await;
+    common::declare_fixture_regions(&provider, OTHER_TENANT).await;
     let registry = Arc::new(RegistryDouble::default());
     let publish = PublishService::new(
         provider.clone(),
@@ -337,6 +344,7 @@ fn flat_row() -> PriceContent {
     PriceContent {
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
@@ -2545,6 +2553,13 @@ async fn a_sweep_with_no_registry_configured_is_inert() {
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
+    // The tenant declares the regions its rows sell in. `inst-tx-region` is
+    // registered in the Foundation rule set and C2 is fail-closed, so a publish
+    // by a tenant with an empty region taxonomy is refused — which is correct,
+    // and which every fixture here would otherwise trip on a rule none of them
+    // is about.
+    common::declare_fixture_regions(&provider, TENANT).await;
+    common::declare_fixture_regions(&provider, OTHER_TENANT).await;
     let registry = Arc::new(RegistryDouble::default());
     let h = Harness {
         plans: PlanRepo::new(provider.clone()),

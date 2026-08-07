@@ -1043,6 +1043,7 @@ fn graduated_usage(unit_price: i64) -> PriceContent {
     PriceContent {
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,

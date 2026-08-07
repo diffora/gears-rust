@@ -77,9 +77,12 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS,
     };
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
+    use bss_pricing::api::rest::preview::PLAN_PREVIEW;
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
+    use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
+    use bss_pricing::api::rest::taxonomies::TAXONOMY;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{
         PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
@@ -106,6 +109,18 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", PRICE_OVERLAYS),
         ("PATCH", PRICE_OVERLAY_BY_ID),
         ("POST", PRICE_OVERLAY_SUBMIT),
+        // Slice 4's config plane: the four scope-value taxonomies, as one route
+        // pair over a `{class}` segment (§5 writes the row as a single cell).
+        // This is the surface that had never existed — `inst-plv-scope` and
+        // `inst-tx-region` both validate against these tables, and until now the
+        // only way to put a value in one was direct SQL.
+        // Slice 4's base-price preview (§2, `inst-pv-api`). A read, gated on
+        // `plan × preview` — deliberately not `plan × read`.
+        ("GET", PLAN_PREVIEW),
+        ("GET", TAXONOMY),
+        ("PUT", TAXONOMY),
+        ("GET", TAX_DISPLAY_POLICY),
+        ("PUT", TAX_DISPLAY_POLICY),
         ("POST", BUNDLES),
         ("PATCH", BUNDLE_BY_ID),
         ("POST", BUNDLE_PUBLISH),
@@ -187,6 +202,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         bundles: bss_pricing::infra::storage::repo::BundleRepo::new(db.clone()),
         bundle_service: bss_pricing::infra::bundle::BundleService::new(db.clone()),
         overlays: bss_pricing::infra::storage::repo::OverlayRepo::new(db.clone()),
+        taxonomies: bss_pricing::infra::storage::repo::taxonomy_repo::TaxonomyRepo::new(db.clone()),
         idempotency: IdempotencyGate::new(Duration::from_hours(1)),
     });
     // The registry is the fail-closed production default and the fixture gate is
@@ -200,6 +216,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             LimitsConfig::default().idempotency_key_ttl(),
         ),
         thresholds: bss_pricing::infra::threshold::ThresholdService::new(db.clone()),
+        // The no-op, for the same reason as the gate above: this test builds the
+        // router to census its paths and sends no request, so there is nothing
+        // to report.
+        metrics: Arc::new(bss_pricing::domain::ports::metrics::NoopPricingMetrics),
         plans: PlanRepo::new(db.clone()),
         prices: PriceRepo::new(db.clone()),
         approvals,
@@ -255,6 +275,18 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             // The submit route publishes (D-234), so it is mounted on the
             // governance state apart from its authoring siblings.
             .merge(bss_pricing::api::rest::overlays::governance_router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::taxonomies::router(
+                Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::tax_display_policy::router(
+                Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::preview::router(
                 Arc::clone(&governance),
                 &openapi,
             ))

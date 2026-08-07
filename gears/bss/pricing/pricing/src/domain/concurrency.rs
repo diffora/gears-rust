@@ -227,6 +227,42 @@ pub fn require_match(current: RowVersion, submitted: RowVersion) -> Result<(), D
 /// somewhere else.
 const POLICY_TAG_DOMAIN_SEP: &[u8] = b"cf.bss.pricing.approval_threshold_policy.etag.v1\x00";
 
+/// The taxonomy resource's own domain separator.
+///
+/// **Distinct from [`POLICY_TAG_DOMAIN_SEP`], and that is the point of a
+/// separator rather than a nicety.** Both resources render a [`PolicyTag`] and
+/// both parse one back with [`PolicyTag::from_etag`], so without separation a
+/// digest computed over one representation could be presented as an assertion
+/// about the other — and `If-Match` would accept it. The class is folded in
+/// below for the same reason one level down: four taxonomies share this
+/// separator, and a tag for the brand list must not satisfy a `PUT` on the
+/// partner list.
+const TAXONOMY_TAG_DOMAIN_SEP: &[u8] = b"cf.bss.pricing.taxonomy.etag.v1\x00";
+
+/// One taxonomy entry as [`PolicyTag::of_taxonomy`] digests it.
+///
+/// A named struct rather than a five-tuple, because the two `tax_*` members were
+/// added after the tuple existed and a positional pair of `Option<&str>` beside a
+/// `bool` is exactly the shape a caller transposes silently. Every field the
+/// `GET` renders is here, and that correspondence is the type's whole job: a
+/// field the response carries and this does not is a validator that cannot see
+/// its own representation.
+#[domain_model]
+#[derive(Clone, Copy, Debug)]
+pub struct TaxonomyTagEntry<'a> {
+    /// The declared code.
+    pub value: &'a str,
+    /// `active` or `retired`.
+    pub state: &'a str,
+    /// The operator's label.
+    pub display_name: &'a str,
+    /// D-01's default tax category; `None` on the three non-region taxonomies
+    /// and on a region with no default declared.
+    pub tax_category: Option<&'a str>,
+    /// D-01's tenant-declared rate marker; `false` on the other three.
+    pub tax_rate_present: bool,
+}
+
 /// NULL-safe framing markers, [`crate::domain::approval::content_pin`]'s, for the
 /// reason that module gives: a field's **absence** has to frame differently from
 /// every value it could have held.
@@ -300,6 +336,82 @@ impl PolicyTag {
                 buf.extend_from_slice(unit.as_bytes());
             }
             None => buf.push(TAG_ABSENT),
+        }
+        Self(crate::domain::audit::hex_bytes(
+            aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &buf).as_ref(),
+        ))
+    }
+
+    /// The tag of one taxonomy's representation (`04-currency-tax.md` §5).
+    ///
+    /// The digest covers the **class** and **every field the `GET` renders** for
+    /// each entry, in the order the repository reads them — which is ordered by
+    /// value, so two reads of an unchanged taxonomy render one tag.
+    ///
+    /// # Every rendered field, and the one that was missed
+    ///
+    /// A tag that moved only with membership would not change when an operator
+    /// re-labelled a value or retired one, and a validator that does not change
+    /// when the representation changes is broken rather than lenient — the same
+    /// argument the threshold policy's tag makes for covering its pending unit as
+    /// well as its effective version.
+    ///
+    /// **That argument was stated here while the code did not hold it.** The
+    /// first version digested `(value, state, display_name)` and omitted D-01's
+    /// two region markers, which the `GET` renders and the `PUT` writes. The
+    /// consequence was a lost update with no race in it: an operator changing a
+    /// region's `tax_category` left the tag fixed, so a second operator holding
+    /// the pre-change tag could revert it and be told the precondition held — and
+    /// the reverted field is C4's `RegionTaxReadiness` input, so the blast radius
+    /// is a publish blocked, or allowed, on a readiness nobody authored. It also
+    /// made this a lying **strong** validator: a conditional `GET` answered 304
+    /// for a body that had changed. Found by review; `the_tag_moves_when_only_
+    /// the_region_tax_markers_change` is what holds it now.
+    ///
+    /// # Framing
+    ///
+    /// Each field is length-prefixed rather than delimited, because a delimiter
+    /// is forgeable from inside a `display_name`: an operator could otherwise
+    /// label one value so that two different taxonomies digest identically.
+    ///
+    /// An **absent** `tax_category` is framed distinctly from any present value,
+    /// including the empty string, for [`PolicyTag::of`]'s reason — absence is a
+    /// different fact from a value, and a scheme that rendered both as nothing
+    /// would let one be substituted for the other.
+    #[must_use]
+    pub fn of_taxonomy<'a>(
+        class: &str,
+        entries: impl Iterator<Item = TaxonomyTagEntry<'a>>,
+    ) -> Self {
+        /// Append one length-framed field.
+        ///
+        /// A free function rather than a closure over `buf`, because the markers
+        /// need to push their own presence byte between framed fields and a
+        /// closure holding `&mut buf` forbids that.
+        fn push(buf: &mut Vec<u8>, field: &str) {
+            buf.extend_from_slice(&(field.len() as u64).to_be_bytes());
+            buf.extend_from_slice(field.as_bytes());
+        }
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(TAXONOMY_TAG_DOMAIN_SEP);
+        push(&mut buf, class);
+        for entry in entries {
+            push(&mut buf, entry.value);
+            push(&mut buf, entry.state);
+            push(&mut buf, entry.display_name);
+            match entry.tax_category {
+                Some(category) => {
+                    buf.push(TAG_PRESENT);
+                    push(&mut buf, category);
+                }
+                None => buf.push(TAG_ABSENT),
+            }
+            buf.push(if entry.tax_rate_present {
+                TAG_PRESENT
+            } else {
+                TAG_ABSENT
+            });
         }
         Self(crate::domain::audit::hex_bytes(
             aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, &buf).as_ref(),

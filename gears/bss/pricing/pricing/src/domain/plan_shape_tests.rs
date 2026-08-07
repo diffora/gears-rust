@@ -81,6 +81,7 @@ fn record(charge_kind: ChargeKind, code: &str, market: &str, on_phase: PhaseId) 
         scope_key,
         row: PriceRow::new(charge_kind, Some(ModelKind::Flat)),
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: None,
         grandfather_until: None,

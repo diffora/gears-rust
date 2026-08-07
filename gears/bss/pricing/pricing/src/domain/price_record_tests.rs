@@ -41,6 +41,7 @@ fn the_content_carries_every_editable_column_and_no_identity() {
         scope_key: key,
         row: PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat)),
         tax_inclusive: true,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: Some(Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap()),
@@ -59,6 +60,7 @@ fn the_content_carries_every_editable_column_and_no_identity() {
         PriceContent {
             row: record.row.clone(),
             tax_inclusive: record.tax_inclusive,
+            tax_category_ref: None,
             billing_timing: record.billing_timing.clone(),
             rounding_policy_ref: record.rounding_policy_ref.clone(),
             grandfather_until: record.grandfather_until,

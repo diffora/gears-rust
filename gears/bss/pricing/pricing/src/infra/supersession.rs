@@ -281,6 +281,25 @@ pub async fn commit_supersession(
     //    **First, so that a replayed commit is refused where the refusal is
     //    actionable** — see the module doc. This was the other way round until a probe
     //    measured what each order tells the loser of a race.
+    // D-154's readiness, resolved in **this** transaction so the successor's
+    // frozen category is the one the world held when it published — the same
+    // reason `infra::publish::rule_params` resolves it there rather than letting
+    // the projector re-derive it later (`T-13`).
+    let readiness = crate::domain::tax_display::RegionTaxReadiness::new(
+        crate::infra::storage::repo::taxonomy_repo::region_readiness_map(txn, scope, tenant_id)
+            .await?
+            .into_iter()
+            .map(|(region, markers)| {
+                (
+                    region,
+                    crate::domain::tax_display::RegionReadiness {
+                        tax_category: markers.tax_category,
+                        tax_rate_present: markers.tax_rate_present,
+                    },
+                )
+            })
+            .collect(),
+    );
     price_repo::commit_supersession_rows(
         txn,
         scope,
@@ -288,6 +307,7 @@ pub async fn commit_supersession(
         plan.plan_id,
         plan.predecessor,
         plan.successor,
+        &readiness,
     )
     .await?;
 
@@ -1230,6 +1250,7 @@ fn successor_candidate(
         scope_key: request.key.clone(),
         row: authored.row,
         tax_inclusive: authored.tax_inclusive,
+        tax_category_ref: authored.tax_category_ref.clone(),
         billing_timing: authored.billing_timing,
         rounding_policy_ref: authored.rounding_policy_ref,
         grandfather_until: authored.grandfather_until,

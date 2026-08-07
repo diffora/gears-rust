@@ -57,6 +57,14 @@ pub struct AuthoringState {
     /// service is what keeps the transaction boundary in a service instead of putting
     /// one in a handler, which no route in this gear does.
     pub approvals: crate::infra::approval::ApprovalService,
+    /// Slice 4's four scope-value taxonomies — the `config` plane's own store.
+    ///
+    /// Here rather than on [`GovernanceState`] for [`AuthoringState::overlays`]'
+    /// reason and the criterion that split the two: a taxonomy `PUT` requests no
+    /// `CatalogVersion`. It opens no approval unit either — taxonomy mutation is
+    /// `CatalogAdmin` config (§10), audited, and not one of D-10's always-material
+    /// acts — so nothing pulls it toward the governance plane.
+    pub taxonomies: crate::infra::storage::repo::taxonomy_repo::TaxonomyRepo,
     /// The at-most-once gate, holding the configured retention window.
     pub idempotency: IdempotencyGate,
 }
@@ -170,4 +178,12 @@ pub struct GovernanceState {
     /// `approvals` writes. It requests no `CatalogVersion`, so it does not bear on
     /// the split's own criterion either way.
     pub thresholds: crate::infra::threshold::ThresholdService,
+    /// What the catalog reports about itself (`T-17`).
+    ///
+    /// Here rather than on [`AuthoringState`] because the two surfaces that
+    /// report today are governance-plane reads — the base-price preview's
+    /// fail-closed counter and the publish path's currency-binding and GA-gate
+    /// instruments. A later slice reporting from an authoring route adds the
+    /// field there; the port is the same one.
+    pub metrics: std::sync::Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
 }

@@ -12,10 +12,11 @@
 
 use chrono::{TimeZone, Utc};
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use super::{
     CROSS_BOUNDARY_CHANGE_POLICY, OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta,
-    PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta,
+    PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta, RowTaxProjection,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
@@ -76,6 +77,7 @@ fn shape_only() -> PlanSubjectDelta {
             additional: std::collections::BTreeMap::new(),
         }),
         prices: Vec::new(),
+        tax_projection: BTreeMap::new(),
         windows: Vec::new(),
     }
 }
@@ -101,6 +103,7 @@ fn graduated_row() -> PriceRecord {
         .expect("the class pairs with cohort none"),
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
@@ -636,4 +639,117 @@ fn an_empty_shard_renders_the_key_rather_than_omitting_it() {
     .to_value();
 
     assert_eq!(value.get("overlays"), Some(&json!([])));
+}
+
+// ---------------------------------------------------------------------------
+// D-154's resolved category and C3's GA gate — the derived pair (§6).
+// ---------------------------------------------------------------------------
+
+/// A delta carrying one row and the tax facts derived for it.
+fn delta_with_tax(record: PriceRecord, tax: RowTaxProjection) -> PlanSubjectDelta {
+    let mut delta = shape_only();
+    let price_id = record.price_id;
+    delta.prices = vec![record];
+    delta.tax_projection = [(price_id, tax)].into_iter().collect();
+    delta
+}
+
+/// The payload carries **both** derived facts beside the authored column.
+///
+/// The authored `taxCategoryRef` and the resolved `resolvedTaxCategory` are two
+/// fields, not one: D-110 makes the row the source of truth and D-154 freezes
+/// what a consumer should use, and a payload rendering only the resolved value
+/// would leave an operator unable to see what they actually authored.
+#[test]
+fn a_projected_row_carries_the_resolved_category_and_the_ga_flag() {
+    let mut record = graduated_row();
+    record.tax_category_ref = None;
+    record.tax_inclusive = true;
+    let delta = delta_with_tax(
+        record,
+        RowTaxProjection {
+            resolved_tax_category: Some("standard".to_owned()),
+            not_sellable_ga: true,
+        },
+    );
+
+    let value = delta.to_value();
+    let row = &value["prices"][0];
+
+    assert_eq!(
+        row["taxCategoryRef"],
+        json!(null),
+        "the authored column is what the row states, and it states nothing"
+    );
+    assert_eq!(
+        row["resolvedTaxCategory"], "standard",
+        "and the resolved value is the region default D-154 froze"
+    );
+    assert_eq!(row["notSellableGa"], true);
+}
+
+/// A row with no derived facts renders the pair as absent rather than omitting
+/// the keys.
+///
+/// A consumer must be able to tell *this version resolved nothing* from *this
+/// field is not part of the contract*; an omitted key says the second.
+#[test]
+fn a_row_with_no_tax_projection_still_renders_both_keys() {
+    let delta = {
+        let mut d = shape_only();
+        d.prices = vec![graduated_row()];
+        d
+    };
+
+    let value = delta.to_value();
+    let row = &value["prices"][0];
+
+    assert_eq!(row["resolvedTaxCategory"], json!(null));
+    assert_eq!(
+        row["notSellableGa"], false,
+        "absent is not gated: the gate is a positive fact a publish derives"
+    );
+}
+
+/// The projection is **per row**, so one gated market does not gate its sibling.
+///
+/// `inst-td-gagate` is explicit that the flag is per `(currency, region)` market
+/// and never per plan: "a plan selling tax-exclusive in US and tax-inclusive in
+/// EU is gated **only** on its EU market(s)".
+#[test]
+fn the_ga_flag_is_carried_per_row_and_not_across_the_plan() {
+    let mut gated = graduated_row();
+    gated.tax_inclusive = true;
+    let mut open = graduated_row();
+    open.price_id = uuid::Uuid::from_u128(0xb0_02);
+    open.tax_inclusive = false;
+
+    let mut delta = shape_only();
+    delta.tax_projection = [
+        (
+            gated.price_id,
+            RowTaxProjection {
+                resolved_tax_category: Some("standard".to_owned()),
+                not_sellable_ga: true,
+            },
+        ),
+        (
+            open.price_id,
+            RowTaxProjection {
+                resolved_tax_category: Some("standard".to_owned()),
+                not_sellable_ga: false,
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+    delta.prices = vec![gated, open];
+
+    let value = delta.to_value();
+
+    assert_eq!(value["prices"][0]["notSellableGa"], true);
+    assert_eq!(
+        value["prices"][1]["notSellableGa"], false,
+        "the sibling market stays sellable"
+    );
 }

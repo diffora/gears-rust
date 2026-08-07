@@ -3,11 +3,13 @@
 
 pub mod approval;
 pub mod bundle;
+pub mod currency_binding;
 pub mod cutover;
 pub mod error_mapping;
 pub mod fixture_gate;
 pub mod idempotent;
 pub mod jobs;
+pub mod metrics;
 pub mod overlay_publish;
 pub mod publish;
 pub mod read_model;

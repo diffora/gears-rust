@@ -58,6 +58,22 @@ pub struct Model {
     pub amount_minor: Option<i64>,
     pub model_kind: Option<String>,
     pub tax_inclusive: bool,
+    /// The row's tax category (D-110, `m20260802_000037`).
+    ///
+    /// **The source of truth and the only place a category lives** — §6 removes
+    /// the per-plan descriptor-set column that claimed to mirror it. `None` is
+    /// *the row states none*, which D-154 resolves against the region taxonomy's
+    /// default at publish; it is not "no category", and the two are what
+    /// `inst-td-policy`'s coalesce is about.
+    pub tax_category_ref: Option<String>,
+    /// D-154's **resolved effective** category, frozen at the publish commit
+    /// (`m20260802_000039`).
+    ///
+    /// `coalesce(tax_category_ref, readiness.taxCategory)` as it stood *when the
+    /// rule set judged this row*, not as the region taxonomy stands when a
+    /// consumer asks. NULL on a draft row — there is nothing to freeze until a
+    /// publish resolves it.
+    pub resolved_tax_category: Option<String>,
     pub billing_timing: Option<String>,
     /// `subscription_seat_count` | `manual` — where a **non-usage** `per_unit`
     /// row gets its quantity. Usage rows never carry it: the meter supplies `Q`,

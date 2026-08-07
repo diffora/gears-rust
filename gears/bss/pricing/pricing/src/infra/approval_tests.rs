@@ -122,6 +122,7 @@ fn row(market: &str) -> PriceRecord {
         scope_key,
         row: PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat)),
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: None,
         rounding_policy_ref: None,
         grandfather_until: None,

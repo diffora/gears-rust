@@ -142,6 +142,7 @@ fn maximal_record(seed: u128) -> PriceRecord {
         scope_key: key(ChargeKind::Usage, "USD", "EU", phase_id(0x11)),
         row: maximal_row(),
         tax_inclusive: true,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: Some("half-up".to_owned()),
         grandfather_until: Some(at(20)),
@@ -461,6 +462,13 @@ fn row_mutators() -> Vec<Mutator> {
             s.rows[0].price_id = Uuid::from_u128(0xb003);
         }),
         ("record.tax_inclusive", |s| s.rows[0].tax_inclusive = false),
+        // D-110's category, which a `PATCH` can move on a draft. Without this
+        // entry a reviewer could approve a plan billing one tax category and the
+        // commit publish another with every digest equal — the same
+        // re-verification hole `sku_id` records.
+        ("record.tax_category_ref", |s| {
+            s.rows[0].tax_category_ref = Some("reduced".to_owned());
+        }),
         ("record.billing_timing", |s| {
             s.rows[0].billing_timing = Some("arrears".to_owned());
         }),
@@ -885,6 +893,15 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   `group.scope_key.dimension_key` in the mutator table are that property; this
 ///   is its byte vector.
 ///
+/// - `v4` → `v5`, on **2026-08-07**, when Slice 4's `tax_category_ref` joined
+///   `put_price_record`. Like `v4` this closes a hole rather than moving a
+///   boundary: the column landed with `m20260802_000037`, it is authored draft
+///   content a `PATCH` moves under the row's tag, and D-48 makes it one of the
+///   descriptor set's pinned v1 five riding the row — so a reviewer who approved
+///   a plan billing `standard` and a commit that publishes `reduced` would have
+///   matched on every digest. `record.tax_category_ref` in the mutator table is
+///   that property; this is its byte vector.
+///
 /// What makes any of them an edit rather than a migration today is on
 /// [`CONTENT_PIN_DOMAIN_SEP`](super::CONTENT_PIN_DOMAIN_SEP): this gear is not
 /// deployed, so no durable row holds a `v1` or a `v2` digest. That argument expires
@@ -893,7 +910,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "1b07511175608b27a228cbd7c99511f6ad9f40380f7d7f36710b421104b60c25"
+        "cb26a94b24fe3839abf72e55ca1644f970a742bee78608713a135e0a8a73d504"
     );
 }
 

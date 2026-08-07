@@ -58,15 +58,21 @@
 
 use std::collections::BTreeSet;
 
+use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::config::LimitsConfig;
+use crate::domain::audit::AuditStamp;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete};
-use crate::infra::storage::RepoError;
+use crate::domain::tax_display::TaxDisplayPolicy;
 use crate::infra::storage::entity::policy_object;
+use crate::infra::storage::{RepoError, contention_or_db};
 
 /// One tenant's authoring-time configuration, already resolved against the
 /// deployment defaults.
@@ -89,6 +95,7 @@ pub struct AuthoringPolicy {
     max_custom_interval_months: u32,
     additional_required_descriptors: Vec<String>,
     default_rounding_policy_ref: Option<String>,
+    tax_display_policy_mode: String,
 }
 
 impl AuthoringPolicy {
@@ -114,6 +121,11 @@ impl AuthoringPolicy {
             // implicit rounding PRD §17.4 refuses. A tenant without an entry
             // simply requires every published row to carry its own.
             default_rounding_policy_ref: None,
+            // C4 is fail-closed "for **all** tenants", so a tenant with no
+            // policy row is governed by it exactly as one with a row that says
+            // so. There is no deployment knob here for the same reason there is
+            // none for the rounding default.
+            tax_display_policy_mode: TaxDisplayPolicy::FailClosed.as_str().to_owned(),
         }
     }
 
@@ -173,6 +185,25 @@ impl AuthoringPolicy {
     #[must_use]
     pub fn default_rounding_policy_ref(&self) -> Option<&str> {
         self.default_rounding_policy_ref.as_deref()
+    }
+
+    /// C4's tax-display enforcement mode.
+    ///
+    /// An unreadable token is **not** a fallback to the default: the column's
+    /// `CHECK` admits exactly two values, so a third is an invariant breach and
+    /// resolving it to `fail_closed` would hide a corrupt row behind the safe
+    /// answer. It surfaces, which is `cap_or_default`'s discipline one field
+    /// over — a stored value the schema forbids is not a tenant preference.
+    ///
+    /// # Errors
+    /// [`RepoError::CorruptRow`] when the stored token is outside the `CHECK`.
+    pub fn tax_display_policy(&self) -> Result<TaxDisplayPolicy, RepoError> {
+        TaxDisplayPolicy::parse(&self.tax_display_policy_mode).ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "pricing_policy_object.tax_display_policy_mode `{}`",
+                self.tax_display_policy_mode
+            ))
+        })
     }
 }
 
@@ -286,8 +317,104 @@ impl PolicyObjectRepo {
             // Taken as stored, with no deployment fallback: see
             // `AuthoringPolicy::default_rounding_policy_ref`.
             default_rounding_policy_ref: row.default_rounding_policy_ref,
+            tax_display_policy_mode: row.tax_display_policy_mode,
         })
     }
+}
+
+/// Set the tenant's tax-display enforcement mode (§5's `PUT`, C4).
+///
+/// **Upsert, because a tenant with no policy row is the ordinary state.** C4
+/// governs every tenant whether or not one has ever written a policy object, so
+/// the first `PUT` has to be able to create the row — and every other column
+/// then takes the schema default, which is the ratified launch value each of
+/// them documents.
+///
+/// Answers **`false`** when the stored mode is not `expected` — a stale
+/// precondition, which the surface renders `STALE_VERSION` (409) — and `true`
+/// when the write landed.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::ConcurrentMutation`] when two first writes race the same insert.
+pub async fn set_tax_display_policy(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    mode: TaxDisplayPolicy,
+    expected: TaxDisplayPolicy,
+    stamp: &AuditStamp,
+) -> Result<bool, RepoError> {
+    let updated = policy_object::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            policy_object::Column::TaxDisplayPolicyMode,
+            Expr::value(mode.as_str()),
+        )
+        .col_expr(
+            policy_object::Column::UpdatedAtUtc,
+            Expr::value(stamp.recorded_at),
+        )
+        .col_expr(
+            policy_object::Column::UpdatedBy,
+            Expr::value(stamp.actor_principal_id),
+        )
+        // **The premise is in the `WHERE`, so the check and the write are one
+        // statement.** The caller's `If-Match` resolved to `expected`; matching
+        // on it makes this a compare-and-swap, and a concurrent writer who moved
+        // the mode between the caller's read and this statement affects zero rows
+        // rather than being silently overwritten. Comparing in the handler and
+        // updating here unconditionally is the T-7 defect, and it was rebuilt on
+        // this surface one commit after being removed from the taxonomy one.
+        .filter(
+            Condition::all()
+                .add(policy_object::Column::TenantId.eq(tenant_id))
+                .add(policy_object::Column::TaxDisplayPolicyMode.eq(expected.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("update tax-display policy: {e}")))?;
+    if updated.rows_affected > 0 {
+        return Ok(true);
+    }
+
+    // No row matched. Either the tenant has no policy object at all — the
+    // ordinary bootstrap — or one exists and its mode has moved. Only the first
+    // may insert, and the difference is what separates a first write from a lost
+    // update, so it is read rather than assumed.
+    let exists = policy_object::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(policy_object::Column::TenantId.eq(tenant_id)))
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read policy object: {e}")))?
+        .is_some();
+    if exists {
+        return Ok(false);
+    }
+    // A tenant with no row is governed by `fail_closed`, so that is the only
+    // premise a first write may assert.
+    if expected != TaxDisplayPolicy::FailClosed {
+        return Ok(false);
+    }
+
+    let row = policy_object::ActiveModel {
+        tenant_id: Set(tenant_id),
+        tax_display_policy_mode: Set(mode.as_str().to_owned()),
+        updated_at_utc: Set(stamp.recorded_at),
+        updated_by: Set(stamp.actor_principal_id),
+        ..Default::default()
+    };
+    policy_object::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .map_err(|e| RepoError::Db(format!("scope pricing_policy_object: {e}")))?
+        .exec(runner)
+        .await
+        .map(|_| true)
+        .map_err(|e| contention_or_db(&e, "pricing_policy_object", "insert policy object"))
 }
 
 /// Resolve one cap column against the deployment default.

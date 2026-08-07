@@ -45,6 +45,10 @@ pub struct PriceContent {
     pub row: PriceRow,
     /// Whether the authored amounts are tax-inclusive.
     pub tax_inclusive: bool,
+    /// The row's tax category (D-110): the **source of truth**, and the only
+    /// place a category lives. `None` states none, which D-154 resolves against
+    /// the region taxonomy's default at publish.
+    pub tax_category_ref: Option<String>,
     /// `advance` | `arrears`, Slice-6-owned; see the module doc.
     pub billing_timing: Option<String>,
     /// The named rounding policy this row resolves against, when one is set on
@@ -84,6 +88,10 @@ pub struct PriceRecord {
     pub row: PriceRow,
     /// Whether the authored amounts are tax-inclusive.
     pub tax_inclusive: bool,
+    /// The row's tax category (D-110): the **source of truth**, and the only
+    /// place a category lives. `None` states none, which D-154 resolves against
+    /// the region taxonomy's default at publish.
+    pub tax_category_ref: Option<String>,
     /// `advance` | `arrears`, Slice-6-owned; see the module doc.
     pub billing_timing: Option<String>,
     /// The named rounding policy resolved for this row, when one is set on it.
@@ -121,6 +129,7 @@ impl PriceRecord {
         PriceContent {
             row: self.row.clone(),
             tax_inclusive: self.tax_inclusive,
+            tax_category_ref: self.tax_category_ref.clone(),
             billing_timing: self.billing_timing.clone(),
             rounding_policy_ref: self.rounding_policy_ref.clone(),
             grandfather_until: self.grandfather_until,

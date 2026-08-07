@@ -39,17 +39,18 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureUpdateExt};
+use toolkit_db::secure::{AccessScope, DBRunner, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::infra::storage::entity::{plan, price};
+use bss_pricing::infra::storage::entity::{plan, price, region_taxonomy};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::window_repo::{NewWindow, WindowRecord, schedule};
 
@@ -272,6 +273,70 @@ pub async fn schedule_coverage_window(
 /// engine has its own suites, and borrowing it here would make an unrelated
 /// failure read as this file's. The append-only trigger permits `draft →
 /// published`: it fires only when the row is already past `draft`.
+/// Declare the region universe every publishing fixture's rows sell in.
+///
+/// **Required since `inst-tx-region` was registered in the Foundation rule set.**
+/// C2 is fail-closed — a tenant whose region taxonomy declares nothing publishes
+/// nothing — so a fixture that publishes a plan has to declare the region its
+/// rows carry, exactly as a real operator would through
+/// `PUT /config/taxonomies/region`.
+///
+/// Before the rule was registered these fixtures published rows in regions no
+/// tenant had ever declared, which is a world the system is not supposed to be
+/// able to reach. That they were green is not evidence the rule was satisfied;
+/// it is evidence nothing was asking.
+///
+/// The set is the union of the spellings the suites use — `region` is
+/// case-sensitive and `eu` and `EU` are two different values on the axis.
+pub async fn declare_fixture_regions(provider: &DBProvider<DbError>, tenant_id: Uuid) {
+    let conn = provider.conn().expect("conn");
+    for value in ["eu", "EU", "us", "US", "DE", "us-east"] {
+        let row = region_taxonomy::ActiveModel {
+            tenant_id: Set(tenant_id),
+            value: Set(value.to_owned()),
+            display_name: Set(format!("fixture region {value}")),
+            state: Set("active".to_owned()),
+            // **Both D-01 markers declared**, and not for tidiness:
+            // `inst-td-policy` is registered in the Foundation set, its category
+            // arm is unconditional (D-154) and C4's rate arm is fail-closed, so a
+            // fixture region declaring neither would fail every publish in the
+            // crate on a rule none of those suites is about. A real operator
+            // declares them in the same `PUT` that declares the region.
+            tax_category: Set(Some("standard".to_owned())),
+            tax_rate_present: Set(true),
+        };
+        region_taxonomy::Entity::insert(row.clone())
+            .secure()
+            .scope_with_model(&AccessScope::allow_all(), &row)
+            .expect("scope")
+            .exec(&conn)
+            .await
+            .expect("declare a fixture region");
+    }
+}
+
+/// Retire one declared fixture region, past the repository's guard.
+///
+/// Direct because the guard is not what these cases are about: they need a value
+/// that *is* `retired`, and reaching it through `PUT /config/taxonomies/region`
+/// would make an unrelated refusal there look like the failure under test.
+pub async fn retire_fixture_region(provider: &DBProvider<DbError>, tenant_id: Uuid, value: &str) {
+    let conn = provider.conn().expect("conn");
+    let affected = region_taxonomy::Entity::update_many()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .col_expr(region_taxonomy::Column::State, Expr::value("retired"))
+        .filter(
+            Condition::all()
+                .add(region_taxonomy::Column::TenantId.eq(tenant_id))
+                .add(region_taxonomy::Column::Value.eq(value)),
+        )
+        .exec(&conn)
+        .await
+        .expect("retire the fixture region");
+    assert_eq!(affected.rows_affected, 1, "the fixture region must exist");
+}
+
 pub async fn publish_row_directly(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,

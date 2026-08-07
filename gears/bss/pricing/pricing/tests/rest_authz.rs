@@ -39,9 +39,12 @@ use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
 use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
+use bss_pricing::api::rest::preview::PLAN_PREVIEW;
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
+use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
+use bss_pricing::api::rest::taxonomies::TAXONOMY;
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::api::rest::windows::{
     PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
@@ -309,7 +312,69 @@ fn census() -> Vec<Route> {
         },
     ];
     rows.extend(overlay_routes());
+    rows.extend(config_routes());
     rows
+}
+
+/// Slice 4's two config-plane routes, extracted for [`overlay_routes`]' reason:
+/// [`census`] crossed the line cap again when they were added, and one more
+/// extraction is honest where a lint allow would not be. The roster is still
+/// `census()`.
+fn config_routes() -> Vec<Route> {
+    vec![
+        // Slice 4's preview. `plan × preview` and **not** `plan × read`: §2 and
+        // §10 both make the grant an extra assignment the default role matrix
+        // does not carry, so filing it under `read` would hand it to every
+        // holder of the ordinary catalog read. Invisible to any allow/deny
+        // fixture — the same shape as `plan × publish`, and asserted for the
+        // same reason.
+        Route {
+            method: "GET",
+            path: PLAN_PREVIEW,
+            resource_type: labels::PLAN,
+            action: actions::PREVIEW,
+            mutating: false,
+        },
+        // Slice 4's taxonomies are the other half of that separation, and the
+        // contrast is the reason they sit here rather than with the authoring
+        // routes. They gate on `config`, which is exactly what the threshold
+        // policy must **not** gate on: a CatalogAdmin holding `config × write`
+        // declares regions and brands and cannot, by that same grant, touch the
+        // thresholds deciding whether their own changes need a second principal.
+        // No allow/deny fixture can see the difference, so it is asserted.
+        Route {
+            method: "GET",
+            path: TAXONOMY,
+            resource_type: labels::CONFIG,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PUT",
+            path: TAXONOMY,
+            resource_type: labels::CONFIG,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        // C4's enforcement mode. `config`, like the taxonomies and unlike the
+        // approval-threshold policy — this one softens how one publish rule
+        // reports one missing external fact; that one decides whether a change
+        // needs a second principal at all.
+        Route {
+            method: "GET",
+            path: TAX_DISPLAY_POLICY,
+            resource_type: labels::CONFIG,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PUT",
+            path: TAX_DISPLAY_POLICY,
+            resource_type: labels::CONFIG,
+            action: actions::WRITE,
+            mutating: true,
+        },
+    ]
 }
 
 /// Slice 9's four overlay routes, extracted so [`census`] stays under the line
@@ -497,7 +562,13 @@ fn drive(
         .replace("{approvalId}", &seeded.approval.to_string())
         .replace("{windowId}", &seeded.window.to_string())
         .replace("{bundleId}", &seeded.bundle.to_string())
-        .replace("{overlayId}", &seeded.overlay.to_string());
+        .replace("{overlayId}", &seeded.overlay.to_string())
+        // The taxonomy class is a **resource selector**, not a seeded id: any of
+        // the four addressable segments drives the same handler through the same
+        // gate. `brand` is used because it is the one Slice 9's overlay scope
+        // actually reads, so a denial here is a denial on the path an operator
+        // is really walking.
+        .replace("{class}", "brand");
     // The sellability surface requires all three of §5's query parameters and
     // parses them **before** it asks the PDP — `schedule_window`'s ordering, and
     // for its reason: a caller who omitted one is told that rather than being told
@@ -642,6 +713,30 @@ fn drive(
             })),
             Vec::new(),
         ),
+        // A well-formed whole-set replacement, so a refusal here is the gate's
+        // and never a body or precondition complaint. The `If-Match` is
+        // deliberately a **wrong-but-well-formed** tag: the header is parsed
+        // before the tag is compared but **after** the gate, so a denied caller
+        // is told they may not write rather than that their tag is stale — which
+        // is the ordering `every_route_asks_the_catalogued_pair` depends on, and
+        // the ordering this row would silently stop asserting if the header were
+        // omitted instead.
+        ("PUT", TAX_DISPLAY_POLICY) => (
+            Some(serde_json::json!({ "mode": "fail_closed" })),
+            vec![(
+                "if-match",
+                "\"0000000000000000000000000000000000000000000000000000000000000000\"",
+            )],
+        ),
+        ("PUT", TAXONOMY) => (
+            Some(serde_json::json!({
+                "values": [{ "value": "acme", "display_name": "Acme" }]
+            })),
+            vec![(
+                "if-match",
+                "\"0000000000000000000000000000000000000000000000000000000000000000\"",
+            )],
+        ),
         ("POST", APPROVAL_REJECT) => (
             Some(serde_json::json!({ "reason": "not signed off" })),
             Vec::new(),
@@ -702,6 +797,18 @@ async fn registered_paths() -> Vec<String> {
             // governance state apart from its authoring siblings. It is in this
             // census because the census is about paths, and the path did not move.
             .merge(bss_pricing::api::rest::overlays::governance_router(
+                Arc::clone(&harness.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::taxonomies::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::tax_display_policy::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::preview::router(
                 Arc::clone(&harness.governance),
                 &openapi,
             ))
@@ -782,6 +889,15 @@ async fn the_census_covers_every_route_the_routers_register() {
     // a policy route filed under `config` would hand a config admin the thresholds
     // that govern their own changes. That is invisible to every allow/deny fixture,
     // which is why it is asserted here.
+    //
+    // `config` is the fifth, mounted by Slice 4's taxonomy pair, and it is the
+    // other side of that same separation. It is the label the segregation
+    // argument above has always been *about* — until now the catalog declared
+    // `config` and nothing was filed under it, so the sentence "a policy route
+    // filed under `config` would hand a config admin the thresholds" named a
+    // holder no route created. Now something does: a CatalogAdmin with
+    // `config × write` declares regions, brands, partners and org tiers, and
+    // holds nothing on `approval_policy`.
     let used: std::collections::BTreeSet<&str> =
         census().iter().map(|route| route.resource_type).collect();
     assert_eq!(
@@ -792,6 +908,7 @@ async fn the_census_covers_every_route_the_routers_register() {
             labels::PRICE_OVERLAY,
             labels::APPROVAL,
             labels::APPROVAL_POLICY,
+            labels::CONFIG,
         ]),
         "a census row on a label this gear has not mounted before needs a decision, not a row"
     );

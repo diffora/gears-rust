@@ -198,10 +198,11 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::projection::{
     OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta, PROJECTED_ROW_STATES,
-    PROJECTED_WINDOW_STATES, PlanSubjectDelta,
+    PROJECTED_WINDOW_STATES, PlanSubjectDelta, RowTaxProjection,
 };
 use crate::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
 use crate::domain::scope_key::PlanId;
+use crate::domain::tax_display::{TAX_ENGINE_GA, is_not_sellable_ga};
 use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
 use crate::infra::storage::repo::{
@@ -899,6 +900,42 @@ async fn project_plan_subject(
         .map_err(|e| repo_failure(&e))?;
     let windows = project_windows(runner, scope, tenant_id, plan_id, &prices).await?;
 
+    // C3's GA gate, derived here — it is a function of the row and a launch
+    // constant, so there is nothing to freeze.
+    //
+    // **D-154's resolved category is NOT derived here.** It is read off
+    // `pricing_price.resolved_tax_category`, which the publish commit froze
+    // against the readiness the rule set judged the row with. Re-resolving it
+    // here was the shape review found (`T-13`): this sweep runs up to D-47's
+    // five-minute batching maximum after the commit, and the region taxonomy is
+    // a tenant-declared table anyone with `config × write` may re-declare in
+    // between — so a version could freeze a category no rule ever judged, or
+    // lose one that was present when publish passed.
+    let resolved = crate::infra::storage::repo::price_repo::resolved_tax_categories(
+        runner, scope, tenant_id, plan_id,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    let tax_projection = prices
+        .iter()
+        .map(|record| {
+            (
+                record.price_id,
+                RowTaxProjection {
+                    resolved_tax_category: resolved.get(&record.price_id).cloned().flatten(),
+                    // `TAX_ENGINE_GA` is a launch constant, not a column: C3
+                    // makes the gate a property of the *platform's* Tax Engine
+                    // status, and a per-tenant carrier would let one tenant
+                    // declare itself post-GA while the engine that computes the
+                    // tax does not exist. It flips in code when the engine ships,
+                    // and `inst-td-clear` makes every gated plan re-publish to
+                    // pick it up rather than flipping silently.
+                    not_sellable_ga: is_not_sellable_ga(record, TAX_ENGINE_GA),
+                },
+            )
+        })
+        .collect();
+
     Ok(PlanSubjectDelta {
         plan_id,
         revision,
@@ -927,6 +964,7 @@ async fn project_plan_subject(
         .await
         .map_err(|e| repo_failure(&e))?,
         prices,
+        tax_projection,
         windows,
     })
 }

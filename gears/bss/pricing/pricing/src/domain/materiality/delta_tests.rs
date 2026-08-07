@@ -40,6 +40,7 @@ fn record(row: PriceRow) -> PriceRecord {
         .expect("the eight axes agree"),
         row,
         tax_inclusive: false,
+        tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
         rounding_policy_ref: None,
         grandfather_until: None,
