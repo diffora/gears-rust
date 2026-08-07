@@ -61,8 +61,13 @@ fn stamp_of(
 mod common;
 
 /// The repository, plus the provider the seeding helper needs to put a row into
-/// a state `PlanRepo::publish_revision` now reaches by the sanctioned path, and
-/// one - `retired` - that still has no producer in this gear (D-128, Slice 11).
+/// a state `PlanRepo::publish_revision` now reaches by the sanctioned path.
+///
+/// `retired` no longer needs the seed either: `plan_repo::retire_revision` is
+/// its producer as of Slice 11 (D-128), and `tests/sqlite_retirement.rs` drives
+/// it. This file keeps `flip_state` because its own subject is the revision
+/// chain rather than the act, and reaching `retired` through the orchestrator
+/// here would couple a repository suite to a workflow.
 async fn harness() -> (PlanRepo, DBProvider<DbError>) {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
@@ -110,9 +115,11 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
 
 /// Move a revision's `lifecycle_state` directly.
 ///
-/// Used only for `published -> retired`, which has no producer in this gear
-/// (D-128 is Slice 11's publish unit); `draft -> published` goes through
-/// `publish_revision` below, because that flip now has one. The append-only
+/// Used only for `published -> retired`. That flip **does** have a producer now,
+/// `plan_repo::retire_revision` (D-128, Slice 11), and this seed stays because
+/// it puts the row there in one statement without pulling a workflow into a
+/// repository suite; `draft -> published` goes through `publish_revision`
+/// below. The append-only
 /// trigger permits this edge: it fires only when the row is already past
 /// `draft`, and `published -> retired` is one of the two flips it whitelists.
 async fn flip_state(
