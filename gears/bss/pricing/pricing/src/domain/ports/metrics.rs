@@ -168,10 +168,12 @@ impl AlarmSeverity {
 /// compile-time fact and makes adding one a deliberate edit here — which is also
 /// what lets a later slice add its alarms without inventing a second mechanism.
 ///
-/// **Only Slice 4's two are declared so far**, and that is the honest state
-/// rather than a stub: this module opens the plane, and each slice adds its own
-/// alarms beside these when it wires them. A variant with no emitter would be a
-/// roster entry claiming coverage that does not exist — the shape D-232 records
+/// **Four are declared: Slice 4's two, and Foundation's two Criticals** — the
+/// latter added by D-238 after the module that raises them was found still
+/// arguing that this gear had no alarm plane, months after Slice 4 opened it.
+/// Each slice adds its own alarms beside these when it wires them. A variant with
+/// no emitter would be a roster entry claiming coverage that does not exist — the
+/// shape D-232 records
 /// one plane over, where a trigger answers `true` on the strength of a
 /// constructor nobody calls.
 #[domain_model]
@@ -190,11 +192,33 @@ pub enum PricingAlarm {
     /// and because the module doc's rule is that a slice adds its alarms when it
     /// wires them — this one's wiring is a contract, not code.
     TaxReadinessDivergent,
+    /// `pricing.catalogversion.commit_overdue` (Critical, `01-foundation.md`
+    /// §3.6) — a pending `CatalogVersion` ref the registry has not answered for
+    /// past the max batching-delay SLO.
+    CatalogVersionCommitOverdue,
+    /// `pricing.readmodel.pin_eligibility_overdue` (Critical,
+    /// `01-foundation.md` §4.4) — a tenant's pin frontier has not advanced
+    /// inside the SLO while something is holding it.
+    ReadModelPinEligibilityOverdue,
 }
 
 impl PricingAlarm {
     /// Every alarm this gear can currently raise.
-    pub const ALL: &'static [Self] = &[Self::TaxNotSellableGaActive, Self::TaxReadinessDivergent];
+    ///
+    /// **The last two arrived late and the reason is worth keeping** (D-238).
+    /// `readmodel_warm` has raised them as bare `tracing::error!` since it was
+    /// written, on the argument that *"this gear has no metrics or alarm facility
+    /// at all"* — true when written, falsified by Slice 4 opening this plane, and
+    /// left standing afterwards. The consequence was sharper than the wording:
+    /// these two are the gear's **only Critical** alarms, and they were the only
+    /// two not on its alarm plane, so the estate's alerting saw every Info and
+    /// Warn this gear raises and neither of the two that page somebody.
+    pub const ALL: &'static [Self] = &[
+        Self::TaxNotSellableGaActive,
+        Self::TaxReadinessDivergent,
+        Self::CatalogVersionCommitOverdue,
+        Self::ReadModelPinEligibilityOverdue,
+    ];
 
     /// The alarm's declared name, exactly as the design set spells it.
     ///
@@ -207,6 +231,8 @@ impl PricingAlarm {
         match self {
             Self::TaxNotSellableGaActive => "pricing.tax.not_sellable_ga_active",
             Self::TaxReadinessDivergent => "pricing.tax.readiness_divergent",
+            Self::CatalogVersionCommitOverdue => "pricing.catalogversion.commit_overdue",
+            Self::ReadModelPinEligibilityOverdue => "pricing.readmodel.pin_eligibility_overdue",
         }
     }
 
@@ -219,6 +245,9 @@ impl PricingAlarm {
         match self {
             Self::TaxNotSellableGaActive => AlarmSeverity::Info,
             Self::TaxReadinessDivergent => AlarmSeverity::Warn,
+            Self::CatalogVersionCommitOverdue | Self::ReadModelPinEligibilityOverdue => {
+                AlarmSeverity::Critical
+            }
         }
     }
 }

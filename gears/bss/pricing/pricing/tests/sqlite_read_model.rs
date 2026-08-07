@@ -273,6 +273,8 @@ struct Harness {
     registry: Arc<RegistryDouble>,
     scope: AccessScope,
     provider: DBProvider<DbError>,
+    /// The in-memory exporter the sweep's alarms are read back through (D-238).
+    metrics: bss_pricing::infra::metrics::test_harness::MetricsHarness,
 }
 
 async fn harness() -> Harness {
@@ -295,6 +297,7 @@ async fn harness_with(jobs: JobsConfig) -> Harness {
     common::declare_fixture_regions(&provider, TENANT).await;
     common::declare_fixture_regions(&provider, OTHER_TENANT).await;
     let registry = Arc::new(RegistryDouble::default());
+    let metrics_harness = bss_pricing::infra::metrics::test_harness::MetricsHarness::new();
     let publish = PublishService::new(
         provider.clone(),
         &LimitsConfig::default(),
@@ -311,10 +314,12 @@ async fn harness_with(jobs: JobsConfig) -> Harness {
             provider.clone(),
             Arc::clone(&registry) as Arc<dyn CatalogVersionRegistryV1>,
             jobs,
-        ),
+        )
+        .with_metrics(Arc::new(metrics_harness.metrics())),
         registry,
         scope: AccessScope::for_tenant(TENANT),
         provider,
+        metrics: metrics_harness,
     }
 }
 
@@ -1639,6 +1644,21 @@ async fn a_deferred_completion_is_not_silent() {
         report.pin_eligibility_overdue, 1,
         "the deferral is reported, not merely survived"
     );
+
+    // **And it reaches the alarm plane** (D-238). The report count is a return
+    // value only this test reads; the counter is what an alerting rule sees, and
+    // for months this was the gear's only Critical alarm that no rule could.
+    h.metrics.force_flush();
+    assert_eq!(
+        h.metrics.counter_value(
+            "pricing_alarm_total",
+            &[
+                ("alarm", "pricing.readmodel.pin_eligibility_overdue"),
+                ("severity", "critical"),
+            ]
+        ),
+        1
+    );
 }
 
 #[tokio::test]
@@ -2650,6 +2670,7 @@ async fn a_sweep_with_no_registry_configured_is_inert() {
         registry,
         scope: AccessScope::for_tenant(TENANT),
         provider,
+        metrics: bss_pricing::infra::metrics::test_harness::MetricsHarness::new(),
     };
     let (_, _) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
 

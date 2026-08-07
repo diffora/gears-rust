@@ -421,6 +421,12 @@ fn alarm_labels_are_the_dotted_names_the_design_set_declares() {
         [
             ("pricing.tax.not_sellable_ga_active", "info"),
             ("pricing.tax.readiness_divergent", "warn"),
+            // Foundation's two, added by D-238. **This census is what caught
+            // them being added** — the roster grew and this list did not, and the
+            // case went red rather than the two new names shipping untranscribed.
+            // That is the whole argument for transcribing instead of deriving.
+            ("pricing.catalogversion.commit_overdue", "critical"),
+            ("pricing.readmodel.pin_eligibility_overdue", "critical"),
         ]
     );
 }

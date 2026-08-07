@@ -77,9 +77,12 @@
 //! ledger has, with a `PricingAlarm` roster. These two names are still a
 //! `tracing::error!` under the named string — so what was *a missing facility*
 //! is now **two Critical alarms sitting off a plane that exists**, which is a
-//! smaller gap and a different one. Recorded as D-238 rather than wired here:
-//! the roster's own rule is that a slice adds its alarms when it wires them,
-//! and these two belong to whoever owns this plane's observability.
+//! smaller gap and a different one, and **D-238 closed it**: both names are on
+//! `PricingAlarm::ALL` and both firings go through the port as well as to the
+//! log. The log line stays because it is what the e2e boot without a registry
+//! reads; the counter is what an alerting rule can see, and these two are the
+//! gear's only **Critical** alarms — for a while, the only two not on its own
+//! alarm plane.
 //!
 //! # The degraded mark has no home, and none is invented
 //!
@@ -239,6 +242,14 @@ pub struct ReadModelWarmJob {
     projector: ReadModelProjector,
     registry: Arc<dyn CatalogVersionRegistryV1>,
     jobs: JobsConfig,
+    /// The alarm plane (D-238).
+    ///
+    /// The two names below are this gear's **only Critical** alarms, and until
+    /// D-238 they were the only two not on `PricingAlarm::ALL` — raised as a bare
+    /// `tracing::error!` on an argument this module went on making after it
+    /// stopped being true. They now go to both: the log line is what the e2e boot
+    /// without a registry reads, and the counter is what an alerting rule can see.
+    metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
 }
 
 impl ReadModelWarmJob {
@@ -256,7 +267,25 @@ impl ReadModelWarmJob {
             projector,
             registry,
             jobs,
+            // The safe default, for `PublishService::new`'s reason: a job built
+            // without one reports nothing rather than failing to build.
+            metrics: Arc::new(crate::domain::ports::metrics::NoopPricingMetrics),
         }
+    }
+
+    /// Attach the metrics port (D-238).
+    ///
+    /// A **second call** rather than a fourth parameter on [`Self::new`], the
+    /// shape `PublishService::with_metrics` and `BundleService::with_metrics`
+    /// already use here: every existing caller has nothing to say to it, and the
+    /// no-op [`Self::new`] installs is exactly what a test harness means.
+    #[must_use]
+    pub fn with_metrics(
+        mut self,
+        metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
+    ) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Run one pass, **tenant by tenant**.
@@ -530,6 +559,8 @@ impl ReadModelWarmJob {
                 "bss-pricing: a committed catalog version has stood short of pin-eligibility \
                  past the max batching delay; consumers keep pinning the previous edge"
             );
+            self.metrics
+                .alarm(crate::domain::ports::metrics::PricingAlarm::ReadModelPinEligibilityOverdue);
             report.pin_eligibility_overdue += 1;
         }
     }
@@ -787,6 +818,8 @@ impl ReadModelWarmJob {
              delay with no answer from the registry; remediation is a registry re-request, never \
              a silent re-emit"
         );
+        self.metrics
+            .alarm(crate::domain::ports::metrics::PricingAlarm::CatalogVersionCommitOverdue);
         report.commit_overdue += 1;
     }
 

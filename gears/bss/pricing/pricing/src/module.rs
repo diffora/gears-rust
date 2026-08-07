@@ -111,6 +111,14 @@ pub(crate) struct PricingRuntime {
     pub authoring_api: Arc<AuthoringState>,
     /// Per-request state for the approval surface and the publish mount.
     pub governance_api: Arc<GovernanceState>,
+    /// The alarm and metric plane, carried so the **background** work reports on
+    /// the same port the request paths do (D-238).
+    ///
+    /// Stored on the runtime rather than rebuilt in `serve`: the adapter caches
+    /// its instruments and holds the observable gauge's registration, so a second
+    /// build would be a second set of instruments and — for the gauge — a second
+    /// callback observing a different cell.
+    pub metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
 }
 
 #[toolkit::gear(name = "bss-pricing", capabilities = [db, rest, stateful], deps = [types_registry, authz_resolver], lifecycle(entry = "serve", stop_timeout = "30s"))]
@@ -246,7 +254,8 @@ impl BssPricingGear {
                 rt.db.clone(),
                 Arc::clone(&rt.catalog_version_registry),
                 rt.config.jobs.clone(),
-            );
+            )
+            .with_metrics(Arc::clone(&rt.metrics));
             loop {
                 tokio::select! {
                     biased;
@@ -680,6 +689,7 @@ impl Gear for BssPricingGear {
             catalog_version_api,
             authoring_api,
             governance_api,
+            metrics,
         })));
         info!("bss-pricing: runtime published");
         Ok(())
