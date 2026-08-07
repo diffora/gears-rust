@@ -69,7 +69,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, SimpleExpr};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue, Order};
 use toolkit_db::secure::{
     AccessScope, DBRunner, DbConn, DbTx, SecureEntityExt, SecureInsertExt, SecureUpdateExt, TxError,
 };
@@ -78,6 +78,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{PlanChangeContract, UsageCounterOnPlanChange};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
@@ -734,6 +735,11 @@ impl PlanRepo {
             invoice_grouping_key: current.invoice_grouping_key,
             available_from: current.available_from,
             available_to: current.available_to,
+            // Carried forward with the rest of the content: a new revision opens
+            // as a copy of the current one, and an edge list that reset itself
+            // here would silently drop a plan out of self-service change on the
+            // next edit of any unrelated field.
+            change_contract: current.change_contract,
             lifecycle_state: LifecycleState::Draft,
             created_by,
             created_at_utc: now,
@@ -1015,6 +1021,11 @@ pub async fn create_draft_on(
         invoice_grouping_key: draft.invoice_grouping_key,
         available_from: draft.available_from,
         available_to: draft.available_to,
+        // The fail-safe: a plan nobody has authored edges on offers no
+        // self-service change (`inst-pc-failsafe`). `NewPlanDraft` deliberately
+        // carries no field for it -- the contract arrives by `PATCH`, which is
+        // the same door every other governed plan column uses.
+        change_contract: PlanChangeContract::default(),
         lifecycle_state: LifecycleState::Draft,
         created_by: draft.created_by,
         created_at_utc: draft.created_at_utc,
@@ -1461,6 +1472,17 @@ fn revision_model(
         purchase_min_qty: Set(stored_qty("purchaseMinQty", revision.purchase_min_qty)?),
         purchase_max_qty: Set(stored_qty("purchaseMaxQty", revision.purchase_max_qty)?),
         invoice_grouping_key: Set(revision.invoice_grouping_key.clone()),
+        allowed_change_targets: Set(change_targets_json(
+            revision.change_contract.allowed_change_targets.as_deref(),
+        )),
+        comparability_rank: Set(revision.change_contract.comparability_rank),
+        usage_counter_on_plan_change: Set(Some(
+            revision
+                .change_contract
+                .usage_counter_on_plan_change
+                .as_str()
+                .to_owned(),
+        )),
         lifecycle_state: Set(revision.lifecycle_state.as_str().to_owned()),
         available_from: Set(revision.available_from),
         available_to: Set(revision.available_to),
@@ -1570,7 +1592,104 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
     if let Some(available_to) = patch.available_to {
         columns.push((plan::Column::AvailableTo, Expr::value(available_to)));
     }
+    // One value, three columns, and they travel together for `Frequency`'s
+    // reason: K4 ties the rank to whether the edge list names anyone, so moving
+    // one on its own could leave a plan with edges and no rank -- a state no
+    // publish accepts and no caller meant. `PlanShapePatch::change_contract`
+    // replaces the contract wholesale precisely so this stays impossible.
+    if let Some(contract) = patch.change_contract {
+        columns.push((
+            plan::Column::AllowedChangeTargets,
+            Expr::value(change_targets_json(
+                contract.allowed_change_targets.as_deref(),
+            )),
+        ));
+        columns.push((
+            plan::Column::ComparabilityRank,
+            Expr::value(contract.comparability_rank),
+        ));
+        columns.push((
+            plan::Column::UsageCounterOnPlanChange,
+            Expr::value(contract.usage_counter_on_plan_change.as_str()),
+        ));
+    }
     Ok(columns)
+}
+
+/// The edge list as the column holds it: a JSON array of `planId` strings, or
+/// `NULL` for the fail-safe.
+///
+/// `NULL` and `[]` are **different** and both are kept: `inst-pc-failsafe` makes
+/// absence mean "no self-service change", while an empty array is an author who
+/// stated the edge set and left it empty. A renderer that collapsed one into the
+/// other would erase the distinction `inst-cr-nodefault` promises a consumer it
+/// can rely on.
+fn change_targets_json(targets: Option<&[Uuid]>) -> Option<JsonValue> {
+    targets.map(|ids| {
+        JsonValue::Array(
+            ids.iter()
+                .map(|id| JsonValue::String(id.to_string()))
+                .collect(),
+        )
+    })
+}
+
+/// Read the edge list back, refusing anything the renderer above cannot have
+/// written.
+///
+/// A stored value that is not an array of `uuid` strings is **corruption**, not
+/// an absent contract: the only writer is `change_targets_json`, and reading a
+/// malformed one as `None` would silently turn a plan with edges into one
+/// advertising no self-service change at all.
+fn read_change_targets(
+    plan_id: Uuid,
+    stored: Option<&JsonValue>,
+) -> Result<Option<Vec<Uuid>>, RepoError> {
+    let Some(value) = stored else {
+        return Ok(None);
+    };
+    let JsonValue::Array(items) = value else {
+        return Err(RepoError::CorruptRow(format!(
+            "pricing_plan {plan_id}: allowed_change_targets holds {value}, which is not an array"
+        )));
+    };
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .ok_or_else(|| {
+                    RepoError::CorruptRow(format!(
+                        "pricing_plan {plan_id}: allowed_change_targets holds {item}, which is not \
+                         a planId"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// Rebuild the plan-change contract from its three columns.
+fn to_change_contract(row: &plan::Model) -> Result<PlanChangeContract, RepoError> {
+    Ok(PlanChangeContract {
+        allowed_change_targets: read_change_targets(
+            row.plan_id,
+            row.allowed_change_targets.as_ref(),
+        )?,
+        comparability_rank: row.comparability_rank,
+        // NULL reads as the ratified default rather than as a third state:
+        // D-113 says absence **is** `reset`, so an old row and one that
+        // authored `reset` are the same plan.
+        usage_counter_on_plan_change: match row.usage_counter_on_plan_change.as_deref() {
+            None => UsageCounterOnPlanChange::Reset,
+            Some(token) => read_token(
+                "pricing_plan.usage_counter_on_plan_change",
+                token,
+                UsageCounterOnPlanChange::ALL,
+                UsageCounterOnPlanChange::as_str,
+            )?,
+        },
+    })
 }
 
 /// The three columns a [`Frequency`] occupies, rendered together.
@@ -1695,6 +1814,9 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
     let frequency = read_frequency(&row)?;
     let purchase_min_qty = read_qty("pricing_plan.purchase_min_qty", row.purchase_min_qty)?;
     let purchase_max_qty = read_qty("pricing_plan.purchase_max_qty", row.purchase_max_qty)?;
+    // Read before the literal below consumes `row`, which is why this is a
+    // `let` rather than an inline call.
+    let change_contract = to_change_contract(&row)?;
     Ok(PlanRevision {
         plan_id: PlanId::new(row.plan_id),
         revision,
@@ -1708,6 +1830,7 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
         invoice_grouping_key: row.invoice_grouping_key,
         available_from: row.available_from,
         available_to: row.available_to,
+        change_contract,
         lifecycle_state,
         created_by: row.created_by,
         created_at_utc: row.created_at_utc,

@@ -363,7 +363,24 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// The **deployed-world** paragraph applies verbatim once more: this needs
 /// pending approvals drained before it ships, and it is an edit today only
 /// because nothing durable holds a `v5` digest either.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v6\x1f";
+/// # `v7`: Slice 6's plan-change contract joined the plan's framing (2026-08-07)
+///
+/// The third re-freeze of this counter and the same case as `v4` and `v6`:
+/// [`put_plan_shape`] gained framed fields, so **every** preimage produces
+/// different bytes, not only those carrying a price row. The contract is
+/// authored content a `PATCH` moves, and unlike the two before it the hole it
+/// closes is an **authorization** one rather than a billing one — an edge list
+/// decides who may move where, so a reviewer who approved a plan changeable only
+/// to `standard` and a commit publishing one changeable to `enterprise`, with
+/// every digest equal, is the same re-verification hole with a different
+/// consequence.
+///
+/// **`v6` and `v7` collapse for anyone deploying**, because nothing durable held
+/// a `v6` digest either: both landed in the same unshipped series. They are two
+/// bumps rather than one because each records a distinct re-freeze, and a
+/// counter that skipped one would leave a later reader unable to tell which
+/// change moved the bytes.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v7\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -595,6 +612,7 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         addon_rules,
         descriptor_set,
         rows,
+        change_contract,
         windows,
         // Not hashed; the module doc argues both, and the first one is the
         // difference between a pin that can ever verify and one that cannot.
@@ -614,6 +632,39 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_opt_u64(buf, *purchase_min_qty);
     put_opt_u64(buf, *purchase_max_qty);
     put_opt_str(buf, invoice_grouping_key.as_deref());
+
+    // Slice 6's plan-change contract. **In the pin because a `PATCH` moves it**,
+    // and because an edge list is what decides who may move where -- a reviewer
+    // who approved a plan changeable only to `standard` and a commit that
+    // publishes one changeable to `enterprise`, with every digest equal, is the
+    // re-verification hole `sku_id`'s own note describes, with an authorization
+    // consequence rather than a billing one.
+    //
+    // Framed **unconditionally and member by member**, per `put_scope_key`'s
+    // rule about ambiguous runs. The edge list's `None` and its empty vector are
+    // framed **differently** -- a leading `bool` then the count -- because
+    // `inst-pc-failsafe` gives them different meanings and a preimage that
+    // collapsed them would let a plan leave self-service change without moving
+    // its digest.
+    match &change_contract.allowed_change_targets {
+        None => put_bool(buf, false),
+        Some(targets) => {
+            put_bool(buf, true);
+            let mut ordered: Vec<&uuid::Uuid> = targets.iter().collect();
+            ordered.sort_unstable();
+            put_u64(buf, count_of(ordered.len()));
+            for target in ordered {
+                put_uuid(buf, *target);
+            }
+        }
+    }
+    put_opt_u64(
+        buf,
+        change_contract
+            .comparability_rank
+            .map(|rank| rank.cast_unsigned().into()),
+    );
+    put_str(buf, change_contract.usage_counter_on_plan_change.as_str());
 
     let mut ordered_phases: Vec<&PlanPhase> = phases.phases().iter().collect();
     ordered_phases.sort_unstable_by_key(|phase| (phase.ordinal, phase.phase_id.get()));

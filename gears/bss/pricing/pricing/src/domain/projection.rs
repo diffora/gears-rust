@@ -135,10 +135,33 @@
 //! presentation. **None of them is rostered, so the roster does not move and
 //! `ep-1` stands.**
 //!
-//! D-162's named example is not landed here either: `usage_counter_on_plan_change`
-//! **does not exist in this crate** — there is no column, no field and no
-//! writer for it anywhere — so it cannot join a roster from this module. The
-//! slice that lands the field lands the bump with it.
+//! D-162's named example **is landed now** (Slice 6, 2026-08-07), and the
+//! paragraph that said it "does not exist in this crate — there is no column, no
+//! field and no writer for it anywhere" is corrected rather than deleted,
+//! because a premise resting on a fact that has changed is one a later reader
+//! will believe for the wrong reason. `usage_counter_on_plan_change` is a column
+//! (`m20260802_000052`), a field of [`PlanChangeContract`], written by
+//! `plan_repo` and rendered into this payload as `usageCounterOnPlanChange`.
+//!
+//! **The bump D-162 owes is therefore due, and this strand cannot make it.**
+//! D-162 clause (5) makes the roster *what replaying the log in
+//! `01-foundation.md` §4.4 produces*, and
+//! [`evaluation_policy_tests`](crate::domain::evaluation_policy) reads that block
+//! with `include_str!` — so [`EVALUATION_POLICY_GENERATION`] cannot move to
+//! `ep-2` without the document gaining the line
+//! `ep-2  D-113  + usage_counter_on_plan_change`. `docs/**` belongs to the main
+//! session, so the change is handed back as a register item instead of made
+//! here.
+//!
+//! **Nothing reddens meanwhile, and that is the hazard rather than the
+//! comfort.** The guard's exhaustive classification runs over
+//! [`PriceRow`](crate::domain::price_row::PriceRow) alone, so a plan-scoped
+//! roster member is invisible to it — which is exactly what D-162 warns of: *"a
+//! slice that lands it and leaves the roster alone leaves the generation
+//! claiming more than it covers."* Until the log line lands, `ep-1` claims a
+//! field set that no longer describes what a snapshot freezes, and two snapshots
+//! stamped `ep-1` may have been frozen under different evaluation semantics —
+//! the one thing the generation exists to make impossible.
 //!
 //! The D-162 guard's **reach** is decided here too, and it stays where it is.
 //! [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)
@@ -160,7 +183,7 @@ use serde_json::{Value as JsonValue, json};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
-use crate::domain::contracts::published_billing_timing;
+use crate::domain::contracts::{PlanChangeContract, published_billing_timing};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
@@ -459,6 +482,13 @@ pub struct PlanSubjectDelta {
     pub addon_rules: Vec<AddonRule>,
     /// The revision's billing descriptor set (D-83).
     pub descriptor_set: Option<DescriptorSet>,
+    /// The plan-change contract this revision publishes (Slice 6, §6).
+    ///
+    /// **A projected plan-subject field**, because it is what a consumer reads to
+    /// know whether a self-service change is offered at all — and
+    /// `inst-pc-failsafe` makes its *absence* the fail-safe answer rather than an
+    /// unknown, which only holds if the field is part of the contract.
+    pub change_contract: PlanChangeContract,
     /// The price rows the version freezes, drawn from [`PROJECTED_ROW_STATES`].
     pub prices: Vec<PriceRecord>,
     /// The **derived** tax facts each projected row carries: D-154's resolved
@@ -581,6 +611,7 @@ impl PlanSubjectDelta {
             phases,
             addon_rules,
             descriptor_set,
+            change_contract,
             prices,
             tax_projection,
             windows,
@@ -603,6 +634,22 @@ impl PlanSubjectDelta {
             "phases": phases.iter().map(phase_value).collect::<Vec<_>>(),
             "addonRules": addon_rules.iter().map(addon_rule_value).collect::<Vec<_>>(),
             "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
+            // The plan-change contract (`inst-pc-targets` / `inst-pc-rank` /
+            // `inst-pc-counter-carry`). `allowedChangeTargets` renders `null`
+            // when the plan states none, and that null **is** the answer: absence
+            // means no self-service change (`inst-pc-failsafe`), never "unknown"
+            // — which is why an empty array is a different payload and a
+            // different fact.
+            //
+            // No `inPlace` / `cancelPlusNew` classification is stamped. D-93
+            // moved it to change time in Subscriptions, computed from both plans'
+            // published facts at the pinned version; a stamped value here could
+            // never be re-computed, because a target's publish warms only its own
+            // delta (D-86/D-91) and the source's revision is immutable. What is
+            // published is the input (`inst-pc-boundary`).
+            "allowedChangeTargets": change_contract.allowed_change_targets,
+            "comparabilityRank": change_contract.comparability_rank,
+            "usageCounterOnPlanChange": change_contract.usage_counter_on_plan_change.as_str(),
             "prices": prices
                 .iter()
                 .map(|record| price_value(record, tax_projection.get(&record.price_id)))

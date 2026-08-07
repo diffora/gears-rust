@@ -963,6 +963,7 @@ async fn project_plan_subject(
         )
         .await
         .map_err(|e| repo_failure(&e))?,
+        change_contract: current.change_contract,
         prices,
         tax_projection,
         windows,

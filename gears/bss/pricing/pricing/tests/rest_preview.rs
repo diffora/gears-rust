@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::preview::PLAN_PREVIEW;
+use bss_pricing::domain::contracts::PlanChangeContract;
 use chrono::{DateTime, TimeZone, Utc};
 use rest_support::{Harness, body_json, request};
 use uuid::Uuid;
@@ -86,6 +87,7 @@ fn delta_of(
     let price_id = Uuid::from_u128(0xb_0001);
 
     let mut delta = PlanSubjectDelta {
+        change_contract: PlanChangeContract::default(),
         plan_id: PlanId::new(plan_id),
         revision: 0,
         lifecycle_state: LifecycleState::Published,

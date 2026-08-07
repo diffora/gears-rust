@@ -48,7 +48,9 @@ use super::{OVERLAY_PIN_DOMAIN_SEP, overlay_content_hash};
 use super::{content_hash, threshold_content_hash};
 use crate::domain::audit::hex32;
 use crate::domain::concurrency::RowVersion;
-use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract};
+use crate::domain::contracts::{
+    AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract, UsageCounterOnPlanChange,
+};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -281,6 +283,7 @@ fn mutators() -> Vec<Mutator> {
     all.extend(child_mutators());
     all.extend(window_mutators());
     all.extend(row_mutators());
+    all.extend(plan_contract_mutators());
     all
 }
 
@@ -669,6 +672,41 @@ fn row_mutators() -> Vec<Mutator> {
     ]
 }
 
+/// Slice 6's **plan-level** contract mutators, split out of [`row_mutators`].
+///
+/// A second table rather than four more entries in the first, because
+/// `clippy::too_many_lines` caps that one at 200 and it was at the edge — and
+/// because these four move a field of the [`PlanShape`] itself rather than of a
+/// row it carries, which is the same seam the two tables already sit either side
+/// of.
+fn plan_contract_mutators() -> Vec<Mutator> {
+    vec![
+        // Slice 6's plan-change contract, member by member. The edge list's
+        // `None` and its empty vector are separate entries on purpose: the pin
+        // frames them differently because `inst-pc-failsafe` gives them
+        // different meanings, and a preimage that collapsed them would let a
+        // plan leave self-service change without moving its digest.
+        (
+            "shape.change_contract.allowed_change_targets (none vs empty)",
+            |s| {
+                s.change_contract.allowed_change_targets = Some(Vec::new());
+            },
+        ),
+        (
+            "shape.change_contract.allowed_change_targets (one edge)",
+            |s| {
+                s.change_contract.allowed_change_targets = Some(vec![Uuid::from_u128(0xed_9e)]);
+            },
+        ),
+        ("shape.change_contract.comparability_rank", |s| {
+            s.change_contract.comparability_rank = Some(42);
+        }),
+        ("shape.change_contract.usage_counter_on_plan_change", |s| {
+            s.change_contract.usage_counter_on_plan_change = UsageCounterOnPlanChange::Carry;
+        }),
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // The pin moves for content
 // ---------------------------------------------------------------------------
@@ -966,7 +1004,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "362e4ee46a037c2495a7f353a0038051473ca1cd1dbc9bf9dab6e97cb08a7b86"
+        "ebcb1a28486cddaa7507cb2fc1e0c49d799091f7fb22f286e236c52651142ce2"
     );
 }
 
@@ -1127,7 +1165,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v6\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v7\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

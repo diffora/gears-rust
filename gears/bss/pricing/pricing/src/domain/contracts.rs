@@ -20,10 +20,11 @@
 //! statement about a *set* of rows crossed with a set of markets has no
 //! row-local form at all.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use toolkit_macros::domain_model;
+use uuid::Uuid;
 
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
@@ -497,12 +498,15 @@ impl ValidationRule<PlanShape> for ProrationContractMarketUniform {
 
 /// Slice 6's registered set over one publish subject.
 #[must_use]
-pub fn consumer_contract_rules() -> ValidationPipeline<PlanShape> {
+pub fn consumer_contract_rules(index: &ChangeTargetIndex) -> ValidationPipeline<PlanShape> {
     ValidationPipeline::new()
         .with_rule(Box::new(BillingTimingPresent))
         .with_rule(Box::new(ProrationInputsPresent))
         .with_rule(Box::new(ProrationCreditHasBasis))
         .with_rule(Box::new(ProrationContractMarketUniform))
+        .with_rule(Box::new(ChangeGraphAuthorable {
+            index: index.clone(),
+        }))
 }
 
 /// The `(currency, region)` pair D-123 scopes uniformity to. Named because the
@@ -574,3 +578,305 @@ pub const BILLING_TIMING_ARREARS: &str = "arrears";
 #[cfg(test)]
 #[path = "contracts_tests.rs"]
 mod contracts_tests;
+
+// ---------------------------------------------------------------------------
+// The plan-change contract (§3 Plan-Change Contract, §6).
+// ---------------------------------------------------------------------------
+
+/// What happens to a tier counter's `Q` when a subscription changes plan
+/// (D-113, `inst-pc-counter-carry`).
+///
+/// **The snapshot-frozen flag Rating consults**, and the pricing side's whole
+/// obligation is to publish it: at an in-place change Rating routes the
+/// **target** plan's frozen value — the plan whose bands consume the continued
+/// `Q` accepts the continuity liability — and honours `Carry` only per shared
+/// `(meter, dimensionKey)` line whose D-82/D-98/D-122 unit fields match across
+/// both frozen snapshots. A mismatched line resets. None of that is decided
+/// here; the catalog publishes the input.
+///
+/// **Absence is [`Self::Reset`]**, which is why this is not an `Option` on the
+/// contract: an old snapshot without the field is a reset, never a rating
+/// failure. Representing "unset" would create a third state no consumer has a
+/// reading for.
+///
+/// The default matters for money. An unguarded carry is the ×24 class through
+/// its fourth door — supersession (D-82), kind flip (D-98), phase axis (D-89)
+/// and plan change here — where an hours-denominated counter is applied to
+/// day-denominated bands. `Reset` is the safe direction and is what an
+/// unauthored plan gets.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UsageCounterOnPlanChange {
+    /// The counter restarts at the change boundary. The default, and what an
+    /// absent value means.
+    #[default]
+    Reset,
+    /// The counter continues, per unit-matched shared line only.
+    Carry,
+}
+
+impl UsageCounterOnPlanChange {
+    /// Both members, for the reader that maps a stored token back.
+    pub const ALL: &'static [Self] = &[Self::Reset, Self::Carry];
+
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reset => "reset",
+            Self::Carry => "carry",
+        }
+    }
+}
+
+impl fmt::Display for UsageCounterOnPlanChange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The plan-change contract a revision publishes (§6).
+///
+/// # Why `allowed_change_targets` is an `Option<Vec<..>>` and not a bare `Vec`
+///
+/// `inst-pc-failsafe` makes **absence** mean *no self-service change*, and it is
+/// a value with a reading rather than the lack of one. An empty vector says the
+/// same thing, but only by convention — and a consumer that received `[]` where
+/// the author meant "I have not decided" would have no way to tell. The `Option`
+/// keeps "the author stated no edges" distinct from "the author stated nothing",
+/// which is exactly the distinction `inst-cr-nodefault` promises a consumer it
+/// can rely on.
+///
+/// # Why the rank is optional and the counter flag is not
+///
+/// K4 makes `comparability_rank` REQUIRED only of a plan **participating** in
+/// self-service change, so a plan with no edges and no inbound edges legitimately
+/// has none. `usage_counter_on_plan_change` has a ratified default (D-113,
+/// `reset`) and absence *is* that default, so an `Option` would represent a
+/// state with no distinct meaning.
+#[domain_model]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlanChangeContract {
+    /// The explicit published `planId`s a self-service change may travel to.
+    /// `None` is the fail-safe: no self-service change (`inst-pc-failsafe`).
+    pub allowed_change_targets: Option<Vec<Uuid>>,
+    /// The tenant-wide comparability scale (K4). Higher is an upgrade, lower a
+    /// downgrade, equal a switch.
+    pub comparability_rank: Option<i32>,
+    /// D-113's tier-`Q` continuity flag, frozen into the snapshot Rating reads.
+    pub usage_counter_on_plan_change: UsageCounterOnPlanChange,
+}
+
+impl PlanChangeContract {
+    /// Does this plan participate in self-service change as a **source**?
+    ///
+    /// Read through here rather than matched at each site: "participates" is the
+    /// predicate K4's rank requirement is stated against, and an edge list that
+    /// is `Some` but empty must not count — an author who cleared their edges has
+    /// left self-service change, and demanding a rank of them would refuse a
+    /// publish that removes the last edge.
+    #[must_use]
+    pub fn offers_self_service_change(&self) -> bool {
+        self.allowed_change_targets
+            .as_ref()
+            .is_some_and(|targets| !targets.is_empty())
+    }
+
+    /// The targets this contract names, or nothing.
+    #[must_use]
+    pub fn targets(&self) -> &[Uuid] {
+        self.allowed_change_targets.as_deref().unwrap_or(&[])
+    }
+}
+
+/// A published `allowedChangeTargets` edge names a plan that is not published
+/// (`06-consumer-contracts.md` §5, `inst-pc-targets`).
+pub const CHANGE_TARGET_UNPUBLISHED: &str = "CHANGE_TARGET_UNPUBLISHED";
+
+/// A plan participating in self-service change carries no `comparabilityRank`
+/// (K4, §5, `inst-pc-rank` / `inst-pc-mutual`).
+pub const COMPARABILITY_RANK_REQUIRED: &str = "COMPARABILITY_RANK_REQUIRED";
+
+/// A re-publish drops the rank while published inbound edges still reference the
+/// plan (D-54, §5, `inst-pc-mutual`).
+pub const COMPARABILITY_RANK_REVOKED: &str = "COMPARABILITY_RANK_REVOKED";
+
+/// What the publish path knows about the *other* plans this one's change
+/// contract touches.
+///
+/// **A resolved fact, handed in**, exactly as
+/// [`ReferencingMarket`](crate::domain::publish::ReferencingMarket) is and for
+/// the same reason: the rules below are statements about aggregates this walk
+/// does not hold, answering them would need a storage read, and the rule set
+/// runs twice on one publish with the same answer required both times.
+///
+/// It carries **both directions**, because `inst-pc-mutual` needs both. The
+/// outbound half answers "is this target published, and does it carry a rank" —
+/// `inst-pc-targets` and the forward half of mutual comparability. The inbound
+/// half answers "who already points at me", which is D-54's reverse guard: a
+/// plan referenced by a published edge must not re-publish with its rank dropped
+/// to NULL, or every one of those already-published edges becomes unclassifiable
+/// at read time — the same read-time drift D-23 cut rule-based targets to avoid.
+#[domain_model]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChangeTargetIndex {
+    /// The rank of each **published** plan this publish's edges name. A plan
+    /// absent from the map is one no published revision exists for.
+    published_targets: BTreeMap<Uuid, Option<i32>>,
+    /// The published plans whose own `allowedChangeTargets` name the plan under
+    /// judgement.
+    inbound_edges: BTreeSet<Uuid>,
+}
+
+impl ChangeTargetIndex {
+    /// The fail-closed empty index: no plan is published, nobody points here.
+    ///
+    /// A `const fn` rather than the derived `Default`, so
+    /// [`PublishRuleParams::new`](crate::domain::publish::PublishRuleParams::new)
+    /// can stay `const` — the same shape `RegionTaxReadiness::empty` takes for
+    /// the same reason.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            published_targets: BTreeMap::new(),
+            inbound_edges: BTreeSet::new(),
+        }
+    }
+
+    /// Name what the store found.
+    #[must_use]
+    pub const fn new(
+        published_targets: BTreeMap<Uuid, Option<i32>>,
+        inbound_edges: BTreeSet<Uuid>,
+    ) -> Self {
+        Self {
+            published_targets,
+            inbound_edges,
+        }
+    }
+
+    /// Is `plan` a published plan?
+    #[must_use]
+    pub fn is_published(&self, plan: Uuid) -> bool {
+        self.published_targets.contains_key(&plan)
+    }
+
+    /// The rank `plan` publishes, when it is published and carries one.
+    #[must_use]
+    pub fn rank_of(&self, plan: Uuid) -> Option<i32> {
+        self.published_targets.get(&plan).copied().flatten()
+    }
+
+    /// The published plans pointing at the subject.
+    #[must_use]
+    pub fn inbound(&self) -> &BTreeSet<Uuid> {
+        &self.inbound_edges
+    }
+}
+
+/// The change graph is authorable: every edge names a published plan, and both
+/// ends of every edge carry a rank (`inst-pc-targets`, `inst-pc-mutual`,
+/// `inst-pc-rank`, D-54).
+///
+/// **One rule, three codes**, rather than three rules over one subject. The
+/// three findings are readings of the same walk over the same edge list, and a
+/// split would make an author remediate one contract in three reports — while
+/// the walk would have to be repeated, with the index it needs handed to each
+/// copy.
+///
+/// # What is deliberately absent
+///
+/// **The retirement case.** An edge whose target is later *retired* is **inert**,
+/// not invalid: D-24 puts the re-check at change time in Subscriptions, because a
+/// target's retirement is not an event the source's frozen revision can react to.
+/// A rule refusing it here would refuse a publish for a fact the author cannot
+/// fix and Subscriptions already handles.
+///
+/// **The `in_place` / `cancel_plus_new` classification.** D-93 removed the
+/// publish-time stamp; see [`m20260802_000052`](crate::infra::storage::migrations::m20260802_000052_add_pricing_plan_change_contract).
+#[domain_model]
+#[derive(Clone, Debug, Default)]
+pub struct ChangeGraphAuthorable {
+    /// What the store found about the other plans; see [`ChangeTargetIndex`].
+    pub index: ChangeTargetIndex,
+}
+
+impl ValidationRule<PlanShape> for ChangeGraphAuthorable {
+    fn name(&self) -> &'static str {
+        "inst-pc-targets"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        let contract = &subject.change_contract;
+        let subject_name = subject.plan_id.get().to_string();
+
+        // D-54's reverse guard runs whether or not this plan authors edges of
+        // its own: what it judges is the plan's rank against the edges pointing
+        // **at** it, and a plan that dropped its last outbound edge is exactly
+        // the one most likely to drop its rank in the same breath.
+        if contract.comparability_rank.is_none() && !self.index.inbound().is_empty() {
+            let referencing: Vec<String> = self
+                .index
+                .inbound()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            report.violate(
+                COMPARABILITY_RANK_REVOKED,
+                subject_name.clone(),
+                format!(
+                    "this plan re-publishes with no comparabilityRank while published \
+                     allowedChangeTargets edges still reference it ({}). Every one of those edges \
+                     would become unclassifiable at read time, which is the drift D-23 cut \
+                     rule-based targets to avoid; remove the inbound edges first (D-54)",
+                    referencing.join(", ")
+                ),
+            );
+        }
+
+        if !contract.offers_self_service_change() {
+            return;
+        }
+
+        // K4, the source half. Reported once for the plan rather than once per
+        // edge: the omission is one field on one plan, and an author told the
+        // same thing five times has five places to look and one thing to fix.
+        if contract.comparability_rank.is_none() {
+            report.violate(
+                COMPARABILITY_RANK_REQUIRED,
+                subject_name.clone(),
+                "a plan participating in self-service change MUST carry a comparabilityRank: it \
+                 is a single tenant-wide scale and the runtime classification of a change is \
+                 uncomputable without both ends of the edge (K4, inst-pc-rank)"
+                    .to_owned(),
+            );
+        }
+
+        for target in contract.targets() {
+            if !self.index.is_published(*target) {
+                report.violate(
+                    CHANGE_TARGET_UNPUBLISHED,
+                    subject_name.clone(),
+                    format!(
+                        "allowedChangeTargets names {target}, which has no published revision. \
+                         Targets are explicit published planIds -- a rule-based target resolves \
+                         only at read time and defeats every publish-time guarantee here (D-23, \
+                         inst-pc-targets)"
+                    ),
+                );
+                continue;
+            }
+            if self.index.rank_of(*target).is_none() {
+                report.violate(
+                    COMPARABILITY_RANK_REQUIRED,
+                    subject_name.clone(),
+                    format!(
+                        "allowedChangeTargets names {target}, which publishes no \
+                         comparabilityRank. Both ends of an edge carry one or the runtime \
+                         classification A -> B is uncomputable (K4, inst-pc-mutual)"
+                    ),
+                );
+            }
+        }
+    }
+}

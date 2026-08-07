@@ -15,6 +15,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use bss_pricing::domain::contracts::PlanChangeContract;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::CurrencyCode;
 use bss_pricing::domain::plan_shape::Frequency;
@@ -121,6 +122,7 @@ fn delta_covering(coverage_to: Option<DateTime<Utc>>) -> PlanSubjectDelta {
         phases: Vec::new(),
         addon_rules: Vec::new(),
         descriptor_set: None,
+        change_contract: PlanChangeContract::default(),
         prices: vec![row()],
         tax_projection: BTreeMap::new(),
         windows: vec![KeyWindows {

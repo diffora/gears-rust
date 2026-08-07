@@ -901,6 +901,20 @@ async fn rule_params(
         crate::infra::currency_binding::addon_coverage(runner, scope, tenant_id, shape)
             .await
             .map_err(|e| repo_failure(&e))?;
+    // Slice 6's change graph, resolved for the same two reasons the markets and
+    // the add-on coverage above are: the rules read other plans' published
+    // revisions, and the set runs twice on one publish with the same answer
+    // required both times. Narrowed to the edges this contract names, so the
+    // index's size follows the contract rather than the catalog.
+    let change_targets = crate::infra::change_graph::resolve(
+        runner,
+        scope,
+        tenant_id,
+        plan_id,
+        shape.change_contract.targets(),
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
     Ok(PublishRuleParams::new(
         policy.interval_bounds(),
         policy.descriptor_rule(),
@@ -916,7 +930,8 @@ async fn rule_params(
     .with_referencing_markets(referencing)
     .with_declared_regions(declared_regions)
     .with_tax_display(tax_display_policy, readiness)
-    .with_addon_coverage(addon_coverage))
+    .with_addon_coverage(addon_coverage)
+    .with_change_targets(change_targets))
 }
 
 /// The registry request id of one publish unit.

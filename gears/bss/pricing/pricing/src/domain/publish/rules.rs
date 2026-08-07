@@ -121,7 +121,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
-use crate::domain::contracts::consumer_contract_rules;
+use crate::domain::contracts::{ChangeTargetIndex, consumer_contract_rules};
 use crate::domain::coverage::window_coverage_rules;
 use crate::domain::currency_binding::{AddonCoverage, RequiredAddonsCoverMarkets};
 use crate::domain::money::CurrencyCode;
@@ -234,6 +234,7 @@ pub struct PublishRuleParams {
     addon_coverage: AddonCoverage,
     tax_display_policy: TaxDisplayPolicy,
     region_readiness: RegionTaxReadiness,
+    change_targets: ChangeTargetIndex,
 }
 
 /// One market of one **bundle that references this plan as a component**, and the
@@ -302,6 +303,11 @@ impl PublishRuleParams {
             // fail-closed rule rather than the permissive one.
             tax_display_policy: TaxDisplayPolicy::FailClosed,
             region_readiness: RegionTaxReadiness::empty(),
+            // Empty is fail-closed here too, and the direction is the safe one:
+            // an index nobody resolved knows of no published plan, so every
+            // authored edge reads as dangling and the publish is refused. A
+            // caller who forgets is loud immediately.
+            change_targets: ChangeTargetIndex::empty(),
         }
     }
 
@@ -334,6 +340,22 @@ impl PublishRuleParams {
     #[must_use]
     pub fn with_declared_regions(mut self, regions: BTreeSet<Region>) -> Self {
         self.declared_regions = regions;
+        self
+    }
+
+    /// Attach what the store found about the plans this one's change contract
+    /// touches (`inst-pc-targets`, `inst-pc-mutual`, D-54).
+    ///
+    /// A second call for [`Self::with_referencing_markets`]' reason — almost no
+    /// plan authors a change edge — but the empty index means what
+    /// [`Self::with_declared_regions`]' empty set means and not what that one's
+    /// does: **fail-closed**. An index nobody resolved knows of no published
+    /// plan, so every authored edge reads as dangling. That is the safe
+    /// direction and it is loud immediately; the opposite default would let a
+    /// dangling edge publish for a caller who forgot to look.
+    #[must_use]
+    pub fn with_change_targets(mut self, index: ChangeTargetIndex) -> Self {
+        self.change_targets = index;
         self
     }
 
@@ -455,7 +477,7 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
     // row reads back to front. It stays ahead of `window_coverage_rules` for the
     // same doc's reason: coverage is a statement about a key's window plane and
     // reads last.
-    report.absorb(consumer_contract_rules().run(shape));
+    report.absorb(consumer_contract_rules(&params.change_targets).run(shape));
     report.absorb(window_coverage_rules().run(shape));
     report
 }

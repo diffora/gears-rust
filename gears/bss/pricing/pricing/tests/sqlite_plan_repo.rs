@@ -461,6 +461,7 @@ async fn every_patched_column_reaches_the_row_it_names() {
             0,
             RowVersion::new(0),
             PlanShapePatch {
+                change_contract: Option::default(),
                 sku_id: Some(sku_id),
                 plan_tier: Some("platinum".to_owned()),
                 billing_cycle: Some(BillingCycle::OneTime),
@@ -2446,6 +2447,9 @@ async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
     // A second revision row, fabricated straight at the table: `open_revision`
     // refuses a retired plan first, and what is under test is the publish.
     let opened = plan::ActiveModel {
+        allowed_change_targets: Set(None),
+        comparability_rank: Set(None),
+        usage_counter_on_plan_change: Set(None),
         plan_id: sea_orm::ActiveValue::Set(plan_id.get()),
         revision: sea_orm::ActiveValue::Set(1),
         tenant_id: sea_orm::ActiveValue::Set(tenant),

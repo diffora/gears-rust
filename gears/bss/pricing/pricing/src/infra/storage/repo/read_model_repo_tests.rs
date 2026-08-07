@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::{StoredDelta, sellability_facts};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::PlanChangeContract;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
@@ -144,6 +145,7 @@ fn populated() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        change_contract: PlanChangeContract::default(),
         prices: vec![
             row_on(everyone.clone()),
             row_on(generation.clone()),
@@ -260,7 +262,15 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
     /// Every member it deliberately does not.
     const IGNORED: &[&str] = &[
         "addonRules",
+        // Slice 6's plan-change contract. **Ignored deliberately**: the six
+        // sellability predicates ask whether a thing may be *sold*, and these
+        // three say where a subscription may *move* once sold. A plan offering
+        // no self-service change is perfectly sellable, and one offering it is
+        // not thereby sellable — so reading them here would make an
+        // authorization fact decide a sellability one.
+        "allowedChangeTargets",
         "billingCycle",
+        "comparabilityRank",
         "crossBoundaryChangePolicy",
         "descriptorSet",
         "evaluationPolicyVersion",
@@ -272,6 +282,7 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         "purchaseMinQty",
         "revision",
         "skuId",
+        "usageCounterOnPlanChange",
     ];
 
     let payload = populated().to_value();

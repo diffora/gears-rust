@@ -3,6 +3,7 @@
 
 pub mod approval;
 pub mod bundle;
+pub mod change_graph;
 pub mod currency_binding;
 pub mod cutover;
 pub mod error_mapping;

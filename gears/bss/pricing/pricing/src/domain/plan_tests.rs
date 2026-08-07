@@ -16,12 +16,15 @@ use super::PlanShapePatch;
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
 
 #[test]
-fn the_patch_names_ten_columns_and_cannot_mean_clear_nine_of_them() {
+fn the_patch_names_eleven_columns_and_cannot_mean_clear_ten_of_them() {
     // The exhaustive struct literal is the assertion, and it is a compile-time
     // one: when a slice widens what a draft edit may touch, this stops
     // compiling, so the widening becomes a decision somebody made rather than a
-    // field that appeared. Slice 2 widened it by five.
-    let _ten_columns = PlanShapePatch {
+    // field that appeared. Slice 2 widened it by five; Slice 6 by one, and this
+    // census caught that widening exactly as designed -- the name and the count
+    // are re-stated rather than derived, because a name that counted itself
+    // could never go red.
+    let _eleven_columns = PlanShapePatch {
         sku_id: Some(Uuid::from_u128(1)),
         plan_tier: Some("silver".to_owned()),
         billing_cycle: Some(BillingCycle::Recurring),
@@ -35,6 +38,7 @@ fn the_patch_names_ten_columns_and_cannot_mean_clear_nine_of_them() {
         invoice_grouping_key: Some("emea-bundle".to_owned()),
         available_from: Some(Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap()),
         available_to: Some(Utc.with_ymd_and_hms(2028, 1, 1, 0, 0, 0).unwrap()),
+        change_contract: Option::default(),
     };
 
     // The empty patch has to be empty in **every** field, and that is what makes

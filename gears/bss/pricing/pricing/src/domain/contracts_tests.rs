@@ -11,6 +11,10 @@ use super::{
     ProrationBasis, ProrationContract, ProrationContractMarketUniform, ProrationCreditHasBasis,
     ProrationInputsPresent,
 };
+use super::{
+    CHANGE_TARGET_UNPUBLISHED, COMPARABILITY_RANK_REQUIRED, COMPARABILITY_RANK_REVOKED,
+    ChangeGraphAuthorable, ChangeTargetIndex, PlanChangeContract, UsageCounterOnPlanChange,
+};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -651,4 +655,186 @@ fn an_absent_contract_is_not_a_divergence() {
     ]);
 
     assert!(codes(&run(&ProrationContractMarketUniform, &shape)).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// `inst-pc-targets` / `inst-pc-mutual` / `inst-pc-rank` / `inst-pc-failsafe`
+// (§3 Plan-Change Contract, §5, K4, D-23, D-24, D-54).
+// ---------------------------------------------------------------------------
+
+fn other(n: u128) -> Uuid {
+    Uuid::from_u128(0xf000 + n)
+}
+
+/// A plan shape carrying `contract` and no rows.
+fn shape_with(contract: PlanChangeContract) -> PlanShape {
+    let mut shape = PlanShape::new(plan(), 1, now());
+    shape.change_contract = contract;
+    shape
+}
+
+/// An index in which each `(plan, rank)` is published, and `inbound` point here.
+fn index(published: &[(Uuid, Option<i32>)], inbound: &[Uuid]) -> ChangeTargetIndex {
+    ChangeTargetIndex::new(
+        published.iter().copied().collect(),
+        inbound.iter().copied().collect(),
+    )
+}
+
+fn graph(index: ChangeTargetIndex) -> ChangeGraphAuthorable {
+    ChangeGraphAuthorable { index }
+}
+
+#[test]
+fn the_change_graph_codes_are_the_designs_verbatim() {
+    assert_eq!(CHANGE_TARGET_UNPUBLISHED, "CHANGE_TARGET_UNPUBLISHED");
+    assert_eq!(COMPARABILITY_RANK_REQUIRED, "COMPARABILITY_RANK_REQUIRED");
+    assert_eq!(COMPARABILITY_RANK_REVOKED, "COMPARABILITY_RANK_REVOKED");
+}
+
+/// `inst-pc-failsafe`: absence is a value with a reading, and it is the one
+/// state this rule has nothing to say about.
+#[test]
+fn a_plan_offering_no_self_service_change_is_publishable_with_no_rank() {
+    let shape = shape_with(PlanChangeContract::default());
+
+    assert!(codes(&run(&graph(index(&[], &[])), &shape)).is_empty());
+}
+
+/// An author who clears their last edge is leaving self-service change, and K4
+/// must not refuse the publish that does it.
+#[test]
+fn an_empty_edge_list_is_leaving_self_service_change_not_entering_it() {
+    let shape = shape_with(PlanChangeContract {
+        allowed_change_targets: Some(Vec::new()),
+        comparability_rank: None,
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Reset,
+    });
+
+    assert!(codes(&run(&graph(index(&[], &[])), &shape)).is_empty());
+}
+
+#[test]
+fn a_dangling_target_fails_publish_naming_the_target() {
+    let shape = shape_with(PlanChangeContract {
+        allowed_change_targets: Some(vec![other(1)]),
+        comparability_rank: Some(10),
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Reset,
+    });
+
+    let report = run(&graph(index(&[], &[])), &shape);
+
+    assert_eq!(codes(&report), [CHANGE_TARGET_UNPUBLISHED]);
+    assert!(
+        report.violations[0].detail.contains(&other(1).to_string()),
+        "{}",
+        report.violations[0].detail
+    );
+}
+
+/// K4, the source half: a plan that names edges owes a rank.
+#[test]
+fn a_source_plan_with_edges_and_no_rank_fails_publish() {
+    let shape = shape_with(PlanChangeContract {
+        allowed_change_targets: Some(vec![other(1)]),
+        comparability_rank: None,
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Reset,
+    });
+
+    assert_eq!(
+        codes(&run(&graph(index(&[(other(1), Some(5))], &[])), &shape)),
+        [COMPARABILITY_RANK_REQUIRED]
+    );
+}
+
+/// `inst-pc-mutual`, the target half: without the target's rank the runtime
+/// classification A→B is uncomputable, so publish refuses the edge.
+#[test]
+fn a_published_target_without_a_rank_fails_publish() {
+    let shape = shape_with(PlanChangeContract {
+        allowed_change_targets: Some(vec![other(1)]),
+        comparability_rank: Some(10),
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Reset,
+    });
+
+    let report = run(&graph(index(&[(other(1), None)], &[])), &shape);
+
+    assert_eq!(codes(&report), [COMPARABILITY_RANK_REQUIRED]);
+    assert!(
+        report.violations[0].detail.contains(&other(1).to_string()),
+        "the target is named: {}",
+        report.violations[0].detail
+    );
+}
+
+#[test]
+fn a_whole_edge_publishes_when_both_ends_carry_a_rank() {
+    let shape = shape_with(PlanChangeContract {
+        allowed_change_targets: Some(vec![other(1), other(2)]),
+        comparability_rank: Some(10),
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Carry,
+    });
+
+    let idx = index(&[(other(1), Some(5)), (other(2), Some(20))], &[]);
+    assert!(codes(&run(&graph(idx), &shape)).is_empty());
+}
+
+/// D-54's reverse guard. Without it a rank-less re-publish leaves
+/// already-published inbound edges unclassifiable at read time — the same
+/// read-time drift D-23 cut rule-based targets to avoid.
+#[test]
+fn dropping_the_rank_while_inbound_edges_reference_the_plan_is_refused() {
+    let shape = shape_with(PlanChangeContract::default());
+
+    let report = run(&graph(index(&[], &[other(7), other(8)])), &shape);
+
+    assert_eq!(codes(&report), [COMPARABILITY_RANK_REVOKED]);
+    let detail = &report.violations[0].detail;
+    for id in [other(7), other(8)] {
+        assert!(
+            detail.contains(&id.to_string()),
+            "the referencing plans are enumerated: {detail}"
+        );
+    }
+}
+
+/// The legitimate route D-54 leaves open: remove the inbound edges first, and
+/// the rank may then go.
+#[test]
+fn a_rank_less_republish_with_no_inbound_edges_publishes() {
+    let shape = shape_with(PlanChangeContract::default());
+
+    assert!(codes(&run(&graph(index(&[], &[])), &shape)).is_empty());
+}
+
+/// A plan that still carries its rank may be pointed at by anyone.
+#[test]
+fn keeping_the_rank_satisfies_the_reverse_guard() {
+    let shape = shape_with(PlanChangeContract {
+        allowed_change_targets: None,
+        comparability_rank: Some(3),
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Reset,
+    });
+
+    assert!(codes(&run(&graph(index(&[], &[other(7)])), &shape)).is_empty());
+}
+
+/// Every offending edge is reported, not the first.
+#[test]
+fn every_dangling_target_is_named() {
+    let shape = shape_with(PlanChangeContract {
+        allowed_change_targets: Some(vec![other(1), other(2)]),
+        comparability_rank: Some(10),
+        usage_counter_on_plan_change: UsageCounterOnPlanChange::Reset,
+    });
+
+    // The **codes**, not merely the count. A count assertion cannot tell
+    // `CHANGE_TARGET_UNPUBLISHED` from the `COMPARABILITY_RANK_REQUIRED` an
+    // unpublished target also produces -- measured by probing the dangling arm
+    // and watching this case stay green while its sibling reddened.
+    assert_eq!(
+        codes(&run(&graph(index(&[], &[])), &shape)),
+        [CHANGE_TARGET_UNPUBLISHED, CHANGE_TARGET_UNPUBLISHED],
+        "two dangling edges are two findings, both of them this code"
+    );
 }

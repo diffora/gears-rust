@@ -125,6 +125,7 @@ use chrono::{DateTime, Utc};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::domain::contracts::PlanChangeContract;
 use crate::domain::money::CurrencyCode;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
@@ -664,6 +665,14 @@ pub struct PlanShape {
     pub descriptor_set: Option<DescriptorSet>,
     /// The candidate row set the publish would produce; see the module doc.
     pub rows: Vec<PriceRecord>,
+    /// The plan-change contract this revision publishes (Slice 6, §6): the
+    /// edges a self-service change may travel, the comparability rank that
+    /// classifies one, and D-113's tier-`Q` continuity flag.
+    ///
+    /// Not an `Option`: [`PlanChangeContract`]'s own default is the fail-safe
+    /// (no edges, no rank, `reset`), so an unauthored plan and one that authored
+    /// the fail-safe are the same plan and must not validate differently.
+    pub change_contract: PlanChangeContract,
     /// The plan's window plane, one entry per canonical scope key; see the
     /// module doc for why it is here and why the read behind it is unfiltered.
     ///
@@ -710,6 +719,7 @@ impl PlanShape {
             addon_rules: Vec::new(),
             descriptor_set: None,
             rows: Vec::new(),
+            change_contract: PlanChangeContract::default(),
             windows: Vec::new(),
             baseline: None,
             evaluated_at,

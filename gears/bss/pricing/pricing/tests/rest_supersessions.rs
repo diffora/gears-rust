@@ -53,6 +53,15 @@ fn supersede_body(predecessor: Uuid, amount: i64) -> serde_json::Value {
             "model_kind": "flat",
             "amount_minor": amount,
             "billing_timing": "advance",
+            // The predecessor's proration contract, restated. Without it the
+            // successor drops the whole contract, which Slice 6's
+            // `contract_change` arm correctly reports as a material change --
+            // so this body would be testing "amount and contract moved" while
+            // its name claims only the amount did. The auto-publishable case
+            // needs a successor that moved exactly one thing.
+            "billing_anchor_policy": "calendar_month",
+            "proration_basis": "calendar_days_actual",
+            "credit_on_downgrade": false,
             "rounding_policy_ref": "half_up"
         },
         "reason_code": "repricing"

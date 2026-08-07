@@ -49,6 +49,7 @@ use crate::api::rest::preconditions::{self, RevisionTag};
 use crate::api::rest::state::AuthoringState;
 use crate::domain::audit::AuditStamp;
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{PlanChangeContract, UsageCounterOnPlanChange};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
@@ -385,6 +386,34 @@ pub struct PlanShapeRequest {
     pub available_from: Option<DateTime<Utc>>,
     /// End of the availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// The plan-change contract (Slice 6, §6): the published `planId`s a
+    /// self-service change may travel to, the comparability rank that
+    /// classifies one, and D-113's tier-`Q` continuity flag.
+    ///
+    /// Sent **whole or not at all**, which is the shape
+    /// [`PlanShapePatch::change_contract`] gives it: K4 ties the rank to whether
+    /// the edge list names anyone, so a caller able to move one member alone
+    /// could express a state no publish accepts.
+    pub change_contract: Option<PlanChangeContractRequest>,
+}
+
+/// The plan-change contract on the wire.
+///
+/// `request, response` rather than `request`, because
+/// [`PlanShapeRequest`] is both and a member of a response DTO has to be
+/// serializable too.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct PlanChangeContractRequest {
+    /// Explicit published `planId`s. **Omit the field entirely** to state the
+    /// fail-safe — no self-service change (`inst-pc-failsafe`) — which is not
+    /// the same as sending an empty list.
+    pub allowed_change_targets: Option<Vec<Uuid>>,
+    /// The tenant-wide comparability rank (K4).
+    pub comparability_rank: Option<i32>,
+    /// `reset` (default) | `carry`. Omitted is `reset`, which is D-113's
+    /// ratified default and the safe direction.
+    pub usage_counter_on_plan_change: Option<String>,
 }
 
 /// A `PATCH` body: **exactly one** of the four facets S2 §5 names.
@@ -1352,6 +1381,42 @@ fn shape_patch(body: &PlanShapeRequest) -> Result<PlanShapePatch, DomainError> {
         invoice_grouping_key: body.invoice_grouping_key.clone(),
         available_from: body.available_from,
         available_to: body.available_to,
+        change_contract: body
+            .change_contract
+            .as_ref()
+            .map(read_change_contract)
+            .transpose()?,
+    })
+}
+
+/// Read the wire plan-change contract into the domain value.
+///
+/// The only thing refused here is a token outside D-113's pair. The edge list
+/// and the rank are judged at **publish** rather than at this boundary, because
+/// a draft is allowed to be unfinished and because `inst-pc-targets` needs the
+/// published-plan lookup this surface does not hold — the same division
+/// `inst-pi-required` draws for the proration set.
+fn read_change_contract(
+    request: &PlanChangeContractRequest,
+) -> Result<PlanChangeContract, DomainError> {
+    Ok(PlanChangeContract {
+        allowed_change_targets: request.allowed_change_targets.clone(),
+        comparability_rank: request.comparability_rank,
+        usage_counter_on_plan_change: match request.usage_counter_on_plan_change.as_deref() {
+            // Omitted is D-113's ratified default, not a missing field: absence
+            // **is** `reset`, so there is nothing to refuse.
+            None => UsageCounterOnPlanChange::Reset,
+            Some(token) => UsageCounterOnPlanChange::ALL
+                .iter()
+                .copied()
+                .find(|candidate| candidate.as_str() == token)
+                .ok_or_else(|| {
+                    DomainError::InvalidRequest(format!(
+                        "change_contract.usage_counter_on_plan_change `{token}` is not one of \
+                         reset, carry"
+                    ))
+                })?,
+        },
     })
 }
 
