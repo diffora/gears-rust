@@ -235,7 +235,7 @@ flowchart TB
 |--------|------|---------|-------------|
 | `POST` | `/bss-pricing/v1/price-overlays` | Author an overlay (draft; a save never publishes) | idempotency key |
 | `PATCH` | `/bss-pricing/v1/price-overlays/{overlayId}` | Edit the open draft revision (**D-227**) | ETag (`If-Match`) |
-| `POST` | `/bss-pricing/v1/price-overlays/{overlayId}/submit` | Submit the draft — always-material Slice 5 approval unit (D-50), then the D-06 publish unit (202; 2026-07-28 review fix, confirmed 2026-07-31) | per revision |
+| `POST` | `/bss-pricing/v1/price-overlays/{overlayId}/submit` | Submit the draft — always-material Slice 5 approval unit (D-50), then the D-06 publish unit. **Two acts on one call (D-234, 2026-08-07):** with no approved unit over this revision *and this content* it opens the unit → **202**; with one it commits and answers **200** carrying the registry's pending handle | per revision |
 | `GET` | `/bss-pricing/v1/price-overlays` | List overlays (admin/Tariffs read) | — |
 | `GET/PUT` | `/bss-pricing/v1/customer-groups/taxonomy` | The BSS group taxonomy | ETag |
 | `POST` | `/bss-pricing/v1/customer-groups/{group}/members` | Create an effective-dated membership | idempotency key |
