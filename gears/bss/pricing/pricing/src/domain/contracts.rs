@@ -20,12 +20,15 @@
 //! statement about a *set* of rows crossed with a set of markets has no
 //! row-local form at all.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use toolkit_macros::domain_model;
 
+use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
-use crate::domain::scope_key::ChargeKind;
+use crate::domain::price_record::PriceRecord;
+use crate::domain::scope_key::{ChargeKind, PriceEligibility, Region};
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
 
 /// The day of the month a `fixed_day` anchor lands on, 1–31.
@@ -73,6 +76,7 @@ impl fmt::Display for AnchorDay {
 }
 
 /// An anchor day outside the 1–31 a month can offer.
+#[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnchorDayOutOfRange(pub u8);
 
@@ -255,6 +259,8 @@ pub const BILLING_TIMING_MISSING: &str = "BILLING_TIMING_MISSING";
 /// published without the field would leave Billing deriving a deferral policy
 /// for a live subscriber by heuristic, which is exactly what `inst-bt-frozen`
 /// exists to prevent.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct BillingTimingPresent;
 
 impl ValidationRule<PlanShape> for BillingTimingPresent {
@@ -280,10 +286,247 @@ impl ValidationRule<PlanShape> for BillingTimingPresent {
     }
 }
 
+/// A recurring row publishes without its proration inputs
+/// (`06-consumer-contracts.md` §3 `inst-pi-required`, §5).
+pub const PRORATION_INPUTS_MISSING: &str = "PRORATION_INPUTS_MISSING";
+
+/// `creditOnDowngrade = true` on a row whose basis computes nothing
+/// (`inst-pi-credit-none`, §5).
+pub const PRORATION_INPUTS_CONTRADICTORY: &str = "PRORATION_INPUTS_CONTRADICTORY";
+
+/// The recurring rows of one plan-market disagree on the contract
+/// (D-123 as scoped by D-132, `inst-pi-uniform`, §5).
+pub const PRORATION_CONTRACT_MIXED_MARKET: &str = "PRORATION_CONTRACT_MIXED_MARKET";
+
+/// Every recurring row states all three proration inputs (`inst-pi-required`).
+///
+/// The domain type makes "all three or none" the only representable pair, so
+/// this rule has exactly one thing to say: the set is absent on a row that owes
+/// it. What it does **not** say is anything about the values — `inst-pi-enum`
+/// (K1's five bases) and the `fixed_day`/`anchor_day` pairing of
+/// `inst-pi-anchor` are both discharged by [`ProrationBasis`] and
+/// [`BillingAnchorPolicy`] being unable to hold a violation, which is the
+/// stronger form of the same statement and the one `publish::rules` already
+/// takes for the money rules.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProrationInputsPresent;
+
+impl ValidationRule<PlanShape> for ProrationInputsPresent {
+    fn name(&self) -> &'static str {
+        "inst-pi-required"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        for record in &subject.rows {
+            if !is_recurring(record.scope_key.charge_kind()) || record.proration_contract.is_some()
+            {
+                continue;
+            }
+            report.violate(
+                PRORATION_INPUTS_MISSING,
+                record.price_id.to_string(),
+                "a recurring row MUST publish billingAnchorPolicy, prorationBasis and \
+                 creditOnDowngrade: Subscriptions computes its proration from the frozen values \
+                 and the catalog substitutes no defaults, so an absent set is a row no consumer \
+                 can prorate (inst-pi-required)"
+                    .to_owned(),
+            );
+        }
+    }
+}
+
+/// A credited downgrade needs a basis to compute the partial period with
+/// (`inst-pi-credit-none`).
+///
+/// The contradiction is `creditOnDowngrade = true` beside
+/// `prorationBasis = none`: the row promises a credit and denies the arithmetic
+/// that would size it. Both halves are individually legal, which is why this is
+/// a rule and not a type — `none` is a real basis (a plan that never prorates)
+/// and `true` is a real flag; only the pair is unpublishable.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProrationCreditHasBasis;
+
+impl ValidationRule<PlanShape> for ProrationCreditHasBasis {
+    fn name(&self) -> &'static str {
+        "inst-pi-credit-none"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        for record in &subject.rows {
+            let Some(contract) = record.proration_contract else {
+                continue;
+            };
+            if !(contract.credit_on_downgrade && contract.proration_basis.is_none()) {
+                continue;
+            }
+            report.violate(
+                PRORATION_INPUTS_CONTRADICTORY,
+                record.price_id.to_string(),
+                "creditOnDowngrade = true with prorationBasis = none is a contradiction: the row \
+                 grants a credit for a surrendered part-period and states no basis to compute \
+                 that part with (inst-pi-credit-none)"
+                    .to_owned(),
+            );
+        }
+    }
+}
+
+/// One proration/anchor contract per plan-market (D-123, scoped by D-132).
+///
+/// **A subscription is one cycle clock** — D-110's "an invoice is one document"
+/// applied to the time axis. Phase is a scope-key axis, so under D-15 a phased
+/// plan carries one recurring row per charging phase per market, each with its
+/// own anchor as authored; the consuming side reads **one** value, because
+/// Subscriptions' `billingAnchor` is a single field on the aggregate. Nothing
+/// related the N authored values to the one consumed value, so an intro-pricing
+/// plan anchoring `subscription_start` on the intro row and `fixed_day(1)` on
+/// the terminal row published both into one frozen snapshot with no rule saying
+/// which sets the boundary. This rule makes the question not arise: the phase
+/// axis becomes cycle-clock-neutral by construction.
+///
+/// **Per market, not per plan.** Anchoring EU on the 1st and US on signup day
+/// stays legal, exactly as D-110 lets two markets differ on tax basis.
+///
+/// **`existing_grandfathered` generations are excluded before the grouping**,
+/// not filtered out of a finding afterwards — [`MarketBasisUniform`]'s reason
+/// and D-132's: an immutable, never-superseded generation must not even
+/// contribute a value to compare against, or one cutover would permanently
+/// freeze the market's cycle clock and every later publish would fail on a row
+/// nobody can fix. A grandfathered subscriber reads these fields from its own
+/// frozen snapshot, so "a subscription is one cycle clock" still holds per
+/// subscription.
+///
+/// [`MarketBasisUniform`]: crate::domain::tax_display::MarketBasisUniform
+///
+/// **`billingTiming` is exempt** and is not read here: it is deliberately
+/// per-row, because a hybrid mixes an `advance` base with an `arrears` usage
+/// line (`inst-bt-usage`) and Billing consumes it per line rather than as a
+/// subscription-level clock.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProrationContractMarketUniform;
+
+impl ValidationRule<PlanShape> for ProrationContractMarketUniform {
+    fn name(&self) -> &'static str {
+        "inst-pi-uniform"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        // The contract is carried **beside** the row rather than left on it as
+        // an `Option`, so nothing below has to re-assert that a row in this map
+        // has one. A row with no contract at all is `inst-pi-required`'s
+        // finding: admitting it here would report one omission under two codes
+        // and send the author to remediate it in two places.
+        let mut markets: BTreeMap<Market, Vec<ContractedRow<'_>>> = BTreeMap::new();
+        for record in &subject.rows {
+            if !is_recurring(record.scope_key.charge_kind())
+                || !in_uniformity_set(record.scope_key.price_eligibility())
+            {
+                continue;
+            }
+            let Some(contract) = record.proration_contract else {
+                continue;
+            };
+            markets
+                .entry((
+                    record.scope_key.currency().clone(),
+                    record.scope_key.region().clone(),
+                ))
+                .or_default()
+                .push((record, contract));
+        }
+
+        for ((currency, region), rows) in markets {
+            let Some(((_, reference), rest)) = rows.split_first() else {
+                continue;
+            };
+            if !rest.iter().any(|(_, c)| c != reference) {
+                continue;
+            }
+
+            let diverges = |field: fn(&ProrationContract, &ProrationContract) -> bool| {
+                rest.iter().any(|(_, c)| field(c, reference))
+            };
+            let mut fields = Vec::new();
+            if diverges(|c, r| c.billing_anchor_policy != r.billing_anchor_policy) {
+                fields.push("billingAnchorPolicy");
+            }
+            if diverges(|c, r| c.proration_basis != r.proration_basis) {
+                fields.push("prorationBasis");
+            }
+            if diverges(|c, r| c.credit_on_downgrade != r.credit_on_downgrade) {
+                fields.push("creditOnDowngrade");
+            }
+
+            // Every row of the market is named, not only the ones that differ
+            // from whichever happened to be first: an operator told "these two
+            // disagree" still has to find what the market's contract is, and
+            // rendering each row beside its own values answers that in one read.
+            let sides: Vec<String> = rows
+                .iter()
+                .map(|(record, c)| {
+                    format!(
+                        "{}: billingAnchorPolicy={}, prorationBasis={}, creditOnDowngrade={}",
+                        record.price_id,
+                        c.billing_anchor_policy,
+                        c.proration_basis,
+                        c.credit_on_downgrade
+                    )
+                })
+                .collect();
+
+            report.violate(
+                PRORATION_CONTRACT_MIXED_MARKET,
+                format!("{}/{region}", currency.as_str()),
+                format!(
+                    "recurring rows of this plan on market {}/{region} disagree on {} - {}. A \
+                     subscription is one cycle clock, and phase is a scope-key axis, so a phased \
+                     plan's rows on one market must carry one contract or nothing says which of \
+                     them sets the boundary (D-123). Grandfathered generations are excluded from \
+                     this set (D-132)",
+                    currency.as_str(),
+                    fields.join(", "),
+                    sides.join(" | ")
+                ),
+            );
+        }
+    }
+}
+
 /// Slice 6's registered set over one publish subject.
 #[must_use]
 pub fn consumer_contract_rules() -> ValidationPipeline<PlanShape> {
-    ValidationPipeline::new().with_rule(Box::new(BillingTimingPresent))
+    ValidationPipeline::new()
+        .with_rule(Box::new(BillingTimingPresent))
+        .with_rule(Box::new(ProrationInputsPresent))
+        .with_rule(Box::new(ProrationCreditHasBasis))
+        .with_rule(Box::new(ProrationContractMarketUniform))
+}
+
+/// The `(currency, region)` pair D-123 scopes uniformity to. Named because the
+/// rule groups by it and `tax_display`'s D-110 sibling groups by the same pair.
+type Market = (CurrencyCode, Region);
+
+/// One row of a market beside the contract it published. The contract is not an
+/// `Option` here: rows without one are `inst-pi-required`'s finding and never
+/// enter the grouping.
+type ContractedRow<'a> = (&'a PriceRecord, ProrationContract);
+
+/// Is this row's eligibility class inside D-123's uniformity row set?
+///
+/// The two classes D-123 names, and not the third. An `existing_grandfathered`
+/// generation is immutable and never superseded, so a divergence it carries can
+/// never be remediated — including it would let one cutover permanently freeze
+/// the market's cycle clock and fail every later publish on a row nobody can
+/// fix (D-132). It is excluded **before** the grouping rather than filtered out
+/// of a finding, so it cannot decide the market's verdict either.
+fn in_uniformity_set(eligibility: PriceEligibility) -> bool {
+    matches!(
+        eligibility,
+        PriceEligibility::AllSubscriptions | PriceEligibility::NewSubscriptionsOnly
+    )
 }
 
 /// Is this row one the recurring-row contracts apply to?

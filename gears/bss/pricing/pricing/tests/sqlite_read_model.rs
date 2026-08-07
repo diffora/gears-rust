@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bss_pricing::config::{JobsConfig, LimitsConfig};
 use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::overlay::{
@@ -351,7 +352,16 @@ fn flat_row() -> PriceContent {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: Some("advance".to_owned()),
-        proration_contract: None,
+        // Stated, because this is a **recurring** row and Slice 6's
+        // `inst-pi-required` makes the three proration inputs mandatory on one.
+        // A fixture that asserts a clean publish needs a row publishable in every
+        // respect but the one under judgement, and a row with no proration
+        // contract is not.
+        proration_contract: Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        }),
         rounding_policy_ref: Some("half_up".to_owned()),
         grandfather_until: None,
         supersedes_price_id: None,

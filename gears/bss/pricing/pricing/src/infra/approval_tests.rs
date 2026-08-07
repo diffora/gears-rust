@@ -18,6 +18,7 @@ use super::{RegionGrant, grant_against, independent_approver, refusal_to_domain,
 use crate::domain::approval::{ApprovalState, DecisionRefusal};
 use crate::domain::audit::AuditSubjectKind;
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
@@ -124,7 +125,16 @@ fn row(market: &str) -> PriceRecord {
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: None,
-        proration_contract: None,
+        // Stated, because this is a **recurring** row and Slice 6's
+        // `inst-pi-required` makes the three proration inputs mandatory on one.
+        // A fixture that asserts a clean publish needs a row publishable in every
+        // respect but the one under judgement, and a row with no proration
+        // contract is not.
+        proration_contract: Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        }),
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,

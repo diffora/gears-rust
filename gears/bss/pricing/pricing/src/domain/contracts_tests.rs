@@ -5,7 +5,12 @@
 use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
-use super::{BILLING_TIMING_MISSING, BillingTimingPresent};
+use super::{
+    AnchorDay, BILLING_TIMING_MISSING, BillingAnchorPolicy, BillingTimingPresent,
+    PRORATION_CONTRACT_MIXED_MARKET, PRORATION_INPUTS_CONTRADICTORY, PRORATION_INPUTS_MISSING,
+    ProrationBasis, ProrationContract, ProrationContractMarketUniform, ProrationCreditHasBasis,
+    ProrationInputsPresent,
+};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -35,6 +40,7 @@ fn row(
     region: &str,
     eligibility: PriceEligibility,
     billing_timing: Option<&str>,
+    proration_contract: Option<ProrationContract>,
 ) -> PriceRecord {
     let cohort = if eligibility == PriceEligibility::ExistingGrandfathered {
         Cohort::Generation(now())
@@ -62,7 +68,7 @@ fn row(
         tax_inclusive: false,
         tax_category_ref: None,
         billing_timing: billing_timing.map(ToOwned::to_owned),
-        proration_contract: None,
+        proration_contract,
         rounding_policy_ref: None,
         grandfather_until: None,
         supersedes_price_id: None,
@@ -107,6 +113,7 @@ fn a_recurring_row_without_billing_timing_fails_publish_naming_the_row() {
         "eu",
         PriceEligibility::AllSubscriptions,
         None,
+        None,
     )]);
 
     let report = run(&BillingTimingPresent, &shape);
@@ -130,6 +137,7 @@ fn a_recurring_row_stating_its_timing_passes() {
             "eu",
             PriceEligibility::AllSubscriptions,
             Some(timing),
+            None,
         )]);
 
         assert!(
@@ -156,6 +164,7 @@ fn a_non_recurring_row_without_billing_timing_is_not_this_rules_business() {
             "eu",
             PriceEligibility::AllSubscriptions,
             None,
+            None,
         )]);
 
         assert!(
@@ -179,6 +188,7 @@ fn a_grandfathered_recurring_row_is_held_to_the_same_presence_rule() {
         "eu",
         PriceEligibility::ExistingGrandfathered,
         None,
+        None,
     )]);
 
     assert_eq!(
@@ -198,6 +208,7 @@ fn every_offending_row_is_reported_not_merely_the_first() {
             "eu",
             PriceEligibility::AllSubscriptions,
             None,
+            None,
         ),
         row(
             0xb6,
@@ -206,8 +217,438 @@ fn every_offending_row_is_reported_not_merely_the_first() {
             "us",
             PriceEligibility::AllSubscriptions,
             None,
+            None,
         ),
     ]);
 
     assert_eq!(codes(&run(&BillingTimingPresent, &shape)).len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// `inst-pi-required` / `inst-pi-credit-none` / `inst-pi-uniform`
+// (§3 Proration Input Contract, §5, D-123 scoped by D-132).
+// ---------------------------------------------------------------------------
+
+/// One contract, named by its three members.
+fn contract(
+    policy: BillingAnchorPolicy,
+    basis: ProrationBasis,
+    credit_on_downgrade: bool,
+) -> ProrationContract {
+    ProrationContract {
+        billing_anchor_policy: policy,
+        proration_basis: basis,
+        credit_on_downgrade,
+    }
+}
+
+/// The contract every uniformity case moves exactly one member away from.
+fn baseline_contract() -> ProrationContract {
+    contract(
+        BillingAnchorPolicy::CalendarMonth,
+        ProrationBasis::CalendarDaysActual,
+        false,
+    )
+}
+
+/// A recurring row on `currency`/`region`, in `eligibility`, carrying `c`.
+fn priced(
+    price_id: u128,
+    currency: &str,
+    region: &str,
+    eligibility: PriceEligibility,
+    c: Option<ProrationContract>,
+) -> PriceRecord {
+    row(
+        price_id,
+        ChargeKind::Recurring,
+        currency,
+        region,
+        eligibility,
+        Some("advance"),
+        c,
+    )
+}
+
+#[test]
+fn the_three_codes_are_the_designs_verbatim() {
+    assert_eq!(PRORATION_INPUTS_MISSING, "PRORATION_INPUTS_MISSING");
+    assert_eq!(
+        PRORATION_INPUTS_CONTRADICTORY,
+        "PRORATION_INPUTS_CONTRADICTORY"
+    );
+    assert_eq!(
+        PRORATION_CONTRACT_MIXED_MARKET,
+        "PRORATION_CONTRACT_MIXED_MARKET"
+    );
+}
+
+#[test]
+fn a_recurring_row_without_the_proration_inputs_fails_publish_naming_the_row() {
+    let shape = shape_of(vec![priced(
+        0xc1,
+        "EUR",
+        "eu",
+        PriceEligibility::AllSubscriptions,
+        None,
+    )]);
+
+    let report = run(&ProrationInputsPresent, &shape);
+
+    assert_eq!(codes(&report), [PRORATION_INPUTS_MISSING]);
+    assert_eq!(
+        report.violations[0].subject,
+        Uuid::from_u128(0xc1).to_string()
+    );
+}
+
+#[test]
+fn a_recurring_row_stating_the_contract_passes() {
+    let shape = shape_of(vec![priced(
+        0xc2,
+        "EUR",
+        "eu",
+        PriceEligibility::AllSubscriptions,
+        Some(baseline_contract()),
+    )]);
+
+    assert!(codes(&run(&ProrationInputsPresent, &shape)).is_empty());
+}
+
+/// The contract attaches to recurring rows. A usage or one-time row authors no
+/// proration inputs, and demanding them would reject a row whose values are not
+/// the author's to give — the same boundary `inst-bt-required` draws.
+#[test]
+fn a_non_recurring_row_owes_no_proration_contract() {
+    for kind in [
+        ChargeKind::Usage,
+        ChargeKind::OneTime,
+        ChargeKind::OneTimeSetup,
+    ] {
+        let shape = shape_of(vec![row(
+            0xc3,
+            kind,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            None,
+            None,
+        )]);
+
+        assert!(
+            codes(&run(&ProrationInputsPresent, &shape)).is_empty(),
+            "{kind} authors no proration contract"
+        );
+    }
+}
+
+/// A grandfathered row is held to **presence** — D-132 excludes it from the
+/// uniformity row set, which is a different rule.
+#[test]
+fn a_grandfathered_recurring_row_still_owes_its_own_contract() {
+    let shape = shape_of(vec![priced(
+        0xc4,
+        "EUR",
+        "eu",
+        PriceEligibility::ExistingGrandfathered,
+        None,
+    )]);
+
+    assert_eq!(
+        codes(&run(&ProrationInputsPresent, &shape)),
+        [PRORATION_INPUTS_MISSING]
+    );
+}
+
+#[test]
+fn crediting_a_downgrade_with_no_basis_to_size_it_fails_publish() {
+    let shape = shape_of(vec![priced(
+        0xc5,
+        "EUR",
+        "eu",
+        PriceEligibility::AllSubscriptions,
+        Some(contract(
+            BillingAnchorPolicy::CalendarMonth,
+            ProrationBasis::None,
+            true,
+        )),
+    )]);
+
+    let report = run(&ProrationCreditHasBasis, &shape);
+
+    assert_eq!(codes(&report), [PRORATION_INPUTS_CONTRADICTORY]);
+    assert_eq!(
+        report.violations[0].subject,
+        Uuid::from_u128(0xc5).to_string()
+    );
+}
+
+/// Both halves are individually legal: a plan that never prorates is a real
+/// plan, and a credited downgrade is a real policy. Only the pair contradicts.
+#[test]
+fn neither_half_of_the_contradiction_is_a_violation_on_its_own() {
+    for c in [
+        contract(
+            BillingAnchorPolicy::CalendarMonth,
+            ProrationBasis::None,
+            false,
+        ),
+        contract(
+            BillingAnchorPolicy::CalendarMonth,
+            ProrationBasis::BySecond,
+            true,
+        ),
+    ] {
+        let shape = shape_of(vec![priced(
+            0xc6,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(c),
+        )]);
+        assert!(
+            codes(&run(&ProrationCreditHasBasis, &shape)).is_empty(),
+            "{c:?} is publishable on its own"
+        );
+    }
+}
+
+/// D-123's own scenario: an intro-pricing plan anchoring `subscription_start`
+/// on the intro row and `fixed_day(1)` on the terminal row, both on one market.
+#[test]
+fn two_anchors_on_one_market_fail_publish_naming_the_divergent_rows() {
+    let shape = shape_of(vec![
+        priced(
+            0xd1,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(contract(
+                BillingAnchorPolicy::SubscriptionStart,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            )),
+        ),
+        priced(
+            0xd2,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(contract(
+                BillingAnchorPolicy::FixedDay(AnchorDay::new(1).expect("a day of the month")),
+                ProrationBasis::CalendarDaysActual,
+                false,
+            )),
+        ),
+    ]);
+
+    let report = run(&ProrationContractMarketUniform, &shape);
+
+    assert_eq!(codes(&report), [PRORATION_CONTRACT_MIXED_MARKET]);
+    let detail = &report.violations[0].detail;
+    for id in [0xd1_u128, 0xd2] {
+        assert!(
+            detail.contains(&Uuid::from_u128(id).to_string()),
+            "the design requires the divergent rows to be named: {detail}"
+        );
+    }
+    assert!(
+        detail.contains("billingAnchorPolicy"),
+        "and the divergent field: {detail}"
+    );
+}
+
+/// Two `fixed_day` anchors on different days are two anchors, not one. A
+/// comparison on the token alone would call them equal and publish a market
+/// with two cycle clocks.
+#[test]
+fn two_fixed_days_on_different_days_are_a_divergence() {
+    let shape = shape_of(vec![
+        priced(
+            0xd3,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(contract(
+                BillingAnchorPolicy::FixedDay(AnchorDay::new(1).expect("a day")),
+                ProrationBasis::CalendarDaysActual,
+                false,
+            )),
+        ),
+        priced(
+            0xd4,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(contract(
+                BillingAnchorPolicy::FixedDay(AnchorDay::new(15).expect("a day")),
+                ProrationBasis::CalendarDaysActual,
+                false,
+            )),
+        ),
+    ]);
+
+    assert_eq!(
+        codes(&run(&ProrationContractMarketUniform, &shape)),
+        [PRORATION_CONTRACT_MIXED_MARKET]
+    );
+}
+
+/// Per market, not per plan: the D-110 shape. EU on the 1st and US on signup
+/// day is exactly what this rule leaves legal.
+#[test]
+fn the_same_split_across_two_markets_publishes() {
+    let shape = shape_of(vec![
+        priced(
+            0xd5,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(contract(
+                BillingAnchorPolicy::FixedDay(AnchorDay::new(1).expect("a day")),
+                ProrationBasis::CalendarDaysActual,
+                false,
+            )),
+        ),
+        priced(
+            0xd6,
+            "USD",
+            "us",
+            PriceEligibility::AllSubscriptions,
+            Some(contract(
+                BillingAnchorPolicy::SubscriptionStart,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            )),
+        ),
+    ]);
+
+    assert!(codes(&run(&ProrationContractMarketUniform, &shape)).is_empty());
+}
+
+/// D-132: an immutable generation is not in the uniformity row set. Without
+/// this, one cutover would permanently freeze the market's cycle clock and
+/// every later publish would fail on a row nobody can fix.
+#[test]
+fn a_grandfathered_generation_diverging_from_the_current_rows_publishes() {
+    let shape = shape_of(vec![
+        priced(
+            0xd7,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(baseline_contract()),
+        ),
+        priced(
+            0xd8,
+            "EUR",
+            "eu",
+            PriceEligibility::ExistingGrandfathered,
+            Some(contract(
+                BillingAnchorPolicy::SubscriptionStart,
+                ProrationBasis::BySecond,
+                true,
+            )),
+        ),
+    ]);
+
+    assert!(codes(&run(&ProrationContractMarketUniform, &shape)).is_empty());
+}
+
+/// `new_subscriptions_only` **is** in the row set — D-123 names the two
+/// eligibility classes it covers, and this is the second of them.
+#[test]
+fn a_new_subscriptions_only_row_is_inside_the_uniformity_set() {
+    let shape = shape_of(vec![
+        priced(
+            0xd9,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(baseline_contract()),
+        ),
+        priced(
+            0xda,
+            "EUR",
+            "eu",
+            PriceEligibility::NewSubscriptionsOnly,
+            Some(contract(
+                BillingAnchorPolicy::SubscriptionStart,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            )),
+        ),
+    ]);
+
+    assert_eq!(
+        codes(&run(&ProrationContractMarketUniform, &shape)),
+        [PRORATION_CONTRACT_MIXED_MARKET]
+    );
+}
+
+/// All three members are compared, and the finding names which one diverged.
+#[test]
+fn the_basis_and_the_credit_flag_are_compared_too_and_the_finding_names_the_field() {
+    for (moved, field) in [
+        (
+            contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::BySecond,
+                false,
+            ),
+            "prorationBasis",
+        ),
+        (
+            contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::CalendarDaysActual,
+                true,
+            ),
+            "creditOnDowngrade",
+        ),
+    ] {
+        let shape = shape_of(vec![
+            priced(
+                0xe1,
+                "EUR",
+                "eu",
+                PriceEligibility::AllSubscriptions,
+                Some(baseline_contract()),
+            ),
+            priced(
+                0xe2,
+                "EUR",
+                "eu",
+                PriceEligibility::AllSubscriptions,
+                Some(moved),
+            ),
+        ]);
+
+        let report = run(&ProrationContractMarketUniform, &shape);
+        assert_eq!(codes(&report), [PRORATION_CONTRACT_MIXED_MARKET]);
+        assert!(
+            report.violations[0].detail.contains(field),
+            "{field} diverged: {}",
+            report.violations[0].detail
+        );
+    }
+}
+
+/// A row with no contract at all is `inst-pi-required`'s finding, not this
+/// one's: reporting the same row twice under two codes would make an author
+/// remediate one omission in two places.
+#[test]
+fn an_absent_contract_is_not_a_divergence() {
+    let shape = shape_of(vec![
+        priced(
+            0xe3,
+            "EUR",
+            "eu",
+            PriceEligibility::AllSubscriptions,
+            Some(baseline_contract()),
+        ),
+        priced(0xe4, "EUR", "eu", PriceEligibility::AllSubscriptions, None),
+    ]);
+
+    assert!(codes(&run(&ProrationContractMarketUniform, &shape)).is_empty());
 }

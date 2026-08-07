@@ -13,6 +13,7 @@ use super::{
 };
 use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
 use crate::domain::concurrency::RowVersion;
+use crate::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_rules::{
@@ -128,7 +129,16 @@ fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>)
         // row no publish would have accepted, which nothing measured while the
         // rule had no code.
         billing_timing: Some("advance".to_owned()),
-        proration_contract: None,
+        // Stated, because this is a **recurring** row and Slice 6's
+        // `inst-pi-required` makes the three proration inputs mandatory on one.
+        // A fixture that asserts a clean publish needs a row publishable in every
+        // respect but the one under judgement, and a row with no proration
+        // contract is not.
+        proration_contract: Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        }),
         rounding_policy_ref: rounding.map(ToOwned::to_owned),
         grandfather_until: None,
         supersedes_price_id: None,
