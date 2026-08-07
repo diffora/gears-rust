@@ -76,6 +76,7 @@ pub mod m20260802_000040_guard_pricing_price_tax_columns;
 pub mod m20260802_000041_retire_pricing_policy_object_tax_display_mode;
 pub mod m20260802_000042_tighten_taxonomy_value_present_check;
 pub mod m20260802_000050_add_pricing_price_proration_contract;
+pub mod m20260802_000051_guard_pricing_price_proration_columns;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -200,6 +201,11 @@ impl MigratorTrait for Migrator {
             // `000002` creates the table; the number is this strand's allotted
             // range (`000050`-`000059`), disjoint from the concurrent strand's.
             Box::new(m20260802_000050_add_pricing_price_proration_contract::Migration),
+            // The guard restatement for the four columns `000050` adds. It sorts
+            // after them because a trigger naming a column that does not exist
+            // yet does not create -- `m20260802_000040`'s reason for being its
+            // own migration rather than an edit to `m20260802_000002`.
+            Box::new(m20260802_000051_guard_pricing_price_proration_columns::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),
