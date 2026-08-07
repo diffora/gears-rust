@@ -17,5 +17,6 @@ pub mod read_model;
 pub mod retirement;
 pub mod storage;
 pub mod supersession;
+pub mod synthesis;
 pub mod threshold;
 pub mod window;

@@ -209,6 +209,9 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_price_tier_band_kind",
     "pricing_price_tier_band_parent_kind",
     "pricing_price_window_append_only",
+    // Slice 11. Two unconditional arms in one function: a migrated-origin
+    // snapshot is frozen, so no UPDATE is sanctioned at all.
+    "pricing_snapshot_provenance_frozen",
 ];
 
 /// The triggers those functions are bound to, one per function.
@@ -237,6 +240,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_tier_band_kind",
     "trg_pricing_price_tier_band_parent_kind",
     "trg_pricing_price_window_append_only",
+    "trg_pricing_snapshot_provenance_frozen",
 ];
 
 /// The partial indexes — the `WHERE`-carrying ones, where the predicate *is* the
@@ -309,6 +313,8 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_price_window: window_id",
     "pricing_read_model: tenant_id, catalog_version, subject_kind, subject_ref",
     "pricing_region_taxonomy: tenant_id, value",
+    // Read back from `m20260802_000044`'s own DDL rather than from the live server.
+    "pricing_snapshot_provenance: provenance_id",
 ];
 
 const EXPECTED_CHECKS: &[&str] = &[
@@ -455,6 +461,10 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_read_model_warm_marker",
     "chk_pricing_region_taxonomy_state",
     "chk_pricing_region_taxonomy_value_present",
+    "chk_pricing_snapshot_provenance_payload",
+    "chk_pricing_snapshot_provenance_resolved",
+    "chk_pricing_snapshot_provenance_revision",
+    "chk_pricing_snapshot_provenance_trigger",
 ];
 
 // ---------------------------------------------------------------------------

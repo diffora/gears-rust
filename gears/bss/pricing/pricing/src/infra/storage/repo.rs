@@ -52,6 +52,7 @@ pub mod plan_shape_repo;
 pub mod policy_repo;
 pub mod price_repo;
 pub mod read_model_repo;
+pub mod synthesis_repo;
 pub mod taxonomy_repo;
 pub mod threshold_repo;
 pub mod window_repo;
@@ -80,6 +81,7 @@ pub use plan_shape_repo::PlanShapeRepo;
 pub use policy_repo::{AuthoringPolicy, PolicyObjectRepo};
 pub use price_repo::{NewPriceDraft, PriceRepo};
 pub use read_model_repo::NewDelta;
+pub use synthesis_repo::{NewProvenance, ProvenanceRecord};
 pub use threshold_repo::{StoredVersion, ThresholdEntryRow};
 pub use window_repo::{NewWindow, WindowRecord};
 

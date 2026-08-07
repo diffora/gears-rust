@@ -178,6 +178,14 @@ pub struct GovernanceState {
     /// there is nothing for a consumer to pin. It emits a schedule and
     /// Subscriptions executes it.
     pub migrations: crate::infra::migration::MigrationService,
+    /// The `SnapshotSynthesizer` of Slice 11 §1.7 — D-76's two-tier selection,
+    /// D-87's self-contained payload and the D-102 read surface.
+    ///
+    /// Requests **no** `CatalogVersion` either, and here the reason is normative
+    /// rather than incidental: D-87 makes a `migrated-origin` ref the one
+    /// deliberately non-version-pinned reference in the system, so there is no
+    /// version for it to request.
+    pub synthesis: crate::infra::synthesis::SynthesisService,
     /// The at-most-once gate the `POST …/windows` claims under (D-191).
     ///
     /// Here as well as on [`AuthoringState`] rather than instead of it: the two planes

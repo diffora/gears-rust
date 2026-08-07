@@ -37,6 +37,7 @@ use bss_pricing::api::rest::approvals::{
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
+use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
 use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
 use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
@@ -315,6 +316,7 @@ fn census() -> Vec<Route> {
     ];
     rows.extend(retirement_routes());
     rows.extend(migration_routes());
+    rows.extend(synthesis_routes());
     rows.extend(overlay_routes());
     rows.extend(config_routes());
     rows
@@ -440,6 +442,24 @@ fn migration_routes() -> Vec<Route> {
             mutating: true,
         },
     ]
+}
+
+/// D-102's `migrated-origin` read surface.
+///
+/// **`plan x read`, and the object is deliberately not the subscription.** This
+/// is the one route in the gear whose authz object differs from its path object:
+/// the content is the catalog's, just content no `CatalogVersion` addresses, so
+/// it is served under the same authority as the read model. Asking the PDP about
+/// a subscription id as a `plan` resource would be a question about an object of
+/// the wrong type - which is exactly the mis-gating this census exists to catch.
+fn synthesis_routes() -> Vec<Route> {
+    vec![Route {
+        method: "GET",
+        path: MIGRATED_ORIGIN_SNAPSHOT,
+        resource_type: labels::PLAN,
+        action: actions::READ,
+        mutating: false,
+    }]
 }
 
 fn overlay_routes() -> Vec<Route> {
@@ -631,6 +651,11 @@ fn drive(
         // a gate, which is exactly what the four properties below reddened with
         // before this line existed.
         .replace("{migrationId}", "00000000-0000-4000-8000-000000000fa1")
+        // Not a seeded id either, and for the same reason: the read surface asks
+        // the PDP before it reads, and a 404 for a subscription that was never
+        // synthesized is the contract (`inst-sy-firstrating`) rather than a gap
+        // in this fixture.
+        .replace("{subscriptionRef}", "00000000-0000-4000-8000-0000000005ab")
         // The taxonomy class is a **resource selector**, not a seeded id: any of
         // the four addressable segments drives the same handler through the same
         // gate. `brand` is used because it is the one Slice 9's overlay scope
@@ -912,6 +937,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::migrations::router(
+                Arc::clone(&harness.governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::migrated_origin_snapshots::router(
                 Arc::clone(&harness.governance),
                 &openapi,
             ))

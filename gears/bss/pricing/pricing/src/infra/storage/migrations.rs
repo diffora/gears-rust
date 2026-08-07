@@ -76,6 +76,7 @@ pub mod m20260802_000040_guard_pricing_price_tax_columns;
 pub mod m20260802_000041_retire_pricing_policy_object_tax_display_mode;
 pub mod m20260802_000042_tighten_taxonomy_value_present_check;
 pub mod m20260802_000043_create_pricing_migration;
+pub mod m20260802_000044_create_pricing_snapshot_provenance;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -201,6 +202,10 @@ impl MigratorTrait for Migrator {
             // id - which is every position, since it carries no foreign key (see
             // its module doc for why neither plan reference is expressible as one).
             Box::new(m20260802_000043_create_pricing_migration::Migration),
+            // Slice 11's synthesis half: the `migrated-origin` record. Like the
+            // table above it restates nothing and carries no foreign key, so its
+            // position in the chain is free.
+            Box::new(m20260802_000044_create_pricing_snapshot_provenance::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

@@ -91,6 +91,8 @@ const EXPECTED_TABLES: &[&str] = &[
     // Slice 11's migration plane: one scheduled plan migration and its section 4
     // state machine.
     "pricing_migration",
+    // Slice 11's synthesis half: the frozen `migrated-origin` record.
+    "pricing_snapshot_provenance",
     "coord_leases",
 ];
 
@@ -181,6 +183,10 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_window_future_end",
     "trg_pricing_price_window_immutable_history",
     "trg_pricing_price_window_no_delete",
+    // Slice 11. Two unconditional arms and no whitelist: a migrated-origin
+    // snapshot is **frozen**, so no UPDATE is sanctioned at all.
+    "trg_pricing_snapshot_provenance_no_delete",
+    "trg_pricing_snapshot_provenance_no_update",
 ];
 
 /// Every index the chain creates, `uq_` and `idx_` alike.
@@ -221,6 +227,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_price_window_due",
     "idx_pricing_price_window_price",
     "idx_pricing_read_model_resolve",
+    "idx_pricing_snapshot_provenance_plan",
     "uq_pricing_approval_key_pending",
     "uq_pricing_approval_policy_pending",
     "uq_pricing_bundle_plan",
@@ -241,6 +248,11 @@ const EXPECTED_INDEXES: &[&str] = &[
     "uq_pricing_price_overlay_precedence",
     "uq_pricing_price_scope_key_current",
     "uq_pricing_price_scope_key_draft",
+    // Section 9's idempotency rule as an index: one subscription, one frozen
+    // snapshot, ever. Keyed without the trigger on purpose - D-81 gives the two
+    // triggers different instants, so a per-trigger key would let one
+    // subscription hold two different frozen prices.
+    "uq_pricing_snapshot_provenance_subscription",
 ];
 
 /// Every named CHECK constraint the chain declares, **by name**.
@@ -392,6 +404,10 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_read_model_warm_marker",
     "chk_pricing_region_taxonomy_state",
     "chk_pricing_region_taxonomy_value_present",
+    "chk_pricing_snapshot_provenance_payload",
+    "chk_pricing_snapshot_provenance_resolved",
+    "chk_pricing_snapshot_provenance_revision",
+    "chk_pricing_snapshot_provenance_trigger",
 ];
 
 /// Every trigger's body, pinned by digest — the roster, in `sqlite_master`'s
@@ -480,6 +496,10 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "tenant_id, catalog_version, subject_kind, subject_ref",
     ),
     ("pricing_region_taxonomy", "tenant_id, value"),
+    // Read back from `m20260802_000044`'s own DDL. `provenance_id` and not the
+    // subscription: the subscription's uniqueness is a partial-free UNIQUE index
+    // beside it, which is the rule rather than the identity.
+    ("pricing_snapshot_provenance", "provenance_id"),
 ];
 
 fn expected_primary_keys() -> Vec<(String, String)> {
@@ -785,6 +805,18 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_price_window_no_delete",
         8_334_934_610_813_099_928_u64,
+    ),
+    // Slice 11's two. As with `m20260802_000043`'s five, the digest can only come
+    // from the stored body; what was checked against the migration itself is the
+    // **content** - both statements were diffed byte-for-byte against what
+    // `sqlite_master` holds, so these pin the migration's own DDL.
+    (
+        "trg_pricing_snapshot_provenance_no_delete",
+        14_812_364_302_530_093_290_u64,
+    ),
+    (
+        "trg_pricing_snapshot_provenance_no_update",
+        3_248_933_936_782_516_701_u64,
     ),
 ];
 

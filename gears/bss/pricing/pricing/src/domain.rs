@@ -39,6 +39,7 @@ pub mod scope_key;
 pub mod sellability;
 pub mod snapshot;
 pub mod supersession;
+pub mod synthesis;
 pub mod tax_display;
 pub mod taxonomy;
 pub mod validation;

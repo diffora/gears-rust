@@ -73,6 +73,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
     use bss_pricing::api::rest::frontier::FRONTIER;
+    use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
     use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
     use bss_pricing::api::rest::overlays::{
         PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS,
@@ -154,6 +155,9 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("POST", MIGRATIONS),
         ("GET", MIGRATION_BY_ID),
         ("DELETE", MIGRATION_BY_ID),
+        // D-102's read surface. The only route in the gear whose authz object
+        // (`plan`) differs from its path object (a subscription).
+        ("GET", MIGRATED_ORIGIN_SNAPSHOT),
         // Slice 5's entrance: the publish mount and the approval surface.
         ("POST", PLAN_PUBLISH),
         ("GET", APPROVALS),
@@ -269,6 +273,9 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             db.clone(),
             &LimitsConfig::default(),
         ),
+        // Slice 11's synthesis half. No registry and no limits: it freezes a
+        // payload nothing can look up (D-87).
+        synthesis: bss_pricing::infra::synthesis::SynthesisService::new(db.clone()),
         publish: PublishService::new(
             db,
             &LimitsConfig::default(),
@@ -332,6 +339,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::migrations::router(
+                Arc::clone(&governance),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::migrated_origin_snapshots::router(
                 Arc::clone(&governance),
                 &openapi,
             ))
