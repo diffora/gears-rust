@@ -869,7 +869,9 @@ async fn a_request_naming_no_market_reports_a_client_fault() {
         .allowed()
         .send(request("GET", &preview_path(plan_id, "region=EU"), None))
         .await;
-    assert_ne!(response.status(), StatusCode::OK);
+    // The status, not merely "not 200": a 403 would also satisfy `!= OK` while
+    // meaning the gate refused, and the emission sits **after** the gate.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     h.metrics.force_flush();
 
     assert_eq!(

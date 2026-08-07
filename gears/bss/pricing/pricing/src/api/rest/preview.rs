@@ -285,9 +285,18 @@ async fn preview_plan_price(
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?
     else {
         // **A different reason from an absent market**, though the caller sees
-        // the same 404: this tenant has published nothing at all, so no row of
-        // any market exists. An operator seeing this series climb has a
-        // different job from one seeing `market_absent` climb.
+        // the same 404: no version of this tenant's catalog is readable, so no
+        // row of any market exists to quote. An operator seeing this series climb
+        // has a different job from one seeing `market_absent` climb.
+        //
+        // "Not readable" rather than "never published", which is what the reason
+        // is named for and is the wider of the two: `read_at` answers `None` both
+        // for a tenant that has never published and for one whose only
+        // projections are **later than the pin**, i.e. published and not yet
+        // warmed. The remediations differ — publish, versus wait for the
+        // projector — and this series does not separate them. Recorded rather
+        // than split, because splitting it needs a fact the frontier read does
+        // not return.
         state
             .metrics
             .preview_failclosed(PreviewFailClosed::NoPublishedVersion);

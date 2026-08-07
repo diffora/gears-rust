@@ -26,8 +26,10 @@
 //! every label this gear reports is a *rule outcome* rather than caller input,
 //! is to have no `&str` labels at all.
 //!
-//! The **alarm** counter is the one place a name is passed as a string, and it
-//! is bounded by a different mechanism — see [`PricingMetricsPort::alarm`].
+//! The **alarm** counter is the one whose label is a declared *name* rather than
+//! a rule outcome — the one place a design document would tempt a caller to pass
+//! a `&str`. It is bounded the same way as the rest: by an enum. See
+//! [`PricingMetricsPort::alarm`].
 //!
 //! # A no-op is the default, and it is the safe one
 //!
@@ -52,7 +54,15 @@ pub enum PreviewFailClosed {
     /// The plan publishes no row on the requested `(currency, region)` — the
     /// `inst-mc-nofx` refusal. A catalog gap: somebody has to author the row.
     MarketAbsent,
-    /// The plan has no published version at all, so there is nothing to read.
+    /// No version of the tenant's catalog is readable, so there is nothing to
+    /// quote on any market.
+    ///
+    /// **Wider than its name**, and that is recorded rather than hidden: the
+    /// frontier read answers `None` both for a tenant that has never published
+    /// and for one whose only projections are later than the pin — published, not
+    /// yet warmed by the projector. The remediations differ (publish, versus
+    /// wait), and separating them needs a fact the frontier read does not return.
+    /// `T-17`.
     NoPublishedVersion,
     /// The request named no market, or a malformed one. A caller fault.
     MarketNotNamed,

@@ -32,7 +32,7 @@ use crate::domain::ports::metrics::{
     CurrencyBindingCase, PreviewFailClosed, PricingAlarm, PricingMetricsPort,
 };
 use crate::domain::publish::rules::PublishRuleParams;
-use crate::domain::scope_key::Region;
+use crate::domain::scope_key::{PriceEligibility, Region};
 use crate::domain::tax_display::{TAX_ENGINE_GA, is_not_sellable_ga};
 
 /// Meter / instrumentation scope name — the gear's own name.
@@ -165,12 +165,16 @@ impl PricingMetricsPort for PricingMetricsMeter {
 /// testable against the in-memory exporter without staging a publishable plan,
 /// which is what makes the label assertions below cheap enough to be exhaustive.
 ///
-/// **Called from the pre-check, not the commit**, and that is the whole
-/// decision. `pricing_currency_binding_blocks_total` counts the *rule* firing,
-/// and a plan refused at pre-check never reaches a commit — counting there would
-/// report only the blocks an operator went on to ignore. The GA gauge is likewise
-/// a property of the candidate set: it answers "how many markets would this plan
-/// gate", which is what an operator watching the C3 backlog asks while authoring.
+/// **Called from both rule runs — the pre-check and the commit — and the commit
+/// is the more important of the two.** This was first written the other way, on
+/// the argument that "a plan refused at pre-check never reaches a commit, so
+/// counting there would report only the blocks an operator went on to ignore".
+/// The premise is inverted: the publish route's approved arm reaches `commit`
+/// **without** running a pre-check at all, and a plan that failed its pre-check
+/// is never approved — so a block raised at the commit is one that appeared
+/// between the reviewer's decision and the commit, which is precisely the kind an
+/// operator cannot see coming. The two runs are two events and a plan blocked at
+/// the pre-check never reaches the second, so nothing is double-counted.
 ///
 /// Emitting cannot fail and cannot block: the port is a no-op until the host
 /// wires an exporter.
@@ -195,10 +199,18 @@ pub fn report_market_metrics(
     // The candidate set's gated markets, deduplicated by `(currency, region)`:
     // `inst-td-gagate` makes the flag per market, and a hybrid plan carrying four
     // gated rows on one market is one gated market.
+    //
+    // **Grandfathered generations are excluded**, on `sold_markets`' rule and for
+    // its reason (ADR-0002): a market reached only through a frozen generation is
+    // not one this plan sells, and it can never be un-gated by re-publishing —
+    // counting it would put a market in a backlog no action can clear.
     let gated: BTreeSet<(CurrencyCode, Region)> = shape
         .rows
         .iter()
-        .filter(|record| is_not_sellable_ga(record, TAX_ENGINE_GA))
+        .filter(|record| {
+            record.scope_key.price_eligibility() != PriceEligibility::ExistingGrandfathered
+                && is_not_sellable_ga(record, TAX_ENGINE_GA)
+        })
         .map(|record| {
             (
                 record.scope_key.currency().clone(),
@@ -206,7 +218,23 @@ pub fn report_market_metrics(
             )
         })
         .collect();
-    metrics.tax_not_sellable_ga(i64::try_from(gated.len()).unwrap_or(i64::MAX));
+
+    // §7's Info alarm, raised **as a counter and not as the gauge §10 declares**.
+    //
+    // The gauge is catalog-wide — "how many markets are gated *now*" — and this
+    // function knows one plan. Recording a per-plan count on an un-dimensioned
+    // gauge is last-writer-wins across every plan and tenant in the process: a
+    // tax-exclusive plan pre-checked one second after a plan gating five markets
+    // would write `0` and clear the alarm while those five markets stayed gated.
+    // A per-tenant label would fix the collision and break the module's
+    // cardinality bound, so the gauge needs a catalog-wide observer over the read
+    // model rather than a caller on the publish path. `T-17` carries it.
+    //
+    // What *is* well-defined here is the alarm: this plan would gate at least one
+    // market. A counter accumulates, so two plans cannot overwrite each other.
+    if !gated.is_empty() {
+        metrics.alarm(PricingAlarm::TaxNotSellableGaActive);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -277,9 +305,18 @@ pub mod test_harness {
         ///
         /// `0` for a series that was never recorded, which is what makes a
         /// negative assertion ("this label was *not* incremented") expressible.
+        ///
+        /// **The latest export, not the sum of the exports.**
+        /// `InMemoryMetricExporter` defaults to `Temporality::Cumulative`, so
+        /// every collection appends a fresh *running-total* snapshot and
+        /// `get_finished_metrics` hands back all of them. Adding them together
+        /// double-counts the moment a case flushes twice — and a `PeriodicReader`
+        /// also exports on its own timer, so a slow case can mint a second batch
+        /// with nobody asking. Under cumulative temporality the newest snapshot
+        /// **is** the total.
         #[must_use]
         pub fn counter_value(&self, name: &str, attributes: &[(&str, &str)]) -> u64 {
-            self.sum_points(name, attributes)
+            self.latest_sum_point(name, attributes).unwrap_or(0)
         }
 
         /// The last recorded value of one gauge data point, or `0` when the
@@ -302,8 +339,14 @@ pub mod test_harness {
         /// counter: a gauge only written when it is non-zero **never falls**, so
         /// it holds the last gated count forever and tells an operator the
         /// backlog stands after the plan that caused it was fixed.
+        ///
+        /// **The last matching point across all exports**, for
+        /// [`Self::counter_value`]'s reason: the batches accumulate, and taking
+        /// the first match would answer with the oldest flush while calling it the
+        /// last recorded value.
         #[must_use]
         pub fn gauge_point(&self, name: &str, attributes: &[(&str, &str)]) -> Option<i64> {
+            let mut latest = None;
             for batch in self.exporter.get_finished_metrics().unwrap_or_default() {
                 for scope in batch.scope_metrics() {
                     for metric in scope.metrics() {
@@ -313,18 +356,19 @@ pub mod test_harness {
                         if let AggregatedMetrics::I64(MetricData::Gauge(gauge)) = metric.data() {
                             for point in gauge.data_points() {
                                 if matches(point.attributes(), attributes) {
-                                    return Some(point.value());
+                                    latest = Some(point.value());
                                 }
                             }
                         }
                     }
                 }
             }
-            None
+            latest
         }
 
-        fn sum_points(&self, name: &str, attributes: &[(&str, &str)]) -> u64 {
-            let mut total = 0;
+        /// The newest cumulative snapshot of one sum data point.
+        fn latest_sum_point(&self, name: &str, attributes: &[(&str, &str)]) -> Option<u64> {
+            let mut latest = None;
             for batch in self.exporter.get_finished_metrics().unwrap_or_default() {
                 for scope in batch.scope_metrics() {
                     for metric in scope.metrics() {
@@ -334,14 +378,14 @@ pub mod test_harness {
                         if let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() {
                             for point in sum.data_points() {
                                 if matches(point.attributes(), attributes) {
-                                    total += point.value();
+                                    latest = Some(point.value());
                                 }
                             }
                         }
                     }
                 }
             }
-            total
+            latest
         }
     }
 

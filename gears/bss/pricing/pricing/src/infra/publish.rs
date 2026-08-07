@@ -482,6 +482,9 @@ impl PublishService {
         let scope = scope.clone();
         let policies = self.policies.clone();
         let gate = self.fixture_gate.clone();
+        // Cloned beside the gate and for its reason: the transaction closure
+        // outlives the borrow of `self`.
+        let metrics = Arc::clone(&self.metrics);
         let registry = Arc::clone(&self.registry);
         let request_id = publish_request_id(tenant_id, unit);
 
@@ -530,6 +533,16 @@ impl PublishService {
                     }
 
                     let report = run_publish_rules(&shape, &params);
+                    // **Reported here as well as at the pre-check, and the
+                    // commit is the more important of the two.** The route's
+                    // approved arm reaches this without a pre-check at all, and
+                    // a plan that failed its pre-check is never approved — so a
+                    // block raised *here* is one that appeared between the
+                    // reviewer's decision and the commit, which is the only kind
+                    // an operator cannot see coming. There is no double count:
+                    // the two runs are two events, and a plan blocked at
+                    // pre-check never reaches this one.
+                    crate::infra::metrics::report_market_metrics(&*metrics, &shape, &params);
                     if !report.is_publishable() {
                         return Err(DomainError::ValidationFailed(report));
                     }

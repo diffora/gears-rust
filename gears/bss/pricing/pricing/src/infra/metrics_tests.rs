@@ -179,7 +179,58 @@ fn the_ga_gauge_can_fall_to_zero() {
     m.tax_not_sellable_ga(0);
     h.force_flush();
 
-    assert_eq!(h.gauge_value("pricing_tax_not_sellable_ga", &[]), 0);
+    // `gauge_point`, not `gauge_value`: the latter answers `0` for a series that
+    // was never recorded, so it cannot tell a fall to zero from an instrument
+    // that was renamed, silenced or built as a counter.
+    assert_eq!(h.gauge_point("pricing_tax_not_sellable_ga", &[]), Some(0));
+}
+
+/// **The harness reads the newest cumulative snapshot, not the sum of them.**
+///
+/// `InMemoryMetricExporter` defaults to `Temporality::Cumulative`: every
+/// collection appends a fresh running total, and a reader that added the batches
+/// together would answer 3 here. Held because the first later slice to write
+/// `emit; flush; assert; emit; flush; assert` gets a wrong number otherwise, and
+/// would have no reason to suspect the harness.
+#[test]
+fn a_second_flush_does_not_double_count_the_first() {
+    let h = MetricsHarness::new();
+    let m = h.metrics();
+
+    m.preview_failclosed(PreviewFailClosed::MarketAbsent);
+    h.force_flush();
+    assert_eq!(
+        h.counter_value(
+            "pricing_preview_failclosed_total",
+            &[("reason", "market_absent")]
+        ),
+        1
+    );
+
+    m.preview_failclosed(PreviewFailClosed::MarketAbsent);
+    h.force_flush();
+    assert_eq!(
+        h.counter_value(
+            "pricing_preview_failclosed_total",
+            &[("reason", "market_absent")]
+        ),
+        2,
+        "two increments and two flushes are two, not three"
+    );
+}
+
+/// A gauge read after a second flush is the **latest** value, not the oldest.
+#[test]
+fn a_gauge_read_after_two_flushes_is_the_later_value() {
+    let h = MetricsHarness::new();
+    let m = h.metrics();
+
+    m.tax_not_sellable_ga(4);
+    h.force_flush();
+    m.tax_not_sellable_ga(1);
+    h.force_flush();
+
+    assert_eq!(h.gauge_point("pricing_tax_not_sellable_ga", &[]), Some(1));
 }
 
 // ---------------------------------------------------------------------------
@@ -251,17 +302,21 @@ fn an_alarms_severity_is_a_property_of_the_alarm() {
 /// and the dashboard two vocabularies.
 #[test]
 fn alarm_labels_are_the_dotted_names_the_design_set_declares() {
-    for alarm in PricingAlarm::ALL {
-        let name = alarm.as_str();
-        assert!(
-            name.starts_with("pricing."),
-            "{name} must be the declared dotted name"
-        );
-        assert!(
-            !name.contains("__") && name.contains('.'),
-            "{name} must not be rewritten into snake_case"
-        );
-    }
+    // The literal spellings, transcribed from §7. A shape assertion —
+    // "starts with `pricing.`, contains a dot" — is satisfied by
+    // `pricing.tax.not_sellable_ga`, which is a name §7 does not declare and no
+    // alerting rule matches.
+    let declared: Vec<(&str, &str)> = PricingAlarm::ALL
+        .iter()
+        .map(|a| (a.as_str(), a.severity().as_str()))
+        .collect();
+    assert_eq!(
+        declared,
+        [
+            ("pricing.tax.not_sellable_ga_active", "info"),
+            ("pricing.tax.readiness_divergent", "warn"),
+        ]
+    );
 }
 
 /// Every severity is a legal label, so a later slice adding a Critical alarm
@@ -276,13 +331,17 @@ fn every_severity_renders_a_label() {
 // The no-op.
 // ---------------------------------------------------------------------------
 
-/// The default port is usable behind the `Arc<dyn …>` the surfaces hold.
+/// The default port answers every method behind the `Arc<dyn …>` the surfaces
+/// hold, without panicking.
 ///
-/// It is what every unit test and every construction before an exporter is wired
-/// holds, so a missing exporter can never be the reason a publish fails. Covers
-/// the dyn-dispatch path, which a concrete-type call would not.
+/// **That is the whole claim, and it is not "does nothing"** — there is no
+/// observer to prove a no-op against, and inventing one would be testing the
+/// double. What this holds is that a service built before an exporter is wired
+/// can be called on every method of the port, so a missing exporter can never be
+/// the reason a publish fails. Covers dyn dispatch, which a concrete-type call
+/// would not.
 #[test]
-fn the_noop_port_is_usable_as_a_dyn_port_and_does_nothing() {
+fn the_noop_port_answers_every_method_behind_a_dyn_port() {
     let m: std::sync::Arc<dyn PricingMetricsPort> = std::sync::Arc::new(NoopPricingMetrics);
     m.preview_failclosed(PreviewFailClosed::MarketAbsent);
     m.currency_binding_block(CurrencyBindingCase::RequiredAddon);
@@ -368,7 +427,8 @@ mod publish_path {
 
     const ADDON: Uuid = Uuid::from_u128(0x0add_000a);
     const BLOCKS: &str = "pricing_currency_binding_blocks_total";
-    const GAUGE: &str = "pricing_tax_not_sellable_ga";
+    const ALARM: &str = "pricing_alarm_total";
+    const GA_ALARM: &str = "pricing.tax.not_sellable_ga_active";
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0)
@@ -545,15 +605,25 @@ mod publish_path {
         assert_eq!(h.counter_value(BLOCKS, &[("case", "required_addon")]), 0);
     }
 
-    /// Cases (ii) and (iii) are **not** counted under case (i)'s label.
+    /// A plan composing no add-on is no case (i) block, and wears no other
+    /// case's label either.
     ///
-    /// `bundle_rules` raises the *same* `CURRENCY_NOT_COVERED` string, so a
-    /// derivation scanning the report by code would label a bundle's fault
-    /// `required_addon`. This asks the domain verdict instead, and a plan with no
-    /// add-on rule at all has no case (i) to report however the bundle plane
-    /// answered.
+    /// # What this does **not** hold, stated because the name once claimed it did
+    ///
+    /// `bundle_rules` raises the *same* `CURRENCY_NOT_COVERED` string as case
+    /// (i), and the hazard is a derivation that scans the report by code and
+    /// labels a bundle's fault `required_addon`. **No case here can see that**:
+    /// staging it needs a bundle publish, whose rules live in a file this strand
+    /// is forbidden, and this one seeds no bundle at all — so a derivation
+    /// rewritten to scan the report would pass it unchanged.
+    ///
+    /// What closes the hazard is structural rather than tested:
+    /// `report_market_metrics` takes no `ValidationReport`, so it *cannot* scan
+    /// one. That is a compile-time fact and a stronger guarantee than a case,
+    /// which is why this one is left holding the narrower claim its assertions
+    /// actually make. Cases (ii) and (iii) have no emitter at all — `T-17`.
     #[test]
-    fn the_required_addon_label_is_not_worn_by_the_bundle_cases() {
+    fn a_plan_composing_no_addon_is_no_block_of_any_case() {
         let h = MetricsHarness::new();
 
         report_market_metrics(
@@ -575,14 +645,30 @@ mod publish_path {
         assert_eq!(h.counter_value(BLOCKS, &[("case", "bundle_own_price")]), 0);
     }
 
-    /// The gauge counts **markets**, not rows.
-    ///
-    /// `inst-td-gagate` makes the flag per row and hence per `(currency,
-    /// region)`; a hybrid plan carrying four gated rows on one market is one
-    /// gated market, and an operator reading the C3 backlog is counting markets
-    /// to unblock.
+    /// A plan gating at least one market raises §7's Info alarm.
     #[test]
-    fn the_gauge_counts_gated_markets_rather_than_gated_rows() {
+    fn a_plan_gating_a_market_raises_the_ga_alarm() {
+        let h = MetricsHarness::new();
+
+        report_market_metrics(
+            &h.metrics(),
+            &shape_of(&[("EUR", "EU", true), ("USD", "US", false)], false),
+            &params_covering(&[]),
+        );
+        h.force_flush();
+
+        assert_eq!(h.counter_value(ALARM, &[("alarm", GA_ALARM)]), 1);
+    }
+
+    /// **One alarm per publish, however many markets it gates.**
+    ///
+    /// The alarm says "this plan would gate markets"; it is not a count of them.
+    /// A firing per market would make one authoring decision look like four
+    /// incidents, and §7 declares an alarm rather than a measure. The *count* is
+    /// the gauge's job, and the gauge has no honest writer on a per-plan path —
+    /// see `PricingMetricsPort::tax_not_sellable_ga` and `T-17`.
+    #[test]
+    fn many_gated_markets_are_still_one_alarm() {
         let h = MetricsHarness::new();
 
         report_market_metrics(
@@ -600,22 +686,16 @@ mod publish_path {
         );
         h.force_flush();
 
-        assert_eq!(
-            h.gauge_value(GAUGE, &[]),
-            2,
-            "two markets are gated; the third is tax-exclusive and the duplicate \
-             row is the same market"
-        );
+        assert_eq!(h.counter_value(ALARM, &[("alarm", GA_ALARM)]), 1);
     }
 
-    /// A plan gating nothing reports **zero**, and reports it rather than staying
-    /// silent.
+    /// A plan gating nothing raises nothing.
     ///
-    /// A gauge only written when it is non-zero never falls: it would hold the
-    /// last gated count forever and tell an operator the backlog stands after the
-    /// plan that made it was fixed.
+    /// The negative control: an alarm raised on every publish would satisfy both
+    /// cases above and would page somebody for every tax-exclusive plan in the
+    /// catalog.
     #[test]
-    fn a_plan_gating_nothing_reports_zero() {
+    fn a_plan_gating_nothing_raises_no_alarm() {
         let h = MetricsHarness::new();
 
         report_market_metrics(
@@ -625,11 +705,30 @@ mod publish_path {
         );
         h.force_flush();
 
-        assert_eq!(
-            h.gauge_point(GAUGE, &[]),
-            Some(0),
-            "the zero must be **written**: a gauge only written when non-zero \
-             never falls, and would report a backlog that no longer exists"
-        );
+        assert_eq!(h.counter_value(ALARM, &[("alarm", GA_ALARM)]), 0);
+    }
+
+    /// **A market reachable only through a frozen generation is not gated.**
+    ///
+    /// `sold_markets`' rule and its reason (ADR-0002): a grandfathered generation
+    /// is not a market the plan sells, and no re-publish can ever un-gate it — so
+    /// counting it would put a market into a backlog no action clears, and §7's
+    /// alarm would stand for the life of the plan.
+    #[test]
+    fn a_grandfathered_tax_inclusive_market_does_not_raise_the_alarm() {
+        let h = MetricsHarness::new();
+        let mut shape = shape_of(&[("USD", "US", false)], false);
+        shape.rows.push(row(
+            0xb0ff,
+            "EUR",
+            "EU",
+            true,
+            PriceEligibility::ExistingGrandfathered,
+        ));
+
+        report_market_metrics(&h.metrics(), &shape, &params_covering(&[]));
+        h.force_flush();
+
+        assert_eq!(h.counter_value(ALARM, &[("alarm", GA_ALARM)]), 0);
     }
 }
