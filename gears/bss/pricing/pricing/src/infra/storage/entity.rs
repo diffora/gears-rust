@@ -21,6 +21,7 @@ pub mod bundle_revshare;
 pub mod bundle_revshare_group;
 pub mod catalog_version_ref;
 pub mod idempotency_dedup;
+pub mod migration;
 pub mod operator_flag;
 pub mod org_tier_taxonomy;
 pub mod outbox;

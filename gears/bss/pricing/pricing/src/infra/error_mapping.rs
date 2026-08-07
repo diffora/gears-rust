@@ -45,9 +45,24 @@
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 
 use crate::domain::error::DomainError;
+use crate::domain::migration;
 
 #[resource_error(gts_id!("cf.bss.pricing.plan.v1~"))]
 struct PlanResource;
+
+/// One architectural 422 (rendered 400, the code the discriminator).
+///
+/// Added with Slice 11's three and used **only** by them, rather than folding the
+/// arms above into it: those spell the builder out inline, and rewriting them to
+/// save lines here would be a re-organisation of a file two strands are appending
+/// to. What this is for is keeping the three new arms one line each, because
+/// `clippy::too_many_lines` bounds [`From<DomainError>`] at 200 and the inline
+/// spelling put it at 206.
+fn precondition(field: &'static str, detail: &str, code: &'static str) -> CanonicalError {
+    PlanResource::failed_precondition()
+        .with_precondition_violation(field, detail, code)
+        .create()
+}
 
 impl From<DomainError> for CanonicalError {
     fn from(err: DomainError) -> Self {
@@ -142,6 +157,27 @@ impl From<DomainError> for CanonicalError {
             D::CutoverGap(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation("cutover_at", detail, "CUTOVER_GAP")
                 .create(),
+            // Slice 11's three architectural 422s (§5), rendered 400 with the code
+            // as the discriminator; see the module note.
+            //
+            // All three are precondition failures rather than malformed arguments,
+            // and each names the field an operator actually edits: the body parsed
+            // in every case, and what is wrong is a relationship between the request
+            // and the world (a target's lifecycle state, a tenant's notice policy,
+            // a delta set) rather than the shape of a value.
+            D::MigrationTargetInvalid(d) => {
+                precondition("target_plan_id", &d, migration::MIGRATION_TARGET_INVALID)
+            }
+            // D-49. The field is `effective_at` and not the policy, because the
+            // policy is a different object under a different grant - an operator
+            // who cannot wait must go and change that one, audited, first.
+            D::MigrationNoticeTooShort(d) => {
+                precondition("effective_at", &d, migration::MIGRATION_NOTICE_TOO_SHORT)
+            }
+            // The deltas ride the detail, enumerated: "blocked" alone is not an
+            // actionable sentence when the remedy is to change the target, scope a
+            // named subscription out, or fix a named add-on.
+            D::MigrationBlocked(d) => precondition("scope", &d, migration::MIGRATION_BLOCKED),
             // D-63's future-only start. An architectural 422 (§5) rendered 400,
             // and a precondition failure rather than a malformed argument for
             // `TIMESTAMP_PRECISION_EXCEEDED`'s reason: the instant parses and is a
@@ -317,6 +353,23 @@ impl From<DomainError> for CanonicalError {
             // at the enumerated referrers is the whole remedy.
             D::RetirePlanReferenced(detail) => PlanResource::aborted(detail)
                 .with_reason(crate::domain::retirement::RETIRE_PLAN_REFERENCED)
+                .create(),
+            // The line above's sibling, and a conflict for the same reason: what
+            // refuses the retirement is a live schedule aimed at this plan, which
+            // the caller's own request never named. Kept apart from it because the
+            // remedies are different acts on different objects - one goes and
+            // re-composes a bundle, the other cancels a migration or waits for it.
+            D::RetireTargetOfMigration(detail) => PlanResource::aborted(detail)
+                .with_reason(crate::domain::migration::RETIRE_TARGET_OF_MIGRATION)
+                .create(),
+            // D-34's one named refusal, 409 in §5's own words. A conflict on
+            // mutable state and not a 400: the request was well-formed and the
+            // authority sufficient, the run simply finished first. The code names
+            // **completion** rather than the pre-D-34 `MIGRATION_ALREADY_EFFECTIVE`
+            // because an `in_progress` run past its effective date is still
+            // cancellable, so "already effective" named the wrong fact.
+            D::MigrationCompleted(detail) => PlanResource::aborted(detail)
+                .with_reason(crate::domain::migration::MIGRATION_COMPLETED)
                 .create(),
 
             // -- PermissionDenied (403) -- the two audited authority refusals.
