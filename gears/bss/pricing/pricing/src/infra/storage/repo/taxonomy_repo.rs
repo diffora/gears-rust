@@ -74,7 +74,7 @@ use crate::domain::overlay::ScopeValue;
 use crate::domain::scope_key::Region;
 use crate::domain::taxonomy::{
     RegionTaxMarkers, TaxonomyClass, TaxonomyEntry, TaxonomyState, ValueReferences,
-    check_retirable, tag_of,
+    check_retirable, check_tax_category_removable, tag_of,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::entity::{
@@ -388,6 +388,38 @@ pub async fn references_to(
     })
 }
 
+/// Published rows in one region that state **no category of their own** — the
+/// set D-245's marker guard counts.
+///
+/// Narrower than [`references_to`]'s row count on purpose, and the narrowing is
+/// the rule: a published row carrying its own `tax_category_ref` does not resolve
+/// through the region default and is unaffected by the default going away. Only a
+/// row stating none leans on it, which is exactly `inst-td-policy`'s coalesce read
+/// from the other end.
+///
+/// # Errors
+/// [`RepoError::Db`] when the count fails.
+pub async fn rows_resolving_category_through(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    value: &ScopeValue,
+) -> Result<u64, RepoError> {
+    price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::Region.eq(value.as_str()))
+                .add(price::Column::LifecycleState.eq(PUBLISHED))
+                .add(price::Column::TaxCategoryRef.is_null()),
+        )
+        .count(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("count pricing_price on a region default: {e}")))
+}
+
 // ---------------------------------------------------------------------------
 // The write.
 // ---------------------------------------------------------------------------
@@ -448,6 +480,37 @@ async fn apply_replace(
         }
         let references = references_to(runner, scope, tenant_id, class, &existing.value).await?;
         report.absorb(check_retirable(class, &existing.value, references));
+    }
+
+    // D-245: dropping a region's `taxCategory` is its own act, guarded on its own
+    // read. It is **not** folded into the loop above because it is reachable by a
+    // `PUT` that retires nothing at all — a body re-asserting every value and
+    // merely omitting one marker — and the remedy is different: nothing is
+    // retargeted, the operator re-declares the default or authors the category
+    // onto the rows leaning on it.
+    //
+    // Only the `region` class: §6 gives the tax markers to that table alone, and
+    // `TaxonomyClass::carries_tax_markers` is the one answer to that question.
+    if class.carries_tax_markers() {
+        for existing in &held {
+            // A value the body drops entirely is a **retirement**, already judged
+            // above. Guarding it here as well would refuse one act with two
+            // violations naming two different remedies.
+            let Some(entry) = submitted.get(existing.value.as_str()) else {
+                continue;
+            };
+            let had = existing
+                .tax
+                .as_ref()
+                .and_then(|t| t.tax_category.as_deref());
+            let keeps = entry.tax.as_ref().and_then(|t| t.tax_category.as_deref());
+            if had.is_some() && keeps.is_none() {
+                let dependents =
+                    rows_resolving_category_through(runner, scope, tenant_id, &existing.value)
+                        .await?;
+                report.absorb(check_tax_category_removable(&existing.value, dependents));
+            }
+        }
     }
 
     if !report.is_publishable() {

@@ -383,6 +383,67 @@ pub fn check_retirable(
     report
 }
 
+/// D-245: a region's `tax_category` marker may not be **removed** while a
+/// published row resolves its category through it.
+///
+/// # Why this is a second guard and not another `ValueReferences` field
+///
+/// [`check_retirable`] answers *may this value stop existing*. This answers *may
+/// this value keep existing with one fewer marker* — a different act, reachable
+/// by a `PUT` that retires nothing at all, and with a different remedy: there is
+/// nothing to retarget, the operator either re-declares the default or authors
+/// the category onto the rows that were leaning on it. Folding it into
+/// `ValueReferences` would have made one refusal stand for two acts, and the
+/// message could then only name one of them.
+///
+/// # What it closes, and what it does not
+///
+/// `TaxBasisComplete` ranges over **every** candidate row, including the
+/// `existing_grandfathered` generation that `MarketBasisUniform` beside it
+/// excludes under D-132. So an immutable grandfathered row published with
+/// `tax_category_ref = NULL` takes the region default, the tenant later drops
+/// that default, and every subsequent publish of that plan fails
+/// `TAX_BASIS_INCOMPLETE` on a row that MUST NOT be superseded and cannot be
+/// `PATCH`ed — a market frozen out of publishing by a config edit.
+///
+/// D-245 chose this over mirroring D-132's carve-out onto the completeness arm,
+/// and the reason is that the two exclusions are not the same fact: D-132
+/// excludes a generation whose *basis* is frozen and harmless, whereas a missing
+/// *category* is a descriptor element genuinely absent from something still
+/// published. It also closes half of `T-13` — the value can no longer vanish from
+/// under a category a publish already froze. What it does not close is the value
+/// **changing**, which `ea8ebc29b` handled by freezing the resolved category at
+/// the publish commit.
+///
+/// # The code is `TAXONOMY_VALUE_IN_USE`, and that is a choice worth naming
+///
+/// §5 declares no code for this refusal, and this crate's standing rule is that a
+/// gear mints domain errors freely but **a wire code is the design set's to
+/// declare**. `TAXONOMY_VALUE_IN_USE`'s own declaration is *"409, on retire — any
+/// referencing shape"*, and a marker something still resolves through is a
+/// referencing shape, so this rides it rather than inventing a token ahead of the
+/// route. If the set wants the two acts told apart on the wire, that is a
+/// D-number and not an implementation detail.
+#[must_use]
+pub fn check_tax_category_removable(value: &ScopeValue, dependents: u64) -> ValidationReport {
+    let mut report = ValidationReport::default();
+    if dependents == 0 {
+        return report;
+    }
+    report.violate(
+        TAXONOMY_VALUE_IN_USE,
+        value.as_str(),
+        format!(
+            "region `{value}` cannot drop its `taxCategory`: {dependents} published price \
+             row(s) state no category of their own and resolve theirs through it (D-154). \
+             Re-declare the default, or author `taxCategoryRef` onto those rows first — note \
+             that a grandfathered row can do neither, which is why the marker is guarded \
+             rather than the publish rule relaxed (D-245)"
+        ),
+    );
+    report
+}
+
 // ---------------------------------------------------------------------------
 // `inst-tx-region` / `inst-mc-region` — the price-row membership rule.
 // ---------------------------------------------------------------------------

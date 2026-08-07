@@ -755,6 +755,85 @@ async fn the_row_plane_is_counted_for_region_alone() {
     }
 }
 
+/// Dropping a region's `taxCategory` is refused while a published row resolves
+/// through it — **without retiring anything** (D-245).
+///
+/// The body re-asserts the value as `active` and changes exactly one thing: the
+/// marker. That is the point of the case. The retire guard beside it never fires
+/// here, so a guard folded into `check_retirable` would have let this through,
+/// and the failure would have surfaced months later as a plan that cannot
+/// re-publish.
+#[tokio::test]
+async fn dropping_a_region_tax_category_a_published_row_leans_on_is_refused() {
+    let (repo, scope, provider) = harness().await;
+    replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", Some("standard"), true)],
+    )
+    .await
+    .expect("seed");
+    // The row states no category of its own, so it resolves through the default.
+    publish_price_row_in(&provider, "eu").await;
+
+    let result = replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", None, true)],
+    )
+    .await
+    .expect("refused, not errored");
+
+    assert_eq!(
+        result
+            .report
+            .violations
+            .iter()
+            .map(|v| v.code.as_str())
+            .collect::<Vec<_>>(),
+        [TAXONOMY_VALUE_IN_USE],
+        "the marker removal is refused on its own, with nothing retired"
+    );
+    assert_eq!(
+        values(&result.entries),
+        [("eu", TaxonomyState::Active)],
+        "one transaction, one verdict: the taxonomy is unchanged"
+    );
+}
+
+/// The same edit is accepted when nothing leans on the marker.
+///
+/// The control, and it is what separates "guards the dependency" from "refuses
+/// every marker removal": same `PUT`, same shape, no published row.
+#[tokio::test]
+async fn dropping_a_region_tax_category_nothing_leans_on_is_accepted() {
+    let (repo, scope, _provider) = harness().await;
+    replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", Some("standard"), true)],
+    )
+    .await
+    .expect("seed");
+
+    let result = replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", None, true)],
+    )
+    .await
+    .expect("accepted");
+
+    assert!(
+        result.report.is_publishable(),
+        "no row resolves through it, so nothing is guarded"
+    );
+}
+
 /// A published price row blocks its region's retirement end to end.
 #[tokio::test]
 async fn a_published_price_row_blocks_its_regions_retirement() {

@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::{
     REGION_UNKNOWN, RegionsDeclared, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyState,
-    ValueReferences, check_retirable,
+    ValueReferences, check_retirable, check_tax_category_removable,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
@@ -168,6 +168,38 @@ fn a_segment_round_trips_and_an_unknown_one_does_not_parse() {
     // an alias, because two spellings that both route is the state in which
     // neither is canonical.
     assert_eq!(TaxonomyClass::parse_segment("orgTier"), None);
+}
+
+/// A region's `taxCategory` cannot be dropped while a published row resolves
+/// through it (D-245).
+///
+/// The count is in the message because the operator's next move depends on it:
+/// one row is an edit, forty is a decision about the default. And the message
+/// names the grandfathered case explicitly, because that is the one where "author
+/// the category onto those rows" is **not** available — an `existing_grandfathered`
+/// row MUST NOT be superseded and cannot be `PATCH`ed, which is the whole reason
+/// D-245 guards the marker instead of relaxing `TaxBasisComplete`.
+#[test]
+fn a_tax_category_a_published_row_resolves_through_cannot_be_dropped() {
+    let report = check_tax_category_removable(&value("eu"), 2);
+
+    assert_eq!(codes(&report), [TAXONOMY_VALUE_IN_USE]);
+    let detail = &report.violations[0].detail;
+    assert!(detail.contains('2'), "the count is actionable: {detail}");
+    assert!(
+        detail.contains("grandfathered"),
+        "the case with no remedy on the row side must be named: {detail}"
+    );
+    assert_eq!(subjects(&report), ["eu"]);
+}
+
+/// A marker nothing leans on comes off cleanly.
+///
+/// The control the case above needs: without it the guard could refuse every
+/// removal and still look correct.
+#[test]
+fn a_tax_category_nothing_resolves_through_comes_off_cleanly() {
+    assert!(check_tax_category_removable(&value("eu"), 0).is_publishable());
 }
 
 /// The table map is `ScopeClass`', not a second copy of it.
