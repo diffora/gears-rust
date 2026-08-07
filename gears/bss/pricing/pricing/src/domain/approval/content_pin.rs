@@ -347,7 +347,7 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// pending policy unit to record a re-freeze of content those units are not about —
 /// which is the argument for two counters, applied in the other direction from the
 /// `v3` note above.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v4\x1f";
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v5\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///

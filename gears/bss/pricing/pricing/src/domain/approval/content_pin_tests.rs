@@ -869,7 +869,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 /// encoding no longer verifies, so every open approval unit refuses. The
 /// domain-separation tag carries the version for exactly that reason.
 ///
-/// It has moved three times, and each move is recorded rather than merely
+/// It has moved four times, and each move is recorded rather than merely
 /// re-pasted:
 ///
 /// - `v1` → `v2`, when `PlanShape::windows` joined the preimage.
@@ -910,7 +910,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "cb26a94b24fe3839abf72e55ca1644f970a742bee78608713a135e0a8a73d504"
+        "9f725d3709582b263a0fd9e265dfd29f0caed91db23b5cb3cc2cdf44d69a4897"
     );
 }
 
@@ -1057,11 +1057,12 @@ fn an_absolute_and_a_percent_threshold_of_the_same_number_pin_differently() {
 /// on a collision the `subject_ref` alone would have to catch. The second pins the
 /// two counters *independently* — which is the property, rather than either value.
 ///
-/// **The plan tag is `v4` since 2026-08-06**: D-196's usage line joined
-/// `put_scope_key`, so the plan preimage was re-frozen and its counter moved. The
-/// threshold tag stayed at `v1` in the same edit, because a `ThresholdVersion`
-/// carries no scope key — and that is the case this test exists for, one counter
-/// moving while the other does not.
+/// **The plan tag is `v5` since 2026-08-07**: Slice 4's `tax_category_ref` joined
+/// `put_price_record`, so the plan preimage was re-frozen and its counter moved —
+/// as it had at `v4` on 2026-08-06, when D-196's usage line joined `put_scope_key`.
+/// The threshold tag has stayed at `v1` through both, because a `ThresholdVersion`
+/// carries neither a scope key nor a price row — and that is the case this test
+/// exists for, one counter moving while the other does not.
 #[test]
 fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     assert_ne!(
@@ -1070,7 +1071,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v4\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v5\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,
