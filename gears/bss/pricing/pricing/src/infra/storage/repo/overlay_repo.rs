@@ -328,15 +328,15 @@ impl OverlayRepo {
                     // predecessor can outrank it — so deriving from it is deriving
                     // from the wrong row even where the two happen to agree.
                     //
-                    // **It does not make the number monotonic under a discard, and
-                    // it cannot.** A discarded draft leaves by DELETE, because §6
-                    // gives the overlay three states and no `abandoned` tombstone,
-                    // so the number it consumed is gone from the table and `max`
-                    // cannot see it. Measured, not assumed:
-                    // `sqlite_overlay_repo::a_discarded_revision_number_is_re_minted`
-                    // is that case, and it asserts the re-mint rather than a fix.
-                    // Closing it needs a tombstone the design set does not declare
-                    // — owed-register entry O-13.
+                    // **It is a true high-water read since D-231, and it was not
+                    // before.** A discarded draft used to leave by DELETE — §6
+                    // gave the overlay three states and no tombstone — so the
+                    // number it consumed was gone from the table and `max` could
+                    // not see it, whatever this line said. `m20260802_000045`
+                    // added `abandoned` and removed DELETE as an exit, so the
+                    // discarded row is still here and still counted:
+                    // `sqlite_overlay_repo::an_abandoned_revision_number_is_never_re_minted`
+                    // is the case, and it asserts the successor is **new**.
                     let successor = highest_revision(txn, &scope, tenant_id, price_overlay_id)
                         .await?
                         .saturating_add(1);
@@ -526,6 +526,113 @@ impl OverlayRepo {
                 Box::pin(async move {
                     publish_revision_on(txn, &scope, tenant_id, price_overlay_id, revision, stamp)
                         .await
+                })
+            })
+            .await;
+        outcome.map_err(tx_failure)
+    }
+
+    /// Discard an open draft revision — the **flip**, never a deletion (D-231).
+    ///
+    /// This is the sanctioned discard, and before D-231 the overlay plane had
+    /// none: no repository method removed a revision at all, and the only path
+    /// that discarded one was a raw `DELETE` in a test. The store now refuses that
+    /// `DELETE` on both engines, so this is the one way out of a draft that is not
+    /// a publish.
+    ///
+    /// **The number stays consumed.** That is the whole point: the row survives as
+    /// a tombstone, so `open_revision`'s `max(revision) + 1` mints a genuinely new
+    /// number and a client holding the discarded revision's entity tag can no
+    /// longer have its stale `If-Match` match a *different* revision under the
+    /// same overlay identity.
+    ///
+    /// **The lines are dropped before the flip, and the order is load-bearing.**
+    /// `abandoned` is not `draft`, and the three
+    /// `pricing_price_overlay_line`/`…_line_amount` delete triggers each refuse a
+    /// child row whose parent revision is not a draft — so a flip issued first
+    /// would leave the line set undeletable and the tombstone carrying content it
+    /// is not supposed to have. `PlanRepo::abandon_draft` drops its children in
+    /// the same order for the same reason.
+    ///
+    /// # Errors
+    /// [`RepoError::NotFound`] when the revision is not this overlay's open draft;
+    /// [`RepoError::Db`] on a scope or storage failure.
+    pub async fn abandon_draft(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        price_overlay_id: Uuid,
+        revision: u64,
+        stamp: AuditStamp,
+    ) -> Result<(), RepoError> {
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<(), RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    let Ok(number) = i64::try_from(revision) else {
+                        return Err(RepoError::NotFound {
+                            subject: "price overlay revision".to_owned(),
+                            id: format!("{price_overlay_id}/{revision}"),
+                        });
+                    };
+                    // Proved to be *this overlay's* open draft before anything is
+                    // written, on `publish_revision_on`'s argument: the drop below
+                    // is a write, and issuing it on the way to saying no is the
+                    // ordering that module rejects for the same operation.
+                    if revision_in_state(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        price_overlay_id,
+                        OverlayLifecycle::Draft,
+                    )
+                    .await?
+                    .is_none_or(|draft| draft.revision != number)
+                    {
+                        return Err(RepoError::NotFound {
+                            subject: "open draft price overlay revision".to_owned(),
+                            id: format!("{price_overlay_id}/{revision}"),
+                        });
+                    }
+
+                    drop_lines(txn, &scope, price_overlay_id, tenant_id, number).await?;
+
+                    if flip(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        price_overlay_id,
+                        number,
+                        OverlayLifecycle::Abandoned,
+                    )
+                    .await?
+                        == 0
+                    {
+                        // The read above passed and the swap matched nothing, so a
+                        // concurrent publish took the draft in between. The
+                        // rollback is the guard; this only picks the sentence.
+                        return Err(RepoError::NotFound {
+                            subject: "open draft price overlay revision".to_owned(),
+                            id: format!("{price_overlay_id}/{revision}"),
+                        });
+                    }
+
+                    // `Abandon` rather than `Delete`: D-145 minted that token
+                    // precisely because the row survives and its number stays
+                    // consumed, and an auditor reading `Delete` here would look
+                    // for a row that is still there.
+                    record_overlay_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        price_overlay_id,
+                        number,
+                        AuditAction::Abandon,
+                        stamp,
+                    )
+                    .await
                 })
             })
             .await;
@@ -1012,7 +1119,7 @@ async fn flip(
     to: OverlayLifecycle,
 ) -> Result<u64, RepoError> {
     let from = match to {
-        OverlayLifecycle::Published => OverlayLifecycle::Draft,
+        OverlayLifecycle::Published | OverlayLifecycle::Abandoned => OverlayLifecycle::Draft,
         OverlayLifecycle::Superseded => OverlayLifecycle::Published,
         // A flip *to* draft is not a sanctioned edge; the trigger refuses it and
         // no caller here asks for one.

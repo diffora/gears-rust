@@ -317,11 +317,26 @@ pub enum OverlayLifecycle {
     Published,
     /// A predecessor, flipped by the submit that published its successor.
     Superseded,
+    /// A discarded draft's tombstone (D-231). Terminal: it never publishes, never
+    /// supersedes, and is never a candidate for a read.
+    ///
+    /// It exists to hold the **revision number** the discarded draft consumed. A
+    /// discarded draft used to leave by `DELETE`, so `max(revision) + 1` re-minted
+    /// its number and a client holding the discarded revision's entity tag found a
+    /// different revision under the same overlay identity — its stale `If-Match`
+    /// matching the fresh row's compare-and-swap. `pricing_plan` has carried the
+    /// same tombstone since D-145, for the reason stated in the same words.
+    Abandoned,
 }
 
 impl OverlayLifecycle {
     /// Every state, in §6's order.
-    pub const ALL: &'static [Self] = &[Self::Draft, Self::Published, Self::Superseded];
+    pub const ALL: &'static [Self] = &[
+        Self::Draft,
+        Self::Published,
+        Self::Superseded,
+        Self::Abandoned,
+    ];
 
     /// The persisted / wire token.
     #[must_use]
@@ -330,6 +345,7 @@ impl OverlayLifecycle {
             Self::Draft => "draft",
             Self::Published => "published",
             Self::Superseded => "superseded",
+            Self::Abandoned => "abandoned",
         }
     }
 

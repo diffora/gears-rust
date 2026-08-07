@@ -22,19 +22,18 @@ use bss_pricing::domain::overlay::{
 };
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::RepoError;
-use bss_pricing::infra::storage::entity::{
-    audit_log, brand_taxonomy, plan, price_overlay, price_overlay_line,
-};
+use bss_pricing::infra::storage::entity::{audit_log, brand_taxonomy, plan, price_overlay};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewOverlay, OverlayRepo, audit_repo};
 use chrono::{TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::SecureDeleteExt;
-use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -143,27 +142,25 @@ async fn repo() -> (OverlayRepo, AccessScope) {
     (OverlayRepo::new(provider().await), AccessScope::allow_all())
 }
 
-/// Discard one draft revision: its lines first, then the revision row — the
-/// order the foreign key forces.
+/// Attempt the raw `DELETE` of one revision row, returning the driver's answer.
+///
+/// This **was** `discard_revision`, the helper that made the pre-D-231 re-mint
+/// reachable — it deleted the lines and then the row, and both `expect`ed. Since
+/// `m20260802_000045` the store refuses the second statement, so the helper's
+/// purpose is inverted: it exists to prove the refusal rather than to perform the
+/// discard, and it therefore returns the error instead of unwrapping it.
 ///
 /// Takes the provider **as an argument**. It was briefly a process-wide static,
 /// which is wrong for the same reason a shared scratchpad is: these cases run in
 /// parallel, so one test read another's database and the failure looked like a
 /// defect in the code under test rather than in the fixture.
-async fn discard_revision(provider: &DBProvider<DbError>, overlay: Uuid, revision: i64) {
+async fn delete_revision_row(
+    provider: &DBProvider<DbError>,
+    overlay: Uuid,
+    revision: i64,
+) -> Result<(), toolkit_db::secure::ScopeError> {
     let conn = provider.conn().expect("a connection");
     let scope = AccessScope::allow_all();
-    price_overlay_line::Entity::delete_many()
-        .secure()
-        .scope_with(&scope)
-        .filter(
-            Condition::all()
-                .add(price_overlay_line::Column::PriceOverlayId.eq(overlay))
-                .add(price_overlay_line::Column::OverlayRevision.eq(revision)),
-        )
-        .exec(&conn)
-        .await
-        .expect("the draft's lines are discardable");
     price_overlay::Entity::delete_many()
         .secure()
         .scope_with(&scope)
@@ -174,7 +171,36 @@ async fn discard_revision(provider: &DBProvider<DbError>, overlay: Uuid, revisio
         )
         .exec(&conn)
         .await
-        .expect("a draft revision is discardable");
+        .map(|_| ())
+}
+
+/// Drive a raw `lifecycle_state` flip past the repository, returning the driver's
+/// answer.
+///
+/// The repository offers no exit from `abandoned` — that is the point — so the
+/// only way to assert the state is terminal *in the store* is to issue the
+/// statement a hand-run migration or a future caller would. A domain assertion
+/// here would say nothing about what the trigger does.
+async fn force_lifecycle_state(
+    provider: &DBProvider<DbError>,
+    overlay: Uuid,
+    revision: i64,
+    to: &str,
+) -> Result<(), toolkit_db::secure::ScopeError> {
+    let conn = provider.conn().expect("a connection");
+    let scope = AccessScope::allow_all();
+    price_overlay::Entity::update_many()
+        .secure()
+        .scope_with(&scope)
+        .col_expr(price_overlay::Column::LifecycleState, Expr::value(to))
+        .filter(
+            Condition::all()
+                .add(price_overlay::Column::PriceOverlayId.eq(overlay))
+                .add(price_overlay::Column::Revision.eq(revision)),
+        )
+        .exec(&conn)
+        .await
+        .map(|_| ())
 }
 
 /// The overlay with one per-plan line and one list-default line, at revision 0.
@@ -986,25 +1012,122 @@ async fn a_line_id_already_taken_at_that_revision_is_a_typed_refusal() {
     );
 }
 
-/// **A discarded revision number IS re-minted, and no repository change closes
-/// it.**
+/// **An abandoned revision number is never re-minted** — D-231's tombstone, and
+/// the reason it had to be a migration rather than a repository change.
 ///
-/// This case began life asserting the opposite. `open_revision` was changed from
-/// `published.revision + 1` to `max(revision) + 1` to close it — and the test
-/// then failed, because a discarded draft is **deleted** (§6 gives the overlay
-/// three states and no `abandoned` tombstone, so DELETE is the only exit a draft
-/// has), and `max` cannot see a row that is gone.
+/// This case began life asserting the opposite, twice over. `open_revision` was
+/// changed from `published.revision + 1` to `max(revision) + 1` to close the
+/// re-mint, and the test then failed anyway: a discarded draft left by `DELETE`
+/// (§6 gave the overlay three states and no tombstone), and `max` cannot see a
+/// row that is gone. So the case was rewritten to assert the **re-mint**, naming
+/// the hazard — a client holding the discarded revision's entity tag finds a
+/// *different* revision 1 under the same identity, and its stale `If-Match`
+/// matches the fresh row's compare-and-swap.
 ///
-/// So the hazard is real and its cause is the schema, not the repository: a
-/// client still holding the discarded draft's entity tag `"1-3"` will find a
-/// **different** revision 1 under the same identity, and a stale `If-Match:
-/// "1-0"` would match the fresh row's compare-and-swap. Closing it needs a
-/// tombstone the design set does not declare — owed-register entry **O-13**.
-///
-/// The assertion is what actually happens, so the day a tombstone lands this test
-/// fails and points at the entry.
+/// `m20260802_000045` closed it from the schema end: `abandoned` joined the
+/// lifecycle and `DELETE` stopped being an exit. The assertion is now the
+/// opposite of what it was and `max(revision) + 1` is a true high-water read for
+/// the first time.
 #[tokio::test]
-async fn a_discarded_revision_number_is_re_minted() {
+async fn an_abandoned_revision_number_is_never_re_minted() {
+    let (repo, scope) = seeded().await;
+    repo.publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
+        .await
+        .expect("revision 0 publishes");
+    repo.open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("revision 1 opens");
+
+    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, stamp())
+        .await
+        .expect("the open draft is discardable by the flip");
+
+    let successor = repo
+        .open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("a fresh successor opens");
+    assert_eq!(
+        successor, 2,
+        "the abandoned revision still holds number 1, so the successor is a new number \
+         and a stale `If-Match` on the discarded revision can match nothing (D-231)"
+    );
+}
+
+/// The tombstone leaves the **open-draft** slot even though it keeps its number.
+///
+/// Both halves matter and they pull in opposite directions:
+/// `uq_pricing_price_overlay_open_draft` is partial on `lifecycle_state =
+/// 'draft'`, so an abandoned row leaves the index the moment it flips and a fresh
+/// draft opens against the same overlay. Had that index been unconditional, one
+/// discard would have blocked every future revision of the overlay.
+#[tokio::test]
+async fn an_abandoned_draft_frees_the_open_draft_slot_without_freeing_its_number() {
+    let (repo, scope) = seeded().await;
+    repo.publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
+        .await
+        .expect("revision 0 publishes");
+    repo.open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("revision 1 opens");
+    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, stamp())
+        .await
+        .expect("revision 1 is abandoned");
+
+    // A second open is refused when a draft is live, so this succeeding is what
+    // says the slot is free.
+    let successor = repo
+        .open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("the open-draft slot is free");
+    assert_eq!(successor, 2);
+
+    let tombstone = repo
+        .load(&scope, TENANT, OVERLAY, 1)
+        .await
+        .expect("the tombstone is still readable")
+        .expect("the abandoned revision was not deleted");
+    assert_eq!(
+        tombstone.lifecycle_state,
+        OverlayLifecycle::Abandoned,
+        "the discarded revision survives as a tombstone rather than leaving by DELETE"
+    );
+}
+
+/// **`abandoned` is terminal**, and the store says so rather than the caller.
+///
+/// The repository offers no flip out of it, so this drives the raw `UPDATE` the
+/// way a hand-run migration or a future caller would, and reads the driver's
+/// refusal. Nothing above the store is trusted to keep a tombstone terminal.
+#[tokio::test]
+async fn an_abandoned_revision_is_terminal_on_every_exit() {
+    let (repo, scope, provider) = seeded_full().await;
+    repo.publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
+        .await
+        .expect("revision 0 publishes");
+    repo.open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("revision 1 opens");
+    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, stamp())
+        .await
+        .expect("revision 1 is abandoned");
+
+    for target in ["draft", "published", "superseded"] {
+        let refusal = force_lifecycle_state(&provider, OVERLAY, 1, target).await;
+        let refusal = refusal.expect_err(&format!("abandoned -> {target} must be refused"));
+        assert!(
+            refusal.to_string().contains("sanctioned flip"),
+            "abandoned -> {target} got {refusal:?}"
+        );
+    }
+}
+
+/// **A draft no longer leaves by `DELETE`**, which is what actually closes the
+/// re-mint — the new state alone would have left the old path open.
+///
+/// The refusal is the driver's, tested through the same raw delete the discard
+/// helper used before D-231.
+#[tokio::test]
+async fn a_draft_revision_cannot_be_deleted() {
     let (repo, scope, provider) = seeded_full().await;
     repo.publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
         .await
@@ -1013,17 +1136,14 @@ async fn a_discarded_revision_number_is_re_minted() {
         .await
         .expect("revision 1 opens");
 
-    // Discard revision 1 the way the store permits.
-    discard_revision(&provider, OVERLAY, 1).await;
-
-    let successor = repo
-        .open_revision(&scope, TENANT, OVERLAY, stamp())
+    let refusal = delete_revision_row(&provider, OVERLAY, 1)
         .await
-        .expect("a fresh successor opens");
-    assert_eq!(
-        successor, 1,
-        "the discarded draft's number is re-minted, because the row it consumed is gone \
-         and no tombstone records it (O-13)"
+        .expect_err("DELETE of a draft revision must be refused");
+    assert!(
+        refusal
+            .to_string()
+            .contains("a discarded draft revision is abandoned"),
+        "got {refusal:?}"
     );
 }
 

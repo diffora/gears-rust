@@ -491,35 +491,77 @@ async fn only_the_sanctioned_lifecycle_flips_are_permitted() {
     .await;
 }
 
-/// History is not deletable; an undecided draft is.
+/// **No revision is deletable, in any state** — D-231, `m20260802_000045`.
 ///
-/// The overlay's three states carry no `abandoned` tombstone the way
-/// `pricing_plan` does, so a discarded draft revision leaves by DELETE. What
-/// must never be deletable is a revision some `CatalogVersion` froze.
+/// This case asserted the opposite until the tombstone landed: the overlay's
+/// three states carried no `abandoned` the way `pricing_plan` does, so a
+/// discarded draft left by `DELETE` and this suite pinned that as the rule. It
+/// was the mechanism of the re-mint — `max(revision) + 1` cannot see a deleted
+/// row — so the exit is gone rather than narrowed, and a discarded draft now
+/// leaves by the `draft -> abandoned` flip below.
+///
+/// Both halves are still asserted, because the *reason* differs by state: a
+/// published revision must not be deletable because some `CatalogVersion` froze
+/// it, and a draft must not be deletable because its **number** must stay
+/// consumed.
 #[tokio::test]
-async fn a_draft_revision_is_discardable_and_a_published_one_is_not() {
+async fn no_revision_is_deletable_in_any_state() {
     let conn = migrated_db().await;
     must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
     flip(&conn, OVERLAY, 0, "published").await;
     must_succeed(&conn, &draft_overlay(OVERLAY, 1)).await;
 
-    must_succeed(
-        &conn,
-        &format!(
-            "DELETE FROM pricing_price_overlay \
-             WHERE price_overlay_id = '{OVERLAY}' AND revision = 1"
-        ),
-    )
-    .await;
-    must_be_rejected(
-        &conn,
-        &format!(
-            "DELETE FROM pricing_price_overlay \
-             WHERE price_overlay_id = '{OVERLAY}' AND revision = 0"
-        ),
-        "is not permitted",
-    )
-    .await;
+    for revision in [0, 1] {
+        must_be_rejected(
+            &conn,
+            &format!(
+                "DELETE FROM pricing_price_overlay \
+                 WHERE price_overlay_id = '{OVERLAY}' AND revision = {revision}"
+            ),
+            "is not permitted",
+        )
+        .await;
+    }
+}
+
+/// A draft leaves by `draft -> abandoned`, and `abandoned` is terminal.
+///
+/// The tombstone's whole job is to hold the revision number, so what the schema
+/// has to guarantee is that nothing takes the row back out of that state — not
+/// to `draft`, not to `published`, not to `superseded`.
+#[tokio::test]
+async fn a_draft_may_be_abandoned_and_an_abandoned_revision_never_leaves() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+    flip(&conn, OVERLAY, 0, "abandoned").await;
+
+    for target in ["draft", "published", "superseded"] {
+        must_be_rejected(
+            &conn,
+            &format!(
+                "UPDATE pricing_price_overlay SET lifecycle_state = '{target}' \
+                 WHERE price_overlay_id = '{OVERLAY}' AND revision = 0"
+            ),
+            "not a sanctioned flip",
+        )
+        .await;
+    }
+}
+
+/// The tombstone keeps its **number** without keeping the **open-draft slot**.
+///
+/// `uq_pricing_price_overlay_open_draft` is partial on `lifecycle_state =
+/// 'draft'`, so an abandoned row leaves it and a fresh draft opens against the
+/// same overlay. Asserted at the schema because it is the index's predicate that
+/// decides it: an unconditional index would have let one discard block every
+/// future revision of the overlay.
+#[tokio::test]
+async fn an_abandoned_revision_does_not_hold_the_open_draft_index() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+    flip(&conn, OVERLAY, 0, "abandoned").await;
+
+    must_succeed(&conn, &draft_overlay(OVERLAY, 1)).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -535,10 +577,11 @@ async fn a_draft_revision_is_discardable_and_a_published_one_is_not() {
 /// an absent `(price_overlay_id, overlay_revision)` is refused by the
 /// append-only trigger's `NOT EXISTS` — which fires `BEFORE INSERT`, ahead of
 /// the composite foreign key — so the sentence asserted here is the trigger's
-/// and the foreign key is invisible behind it. The foreign key is proved on its
-/// own by
-/// [`the_foreign_key_refuses_a_delete_that_would_orphan_lines`], which reaches a
-/// state the trigger permits.
+/// and the foreign key is invisible behind it. **Since D-231 the key is invisible
+/// on every path**, the delete side included — see
+/// [`a_lines_parent_revision_cannot_be_deleted_out_from_under_it`], which used to
+/// reach it through the one state the header's trigger permitted and no longer
+/// can.
 #[tokio::test]
 async fn a_line_names_the_overlay_revision_it_belongs_to() {
     let conn = migrated_db().await;
@@ -553,14 +596,25 @@ async fn a_line_names_the_overlay_revision_it_belongs_to() {
     .await;
 }
 
-/// The composite foreign key, on its own.
+/// A line's parent revision cannot be deleted out from under it — **and since
+/// D-231 the refusal is the trigger's, not the foreign key's.**
 ///
-/// A **draft** revision is deletable — that is how a discarded draft leaves, and
-/// the header's own trigger permits it — so this is the one state in which the
-/// foreign key answers with no trigger standing in front of it. Without the key,
-/// discarding a draft would leave its lines pointing at a revision that is gone.
+/// This case existed to prove the composite foreign key *on its own*: a draft
+/// revision used to be deletable, which made it the one state where the key
+/// answered with no trigger standing in front of it. `m20260802_000045` refuses
+/// `DELETE` in every state, so that window is closed and the key is now shadowed
+/// on this path — the trigger fires `BEFORE DELETE` and the key never gets the
+/// statement.
+///
+/// **The key is therefore no longer independently observable anywhere in this
+/// suite**, and that is stated rather than quietly lost. It is not removed: it
+/// still declares the parent-child relationship the schema depends on, and a
+/// migration that later narrows the trigger would find the key still behind it.
+/// What no test can assert any more is the key *acting*, because nothing can
+/// reach it — which is the honest consequence of putting a stricter guard in
+/// front of a weaker one.
 #[tokio::test]
-async fn the_foreign_key_refuses_a_delete_that_would_orphan_lines() {
+async fn a_lines_parent_revision_cannot_be_deleted_out_from_under_it() {
     let conn = migrated_db().await;
     must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
     must_succeed(&conn, &default_line(LINE, OVERLAY, 0)).await;
@@ -571,7 +625,7 @@ async fn the_foreign_key_refuses_a_delete_that_would_orphan_lines() {
             "DELETE FROM pricing_price_overlay \
              WHERE price_overlay_id = '{OVERLAY}' AND revision = 0"
         ),
-        "FOREIGN KEY constraint failed",
+        "a discarded draft revision is abandoned",
     )
     .await;
 }

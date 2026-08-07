@@ -726,9 +726,11 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     // hand-derived: what this census defends is that a `WHEN` clause cannot
     // silently lose a disjunct, and a hand-written number could only ever be
     // this same read-back written down twice.
+    // Re-pinned 2026-08-08 by `m20260802_000045` (D-231), which added `abandoned`
+    // to the draft's exit list. Was `2_292_452_181_472_169_825`.
     (
         "trg_pricing_price_overlay_draft_exit",
-        2_292_452_181_472_169_825_u64,
+        1_991_170_413_819_745_157_u64,
     ),
     (
         "trg_pricing_price_overlay_frozen_columns",
@@ -762,9 +764,14 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         "trg_pricing_price_overlay_line_no_update",
         15_101_858_051_437_048_819_u64,
     ),
+    // Re-pinned 2026-08-08 by `m20260802_000045` (D-231): the `WHEN
+    // OLD.lifecycle_state <> 'draft'` guard is gone, so the trigger refuses every
+    // DELETE rather than every DELETE but a draft's. This is the digest whose
+    // movement *is* the fix — the state alone would have left the old exit open.
+    // Was `1_755_439_239_709_496_796`.
     (
         "trg_pricing_price_overlay_no_delete",
-        1_755_439_239_709_496_796_u64,
+        11_656_928_464_923_846_849_u64,
     ),
     (
         "trg_pricing_price_tier_band_kind_insert",

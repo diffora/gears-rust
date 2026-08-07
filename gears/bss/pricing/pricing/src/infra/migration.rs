@@ -23,10 +23,24 @@
 //! 2. **The Contracts lock registry** (`inst-cl-source`). See
 //!    [`crate::domain::migration_delta`] — absent, so every subscription reads
 //!    locked and is excluded.
-//! 3. **Entitlement grant totals** (`inst-md-entitlements`). There is **no grant
-//!    store in this gear at all** — no table, no column, no domain type — so
-//!    [`target_shape`] reports an empty grant set and the overflow class has no
-//!    input. The judgement is built and tested; only its feed is missing.
+//! 3. **Entitlement grant totals** (`inst-md-entitlements`). [`target_shape`]
+//!    reports an empty grant set, so the overflow class has no input. **The
+//!    reason is a wiring gap, not an absent store, and this said otherwise until
+//!    2026-08-08** — D-252 was written by a strand running concurrently with the
+//!    one that landed `pricing_plan.entitlement_grants` (`m20260802_000053`,
+//!    D-41), typed [`EntitlementGrants`](crate::domain::contracts::EntitlementGrants),
+//!    and [`target_shape`] *already loads it*: the `plan_repo::load_current` call
+//!    on its first line returns it and the function then discards it. What the
+//!    wiring cannot decide by itself is the other half — the set's `quotas` map
+//!    onto the `(grantKey, total)` vocabulary exactly, its `feature_flags` have no
+//!    representation in it (a dropped flag is a loss that neither `false` nor
+//!    "absent is zero" states as a total), and its `per_phase` axis has no operand
+//!    because [`SubscriptionFacts`] carries no phase. That is a design act and is
+//!    recorded as owed on D-252.
+//!
+//!    **The class stays silent end to end either way, on the *subject* side**:
+//!    source-side totals come from Subscriptions, which has no crate here and
+//!    enumerates nothing.
 //!
 //! What is genuinely readable today is the target's **boundary coverage** and its
 //! **add-on rule set**, and those two classes work end to end.
@@ -549,10 +563,15 @@ async fn target_shape(
         covered,
         offered_addon_sku_ids: offered.into_iter().collect(),
         required_addon_sku_ids: required.into_iter().collect(),
-        // **No grant store exists in this gear** - no table, no column, no
-        // domain type. `inst-md-entitlements`' judgement is built and tested and
-        // its feed is absent; an empty set here means the overflow class simply
-        // never fires, which is reported rather than read as "no overflow".
+        // **Empty because nothing maps it yet, not because the store is
+        // absent** - `current.entitlement_grants` is in hand right here, off the
+        // `load_current` above. The comment that stood here said "no table, no
+        // column, no domain type", which was true of the branch it was written on
+        // and false at the merge (`m20260802_000053`, D-41). Mapping the `quotas`
+        // half is mechanical; the `feature_flags` half and the `per_phase` axis
+        // are not, and D-252 records why. Until that lands the class stays silent
+        // - which is reported rather than read as "no overflow", and is anyway
+        // what the absent subject side would force.
         grants: Vec::new(),
     })
 }
