@@ -93,6 +93,16 @@ pub const LEVEL_GRANULARITY_MISMATCH: &str = "LEVEL_GRANULARITY_MISMATCH";
 /// D-127 / D-129).
 pub const SUPERSESSION_UNIT_MISMATCH: &str = "SUPERSESSION_UNIT_MISMATCH";
 
+/// A composite meter naming fewer than two constituents (S10 §5,
+/// `inst-cm-constituents`). Its sibling `COMPOSITE_CONSTITUENT_UNPUBLISHED` is
+/// declared in the design set and **raised nowhere**, because this gear has no
+/// registry to ask whether a unit is published — see `plan_rules::composite`.
+pub const COMPOSITE_TOO_FEW_CONSTITUENTS: &str = "COMPOSITE_TOO_FEW_CONSTITUENTS";
+
+/// A composite meter that resolves to itself through its constituents, directly
+/// or transitively (S10 §5, `inst-cm-formula`).
+pub const COMPOSITE_SELF_REFERENCE: &str = "COMPOSITE_SELF_REFERENCE";
+
 // ---------------------------------------------------------------------------
 // Advisory codes
 // ---------------------------------------------------------------------------

@@ -118,6 +118,11 @@ const REGISTERED: &[&str] = &[
     "inst-cmp-addons",
     "inst-cmp-addons",
     "inst-cmp-addons",
+    // cpt-cf-bss-pricing-algo-composite-meter (Slice 10, D-256). Registered in
+    // this Slice-2 pipeline because a composite is plan-shape configuration and
+    // the self-reference walk needs the whole revision's set.
+    "inst-cm-constituents",
+    "inst-cm-formula",
     // cpt-cf-bss-pricing-algo-phases
     "inst-ph-graph",
     "inst-ph-graph/linear",

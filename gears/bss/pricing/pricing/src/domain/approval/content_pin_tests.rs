@@ -1100,7 +1100,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "6ad210681e97cb764625b18710aab0d49d01746ae0c9647d60d6481c2080ef1c"
+        "fbb118b7602a08b759a73550f6859df9f2530e561ce0c8a66a1940bf25609dd8"
     );
 }
 
@@ -1261,7 +1261,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v10\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v11\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

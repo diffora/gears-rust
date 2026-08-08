@@ -316,9 +316,11 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "CHANGE_TARGET_UNPUBLISHED", "design/06-consumer-contracts.md"),
     ("pricing", "CLONE_SOURCE_NOT_FOUND", "design/12-operator-efficiency.md"),
     ("pricing", "COMPONENT_UNPUBLISHED", "design/08-bundles.md"),
-    ("pricing", "COMPOSITE_CONSTITUENT_UNPUBLISHED", "design/10-advanced-primitives.md"),
-    ("pricing", "COMPOSITE_SELF_REFERENCE", "design/10-advanced-primitives.md"),
-    ("pricing", "COMPOSITE_TOO_FEW_CONSTITUENTS", "design/10-advanced-primitives.md"),
+    # Three paid down 2026-08-08 by D-256, which built the composite meter:
+    # `inst-cm-constituents` and `inst-cm-formula` now name the two codes their
+    # rules raise, and the same annotation names `COMPOSITE_CONSTITUENT_UNPUBLISHED`
+    # as blocked on a registry client this gear does not have -- a code referenced
+    # by the rule that would raise it, with the reason it cannot.
     ("pricing", "CREDIT_UNIT_UNPUBLISHED", "design/10-advanced-primitives.md"),
     ("pricing", "EVAL_POLICY_MISPLACED", "design/03-price-structure.md"),
     ("pricing", "FLOOR_FALLBACK_MISSING", "design/10-advanced-primitives.md"),

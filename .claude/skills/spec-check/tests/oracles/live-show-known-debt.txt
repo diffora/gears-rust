@@ -1,7 +1,7 @@
 [Low] DECISIONS.md — P1 cannot verify propagation for gears/bss/rating/docs: DECISIONS.md yielded zero decision entries — no `#### <id> …` heading matched the recognised id shape (`D-NN`, optionally gear-prefixed, e.g. `SUB-D-01`) — 0 `**Propagated`-shaped field(s) in that register went unchecked as a result (P1/decision-register-unparsed)
 [Low] design/15-rated-output-balance-effects.md — design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention (P3/code-convention-divergent)
 
-Known debt — accepted, tracked as D-69, not new drift (57 finding(s)):
+Known debt — accepted, tracked as D-69, not new drift (54 finding(s)):
 [Medium] DECISIONS.md:247 — D-02 claims propagation into ADR/0001-cpt-cf-bss-pricing-adr-canonical-scope-key.md, but that document never cites D-02 (P1/propagation-missing)
 [Medium] DECISIONS.md:247 — D-02 claims propagation into DESIGN.md, but that document never cites D-02 (P1/propagation-missing)
 [Medium] DECISIONS.md:247 — D-02 claims propagation into PRD.md, but that document never cites D-02 (P1/propagation-missing)
@@ -32,9 +32,6 @@ Known debt — accepted, tracked as D-69, not new drift (57 finding(s)):
 [Low] design/06-consumer-contracts.md — `CHANGE_TARGET_UNPUBLISHED` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
 [Low] design/12-operator-efficiency.md — `CLONE_SOURCE_NOT_FOUND` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
 [Low] design/08-bundles.md — `COMPONENT_UNPUBLISHED` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
-[Low] design/10-advanced-primitives.md — `COMPOSITE_CONSTITUENT_UNPUBLISHED` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
-[Low] design/10-advanced-primitives.md — `COMPOSITE_SELF_REFERENCE` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
-[Low] design/10-advanced-primitives.md — `COMPOSITE_TOO_FEW_CONSTITUENTS` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
 [Low] design/10-advanced-primitives.md — `CREDIT_UNIT_UNPUBLISHED` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
 [Low] design/03-price-structure.md — `EVAL_POLICY_MISPLACED` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
 [Low] design/10-advanced-primitives.md — `FLOOR_FALLBACK_MISSING` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
@@ -61,4 +58,4 @@ Known debt — accepted, tracked as D-69, not new drift (57 finding(s)):
 [Low] design/07-pricewindow-linkage.md — `WINDOW_GAP` is declared in a Problem-responses block but referenced by no rule (P3/code-unreferenced)
 
 2 finding(s)
-57 known-debt finding(s) shown above, tracked as D-69 (accepted, not new drift)
+54 known-debt finding(s) shown above, tracked as D-69 (accepted, not new drift)

@@ -86,6 +86,7 @@
 //! - `taxCategory` is each row's Slice-4 `tax_category_ref` (D-110) — never a
 //!   descriptor-set column and never a Slice-2 check.
 
+pub mod composite;
 pub mod composition;
 pub mod cycle_shape;
 pub mod descriptor_set;
@@ -410,6 +411,11 @@ pub fn plan_shape_rules(
         .with_rule(Box::new(composition::AddonDependencyAcyclic))
         .with_rule(Box::new(composition::AddonConflictBothRequired))
         .with_rule(Box::new(composition::AddonQtyRange))
+        // Slice 10's derived meters. Plan-shape rather than row-local because a
+        // transitive self-reference is a cycle across two definitions and no
+        // single row can see one.
+        .with_rule(Box::new(composite::CompositeArity))
+        .with_rule(Box::new(composite::CompositeSelfReference))
         // Phase schedule: how the plan runs over time.
         .with_rule(Box::new(phase_graph::PhaseGraphIntegrity))
         .with_rule(Box::new(phase_graph::PhaseChainLinear))

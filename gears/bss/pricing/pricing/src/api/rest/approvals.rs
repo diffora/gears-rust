@@ -468,6 +468,9 @@ impl From<&PlanShape> for PinnedContentView {
             descriptor_set,
             rows,
             entitlement_grants,
+            // Not on the wire view: the pin covers it (`inst-cm-frozen`) and a
+            // reviewer reads the formula in the design set, not in a diff.
+            composites: _,
             change_contract,
             windows,
             // Outside the digest, so outside this document: showing a reviewer

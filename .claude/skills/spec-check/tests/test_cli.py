@@ -98,7 +98,7 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # the rule that would raise it, together with the reason it cannot fire in the
     # two-field floor shape the slice actually built. Debt is now 21 propagation
     # gaps + 36 unreferenced codes. Live findings unchanged at 2, both rating-side.
-    assert payload["known_debt_suppressed"] == 57
+    assert payload["known_debt_suppressed"] == 54
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

@@ -63,6 +63,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_price_tier_band",
     "pricing_read_model",
     "pricing_catalog_version_ref",
+    "pricing_composite_meter",
     "pricing_pin_frontier",
     "pricing_policy_object",
     "pricing_operator_flag",
@@ -130,6 +131,12 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_bundle_revshare_no_delete",
     "trg_pricing_bundle_revshare_no_insert",
     "trg_pricing_bundle_revshare_no_update",
+    // Slice 10's composite meter. Three arms mirroring the one Postgres
+    // function, `pricing_plan_phase`'s shape: the parent revision's
+    // `lifecycle_state` is the row's, so every verb consults it.
+    "trg_pricing_composite_meter_no_delete",
+    "trg_pricing_composite_meter_no_insert",
+    "trg_pricing_composite_meter_no_update",
     // Slice 11. Five arms, mirroring the one Postgres function: the DELETE ban,
     // the terminal-row ban, the frozen-column whitelist, section 4's edges, and
     // D-65's replay guard on the persisted exclusion set.
@@ -206,6 +213,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_bundle_revshare_revision",
     "idx_pricing_bundle_tenant",
     "idx_pricing_catalog_version_ref_version",
+    "idx_pricing_composite_meter_revision",
     "idx_pricing_idempotency_dedup_created",
     "idx_pricing_migration_due",
     "idx_pricing_migration_source",
@@ -231,6 +239,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "uq_pricing_approval_key_pending",
     "uq_pricing_approval_policy_pending",
     "uq_pricing_bundle_plan",
+    "uq_pricing_composite_meter_output",
     "uq_pricing_outbox_dedup_key",
     "uq_pricing_outbox_sequence",
     "uq_pricing_plan_current",
@@ -292,6 +301,11 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_catalog_version_ref_subject_lifecycle",
     "chk_pricing_catalog_version_ref_subject_revision",
     "chk_pricing_catalog_version_ref_version",
+    // Slice 10's composite meter. One CHECK only: the arity and self-reference
+    // rules are publish rules rather than column constraints -- see
+    // `m20260802_000046`'s module doc for why, and `m20260802_000045`'s for the
+    // portability argument it inherits.
+    "chk_pricing_composite_meter_output_unit",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
     // Slice 11. The two implications that carry section 4's reachable set
@@ -461,6 +475,10 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "pricing_catalog_version_ref",
         "tenant_id, pending_ref, subject_kind, subject_ref",
     ),
+    // Slice 10's composite meter, D-106's revision discipline in the key
+    // itself: `composite_id` is stable across revisions and the revision is the
+    // second column, so a copy-forward is a new row rather than an edit.
+    ("pricing_composite_meter", "composite_id, plan_revision"),
     (
         "pricing_idempotency_dedup",
         "tenant_id, operation, client_key",
@@ -617,6 +635,21 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_bundle_revshare_no_update",
         12_884_963_950_550_849_015_u64,
+    ),
+    // Slice 10's composite meter. Read back off the built schema, as this
+    // census requires -- a hand-derived number could only ever be this same
+    // read-back written down twice.
+    (
+        "trg_pricing_composite_meter_no_delete",
+        4_725_017_676_843_212_914_u64,
+    ),
+    (
+        "trg_pricing_composite_meter_no_insert",
+        14_438_003_716_742_837_994_u64,
+    ),
+    (
+        "trg_pricing_composite_meter_no_update",
+        2_815_598_062_845_254_393_u64,
     ),
     // Slice 11's five arms. Each digest is the stored body's, which is the only
     // place a digest can come from; what was checked against `m20260802_000043`

@@ -20,6 +20,7 @@ pub mod bundle_component;
 pub mod bundle_revshare;
 pub mod bundle_revshare_group;
 pub mod catalog_version_ref;
+pub mod composite_meter;
 pub mod idempotency_dedup;
 pub mod migration;
 pub mod operator_flag;

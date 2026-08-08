@@ -19,7 +19,8 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::plan::PlanShapePatch;
 use bss_pricing::domain::plan_shape::{
-    AddonRule, BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency,
+    PhaseKind, PlanPhase,
 };
 use bss_pricing::domain::scope_key::{PhaseId, PlanId};
 use bss_pricing::infra::storage::entity::{
@@ -1389,6 +1390,28 @@ fn three_addon_rules() -> Vec<AddonRule> {
 /// obligations under test are `open_revision` copying **every** child table
 /// forward and `abandon_draft` dropping **every** one, and a seed carrying a
 /// single table would leave a copier that handles exactly one of them green.
+/// Two composite definitions, neither self-referential, for the shape cases.
+///
+/// **In the order the reader guarantees** — `output_unit` then `composite_id` —
+/// so the assertions stay equalities over a total order rather than set
+/// comparisons, which is `three_phases`' arrangement for the same reason.
+fn two_composites() -> Vec<CompositeMeter> {
+    vec![
+        CompositeMeter {
+            composite_id: Uuid::from_u128(0xc0_a2),
+            output_unit: "storage-unit".to_owned(),
+            constituent_units: vec!["iops".to_owned(), "gb-month".to_owned()],
+            formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 1] }),
+        },
+        CompositeMeter {
+            composite_id: Uuid::from_u128(0xc0_a1),
+            output_unit: "vm-hour".to_owned(),
+            constituent_units: vec!["vcpu-hour".to_owned(), "ram-gb-hour".to_owned()],
+            formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 4] }),
+        },
+    ]
+}
+
 async fn published_plan_with_shape(
     repo: &PlanRepo,
     provider: &DBProvider<DbError>,
@@ -1439,6 +1462,18 @@ async fn published_plan_with_shape(
         )
         .await
         .expect("attach the descriptor set on the open draft");
+    shapes
+        .replace_composites(
+            scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(3),
+            two_composites(),
+            stamp(),
+        )
+        .await
+        .expect("author the composite set on the open draft");
     seed_bundle_composition(provider, scope, tenant, plan_id).await;
     flip_state(provider, scope, plan_id, 0, LifecycleState::Published).await;
     shapes
@@ -1893,6 +1928,15 @@ async fn a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83() {
     );
     assert_eq!(
         shapes
+            .list_composites(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read the successor's composites"),
+        two_composites(),
+        "the composite definitions travel with a stable `composite_id` (D-106), so a formula \
+         edit on this draft leaves the published revision byte-identical"
+    );
+    assert_eq!(
+        shapes
             .list_addon_rules(&scope, tenant, plan_id, 1)
             .await
             .expect("read the successor's add-on rules"),
@@ -2023,6 +2067,15 @@ async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
     );
     assert!(
         shapes
+            .list_composites(&scope, tenant, plan_id, 1)
+            .await
+            .expect("read")
+            .is_empty(),
+        "no composite rows survive the tombstone: `abandoned` is not `draft`, so the drop has \
+         to precede the flip or the table's DELETE trigger refuses it forever"
+    );
+    assert!(
+        shapes
             .list_addon_rules(&scope, tenant, plan_id, 1)
             .await
             .expect("read")
@@ -2119,10 +2172,16 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
     /// themselves, so their statements need that indirection and Slice 2's do
     /// not. `PlanRepo` calls both unconditionally; a plan that is not a bundle is
     /// a no-op.
-    const REVISION_SCOPED: [&str; 6] = [
+    const REVISION_SCOPED: [&str; 7] = [
         "pricing_bundle_component",
         "pricing_bundle_revshare",
         "pricing_bundle_revshare_group",
+        // Slice 10's composite meters (2026-08-08). Added **after** the obligation
+        // this assertion states was met, not to silence it: `copy_composites` and
+        // `delete_composites` live in `plan_shape_repo` beside the phase set's,
+        // `open_revision` and `abandon_draft` call them in the required order, and
+        // the two shape cases below assert both.
+        "pricing_composite_meter",
         "pricing_plan_addon_rule",
         "pricing_plan_descriptor_set",
         "pricing_plan_phase",

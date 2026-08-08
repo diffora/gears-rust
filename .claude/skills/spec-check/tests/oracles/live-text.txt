@@ -2,4 +2,4 @@
 [Low] design/15-rated-output-balance-effects.md — design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention (P3/code-convention-divergent)
 
 2 finding(s)
-57 known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt to see them
+54 known-debt finding(s) suppressed, tracked as D-69 — pass --show-known-debt to see them

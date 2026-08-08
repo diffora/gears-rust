@@ -122,6 +122,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+use serde_json::Value as JsonValue;
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
@@ -378,6 +379,31 @@ impl fmt::Display for PhaseKind {
 }
 
 /// One row of `pricing_plan_phase`, as the rules read it.
+/// One derived (composite) meter definition (Slice 10 §6, A4, D-32, D-106).
+///
+/// The formula travels as **data** — operands plus operator/weights — and never
+/// as executable code, which is A4's rule and the reason this carries an opaque
+/// [`JsonValue`] rather than anything this crate evaluates: the catalog persists
+/// and freezes the definition, and Rating computes from the snapshot
+/// (`inst-cm-frozen`). Nothing here reads inside it.
+///
+/// `composite_id` is stable across revisions (D-106): opening a draft copies the
+/// row under the new `plan_revision` without re-minting the id, so a formula edit
+/// on a draft leaves the published revision byte-identical.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompositeMeter {
+    /// Stable across revisions; the definition's identity, not its copy.
+    pub composite_id: Uuid,
+    /// The registry-declared unit this composite rates as (`inst-cm-output`).
+    pub output_unit: String,
+    /// The constituent unit ids. `>= 2` is `CompositeArity`'s rule; whether each
+    /// is *published* is unasked, because there is no registry client here.
+    pub constituent_units: Vec<String>,
+    /// The formula as data. Opaque to this crate on purpose (A4).
+    pub formula: JsonValue,
+}
+
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanPhase {
@@ -674,6 +700,13 @@ pub struct PlanShape {
     /// authored the empty set are the same plan and must not validate
     /// differently.
     pub entitlement_grants: EntitlementGrants,
+    /// The derived (composite) meters this revision defines (Slice 10 §6,
+    /// `inst-cm-formula`).
+    ///
+    /// A `Vec` and not a map: the self-reference walk needs the whole set at
+    /// once, because a transitive cycle spans two definitions, and nothing
+    /// addresses one composite by key inside the shape.
+    pub composites: Vec<CompositeMeter>,
     /// The plan-change contract this revision publishes (Slice 6, §6): the
     /// edges a self-service change may travel, the comparability rank that
     /// classifies one, and D-113's tier-`Q` continuity flag.
@@ -729,6 +762,7 @@ impl PlanShape {
             descriptor_set: None,
             rows: Vec::new(),
             entitlement_grants: EntitlementGrants::default(),
+            composites: Vec::new(),
             change_contract: PlanChangeContract::default(),
             windows: Vec::new(),
             baseline: None,

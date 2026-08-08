@@ -194,6 +194,8 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_bundle_component_append_only",
     "pricing_bundle_revshare_append_only",
     "pricing_bundle_revshare_group_append_only",
+    // Slice 10's composite meter: one PL/pgSQL function, three SQLite triggers.
+    "pricing_composite_meter_append_only",
     // Slice 11. One PL/pgSQL function carrying the five arms the SQLite mirror
     // spells as five triggers.
     "pricing_migration_append_only",
@@ -227,6 +229,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_bundle_component_append_only",
     "trg_pricing_bundle_revshare_append_only",
     "trg_pricing_bundle_revshare_group_append_only",
+    "trg_pricing_composite_meter_append_only",
     "trg_pricing_migration_append_only",
     "trg_pricing_plan_addon_rule_append_only",
     "trg_pricing_plan_append_only",
@@ -290,6 +293,7 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_bundle_revshare: bundle_id, plan_revision, vendor_sku_id, party",
     "pricing_bundle_revshare_group: bundle_id, plan_revision, vendor_sku_id",
     "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
+    "pricing_composite_meter: composite_id, plan_revision",
     "pricing_idempotency_dedup: tenant_id, operation, client_key",
     // Read back from `m20260802_000043`'s own DDL rather than from the live
     // server: client-supplied (`inst-ms-api`, M2), so the idempotency key and the
@@ -350,6 +354,9 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_catalog_version_ref_subject_lifecycle",
     "chk_pricing_catalog_version_ref_subject_revision",
     "chk_pricing_catalog_version_ref_version",
+    // Slice 10's composite meter. One CHECK only: arity and self-reference are
+    // publish rules, for `m20260802_000046`'s portability reason.
+    "chk_pricing_composite_meter_output_unit",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
     // Slice 11, the same twelve the SQLite mirror carries, name for name.

@@ -425,7 +425,14 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// bumps rather than one for `v8`'s reason -- each records a distinct re-freeze,
 /// and a counter that skipped any would leave a later reader unable to tell
 /// which change moved the bytes.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v10\x1f";
+/// # `v11`: Slice 10's composite definitions joined the plan shape (2026-08-08)
+///
+/// `inst-cm-frozen` freezes the definition into the snapshot, so it is authored
+/// draft content a `PATCH` moves and it enters this preimage. The hole it closes
+/// is the formula's: a reviewer who approved `vCPU + RAM` weighted 1:1 and a
+/// commit that publishes 1:4, with every digest equal. `v6` through `v11` all
+/// collapse for anyone deploying — nothing durable held any of them.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v11\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -672,6 +679,7 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         descriptor_set,
         rows,
         entitlement_grants,
+        composites,
         change_contract,
         windows,
         // Not hashed; the module doc argues both, and the first one is the
@@ -722,6 +730,23 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     for (phase_id, set) in &entitlement_grants.per_phase {
         put_uuid(buf, *phase_id);
         put_grant_set(buf, set);
+    }
+
+    // Slice 10's composite definitions (`inst-cm-frozen`, D-256). Length-framed
+    // like every other collection here, for the reason stated above: without the
+    // count two adjacent collections can be re-split. The formula is framed as
+    // its **canonical JSON text** -- this crate never reads inside it (A4), and a
+    // structural walk would be a second spelling of a value the store already
+    // holds as one string.
+    put_u64(buf, count_of(composites.len()));
+    for composite in composites {
+        put_uuid(buf, composite.composite_id);
+        put_str(buf, &composite.output_unit);
+        put_u64(buf, count_of(composite.constituent_units.len()));
+        for unit in &composite.constituent_units {
+            put_str(buf, unit);
+        }
+        put_str(buf, &composite.formula.to_string());
     }
 
     match &change_contract.allowed_change_targets {

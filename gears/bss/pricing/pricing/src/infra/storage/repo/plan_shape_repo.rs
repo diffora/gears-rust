@@ -90,10 +90,12 @@ use uuid::Uuid;
 use crate::domain::audit::{AuditAction, AuditStamp};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::plan::PlanRevision;
-use crate::domain::plan_shape::{AddonRule, DescriptorSet, PhaseKind, PlanPhase};
+use crate::domain::plan_shape::{AddonRule, CompositeMeter, DescriptorSet, PhaseKind, PlanPhase};
 use crate::domain::scope_key::{PhaseId, PlanId};
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{plan, plan_addon_rule, plan_descriptor_set, plan_phase};
+use crate::infra::storage::entity::{
+    composite_meter, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
+};
 use crate::infra::storage::repo::plan_repo::{
     load_revision, mutable_draft, not_found, read_token, record_revision_mutation, refuse,
     swap_guard,
@@ -239,6 +241,101 @@ impl PlanShapeRepo {
             .conn()
             .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
         load_phase_set(&conn, scope, tenant_id, plan_id, revision).await
+    }
+
+    /// Replace an open draft revision's whole composite-meter set, under the
+    /// caller's row version, in one transaction (Slice 10 §6).
+    ///
+    /// Structurally [`PlanShapeRepo::replace_phases`] against the sibling table,
+    /// and deliberately so: the guard, the ordering and the audit record are one
+    /// argument each, and a second spelling of any of them is a second thing to
+    /// keep true.
+    ///
+    /// # Errors
+    /// [`RepoError::StaleRowVersion`] / [`RepoError::LifecycleForbidden`] /
+    /// [`RepoError::NotFound`] as the compare-and-swap resolves them;
+    /// [`RepoError::Db`] on a scope or storage failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "`replace_phases`' signature and `replace_phases`' reason, verbatim: the owed \
+                  `RevisionTarget` bundle would change both together"
+    )]
+    pub async fn replace_composites(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        revision: u64,
+        expected: RowVersion,
+        composites: Vec<CompositeMeter>,
+        stamp: AuditStamp,
+    ) -> Result<PlanRevision, RepoError> {
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+                        return Err(
+                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
+                        );
+                    };
+                    if mutable_draft(txn, &scope, tenant_id, plan_id, revision, expected)
+                        .await?
+                        .is_none()
+                    {
+                        return Err(
+                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
+                        );
+                    }
+                    write_composites(txn, &scope, tenant_id, plan_id, revision, composites).await?;
+                    let result = plan_revision_bump(txn, &scope, guard).await?;
+                    if result == 0 {
+                        return Err(
+                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
+                        );
+                    }
+                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
+                        .await?
+                        .ok_or_else(|| not_found(plan_id, revision))?;
+                    record_revision_mutation(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &updated,
+                        AuditAction::Update,
+                        expected,
+                        stamp,
+                    )
+                    .await?;
+                    Ok(updated)
+                })
+            })
+            .await;
+        outcome.map_err(tx_failure)
+    }
+
+    /// Read one revision's composite set, ordered by `output_unit` then id.
+    ///
+    /// SQL-level BOLA: a foreign tenant's revision yields an empty set.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when `constituent_units` is not a JSON array of
+    /// strings.
+    pub async fn list_composites(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        revision: u64,
+    ) -> Result<Vec<CompositeMeter>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
+        load_composite_set(&conn, scope, tenant_id, plan_id, revision).await
     }
 
     /// Replace an open draft revision's whole add-on rule set, under the
@@ -738,6 +835,198 @@ pub(super) async fn copy_phases(
         })
         .collect();
     insert_phases(runner, scope, copies).await
+}
+
+// ---------------------------------------------------------------------------
+// Statements - `pricing_composite_meter` (Slice 10 §6, D-106).
+// ---------------------------------------------------------------------------
+//
+// The phase set's four statements exactly, and the parallel is the point: a
+// revision-scoped table owes a loader, a writer, a copier and a dropper, and
+// `sqlite_plan_repo::the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_dropped`
+// refuses to let a fifth table exist without all four.
+
+/// One revision's composite definitions, in a deterministic order.
+pub(super) async fn load_composites(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Vec<composite_meter::Model>, RepoError> {
+    let Some(number) = stored_revision(revision) else {
+        return Ok(Vec::new());
+    };
+    composite_meter::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(composite_meter::Column::TenantId.eq(tenant_id))
+                .add(composite_meter::Column::PlanId.eq(plan_id.get()))
+                .add(composite_meter::Column::PlanRevision.eq(number)),
+        )
+        .order_by(composite_meter::Column::OutputUnit, Order::Asc)
+        .order_by(composite_meter::Column::CompositeId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read composite meters: {e}")))
+}
+
+/// The domain view of one revision's composites.
+///
+/// # Errors
+/// [`RepoError::CorruptRow`] when a stored `constituent_units` is not a JSON
+/// array of strings — a shape no writer here produces and no `CHECK` can state.
+pub async fn load_composite_set(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<Vec<CompositeMeter>, RepoError> {
+    load_composites(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .iter()
+        .map(to_composite)
+        .collect()
+}
+
+fn to_composite(row: &composite_meter::Model) -> Result<CompositeMeter, RepoError> {
+    let units = row.constituent_units.as_array().ok_or_else(|| {
+        RepoError::CorruptRow(format!(
+            "pricing_composite_meter {}: constituent_units is not a JSON array",
+            row.composite_id
+        ))
+    })?;
+    let constituent_units = units
+        .iter()
+        .map(|value| {
+            value.as_str().map(str::to_owned).ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "pricing_composite_meter {}: a constituent unit is not a string",
+                    row.composite_id
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CompositeMeter {
+        composite_id: row.composite_id,
+        output_unit: row.output_unit.clone(),
+        constituent_units,
+        formula: row.formula.clone(),
+    })
+}
+
+async fn insert_composites(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    composites: Vec<composite_meter::ActiveModel>,
+) -> Result<(), RepoError> {
+    for composite in composites {
+        composite_meter::Entity::insert(composite.clone())
+            .secure()
+            .scope_with_model(scope, &composite)
+            .map_err(|e| RepoError::Db(format!("pricing_composite_meter scope: {e}")))?
+            .exec(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("insert pricing_composite_meter: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Replace one draft revision's composite set wholesale.
+pub(super) async fn write_composites(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    composites: Vec<CompositeMeter>,
+) -> Result<(), RepoError> {
+    let Some(number) = stored_revision(revision) else {
+        return Err(RepoError::CorruptRow(format!(
+            "plan {plan_id} revision {revision} exceeds the storable range"
+        )));
+    };
+    delete_composites(runner, scope, tenant_id, plan_id, revision).await?;
+    let rows = composites
+        .into_iter()
+        .map(|composite| composite_meter::ActiveModel {
+            composite_id: Set(composite.composite_id),
+            plan_revision: Set(number),
+            tenant_id: Set(tenant_id),
+            plan_id: Set(plan_id.get()),
+            output_unit: Set(composite.output_unit),
+            constituent_units: Set(serde_json::Value::Array(
+                composite
+                    .constituent_units
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            )),
+            formula: Set(composite.formula),
+        })
+        .collect();
+    insert_composites(runner, scope, rows).await
+}
+
+/// Drop one revision's whole composite set.
+pub(super) async fn delete_composites(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<(), RepoError> {
+    let Some(number) = stored_revision(revision) else {
+        return Ok(());
+    };
+    composite_meter::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(composite_meter::Column::TenantId.eq(tenant_id))
+                .add(composite_meter::Column::PlanId.eq(plan_id.get()))
+                .add(composite_meter::Column::PlanRevision.eq(number)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("delete composite meters: {e}")))?;
+    Ok(())
+}
+
+/// Copy one revision's composites onto `to`, **preserving `composite_id`** (D-106).
+pub(super) async fn copy_composites(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    from: u64,
+    to: u64,
+) -> Result<(), RepoError> {
+    let Some(number) = stored_revision(to) else {
+        return Err(RepoError::CorruptRow(format!(
+            "plan {plan_id} revision {to} exceeds the storable range"
+        )));
+    };
+    let source = load_composites(runner, scope, tenant_id, plan_id, from).await?;
+    let copies = source
+        .into_iter()
+        .map(|row| composite_meter::ActiveModel {
+            // Unchanged, deliberately and load-bearingly: a stable id is what
+            // makes a draft's formula edit invisible to the published revision.
+            composite_id: Set(row.composite_id),
+            plan_revision: Set(number),
+            tenant_id: Set(row.tenant_id),
+            plan_id: Set(row.plan_id),
+            output_unit: Set(row.output_unit),
+            constituent_units: Set(row.constituent_units),
+            formula: Set(row.formula),
+        })
+        .collect();
+    insert_composites(runner, scope, copies).await
 }
 
 // ---------------------------------------------------------------------------

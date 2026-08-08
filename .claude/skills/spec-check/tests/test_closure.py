@@ -205,7 +205,7 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # by naming it in `inst-ft-typed` -- the rule that would raise it -- together
     # with the reason it cannot fire in the two-field floor shape the slice built.
     # Note beside the list.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 36
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 33
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

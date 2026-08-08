@@ -202,13 +202,23 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #:   a single account that is *also* id-anchored and ≥ 0.75, and requirement prose in
 #:   both corpora is overwhelmingly `MUST`-laden. Both stay in the histogram at zero
 #:   so a class that stops occurring is distinguishable from one that never existed.
+#: **Moved back on 2026-08-08 by the D-256 composite-meter wave, to exactly the
+#: pre-wave values (5 / 59 / 10, judged 69).** `fr-scheduled-migration` and
+#: `fr-supersession` returned to `multi-region` and `weak-coverage`: prose added to
+#: `design/10` re-weighted `DF_CUTOFF` the other way and pushed their 0.603 / 0.602
+#: accounts back over the 0.600 floor. This is the same mechanism the note above
+#: records, observed in both directions within one day -- which is the strongest
+#: evidence available that these pins track corpus term statistics rather than
+#: coverage, and that pricing has requirements whose whole account lives inside a
+#: 0.003 band. Nothing about either requirement's documentation changed in either
+#: direction.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 7,
-    "suspicious:multi-region": 58,
+    "anchored:no-account": 5,
+    "suspicious:multi-region": 59,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 9,
+    "suspicious:weak-coverage": 10,
     "covered:strong": 0,
 }
 #: Moved 2026-08-08 (was 5 / 59 / 10) by the **D-251/D-252/D-234 propagation wave** — the
@@ -1144,7 +1154,7 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 67, "ledger": 17}
+PINNED_JUDGE_CALLS = {"pricing": 69, "ledger": 17}
 #: pricing 69 -> 67 on the 2026-08-08 **D-251/D-252/D-234 propagation wave**. Two movers,
 #: `fr-scheduled-migration` and `fr-supersession`, both leaving the judged set for
 #: `anchored:no-account` — the full control is recorded beside `PINNED_TRIAGE_PRICING` above and

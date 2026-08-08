@@ -91,8 +91,8 @@ use crate::infra::storage::entity::plan;
 use crate::infra::storage::repo::bundle_repo;
 use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::repo::plan_shape_repo::{
-    copy_addon_rules, copy_descriptor_set, copy_phases, delete_addon_rules, delete_descriptor_set,
-    delete_phases,
+    copy_addon_rules, copy_composites, copy_descriptor_set, copy_phases, delete_addon_rules,
+    delete_composites, delete_descriptor_set, delete_phases,
 };
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
 use crate::infra::storage::{RepoError, contention_or_db};
@@ -509,6 +509,10 @@ impl PlanRepo {
                     delete_phases(txn, &scope, tenant_id, plan_id, revision).await?;
                     delete_addon_rules(txn, &scope, tenant_id, plan_id, revision).await?;
                     delete_descriptor_set(txn, &scope, tenant_id, plan_id, revision).await?;
+                    // Slice 10's composite meters, on the same terms: `abandoned`
+                    // is not `draft` and the table's DELETE trigger refuses
+                    // everything after the flip.
+                    delete_composites(txn, &scope, tenant_id, plan_id, revision).await?;
                     // Slice 8's three composition tables ride this revision too
                     // (D-92), and `abandoned` is not `draft`: the drop has to
                     // precede the flip for the same reason the three above do.
@@ -765,6 +769,10 @@ impl PlanRepo {
                     copy_phases(txn, &scope, tenant_id, plan_id, source, next).await?;
                     copy_addon_rules(txn, &scope, tenant_id, plan_id, source, next).await?;
                     copy_descriptor_set(txn, &scope, tenant_id, plan_id, source, next).await?;
+                    // Slice 10's composites, with `composite_id` preserved
+                    // (D-106) so a formula edit on the draft leaves the published
+                    // revision byte-identical.
+                    copy_composites(txn, &scope, tenant_id, plan_id, source, next).await?;
                     // Slice 8's composition, on the same terms and after the new
                     // revision row exists: these tables refuse an INSERT whose
                     // parent revision is not `draft`.
