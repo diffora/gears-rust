@@ -4,11 +4,15 @@
 //! the store's own guarantee and not any repository's use of it.
 //!
 //! Two of this table's three rules are about *when* a lock may exist, and the
-//! third is the absence of a rule: `DELETE` is unguarded, because release has to
-//! work from the ordinary completion, from D-37's operator abort, and from a
-//! janitor cleaning up after a crash. A guard there would freeze interactive
-//! authoring exactly when a run has died holding rows, which is the failure the
-//! release path exists to prevent.
+//! third is the absence of a rule: `DELETE` is unguarded. §6 orders the operator
+//! abort as one act — `committing → completed_with_conflicts` with the lock
+//! cleared — so a guard admitting `DELETE` only under a `committing` run would
+//! refuse the clear inside the transaction §6 specifies; and a crash between the
+//! terminal transition and the release would strand the locks permanently, the
+//! run being terminal. That is the freeze D-37's release path exists to prevent.
+//!
+//! A fourth rule this table must **not** have is pinned here too: a lock is not
+//! restricted to a repricing run.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -39,10 +43,14 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
 }
 
 fn seed_run(op: &str, tenant: &str) -> String {
+    seed_run_of_kind(op, tenant, "repricing")
+}
+
+fn seed_run_of_kind(op: &str, tenant: &str, kind: &str) -> String {
     format!(
         "INSERT INTO pricing_bulk_operation \
          (operation_id, tenant_id, kind, state, client_key, report, submitted_by, submitted_at) \
-         VALUES ('{op}', '{tenant}', 'repricing', 'validating', 'ck-{op}', '{{}}', '{ACTOR}', \
+         VALUES ('{op}', '{tenant}', '{kind}', 'validating', 'ck-{op}', '{{}}', '{ACTOR}', \
          '2026-08-08T00:00:00Z')"
     )
 }
@@ -119,6 +127,24 @@ async fn a_committing_run_takes_and_releases_a_lock() {
         ),
     )
     .await;
+    assert_eq!(
+        locks_held(&conn).await,
+        "0",
+        "and the release must have taken effect, not merely not errored -- this \
+         is the sweep's own query shape and the only place either suite runs it"
+    );
+}
+
+/// How many locks the tenant holds on the fixture's row.
+async fn locks_held(conn: &DatabaseConnection) -> String {
+    scalar(
+        conn,
+        &format!(
+            "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_bulk_row_lock \
+             WHERE tenant_id = '{TENANT}' AND price_id = '{PRICE}'"
+        ),
+    )
+    .await
 }
 
 /// **The bulk lock takes effect only on entry to `committing`.** §4 is explicit
@@ -131,6 +157,7 @@ async fn a_lock_may_only_be_taken_while_its_run_commits() {
     for state in [
         "validating",
         "awaiting_approval",
+        "validation_failed",
         "completed",
         "completed_with_conflicts",
     ] {
@@ -277,4 +304,26 @@ async fn both_keys_name_a_row_that_exists() {
     let conn = migrated_db().await;
     committing_run(&conn).await;
     must_succeed(&conn, &take_lock(RUN, TENANT, PRICE)).await;
+}
+
+/// **An import takes a lock too, and this case exists to pin an absence.**
+///
+/// `pricing_repricing_journal` carries an arm admitting only `kind = repricing`,
+/// and the symmetry is a trap: `inst-bk-lock` is the **import's** own rule — "rows
+/// in an in-flight import are marked" — and `inst-bs-commit` puts *every* import
+/// on the edge into `committing`. Without this case every fixture in this file
+/// seeds a repricing run, so an arm copied here from the sibling would leave the
+/// whole suite green while every bulk import failed to take its lock at commit.
+#[tokio::test]
+async fn an_import_takes_a_lock_like_any_other_run() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed_price(TENANT)).await;
+    must_succeed(&conn, &seed_run_of_kind(RUN, TENANT, "import")).await;
+    must_succeed(&conn, &advance(RUN, "committing")).await;
+    must_succeed(&conn, &take_lock(RUN, TENANT, PRICE)).await;
+    assert_eq!(
+        locks_held(&conn).await,
+        "1",
+        "an import holds its rows exactly as a repricing run does"
+    );
 }

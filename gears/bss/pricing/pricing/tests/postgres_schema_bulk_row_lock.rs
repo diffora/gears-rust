@@ -87,10 +87,14 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, by: &str) {
 }
 
 fn seed_run(op: &str, tenant: &str) -> String {
+    seed_run_of_kind(op, tenant, "repricing")
+}
+
+fn seed_run_of_kind(op: &str, tenant: &str, kind: &str) -> String {
     format!(
         "INSERT INTO bss.pricing_bulk_operation \
          (operation_id, tenant_id, kind, state, client_key, report, submitted_by, submitted_at) \
-         VALUES ('{op}', '{tenant}', 'repricing', 'validating', 'ck-{op}', '{{}}'::jsonb, \
+         VALUES ('{op}', '{tenant}', '{kind}', 'validating', 'ck-{op}', '{{}}'::jsonb, \
          '{ACTOR}', now())"
     )
 }
@@ -173,6 +177,7 @@ async fn a_lock_may_only_be_taken_while_its_run_commits() {
     for state in [
         "validating",
         "awaiting_approval",
+        "validation_failed",
         "completed",
         "completed_with_conflicts",
     ] {
@@ -204,8 +209,10 @@ async fn a_lock_may_only_be_taken_while_its_run_commits() {
 #[ignore = "requires Docker"]
 async fn a_run_may_not_lock_another_tenants_row() {
     let conn = applied().await;
-    // The price row belongs to the other tenant, so its key is satisfied and this
-    // arm is what answers rather than the key.
+    // The price row exists, so `fk_pricing_bulk_row_lock_price` is satisfied and
+    // this arm is what answers rather than the key. Its **tenant** is irrelevant
+    // to that: the key covers `price_id` alone, which is why the mirror's twin of
+    // this case seeds the price under the other tenant and gets the same refusal.
     must_succeed(&conn, &seed_price(OTHER_TENANT)).await;
     must_succeed(&conn, &seed_run(RUN, TENANT)).await;
     must_succeed(&conn, &advance(RUN, "committing")).await;
@@ -321,4 +328,26 @@ async fn both_keys_name_a_row_that_exists() {
 
     let conn = committing_run().await;
     must_succeed(&conn, &take_lock(RUN, TENANT)).await;
+}
+
+/// **An import takes a lock too, and this case exists to pin an absence.**
+///
+/// `pricing_repricing_journal` carries an arm admitting only `kind = repricing`;
+/// the symmetry is a trap. `inst-bk-lock` is the **import's** own rule and
+/// `inst-bs-commit` puts every import on the edge into `committing`, so an arm
+/// copied here from the sibling would leave both suites green while every bulk
+/// import failed to take its lock at commit.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn an_import_takes_a_lock_like_any_other_run() {
+    let conn = applied().await;
+    must_succeed(&conn, &seed_price(TENANT)).await;
+    must_succeed(&conn, &seed_run_of_kind(RUN, TENANT, "import")).await;
+    must_succeed(&conn, &advance(RUN, "committing")).await;
+    must_succeed(&conn, &take_lock(RUN, TENANT)).await;
+    assert_eq!(
+        locks_held(&conn).await,
+        1,
+        "an import holds its rows exactly as a repricing run does"
+    );
 }

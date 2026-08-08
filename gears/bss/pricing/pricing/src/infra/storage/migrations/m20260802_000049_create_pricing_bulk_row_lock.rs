@@ -32,15 +32,31 @@
 //!
 //! **`DELETE` is not guarded at all, and that is the rule rather than an
 //! omission.** Both sibling tables of this slice refuse `DELETE` outright, and
-//! copying that here would be precisely wrong: a lock is transient, release *is*
-//! a delete, and it has to work from every path — the ordinary completion, D-37's
-//! operator abort of a stalled run, and a janitor cleaning up after a crash whose
-//! run is already terminal. A guard conditioned on the run's state would make a
-//! crashed run's locks unreleasable at exactly the moment they most need
-//! releasing, which is the freeze D-37's release path exists to prevent: a
-//! crashed import must never freeze interactive authoring indefinitely. The
-//! trigger is therefore bound to `INSERT OR UPDATE` and not to `DELETE`, so the
-//! absence is structural rather than a fall-through nobody notices.
+//! copying that here would be precisely wrong: a lock is transient and release
+//! *is* a delete. Two grounds, both from the design set rather than from a
+//! release actor it does not have:
+//!
+//! 1. **§6 orders the abort as one act** — `committing → completed_with_conflicts`
+//!    with "the lock cleared" — so a guard admitting `DELETE` only under a
+//!    `committing` run would refuse the clear inside the very transaction §6
+//!    specifies, depending on which of the two statements ran first.
+//! 2. **A crash between the terminal transition and the release strands the
+//!    locks.** Under such a guard they would then be unreleasable *permanently*,
+//!    the run being terminal — which is the freeze D-37's release path exists to
+//!    prevent: a crashed import must never freeze interactive authoring
+//!    indefinitely.
+//!
+//! The trigger is therefore bound to `INSERT OR UPDATE` and not to `DELETE`, so
+//! the absence is structural rather than a fall-through nobody notices.
+//!
+//! **A lock is not restricted to a repricing run, and that absence is
+//! load-bearing.** `pricing_repricing_journal` carries an arm admitting only
+//! `kind = repricing`, and the symmetry is a trap: `inst-bk-lock` is the
+//! **import's** own rule — "rows in an in-flight import are marked" — and
+//! `inst-bs-commit` puts *every* import on the edge into `committing`. An arm
+//! copied here from the sibling would leave every bulk import unable to take its
+//! lock at commit. A case in each suite locks under an `import` run for exactly
+//! that reason.
 //!
 //! **The lock's tenant is its run's tenant.** The foreign key covers
 //! `bulk_operation_id` alone, so without this arm one tenant's run could mark
