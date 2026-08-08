@@ -1025,28 +1025,68 @@ pub(crate) async fn assemble_from(
     draft: crate::domain::plan::PlanRevision,
     now: DateTime<Utc>,
 ) -> Result<PlanShape, DomainError> {
-    let mut shape = PlanShape::new(plan_id, draft.revision, now);
-    shape.sku_id = draft.sku_id;
-    shape.billing_cycle = draft.billing_cycle;
-    shape.frequency = draft.frequency;
-    shape.plan_tier = draft.plan_tier.clone();
-    shape.plan_tier_override = draft.plan_tier_override;
-    shape.available_from = draft.available_from;
-    shape.available_to = draft.available_to;
-    shape.purchase_min_qty = draft.purchase_min_qty;
-    shape.purchase_max_qty = draft.purchase_max_qty;
-    shape.invoice_grouping_key = draft.invoice_grouping_key.clone();
+    // **Destructured, so a field added to `PlanRevision` and forgotten here is a
+    // compile error** (D-259). This assembly was written field by field and was
+    // wrong three times in one day — D-257's `composites`, and D-258's
+    // `change_contract` and `entitlement_grants`, one of which refused
+    // legitimate publishes outright. A missing line was not a compile error and
+    // no test that hand-builds a `PlanShape` could see it, which is why all
+    // three passed every gate. `content_pin::put_plan_shape` has always
+    // destructured for exactly this reason; the defect was that it destructures
+    // the *shape*, not the draft the shape is assembled from.
+    //
+    // The five ignored fields are ignored **by name**: `plan_id` and `revision`
+    // are the constructor's own arguments, and `lifecycle_state`, `created_by`,
+    // `created_at_utc` and `row_version` are the row's provenance rather than
+    // its authored content — the rules judge what an author wrote, and the pin
+    // frames the same set.
+    let crate::domain::plan::PlanRevision {
+        // `plan_id` is the caller's argument; `revision` is bound because the
+        // child-table loads below key on it.
+        plan_id: _,
+        revision,
+        sku_id,
+        plan_tier,
+        billing_cycle,
+        frequency,
+        plan_tier_override,
+        purchase_min_qty,
+        purchase_max_qty,
+        invoice_grouping_key,
+        available_from,
+        available_to,
+        entitlement_grants,
+        change_contract,
+        lifecycle_state: _,
+        created_by: _,
+        created_at_utc: _,
+        row_version: _,
+    } = draft;
+
+    let mut shape = PlanShape::new(plan_id, revision, now);
+    shape.sku_id = sku_id;
+    shape.billing_cycle = billing_cycle;
+    shape.frequency = frequency;
+    shape.plan_tier = plan_tier;
+    shape.plan_tier_override = plan_tier_override;
+    shape.available_from = available_from;
+    shape.available_to = available_to;
+    shape.purchase_min_qty = purchase_min_qty;
+    shape.purchase_max_qty = purchase_max_qty;
+    shape.invoice_grouping_key = invoice_grouping_key;
+    shape.change_contract = change_contract;
+    shape.entitlement_grants = entitlement_grants;
     shape.phases = PhaseGraph::new(
-        plan_shape_repo::load_phase_set(runner, scope, tenant_id, plan_id, draft.revision)
+        plan_shape_repo::load_phase_set(runner, scope, tenant_id, plan_id, revision)
             .await
             .map_err(|e| repo_failure(&e))?,
     );
     shape.addon_rules =
-        plan_shape_repo::load_addon_rule_set(runner, scope, tenant_id, plan_id, draft.revision)
+        plan_shape_repo::load_addon_rule_set(runner, scope, tenant_id, plan_id, revision)
             .await
             .map_err(|e| repo_failure(&e))?;
     shape.descriptor_set =
-        plan_shape_repo::load_descriptor(runner, scope, tenant_id, plan_id, draft.revision)
+        plan_shape_repo::load_descriptor(runner, scope, tenant_id, plan_id, revision)
             .await
             .map_err(|e| repo_failure(&e))?;
     // Slice 10's composite definitions. **Without this line the two composite
@@ -1070,10 +1110,8 @@ pub(crate) async fn assemble_from(
     //   publish and the pin framing the default, so the "approved a trial capped
     //   at 20, published 20 000, equal digest" hole `content_pin`'s own doc
     //   claims to close was open.
-    shape.change_contract = draft.change_contract.clone();
-    shape.entitlement_grants = draft.entitlement_grants.clone();
     shape.composites =
-        plan_shape_repo::load_composite_set(runner, scope, tenant_id, plan_id, draft.revision)
+        plan_shape_repo::load_composite_set(runner, scope, tenant_id, plan_id, revision)
             .await
             .map_err(|e| repo_failure(&e))?;
     // The candidate set: the shape as it will be after the commit.

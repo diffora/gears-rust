@@ -212,13 +212,17 @@ def test_an_unknown_only_class_is_a_usage_error(tmp_path):
 #: coverage, and that pricing has requirements whose whole account lives inside a
 #: 0.003 band. Nothing about either requirement's documentation changed in either
 #: direction.
+#: **Third movement in one day, back to 7 / 58 / 9** (D-259's tail wave). The two
+#: knife-edge requirements have now crossed the 0.600 floor three times in a
+#: single session, on three waves none of which edited either requirement or its
+#: accounts. Re-pinned rather than tuned, for the reason the first note gives.
 PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
-    "anchored:no-account": 5,
-    "suspicious:multi-region": 59,
+    "anchored:no-account": 7,
+    "suspicious:multi-region": 58,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 10,
+    "suspicious:weak-coverage": 9,
     "covered:strong": 0,
 }
 #: Moved 2026-08-08 (was 5 / 59 / 10) by the **D-251/D-252/D-234 propagation wave** — the
@@ -1154,7 +1158,10 @@ PINNED_TRIAGE_LEDGER = {
 #: D-72 obliges a wave to keep current summarises every requirement in the gear, so every
 #: requirement's vocabulary can match it — which is a property of the corpus, not of the
 #: coverage. Per-id record beside `PINNED_TRIAGE_PRICING`.)
-PINNED_JUDGE_CALLS = {"pricing": 69, "ledger": 17}
+#: 69 -> 67 on the 2026-08-08 D-259 tail wave. The triage histogram is unchanged,
+#: so this is the judged-share side of the same knife-edge movement recorded above,
+#: moving for the third time in one day on prose that touched neither requirement.
+PINNED_JUDGE_CALLS = {"pricing": 67, "ledger": 17}
 #: pricing 69 -> 67 on the 2026-08-08 **D-251/D-252/D-234 propagation wave**. Two movers,
 #: `fr-scheduled-migration` and `fr-supersession`, both leaving the judged set for
 #: `anchored:no-account` — the full control is recorded beside `PINNED_TRIAGE_PRICING` above and

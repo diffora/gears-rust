@@ -31,8 +31,10 @@ use super::{
 };
 use crate::domain::rules::{COMPOSITE_SELF_REFERENCE, COMPOSITE_TOO_FEW_CONSTITUENTS};
 
-/// Every code G4 emits, paired with the spelling `02-plan-definition.md` §5
-/// gives it. The right-hand side is transcribed from the document, not from the
+/// Every code this pipeline emits, paired with the spelling its own slice's §5
+/// gives it — `02-plan-definition.md` for G4's, and `10-advanced-primitives.md`
+/// for Slice 10's two (D-256), which this Slice-2 pipeline also registers because
+/// a composite is plan-shape configuration. The right-hand side is transcribed from the document, not from the
 /// constant, which is the only arrangement under which this test can fail.
 const DECLARED: &[(&str, &str)] = &[
     // Slice 10's two, emitted by this pipeline since D-256.

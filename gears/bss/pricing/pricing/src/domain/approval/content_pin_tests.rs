@@ -231,6 +231,15 @@ fn contract(
 
 fn base() -> PlanShape {
     let mut shape = PlanShape::new(plan(), 3, at(12));
+    // One composite, so the indexed mutators below have a member to move and the
+    // frozen digest covers a non-empty set -- an empty one would frame a count of
+    // zero and prove nothing about the members (D-259).
+    shape.composites = vec![crate::domain::plan_shape::CompositeMeter {
+        composite_id: Uuid::from_u128(0xc0_01),
+        output_unit: "vm-hour".to_owned(),
+        constituent_units: vec!["vcpu-hour".to_owned(), "ram-gb-hour".to_owned()],
+        formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 1] }),
+    }];
     shape.sku_id = Some(Uuid::from_u128(0x5_c1));
     shape.billing_cycle = Some(BillingCycle::Recurring);
     shape.frequency = Some(Frequency::CustomEveryN {
@@ -755,6 +764,30 @@ fn plan_contract_mutators() -> Vec<Mutator> {
                 s.change_contract.allowed_change_targets = Some(vec![Uuid::from_u128(0xed_9e)]);
             },
         ),
+        // Slice 10's composites (D-256). Four mutators, one per framed member,
+        // because the census is what asserts the framing exists at all -- without
+        // them D-256's `put_composite` block could be deleted and this suite
+        // would stay green (found by review, D-259).
+        ("shape.composites: added", |s| {
+            s.composites
+                .push(crate::domain::plan_shape::CompositeMeter {
+                    composite_id: uuid::Uuid::from_u128(0xc0_11),
+                    output_unit: "vm-hour".to_owned(),
+                    constituent_units: vec!["vcpu".to_owned(), "ram".to_owned()],
+                    formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 1] }),
+                });
+        }),
+        ("shape.composites[0].output_unit", |s| {
+            s.composites[0].output_unit = "pod-hour".to_owned();
+        }),
+        ("shape.composites[0].constituent_units", |s| {
+            s.composites[0].constituent_units.push("disk".to_owned());
+        }),
+        // The one the v11 bump exists for: the weights move and nothing else.
+        ("shape.composites[0].formula", |s| {
+            s.composites[0].formula =
+                serde_json::json!({ "op": "weighted_sum", "weights": [1, 4] });
+        }),
         ("shape.entitlement_grants.plan_tier_ref", |s| {
             s.entitlement_grants.plan_tier_ref = Some("gold".to_owned());
         }),
@@ -1100,7 +1133,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "fbb118b7602a08b759a73550f6859df9f2530e561ce0c8a66a1940bf25609dd8"
+        "217eeddad8e187c4286704064eabaa6b45d0806c1fa7fa63759f4eabecbbb663"
     );
 }
 

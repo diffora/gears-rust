@@ -97,7 +97,7 @@ use crate::domain::error::DomainError;
 use crate::domain::materiality::{
     MaterialityReason, MaterialityVerdict, ThresholdBasis, ThresholdEntry, ThresholdVersion,
 };
-use crate::domain::plan_shape::PlanShape;
+use crate::domain::plan_shape::{CompositeMeter, PlanShape};
 use crate::domain::window::KeyWindows;
 use crate::infra::approval::{ApprovalDetail, DecideRequest, PinnedSubject, RegionGrant};
 use crate::infra::storage::repo::approval_repo::ApprovalRecord;
@@ -258,6 +258,36 @@ impl From<&ApprovalRecord> for ApprovalView {
     }
 }
 
+/// One composite meter as a reviewer sees it (Slice 10 §6).
+///
+/// A view rather than the domain type, on this module's convention: the wire
+/// shape is the reviewer's document and is versioned by the API, not by the
+/// domain.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct CompositeMeterView {
+    /// Stable across revisions (D-106).
+    pub composite_id: Uuid,
+    /// The unit this composite rates as.
+    pub output_unit: String,
+    /// The constituent units it is built from.
+    pub constituent_units: Vec<String>,
+    /// The formula, verbatim as authored — this is the field the v11 pin covers
+    /// and the one a reviewer is signing for.
+    pub formula: serde_json::Value,
+}
+
+impl From<&CompositeMeter> for CompositeMeterView {
+    fn from(meter: &CompositeMeter) -> Self {
+        Self {
+            composite_id: meter.composite_id,
+            output_unit: meter.output_unit.clone(),
+            constituent_units: meter.constituent_units.clone(),
+            formula: meter.formula.clone(),
+        }
+    }
+}
+
 /// The entitlement grant set as a reviewer sees it (Slice 6, §6, D-41).
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
@@ -391,6 +421,14 @@ pub struct PinnedContentView {
     /// signature covers it, and a signature over unseen entitlements is one the
     /// reviewer did not give.
     pub entitlement_grants: EntitlementGrantsView,
+    /// The composite meters this revision would publish (Slice 10 §6).
+    ///
+    /// Shown for the same reason as the two above and stated because it was
+    /// **hashed and not shown for one commit** (D-259): the pin covers the
+    /// formula since v11, so a reviewer's signature covers a weighting they were
+    /// never displayed — which is precisely the signature they did not give. The
+    /// module's invariant is "exactly the fields the pin hashes and no others".
+    pub composites: Vec<CompositeMeterView>,
     pub change_contract: PlanChangeContractView,
     /// The window plane the pin covers, one entry per canonical scope key.
     ///
@@ -468,9 +506,7 @@ impl From<&PlanShape> for PinnedContentView {
             descriptor_set,
             rows,
             entitlement_grants,
-            // Not on the wire view: the pin covers it (`inst-cm-frozen`) and a
-            // reviewer reads the formula in the design set, not in a diff.
-            composites: _,
+            composites,
             change_contract,
             windows,
             // Outside the digest, so outside this document: showing a reviewer
@@ -506,6 +542,7 @@ impl From<&PlanShape> for PinnedContentView {
             descriptor_set: descriptor_set.clone().map(DescriptorSetView::from),
             rows: rows.iter().map(PriceRowView::from).collect(),
             entitlement_grants: EntitlementGrantsView::from(entitlement_grants),
+            composites: composites.iter().map(CompositeMeterView::from).collect(),
             change_contract: PlanChangeContractView::from(change_contract),
             windows: windows.iter().map(PinnedWindowsView::from).collect(),
         }
