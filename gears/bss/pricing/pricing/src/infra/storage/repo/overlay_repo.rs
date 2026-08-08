@@ -554,8 +554,19 @@ impl OverlayRepo {
     /// is not supposed to have. `PlanRepo::abandon_draft` drops its children in
     /// the same order for the same reason.
     ///
+    /// **Abandoning revision 0 of a never-published overlay spends the identity**,
+    /// and that is stated rather than guarded against. `open_revision` mints a
+    /// successor from the *published* revision, so an overlay whose only revision
+    /// was discarded has no revision to open from and the identity is terminal.
+    /// That is the correct outcome for an overlay no consumer ever saw — nothing
+    /// pinned it, nothing resolved it, and a fresh `create` costs one id — and
+    /// inventing a resurrection path would be surface the design set has not
+    /// asked for. Named here because the shape is a trap for a caller who reads
+    /// "discard" as "undo".
+    ///
     /// # Errors
     /// [`RepoError::NotFound`] when the revision is not this overlay's open draft;
+    /// [`RepoError::StaleRowVersion`] when `expected` is not the revision's tag;
     /// [`RepoError::Db`] on a scope or storage failure.
     pub async fn abandon_draft(
         &self,
@@ -563,6 +574,7 @@ impl OverlayRepo {
         tenant_id: Uuid,
         price_overlay_id: Uuid,
         revision: u64,
+        expected: i64,
         stamp: AuditStamp,
     ) -> Result<(), RepoError> {
         let scope = scope.clone();
@@ -577,24 +589,45 @@ impl OverlayRepo {
                             id: format!("{price_overlay_id}/{revision}"),
                         });
                     };
-                    // Proved to be *this overlay's* open draft before anything is
-                    // written, on `publish_revision_on`'s argument: the drop below
-                    // is a write, and issuing it on the way to saying no is the
-                    // ordering that module rejects for the same operation.
-                    if revision_in_state(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        price_overlay_id,
-                        OverlayLifecycle::Draft,
-                    )
-                    .await?
-                    .is_none_or(|draft| draft.revision != number)
-                    {
-                        return Err(RepoError::NotFound {
-                            subject: "open draft price overlay revision".to_owned(),
-                            id: format!("{price_overlay_id}/{revision}"),
-                        });
+                    // **The compare-and-swap is the guard**, exactly as it is in
+                    // `replace_lines` one path over. It ran without an `expected`
+                    // for one wave (D-255) -- a caller holding a stale tag could
+                    // discard a draft someone else had since edited, and the
+                    // discard is not a remediable act. The bump also happens
+                    // *before* the drop below, so a write is never issued on the
+                    // way to saying no -- `publish_revision_on`'s ordering.
+                    let moved = price_overlay::Entity::update_many()
+                        .secure()
+                        .scope_with(&scope)
+                        .col_expr(
+                            price_overlay::Column::RowVersion,
+                            Expr::col(price_overlay::Column::RowVersion).add(1),
+                        )
+                        .filter(
+                            Condition::all()
+                                .add(price_overlay::Column::TenantId.eq(tenant_id))
+                                .add(price_overlay::Column::PriceOverlayId.eq(price_overlay_id))
+                                .add(price_overlay::Column::Revision.eq(number))
+                                .add(price_overlay::Column::RowVersion.eq(expected))
+                                .add(
+                                    price_overlay::Column::LifecycleState
+                                        .eq(OverlayLifecycle::Draft.as_str()),
+                                ),
+                        )
+                        .exec(txn)
+                        .await
+                        .map_err(|e| RepoError::Db(format!("bump pricing_price_overlay: {e}")))?
+                        .rows_affected;
+                    if moved == 0 {
+                        return Err(refuse_edit(
+                            txn,
+                            &scope,
+                            tenant_id,
+                            price_overlay_id,
+                            number,
+                            expected,
+                        )
+                        .await);
                     }
 
                     drop_lines(txn, &scope, price_overlay_id, tenant_id, number).await?;

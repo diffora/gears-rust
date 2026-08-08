@@ -1038,7 +1038,7 @@ async fn an_abandoned_revision_number_is_never_re_minted() {
         .await
         .expect("revision 1 opens");
 
-    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, stamp())
+    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, 0, stamp())
         .await
         .expect("the open draft is discardable by the flip");
 
@@ -1069,7 +1069,7 @@ async fn an_abandoned_draft_frees_the_open_draft_slot_without_freeing_its_number
     repo.open_revision(&scope, TENANT, OVERLAY, stamp())
         .await
         .expect("revision 1 opens");
-    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, stamp())
+    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, 0, stamp())
         .await
         .expect("revision 1 is abandoned");
 
@@ -1107,7 +1107,7 @@ async fn an_abandoned_revision_is_terminal_on_every_exit() {
     repo.open_revision(&scope, TENANT, OVERLAY, stamp())
         .await
         .expect("revision 1 opens");
-    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, stamp())
+    repo.abandon_draft(&scope, TENANT, OVERLAY, 1, 0, stamp())
         .await
         .expect("revision 1 is abandoned");
 
@@ -1280,4 +1280,52 @@ async fn an_overlays_records_never_land_on_the_plan_its_lines_target() {
         on_the_plan.is_empty(),
         "the targeted plan's segment must carry none of the overlay's records: {on_the_plan:?}"
     );
+}
+
+/// **A stale tag cannot discard a draft someone else has since edited** (D-255).
+///
+/// `abandon_draft` took no `expected` for one wave, unlike `PlanRepo`'s, so a
+/// caller holding a tag from before another author's edit could throw that edit
+/// away — and a discard is not a remediable act: the revision becomes a terminal
+/// tombstone and its content is gone. The compare-and-swap is the guard, so this
+/// asserts the refusal *and* that the draft survived it.
+#[tokio::test]
+async fn a_stale_row_version_cannot_abandon_a_draft() {
+    let (repo, scope) = seeded().await;
+    repo.publish_revision(&scope, TENANT, OVERLAY, 0, stamp())
+        .await
+        .expect("revision 0 publishes");
+    repo.open_revision(&scope, TENANT, OVERLAY, stamp())
+        .await
+        .expect("revision 1 opens");
+
+    // Someone else edits the draft, moving its tag off 0.
+    repo.replace_lines(
+        &scope,
+        TENANT,
+        OVERLAY,
+        1,
+        0,
+        vec![percent_line(LINE_A, LineKey::list_default(), 900)],
+        stamp(),
+    )
+    .await
+    .expect("the draft is edited");
+
+    let refusal = repo
+        .abandon_draft(&scope, TENANT, OVERLAY, 1, 0, stamp())
+        .await
+        .expect_err("a tag from before that edit must not discard it");
+    assert!(
+        matches!(refusal, RepoError::StaleRowVersion { .. }),
+        "got {refusal:?}"
+    );
+
+    // And the draft is still there, still a draft, still holding the edit.
+    let survived = repo
+        .load(&scope, TENANT, OVERLAY, 1)
+        .await
+        .expect("load")
+        .expect("the draft survived the refused discard");
+    assert_eq!(survived.lifecycle_state, OverlayLifecycle::Draft);
 }

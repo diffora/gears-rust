@@ -599,9 +599,17 @@ pub struct PriceRow {
     /// (`inst-dr-referential`).
     ///
     /// Outside the roster. Promotions owns the instrument and Promotions/Tariffs
-    /// evaluate it; this gear validates that it resolves and persists it
-    /// (`inst-dr-boundary`), so it changes nothing about how *this* row derives
-    /// a quantity or selects a rate.
+    /// evaluate it; this gear only **persists** it (`inst-dr-boundary`), so it
+    /// changes nothing about how *this* row derives a quantity or selects a rate.
+    ///
+    /// **It is not validated, and this doc claimed it was for one wave** (D-255).
+    /// `inst-dr-referential` asks for referential integrity against a registered
+    /// instrument, and there is no Promotions or Tariffs registry client, port or
+    /// contract anywhere in this gear — so `DISCOUNT_REF_UNRESOLVED` is declared
+    /// and unraisable, and an unresolvable ref publishes and freezes into the
+    /// snapshot unchecked. S10 §5 and `m20260802_000056` both record that; this
+    /// field's own doc said the opposite, which is the reading a caller is most
+    /// likely to trust.
     pub discount_ref: Option<String>,
 }
 
