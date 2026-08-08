@@ -1056,6 +1056,22 @@ pub(crate) async fn assemble_from(
     // `CONTENT_PIN_DOMAIN_SEP`'s v11 note both claim to close. Found by review
     // (D-257), and it is D-254's defect class exactly: a rule with an operand
     // nobody loads is a rule that always passes.
+    // **The same omission, twice more** (D-258, found by running D-257's own lens
+    // one field further). Both are authored on the draft revision, both are
+    // framed by the content pin, and neither reached the shape:
+    //
+    // * `change_contract` left `ChangeGraphAuthorable` judging the default, so
+    //   `CHANGE_TARGET_UNPUBLISHED` and `COMPARABILITY_RANK_REQUIRED` could never
+    //   fire -- and `COMPARABILITY_RANK_REVOKED` fired **spuriously**, because
+    //   inbound edges are read off the stored column independently of the shape,
+    //   so any plan another published plan points at was refused publication even
+    //   carrying a rank. That one is a live wrong answer, not only a silent gap.
+    // * `entitlement_grants` left `GrantSetPhasesKnown` returning early on every
+    //   publish and the pin framing the default, so the "approved a trial capped
+    //   at 20, published 20 000, equal digest" hole `content_pin`'s own doc
+    //   claims to close was open.
+    shape.change_contract = draft.change_contract.clone();
+    shape.entitlement_grants = draft.entitlement_grants.clone();
     shape.composites =
         plan_shape_repo::load_composite_set(runner, scope, tenant_id, plan_id, draft.revision)
             .await
