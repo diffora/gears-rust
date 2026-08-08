@@ -81,6 +81,7 @@ pub mod m20260802_000045_add_price_overlay_abandoned_state;
 pub mod m20260802_000046_create_pricing_composite_meter;
 pub mod m20260802_000047_create_pricing_bulk_operation;
 pub mod m20260802_000048_create_pricing_repricing_journal;
+pub mod m20260802_000049_create_pricing_bulk_row_lock;
 pub mod m20260802_000050_add_pricing_price_proration_contract;
 pub mod m20260802_000051_guard_pricing_price_proration_columns;
 pub mod m20260802_000052_add_pricing_plan_change_contract;
@@ -236,6 +237,12 @@ impl MigratorTrait for Migrator {
             // the run its FK names and after `000002` creates the price rows its
             // other two keys name.
             Box::new(m20260802_000048_create_pricing_repricing_journal::Migration),
+            // Slice 12's bulk lock, a side table rather than a column on
+            // `pricing_price` -- the append-only trigger's whitelist refuses the
+            // marker on a published row. Sorts after `000047` creates the run its
+            // FK names and whose state its INSERT arm reads, and after `000002`
+            // creates the price rows its other key names.
+            Box::new(m20260802_000049_create_pricing_bulk_row_lock::Migration),
             // Slice 6's proration input contract: four columns on `pricing_price`
             // (`inst-pi-required`). Plain `ALTER`s, so they sort anywhere after
             // `000002` creates the table; the number is this strand's allotted

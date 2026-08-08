@@ -66,6 +66,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_bulk_operation",
     // Slice 12's per-row spine, after the run it keys on.
     "pricing_repricing_journal",
+    // Slice 12's bulk lock, a side table rather than a column on `pricing_price`.
+    "pricing_bulk_row_lock",
     "pricing_composite_meter",
     "pricing_pin_frontier",
     "pricing_policy_object",
@@ -131,6 +133,13 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_bulk_operation_frozen_columns",
     "trg_pricing_bulk_operation_no_delete",
     "trg_pricing_bulk_operation_transitions",
+    // The bulk lock: one trigger per condition, mirroring the PL/pgSQL function
+    // one to one. There is no `DELETE` arm, deliberately -- release must always
+    // be available (D-37), so this census is where a later hand adding one shows
+    // up.
+    "trg_pricing_bulk_row_lock_no_update",
+    "trg_pricing_bulk_row_lock_only_while_committing",
+    "trg_pricing_bulk_row_lock_same_tenant_as_its_run",
     "trg_pricing_bundle_component_no_delete",
     "trg_pricing_bundle_component_no_insert",
     "trg_pricing_bundle_component_no_update",
@@ -225,6 +234,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_audit_log_recorded",
     "idx_pricing_audit_log_subject",
     "idx_pricing_bulk_operation_live",
+    "idx_pricing_bulk_row_lock_operation",
     "idx_pricing_bundle_component_plan",
     "idx_pricing_bundle_component_revision",
     "idx_pricing_bundle_revshare_group_revision",
@@ -491,6 +501,7 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     ("pricing_audit_log", "tenant_id, chain_id, seq"),
     ("pricing_brand_taxonomy", "tenant_id, value"),
     ("pricing_bulk_operation", "operation_id"),
+    ("pricing_bulk_row_lock", "tenant_id, price_id"),
     ("pricing_bundle", "bundle_id"),
     (
         "pricing_bundle_component",
@@ -652,6 +663,22 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_bulk_operation_transitions",
         18_200_341_525_936_192_938_u64,
+    ),
+    // Slice 12's bulk lock. Read back off the built schema — twice, because the
+    // two parent-reading arms gained their `EXISTS` deferral after the first
+    // reading and both digests moved. Hand-deriving either would have pinned the
+    // shape before the correction.
+    (
+        "trg_pricing_bulk_row_lock_no_update",
+        16_754_342_763_826_305_448_u64,
+    ),
+    (
+        "trg_pricing_bulk_row_lock_only_while_committing",
+        13_206_292_264_415_412_324_u64,
+    ),
+    (
+        "trg_pricing_bulk_row_lock_same_tenant_as_its_run",
+        2_489_780_534_923_709_743_u64,
     ),
     (
         "trg_pricing_bundle_component_no_delete",

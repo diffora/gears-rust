@@ -16,6 +16,7 @@ pub mod approval_threshold_tombstone;
 pub mod audit_log;
 pub mod brand_taxonomy;
 pub mod bulk_operation;
+pub mod bulk_row_lock;
 pub mod bundle;
 pub mod bundle_component;
 pub mod bundle_revshare;

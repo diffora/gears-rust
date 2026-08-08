@@ -193,6 +193,7 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_audit_log_append_only",
     // Slice 12: one PL/pgSQL function, three SQLite triggers.
     "pricing_bulk_operation_transitions",
+    "pricing_bulk_row_lock_custody",
     "pricing_bundle_component_append_only",
     "pricing_bundle_revshare_append_only",
     "pricing_bundle_revshare_group_append_only",
@@ -231,6 +232,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_approval_threshold_tombstone_no_update",
     "trg_pricing_audit_log_append_only",
     "trg_pricing_bulk_operation_transitions",
+    "trg_pricing_bulk_row_lock_custody",
     "trg_pricing_bundle_component_append_only",
     "trg_pricing_bundle_revshare_append_only",
     "trg_pricing_bundle_revshare_group_append_only",
@@ -295,6 +297,7 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_audit_log: tenant_id, chain_id, seq",
     "pricing_brand_taxonomy: tenant_id, value",
     "pricing_bulk_operation: operation_id",
+    "pricing_bulk_row_lock: tenant_id, price_id",
     "pricing_bundle: bundle_id",
     "pricing_bundle_component: bundle_id, plan_revision, component_plan_id",
     "pricing_bundle_revshare: bundle_id, plan_revision, vendor_sku_id, party",
