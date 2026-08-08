@@ -23,7 +23,9 @@
 mod common;
 
 use bss_pricing::domain::audit::AuditStamp;
-use bss_pricing::domain::contracts::{EntitlementGrants, GrantSet};
+use bss_pricing::domain::contracts::{
+    EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
+};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::PlanShapePatch;
@@ -36,8 +38,8 @@ use bss_pricing::domain::scope_key::{
 use bss_pricing::infra::clone::{CloneNotice, PlanCloner};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
-    NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo, plan_shape_repo,
-    price_repo,
+    BundleRepo, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo,
+    plan_shape_repo, price_repo,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
@@ -50,6 +52,7 @@ use uuid::Uuid;
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const ACTOR: Uuid = Uuid::from_u128(0xac_10);
 const CORRELATION: Uuid = Uuid::from_u128(0xc0_11);
+const SOURCE_COMPOSITE: Uuid = Uuid::from_u128(0xc0_f1);
 
 fn source_plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x50_c1))
@@ -76,6 +79,7 @@ fn stamp() -> AuditStamp {
 
 struct Harness {
     provider: DBProvider<DbError>,
+    bundles: BundleRepo,
     plans: PlanRepo,
     shapes: PlanShapeRepo,
     prices: PriceRepo,
@@ -99,9 +103,11 @@ async fn harness() -> Harness {
         plans.clone(),
         shapes.clone(),
         prices.clone(),
+        BundleRepo::new(provider.clone()),
     );
     Harness {
-        provider,
+        provider: provider.clone(),
+        bundles: BundleRepo::new(provider),
         plans,
         shapes,
         prices,
@@ -208,6 +214,44 @@ async fn seed_source(h: &Harness) {
         .await
         .expect("attach the chain");
 
+    let after_descriptors = h
+        .shapes
+        .set_descriptor_set(
+            &h.scope,
+            TENANT,
+            source_plan(),
+            created.revision,
+            after_phases.row_version,
+            bss_pricing::domain::plan_shape::DescriptorSet {
+                invoice_line_template: Some("{plan}".to_owned()),
+                gl_code: Some("4000".to_owned()),
+                itemization_rule: Some("per_charge".to_owned()),
+                additional: BTreeMap::new(),
+            },
+            stamp(),
+        )
+        .await
+        .expect("attach the descriptor set");
+
+    let after_composites = h
+        .shapes
+        .replace_composites(
+            &h.scope,
+            TENANT,
+            source_plan(),
+            created.revision,
+            after_descriptors.row_version,
+            vec![bss_pricing::domain::plan_shape::CompositeMeter {
+                composite_id: SOURCE_COMPOSITE,
+                output_unit: "vm-hour".to_owned(),
+                constituent_units: vec!["vcpu-hour".to_owned(), "ram-gb-hour".to_owned()],
+                formula: serde_json::json!({ "op": "weighted_sum" }),
+            }],
+            stamp(),
+        )
+        .await
+        .expect("attach the composite");
+
     // A per-phase grant set keyed on the trial phase — C-7's subject.
     h.plans
         .update_draft(
@@ -215,8 +259,13 @@ async fn seed_source(h: &Harness) {
             TENANT,
             source_plan(),
             created.revision,
-            after_phases.row_version,
+            after_composites.row_version,
             PlanShapePatch {
+                change_contract: Some(PlanChangeContract {
+                    allowed_change_targets: Some(vec![Uuid::from_u128(0x9_1a9)]),
+                    comparability_rank: Some(10),
+                    usage_counter_on_plan_change: UsageCounterOnPlanChange::Carry,
+                }),
                 entitlement_grants: Some(EntitlementGrants {
                     plan_tier_ref: None,
                     plan_level: GrantSet {
@@ -582,5 +631,150 @@ async fn a_plan_with_nothing_published_cannot_be_cloned() {
     assert!(
         rendered.contains("clonable plan"),
         "the refusal must name what was not found, got: {rendered}"
+    );
+}
+
+/// **The plan-change contract and the rest of the copy set come across** — the
+/// case the group owed and did not have.
+///
+/// `NewPlanDraft` has no field for `change_contract`, so the clone's first draft
+/// silently dropped the plan's `allowedChangeTargets`, its `comparabilityRank`
+/// and D-113's carry flag — and **nothing refused it**: with no edges, K4 asks
+/// for no rank, so the clone published clean and wrong. `open_revision` had
+/// already written the comment explaining that an edge list which resets itself
+/// is a silent drop out of self-service change; this path did not read it.
+///
+/// The descriptor set and the composite meter are here for the same reason —
+/// §8's copy set names them and the suite never seeded either, so
+/// `composites_copied` had never been non-zero and the `composite_id` re-mint had
+/// never run.
+#[tokio::test]
+async fn the_whole_copy_set_comes_across_contract_descriptors_and_composites() {
+    let h = harness().await;
+    seed_source(&h).await;
+    let receipt = h
+        .cloner
+        .clone_plan(
+            &h.scope,
+            TENANT,
+            source_plan(),
+            target_plan(),
+            at(11),
+            stamp(),
+        )
+        .await
+        .expect("the clone runs");
+    assert_eq!(receipt.composites_copied, 1);
+
+    let conn = h.provider.conn().expect("conn");
+    let revision = plan_repo::load_open_draft(&conn, &h.scope, TENANT, target_plan())
+        .await
+        .expect("read the clone")
+        .expect("there is one");
+
+    // The plan-change contract, all three members.
+    assert_eq!(
+        revision.change_contract.allowed_change_targets,
+        Some(vec![Uuid::from_u128(0x9_1a9)]),
+        "an edge list that reset itself here drops the clone out of self-service \
+         change, and nothing downstream would refuse it"
+    );
+    assert_eq!(revision.change_contract.comparability_rank, Some(10));
+    assert_eq!(
+        revision.change_contract.usage_counter_on_plan_change,
+        UsageCounterOnPlanChange::Carry,
+        "D-113's flag decides whether a subscriber's usage counter survives a \
+         plan change; its default is the opposite of this value"
+    );
+
+    // The descriptor set.
+    let descriptors = plan_shape_repo::load_descriptor(&conn, &h.scope, TENANT, target_plan(), 0)
+        .await
+        .expect("read the descriptor set")
+        .expect("it came across");
+    assert_eq!(descriptors.gl_code.as_deref(), Some("4000"));
+
+    // The composite, under a **new** id: `composite_id` is stable across
+    // revisions of one plan (D-106), not across plans.
+    let composites = plan_shape_repo::load_composite_set(&conn, &h.scope, TENANT, target_plan(), 0)
+        .await
+        .expect("read the composites");
+    assert_eq!(composites.len(), 1);
+    assert_ne!(
+        composites[0].composite_id, SOURCE_COMPOSITE,
+        "the clone mints its own composite id"
+    );
+    assert_eq!(composites[0].output_unit, "vm-hour");
+    assert_eq!(composites[0].constituent_units.len(), 2);
+}
+
+/// The source is a bundle and its composition does not come across, so the
+/// receipt says so rather than handing back a plan that silently is not one.
+///
+/// §3's copy set predates Slice 8 and names none of the bundle tables, while
+/// `plan_repo::open_revision` copies them as the plan's child tables — the two
+/// paths that reproduce a plan disagree, and D-266 records that rather than this
+/// path picking a side.
+#[tokio::test]
+async fn a_bundle_source_is_reported_rather_than_silently_flattened() {
+    let h = harness().await;
+    seed_source(&h).await;
+    h.bundles
+        .create(
+            &h.scope,
+            bss_pricing::infra::storage::repo::NewBundle {
+                bundle_id: Uuid::from_u128(0xb_11d),
+                tenant_id: TENANT,
+                plan_id: source_plan(),
+                price_basis: bss_pricing::domain::bundle::PriceBasis::SumOfParts,
+                invoice_itemization: bss_pricing::domain::bundle::InvoiceItemization::Itemize,
+            },
+            stamp(),
+        )
+        .await
+        .expect("make the source a bundle");
+
+    let receipt = h
+        .cloner
+        .clone_plan(
+            &h.scope,
+            TENANT,
+            source_plan(),
+            target_plan(),
+            at(11),
+            stamp(),
+        )
+        .await
+        .expect("the clone runs");
+    assert!(
+        receipt
+            .notices
+            .contains(&CloneNotice::BundleCompositionNotCopied),
+        "cloning a bundle must say the composition stayed behind: {:?}",
+        receipt.notices
+    );
+
+    // And an ordinary plan raises no such notice, so the assertion above is
+    // about the source being a bundle rather than about a constant.
+    let h2 = harness().await;
+    seed_source(&h2).await;
+    let plain = h2
+        .cloner
+        .clone_plan(
+            &h2.scope,
+            TENANT,
+            source_plan(),
+            target_plan(),
+            at(11),
+            stamp(),
+        )
+        .await
+        .expect("the clone runs");
+    assert!(
+        !plain
+            .notices
+            .contains(&CloneNotice::BundleCompositionNotCopied),
+        "an ordinary plan is not a bundle: {:?}",
+        plain.notices
     );
 }

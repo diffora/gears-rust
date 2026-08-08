@@ -72,8 +72,8 @@ use crate::domain::plan_shape::PlanPhase;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{PhaseId, PlanId, PriceEligibility, ScopeKey};
 use crate::infra::storage::repo::{
-    NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo, plan_shape_repo,
-    price_repo,
+    BundleRepo, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo,
+    plan_shape_repo, price_repo,
 };
 use crate::infra::storage::repo_failure;
 use std::collections::BTreeMap;
@@ -100,6 +100,15 @@ pub enum CloneNotice {
     /// rows onto one canonical scope key and guarantee a duplicate-scope failure
     /// at the clone's first publish.
     GrandfatheredRowsNotCopied { rows: usize },
+    /// **The source is a bundle and its composition did not come across.**
+    ///
+    /// §3's copy set predates Slice 8 and names `pricing_bundle` nowhere, while
+    /// `plan_repo::open_revision` treats the composition as one of the plan's
+    /// child tables and copies it — so the two paths that reproduce a plan
+    /// disagree, and this one produces a plan that holds the bundle's price rows
+    /// and none of its composition. Reported rather than copied *or* refused,
+    /// because both of those are edges the design set does not draw; see D-266.
+    BundleCompositionNotCopied,
 }
 
 /// What a clone produced.
@@ -123,6 +132,9 @@ pub struct PlanCloner {
     plans: PlanRepo,
     shapes: PlanShapeRepo,
     prices: PriceRepo,
+    /// Read-only here, and only to notice that the source **is** a bundle. This
+    /// path copies no composition; see [`CloneNotice::BundleCompositionNotCopied`].
+    bundles: BundleRepo,
 }
 
 impl PlanCloner {
@@ -132,12 +144,14 @@ impl PlanCloner {
         plans: PlanRepo,
         shapes: PlanShapeRepo,
         prices: PriceRepo,
+        bundles: BundleRepo,
     ) -> Self {
         Self {
             db,
             plans,
             shapes,
             prices,
+            bundles,
         }
     }
 
@@ -180,8 +194,46 @@ impl PlanCloner {
                 id: source.to_string(),
             })?;
 
+        let source_revision = current.revision;
+        // **Destructured, so a field added to `PlanRevision` and forgotten here
+        // is a compile error** — D-259's remedy, applied to the second place in
+        // this crate that rebuilds a revision from another one. It is here
+        // because this path was written field by field and **lost
+        // `change_contract` on its first draft**: the clone dropped the plan's
+        // `allowedChangeTargets`, its `comparabilityRank` and D-113's carry flag,
+        // and nothing refused it — with no edges K4 asks for no rank, so the
+        // clone published clean and wrong. `open_revision` had already written
+        // the comment explaining why an edge list that resets itself is a silent
+        // drop; this path did not read it.
+        //
+        // The five ignored fields are ignored **by name**: the source's own
+        // `plan_id` and `revision` (the clone is a different plan starting at 0),
+        // its `cloned_from` (lineage is to the source, not through it), and the
+        // three provenance fields the create stamps itself.
+        let crate::domain::plan::PlanRevision {
+            plan_id: _,
+            revision: _,
+            cloned_from: _,
+            sku_id,
+            plan_tier,
+            billing_cycle,
+            frequency,
+            plan_tier_override,
+            purchase_min_qty,
+            purchase_max_qty,
+            invoice_grouping_key,
+            available_from,
+            available_to,
+            entitlement_grants,
+            change_contract,
+            lifecycle_state: _,
+            created_by: _,
+            created_at_utc: _,
+            row_version: _,
+        } = current;
+
         let source_phases =
-            plan_shape_repo::load_phase_set(&conn, scope, tenant_id, source, current.revision)
+            plan_shape_repo::load_phase_set(&conn, scope, tenant_id, source, source_revision)
                 .await
                 .map_err(|e| repo_failure(&e))?;
         let remap = phase_remap(&source_phases);
@@ -195,16 +247,16 @@ impl PlanCloner {
                     tenant_id,
                     created_by: stamp.actor_principal_id,
                     created_at_utc: now,
-                    sku_id: current.sku_id,
-                    plan_tier: current.plan_tier.clone(),
-                    billing_cycle: current.billing_cycle,
-                    frequency: current.frequency,
-                    plan_tier_override: current.plan_tier_override,
-                    purchase_min_qty: current.purchase_min_qty,
-                    purchase_max_qty: current.purchase_max_qty,
-                    invoice_grouping_key: current.invoice_grouping_key.clone(),
-                    available_from: current.available_from,
-                    available_to: current.available_to,
+                    sku_id,
+                    plan_tier,
+                    billing_cycle,
+                    frequency,
+                    plan_tier_override,
+                    purchase_min_qty,
+                    purchase_max_qty,
+                    invoice_grouping_key,
+                    available_from,
+                    available_to,
                     cloned_from: Some(source),
                     correlation_id: stamp.correlation_id,
                 },
@@ -229,7 +281,7 @@ impl PlanCloner {
         }
 
         let rules =
-            plan_shape_repo::load_addon_rule_set(&conn, scope, tenant_id, source, current.revision)
+            plan_shape_repo::load_addon_rule_set(&conn, scope, tenant_id, source, source_revision)
                 .await
                 .map_err(|e| repo_failure(&e))?;
         if !rules.is_empty() {
@@ -242,7 +294,7 @@ impl PlanCloner {
         }
 
         if let Some(descriptors) =
-            plan_shape_repo::load_descriptor(&conn, scope, tenant_id, source, current.revision)
+            plan_shape_repo::load_descriptor(&conn, scope, tenant_id, source, source_revision)
                 .await
                 .map_err(|e| repo_failure(&e))?
         {
@@ -263,7 +315,7 @@ impl PlanCloner {
         }
 
         let source_composites =
-            plan_shape_repo::load_composite_set(&conn, scope, tenant_id, source, current.revision)
+            plan_shape_repo::load_composite_set(&conn, scope, tenant_id, source, source_revision)
                 .await
                 .map_err(|e| repo_failure(&e))?;
         let composites_copied = source_composites.len();
@@ -288,33 +340,33 @@ impl PlanCloner {
                 .row_version;
         }
 
-        // The grant set, with the per-phase map's **keys** remapped — C-7.
-        if !current.entitlement_grants.is_absent() {
-            self.plans
-                .update_draft(
-                    scope,
-                    tenant_id,
-                    target,
-                    revision,
-                    version,
-                    PlanShapePatch {
-                        entitlement_grants: Some(remapped_grants(
-                            &current.entitlement_grants,
-                            &remap,
-                        )),
-                        ..PlanShapePatch::default()
-                    },
-                    stamp,
-                )
-                .await
-                .map_err(|e| repo_failure(&e))?;
-        }
+        // **The two authored facts `NewPlanDraft` cannot express**, patched onto
+        // the created draft: the grant set with the per-phase map's keys remapped
+        // (C-7), and the plan-change contract, which the create path drops
+        // because its struct has no field for it.
+        self.plans
+            .update_draft(
+                scope,
+                tenant_id,
+                target,
+                revision,
+                version,
+                PlanShapePatch {
+                    entitlement_grants: Some(remapped_grants(&entitlement_grants, &remap)),
+                    change_contract: Some(change_contract),
+                    ..PlanShapePatch::default()
+                },
+                stamp,
+            )
+            .await
+            .map_err(|e| repo_failure(&e))?;
 
         let (prices_copied, grandfathered) = self
             .copy_rows(scope, tenant_id, source, target, &remap, now, stamp)
             .await?;
 
         let mut notices = Vec::new();
+        notices.extend(self.bundle_notice(scope, tenant_id, source).await?);
         if prices_copied > 0 {
             notices.push(CloneNotice::NoCoverageScheduled {
                 rows: prices_copied,
@@ -347,6 +399,29 @@ impl PlanCloner {
     /// # Errors
     /// Whatever the price repository refuses with, and
     /// [`DomainError::ValidationFailed`] if a reset key is not constructible.
+    /// Whether the source is a bundle, as the one notice this path owes about a
+    /// table it does not copy.
+    ///
+    /// Its own method rather than a branch inside `clone_plan`, because it is a
+    /// different question from anything else there: not *what did the copy do*
+    /// but *what is the source that this copy set cannot express*.
+    ///
+    /// # Errors
+    /// Whatever the bundle repository refuses with.
+    async fn bundle_notice(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        source: PlanId,
+    ) -> Result<Option<CloneNotice>, DomainError> {
+        Ok(self
+            .bundles
+            .find_by_plan(scope, tenant_id, source)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .map(|_| CloneNotice::BundleCompositionNotCopied))
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "every argument is a fact only the caller holds: the scope, the tenant, the two \
