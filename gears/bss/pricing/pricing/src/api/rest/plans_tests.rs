@@ -39,6 +39,7 @@ fn revision(plan_id: PlanId) -> PlanRevision {
         lifecycle_state: LifecycleState::Draft,
         created_by: Uuid::from_u128(0xac_12),
         created_at_utc: Utc.with_ymd_and_hms(2026, 8, 3, 9, 0, 0).unwrap(),
+        cloned_from: None,
         row_version: RowVersion::new(4),
     }
 }

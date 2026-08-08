@@ -358,6 +358,7 @@ fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        cloned_from: None,
         correlation_id: TEST_CORRELATION,
     }
 }

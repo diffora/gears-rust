@@ -624,24 +624,26 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
 ///
 /// That case pins an 18-entry array copied from the trigger, so it proves the
 /// enumerated columns are frozen and is blind by construction to a column the
-/// enumeration omits. Five were: `entitlement_grants` (`m20260802_000053`) and
+/// enumeration omits. Four were: `entitlement_grants` (`m20260802_000053`) and
 /// the three plan-change contract columns (`m20260802_000052`), all added to
 /// `pricing_plan` after `m20260802_000001` wrote the trigger and none restated
-/// into it — where `pricing_price`'s two later column waves both got their guard
-/// restatement (`m20260802_000051`, `m20260802_000057`) for exactly this reason.
+/// into it — where every later column wave on `pricing_price` got its guard
+/// restatement, `m20260802_000040` covering two of them and `000051`, `000055`
+/// and `000057` one each, for exactly this reason.
 ///
 /// This case reads the column list off the table and the predicate off the
 /// trigger, so a column added and forgotten reddens **here** rather than in
 /// production. It is a text census and not a behavioural one deliberately: a
 /// per-column UPDATE needs a value that both differs from the seed and satisfies
-/// every pairing `CHECK`, which is why the sibling case hand-picks eighteen — and
+/// every pairing `CHECK`, which is why the sibling case hand-picks its list — and
 /// hand-picking is the very step that gets skipped when a column is added.
 #[tokio::test]
 async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
     // `lifecycle_state` is the sanctioned flip the whitelist exists to permit,
     // and it is the only exemption: `row_version` is frozen too, and exempting
-    // it here would have made this census blind to the one column the sibling's
-    // own doc calls out as deliberately in the list.
+    // it here would have made this census blind to a column that is in the
+    // list. (The Postgres twin's doc is the one that calls `row_version` out; the
+    // sibling in this file does not.)
     const SANCTIONED_MUTABLE: [&str; 1] = ["lifecycle_state"];
 
     let conn = migrated_db().await;
@@ -672,7 +674,7 @@ async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
     );
 }
 
-/// The five columns that were missing, refused behaviourally.
+/// The four columns that were missing, refused behaviourally.
 ///
 /// The census above is a text assertion; this is the refusal itself, and the two
 /// are not redundant — a trigger could name a column in a comment, and a

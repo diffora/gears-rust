@@ -81,6 +81,10 @@ pub struct Model {
     pub created_by: Uuid,
     pub created_at_utc: DateTime<Utc>,
     /// The `ETag` / optimistic-concurrency row version.
+    /// The plan this one was cloned from (`inst-cl-copy`, D-19), or `None` for
+    /// an authored plan. Lineage only: a clone is an ordinary draft and nothing
+    /// reads this to decide behaviour.
+    pub cloned_from: Option<Uuid>,
     pub row_version: i64,
 }
 

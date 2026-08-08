@@ -771,7 +771,7 @@ async fn a_draft_revision_leaves_only_by_publishing_or_by_being_abandoned() {
 
 /// Every column the whitelist freezes, one UPDATE each.
 ///
-/// Eighteen columns, and the loop is the point: a whitelist maintained by hand
+/// Twenty-three columns, and the loop is the point: a whitelist maintained by hand
 /// rots one forgotten `OR` at a time, and a test that moved only `plan_tier`
 /// would stay green while `invoice_grouping_key` or `row_version` quietly became
 /// mutable on a frozen revision. That is not an abstract hazard here — the
@@ -810,7 +810,7 @@ async fn a_draft_revision_leaves_only_by_publishing_or_by_being_abandoned() {
 /// shape of the defect: supersession is a real write the gear performs, and
 /// smuggling content into it is how a frozen `CatalogVersion` would actually
 /// change. Without the second pass this test would be an assertion about
-/// wording; with it, deleting the arm makes eighteen illegal writes succeed.
+/// wording; with it, deleting the arm makes twenty-three illegal writes succeed.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
@@ -848,11 +848,15 @@ async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
         r#"allowed_change_targets = '["99999999-9999-9999-9999-999999999999"]'::jsonb"#.to_owned(),
         "comparability_rank = 42".to_owned(),
         "usage_counter_on_plan_change = 'carry'".to_owned(),
+        // Slice 12's clone provenance (`m20260802_000061`), frozen by
+        // `m20260802_000062` in the same wave -- lineage nobody can trust is
+        // worse than none.
+        "cloned_from = '99999999-9999-9999-9999-999999999999'".to_owned(),
     ];
     assert_eq!(
         moves.len(),
-        22,
-        "the whitelist has twenty-two columns; a shorter list here is a column \
+        23,
+        "the whitelist has twenty-three columns; a shorter list here is a column \
          nobody is testing"
     );
 
@@ -868,7 +872,7 @@ async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
         .await;
     }
 
-    // The same eighteen, smuggled into the one flip arm 4 sanctions. See the
+    // The same twenty-three, smuggled into the one flip arm 4 sanctions. See the
     // doc comment: this pass is what makes the arm's removal an executed
     // failure rather than a difference of wording.
     for change in &moves {
@@ -1006,7 +1010,25 @@ async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
          WHERE n.nspname = 'bss' AND p.proname = 'pricing_plan_append_only'",
     )
     .await;
-    let predicate = body.first().expect("the guard function must exist");
+    let function = body.first().expect("the guard function must exist");
+
+    // **Sliced to the frozen-column arm, not matched across the whole function.**
+    // `bss.pricing_plan_append_only()` carries three arms and a comment block, so
+    // a column named in the DELETE ban, in the flip whitelist or in a comment
+    // would pass a function-wide match while being unguarded. The sibling table
+    // already shows the shape: in `bss.pricing_price_append_only()`,
+    // `grandfather_until` appears in the **monotonicity** arm and not in the
+    // frozen-column one, so a function-wide `contains` would report it frozen
+    // when it is not. The `SQLite` twin has no such weakness — it reads one
+    // trigger — and the engine that ships must not have the weaker census.
+    let arm_start = function
+        .find("IF NEW.plan_id")
+        .expect("the frozen-column arm opens on plan_id");
+    let arm = &function[arm_start..];
+    let arm_end = arm
+        .find(" THEN")
+        .expect("the frozen-column arm closes on THEN");
+    let predicate = &arm[..arm_end];
 
     let missing: Vec<&String> = columns
         .iter()

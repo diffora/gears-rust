@@ -1374,6 +1374,11 @@ impl DraftShape {
             invoice_grouping_key: self.invoice_grouping_key,
             available_from: self.available_from,
             available_to: self.available_to,
+            // The authoring surface never sets lineage: `POST /plans` creates an
+            // authored plan by definition, and a caller able to claim a source
+            // could forge provenance for a plan it never copied. The clone path
+            // is the only writer (`inst-cl-copy`).
+            cloned_from: None,
             correlation_id,
         }
     }

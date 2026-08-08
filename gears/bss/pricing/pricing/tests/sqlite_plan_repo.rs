@@ -110,6 +110,7 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         invoice_grouping_key: Some("emea-bundle".to_owned()),
         available_from: Some(at(11)),
         available_to: Some(at(23)),
+        cloned_from: None,
         correlation_id: TEST_CORRELATION,
     }
 }
@@ -2514,6 +2515,7 @@ async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
     // A second revision row, fabricated straight at the table: `open_revision`
     // refuses a retired plan first, and what is under test is the publish.
     let opened = plan::ActiveModel {
+        cloned_from: Set(None),
         entitlement_grants: Set(None),
         allowed_change_targets: Set(None),
         comparability_rank: Set(None),
@@ -3036,4 +3038,79 @@ async fn opening_a_successor_whose_record_cannot_be_written_mints_no_revision_nu
             .is_none(),
         "and the plan holds no half-opened successor"
     );
+}
+
+/// **Lineage round-trips, and it carries forward to the next revision.**
+///
+/// `cloned_from` is provenance (D-264), and until the cloner lands nothing in
+/// production writes it — so without this case the column would be `NULL` in
+/// every row any test ever produced, and the register's claim that it survives
+/// `open_revision` would rest on reading the function rather than running it.
+/// That is the shape this program keeps correcting: a claim in prose the code
+/// does not demonstrate.
+///
+/// The carry-forward is the load-bearing half. Lineage is the **plan's** and not
+/// one revision's, so a second revision of a cloned plan is still cloned; a
+/// version of `open_revision` that dropped it would leave a clone's first
+/// re-publish looking authored, and nothing else would notice.
+#[tokio::test]
+async fn lineage_round_trips_and_survives_the_next_revision() {
+    let (repo, provider) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_1a4));
+    let source = PlanId::new(Uuid::from_u128(0x9_1a5));
+
+    let created = repo
+        .create_draft(
+            &scope,
+            NewPlanDraft {
+                cloned_from: Some(source),
+                ..new_draft(plan_id, tenant)
+            },
+        )
+        .await
+        .expect("create the cloned draft");
+    assert_eq!(
+        created.cloned_from,
+        Some(source),
+        "the create must return the lineage it was given"
+    );
+
+    let read_back = repo
+        .find_revision(&scope, tenant, plan_id, 0)
+        .await
+        .expect("read it back")
+        .expect("the revision is there");
+    assert_eq!(
+        read_back.cloned_from,
+        Some(source),
+        "and it must survive the round trip through storage"
+    );
+
+    flip_state(&provider, &scope, plan_id, 0, LifecycleState::Published).await;
+    let next = repo
+        .open_revision(
+            &scope,
+            tenant,
+            plan_id,
+            stamp_of(Uuid::from_u128(0xac_20), at(12)),
+        )
+        .await
+        .expect("open a successor");
+    assert_eq!(
+        next.cloned_from,
+        Some(source),
+        "lineage is the plan's, not one revision's, so the successor is still \
+         cloned from the same source"
+    );
+
+    // And an authored plan stays authored, so the assertions above are about the
+    // value carried rather than about a column that is always set.
+    let authored = PlanId::new(Uuid::from_u128(0x9_1a6));
+    let plain = repo
+        .create_draft(&scope, new_draft(authored, tenant))
+        .await
+        .expect("create an authored draft");
+    assert_eq!(plain.cloned_from, None, "an authored plan has no lineage");
 }

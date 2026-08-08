@@ -156,6 +156,9 @@ pub struct NewPlanDraft {
     pub available_from: Option<DateTime<Utc>>,
     /// End of the availability window, UTC.
     pub available_to: Option<DateTime<Utc>>,
+    /// The plan this one is being cloned from (`inst-cl-copy`), or `None` for an
+    /// authored plan. Provenance, set once at create and frozen thereafter.
+    pub cloned_from: Option<PlanId>,
     /// The causing request's correlation id (D-178).
     ///
     /// The third field of the [`AuditStamp`](crate::domain::audit::AuditStamp)
@@ -752,6 +755,9 @@ impl PlanRepo {
             lifecycle_state: LifecycleState::Draft,
             created_by,
             created_at_utc: now,
+            // Lineage is the plan's rather than one revision's, so it carries
+            // forward: a second revision of a cloned plan is still cloned.
+            cloned_from: current.cloned_from,
             row_version: RowVersion::new(0),
         };
         // Rendered before the transaction opens: a value no column can hold is
@@ -1043,6 +1049,7 @@ pub async fn create_draft_on(
         lifecycle_state: LifecycleState::Draft,
         created_by: draft.created_by,
         created_at_utc: draft.created_at_utc,
+        cloned_from: draft.cloned_from,
         row_version: RowVersion::new(0),
     };
     let row = revision_model(tenant_id, &opened)?;
@@ -1503,6 +1510,7 @@ fn revision_model(
         available_to: Set(revision.available_to),
         created_by: Set(revision.created_by),
         created_at_utc: Set(revision.created_at_utc),
+        cloned_from: Set(revision.cloned_from.map(PlanId::get)),
         row_version: Set(version),
     })
 }
@@ -1960,6 +1968,7 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
         lifecycle_state,
         created_by: row.created_by,
         created_at_utc: row.created_at_utc,
+        cloned_from: row.cloned_from.map(PlanId::new),
         row_version,
     })
 }

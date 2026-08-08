@@ -72,6 +72,7 @@ fn new_draft(plan_id: PlanId) -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        cloned_from: None,
         correlation_id: CORRELATION,
     }
 }

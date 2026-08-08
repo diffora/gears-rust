@@ -1061,6 +1061,12 @@ pub(crate) async fn assemble_from(
         created_by: _,
         created_at_utc: _,
         row_version: _,
+        // Provenance, like the four above: a clone is an **ordinary** draft
+        // (`inst-cl-draft`) taking the full pipeline and an approval on its first
+        // publish, so no rule judges where it came from and the content pin does
+        // not frame it. Ignored by name because D-259's destructure is what makes
+        // that a decision rather than an omission.
+        cloned_from: _,
     } = draft;
 
     let mut shape = PlanShape::new(plan_id, revision, now);

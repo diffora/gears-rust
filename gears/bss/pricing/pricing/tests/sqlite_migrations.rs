@@ -789,9 +789,14 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         "trg_pricing_plan_flip_whitelist",
         2_936_899_670_102_780_293_u64,
     ),
+    // Re-pinned twice on 2026-08-08 and both moves are guard restatements rather
+    // than drift: `m20260802_000058` added the four columns `000052`/`000053`
+    // left unguarded (D-263), taking the body from
+    // `12_503_936_757_081_989_316`; `m20260802_000062` then added `cloned_from`
+    // (D-264), taking it from `5_595_552_456_787_579_512` to the number below.
     (
         "trg_pricing_plan_frozen_columns",
-        5_595_552_456_787_579_512_u64,
+        8_809_109_997_858_035_071_u64,
     ),
     ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
     (

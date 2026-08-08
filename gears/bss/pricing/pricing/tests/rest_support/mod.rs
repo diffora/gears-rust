@@ -1154,6 +1154,7 @@ fn new_draft(plan_id: Uuid, tenant_id: Uuid) -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        cloned_from: None,
         correlation_id: TEST_CORRELATION,
     }
 }
@@ -1471,6 +1472,7 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
                 invoice_grouping_key: None,
                 available_from: None,
                 available_to: None,
+                cloned_from: None,
                 correlation_id: TEST_CORRELATION,
             },
         )

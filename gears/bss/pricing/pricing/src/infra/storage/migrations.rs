@@ -92,6 +92,8 @@ pub mod m20260802_000056_add_pricing_price_floor_and_discount;
 pub mod m20260802_000057_guard_pricing_price_floor_and_discount_columns;
 pub mod m20260802_000058_guard_pricing_plan_later_columns;
 pub mod m20260802_000060_add_price_overlay_published_event_name;
+pub mod m20260802_000061_add_pricing_plan_cloned_from;
+pub mod m20260802_000062_guard_pricing_plan_cloned_from;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -283,6 +285,11 @@ impl MigratorTrait for Migrator {
             // not exist yet does not create.
             Box::new(m20260802_000058_guard_pricing_plan_later_columns::Migration),
             Box::new(m20260802_000060_add_price_overlay_published_event_name::Migration),
+            // Slice 12's clone provenance, and the guard that freezes it. Two
+            // migrations rather than one, per `m20260802_000040`: a trigger
+            // naming a column that does not exist yet does not create.
+            Box::new(m20260802_000061_add_pricing_plan_cloned_from::Migration),
+            Box::new(m20260802_000062_guard_pricing_plan_cloned_from::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

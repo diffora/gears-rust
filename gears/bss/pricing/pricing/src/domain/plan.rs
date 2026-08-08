@@ -143,6 +143,16 @@ pub struct PlanRevision {
     pub created_by: Uuid,
     /// When this revision row was created, UTC.
     pub created_at_utc: DateTime<Utc>,
+    /// The plan this one was cloned from (`inst-cl-copy`, D-19), or `None` for
+    /// an authored plan.
+    ///
+    /// **Provenance, not authored content.** It sits with `created_by` rather
+    /// than with the shape: a clone is an *ordinary* draft (`inst-cl-draft`),
+    /// taking the full pipeline and an approval on its first publish exactly as
+    /// any other first publish does, so no rule reads this and the content pin
+    /// does not frame it. It carries forward to later revisions of the same plan,
+    /// because lineage is the plan's and not one revision's.
+    pub cloned_from: Option<PlanId>,
     /// The optimistic-concurrency version this revision is at.
     ///
     /// It moves only on the draft plane: an edit advances it, and so does the

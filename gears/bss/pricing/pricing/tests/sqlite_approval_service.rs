@@ -194,6 +194,7 @@ fn new_plan_draft(id: PlanId) -> NewPlanDraft {
         invoice_grouping_key: None,
         available_from: None,
         available_to: None,
+        cloned_from: None,
         correlation_id: TEST_CORRELATION,
     }
 }
