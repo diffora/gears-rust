@@ -63,6 +63,7 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_price_tier_band",
     "pricing_read_model",
     "pricing_catalog_version_ref",
+    "pricing_bulk_operation",
     "pricing_composite_meter",
     "pricing_pin_frontier",
     "pricing_policy_object",
@@ -122,6 +123,11 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_approval_threshold_tombstone_no_update",
     "trg_pricing_audit_log_no_delete",
     "trg_pricing_audit_log_no_update",
+    // Slice 12's bulk operation: the DELETE ban, the frozen-column whitelist
+    // and section 4's edges, as three triggers mirroring the one PL/pgSQL function.
+    "trg_pricing_bulk_operation_frozen_columns",
+    "trg_pricing_bulk_operation_no_delete",
+    "trg_pricing_bulk_operation_transitions",
     "trg_pricing_bundle_component_no_delete",
     "trg_pricing_bundle_component_no_insert",
     "trg_pricing_bundle_component_no_update",
@@ -207,6 +213,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_approval_key_approval",
     "idx_pricing_audit_log_recorded",
     "idx_pricing_audit_log_subject",
+    "idx_pricing_bulk_operation_live",
     "idx_pricing_bundle_component_plan",
     "idx_pricing_bundle_component_revision",
     "idx_pricing_bundle_revshare_group_revision",
@@ -238,6 +245,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_snapshot_provenance_plan",
     "uq_pricing_approval_key_pending",
     "uq_pricing_approval_policy_pending",
+    "uq_pricing_bulk_operation_client_key",
     "uq_pricing_bundle_plan",
     "uq_pricing_composite_meter_output",
     "uq_pricing_outbox_dedup_key",
@@ -287,6 +295,12 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_audit_log_seq",
     "chk_pricing_brand_taxonomy_state",
     "chk_pricing_brand_taxonomy_value_present",
+    // Slice 12's bulk operation. Four: the two vocabularies, D-137's
+    // import-never-awaits edge, and the terminal/completed_at agreement.
+    "chk_pricing_bulk_operation_completed_at",
+    "chk_pricing_bulk_operation_import_never_awaits",
+    "chk_pricing_bulk_operation_kind",
+    "chk_pricing_bulk_operation_state",
     "chk_pricing_bundle_component_min_qty",
     "chk_pricing_bundle_component_qty_range",
     "chk_pricing_bundle_invoice_itemization",
@@ -458,6 +472,7 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     ("pricing_approval_threshold_tombstone", "tenant_id, version"),
     ("pricing_audit_log", "tenant_id, chain_id, seq"),
     ("pricing_brand_taxonomy", "tenant_id, value"),
+    ("pricing_bulk_operation", "operation_id"),
     ("pricing_bundle", "bundle_id"),
     (
         "pricing_bundle_component",
@@ -599,6 +614,21 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_audit_log_no_update",
         8_228_055_037_257_075_408_u64,
+    ),
+    // Slice 12's bulk operation. Read back off the built schema, as this census
+    // requires: the transitions arm carries section 4's five edges, so a lost
+    // disjunct here is a state move the store would silently start admitting.
+    (
+        "trg_pricing_bulk_operation_frozen_columns",
+        4_811_342_419_971_160_178_u64,
+    ),
+    (
+        "trg_pricing_bulk_operation_no_delete",
+        11_270_963_154_713_380_806_u64,
+    ),
+    (
+        "trg_pricing_bulk_operation_transitions",
+        18_200_341_525_936_192_938_u64,
     ),
     (
         "trg_pricing_bundle_component_no_delete",

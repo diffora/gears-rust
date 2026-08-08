@@ -1,0 +1,49 @@
+//! `SeaORM` entity for `bss.pricing_bulk_operation` — one bulk run and its
+//! position in §4's state machine (`design/12-operator-efficiency.md` §6).
+//!
+//! Keyed on `operation_id` alone: a run is not revision-scoped and not part of
+//! any plan's shape, so unlike `pricing_composite_meter` it owes no
+//! copy-forward and no drop-on-abandon (D-256's obligation does not reach it).
+//!
+//! Only `state`, `report` and `completed_at` ever move; everything else is
+//! frozen by the table's trigger, because a run's identity, kind and submitter
+//! are what its report is *about*.
+
+use sea_orm::entity::prelude::*;
+use uuid::Uuid;
+
+use toolkit_db_macros::Scopable;
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
+#[sea_orm(table_name = "pricing_bulk_operation")]
+#[secure(
+    tenant_col = "tenant_id",
+    resource_col = "operation_id",
+    no_owner,
+    no_type
+)]
+pub struct Model {
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub operation_id: Uuid,
+    pub tenant_id: Uuid,
+    /// `import | repricing`, `CHECK`-constrained.
+    pub kind: String,
+    /// One of §4's six states, `CHECK`-constrained; the edges between them are
+    /// the table's trigger, not a caller's convention.
+    pub state: String,
+    /// O4's idempotency key, unique per tenant.
+    pub client_key: String,
+    /// Per-row outcomes. Grows as the run progresses; one of the three columns
+    /// the trigger lets move.
+    pub report: Json,
+    pub submitted_by: Uuid,
+    pub submitted_at: DateTimeUtc,
+    /// Set exactly on the terminal states, and the `CHECK` keeps the two from
+    /// disagreeing about whether the run is over.
+    pub completed_at: Option<DateTimeUtc>,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {}
+
+impl ActiveModelBehavior for ActiveModel {}
