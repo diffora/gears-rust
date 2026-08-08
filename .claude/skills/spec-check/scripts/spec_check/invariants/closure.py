@@ -323,7 +323,13 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "EVAL_POLICY_MISPLACED", "design/03-price-structure.md"),
     ("pricing", "FLOOR_FALLBACK_MISSING", "design/10-advanced-primitives.md"),
     ("pricing", "FLOOR_INSIDE_PRICED_BAND", "design/10-advanced-primitives.md"),
-    ("pricing", "FLOOR_TYPE_MISSING", "design/10-advanced-primitives.md"),
+    # `FLOOR_TYPE_MISSING` paid down 2026-08-08 by the Slice 10 merge: `inst-ft-typed`
+    # now names the code, so it is referenced by the rule that would raise it. The
+    # resolution is the *correct* one for a code the design set still wants — the
+    # annotation records that the code is unraisable in `inst-ft-both`'s two-field
+    # shape (a floor with no type is a row with no floor) and names the `{value, type}`
+    # shape it is owed in, rather than deleting a declaration that still has a future.
+    # Contrast D-239, which paid a member down by deleting the declaration outright.
     ("pricing", "GRANDFATHERED_ROW_IMMUTABLE", "design/07-pricewindow-linkage.md"),
     ("pricing", "GRANDFATHER_LOOSEN_FORBIDDEN", "design/07-pricewindow-linkage.md"),
     ("pricing", "GRANT_APPLICABILITY_INELIGIBLE", "design/10-advanced-primitives.md"),

@@ -201,7 +201,11 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # (BRAND_UNKNOWN — D-239 struck the declaration itself, the first member ever
     # paid down that way rather than by naming the code in its raising rule);
     # note beside the list, and REGENERATE.md entry 23.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 37
+    # 37 until the 2026-08-08 Slice 10 merge, which paid down `FLOOR_TYPE_MISSING`
+    # by naming it in `inst-ft-typed` -- the rule that would raise it -- together
+    # with the reason it cannot fire in the two-field floor shape the slice built.
+    # Note beside the list.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 36
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

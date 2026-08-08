@@ -93,7 +93,12 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     stdout, _ = run_check(*(live_args() + ["--format", "json"]))
     payload = json.loads(stdout)
     assert len(payload["findings"]) == 2
-    assert payload["known_debt_suppressed"] == 58
+    # 58 until the 2026-08-08 Slice 10 merge, which paid down one pinned member --
+    # `FLOOR_TYPE_MISSING` / design/10 -- by naming the code in `inst-ft-typed`,
+    # the rule that would raise it, together with the reason it cannot fire in the
+    # two-field floor shape the slice actually built. Debt is now 21 propagation
+    # gaps + 36 unreferenced codes. Live findings unchanged at 2, both rating-side.
+    assert payload["known_debt_suppressed"] == 57
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

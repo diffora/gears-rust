@@ -177,7 +177,7 @@ flowchart TB
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-reserved`
 
 **Steps**:
-1. [ ] - `p1` - `reservedRate` (≥ 0, row currency) + `reservationFlavor` (`consumption | capacity`) are attributes **on the single usage row**, alongside the on-demand price/tiers (A1 — never a second row, never a second `(meter, dimensionKey)` line) - `inst-rv-attrs`
+1. [ ] - `p1` - `reservedRate` (≥ 0, row currency) + `reservationFlavor` (`consumption | capacity`) are attributes **on the single usage row**, alongside the on-demand price/tiers (A1 — never a second row, never a second `(meter, dimensionKey)` line). **Both or neither: a row carrying one and not the other fails publish with `RESERVATION_PAIR_INCOMPLETE`** (422, 2026-08-08) — §9's first AC requires it and §5 had named no code. Judged row-locally at publish rather than as a column `CHECK`, for §6's portability reason - `inst-rv-attrs`
 2. [ ] - `p1` - The row remains a usage row (A2): `billingGranularity` REQUIRED; `tierAggregationWindow` REQUIRED only when tiered - `inst-rv-usage`
 3. [ ] - `p1` - The reserved/allocated **quantity** is runtime input (OSS/Contracts entitlement); the catalog neither meters nor allocates nor computes the charge; Tariffs step 6 sources the self-service rate from the snapshot - `inst-rv-runtime`
 3a. [ ] - `p1` - **Reservation × tiers (normative, money-affecting):** the matched/allocated reserved quantity is **excluded** from the on-demand tier counter `Q` — only the on-demand **remainder** enters the row's bands (150K used with a 100K reservation: 100K at `reservedRate`, the remainder's `Q` starts at 0, not 100K). Frozen semantics; the reservation joint fixture MUST include a tiered-remainder scenario - `inst-rv-tier-q`
@@ -189,9 +189,9 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-prepaid-grant`
 
 **Steps**:
-1. [ ] - `p2` - Grant fields: `grantAmount > 0`; `creditUnit` = ISO 4217 currency **or** a **published** `meteringUnit` (unpublished fails); `expiryPolicy` explicitly `never` or `days(N>0)` (no implicit never; **`days(N)` anchors at grant issuance** — the purchase or recharge instant, UTC); `autoRechargeAllowed` bool - `inst-pg-fields`
+1. [ ] - `p2` - Grant fields: `grantAmount > 0`; `creditUnit` = ISO 4217 currency **or** a **published** `meteringUnit` (unpublished fails); `expiryPolicy` explicitly `never` or `days(N>0)` (no implicit never; **`days(N)` anchors at grant issuance** — the purchase or recharge instant, UTC); `autoRechargeAllowed` bool. **Same blocked registry read as `inst-cm-constituents` (2026-08-08)**: the `published` qualifier on a `meteringUnit` needs a registry client this gear does not have, so that clause is owed and the rest of the rule is not. - `inst-pg-fields`
 1a. [ ] - `p2` - **`category` (D-43)**: `prepaid` (default — purchased; the `inst-pg-price` rules apply) or `promotional` (issued **free** — grant-price rows MUST be absent, `GRANT_PROMO_PRICE_FORBIDDEN`; `autoRechargeAllowed` MUST be false, `GRANT_PROMO_AUTORECHARGE` — a recharge is a purchase); publish **warns** on `promotional` + `expiryPolicy = never` (`GRANT_PROMO_NO_EXPIRY` — likely authoring error); frozen in the snapshot - `inst-pg-category`
-1b. [ ] - `p2` - **`applicability` (D-43)**: which of the plan's charge lines the credit may offset at drawdown — `all_usage` (default) or an explicit set of **published** `meteringUnit` ids; every target MUST be a usage line of the grant-bearing plan (credit never offsets `one_time_setup` or recurring rows — launch rule); when `creditUnit` is a `meteringUnit`, the set MUST stay within that unit's meters (absent ⇒ that unit's meters). Publish **materializes** the resolved set into the snapshot — the executor never infers scope - `inst-pg-applicability`
+1b. [ ] - `p2` - **`applicability` (D-43)**: which of the plan's charge lines the credit may offset at drawdown — `all_usage` (default) or an explicit set of **published** `meteringUnit` ids; every target MUST be a usage line of the grant-bearing plan (credit never offsets `one_time_setup` or recurring rows — launch rule); when `creditUnit` is a `meteringUnit`, the set MUST stay within that unit's meters (absent ⇒ that unit's meters). Publish **materializes** the resolved set into the snapshot — the executor never infers scope. **Same blocked registry read as `inst-cm-constituents` (2026-08-08)**: the `published` qualifier on a `meteringUnit` needs a registry client this gear does not have, so that clause is owed and the rest of the rule is not. - `inst-pg-applicability`
 1c. [ ] - `p2` - **`drawdownPriority` (D-43)**: optional int ≥ 0 (lower draws first) — an authored **default rank**, frozen in the snapshot. The **effective** cross-grant order at drawdown is **Billing-owned**, resolved over frozen inputs by the normative tie-break chain: `drawdownPriority` → category (`promotional` before `prepaid`) → earlier expiry → earlier issuance → `grantId` (a deterministic total order; the catalog never orders live balances) - `inst-pg-priority`
 2. [ ] - `p2` - (`category = prepaid` only) Grant **price** is authored per `(currency, region)` like a price row scope — but the grant is a plan-attached primitive with **no** `chargeKind`, not on the canonical scope key (A3); a single unscoped price on a multi-`(currency, region)` plan fails publish, and the grant-price set MUST cover **every** `(currency, region)` the plan publishes sellable rows for — a missing market fails publish (`GRANT_PRICE_NOT_COVERED`) - `inst-pg-price`
 3. [ ] - `p2` - Grant changes route through **Slice 5's evaluator** with a split delta semantics: grant-**price** changes are **ordinary per-currency price deltas** (threshold-evaluated, never always-material — Slice 5 `inst-mat-registered`); `category` / `applicability` / `drawdownPriority` changes have **no numeric delta**, so per the G1 fail-safe (no delta computable ⇒ material) they are **always material** - `inst-pg-material`
@@ -217,7 +217,7 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-composite-meter`
 
 **Steps**:
-1. [ ] - `p2` - Persist ≥ 2 **published** constituent `meteringUnit` ids (registry-declared); any unpublished constituent fails publish - `inst-cm-constituents`
+1. [ ] - `p2` - Persist ≥ 2 **published** constituent `meteringUnit` ids (registry-declared); any unpublished constituent fails publish. **The `published` half is blocked on a registry read this gear does not have (2026-08-08)** — `grep` for `metering_unit` / `MeteringUnit` across `src/` returns nothing, so there is no way to ask whether a unit is published, let alone declared. The **arity** and **self-reference** halves need no counterparty and are the buildable part; the publication check is owed with the registry client. Named on all three instructions that share this one hole rather than on whichever is read first - `inst-cm-constituents`
 2. [ ] - `p2` - Persist the formula **as data** (A4): operands + operator/weights — a declarative schema, not executable code; self-reference (output unit among constituents, direct or transitive) fails - `inst-cm-formula`
 2a. [ ] - `p2` - **Output-unit ownership (D-32):** the derived output unit is **declared to the registry like any `meteringUnit`** (one meter namespace — Rating recognizes it through the same registry lookup as base units); the catalog persists the registry-declared unit id + the formula binding, never a catalog-private unit name. Part of the registry joint contract (PRD §15) - `inst-cm-output-unit`
 3. [ ] - `p2` - One declared **output unit**: the price row rates the composite as **one line**, satisfying Slice 2's meter injectivity as one output unit - `inst-cm-output`
@@ -228,7 +228,7 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-discount-ref`
 
 **Steps**:
-1. [ ] - `p2` - Optional `discountRef` validates **referential integrity only**: it must resolve to a registered external instrument (Promotions/Tariffs-owned); absence never blocks publish - `inst-dr-referential`
+1. [ ] - `p2` - Optional `discountRef` validates **referential integrity only**: it must resolve to a registered external instrument (Promotions/Tariffs-owned); absence never blocks publish. **Future / blocked (2026-08-08), and the counterparty is named rather than left to inference**: "resolve to a registered external instrument" requires a Promotions or Tariffs registry read, and **no such client, port or contract exists anywhere in this gear** — there is no lane to ask. So `DISCOUNT_REF_UNRESOLVED` is declared and unraisable, and what is built is the column, its framing into the content pin, and nothing that pretends to check it. Read today as launch scope this instruction promises a referential guarantee the deployment cannot make; it becomes buildable the day the instrument registry has a client here, and not before - `inst-dr-referential`
 2. [ ] - `p2` - The catalog does not author, evaluate, or stack the discount; the ref persists on the snapshot; a clone copies it only if it still resolves (else dropped with an operator notice — Slice 12 clone rule) - `inst-dr-boundary`
 
 ### Minimum-Quantity Floor Typing
@@ -236,8 +236,8 @@ flowchart TB
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-algo-floor-typing`
 
 **Steps**:
-1. [ ] - `p2` - A `minQtyThreshold` MUST declare its floor type: `purchase` (Subscriptions rejects orders below — not silently zero) or `usage` (Tariffs/Rating treats below-floor usage as ineligible, failing closed — never silent zero-rating); untyped fails publish - `inst-ft-typed`
-1a. [ ] - `p2` - **The fallback is authored, not implied:** a `usage` floor MUST declare its fallback on the row; at launch the only supported value is **`exception`** — the below-floor usage line fails closed into the rating exception path (visible, resolvable), never silently zero-rated and never silently charged. Richer fallbacks (e.g. an alternative row) are Future; the declared fallback freezes in the snapshot - `inst-ft-fallback`
+1. [ ] - `p2` - A `minQtyThreshold` MUST declare its floor type: `purchase` (Subscriptions rejects orders below — not silently zero) or `usage` (Tariffs/Rating treats below-floor usage as ineligible, failing closed — never silent zero-rating); untyped fails publish. **`FLOOR_TYPE_MISSING` is unrepresentable in the shape this was built as, and that is a fact about the shape rather than a missing rule (2026-08-08)**: `inst-ft-both` types the floor by **which of the two fields carries it** (`minQtyPurchase` / `minQtyUsage`), so "a floor without a type" is a row with no floor and there is nothing for the refusal to fire on. The code stays declared in §5 because it is owed the day a floor is authored as a `{ value, type }` pair, where a `type` genuinely can be absent — that is the shape to raise it in - `inst-ft-typed`
+1a. [ ] - `p2` - **The fallback is authored, not implied:** a `usage` floor MUST declare its fallback on the row; at launch the only supported value is **`exception`** — the below-floor usage line fails closed into the rating exception path (visible, resolvable), never silently zero-rated and never silently charged. Richer fallbacks (e.g. an alternative row) are Future; the declared fallback freezes in the snapshot. **A fallback declared on a row carrying no `minQtyUsage` warns `FLOOR_FALLBACK_WITHOUT_FLOOR`** rather than refusing (2026-08-08): it is inert and mis-bills nothing, but publish freezes it into an immutable version, so the operator is told before the freeze rather than after - `inst-ft-fallback`
 2. [ ] - `p2` - Both MAY be set on one row (distinct fields); type + value freeze in the snapshot - `inst-ft-both`
 3. [ ] - `p2` - Publish **warns** when a floor falls inside a non-zero-priced band (likely authoring error: the floor hides paid quantity), **and equally when a `usage` floor falls inside the `[0, N)` allowance band** — compiled (D-45) or hand-authored `$0` first band — where the floor silently voids part of the granted allowance (2026-07-31 review fix: the non-zero-priced wording alone never fired on a `$0` band) - `inst-ft-warn`
 
@@ -361,8 +361,25 @@ derivable, `inst-tt-window-pair`),
 authored or allowance-compiled: single-band selection would lock the free rate for a whole
 period, `inst-tt-zero-band`),
 `LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN` (422 — `reservationFlavor = consumption` on a
-non-`sum` row; capacity flavor only at launch, D-53); warnings:
-`FLOOR_INSIDE_PRICED_BAND`, `GRANT_PROMO_NO_EXPIRY` (a `promotional` grant with `expiryPolicy = never`).
+non-`sum` row; capacity flavor only at launch, D-53),
+`RESERVATION_PAIR_INCOMPLETE` (422 — **minted 2026-08-08 while building `inst-rv-attrs`**: a row
+carrying one of `reservedRate` / `reservationFlavor` and not the other. §9's first AC requires a
+flavor without a rate to be rejected and this section named no code for it, so the refusal existed
+as an acceptance criterion with nothing to raise. The pair is judged **row-locally** — the rule sees
+one row against itself — and the guard is a **publish rule rather than a column `CHECK`**, for §6's
+reason below),
+`FLOOR_TYPE_MISSING` above is **unrepresentable in the built shape and is not an omission**: with
+`inst-ft-both`'s two-field form (`minQtyPurchase`, `minQtyUsage`) a floor's *type* is carried by
+**which field is populated**, so a floor with no type is a row with no floor and there is nothing to
+reject. It stays declared here because the code is owed the day a floor is authored as a
+`{ value, type }` pair — where a `type` can be absent — and that is the shape to raise it in;
+warnings: `FLOOR_INSIDE_PRICED_BAND`,
+`FLOOR_FALLBACK_WITHOUT_FLOOR` (**minted 2026-08-08 with `inst-ft-fallback`**: a
+`minQtyUsageFallback` on a row with no `minQtyUsage`. It mis-bills nothing — an inert fallback is
+never consulted — so it warns rather than refuses; it is worth saying because publish **freezes** it
+into an immutable version, and a half-finished edit that reaches a consumer is the thing the
+operator wants to hear about before the freeze, not after),
+`GRANT_PROMO_NO_EXPIRY` (a `promotional` grant with `expiryPolicy = never`).
 
 ## 6. Data Model
 
@@ -432,7 +449,14 @@ copy-on-new-revision with a **stable `composite_id`**, published rows immutable 
 revision. The former bare `revision` column, whose referent was never stated, is replaced by
 `plan_revision`.
 
-Key constraints: `CHECK (reservation_flavor IS NULL) = (reserved_rate_minor IS NULL)`;
+Key constraints: `CHECK (reservation_flavor IS NULL) = (reserved_rate_minor IS NULL)` — **enforced
+as a publish rule, not as a column constraint (2026-08-08)**, and the reason is a portability one
+worth stating so nobody "fixes" it into the table: `SQLite` has no incremental table-`CHECK` form,
+so a pairing constraint added to `pricing_price` after creation is either a full table rebuild or a
+Postgres-only `ALTER`. The Postgres-only form is the worse of the two — it splits the two
+`EXPECTED_CHECKS` censuses, which exist precisely to keep the engines' constraint sets legible
+against each other. The pair is therefore judged by `RESERVATION_PAIR_INCOMPLETE` at publish, where
+it also gets an operator-readable refusal instead of a driver error;
 `CHECK (grant fields complete)` per `pricing_plan_grant` row at publish; composite self-reference
 check application-level (graph walk over `constituent_units` vs `output_unit`).
 
