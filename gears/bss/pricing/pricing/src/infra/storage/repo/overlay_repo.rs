@@ -1563,26 +1563,47 @@ impl OverlayRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("overlay world conn: {e}")))?;
-
-        let scope_value_declared =
-            declares_selector(&conn, scope, tenant_id, &candidate.scope).await?;
-        let plans = plan_facts(&conn, scope, tenant_id, &candidate.target_ref.plans).await?;
-        let markets = price_facts(&conn, scope, tenant_id, &candidate.target_ref.plans).await?;
-        let overlays = overlay_facts(&conn, scope, tenant_id, candidate).await?;
-
-        Ok(OverlayWorld {
-            scope_value_declared,
-            published_plans: plans.published,
-            published_skus: plans.skus,
-            retired_plans: plans.retired,
-            sold_currencies: markets.currencies,
-            published_cohorts: markets.cohorts,
-            precedence_holder: overlays.precedence_holder,
-            interval_holders: overlays.interval_holders,
-            layers_beneath: overlays.layers_beneath,
-            cross_class_ties: overlays.cross_class_ties,
-        })
+        world_on(&conn, scope, tenant_id, candidate).await
     }
+}
+
+/// [`OverlayRepo::world_for`]'s body, on a caller-supplied runner.
+///
+/// **The split is what let §4.2's second validation run be built** (D-234's
+/// residue (1)). That residue was recorded as blocked because `world_for` "takes
+/// a provider rather than a runner" — true of the method, and the obstacle turned
+/// out to be only the wrapper: all four fact readers below have taken
+/// `&impl DBRunner` since they were written, so the world was always assemblable
+/// inside a transaction and nothing but this entry point said otherwise.
+///
+/// The commit needs it on the **transaction**, not on a fresh connection: a world
+/// read outside the transaction that flips the revision could be read before a
+/// concurrent publish it has to see, and the re-validation would then pass
+/// against a world that no longer exists by the time the flip lands.
+pub(crate) async fn world_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    candidate: &OverlayRecord,
+) -> Result<OverlayWorld, RepoError> {
+    let scope_value_declared =
+        declares_selector(runner, scope, tenant_id, &candidate.scope).await?;
+    let plans = plan_facts(runner, scope, tenant_id, &candidate.target_ref.plans).await?;
+    let markets = price_facts(runner, scope, tenant_id, &candidate.target_ref.plans).await?;
+    let overlays = overlay_facts(runner, scope, tenant_id, candidate).await?;
+
+    Ok(OverlayWorld {
+        scope_value_declared,
+        published_plans: plans.published,
+        published_skus: plans.skus,
+        retired_plans: plans.retired,
+        sold_currencies: markets.currencies,
+        published_cohorts: markets.cohorts,
+        precedence_holder: overlays.precedence_holder,
+        interval_holders: overlays.interval_holders,
+        layers_beneath: overlays.layers_beneath,
+        cross_class_ties: overlays.cross_class_ties,
+    })
 }
 
 /// What the **plan** plane says about an overlay's targets.

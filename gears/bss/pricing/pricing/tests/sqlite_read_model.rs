@@ -28,6 +28,7 @@ use async_trait::async_trait;
 use bss_pricing::config::{JobsConfig, LimitsConfig};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
+use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::overlay::{
@@ -54,7 +55,9 @@ use bss_pricing::infra::jobs::window_activation::WindowActivationJob;
 use bss_pricing::infra::overlay_publish::OverlayPublishService;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::RepoError;
-use bss_pricing::infra::storage::entity::{catalog_version_ref, outbox, plan, price, read_model};
+use bss_pricing::infra::storage::entity::{
+    catalog_version_ref, outbox, partner_taxonomy, plan, price, read_model,
+};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
 use bss_pricing::infra::storage::repo::overlay_repo::{NewOverlay, OverlayRepo};
@@ -69,6 +72,7 @@ use bss_pricing_sdk::catalog_version_registry::{
 };
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use sea_orm_migration::MigratorTrait;
 use std::path::{Path, PathBuf};
@@ -153,6 +157,20 @@ impl RegistryDouble {
             .lock()
             .expect("no panics in the double")
             .clear();
+    }
+
+    /// How many handles have been **requested** at all.
+    ///
+    /// Distinct from [`Self::calls_for`], which counts resolutions of a handle
+    /// that exists. This counts the act that creates one — and it is the only
+    /// way to see a `request_version` that a rolled-back transaction did not
+    /// undo, because the registry is outside the transaction and a refused
+    /// commit's *database* writes vanish either way. A test asserting only that
+    /// no ref row survives cannot tell an ordering mistake from a correct
+    /// refusal; that exact assertion was measured vacuous by a probe on
+    /// 2026-08-08.
+    fn issued_count(&self) -> usize {
+        self.issued.lock().expect("no panics in the double").len()
     }
 
     /// How many times this handle has been asked for its committed version.
@@ -874,6 +892,51 @@ async fn a_subject_kind_with_no_store_in_this_gear_is_still_refused_by_name() {
     assert!(deltas(&h).await.is_empty());
 }
 
+/// Declare `partner/acme`, the value both overlay seeds scope themselves to.
+///
+/// **Added 2026-08-08 with §4.2's second validation run, and it is a fixture fix
+/// rather than an accommodation.** Both seeds below scope their overlay to
+/// `partner/acme` and neither declared it, so the commits they drove published an
+/// overlay whose scope value existed in no taxonomy — a state the submit route
+/// refuses outright with `SCOPE_VALUE_UNKNOWN` (D-120). They passed only because
+/// the commit ran no world check; the second run found them the first time it
+/// ran. Declaring the value is what makes the fixture reach a world a real submit
+/// could have produced.
+///
+/// **Idempotent**, because a case that seeds two overlays calls it twice and the
+/// taxonomy is `UNIQUE (tenant_id, value)`.
+async fn declare_partner(h: &Harness) {
+    let conn = h.provider.conn().expect("a connection");
+    if partner_taxonomy::Entity::find()
+        .secure()
+        .scope_with(&h.scope)
+        .filter(
+            Condition::all()
+                .add(partner_taxonomy::Column::TenantId.eq(TENANT))
+                .add(partner_taxonomy::Column::Value.eq("acme")),
+        )
+        .one(&conn)
+        .await
+        .expect("read the partner taxonomy")
+        .is_some()
+    {
+        return;
+    }
+    let row = partner_taxonomy::ActiveModel {
+        tenant_id: Set(TENANT),
+        value: Set("acme".to_owned()),
+        display_name: Set("Acme".to_owned()),
+        state: Set("active".to_owned()),
+    };
+    partner_taxonomy::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&h.scope, &row)
+        .expect("the scope admits the row")
+        .exec(&conn)
+        .await
+        .expect("the partner value is declared");
+}
+
 /// The overlay publish service over this harness's provider and registry.
 fn overlay_publish(h: &Harness) -> OverlayPublishService {
     OverlayPublishService::new(
@@ -884,6 +947,7 @@ fn overlay_publish(h: &Harness) -> OverlayPublishService {
 
 /// A **draft** overlay of one tenant, scoped `partner/acme`, with one line.
 async fn seed_draft_overlay(h: &Harness, precedence: i32) -> Uuid {
+    declare_partner(h).await;
     let overlays = OverlayRepo::new(h.provider.clone());
     let price_overlay_id = Uuid::new_v4();
     overlays
@@ -923,6 +987,7 @@ async fn seed_draft_overlay(h: &Harness, precedence: i32) -> Uuid {
 /// Written through the repository rather than by SQL so the row set is the one a
 /// real publish leaves — three tables, the revision flip and its audit record.
 async fn seed_published_overlay(h: &Harness, precedence: i32) -> Uuid {
+    declare_partner(h).await;
     let overlays = OverlayRepo::new(h.provider.clone());
     let price_overlay_id = Uuid::new_v4();
     overlays
@@ -3723,4 +3788,105 @@ async fn a_pinned_version_resolves_the_same_contract_set_on_every_read() {
             assert!(row.get(key).is_some(), "a row carries {key}: {row}");
         }
     }
+}
+
+/// §4.2's **second validation run**: a world that moved between the submit and
+/// the commit is refused, and nothing is written on the way to saying no.
+///
+/// This is D-234's residue (1), and the case is what the residue was about. The
+/// approval content pin proves the commit freezes what a reviewer approved; it
+/// says nothing about whether the world still admits it. Here the overlay is
+/// approved while `partner/acme` is declared, the value is then **retired** from
+/// the taxonomy — D-120's own withdrawal — and the commit must refuse rather than
+/// freeze an overlay whose scope selects a partner universe that no longer
+/// contains it.
+///
+/// **The three negative assertions are the point.** A refusal that had already
+/// requested a `CatalogVersion` would leave a pending handle nothing ever
+/// commits, tripping `commit_overdue` for a publish that never happened; one that
+/// had already flipped the revision would be a publish it then denied. So the
+/// revision must still be a draft, no ref may exist, and no announcement may have
+/// been enqueued.
+#[tokio::test]
+async fn a_scope_value_withdrawn_between_submit_and_commit_refuses_and_writes_nothing() {
+    let h = harness().await;
+    let overlays = OverlayRepo::new(h.provider.clone());
+    let price_overlay_id = seed_draft_overlay(&h, 40).await;
+    let record = overlays
+        .load(&h.scope, TENANT, price_overlay_id, 0)
+        .await
+        .expect("load")
+        .expect("the draft");
+    let pin = bss_pricing::domain::approval::content_pin::overlay_content_hash(&record.content());
+
+    // The world moves: the partner value this overlay scopes itself to is
+    // withdrawn after the approval and before the commit.
+    let conn = h.provider.conn().expect("a connection");
+    partner_taxonomy::Entity::update_many()
+        .secure()
+        .scope_with(&h.scope)
+        .col_expr(partner_taxonomy::Column::State, Expr::value("retired"))
+        .filter(
+            Condition::all()
+                .add(partner_taxonomy::Column::TenantId.eq(TENANT))
+                .add(partner_taxonomy::Column::Value.eq("acme")),
+        )
+        .exec(&conn)
+        .await
+        .expect("the partner value is retired");
+
+    let refusal = overlay_publish(&h)
+        .commit(
+            &ctx_of(TENANT),
+            &h.scope,
+            TENANT,
+            OverlayPublishUnit::new(price_overlay_id, 0),
+            // The pin still matches: the *content* is exactly what was approved.
+            // Only the world moved, which is precisely what the content pin
+            // cannot see and this run can.
+            PublishAuthorization::approved(Uuid::new_v4(), ACTOR, Uuid::from_u128(0xbb), pin),
+            stamp_of(ACTOR, at_min(12, 0)),
+        )
+        .await
+        .expect_err("a withdrawn scope value must refuse the commit");
+
+    match &refusal {
+        DomainError::ValidationFailed(report) => assert!(
+            report
+                .violations
+                .iter()
+                .any(|v| v.code == "SCOPE_VALUE_UNKNOWN"),
+            "the refusal names the rule that moved: {report:?}"
+        ),
+        other => panic!("expected the aggregate 422, got {other:?}"),
+    }
+
+    assert_eq!(
+        overlays
+            .load(&h.scope, TENANT, price_overlay_id, 0)
+            .await
+            .expect("load")
+            .expect("the revision")
+            .lifecycle_state,
+        bss_pricing::domain::overlay::OverlayLifecycle::Draft,
+        "a refused commit publishes nothing"
+    );
+    assert!(refs(&h).await.is_empty(), "a refused commit records no ref");
+    // **The assertion that actually pins the ordering.** The two above are true
+    // however late the run sits, because a refused commit rolls its database
+    // writes back either way — a probe on 2026-08-08 moved the run to *after* the
+    // registry request and reddened nothing until this line existed. The registry
+    // is outside the transaction, so a handle requested before the refusal
+    // survives it, and a pending handle nobody ever commits is what trips
+    // `commit_overdue` for a publish that never happened.
+    assert_eq!(
+        h.registry.issued_count(),
+        0,
+        "a refused commit must request no CatalogVersion at all: the refusal has to precede the \
+         handle, not merely roll back beside it"
+    );
+    assert!(
+        events_named(&h, "PriceOverlayPublished").await.is_empty(),
+        "a refused commit announces nothing"
+    );
 }

@@ -46,14 +46,19 @@
 //! The set turned out to be frozen in the **schema** as well, so it also cost
 //! `m20260802_000060`.
 //!
-//! # What this deliberately does not do
+//! # Both halves of §4.2 are enforced, and the second arrived late
 //!
-//! **No second validation run.** §4.2's second run re-validates *state* against a
-//! world that moved between approval and commit, and the overlay plane's rule set
-//! needs `overlay_repo::world_for`, which takes a provider rather than a runner.
-//! What is enforced here instead is the **content** pin, which is the half that
-//! keeps a reviewer's decision honest; the state half is owed and is named in
-//! [`OverlayPublishService::commit`]'s own doc.
+//! The **content** pin keeps a reviewer's decision honest: what commits is what
+//! was approved. The **second validation run** keeps the *world* honest: what
+//! commits is still admissible against a state that has moved since the submit.
+//!
+//! The second was owed for one wave, recorded here and on D-234 as blocked
+//! because the rule set's world came from `overlay_repo::world_for`, "which takes
+//! a provider rather than a runner". That was true of the wrapper and of nothing
+//! else — every fact reader underneath it had always taken `&impl DBRunner` — so
+//! the fix was to split out `world_on` and call it on the transaction. The
+//! premise was narrower than the entry recording it, which is why it is stated
+//! here rather than quietly closed.
 
 use std::sync::Arc;
 
@@ -68,6 +73,7 @@ use crate::domain::error::DomainError;
 use crate::domain::events::CatalogEvent;
 use crate::domain::overlay::OverlayLifecycle;
 use crate::domain::overlay::ScopeValue;
+use crate::domain::overlay_rules::{OverlayCandidate, PRECEDENCE_DUPLICATE, conflict_of, validate};
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
 use crate::domain::publish::{OverlayPublishUnit, PublishAuthorization};
 use crate::domain::read_model::{OverlayIndexShard, SubjectRef};
@@ -136,17 +142,13 @@ impl OverlayPublishService {
     ///    `submitted` over the revision just frozen is an orphan whose approval
     ///    could never lead to a publish.
     ///
-    /// # What is owed
-    ///
-    /// §4.2's **second validation run**. Approval approves content and this
-    /// checks that; the commit is also meant to re-validate *state* against a
-    /// world that moved, and the overlay rule set's world is assembled by
-    /// `overlay_repo::world_for`, which takes a provider rather than a runner. So
-    /// a world change between the submit and the commit — a target plan retired,
-    /// a scope value withdrawn from its taxonomy — is **not** caught here today.
-    /// The submit's own run catches it at submit time, which makes this a
-    /// narrowed window rather than an absent check, and the window is D-47's
-    /// batching delay plus the reviewer's thinking time.
+    /// Step **1b** is §4.2's second validation run, and until 2026-08-08 this
+    /// doc said it was owed: a world change between the submit and the commit —
+    /// a target plan retired, a scope value withdrawn from its taxonomy — went
+    /// uncaught, leaving only the submit's own run and a window of D-47's
+    /// batching delay plus the reviewer's thinking time. It is enforced now, on
+    /// the transaction runner, and the module doc says why the obstacle was
+    /// smaller than it was recorded to be.
     ///
     /// # Errors
     /// [`DomainError::NotFound`] when the revision is absent;
@@ -206,6 +208,58 @@ impl OverlayPublishService {
                                 .approval_ref()
                                 .map_or_else(|| "-".to_owned(), |id| id.to_string()),
                         )));
+                    }
+
+                    // 1b. §4.2's **second validation run** (D-234 residue (1)).
+                    // The pin above proves the *content* is what a reviewer
+                    // approved; this proves the *world* still admits it. A target
+                    // plan retired, a scope value withdrawn from its taxonomy or
+                    // a precedence taken by someone else's publish between the
+                    // submit and the commit all land here, and each of them would
+                    // otherwise be frozen into a `CatalogVersion` by a commit
+                    // whose only check was against a reviewer's snapshot.
+                    //
+                    // **On the transaction runner**, which is the whole reason
+                    // this was owed: the world has to be the one the flip two
+                    // steps down will land into, not one read on a separate
+                    // connection that a concurrent publish can invalidate in
+                    // between.
+                    //
+                    // **Before the registry request**, on step 3's own argument —
+                    // a refusal after the handle is issued leaves a pending
+                    // version nothing ever commits and trips `commit_overdue` for
+                    // a publish that never happened.
+                    let world = overlay_repo::world_on(txn, &scope, tenant_id, &record)
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
+                    let report = validate(&OverlayCandidate {
+                        price_overlay_id: record.price_overlay_id,
+                        revision: record.revision,
+                        scope: record.scope.clone(),
+                        precedence: record.precedence,
+                        interval: record.interval,
+                        tax_basis: record.tax_basis,
+                        disclosure: record.disclosure,
+                        target_ref: record.target_ref.clone(),
+                        lines: record.lines.clone(),
+                        world,
+                    });
+                    // The same two-tier shape the submit uses: §5 types these two
+                    // codes 409 and the rest architectural 422s, so a conflict is
+                    // lifted out of the envelope rather than buried in it.
+                    // Warnings do not block — `EQUAL_PRECEDENCE_CROSS_CLASS_TIE`
+                    // and `FIXED_LINE_DISCARDS_STACK` are things an operator is
+                    // told, not things a commit refuses.
+                    if let Some(violation) = conflict_of(&report) {
+                        return Err(match violation.code.as_str() {
+                            PRECEDENCE_DUPLICATE => {
+                                DomainError::PrecedenceDuplicate(violation.detail.clone())
+                            }
+                            _ => DomainError::OverlayIntervalOverlap(violation.detail.clone()),
+                        });
+                    }
+                    if !report.is_publishable() {
+                        return Err(DomainError::ValidationFailed(report));
                     }
 
                     // 2. The shards, resolved before the flip moves the

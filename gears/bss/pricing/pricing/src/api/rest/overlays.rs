@@ -776,7 +776,10 @@ async fn submit_overlay(
 
     // `inst-pl-validate`: the whole rule set, aggregate, over the world as it
     // stands **now**. §4.2 runs the same set again inside the publish commit,
-    // because the world moves between the two.
+    // because the world moves between the two -- and that second run is real
+    // since 2026-08-08 (D-234 residue (1), `infra::overlay_publish` step 1b).
+    // This sentence stood here for one wave while the commit ran no world check
+    // at all.
     let content_for_pin = record.content();
     let world = state
         .overlays
