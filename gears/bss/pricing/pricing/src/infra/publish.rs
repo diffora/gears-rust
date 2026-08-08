@@ -1049,6 +1049,17 @@ pub(crate) async fn assemble_from(
         plan_shape_repo::load_descriptor(runner, scope, tenant_id, plan_id, draft.revision)
             .await
             .map_err(|e| repo_failure(&e))?;
+    // Slice 10's composite definitions. **Without this line the two composite
+    // rules iterate an empty vec and the content pin frames a count of zero**,
+    // so a one-constituent or `vm -> pod -> vm` revision publishes unrejected and
+    // a formula edit moves no digest -- which is precisely the hole D-256 and
+    // `CONTENT_PIN_DOMAIN_SEP`'s v11 note both claim to close. Found by review
+    // (D-257), and it is D-254's defect class exactly: a rule with an operand
+    // nobody loads is a rule that always passes.
+    shape.composites =
+        plan_shape_repo::load_composite_set(runner, scope, tenant_id, plan_id, draft.revision)
+            .await
+            .map_err(|e| repo_failure(&e))?;
     // The candidate set: the shape as it will be after the commit.
     shape.rows = price_repo::load_for_plan(runner, scope, tenant_id, plan_id, CANDIDATE_ROW_STATES)
         .await

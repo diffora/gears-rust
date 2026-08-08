@@ -378,7 +378,6 @@ impl fmt::Display for PhaseKind {
     }
 }
 
-/// One row of `pricing_plan_phase`, as the rules read it.
 /// One derived (composite) meter definition (Slice 10 §6, A4, D-32, D-106).
 ///
 /// The formula travels as **data** — operands plus operator/weights — and never
@@ -404,6 +403,7 @@ pub struct CompositeMeter {
     pub formula: JsonValue,
 }
 
+/// One row of `pricing_plan_phase`, as the rules read it.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanPhase {

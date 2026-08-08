@@ -2735,3 +2735,79 @@ async fn the_commits_rule_run_reports_what_it_judged() {
         "the commit's rule run reported, with no pre-check anywhere in this case"
     );
 }
+
+/// **A self-referential composite is refused by the real publish path** — D-257,
+/// and the case exists because the rule passing in isolation proved nothing.
+///
+/// `CompositeArity` and `CompositeSelfReference` were registered, unit-tested and
+/// green while `assemble_from` never populated `PlanShape::composites`, so both
+/// iterated an empty vec on every publish and the v11 content pin framed a count
+/// of zero. A one-constituent or `vm → pod → vm` revision published unrejected,
+/// and a formula edit moved no digest — the exact hole D-256 claimed to close.
+///
+/// That is D-254's defect class a second time: a rule with an operand nobody
+/// loads is a rule that always passes. So this asserts through `precheck`, which
+/// runs the same assembly a commit does, rather than through a hand-built shape.
+#[tokio::test]
+async fn a_self_referential_composite_is_refused_by_the_publish_path() {
+    let h = harness().await;
+    let (_revision, _version, _) = seed_publishable(&h).await;
+
+    let clean = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the pre-check runs");
+    assert!(clean.is_publishable(), "the subject was publishable first");
+
+    // `vm` is built from `pod`, and `pod` from `vm`. Neither definition is
+    // self-referential alone; the cycle exists only across the pair.
+    let current = h
+        .plans
+        .find_open_draft(&h.scope, TENANT, plan_id())
+        .await
+        .expect("read the draft")
+        .expect("there is one");
+    h.shapes
+        .replace_composites(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            current.revision,
+            current.row_version,
+            vec![
+                bss_pricing::domain::plan_shape::CompositeMeter {
+                    composite_id: Uuid::from_u128(0xc0_f1),
+                    output_unit: "vm-hour".to_owned(),
+                    constituent_units: vec!["vcpu-hour".to_owned(), "pod-hour".to_owned()],
+                    formula: serde_json::json!({ "op": "weighted_sum" }),
+                },
+                bss_pricing::domain::plan_shape::CompositeMeter {
+                    composite_id: Uuid::from_u128(0xc0_f2),
+                    output_unit: "pod-hour".to_owned(),
+                    constituent_units: vec!["ram-gb-hour".to_owned(), "vm-hour".to_owned()],
+                    formula: serde_json::json!({ "op": "weighted_sum" }),
+                },
+            ],
+            stamp_of(ACTOR, at(11)),
+        )
+        .await
+        .expect("author the cycle on the open draft");
+
+    let report = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the pre-check runs");
+    assert!(
+        !report.is_publishable(),
+        "a transitive composite cycle must not publish: {report:?}"
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "COMPOSITE_SELF_REFERENCE"),
+        "and it must say which rule refused: {report:?}"
+    );
+}

@@ -97,7 +97,8 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # `FLOOR_TYPE_MISSING` / design/10 -- by naming the code in `inst-ft-typed`,
     # the rule that would raise it, together with the reason it cannot fire in the
     # two-field floor shape the slice actually built. Debt is now 21 propagation
-    # gaps + 36 unreferenced codes. Live findings unchanged at 2, both rating-side.
+    # gaps + 33 unreferenced codes (36 until D-256 paid down the three composite
+    # entries). Live findings unchanged at 2, both rating-side.
     assert payload["known_debt_suppressed"] == 54
     assert payload["known_debt_tracked_as"] == "D-69"
 

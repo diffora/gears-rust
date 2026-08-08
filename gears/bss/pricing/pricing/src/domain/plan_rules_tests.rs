@@ -29,11 +29,18 @@ use super::{
     SETUP_ROW_INVALID, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
     USAGE_MARKET_INCOMPLETE,
 };
+use crate::domain::rules::{COMPOSITE_SELF_REFERENCE, COMPOSITE_TOO_FEW_CONSTITUENTS};
 
 /// Every code G4 emits, paired with the spelling `02-plan-definition.md` §5
 /// gives it. The right-hand side is transcribed from the document, not from the
 /// constant, which is the only arrangement under which this test can fail.
 const DECLARED: &[(&str, &str)] = &[
+    // Slice 10's two, emitted by this pipeline since D-256.
+    (
+        COMPOSITE_TOO_FEW_CONSTITUENTS,
+        "COMPOSITE_TOO_FEW_CONSTITUENTS",
+    ),
+    (COMPOSITE_SELF_REFERENCE, "COMPOSITE_SELF_REFERENCE"),
     (INVALID_CUSTOM_INTERVAL, "INVALID_CUSTOM_INTERVAL"),
     (HYBRID_INCOMPLETE, "HYBRID_INCOMPLETE"),
     (USAGE_MARKET_INCOMPLETE, "USAGE_MARKET_INCOMPLETE"),
@@ -61,7 +68,11 @@ fn every_declared_code_is_spelled_as_the_design_set_spells_it() {
     for (constant, in_the_document) in DECLARED {
         assert_eq!(constant, in_the_document);
     }
-    assert_eq!(DECLARED.len(), 20, "the codes G4 emits");
+    assert_eq!(
+        DECLARED.len(),
+        22,
+        "the codes G4 emits, plus Slice 10's two (D-256)"
+    );
 }
 
 #[test]

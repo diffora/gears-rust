@@ -1390,28 +1390,6 @@ fn three_addon_rules() -> Vec<AddonRule> {
 /// obligations under test are `open_revision` copying **every** child table
 /// forward and `abandon_draft` dropping **every** one, and a seed carrying a
 /// single table would leave a copier that handles exactly one of them green.
-/// Two composite definitions, neither self-referential, for the shape cases.
-///
-/// **In the order the reader guarantees** — `output_unit` then `composite_id` —
-/// so the assertions stay equalities over a total order rather than set
-/// comparisons, which is `three_phases`' arrangement for the same reason.
-fn two_composites() -> Vec<CompositeMeter> {
-    vec![
-        CompositeMeter {
-            composite_id: Uuid::from_u128(0xc0_a2),
-            output_unit: "storage-unit".to_owned(),
-            constituent_units: vec!["iops".to_owned(), "gb-month".to_owned()],
-            formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 1] }),
-        },
-        CompositeMeter {
-            composite_id: Uuid::from_u128(0xc0_a1),
-            output_unit: "vm-hour".to_owned(),
-            constituent_units: vec!["vcpu-hour".to_owned(), "ram-gb-hour".to_owned()],
-            formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 4] }),
-        },
-    ]
-}
-
 async fn published_plan_with_shape(
     repo: &PlanRepo,
     provider: &DBProvider<DbError>,
@@ -1477,6 +1455,28 @@ async fn published_plan_with_shape(
     seed_bundle_composition(provider, scope, tenant, plan_id).await;
     flip_state(provider, scope, plan_id, 0, LifecycleState::Published).await;
     shapes
+}
+
+/// Two composite definitions, neither self-referential, for the shape cases.
+///
+/// **In the order the reader guarantees** — `output_unit` then `composite_id` —
+/// so the assertions stay equalities over a total order rather than set
+/// comparisons, which is `three_phases`' arrangement for the same reason.
+fn two_composites() -> Vec<CompositeMeter> {
+    vec![
+        CompositeMeter {
+            composite_id: Uuid::from_u128(0xc0_a2),
+            output_unit: "storage-unit".to_owned(),
+            constituent_units: vec!["iops".to_owned(), "gb-month".to_owned()],
+            formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 1] }),
+        },
+        CompositeMeter {
+            composite_id: Uuid::from_u128(0xc0_a1),
+            output_unit: "vm-hour".to_owned(),
+            constituent_units: vec!["vcpu-hour".to_owned(), "ram-gb-hour".to_owned()],
+            formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 4] }),
+        },
+    ]
 }
 
 /// The plan this fixture builds is also a **bundle**, and its composition is
