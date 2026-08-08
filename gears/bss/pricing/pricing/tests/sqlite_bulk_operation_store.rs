@@ -167,3 +167,28 @@ async fn a_client_key_is_idempotent_within_a_tenant() {
     let second = seed("import").replace(OP, "44444444-4444-4444-4444-444444444444");
     must_be_rejected(&conn, &second, "UNIQUE").await;
 }
+
+/// **A run is born `validating` and in no other state** — §4's initial state,
+/// enforced at `INSERT` rather than assumed of the caller.
+///
+/// Without this arm the whole machine is a rule about `UPDATE` with a row free to
+/// be born past it: born `committing` skips the approval gate transitions 2 and 3
+/// exist to impose, and born `completed` reports outcomes for rows it never
+/// committed — the very move `a_terminal_run_never_moves_again` proves is refused
+/// as an update. `m20260802_000015` carries the same arm for the same reason.
+///
+/// Found by review; every case above seeded `validating` and so could not see it.
+#[tokio::test]
+async fn a_run_cannot_be_born_past_the_state_machine() {
+    for state in [
+        "committing",
+        "awaiting_approval",
+        "completed",
+        "completed_with_conflicts",
+        "validation_failed",
+    ] {
+        let conn = migrated_db().await;
+        let born = seed("repricing").replace("'validating'", &format!("'{state}'"));
+        must_be_rejected(&conn, &born, "born validating").await;
+    }
+}

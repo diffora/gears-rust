@@ -125,6 +125,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_audit_log_no_update",
     // Slice 12's bulk operation: the DELETE ban, the frozen-column whitelist
     // and section 4's edges, as three triggers mirroring the one PL/pgSQL function.
+    "trg_pricing_bulk_operation_born_validating",
     "trg_pricing_bulk_operation_frozen_columns",
     "trg_pricing_bulk_operation_no_delete",
     "trg_pricing_bulk_operation_transitions",
@@ -618,6 +619,10 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     // Slice 12's bulk operation. Read back off the built schema, as this census
     // requires: the transitions arm carries section 4's five edges, so a lost
     // disjunct here is a state move the store would silently start admitting.
+    (
+        "trg_pricing_bulk_operation_born_validating",
+        15_400_506_675_831_746_121_u64,
+    ),
     (
         "trg_pricing_bulk_operation_frozen_columns",
         4_811_342_419_971_160_178_u64,

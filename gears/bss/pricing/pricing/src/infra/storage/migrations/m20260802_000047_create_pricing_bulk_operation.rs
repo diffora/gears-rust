@@ -97,6 +97,20 @@ const PG_UP_STATEMENTS: &[&str] = &[
         ON bss.pricing_bulk_operation (tenant_id, state, submitted_at)",
     "CREATE OR REPLACE FUNCTION bss.pricing_bulk_operation_transitions() RETURNS trigger AS $$
         BEGIN
+          -- **A run is born `validating` and in no other state.** -4 names it the
+          -- initial state, and without this arm the whole machine is a rule about
+          -- UPDATE with a row free to be born `committing` -- past the approval
+          -- gate transitions 2 and 3 exist to impose - or born terminal,
+          -- reporting outcomes for rows it never committed. `m20260802_000015`
+          -- carries the same arm for the same reason, in the same words.
+          IF TG_OP = 'INSERT' THEN
+            IF NEW.state <> 'validating' THEN
+              RAISE EXCEPTION
+                'pricing_bulk_operation: a run is born validating, not %', NEW.state;
+            END IF;
+            RETURN NEW;
+          END IF;
+
           IF TG_OP = 'DELETE' THEN
             RAISE EXCEPTION
               'pricing_bulk_operation: DELETE of operation % is not permitted; a run is a record, not a draft',
@@ -134,7 +148,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
         END;
      $$ LANGUAGE plpgsql",
     "CREATE TRIGGER trg_pricing_bulk_operation_transitions
-        BEFORE UPDATE OR DELETE ON bss.pricing_bulk_operation
+        BEFORE INSERT OR UPDATE OR DELETE ON bss.pricing_bulk_operation
         FOR EACH ROW EXECUTE FUNCTION bss.pricing_bulk_operation_transitions()",
 ];
 
@@ -173,6 +187,13 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         ON pricing_bulk_operation (tenant_id, client_key)",
     "CREATE INDEX idx_pricing_bulk_operation_live
         ON pricing_bulk_operation (tenant_id, state, submitted_at)",
+    "CREATE TRIGGER trg_pricing_bulk_operation_born_validating
+        BEFORE INSERT ON pricing_bulk_operation
+        FOR EACH ROW WHEN NEW.state <> 'validating'
+        BEGIN
+          SELECT RAISE(ABORT,
+            'pricing_bulk_operation: a run is born validating and in no other state');
+        END",
     "CREATE TRIGGER trg_pricing_bulk_operation_no_delete
         BEFORE DELETE ON pricing_bulk_operation
         FOR EACH ROW
