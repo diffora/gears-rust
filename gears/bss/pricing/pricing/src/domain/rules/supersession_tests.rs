@@ -6,7 +6,7 @@ use super::{SupersessionPair, SupersessionUnitGuard};
 use crate::domain::money::MinorAmount;
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
-    RolloverPolicy, TierAggregationWindow, TierBand, TierQualificationWindow,
+    ReservationFlavor, RolloverPolicy, TierAggregationWindow, TierBand, TierQualificationWindow,
     unit_determining_mismatch,
 };
 use crate::domain::rules::SUPERSESSION_UNIT_MISMATCH;
@@ -366,5 +366,36 @@ fn moving_to_the_trailing_window_is_a_unit_change() {
         report.violations[0]
             .detail
             .contains("tierQualificationWindow")
+    );
+}
+
+/// **A flavor flip mid-window is a unit change** (D-254), and it was not one until
+/// the review that found it.
+///
+/// `capacity -> consumption` changes whether the reserved quantity ever enters the
+/// on-demand counter: under `capacity` the charge never touches `Q`
+/// (`inst-rv-level`, D-139), under `consumption` the matched quantity is excluded
+/// from it and the remainder's `Q` restarts at zero (`inst-rv-tier-q`). A successor
+/// that flips it inherits a **continued** counter accumulated under the other
+/// reading, which is precisely the hazard this rule refuses for the seven fields
+/// it already listed — and the same series files the flavor inside the
+/// evaluation-policy roster for the same reason.
+#[test]
+fn a_reservation_flavor_flip_is_a_unit_change() {
+    let mut before = predecessor();
+    before.reserved_rate_minor = Some(minor(1000));
+    before.reservation_flavor = Some(ReservationFlavor::Capacity);
+    let mut successor = before.clone();
+    successor.reservation_flavor = Some(ReservationFlavor::Consumption);
+
+    let pair = SupersessionPair::new(before, successor);
+    let report = judge(&pair);
+
+    assert_eq!(report.violations.len(), 1);
+    assert_eq!(report.violations[0].code, SUPERSESSION_UNIT_MISMATCH);
+    assert!(
+        report.violations[0].detail.contains("reservationFlavor"),
+        "the violation must name the offending field: {}",
+        report.violations[0].detail
     );
 }

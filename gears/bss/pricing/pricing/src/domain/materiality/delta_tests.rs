@@ -16,7 +16,8 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
-    IncludedAllowance, ModelKind, PriceRow, QuantitySource, RolloverPolicy, TierBand,
+    IncludedAllowance, MinQtyUsageFallback, ModelKind, PriceRow, QuantitySource, ReservationFlavor,
+    RolloverPolicy, TierBand,
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
@@ -519,5 +520,80 @@ fn gaining_or_losing_the_contract_is_a_change_in_either_direction() {
     assert_eq!(
         row_delta(&without, &with),
         RowDelta::NotComputable("billing_anchor_policy")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Slice 10's primitives, which reached this domain a wave late (D-254).
+// ---------------------------------------------------------------------------
+
+/// **A reserved rate that moves is not an immaterial change**, and until D-254 it
+/// was classified as one.
+///
+/// `reserved_rate_minor` is money — D-139 denominates it per covered granule — but
+/// it is not `amount_minor`, so `amount_delta` compared two unchanged amounts and
+/// answered a **zero move**. A zero move is immaterial, and an immaterial publish
+/// needs one principal. A four-fold rise in the reserved rate therefore reached
+/// consumers with no second approver, on a row whose on-demand price never moved.
+///
+/// It is `NotComputable` rather than an `Amount` move for D-115 clause (2)'s
+/// stated reason: no effective-price delta is computable catalog-side — that would
+/// need the covered-granule count, which is Rating's runtime fact — so the G1
+/// fail-safe applies and the operator gets a second signature instead of a number.
+#[test]
+fn a_reserved_rate_move_is_not_computable_rather_than_a_zero_delta() {
+    let mut current = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    current.amount_minor = Some(minor(10));
+    current.reserved_rate_minor = Some(minor(4000));
+    let mut baseline = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    baseline.amount_minor = Some(minor(10));
+    baseline.reserved_rate_minor = Some(minor(1000));
+
+    assert_eq!(
+        row_delta(&record(current), &record(baseline)),
+        RowDelta::NotComputable("reserved_rate_minor"),
+        "the on-demand amount is identical, so nothing but this field can have answered"
+    );
+}
+
+/// The three fields that decide **what quantity is billable** all fail closed.
+///
+/// Each is in `evaluation-policy-generation`'s roster for exactly this reason —
+/// `reservation_flavor` decides whether the reserved quantity enters the on-demand
+/// counter `Q` at all (`inst-rv-tier-q` / `inst-rv-level`), and the usage floor and
+/// its fallback decide what a below-floor quantity bills as. A field the roster
+/// calls quantity-determining and this domain calls immaterial is the same
+/// contradiction `includedAllowance.quantity` was added here to close.
+#[test]
+fn the_quantity_determining_primitives_fail_closed() {
+    let base = || {
+        let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+        row.amount_minor = Some(minor(10));
+        row.reserved_rate_minor = Some(minor(1000));
+        row.reservation_flavor = Some(ReservationFlavor::Capacity);
+        row.min_qty_usage = Some(5);
+        row.min_qty_usage_fallback = Some(MinQtyUsageFallback::Exception);
+        row
+    };
+
+    let mut flavor = base();
+    flavor.reservation_flavor = Some(ReservationFlavor::Consumption);
+    assert_eq!(
+        row_delta(&record(flavor), &record(base())),
+        RowDelta::NotComputable("reservation_flavor")
+    );
+
+    let mut floor = base();
+    floor.min_qty_usage = Some(50);
+    assert_eq!(
+        row_delta(&record(floor), &record(base())),
+        RowDelta::NotComputable("min_qty_usage")
+    );
+
+    let mut fallback = base();
+    fallback.min_qty_usage_fallback = None;
+    assert_eq!(
+        row_delta(&record(fallback), &record(base())),
+        RowDelta::NotComputable("min_qty_usage_fallback")
     );
 }

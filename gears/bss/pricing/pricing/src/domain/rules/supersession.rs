@@ -128,6 +128,18 @@ impl SupersessionPair {
             changed.push("dimensionKey");
         }
         changed.extend(unit_determining_mismatch(before, after));
+        // `reservation_flavor` is this guard's own rather than one of the shared
+        // seven, and the split is deliberate (D-254): the shared list is
+        // `inst-ph-override-units`' too, and widening it would rebind a
+        // phase-scoped override on an argument the design set has not made.
+        // Here the argument is direct -- the flavor decides whether the reserved
+        // quantity leaves the on-demand counter `Q` (`inst-rv-tier-q`) or never
+        // enters it (`inst-rv-level`, D-139) -- so a successor that flips it
+        // inherits a continued counter under different semantics, which is
+        // exactly what this rule refuses for the other unit-determining fields.
+        if before.reservation_flavor != after.reservation_flavor {
+            changed.push("reservationFlavor");
+        }
         if self.carry_allowance_changed() {
             changed.push("included_allowance");
         }

@@ -167,7 +167,8 @@ fn geometry_of(bands: &[TierBand]) -> Vec<(u64, Option<u64>)> {
         .collect()
 }
 
-/// The quantity-determining fields that move money at zero amount delta.
+/// The fields that move money at **zero amount delta** — quantity-determining, or
+/// money on an axis this domain cannot compute.
 ///
 /// §3 step 3 names them and D-115 clause (2) states the rule: *"no effective-price
 /// delta is computable catalog-side (the no-charge-computation principle forbids
@@ -186,6 +187,32 @@ fn quantity_change(current: &PriceRow, baseline: &PriceRow) -> Option<&'static s
             .map(|allowance| allowance.quantity)
     {
         return Some("includedAllowance.quantity");
+    }
+    // --- Slice 10's primitives (D-254) ---
+    //
+    // Added a wave after the columns landed, which is the defect this arm
+    // records rather than merely fixes: none of them reached this domain, so a
+    // successor moving only one of them produced a **zero** amount move and was
+    // classified immaterial -- a publish on one principal.
+    //
+    // `reserved_rate_minor` is money and is nonetheless `NotComputable` for
+    // clause (2)'s reason: the effective delta needs the covered-granule count
+    // (D-139), which is Rating's runtime fact and not the catalog's to compute.
+    if current.reserved_rate_minor != baseline.reserved_rate_minor {
+        return Some("reserved_rate_minor");
+    }
+    // The three the evaluation-policy roster already calls quantity-determining.
+    // A field the roster files as deciding the billable quantity and this domain
+    // treats as immaterial is the contradiction `includedAllowance.quantity`
+    // was added here to close.
+    if current.reservation_flavor != baseline.reservation_flavor {
+        return Some("reservation_flavor");
+    }
+    if current.min_qty_usage != baseline.min_qty_usage {
+        return Some("min_qty_usage");
+    }
+    if current.min_qty_usage_fallback != baseline.min_qty_usage_fallback {
+        return Some("min_qty_usage_fallback");
     }
     None
 }
