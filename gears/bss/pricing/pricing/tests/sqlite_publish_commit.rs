@@ -44,11 +44,15 @@ use bss_pricing::domain::audit::{
 };
 use bss_pricing::domain::bundle::{InvoiceItemization, PriceBasis};
 use bss_pricing::domain::concurrency::RowVersion;
-use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
+use bss_pricing::domain::contracts::{
+    BillingAnchorPolicy, EntitlementGrants, GrantSet, PlanChangeContract, ProrationBasis,
+    ProrationContract, UsageCounterOnPlanChange,
+};
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+use bss_pricing::domain::plan::PlanShapePatch;
 use bss_pricing::domain::plan_shape::{PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
@@ -2809,5 +2813,288 @@ async fn a_self_referential_composite_is_refused_by_the_publish_path() {
             .iter()
             .any(|v| v.code == "COMPOSITE_SELF_REFERENCE"),
         "and it must say which rule refused: {report:?}"
+    );
+}
+
+/// The trial half of the two-phase chain the grant-set case needs.
+fn trial_phase() -> PhaseId {
+    PhaseId::new(Uuid::from_u128(0xfa_51))
+}
+
+/// The seed's canonical scope key moved onto another phase.
+fn scope_key_in_phase(phase: PhaseId) -> ScopeKey {
+    ScopeKey::new(
+        plan_id(),
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("eu").expect("a non-blank region"),
+        phase,
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("the class pairs with cohort none")
+}
+
+/// Give the seeded plan a real two-phase schedule, covered in its one market.
+///
+/// The seed is D-19's single implicit terminal phase, which makes it
+/// **non-phased** — and `GrantSetPhasesKnown` answers a non-phased plan from its
+/// first arm, before it ever walks the authored keys. Reaching the arm that
+/// judges an *unknown* key needs a schedule of two, and `PhaseCoverage` then
+/// needs a recurring row in every market for both of them or it refuses the plan
+/// for a reason the case is not about.
+///
+/// The terminal phase keeps the seed's id so the seeded row still covers it.
+async fn make_two_phased(h: &Harness) {
+    let current = h
+        .plans
+        .find_open_draft(&h.scope, TENANT, plan_id())
+        .await
+        .expect("read the draft")
+        .expect("there is one");
+    h.shapes
+        .replace_phases(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            current.revision,
+            current.row_version,
+            vec![
+                PlanPhase {
+                    phase_id: trial_phase(),
+                    kind: PhaseKind::Trial,
+                    ordinal: 0,
+                    converts_to_phase_id: Some(terminal_phase()),
+                    phase_duration_days: Some(14),
+                    display_trial_days: Some(14),
+                },
+                PlanPhase {
+                    phase_id: terminal_phase(),
+                    kind: PhaseKind::Evergreen,
+                    ordinal: 1,
+                    converts_to_phase_id: None,
+                    phase_duration_days: None,
+                    display_trial_days: None,
+                },
+            ],
+            stamp(),
+        )
+        .await
+        .expect("attach the two-phase chain");
+
+    let trial_price = Uuid::from_u128(0xb_0002);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: trial_price,
+                scope_key: scope_key_in_phase(trial_phase()),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the trial-phase row");
+    let conn = h.provider.conn().expect("conn");
+    common::schedule_coverage_window(&conn, &h.scope, TENANT, trial_price, stamp()).await;
+}
+
+/// **A per-phase grant set keyed to a phase the schedule does not have is refused
+/// by the real publish path** — D-258's first owed case.
+///
+/// `GrantSetPhasesKnown` was registered, unit-tested and green while
+/// `assemble_from` never copied `entitlement_grants` off the draft. The shape's
+/// grant set was `EntitlementGrants::default()` on **every** publish, so
+/// `per_phase` was always empty and the rule returned on its first line — and the
+/// content pin framed that same default, leaving open the "approved a trial
+/// capped at 20, published 20 000, with an equal digest" hole `content_pin`'s own
+/// doc claims to close.
+///
+/// D-258 landed the correction gated but **untested** and said so rather than
+/// hiding it; this is the case it owed. Asserted through `precheck`, which runs
+/// the same assembly a commit does, because the defect is a field the assembly
+/// never filled and no test that hand-builds a `PlanShape` can see one.
+///
+/// The clean pre-check ahead of the patch is load-bearing twice over: it proves
+/// the subject was publishable before the grant set was authored, and — on a
+/// schedule of two, in a market `PhaseCoverage` walks — that the phase set
+/// reached the shape too, so the refusal below is the unknown-key arm and not
+/// the non-phased one wearing the same code.
+#[tokio::test]
+async fn a_grant_set_naming_an_unknown_phase_is_refused_by_the_publish_path() {
+    let h = harness().await;
+    let (_revision, _version, _) = seed_publishable(&h).await;
+    make_two_phased(&h).await;
+
+    let clean = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the pre-check runs");
+    assert!(
+        clean.is_publishable(),
+        "the two-phase subject was publishable first: {clean:?}"
+    );
+
+    // A key that names no phase of the schedule. The set is non-empty because an
+    // absent grant set is stored as `NULL` and would never read back.
+    let stranger = Uuid::from_u128(0x_9051);
+    let current = h
+        .plans
+        .find_open_draft(&h.scope, TENANT, plan_id())
+        .await
+        .expect("read the draft")
+        .expect("there is one");
+    h.plans
+        .update_draft(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            current.revision,
+            current.row_version,
+            PlanShapePatch {
+                entitlement_grants: Some(EntitlementGrants {
+                    plan_tier_ref: None,
+                    plan_level: GrantSet::default(),
+                    per_phase: std::collections::BTreeMap::from([(
+                        stranger,
+                        GrantSet {
+                            feature_flags: std::collections::BTreeMap::from([(
+                                "bss.pricing/api-access".to_owned(),
+                                true,
+                            )]),
+                            quotas: std::collections::BTreeMap::new(),
+                        },
+                    )]),
+                }),
+                ..PlanShapePatch::default()
+            },
+            stamp(),
+        )
+        .await
+        .expect("author the grant set on the open draft");
+
+    let report = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the pre-check runs");
+    assert!(
+        !report.is_publishable(),
+        "a grant set keyed to no phase of the schedule must not publish: {report:?}"
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.code == "GRANT_SET_PHASE_UNKNOWN"),
+        "and it must say which rule refused: {report:?}"
+    );
+}
+
+/// **A ranked plan that another published plan points at still publishes** —
+/// D-258's second owed case, and the one that was a live wrong answer rather
+/// than a silent gap.
+///
+/// D-54's reverse guard reads the subject's `comparability_rank` off the shape
+/// and the inbound edges off the store, independently. While `assemble_from`
+/// never copied `change_contract`, the shape's rank was `None` on every publish
+/// while the edges were real — so `COMPARABILITY_RANK_REVOKED` fired against
+/// **any** plan another published plan named, however carefully that plan had
+/// authored its rank. An operator was refused for a rule they satisfied, and
+/// their remediation — publish a rank — could not work.
+///
+/// So this case asserts a **publish**, not a refusal. That is the awkward shape
+/// and it is the necessary one: the defect made a passing subject fail, and only
+/// a green subject with a real inbound edge can see it.
+#[tokio::test]
+async fn a_ranked_plan_another_published_plan_points_at_still_publishes() {
+    let h = harness().await;
+    let (_revision, _version, _) = seed_publishable(&h).await;
+
+    // The referencing plan. It is published straight at the table because what
+    // this case needs of it is one stored fact — a published edge naming the
+    // subject — and driving it through the engine would make the case depend on
+    // a second plan being publishable in its own right.
+    let referrer = PlanId::new(Uuid::from_u128(0x9_1a5));
+    let other = h
+        .plans
+        .create_draft(
+            &h.scope,
+            NewPlanDraft {
+                plan_id: referrer,
+                ..new_plan_draft()
+            },
+        )
+        .await
+        .expect("create the referring draft");
+    h.plans
+        .update_draft(
+            &h.scope,
+            TENANT,
+            referrer,
+            other.revision,
+            other.row_version,
+            PlanShapePatch {
+                change_contract: Some(PlanChangeContract {
+                    allowed_change_targets: Some(vec![plan_id().get()]),
+                    comparability_rank: Some(20),
+                    usage_counter_on_plan_change: UsageCounterOnPlanChange::default(),
+                }),
+                ..PlanShapePatch::default()
+            },
+            stamp(),
+        )
+        .await
+        .expect("author the edge pointing at the subject");
+    common::publish_plan_directly(&h.provider, &h.scope, referrer, other.revision).await;
+
+    // The subject carries a rank and no edges of its own: K4 asks a rank of it
+    // for the inbound edges alone, which is exactly D-54's guard.
+    let current = h
+        .plans
+        .find_open_draft(&h.scope, TENANT, plan_id())
+        .await
+        .expect("read the draft")
+        .expect("there is one");
+    h.plans
+        .update_draft(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            current.revision,
+            current.row_version,
+            PlanShapePatch {
+                change_contract: Some(PlanChangeContract {
+                    allowed_change_targets: None,
+                    comparability_rank: Some(10),
+                    usage_counter_on_plan_change: UsageCounterOnPlanChange::default(),
+                }),
+                ..PlanShapePatch::default()
+            },
+            stamp(),
+        )
+        .await
+        .expect("author the subject's rank");
+
+    let report = h
+        .publish
+        .precheck(&h.scope, TENANT, plan_id(), at(11))
+        .await
+        .expect("the pre-check runs");
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.code == "COMPARABILITY_RANK_REVOKED"),
+        "the subject publishes a rank, so D-54's reverse guard has nothing to \
+         report: {report:?}"
+    );
+    assert!(
+        report.is_publishable(),
+        "and the plan publishes: {report:?}"
     );
 }
