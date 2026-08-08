@@ -24,6 +24,9 @@ const TENANT: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "33333333-3333-3333-3333-333333333333";
 const PRICE: &str = "44444444-4444-4444-4444-444444444444";
 const SUCCESSOR: &str = "55555555-5555-5555-5555-555555555555";
+const PLAN: &str = "77777777-7777-7777-7777-777777777777";
+const PHASE_A: &str = "88888888-8888-8888-8888-888888888888";
+const PHASE_B: &str = "99999999-9999-9999-9999-999999999999";
 
 async fn applied() -> DatabaseConnection {
     Pg::applied().await.raw().await
@@ -56,12 +59,41 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, by: &str) {
 }
 
 fn seed_run() -> String {
+    seed_run_of_kind("repricing")
+}
+
+fn seed_run_of_kind(kind: &str) -> String {
     format!(
         "INSERT INTO bss.pricing_bulk_operation \
          (operation_id, tenant_id, kind, state, client_key, report, submitted_by, submitted_at) \
-         VALUES ('{RUN}', '{TENANT}', 'repricing', 'validating', 'ck-1', '{{}}'::jsonb, \
+         VALUES ('{RUN}', '{TENANT}', '{kind}', 'validating', 'ck-1', '{{}}'::jsonb, \
          '{ACTOR}', now())"
     )
+}
+
+/// The selected row and the successor an apply would produce — real
+/// `pricing_price` rows, because the journal keys both.
+fn seed_price(id: &str) -> String {
+    // Distinct phases so the two do not collide on the published-plane scope-key
+    // index, which admits one current row per canonical key.
+    let phase = if id == SUCCESSOR { PHASE_B } else { PHASE_A };
+    format!(
+        "INSERT INTO bss.pricing_price ( \
+             price_id, tenant_id, plan_id, currency, region, phase, \
+             charge_kind, amount_minor, model_kind, lifecycle_state, \
+             created_by, created_at_utc) \
+         VALUES ('{id}', '{TENANT}', '{PLAN}', 'EUR', 'eu', '{phase}', \
+             'recurring', 1000, 'flat', 'published', '{ACTOR}', now())"
+    )
+}
+
+/// Everything a journal row's three keys name.
+async fn seeded() -> DatabaseConnection {
+    let conn = applied().await;
+    must_succeed(&conn, &seed_price(PRICE)).await;
+    must_succeed(&conn, &seed_price(SUCCESSOR)).await;
+    must_succeed(&conn, &seed_run()).await;
+    conn
 }
 
 fn seed_row() -> String {
@@ -84,8 +116,7 @@ fn decide(state: &str) -> String {
 }
 
 async fn journalled() -> DatabaseConnection {
-    let conn = applied().await;
-    must_succeed(&conn, &seed_run()).await;
+    let conn = seeded().await;
     must_succeed(&conn, &seed_row()).await;
     conn
 }
@@ -111,8 +142,7 @@ async fn both_sanctioned_outcomes_are_reachable() {
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn a_journal_row_cannot_be_born_decided() {
-    let conn = applied().await;
-    must_succeed(&conn, &seed_run()).await;
+    let conn = seeded().await;
     for born in [
         format!(
             "INSERT INTO bss.pricing_repricing_journal \
@@ -189,8 +219,7 @@ async fn a_journal_row_is_keyed_frozen_and_undeletable() {
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn the_outcome_columns_agree_with_the_state() {
-    let conn = applied().await;
-    must_succeed(&conn, &seed_run()).await;
+    let conn = seeded().await;
 
     for (born, constraint) in [
         (
@@ -220,6 +249,24 @@ async fn the_outcome_columns_agree_with_the_state() {
             ),
             "chk_pricing_repricing_journal_failed",
         ),
+        (
+            // The mirror half-set: an instant with no successor to point at.
+            format!(
+                "INSERT INTO bss.pricing_repricing_journal \
+                 (run_id, price_id, tenant_id, state, applied_at) \
+                 VALUES ('{RUN}', '{PRICE}', '{TENANT}', 'pending', now())"
+            ),
+            "chk_pricing_repricing_journal_applied",
+        ),
+        (
+            // A row carrying both states' columns at once.
+            format!(
+                "INSERT INTO bss.pricing_repricing_journal \
+                 (run_id, price_id, tenant_id, state, applied_price_id, applied_at, failure_reason) \
+                 VALUES ('{RUN}', '{PRICE}', '{TENANT}', 'pending', '{SUCCESSOR}', now(), 'both')"
+            ),
+            "chk_pricing_repricing_journal_applied",
+        ),
     ] {
         must_be_rejected(&conn, &born, constraint).await;
     }
@@ -235,6 +282,34 @@ async fn the_outcome_columns_agree_with_the_state() {
         "chk_pricing_repricing_journal_successor_is_new",
     )
     .await;
+    // The same two agreements arriving as an **update** out of `pending`. Both
+    // were reachable on this engine through the insert path alone until now, so a
+    // constraint that stopped holding for the verb the apply loop actually uses
+    // would have been invisible here.
+    for (update, constraint) in [
+        (
+            "SET state = 'applied'",
+            "chk_pricing_repricing_journal_applied",
+        ),
+        (
+            "SET state = 'failed'",
+            "chk_pricing_repricing_journal_failed",
+        ),
+        (
+            "SET state = 'applied', applied_at = now()",
+            "chk_pricing_repricing_journal_applied",
+        ),
+    ] {
+        must_be_rejected(
+            &conn,
+            &format!(
+                "UPDATE bss.pricing_repricing_journal {update} \
+                 WHERE run_id = '{RUN}' AND price_id = '{PRICE}'"
+            ),
+            constraint,
+        )
+        .await;
+    }
     // The vocabulary is closed — asserted **only** as an update, because at
     // `INSERT` the born-pending arm is strictly narrower than this `CHECK` and
     // raises first, so a case expecting the constraint there would be reading the
@@ -252,26 +327,66 @@ async fn the_outcome_columns_agree_with_the_state() {
     .await;
 }
 
-/// A journal row belongs to a run, by key.
+/// All three keys, each asserted by **name** — which is what Postgres gives and
+/// the `SQLite` mirror cannot, its key violation being the bare string
+/// `FOREIGN KEY constraint failed`.
 ///
-/// Observable here, unlike `pricing_composite_meter`'s parent key: this table's
-/// `BEFORE INSERT` arm reads `NEW.state` alone, so a row with a good state and a
-/// run that does not exist reaches the key rather than being shadowed by the
-/// trigger.
+/// The run key is observable, unlike `pricing_composite_meter`'s parent key,
+/// because both arms that read the parent defer when the run is absent: a `BEFORE`
+/// trigger answers ahead of the key on this engine, so an arm that raised there
+/// would shadow it and report a fault the caller does not have.
 #[tokio::test]
 #[ignore = "requires Docker"]
-async fn a_journal_row_belongs_to_a_run() {
+async fn every_key_names_a_row_that_exists() {
     let conn = applied().await;
+    must_succeed(&conn, &seed_price(PRICE)).await;
+    must_be_rejected(&conn, &seed_row(), "fk_pricing_repricing_journal_run").await;
+
+    let conn = applied().await;
+    must_succeed(&conn, &seed_run()).await;
+    must_be_rejected(&conn, &seed_row(), "fk_pricing_repricing_journal_price").await;
+
+    // The successor's key is reachable only at the apply: the column is null in
+    // every other state.
+    let conn = applied().await;
+    must_succeed(&conn, &seed_price(PRICE)).await;
+    must_succeed(&conn, &seed_run()).await;
+    must_succeed(&conn, &seed_row()).await;
     must_be_rejected(
         &conn,
-        &format!(
-            "INSERT INTO bss.pricing_repricing_journal (run_id, price_id, tenant_id, state) \
-             VALUES ('{SUCCESSOR}', '{PRICE}', '{TENANT}', 'pending')"
-        ),
-        "fk_pricing_repricing_journal_run",
+        &decide("applied"),
+        "fk_pricing_repricing_journal_applied_price",
     )
     .await;
 
-    must_succeed(&conn, &seed_run()).await;
-    must_succeed(&conn, &seed_row()).await;
+    // With every referent present the same statements land, so each refusal above
+    // is its own key rather than something else about the statement.
+    let conn = journalled().await;
+    must_succeed(&conn, &decide("applied")).await;
+}
+
+/// **One journal row per `(run_id, price_id)`** — the uniqueness that makes this
+/// table an idempotency spine rather than a log. A second row on one pair would
+/// let a re-drive read `pending` for a row already `applied` and apply it twice.
+///
+/// Asserted behaviourally because `EXPECTED_PRIMARY_KEYS` proves the key was
+/// *declared* on both engines and nothing proved it refuses.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn one_journal_row_per_run_and_price() {
+    let conn = journalled().await;
+    must_be_rejected(&conn, &seed_row(), "pricing_repricing_journal_pkey").await;
+}
+
+/// **Only a repricing run journals here.** A bulk import's per-row outcomes live
+/// in the operation's own `report` (`inst-bi-commit`), and nothing drives an
+/// import through this table — so a journal row under an import is a record no
+/// code will ever complete.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn an_import_does_not_journal() {
+    let conn = applied().await;
+    must_succeed(&conn, &seed_price(PRICE)).await;
+    must_succeed(&conn, &seed_run_of_kind("import")).await;
+    must_be_rejected(&conn, &seed_row(), "only a repricing run").await;
 }

@@ -22,6 +22,9 @@ const TENANT: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "33333333-3333-3333-3333-333333333333";
 const PRICE: &str = "44444444-4444-4444-4444-444444444444";
 const SUCCESSOR: &str = "55555555-5555-5555-5555-555555555555";
+const PLAN: &str = "77777777-7777-7777-7777-777777777777";
+const PHASE_A: &str = "88888888-8888-8888-8888-888888888888";
+const PHASE_B: &str = "99999999-9999-9999-9999-999999999999";
 
 async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
     let err = exec(conn, sql)
@@ -36,11 +39,35 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
 
 /// The run the journal rows belong to, in its own initial state.
 fn seed_run() -> String {
+    seed_run_of_kind("repricing")
+}
+
+fn seed_run_of_kind(kind: &str) -> String {
     format!(
         "INSERT INTO pricing_bulk_operation \
          (operation_id, tenant_id, kind, state, client_key, report, submitted_by, submitted_at) \
-         VALUES ('{RUN}', '{TENANT}', 'repricing', 'validating', 'ck-1', '{{}}', '{ACTOR}', \
-         '2026-08-09T00:00:00Z')"
+         VALUES ('{RUN}', '{TENANT}', '{kind}', 'validating', 'ck-1', '{{}}', '{ACTOR}', \
+         '2026-08-08T00:00:00Z')"
+    )
+}
+
+/// The selected row and the successor an apply would produce.
+///
+/// Both are real `pricing_price` rows because the journal keys them, exactly as
+/// `pricing_price_tier_band` and `pricing_price_window` key theirs.
+fn seed_price(id: &str) -> String {
+    // The phase is derived from the row id so the two rows this suite seeds do
+    // not collide on `uq_pricing_price_scope_key_current`, which admits one
+    // published row per canonical scope key.
+    let phase = if id == SUCCESSOR { PHASE_B } else { PHASE_A };
+    format!(
+        "INSERT INTO pricing_price ( \
+             price_id, tenant_id, plan_id, currency, region, phase, \
+             charge_kind, amount_minor, model_kind, lifecycle_state, \
+             created_by, created_at_utc) \
+         VALUES ('{id}', '{TENANT}', '{PLAN}', 'EUR', 'eu', '{phase}', \
+             'recurring', 1000, 'flat', 'published', '{ACTOR}', \
+             '2026-08-08T00:00:00Z')"
     )
 }
 
@@ -56,7 +83,7 @@ fn seed_row() -> String {
 fn decide(state: &str) -> String {
     let columns = match state {
         "applied" => {
-            format!("applied_price_id = '{SUCCESSOR}', applied_at = '2026-08-09T01:00:00Z'")
+            format!("applied_price_id = '{SUCCESSOR}', applied_at = '2026-08-08T01:00:00Z'")
         }
         "failed" => "failure_reason = 'the plan-level pass refused this plan'".to_owned(),
         _ => "applied_price_id = NULL, applied_at = NULL, failure_reason = NULL".to_owned(),
@@ -68,8 +95,16 @@ fn decide(state: &str) -> String {
 }
 
 async fn journalled(conn: &DatabaseConnection) {
-    must_succeed(conn, &seed_run()).await;
+    seeded(conn).await;
     must_succeed(conn, &seed_row()).await;
+}
+
+/// The world a journal row needs before it can exist: its run and both price
+/// rows its two keys name.
+async fn seeded(conn: &DatabaseConnection) {
+    must_succeed(conn, &seed_price(PRICE)).await;
+    must_succeed(conn, &seed_price(SUCCESSOR)).await;
+    must_succeed(conn, &seed_run()).await;
 }
 
 /// Both edges out of `pending` are walkable — the whitelist half, and the case
@@ -99,7 +134,7 @@ async fn a_journal_row_cannot_be_born_decided() {
             "INSERT INTO pricing_repricing_journal \
              (run_id, price_id, tenant_id, state, applied_price_id, applied_at) \
              VALUES ('{RUN}', '{PRICE}', '{TENANT}', 'applied', '{SUCCESSOR}', \
-             '2026-08-09T01:00:00Z')"
+             '2026-08-08T01:00:00Z')"
         ),
         format!(
             "INSERT INTO pricing_repricing_journal \
@@ -108,7 +143,7 @@ async fn a_journal_row_cannot_be_born_decided() {
         ),
     ] {
         let conn = migrated_db().await;
-        must_succeed(&conn, &seed_run()).await;
+        seeded(&conn).await;
         must_be_rejected(&conn, &born, "born pending").await;
     }
 }
@@ -187,32 +222,60 @@ async fn a_journal_row_is_never_deleted() {
 #[tokio::test]
 async fn the_outcome_columns_agree_with_the_state() {
     let conn = migrated_db().await;
-    must_succeed(&conn, &seed_run()).await;
+    seeded(&conn).await;
 
-    for born in [
+    for (born, constraint) in [
         // Pending, but already naming a successor.
-        format!(
-            "INSERT INTO pricing_repricing_journal \
+        (
+            format!(
+                "INSERT INTO pricing_repricing_journal \
              (run_id, price_id, tenant_id, state, applied_price_id, applied_at) \
              VALUES ('{RUN}', '{PRICE}', '{TENANT}', 'pending', '{SUCCESSOR}', \
-             '2026-08-09T01:00:00Z')"
+             '2026-08-08T01:00:00Z')"
+            ),
+            "chk_pricing_repricing_journal_applied",
         ),
         // Pending, naming a successor, with **no instant** — the half-set shape
         // the pair-wise spelling of this `CHECK` would have admitted, and the
         // one the re-drive would apply a second time.
-        format!(
-            "INSERT INTO pricing_repricing_journal \
+        (
+            format!(
+                "INSERT INTO pricing_repricing_journal \
              (run_id, price_id, tenant_id, state, applied_price_id) \
              VALUES ('{RUN}', '{PRICE}', '{TENANT}', 'pending', '{SUCCESSOR}')"
+            ),
+            "chk_pricing_repricing_journal_applied",
         ),
         // Pending, but already carrying a reason it failed.
-        format!(
-            "INSERT INTO pricing_repricing_journal \
+        (
+            format!(
+                "INSERT INTO pricing_repricing_journal \
              (run_id, price_id, tenant_id, state, failure_reason) \
              VALUES ('{RUN}', '{PRICE}', '{TENANT}', 'pending', 'refused before it began')"
+            ),
+            "chk_pricing_repricing_journal_failed",
+        ),
+        // A decided row carrying the *other* state's column.
+        (
+            format!(
+                "INSERT INTO pricing_repricing_journal \
+             (run_id, price_id, tenant_id, state, applied_price_id, applied_at, failure_reason) \
+             VALUES ('{RUN}', '{PRICE}', '{TENANT}', 'pending', '{SUCCESSOR}', \
+             '2026-08-08T01:00:00Z', 'both at once')"
+            ),
+            "chk_pricing_repricing_journal_applied",
+        ),
+        // The mirror half-set: an instant with no successor to point at.
+        (
+            format!(
+                "INSERT INTO pricing_repricing_journal \
+             (run_id, price_id, tenant_id, state, applied_at) \
+             VALUES ('{RUN}', '{PRICE}', '{TENANT}', 'pending', '2026-08-08T01:00:00Z')"
+            ),
+            "chk_pricing_repricing_journal_applied",
         ),
     ] {
-        must_be_rejected(&conn, &born, "CHECK").await;
+        must_be_rejected(&conn, &born, constraint).await;
     }
 
     // The same disagreements arriving as an update of a legitimately pending row.
@@ -224,7 +287,7 @@ async fn the_outcome_columns_agree_with_the_state() {
             "UPDATE pricing_repricing_journal SET state = 'applied' \
              WHERE run_id = '{RUN}' AND price_id = '{PRICE}'"
         ),
-        "CHECK",
+        "chk_pricing_repricing_journal_applied",
     )
     .await;
     must_be_rejected(
@@ -233,7 +296,7 @@ async fn the_outcome_columns_agree_with_the_state() {
             "UPDATE pricing_repricing_journal SET state = 'failed' \
              WHERE run_id = '{RUN}' AND price_id = '{PRICE}'"
         ),
-        "CHECK",
+        "chk_pricing_repricing_journal_failed",
     )
     .await;
     // Applied, with a successor but no instant — the other half-set shape.
@@ -244,7 +307,7 @@ async fn the_outcome_columns_agree_with_the_state() {
              SET state = 'applied', applied_price_id = '{SUCCESSOR}' \
              WHERE run_id = '{RUN}' AND price_id = '{PRICE}'"
         ),
-        "CHECK",
+        "chk_pricing_repricing_journal_applied",
     )
     .await;
     // And the vocabulary is closed. This one is asserted **only** as an update:
@@ -260,7 +323,7 @@ async fn the_outcome_columns_agree_with_the_state() {
             "UPDATE pricing_repricing_journal SET state = 'not-attempted' \
              WHERE run_id = '{RUN}' AND price_id = '{PRICE}'"
         ),
-        "CHECK",
+        "chk_pricing_repricing_journal_state",
     )
     .await;
 }
@@ -277,36 +340,80 @@ async fn a_successor_may_not_wear_the_selected_rows_own_id() {
         &format!(
             "UPDATE pricing_repricing_journal \
              SET state = 'applied', applied_price_id = '{PRICE}', \
-                 applied_at = '2026-08-09T01:00:00Z' \
+                 applied_at = '2026-08-08T01:00:00Z' \
              WHERE run_id = '{RUN}' AND price_id = '{PRICE}'"
         ),
-        "CHECK",
+        "chk_pricing_repricing_journal_successor_is_new",
     )
     .await;
 }
 
-/// A journal row belongs to a run, and the foreign key says so.
+/// All three keys, each asserted by making its referent absent.
 ///
-/// `PRAGMA foreign_keys` is off by default on a bare `SQLite` connection and on
-/// in production (`toolkit_db` turns it on), so the pragma is set here for the
-/// same reason `sqlite_bundle_store` sets it: without it this case would assert
-/// a key the mirror never enforces and would pass whether or not it existed.
+/// **No pragma, and the earlier one was decoration resting on a false premise.**
+/// `sqlx` puts `foreign_keys = ON` in its default pragma set, so every connection
+/// this suite opens already enforces them, and `toolkit_db`'s own pragma parser
+/// handles `journal_mode` and `synchronous` only — it never touches this one.
+/// `sqlite_window_guards` states the same fact in this directory and asserts its
+/// key with no pragma at all. Where `sqlite_bundle_store` *does* set it, the
+/// reason is the opposite of the one written here before: it asserts the
+/// **absence** of a key with `must_succeed`, and pragma-off would make that
+/// vacuous. A `must_be_rejected` fails loudly either way.
+///
+/// `SQLite` names neither the constraint nor the table in a key violation — the
+/// message is the bare `FOREIGN KEY constraint failed` — so the three cases are
+/// told apart by which referent each one removes, not by the text.
 #[tokio::test]
-async fn a_journal_row_belongs_to_a_run() {
+async fn every_key_names_a_row_that_exists() {
+    // The run.
     let conn = migrated_db().await;
-    must_succeed(&conn, "PRAGMA foreign_keys = ON").await;
-    must_be_rejected(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_repricing_journal (run_id, price_id, tenant_id, state) \
-             VALUES ('{SUCCESSOR}', '{PRICE}', '{TENANT}', 'pending')"
-        ),
-        "FOREIGN KEY",
-    )
-    .await;
+    must_succeed(&conn, &seed_price(PRICE)).await;
+    must_be_rejected(&conn, &seed_row(), "FOREIGN KEY").await;
 
-    // And the same row lands once its run exists, so the refusal above is the
-    // key and not something else about the statement.
+    // The selected price row.
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed_run()).await;
+    must_be_rejected(&conn, &seed_row(), "FOREIGN KEY").await;
+
+    // The successor. Its key is only reachable at the apply, since the column is
+    // null in every other state.
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed_price(PRICE)).await;
     must_succeed(&conn, &seed_run()).await;
     must_succeed(&conn, &seed_row()).await;
+    must_be_rejected(&conn, &decide("applied"), "FOREIGN KEY").await;
+
+    // And with every referent present the same statements land, so each refusal
+    // above is its key rather than something else about the statement.
+    let conn = migrated_db().await;
+    journalled(&conn).await;
+    must_succeed(&conn, &decide("applied")).await;
+}
+
+/// **One journal row per `(run_id, price_id)`** — the uniqueness that makes this
+/// table an idempotency spine rather than a log. A second row on one pair would
+/// let a re-drive read `pending` for a row already `applied` and apply it twice,
+/// which is the single thing O3 promises cannot happen.
+///
+/// Asserted behaviourally because `EXPECTED_PRIMARY_KEYS` proves the key was
+/// *declared*, on both engines, and nothing proved it refuses.
+#[tokio::test]
+async fn one_journal_row_per_run_and_price() {
+    let conn = migrated_db().await;
+    journalled(&conn).await;
+    must_be_rejected(&conn, &seed_row(), "UNIQUE").await;
+}
+
+/// **Only a repricing run journals here.** A bulk import's per-row outcomes live
+/// in the operation's own `report` (`inst-bi-commit`), and nothing drives an
+/// import through this table — so a journal row under an import is a record no
+/// code will ever complete, and the entity said so in prose while the schema
+/// admitted it.
+#[tokio::test]
+async fn an_import_does_not_journal() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed_price(PRICE)).await;
+    must_succeed(&conn, &seed_price(SUCCESSOR)).await;
+    must_succeed(&conn, &seed_run_of_kind("import")).await;
+    must_be_rejected(&conn, &seed_row(), "only a repricing run").await;
 }

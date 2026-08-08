@@ -233,8 +233,8 @@ impl MigratorTrait for Migrator {
             // independent, so it owes no copy-forward -- see its module doc.
             Box::new(m20260802_000047_create_pricing_bulk_operation::Migration),
             // Slice 12's per-row idempotency spine. Sorts after `000047` creates
-            // the run its FK names, and after `000002` creates the price rows it
-            // journals progress against.
+            // the run its FK names and after `000002` creates the price rows its
+            // other two keys name.
             Box::new(m20260802_000048_create_pricing_repricing_journal::Migration),
             // Slice 6's proration input contract: four columns on `pricing_price`
             // (`inst-pi-required`). Plain `ALTER`s, so they sort anywhere after

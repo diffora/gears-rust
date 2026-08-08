@@ -200,12 +200,13 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_window_immutable_history",
     "trg_pricing_price_window_no_delete",
     // Slice 12's repricing journal: born pending, undeletable, keyed on a frozen
-    // key, and final once decided — four triggers mirroring the one PL/pgSQL
-    // function.
+    // key, final once decided, and journalling only under a repricing run — five
+    // triggers mirroring the one PL/pgSQL function.
     "trg_pricing_repricing_journal_born_pending",
     "trg_pricing_repricing_journal_decided_is_final",
     "trg_pricing_repricing_journal_frozen_key",
     "trg_pricing_repricing_journal_no_delete",
+    "trg_pricing_repricing_journal_only_under_a_repricing_run",
     // Slice 11. Two unconditional arms and no whitelist: a migrated-origin
     // snapshot is **frozen**, so no UPDATE is sanctioned at all.
     "trg_pricing_snapshot_provenance_no_delete",
@@ -935,6 +936,10 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_repricing_journal_no_delete",
         64_642_075_391_113_409_u64,
+    ),
+    (
+        "trg_pricing_repricing_journal_only_under_a_repricing_run",
+        9_262_864_384_791_163_588_u64,
     ),
     // Slice 11's two. As with `m20260802_000043`'s five, the digest can only come
     // from the stored body; what was checked against the migration itself is the

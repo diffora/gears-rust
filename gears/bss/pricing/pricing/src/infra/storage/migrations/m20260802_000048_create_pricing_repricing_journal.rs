@@ -41,6 +41,29 @@
 //! "a run is complete when no `pending` rows remain" is a statement about the
 //! runner's work rather than about the operation's state.
 //!
+//! # Three keys and one kind
+//!
+//! `run_id` names the operation; `price_id` and `applied_price_id` name the
+//! selected row and the successor it produced, keyed for the reason
+//! `pricing_price_tier_band` and `pricing_price_window` key theirs. A journal row
+//! naming a price that does not exist is `pending` forever: the re-drive can
+//! never apply it, §6's "a run is complete when no `pending` rows remain" is
+//! never satisfied, and the only signal is the stalled-run alarm — which cannot
+//! be told apart from a dead runner.
+//!
+//! **Only a repricing run journals here.** A bulk import's per-row outcomes live
+//! in the operation's own `report` (`inst-bi-commit`, `inst-bk-idem`) and nothing
+//! drives an import through this table, so a row here under an import is a record
+//! no code will ever complete. Enforced rather than asserted in prose, because a
+//! claim in a doc comment that the schema does not hold is the same class of
+//! defect as a rule with no operand.
+//!
+//! **Both parent-reading arms defer to their foreign key when the run does not
+//! exist.** A `BEFORE` trigger answers ahead of the key on either engine, so an
+//! arm written as "the run is not a repricing run" would fire for a row naming
+//! *no* run — reporting a fault the caller does not have, and leaving the key
+//! unobservable and therefore unassertable.
+//!
 //! # What this table deliberately does not carry
 //!
 //! **No `plan_id`, though D-134 commits per plan.** §6 specifies four columns
@@ -63,9 +86,11 @@
 //!
 //! Systematic transforms only: `bss.` dropped, `uuid` -> `text`, `timestamptz`
 //! -> `text`, and the one PL/pgSQL function split into fixed-message
-//! `RAISE(ABORT, …)` triggers, one per guarded verb. Every guard reads only
-//! `OLD`/`NEW`, so each becomes a plain `WHEN` — a `SQLite` `WHEN` may not
-//! contain a subquery.
+//! `RAISE(ABORT, …)` triggers, one per guarded condition. Four of the five read
+//! only `OLD`/`NEW` and are plain `WHEN` clauses. The fifth reads the parent run,
+//! and a `SQLite` `WHEN` may not contain a subquery — so it goes in the trigger
+//! **body** instead (`SELECT RAISE(ABORT, …) WHERE …`), which may,
+//! `m20260802_000046`'s shape exactly.
 
 use sea_orm_migration::prelude::*;
 
@@ -108,9 +133,21 @@ const PG_UP_STATEMENTS: &[&str] = &[
         CONSTRAINT chk_pricing_repricing_journal_successor_is_new CHECK (
             applied_price_id IS NULL OR applied_price_id <> price_id),
         CONSTRAINT fk_pricing_repricing_journal_run FOREIGN KEY (run_id)
-            REFERENCES bss.pricing_bulk_operation (operation_id)
+            REFERENCES bss.pricing_bulk_operation (operation_id),
+        -- The selected row and the successor it produced. Both keyed for the
+        -- reason `pricing_price_tier_band` and `pricing_price_window` key theirs:
+        -- a journal row naming a price that does not exist is pending forever,
+        -- the re-drive can never apply it, and a run whose completion predicate
+        -- is that no pending rows remain never completes -- surfacing only as
+        -- the stalled-run alarm, indistinguishable from a dead runner.
+        CONSTRAINT fk_pricing_repricing_journal_price FOREIGN KEY (price_id)
+            REFERENCES bss.pricing_price (price_id),
+        CONSTRAINT fk_pricing_repricing_journal_applied_price FOREIGN KEY (applied_price_id)
+            REFERENCES bss.pricing_price (price_id)
     )",
     "CREATE OR REPLACE FUNCTION bss.pricing_repricing_journal_progress() RETURNS trigger AS $$
+        DECLARE
+          run_kind text;
         BEGIN
           -- Born pending. A row born `applied` is a row the re-drive skips, so
           -- the price is never touched and nothing anywhere disagrees -- the
@@ -119,6 +156,23 @@ const PG_UP_STATEMENTS: &[&str] = &[
             IF NEW.state <> 'pending' THEN
               RAISE EXCEPTION
                 'pricing_repricing_journal: a journal row is born pending, not %', NEW.state;
+            END IF;
+
+            -- The journal is mass repricing's spine. A bulk import's per-row
+            -- outcomes live in the operation's own report (inst-bi-commit,
+            -- inst-bk-idem) and nothing drives an import through this table, so a
+            -- row here under an import is a record no code will ever complete.
+            SELECT kind INTO run_kind
+              FROM bss.pricing_bulk_operation
+             WHERE operation_id = NEW.run_id;
+            -- No such run: the foreign key is the accurate refusal and this arm
+            -- has no opinion. Deferring keeps the key **observable** -- a BEFORE
+            -- trigger answers ahead of it -- and stops this arm reporting a kind
+            -- fault for a run that does not exist.
+            IF FOUND AND run_kind <> 'repricing' THEN
+              RAISE EXCEPTION
+                'pricing_repricing_journal: operation % is a %, and only a repricing run journals per-row progress',
+                NEW.run_id, run_kind;
             END IF;
             RETURN NEW;
           END IF;
@@ -182,7 +236,17 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         CONSTRAINT chk_pricing_repricing_journal_successor_is_new CHECK (
             applied_price_id IS NULL OR applied_price_id <> price_id),
         CONSTRAINT fk_pricing_repricing_journal_run FOREIGN KEY (run_id)
-            REFERENCES pricing_bulk_operation (operation_id)
+            REFERENCES pricing_bulk_operation (operation_id),
+        -- The selected row and the successor it produced. Both keyed for the
+        -- reason `pricing_price_tier_band` and `pricing_price_window` key theirs:
+        -- a journal row naming a price that does not exist is pending forever,
+        -- the re-drive can never apply it, and a run whose completion predicate
+        -- is that no pending rows remain never completes -- surfacing only as
+        -- the stalled-run alarm, indistinguishable from a dead runner.
+        CONSTRAINT fk_pricing_repricing_journal_price FOREIGN KEY (price_id)
+            REFERENCES pricing_price (price_id),
+        CONSTRAINT fk_pricing_repricing_journal_applied_price FOREIGN KEY (applied_price_id)
+            REFERENCES pricing_price (price_id)
     )",
     "CREATE TRIGGER trg_pricing_repricing_journal_born_pending
         BEFORE INSERT ON pricing_repricing_journal
@@ -190,6 +254,22 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         BEGIN
           SELECT RAISE(ABORT,
             'pricing_repricing_journal: a journal row is born pending and in no other state');
+        END",
+    // Conditioned on the run **existing**, exactly as the PL/pgSQL arm's `FOUND`
+    // conjunct is: without it a row naming no run would be refused here as a kind
+    // fault, the foreign key would never be reached, and the message would name a
+    // problem the caller does not have.
+    "CREATE TRIGGER trg_pricing_repricing_journal_only_under_a_repricing_run
+        BEFORE INSERT ON pricing_repricing_journal
+        FOR EACH ROW
+        BEGIN
+          SELECT RAISE(ABORT,
+            'pricing_repricing_journal: only a repricing run journals per-row progress')
+          WHERE EXISTS (
+            SELECT 1 FROM pricing_bulk_operation WHERE operation_id = NEW.run_id)
+            AND NOT EXISTS (
+            SELECT 1 FROM pricing_bulk_operation
+             WHERE operation_id = NEW.run_id AND kind = 'repricing');
         END",
     "CREATE TRIGGER trg_pricing_repricing_journal_no_delete
         BEFORE DELETE ON pricing_repricing_journal

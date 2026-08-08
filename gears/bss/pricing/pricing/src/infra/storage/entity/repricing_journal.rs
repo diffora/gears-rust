@@ -21,10 +21,14 @@ use toolkit_db_macros::Scopable;
 #[sea_orm(table_name = "pricing_repricing_journal")]
 #[secure(tenant_col = "tenant_id", resource_col = "price_id", no_owner, no_type)]
 pub struct Model {
-    /// The run, which is a `pricing_bulk_operation` of `kind = repricing`.
+    /// The run — a `pricing_bulk_operation` of `kind = repricing`, which the
+    /// table's own trigger holds it to rather than leaving to a caller: a bulk
+    /// import's per-row outcomes live in the operation's `report`, so a row here
+    /// under an import is a record no code will ever complete.
     #[sea_orm(primary_key, auto_increment = false)]
     pub run_id: Uuid,
-    /// The selected price row, frozen into the run's row set at expansion.
+    /// The selected price row, frozen into the run's row set at expansion, and
+    /// keyed to `pricing_price`.
     #[sea_orm(primary_key, auto_increment = false)]
     pub price_id: Uuid,
     /// Written by the expansion, never taken from a request: the foreign key
@@ -38,8 +42,9 @@ pub struct Model {
     /// D-134 plan-level pass is what refused it. Present exactly on `failed`.
     pub failure_reason: Option<String>,
     /// The successor row the apply created (`inst-mp-standard`: a new immutable
-    /// row, never a mutation in place). Present exactly on `applied`, and the
-    /// `CHECK` refuses it naming the selected row itself.
+    /// row, never a mutation in place). Present exactly on `applied`, keyed to
+    /// `pricing_price`, and the `CHECK` refuses it naming the selected row
+    /// itself.
     pub applied_price_id: Option<Uuid>,
     /// When the apply committed. Present exactly on `applied`.
     pub applied_at: Option<DateTimeUtc>,
