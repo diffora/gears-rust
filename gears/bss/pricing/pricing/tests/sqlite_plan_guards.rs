@@ -617,3 +617,108 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
     .await;
     assert_eq!(state, "retired", "the sanctioned flip is what it rides on");
 }
+
+/// **The whitelist names every content column the *table* holds** — the census
+/// `a_published_revision_freezes_every_column_the_whitelist_names` structurally
+/// cannot run.
+///
+/// That case pins an 18-entry array copied from the trigger, so it proves the
+/// enumerated columns are frozen and is blind by construction to a column the
+/// enumeration omits. Five were: `entitlement_grants` (`m20260802_000053`) and
+/// the three plan-change contract columns (`m20260802_000052`), all added to
+/// `pricing_plan` after `m20260802_000001` wrote the trigger and none restated
+/// into it — where `pricing_price`'s two later column waves both got their guard
+/// restatement (`m20260802_000051`, `m20260802_000057`) for exactly this reason.
+///
+/// This case reads the column list off the table and the predicate off the
+/// trigger, so a column added and forgotten reddens **here** rather than in
+/// production. It is a text census and not a behavioural one deliberately: a
+/// per-column UPDATE needs a value that both differs from the seed and satisfies
+/// every pairing `CHECK`, which is why the sibling case hand-picks eighteen — and
+/// hand-picking is the very step that gets skipped when a column is added.
+#[tokio::test]
+async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
+    // `lifecycle_state` is the sanctioned flip the whitelist exists to permit,
+    // and it is the only exemption: `row_version` is frozen too, and exempting
+    // it here would have made this census blind to the one column the sibling's
+    // own doc calls out as deliberately in the list.
+    const SANCTIONED_MUTABLE: [&str; 1] = ["lifecycle_state"];
+
+    let conn = migrated_db().await;
+    let columns = scalar(
+        &conn,
+        "SELECT group_concat(name) AS v FROM pragma_table_info('pricing_plan')",
+    )
+    .await;
+    let predicate = scalar(
+        &conn,
+        "SELECT sql AS v FROM sqlite_master \
+         WHERE type = 'trigger' AND name = 'trg_pricing_plan_frozen_columns'",
+    )
+    .await;
+
+    let missing: Vec<&str> = columns
+        .split(',')
+        .filter(|column| !SANCTIONED_MUTABLE.contains(column))
+        // The trailing space is what keeps `plan_tier` from matching
+        // `plan_tier_override`'s line.
+        .filter(|column| !predicate.contains(&format!("NEW.{column} ")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these columns are on `pricing_plan` and absent from the frozen-column \
+         whitelist, so an ad-hoc UPDATE moves them under a frozen CatalogVersion: \
+         {missing:?}"
+    );
+}
+
+/// The five columns that were missing, refused behaviourally.
+///
+/// The census above is a text assertion; this is the refusal itself, and the two
+/// are not redundant — a trigger could name a column in a comment, and a
+/// behavioural case cannot see a column nobody thought to add.
+#[tokio::test]
+async fn a_published_revision_freezes_its_grant_set_and_change_contract() {
+    const LATER_COLUMNS: [(&str, &str, &str); 4] = [
+        (
+            "entitlement_grants",
+            "'{\"quotas\":{\"seats\":1}}'",
+            "'{\"quotas\":{\"seats\":9000}}'",
+        ),
+        (
+            "allowed_change_targets",
+            "'[]'",
+            "'[\"99999999-9999-9999-9999-999999999999\"]'",
+        ),
+        ("comparability_rank", "10", "99"),
+        ("usage_counter_on_plan_change", "'reset'", "'carry'"),
+    ];
+
+    let conn = migrated_db().await;
+    for (i, (column, seeded, moved)) in LATER_COLUMNS.into_iter().enumerate() {
+        let plan = plan_of(70 + i);
+        must_succeed(
+            &conn,
+            &insert_with(
+                &plan,
+                0,
+                "published",
+                &[
+                    ("billing_cycle", "'recurring'"),
+                    ("frequency", "'monthly'"),
+                    (column, seeded),
+                ],
+            ),
+        )
+        .await;
+        must_be_rejected(
+            &conn,
+            &format!(
+                "UPDATE pricing_plan SET lifecycle_state = 'retired', {column} = {moved} \
+                 WHERE plan_id = '{plan}' AND revision = 0"
+            ),
+            "is frozen",
+        )
+        .await;
+    }
+}

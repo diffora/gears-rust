@@ -120,6 +120,19 @@ async fn exec(conn: &DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr
 }
 
 /// Run one statement that must land.
+/// Every `v` column a catalog query returns, in the order it asked for.
+async fn column_values(conn: &DatabaseConnection, sql: &str) -> Vec<String> {
+    conn.query_all(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        sql.to_owned(),
+    ))
+    .await
+    .expect("run the catalog query")
+    .iter()
+    .map(|row| row.try_get::<String>("", "v").expect("read the value"))
+    .collect()
+}
+
 async fn must_succeed(conn: &DatabaseConnection, sql: &str) {
     exec(conn, sql)
         .await
@@ -827,11 +840,19 @@ async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
         "created_by = '99999999-9999-9999-9999-999999999999'".to_owned(),
         "created_at_utc = '2026-08-02 09:00:00+00'".to_owned(),
         "row_version = 1".to_owned(),
+        // The four `m20260802_000058` restated in, which `000052` and `000053`
+        // added and neither guarded. Every one is inside the approval content
+        // pin, so before that migration a published revision could publish an
+        // entitlement its approval never signed, with the pin's digest unchanged.
+        r#"entitlement_grants = '{"quotas":{"seats":9000}}'::jsonb"#.to_owned(),
+        r#"allowed_change_targets = '["99999999-9999-9999-9999-999999999999"]'::jsonb"#.to_owned(),
+        "comparability_rank = 42".to_owned(),
+        "usage_counter_on_plan_change = 'carry'".to_owned(),
     ];
     assert_eq!(
         moves.len(),
-        18,
-        "the whitelist has eighteen columns; a shorter list here is a column \
+        22,
+        "the whitelist has twenty-two columns; a shorter list here is a column \
          nobody is testing"
     );
 
@@ -949,4 +970,55 @@ async fn a_frozen_revision_moves_only_from_published_to_superseded_or_retired() 
         "lifecycle_state published -> published is not a sanctioned flip",
     )
     .await;
+}
+
+/// **The whitelist names every content column the table holds** — on the engine
+/// that ships, and this is the case the sibling above structurally cannot be.
+///
+/// `every_frozen_column_of_a_frozen_revision_refuses_to_move` maintains its move
+/// list by hand, and its own doc warns that "a whitelist maintained by hand rots
+/// one forgotten `OR` at a time". It did: `m20260802_000052` added three columns
+/// and `m20260802_000053` a fourth, none reached either engine's guard, and
+/// neither that loop nor its `SQLite` twin could see it — both enumerate the
+/// trigger, so both are blind to exactly what the trigger omits.
+///
+/// This case reads the column list off `information_schema` and the predicate out
+/// of `pg_proc.prosrc`, so a column added to `pricing_plan` and forgotten in
+/// `bss.pricing_plan_append_only()` reddens here rather than in production.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
+    // `lifecycle_state` is the sanctioned flip the whitelist exists to permit;
+    // `row_version` is the tag, and it *is* in the list — named here only because
+    // the sibling's doc calls it out as deliberately frozen.
+    const SANCTIONED_MUTABLE: [&str; 1] = ["lifecycle_state"];
+
+    let conn = applied().await;
+    let columns = column_values(
+        &conn,
+        "SELECT column_name AS v FROM information_schema.columns \
+         WHERE table_schema = 'bss' AND table_name = 'pricing_plan' ORDER BY 1",
+    )
+    .await;
+    let body = column_values(
+        &conn,
+        "SELECT prosrc AS v FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+         WHERE n.nspname = 'bss' AND p.proname = 'pricing_plan_append_only'",
+    )
+    .await;
+    let predicate = body.first().expect("the guard function must exist");
+
+    let missing: Vec<&String> = columns
+        .iter()
+        .filter(|c| !SANCTIONED_MUTABLE.contains(&c.as_str()))
+        // The trailing space is what keeps `plan_tier` from matching
+        // `plan_tier_override`'s line.
+        .filter(|c| !predicate.contains(&format!("NEW.{c} ")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these columns are on bss.pricing_plan and absent from the frozen-column \
+         whitelist, so an ad-hoc UPDATE moves them under a frozen CatalogVersion: \
+         {missing:?}"
+    );
 }

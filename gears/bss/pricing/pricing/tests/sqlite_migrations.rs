@@ -791,7 +791,7 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     ),
     (
         "trg_pricing_plan_frozen_columns",
-        12_503_936_757_081_989_316_u64,
+        5_595_552_456_787_579_512_u64,
     ),
     ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
     (

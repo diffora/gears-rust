@@ -90,6 +90,7 @@ pub mod m20260802_000054_add_pricing_price_reservation;
 pub mod m20260802_000055_guard_pricing_price_reservation_columns;
 pub mod m20260802_000056_add_pricing_price_floor_and_discount;
 pub mod m20260802_000057_guard_pricing_price_floor_and_discount_columns;
+pub mod m20260802_000058_guard_pricing_plan_later_columns;
 pub mod m20260802_000060_add_price_overlay_published_event_name;
 
 use sea_orm::{ConnectionTrait, Statement};
@@ -276,6 +277,11 @@ impl MigratorTrait for Migrator {
             // for `000051`'s reason.
             Box::new(m20260802_000056_add_pricing_price_floor_and_discount::Migration),
             Box::new(m20260802_000057_guard_pricing_price_floor_and_discount_columns::Migration),
+            // `pricing_plan`'s frozen-column guard gains the four columns
+            // `000052` and `000053` added and neither restated. Sorts after both,
+            // for `m20260802_000040`'s reason: a trigger naming a column that does
+            // not exist yet does not create.
+            Box::new(m20260802_000058_guard_pricing_plan_later_columns::Migration),
             Box::new(m20260802_000060_add_price_overlay_published_event_name::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
