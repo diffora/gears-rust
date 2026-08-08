@@ -3,10 +3,16 @@
 
 use uuid::Uuid;
 
+use std::collections::BTreeMap;
+
 use super::{
     Boundary, ContractLockSet, DeltaKind, DeltaReport, SubscriptionFacts, TargetShape, analyze,
+    grant_totals,
 };
+use crate::domain::contracts::{EntitlementGrants, GrantSet};
 use crate::domain::error::DomainError;
+use crate::domain::plan_shape::{PhaseKind, PlanPhase};
+use crate::domain::scope_key::PhaseId;
 
 fn boundary(currency: &str, region: &str, frequency: &str) -> Boundary {
     Boundary {
@@ -336,4 +342,149 @@ fn one_subscription_can_carry_several_blocking_deltas_at_once() {
     let report = analyze(&[facts], &shape, &resolved_empty());
     // boundary + invalid addon + missing required + entitlement overflow
     assert_eq!(report.blocking().len(), 4);
+}
+
+// ---------------------------------------------------------------------------
+// D-253: the entitlement grant set, in the analyzer's vocabulary.
+// ---------------------------------------------------------------------------
+
+fn grant_phase(n: u128, ordinal: i32, converts_to: Option<u128>) -> PlanPhase {
+    PlanPhase {
+        phase_id: PhaseId::new(Uuid::from_u128(n)),
+        kind: if converts_to.is_some() {
+            PhaseKind::Trial
+        } else {
+            PhaseKind::Evergreen
+        },
+        ordinal,
+        converts_to_phase_id: converts_to.map(|c| PhaseId::new(Uuid::from_u128(c))),
+        phase_duration_days: converts_to.map(|_| 14),
+        display_trial_days: None,
+    }
+}
+
+fn grant_set(quotas: &[(&str, i64)], flags: &[(&str, bool)]) -> GrantSet {
+    GrantSet {
+        feature_flags: flags.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
+        quotas: quotas.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
+    }
+}
+
+/// **The two key spaces are namespaced**, and this is the case that says why:
+/// `GrantSet` lets a quota and a flag share a name, and a flat merge would make
+/// them one entry whose value is whichever was written second.
+#[test]
+fn a_quota_and_a_flag_of_the_same_name_stay_two_grants() {
+    let grants = EntitlementGrants {
+        plan_tier_ref: None,
+        plan_level: grant_set(&[("beta", 500)], &[("beta", true)]),
+        per_phase: BTreeMap::new(),
+    };
+
+    let totals = grant_totals(&grants, &[]);
+
+    assert_eq!(
+        totals,
+        vec![("flag:beta".to_owned(), 1), ("quota:beta".to_owned(), 500)],
+        "the collision is the whole reason for the prefixes"
+    );
+}
+
+/// A granted flag is `1` and a withheld one is `0`, so `target < source` states
+/// the true thing about a capability the target drops.
+#[test]
+fn a_withheld_flag_reads_as_zero_so_losing_one_is_an_overflow() {
+    let grants = EntitlementGrants {
+        plan_tier_ref: None,
+        plan_level: grant_set(&[], &[("sso", false), ("api", true)]),
+        per_phase: BTreeMap::new(),
+    };
+
+    let totals = grant_totals(&grants, &[]);
+
+    assert_eq!(
+        totals,
+        vec![("flag:api".to_owned(), 1), ("flag:sso".to_owned(), 0)]
+    );
+
+    // And it composes with the rule that reads it: a source that granted `sso`
+    // meets a target that withholds it, and that is a blocking delta.
+    let target = TargetShape {
+        covered: vec![boundary("USD", "EU", "monthly")],
+        offered_addon_sku_ids: Vec::new(),
+        required_addon_sku_ids: Vec::new(),
+        grants: totals,
+    };
+    let subscriber = SubscriptionFacts {
+        subscription_ref: Uuid::from_u128(1),
+        boundary: boundary("USD", "EU", "monthly"),
+        addon_sku_ids: Vec::new(),
+        grants: vec![("flag:sso".to_owned(), 1)],
+        on_grandfathered_row: false,
+    };
+    let report = analyze(&[subscriber], &target, &resolved_empty());
+    assert!(
+        report.deltas.iter().any(|d| matches!(
+            &d.kind,
+            DeltaKind::EntitlementOverflow { key, source_total: 1, target_total: 0 } if key == "flag:sso"
+        )),
+        "a dropped capability is an overflow: {report:?}"
+    );
+}
+
+/// **The minimum across phases, not the plan-level set** — the case the whole
+/// per-phase clause of D-253 turns on.
+///
+/// The target grants 100 seats at plan level and in its terminal phase, and 5
+/// during its trial. A subscriber carrying 50 will meet the trial, so the
+/// operator must be told before confirming; reading the plan-level set alone
+/// would report no delta at all.
+#[test]
+fn a_phased_target_is_measured_at_its_stingiest_phase() {
+    let trial = Uuid::from_u128(0x11);
+    let mut per_phase = BTreeMap::new();
+    per_phase.insert(trial, grant_set(&[("seats", 5)], &[]));
+
+    let grants = EntitlementGrants {
+        plan_tier_ref: None,
+        plan_level: grant_set(&[("seats", 100)], &[]),
+        per_phase,
+    };
+    let schedule = vec![grant_phase(0x11, 0, Some(0x22)), grant_phase(0x22, 1, None)];
+
+    assert_eq!(
+        grant_totals(&grants, &schedule),
+        vec![("quota:seats".to_owned(), 5)],
+        "the evergreen phase falls back to the plan level's 100; the trial's 5 is the minimum \
+         and is what a migrated subscriber actually meets"
+    );
+
+    // The same grants read against no schedule are the plan-level set, which is
+    // the unphased case and NOT the same answer -- stated as a contrast so the
+    // minimum cannot be mistaken for an artefact of the fixture.
+    assert_eq!(
+        grant_totals(&grants, &[]),
+        vec![("quota:seats".to_owned(), 100)]
+    );
+}
+
+/// A key absent from one phase is zero there, so the minimum is zero: a phase
+/// that does not mention a grant is a phase in which the subscriber lacks it.
+#[test]
+fn a_key_missing_from_one_phase_is_zero_across_the_target() {
+    let mut per_phase = BTreeMap::new();
+    per_phase.insert(Uuid::from_u128(0x11), grant_set(&[], &[]));
+
+    let grants = EntitlementGrants {
+        plan_tier_ref: None,
+        plan_level: grant_set(&[("seats", 100)], &[("sso", true)]),
+        per_phase,
+    };
+    let schedule = vec![grant_phase(0x11, 0, Some(0x22)), grant_phase(0x22, 1, None)];
+
+    assert_eq!(
+        grant_totals(&grants, &schedule),
+        vec![("flag:sso".to_owned(), 0), ("quota:seats".to_owned(), 0)],
+        "an authored-but-empty phase set grants nothing, and absent is zero"
+    );
 }

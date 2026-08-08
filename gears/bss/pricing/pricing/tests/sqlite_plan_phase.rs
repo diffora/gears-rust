@@ -23,8 +23,13 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
+
 use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::contracts::{EntitlementGrants, GrantSet};
 use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::domain::migration_delta::grant_totals;
+use bss_pricing::domain::plan::PlanShapePatch;
 use bss_pricing::domain::plan_shape::{PhaseKind, PlanPhase};
 use bss_pricing::domain::scope_key::{PhaseId, PlanId};
 use bss_pricing::infra::storage::RepoError;
@@ -854,4 +859,123 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
         recorded_at: chrono::Utc::now(),
         correlation_id: TEST_CORRELATION,
     }
+}
+
+/// **What the store assembles feeds `grant_totals`, and this is the case that
+/// says so** — D-253's store half.
+///
+/// The domain cases beside `grant_totals` hand-build an `EntitlementGrants` and
+/// a schedule. That proves the arithmetic and says nothing about whether the two
+/// repository reads the migration scheduler actually makes return values it can
+/// be given: `plan_repo::load_current` for the grants, `plan_shape_repo`'s phase
+/// set for the schedule. A domain test that hand-builds a world says nothing
+/// about what the store assembles, so this drives both through the repositories
+/// and maps the result.
+///
+/// The plan grants 100 seats at plan level, 5 in its trial phase, and an `sso`
+/// flag at plan level only. Read back and mapped, the target's totals are the
+/// **minimum across the phases**, and both halves of that are worth stating:
+/// seats is 5 rather than 100, and `sso` is **0 rather than 1** — the trial
+/// authors its own set, so it does not inherit the plan-level flag, and a
+/// subscriber migrated onto this plan loses the capability for the length of the
+/// trial. This expectation was written as `1` first and the case corrected it;
+/// an authored per-phase set replaces the plan-level one, it does not merge with
+/// it (`inst-gs-perphase`).
+#[tokio::test]
+async fn the_stored_grant_set_and_phase_chain_map_to_the_analyzers_totals() {
+    let (repo, shapes, _provider) = repo_harness().await;
+    let tenant = Uuid::from_u128(0x9_e0_01);
+    let scope = AccessScope::for_tenant(tenant);
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_e0_02));
+    let trial = PhaseId::new(Uuid::from_u128(0x9_e0_11));
+    let terminal = PhaseId::new(Uuid::from_u128(0x9_e0_22));
+
+    repo.create_draft(&scope, draft_of(plan_id, tenant))
+        .await
+        .expect("create");
+
+    let mut per_phase = BTreeMap::new();
+    per_phase.insert(
+        trial.get(),
+        GrantSet {
+            feature_flags: BTreeMap::new(),
+            quotas: [("seats".to_owned(), 5)].into_iter().collect(),
+        },
+    );
+    let authored = EntitlementGrants {
+        plan_tier_ref: None,
+        plan_level: GrantSet {
+            feature_flags: [("sso".to_owned(), true)].into_iter().collect(),
+            quotas: [("seats".to_owned(), 100)].into_iter().collect(),
+        },
+        per_phase,
+    };
+
+    let updated = repo
+        .update_draft(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            RowVersion::new(0),
+            PlanShapePatch {
+                entitlement_grants: Some(authored.clone()),
+                ..PlanShapePatch::default()
+            },
+            stamp(),
+        )
+        .await
+        .expect("author the grant set");
+    shapes
+        .replace_phases(
+            &scope,
+            tenant,
+            plan_id,
+            0,
+            updated.row_version,
+            vec![
+                PlanPhase {
+                    phase_id: trial,
+                    kind: PhaseKind::Trial,
+                    ordinal: 0,
+                    converts_to_phase_id: Some(terminal),
+                    phase_duration_days: Some(14),
+                    display_trial_days: None,
+                },
+                PlanPhase {
+                    phase_id: terminal,
+                    kind: PhaseKind::Evergreen,
+                    ordinal: 1,
+                    converts_to_phase_id: None,
+                    phase_duration_days: None,
+                    display_trial_days: None,
+                },
+            ],
+            stamp(),
+        )
+        .await
+        .expect("author the chain");
+
+    // Both reads are the scheduler's own, not a shortcut past them.
+    let read_back = repo
+        .find_open_draft(&scope, tenant, plan_id)
+        .await
+        .expect("read the revision")
+        .expect("it is there");
+    let schedule = shapes
+        .list_phases(&scope, tenant, plan_id, 0)
+        .await
+        .expect("read the chain");
+
+    assert_eq!(
+        read_back.entitlement_grants, authored,
+        "the grant set must survive the JSON round trip before anything maps it"
+    );
+    assert_eq!(
+        grant_totals(&read_back.entitlement_grants, &schedule),
+        vec![("flag:sso".to_owned(), 0), ("quota:seats".to_owned(), 5)],
+        "the trial's 5 is the minimum a migrated subscriber meets; the evergreen phase falls \
+         back to the plan level's 100 and must not be what the operator is shown -- and `sso` \
+         is 0 because the trial's authored set replaces the plan level's rather than merging"
+    );
 }

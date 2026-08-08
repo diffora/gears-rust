@@ -23,27 +23,23 @@
 //! 2. **The Contracts lock registry** (`inst-cl-source`). See
 //!    [`crate::domain::migration_delta`] — absent, so every subscription reads
 //!    locked and is excluded.
-//! 3. **Entitlement grant totals** (`inst-md-entitlements`). [`target_shape`]
-//!    reports an empty grant set, so the overflow class has no input. **The
-//!    reason is a wiring gap, not an absent store, and this said otherwise until
-//!    2026-08-08** — D-252 was written by a strand running concurrently with the
-//!    one that landed `pricing_plan.entitlement_grants` (`m20260802_000053`,
-//!    D-41), typed [`EntitlementGrants`](crate::domain::contracts::EntitlementGrants),
-//!    and [`target_shape`] *already loads it*: the `plan_repo::load_current` call
-//!    on its first line returns it and the function then discards it. What the
-//!    wiring cannot decide by itself is the other half — the set's `quotas` map
-//!    onto the `(grantKey, total)` vocabulary exactly, its `feature_flags` have no
-//!    representation in it (a dropped flag is a loss that neither `false` nor
-//!    "absent is zero" states as a total), and its `per_phase` axis has no operand
-//!    because [`SubscriptionFacts`] carries no phase. That is a design act and is
-//!    recorded as owed on D-252.
+//! 3. **Entitlement grant totals** (`inst-md-entitlements`) — **the target half
+//!    is built since 2026-08-08 and only the subject half is missing.** This
+//!    entry read "there is no grant store in this gear at all" until then, which
+//!    was true of the branch D-252 was written on and false at the merge:
+//!    `pricing_plan.entitlement_grants` landed the same day in a concurrent
+//!    strand (`m20260802_000053`, D-41), and [`target_shape`] was discarding a
+//!    set its own `plan_repo::load_current` call already returned.
+//!    [`grant_totals`] now maps it, and D-253 decides the two halves the mapping
+//!    could not settle by itself — flags as `1`/`0` under a namespaced key, and
+//!    the **minimum** across a phased plan's phases.
 //!
-//!    **The class stays silent end to end either way, on the *subject* side**:
-//!    source-side totals come from Subscriptions, which has no crate here and
-//!    enumerates nothing.
+//!    **The class is still silent end to end, and now for one reason instead of
+//!    two**: source-side totals come from Subscriptions, which has no crate here
+//!    and enumerates nothing. That is case 1 above, not a second gap.
 //!
-//! What is genuinely readable today is the target's **boundary coverage** and its
-//! **add-on rule set**, and those two classes work end to end.
+//! What is readable today is the target's **boundary coverage**, its **add-on
+//! rule set** and now its **grant totals**; all three want a subject set.
 //!
 //! # Why scheduling opens no approval unit
 //!
@@ -70,7 +66,7 @@ use crate::domain::migration::{
     MigrationState, NoticePeriod, ensure_distinct_plans, ensure_target_publishable,
 };
 use crate::domain::migration_delta::{
-    Boundary, ContractLockSet, DeltaReport, SubscriptionFacts, TargetShape, analyze,
+    Boundary, ContractLockSet, DeltaReport, SubscriptionFacts, TargetShape, analyze, grant_totals,
 };
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::plan_addon_rule;
@@ -78,7 +74,7 @@ use crate::infra::storage::repo::audit_repo::NewAuditEntry;
 use crate::infra::storage::repo::migration_repo::{MigrationRecord, NewMigration};
 use crate::infra::storage::repo::{
     NewOutboxEvent, PlanMigrationScheduledPayload, audit_repo, migration_repo, outbox_repo,
-    plan_repo, policy_repo, price_repo,
+    plan_repo, plan_shape_repo, policy_repo, price_repo,
 };
 use crate::infra::storage::{RepoError, repo_failure};
 
@@ -559,20 +555,21 @@ async fn target_shape(
         .map(|r| r.addon_sku_id)
         .collect();
 
+    // The target's grants, at last read rather than reported empty (D-253).
+    // `load_current` above already returned them; the phase set is the second
+    // read this needs, because a phased plan's grants differ per phase and
+    // `grant_totals` takes the **minimum** across them -- see its doc for why
+    // that is the only reading that cannot under-report a loss.
+    let schedule =
+        plan_shape_repo::load_phase_set(runner, scope, tenant_id, target_plan_id, current.revision)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+
     Ok(TargetShape {
         covered,
         offered_addon_sku_ids: offered.into_iter().collect(),
         required_addon_sku_ids: required.into_iter().collect(),
-        // **Empty because nothing maps it yet, not because the store is
-        // absent** - `current.entitlement_grants` is in hand right here, off the
-        // `load_current` above. The comment that stood here said "no table, no
-        // column, no domain type", which was true of the branch it was written on
-        // and false at the merge (`m20260802_000053`, D-41). Mapping the `quotas`
-        // half is mechanical; the `feature_flags` half and the `per_phase` axis
-        // are not, and D-252 records why. Until that lands the class stays silent
-        // - which is reported rather than read as "no overflow", and is anyway
-        // what the absent subject side would force.
-        grants: Vec::new(),
+        grants: grant_totals(&current.entitlement_grants, &schedule),
     })
 }
 

@@ -60,7 +60,9 @@ use std::collections::BTreeSet;
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::domain::contracts::{EntitlementGrants, GrantSet};
 use crate::domain::error::DomainError;
+use crate::domain::plan_shape::PlanPhase;
 
 /// Which subscriptions an active contract binds (`inst-cl-source`, D-36).
 ///
@@ -174,6 +176,95 @@ pub struct TargetShape {
     pub required_addon_sku_ids: Vec<Uuid>,
     /// The entitlement grant totals the target resolves, by grant key.
     pub grants: Vec<(String, i64)>,
+}
+
+/// The prefix a **quota** grant key carries in the analyzer's vocabulary.
+///
+/// See [`grant_totals`] for why the two key spaces are namespaced rather than
+/// merged.
+pub const GRANT_KEY_QUOTA: &str = "quota:";
+
+/// The prefix a **feature-flag** grant key carries in the analyzer's vocabulary.
+pub const GRANT_KEY_FLAG: &str = "flag:";
+
+/// Flatten a plan revision's entitlement grants into the analyzer's
+/// `(key, total)` vocabulary — D-253, and the half of D-252 that was not
+/// plumbing.
+///
+/// # Why the keys are namespaced
+///
+/// [`GrantSet`] holds two maps, `feature_flags` and `quotas`, and **nothing
+/// makes their key spaces disjoint**. Merging them flat would let a quota and a
+/// flag of the same name silently become one entry, and the loser would be
+/// whichever this function wrote second — a wrong answer with no symptom. The
+/// prefixes also survive into the delta report, where `flag:beta-access` reads
+/// to an operator exactly as well as the bare name did.
+///
+/// # Why a flag is `1` and `0`
+///
+/// [`TargetShape::grant_of`] reads absent as **zero**, and the overflow rule is
+/// `target < source`. Encoding a granted flag as `1` and a withheld or absent
+/// one as `0` makes those two rules say the true thing about flags with no new
+/// vocabulary: losing a capability the source granted is `0 < 1`, which is the
+/// overflow `inst-md-entitlements` exists to surface, and gaining one is not.
+///
+/// # Why the **minimum** across phases
+///
+/// A phased plan grants a different set per phase and the analyzer has no phase
+/// to select by — [`SubscriptionFacts`] carries none, because the subject side
+/// comes from Subscriptions and there is no lane. The minimum is the fail-closed
+/// reading and the only one that cannot under-report: a migrated subscriber
+/// occupies **every** phase of the target in turn, so a phase granting less than
+/// the source did is a loss they will actually meet, whether it is the trial they
+/// enter first or the terminal phase they end in. Taking the plan-level set alone
+/// would hide exactly that, and taking the maximum would hide it louder.
+///
+/// An **unphased** plan has no phase map by construction (`phase_map` returns
+/// empty below two phases, D-19), and its grants are the plan-level set — so
+/// that is what is measured, rather than an empty minimum that would read as
+/// "grants nothing".
+#[must_use]
+pub fn grant_totals(grants: &EntitlementGrants, schedule: &[PlanPhase]) -> Vec<(String, i64)> {
+    let phase_map = grants.phase_map(schedule);
+    let sets: Vec<&GrantSet> = if phase_map.is_empty() {
+        vec![&grants.plan_level]
+    } else {
+        phase_map.values().collect()
+    };
+
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for set in &sets {
+        keys.extend(set.quotas.keys().map(|k| format!("{GRANT_KEY_QUOTA}{k}")));
+        keys.extend(
+            set.feature_flags
+                .keys()
+                .map(|k| format!("{GRANT_KEY_FLAG}{k}")),
+        );
+    }
+
+    keys.into_iter()
+        .map(|key| {
+            // Absent in a set is zero, for `grant_of`'s reason: a phase that does
+            // not mention the key is a phase in which the subscriber does not
+            // have it.
+            let total = sets
+                .iter()
+                .map(|set| {
+                    key.strip_prefix(GRANT_KEY_QUOTA).map_or_else(
+                        || {
+                            key.strip_prefix(GRANT_KEY_FLAG)
+                                .and_then(|name| set.feature_flags.get(name))
+                                .copied()
+                                .map_or(0, i64::from)
+                        },
+                        |name| set.quotas.get(name).copied().unwrap_or(0),
+                    )
+                })
+                .min()
+                .unwrap_or(0);
+            (key, total)
+        })
+        .collect()
 }
 
 impl TargetShape {
