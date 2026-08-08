@@ -80,6 +80,7 @@ pub mod m20260802_000044_create_pricing_snapshot_provenance;
 pub mod m20260802_000045_add_price_overlay_abandoned_state;
 pub mod m20260802_000046_create_pricing_composite_meter;
 pub mod m20260802_000047_create_pricing_bulk_operation;
+pub mod m20260802_000048_create_pricing_repricing_journal;
 pub mod m20260802_000050_add_pricing_price_proration_contract;
 pub mod m20260802_000051_guard_pricing_price_proration_columns;
 pub mod m20260802_000052_add_pricing_plan_change_contract;
@@ -231,6 +232,10 @@ impl MigratorTrait for Migrator {
             // Slice 12's bulk-operation record and its state machine. Revision
             // independent, so it owes no copy-forward -- see its module doc.
             Box::new(m20260802_000047_create_pricing_bulk_operation::Migration),
+            // Slice 12's per-row idempotency spine. Sorts after `000047` creates
+            // the run its FK names, and after `000002` creates the price rows it
+            // journals progress against.
+            Box::new(m20260802_000048_create_pricing_repricing_journal::Migration),
             // Slice 6's proration input contract: four columns on `pricing_price`
             // (`inst-pi-required`). Plain `ALTER`s, so they sort anywhere after
             // `000002` creates the table; the number is this strand's allotted

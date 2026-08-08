@@ -64,6 +64,8 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_read_model",
     "pricing_catalog_version_ref",
     "pricing_bulk_operation",
+    // Slice 12's per-row spine, after the run it keys on.
+    "pricing_repricing_journal",
     "pricing_composite_meter",
     "pricing_pin_frontier",
     "pricing_policy_object",
@@ -197,6 +199,13 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_window_future_end",
     "trg_pricing_price_window_immutable_history",
     "trg_pricing_price_window_no_delete",
+    // Slice 12's repricing journal: born pending, undeletable, keyed on a frozen
+    // key, and final once decided — four triggers mirroring the one PL/pgSQL
+    // function.
+    "trg_pricing_repricing_journal_born_pending",
+    "trg_pricing_repricing_journal_decided_is_final",
+    "trg_pricing_repricing_journal_frozen_key",
+    "trg_pricing_repricing_journal_no_delete",
     // Slice 11. Two unconditional arms and no whitelist: a migrated-origin
     // snapshot is **frozen**, so no UPDATE is sanctioned at all.
     "trg_pricing_snapshot_provenance_no_delete",
@@ -433,6 +442,13 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_read_model_warm_marker",
     "chk_pricing_region_taxonomy_state",
     "chk_pricing_region_taxonomy_value_present",
+    // Slice 12's repricing journal. Four: the state vocabulary, the two
+    // outcome-column agreements, and `inst-mp-standard`'s refusal of a successor
+    // wearing the selected row's own id.
+    "chk_pricing_repricing_journal_applied",
+    "chk_pricing_repricing_journal_failed",
+    "chk_pricing_repricing_journal_state",
+    "chk_pricing_repricing_journal_successor_is_new",
     "chk_pricing_snapshot_provenance_payload",
     "chk_pricing_snapshot_provenance_resolved",
     "chk_pricing_snapshot_provenance_revision",
@@ -530,6 +546,7 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "tenant_id, catalog_version, subject_kind, subject_ref",
     ),
     ("pricing_region_taxonomy", "tenant_id, value"),
+    ("pricing_repricing_journal", "run_id, price_id"),
     // Read back from `m20260802_000044`'s own DDL. `provenance_id` and not the
     // subscription: the subscription's uniqueness is a partial-free UNIQUE index
     // beside it, which is the rule rather than the identity.
@@ -898,6 +915,26 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_price_window_no_delete",
         8_334_934_610_813_099_928_u64,
+    ),
+    // Slice 12's repricing journal. Read back off the built schema, as this
+    // census requires: the born-pending arm is the one whose loss is silent —
+    // a row born `applied` is a row the re-drive skips, so the price is never
+    // touched and no state anywhere disagrees.
+    (
+        "trg_pricing_repricing_journal_born_pending",
+        11_969_090_648_213_225_350_u64,
+    ),
+    (
+        "trg_pricing_repricing_journal_decided_is_final",
+        1_753_028_611_995_600_928_u64,
+    ),
+    (
+        "trg_pricing_repricing_journal_frozen_key",
+        17_909_310_162_257_836_633_u64,
+    ),
+    (
+        "trg_pricing_repricing_journal_no_delete",
+        64_642_075_391_113_409_u64,
     ),
     // Slice 11's two. As with `m20260802_000043`'s five, the digest can only come
     // from the stored body; what was checked against the migration itself is the

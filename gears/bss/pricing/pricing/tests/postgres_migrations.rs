@@ -213,6 +213,8 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_price_tier_band_kind",
     "pricing_price_tier_band_parent_kind",
     "pricing_price_window_append_only",
+    // Slice 12: one PL/pgSQL function, four SQLite triggers.
+    "pricing_repricing_journal_progress",
     // Slice 11. Two unconditional arms in one function: a migrated-origin
     // snapshot is frozen, so no UPDATE is sanctioned at all.
     "pricing_snapshot_provenance_frozen",
@@ -246,6 +248,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_tier_band_kind",
     "trg_pricing_price_tier_band_parent_kind",
     "trg_pricing_price_window_append_only",
+    "trg_pricing_repricing_journal_progress",
     "trg_pricing_snapshot_provenance_frozen",
 ];
 
@@ -321,6 +324,7 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_price_window: window_id",
     "pricing_read_model: tenant_id, catalog_version, subject_kind, subject_ref",
     "pricing_region_taxonomy: tenant_id, value",
+    "pricing_repricing_journal: run_id, price_id",
     // Read back from `m20260802_000044`'s own DDL rather than from the live server.
     "pricing_snapshot_provenance: provenance_id",
 ];
@@ -477,6 +481,11 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_read_model_warm_marker",
     "chk_pricing_region_taxonomy_state",
     "chk_pricing_region_taxonomy_value_present",
+    // Slice 12's repricing journal, the same four the SQLite mirror carries.
+    "chk_pricing_repricing_journal_applied",
+    "chk_pricing_repricing_journal_failed",
+    "chk_pricing_repricing_journal_state",
+    "chk_pricing_repricing_journal_successor_is_new",
     "chk_pricing_snapshot_provenance_payload",
     "chk_pricing_snapshot_provenance_resolved",
     "chk_pricing_snapshot_provenance_revision",
