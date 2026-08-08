@@ -31,7 +31,9 @@ use crate::domain::plan_shape::{
     BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
-use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
+use crate::domain::price_row::{
+    MinQtyUsageFallback, ModelKind, PriceRow, ReservationFlavor, TierBand,
+};
 use crate::domain::read_model::OverlayIndexShard;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
@@ -396,6 +398,86 @@ fn a_price_row_freezes_its_key_its_shape_and_its_bands() {
         ])),
         "an open top is null, never a sentinel a reader could compare against"
     );
+}
+
+/// Slice 10's six columns reach the frozen payload (`inst-rv-attrs`,
+/// `inst-ft-typed`, `inst-ft-fallback`, `inst-dr-boundary`).
+///
+/// **This case exists because a probe found its absence.** Replacing
+/// `reservedRateMinor` with a hard `null` in `row_value` reddened *nothing*
+/// across the whole fast suite: the projection is where a value freezes into an
+/// immutable version on the >= 7-year horizon and where Rating reads the
+/// self-service reserved rate (`inst-rv-runtime`), so a field silently dropped
+/// here is a charge Rating cannot compute from a snapshot that looks complete.
+///
+/// Every field is asserted rather than a representative one, for
+/// `the_full_content_round_trips`'s reason: the six arrived in two commits and
+/// the wire name is the consumer's contract, so a typo in one of them is a
+/// consumer reading `null` forever.
+#[test]
+fn a_price_row_freezes_the_slice_ten_primitives() {
+    let mut record = graduated_row();
+    record.row.reserved_rate_minor = Some(MinorAmount::new(250).expect("non-negative"));
+    record.row.reservation_flavor = Some(ReservationFlavor::Capacity);
+    record.row.min_qty_purchase = Some(7);
+    record.row.min_qty_usage = Some(11);
+    record.row.min_qty_usage_fallback = Some(MinQtyUsageFallback::Exception);
+    record.row.discount_ref = Some("promo/spring".to_owned());
+
+    let delta = PlanSubjectDelta {
+        prices: vec![record],
+        ..shape_only()
+    };
+    let value = delta.to_value();
+    let rows = value
+        .get("prices")
+        .expect("prices")
+        .as_array()
+        .expect("array");
+    let row = &rows[0];
+
+    assert_eq!(row.get("reservedRateMinor"), Some(&json!(250)));
+    assert_eq!(row.get("reservationFlavor"), Some(&json!("capacity")));
+    assert_eq!(row.get("minQtyPurchase"), Some(&json!(7)));
+    assert_eq!(row.get("minQtyUsage"), Some(&json!(11)));
+    assert_eq!(row.get("minQtyUsageFallback"), Some(&json!("exception")));
+    assert_eq!(row.get("discountRef"), Some(&json!("promo/spring")));
+}
+
+/// The negative half: a row authoring none of them freezes explicit `null`s
+/// rather than omitting the keys.
+///
+/// A consumer distinguishes "this gear does not publish the field" from "this
+/// row does not carry it" by the key's presence, and `inst-rv-runtime` has
+/// Rating sourcing the reserved rate from here — so an absent key and a null
+/// key are different answers and only one of them is true.
+#[test]
+fn a_row_carrying_no_slice_ten_primitive_freezes_nulls_rather_than_omitting_them() {
+    let delta = PlanSubjectDelta {
+        prices: vec![graduated_row()],
+        ..shape_only()
+    };
+    let value = delta.to_value();
+    let row = &value
+        .get("prices")
+        .expect("prices")
+        .as_array()
+        .expect("array")[0];
+
+    for key in [
+        "reservedRateMinor",
+        "reservationFlavor",
+        "minQtyPurchase",
+        "minQtyUsage",
+        "minQtyUsageFallback",
+        "discountRef",
+    ] {
+        assert_eq!(
+            row.get(key),
+            Some(&serde_json::Value::Null),
+            "{key} must be present and null, not absent"
+        );
+    }
 }
 
 #[test]

@@ -296,6 +296,12 @@ pub struct PriceContentView {
     /// The plan-scoped included allowance (D-45).
     pub included_allowance: Option<IncludedAllowanceView>,
     /// The reserved rate, in the row's currency (`inst-rv-attrs`).
+    ///
+    /// This field and the five below it are Slice 10's authoring surface, and
+    /// they are on **this** view rather than one of their own because
+    /// `inst-ad-author` says so: primitives "author through the Slice 2/3
+    /// plan/price PATCH surfaces", row-attached ones on the price row. S10 §5
+    /// declares no endpoint of its own for the same reason.
     pub reserved_rate_minor: Option<i64>,
     /// What the reservation reserves: `consumption | capacity` (`inst-rv-attrs`).
     pub reservation_flavor: Option<String>,

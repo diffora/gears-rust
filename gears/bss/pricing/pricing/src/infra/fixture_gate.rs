@@ -143,7 +143,13 @@ impl Reservation {
 ///   usage kind (alongside that kind's own fixture)". Both halves are required:
 ///   `is_tiered` because the fixture is about a tier counter, and `is_usage`
 ///   because a non-usage row has no counter to continue.
-/// - [`Variant::Reserved`] when the caller states the row is reserved — see
+/// - [`Variant::Reserved`] on a reserved row — `inst-rv-fixture`: "the
+///   reservation variant requires its own joint golden fixture before publish
+///   (registered into Slice 3's `FixtureGate`)". **This clause is that
+///   registration**, and it is the half of `inst-rv-fixture` this gear owns; the
+///   other half — negotiated RI-style rates — stays in Contracts (D-108 clause
+///   (b)) and no rate path here reaches it. Read through
+///   [`Reservation::of_slice3_row`] on the production path — see
 ///   [`Reservation`] for why that is a parameter.
 ///
 /// It is deliberately a free function and not a method on [`FixtureGate`]: what
