@@ -23,9 +23,11 @@
 //! `LEVEL_UNIT_MISMATCH` and `LEVEL_COMPOSITE_FORBIDDEN` read as enforced when
 //! nothing enforces them.
 
+pub mod floor_typing;
 pub mod level_aggregation;
 pub mod model_kind;
 pub mod package;
+pub mod reservation;
 pub mod supersession;
 pub mod tier_bands;
 
@@ -136,6 +138,16 @@ pub fn price_row_rules() -> ValidationPipeline<PriceRow> {
         .with_rule(Box::new(level_aggregation::LevelFields))
         .with_rule(Box::new(level_aggregation::LevelGranularityPairing))
         .with_rule(Box::new(level_aggregation::LevelMaxHold))
+        // Slice 10's reservation set (`inst-rv-attrs` / `inst-rv-usage` /
+        // `inst-rv-level`). Row-local by construction -- see that module's doc
+        // for why they are here rather than in the Foundation plan set, and for
+        // what the corpus could not reach while they were not.
+        .with_rule(Box::new(reservation::ReservationWellFormed))
+        // Slice 10's floor typing (`inst-ft-fallback` / `inst-ft-warn`).
+        // Row-local for the reservation set's reason; see that module for why
+        // `FLOOR_TYPE_MISSING` has no rule and where it is owed.
+        .with_rule(Box::new(floor_typing::FloorFallbackDeclared))
+        .with_rule(Box::new(floor_typing::FloorOutsideBands))
 }
 
 /// The supersession unit guard, as a pipeline over a predecessor/successor pair.

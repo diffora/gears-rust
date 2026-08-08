@@ -12,7 +12,7 @@ use crate::domain::error::DomainError;
 use crate::domain::money::MinorAmount;
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, PriceRow,
-    QuantitySource, TierAggregationWindow, TierBand,
+    QuantitySource, ReservationFlavor, TierAggregationWindow, TierBand,
 };
 use crate::domain::scope_key::ChargeKind;
 use bss_fixtures::{ModelKind, Variant};
@@ -150,27 +150,71 @@ fn only_a_tiered_usage_row_requires_the_continuity_variant() {
 }
 
 // ---------------------------------------------------------------------------
-// The named Slice-10 hole
+// The Slice-10 hole, now closed
 // ---------------------------------------------------------------------------
 
 #[test]
-fn slice_3_cannot_see_a_reservation_and_the_hole_is_named_rather_than_silent() {
-    // `reservedRateMinor` / `reservationFlavor` are Slice-10 fields and
-    // `PriceRow` is the Slice-3 shape, so there is nothing to read. The gear
-    // states that in one place -- `Reservation::of_slice3_row` -- instead of
-    // never asking the question. When Slice 10 lands, that function reads the
-    // row and this assertion is the one that has to change.
+fn an_unreserved_row_reports_no_reservation() {
+    // The half of the old named-hole test that survives Slice 10: a row that
+    // authors neither half of the pair still reports `Unreserved`, so nothing
+    // that was publishable before became gated on the reservation fixture.
     for kind in ModelKind::ALL {
         assert_eq!(
             Reservation::of_slice3_row(&row(kind)),
             Reservation::Unreserved,
-            "no Slice-3 row can report a reservation; if this fails, Slice 10 landed and \
-             `of_slice3_row` owes it a real read"
+            "a row authoring neither reservation field reserves nothing"
         );
         assert!(
             !required_variants(&row(kind), Reservation::of_slice3_row(&row(kind)))
                 .contains(&Variant::Reserved),
-            "a row nobody can author as reserved must not be gated on the reservation fixture"
+            "an unreserved row must not be gated on the reservation fixture"
+        );
+    }
+}
+
+#[test]
+fn a_row_that_authors_a_reservation_now_reports_it_without_the_caller_saying_so() {
+    // **This is the seam `Reservation::of_slice3_row` was written to hold open.**
+    // Before Slice 10 that function was `const fn ... { Unreserved }` because
+    // `PriceRow` carried neither field, and the gate could only be told about a
+    // reservation by a caller that already knew. The pair now exists, so the
+    // function reads the row and `infra::publish`'s single call site -- which
+    // already asked through `of_slice3_row` -- starts gating reserved rows with
+    // no call site moving. That is the property this asserts.
+    let mut reserved = row(ModelKind::Graduated);
+    reserved.reserved_rate_minor = Some(minor(3));
+    reserved.reservation_flavor = Some(ReservationFlavor::Capacity);
+
+    assert_eq!(
+        Reservation::of_slice3_row(&reserved),
+        Reservation::Reserved,
+        "a row carrying the pair reserves; the gate must see it without being told"
+    );
+    assert!(
+        required_variants(&reserved, Reservation::of_slice3_row(&reserved))
+            .contains(&Variant::Reserved),
+        "`inst-fx-kinds`: a reserved usage row requires the reservation fixture"
+    );
+}
+
+#[test]
+fn a_half_authored_reservation_still_reports_reserved() {
+    // Either half is enough, and deliberately: the pairing is a publish rule
+    // (`RESERVATION_PAIR_INCOMPLETE`), so a half-authored row is a state a draft
+    // can be in. Reading this as a conjunction would let a flavor-without-rate
+    // row past the fixture gate on its way to that refusal, which is the wrong
+    // order to meet the two problems in.
+    for half in [0, 1] {
+        let mut half_row = row(ModelKind::Graduated);
+        if half == 0 {
+            half_row.reserved_rate_minor = Some(minor(3));
+        } else {
+            half_row.reservation_flavor = Some(ReservationFlavor::Consumption);
+        }
+        assert_eq!(
+            Reservation::of_slice3_row(&half_row),
+            Reservation::Reserved,
+            "half {half} of the pair should still be read as a reservation"
         );
     }
 }

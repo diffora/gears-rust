@@ -47,9 +47,9 @@ use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
 use bss_pricing::domain::price_row::{
-    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, ModelKind,
-    PriceRow, QuantitySource, RolloverPolicy, TierAggregationWindow, TierBand,
-    TierQualificationWindow,
+    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance,
+    MinQtyUsageFallback, ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy,
+    TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
@@ -205,6 +205,17 @@ fn graduated_content() -> PriceContent {
         quantity: 50,
         rollover_policy: RolloverPolicy::Carry,
     });
+    // Slice 10's six columns. Authored here rather than in a case of their own
+    // because this fixture's whole job is that **every** content column is
+    // non-default, so a column the store drops is a changed value rather than a
+    // hole staying a hole. Their absence was found by probe: dropping
+    // `discount_ref` on the read path reddened nothing in the entire fast suite.
+    row.reserved_rate_minor = Some(money(3));
+    row.reservation_flavor = Some(ReservationFlavor::Capacity);
+    row.min_qty_purchase = Some(7);
+    row.min_qty_usage = Some(11);
+    row.min_qty_usage_fallback = Some(MinQtyUsageFallback::Exception);
+    row.discount_ref = Some("promo/spring".to_owned());
     PriceContent {
         row,
         tax_inclusive: true,
@@ -353,6 +364,18 @@ async fn a_created_row_and_its_bands_read_back_whole() {
             rollover_policy: RolloverPolicy::Carry,
         })
     );
+    assert_eq!(read.row.reserved_rate_minor, Some(money(3)));
+    assert_eq!(
+        read.row.reservation_flavor,
+        Some(ReservationFlavor::Capacity)
+    );
+    assert_eq!(read.row.min_qty_purchase, Some(7));
+    assert_eq!(read.row.min_qty_usage, Some(11));
+    assert_eq!(
+        read.row.min_qty_usage_fallback,
+        Some(MinQtyUsageFallback::Exception)
+    );
+    assert_eq!(read.row.discount_ref.as_deref(), Some("promo/spring"));
     assert_eq!(read.row.bands, graduated_content().row.bands);
     assert!(read.tax_inclusive);
     assert_eq!(read.billing_timing.as_deref(), Some("arrears"));

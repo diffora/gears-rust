@@ -186,6 +186,87 @@ impl fmt::Display for TierQualificationWindow {
     }
 }
 
+/// What a reservation on a usage row reserves (`inst-rv-attrs`, A1).
+///
+/// A reservation is an **attribute of the usage row it reserves**, never a
+/// second row: A1 keeps one priced line per `(meter, dimensionKey)`, so the pair
+/// `reserved_rate_minor` + this flavor rides the on-demand row alongside its
+/// price and tiers.
+///
+/// **There is no default, deliberately.** The two flavors bill differently
+/// enough that an unauthored one cannot be guessed: [`Self::Consumption`]
+/// excludes the matched reserved quantity from the on-demand tier counter `Q`
+/// and lets the remainder restart at zero (`inst-rv-tier-q`), while
+/// [`Self::Capacity`] never touches `Q` at all and accrues
+/// `reservedRate x reservedQuantity x duration` per covered granule
+/// (`inst-rv-level`, D-139). Absent means *the row reserves nothing*, which is
+/// why the field is an `Option` on the row and why the pairing with
+/// `reserved_rate_minor` is a publish rule rather than a default.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReservationFlavor {
+    /// Reserved **consumption**: the matched quantity is excluded from the
+    /// on-demand tier counter and the remainder's `Q` starts at zero
+    /// (`inst-rv-tier-q`).
+    Consumption,
+    /// Reserved **capacity**: the charge never enters `Q`, and accrues per
+    /// covered granule (`inst-rv-level`, D-139). The only flavor authorable on
+    /// a non-`sum` row at launch.
+    Capacity,
+}
+
+impl ReservationFlavor {
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Consumption => "consumption",
+            Self::Capacity => "capacity",
+        }
+    }
+}
+
+impl fmt::Display for ReservationFlavor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a `usage` floor does with below-floor usage (`inst-ft-fallback`).
+///
+/// **One variant at launch, and that is the decision rather than a placeholder.**
+/// The design set could have left the behaviour implicit and had every row mean
+/// `exception`; `inst-ft-fallback` says instead that "the fallback is authored,
+/// not implied", so an author declares it and it freezes in the snapshot. The
+/// value of a one-variant enum is what happens when the second lands: every
+/// already-published row already says which behaviour it chose, and none of them
+/// silently inherits a new default.
+///
+/// Richer fallbacks -- an alternative row, for instance -- are a named Future.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MinQtyUsageFallback {
+    /// Fail closed into the rating exception path: visible and resolvable, never
+    /// silently zero-rated and never silently charged.
+    Exception,
+}
+
+impl MinQtyUsageFallback {
+    /// The persisted / wire token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exception => "exception",
+        }
+    }
+}
+
+impl fmt::Display for MinQtyUsageFallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// How `Q` is derived from the measures in the window (D-44).
 ///
 /// [`AggregationFunction::Sum`] is the **default**: a row that authors nothing
@@ -481,6 +562,47 @@ pub struct PriceRow {
     pub max_hold_granules: Option<u64>,
     /// The D-45 included allowance.
     pub included_allowance: Option<IncludedAllowance>,
+    /// The reserved rate, in the row's currency (`inst-rv-attrs`, A1).
+    ///
+    /// Money, and therefore **outside** the evaluation-policy roster. Under
+    /// D-139 it is denominated in the row's billable unit — level unit x granule
+    /// duration on a `capacity` reservation — so it is money per granule rather
+    /// than a period charge.
+    pub reserved_rate_minor: Option<MinorAmount>,
+    /// What the reservation reserves; present iff [`Self::reserved_rate_minor`]
+    /// is (`inst-rv-attrs`).
+    ///
+    /// **In** the evaluation-policy roster: it decides whether the reserved
+    /// quantity leaves the on-demand tier counter (`inst-rv-tier-q`) or never
+    /// enters it (`inst-rv-level`), which is quantity derivation.
+    pub reservation_flavor: Option<ReservationFlavor>,
+    /// The **purchase** floor: Subscriptions rejects an order below it rather
+    /// than silently zeroing (`inst-ft-typed`).
+    ///
+    /// Outside the evaluation-policy roster: it is a permission -- whether the
+    /// order may be placed at all -- and decides nothing about how a rated line
+    /// is derived.
+    pub min_qty_purchase: Option<u64>,
+    /// The **usage** floor: below-floor usage is ineligible and fails closed
+    /// (`inst-ft-typed`).
+    ///
+    /// **In** the roster. It decides what quantity is billable, which is
+    /// quantity derivation.
+    pub min_qty_usage: Option<u64>,
+    /// What happens beneath [`Self::min_qty_usage`]; REQUIRED when it is set
+    /// (`inst-ft-fallback`).
+    ///
+    /// **In** the roster, with its floor: the two are one evaluation rule read
+    /// in two fields.
+    pub min_qty_usage_fallback: Option<MinQtyUsageFallback>,
+    /// The optional reference to an external discount instrument
+    /// (`inst-dr-referential`).
+    ///
+    /// Outside the roster. Promotions owns the instrument and Promotions/Tariffs
+    /// evaluate it; this gear validates that it resolves and persists it
+    /// (`inst-dr-boundary`), so it changes nothing about how *this* row derives
+    /// a quantity or selects a rate.
+    pub discount_ref: Option<String>,
 }
 
 impl PriceRow {
@@ -509,7 +631,28 @@ impl PriceRow {
             aggregation_granularity: None,
             max_hold_granules: None,
             included_allowance: None,
+            reserved_rate_minor: None,
+            reservation_flavor: None,
+            min_qty_purchase: None,
+            min_qty_usage: None,
+            min_qty_usage_fallback: None,
+            discount_ref: None,
         }
+    }
+
+    /// Does this row carry a reservation (`inst-rv-attrs`)?
+    ///
+    /// **Either half is enough**, and that is the point rather than an
+    /// oversight: the pairing rule
+    /// ([`RESERVATION_PAIR_INCOMPLETE`](crate::domain::publish::rules::RESERVATION_PAIR_INCOMPLETE))
+    /// refuses a half-authored reservation at publish, and until it has run, a
+    /// row carrying one half is a row somebody meant to reserve. Reading this as
+    /// a conjunction would let a flavor-without-rate row slip past the
+    /// `FixtureGate` on its way to that refusal, which is the wrong order to
+    /// discover the two problems in.
+    #[must_use]
+    pub const fn is_reserved(&self) -> bool {
+        self.reserved_rate_minor.is_some() || self.reservation_flavor.is_some()
     }
 
     /// Is this a metered usage row?

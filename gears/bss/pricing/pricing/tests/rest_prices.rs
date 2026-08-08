@@ -16,6 +16,8 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::plans::PLANS;
+use bss_pricing::domain::money::MinorAmount;
+use bss_pricing::domain::price_row::{MinQtyUsageFallback, ReservationFlavor};
 use rest_support::{
     Harness, body_json, etag_of, location_of, price_rows, problem_code, request, seed_draft_plan,
     seed_price, with_headers,
@@ -1294,5 +1296,114 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
             .map(bss_pricing::domain::scope_key::Meter::as_str),
         Some("cloudlets"),
         "the line the row is filed under is untouched by an ordinary content edit"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Slice 10's authorable primitives, end to end through the create surface
+// ---------------------------------------------------------------------------
+
+/// A create carrying every authorable Slice-10 field stores all six, and the
+/// read surface answers them back (`inst-ad-author`, `inst-rv-attrs`,
+/// `inst-ft-typed`, `inst-ft-fallback`, `inst-dr-boundary`).
+///
+/// **This case exists because a probe found its absence.** Replacing
+/// `content_of`'s `reserved_rate_minor` mapping with a hard `None` -- a client
+/// authoring a reserved rate and the gear silently discarding it -- reddened
+/// *nothing* across the whole fast suite. The authoring path was the third of
+/// four layers found untested this way, after the store round trip and the
+/// projection, and it is the one an operator meets first.
+///
+/// The row is a **usage** row because `inst-rv-usage` refuses a reservation
+/// anywhere else, and the fallback is authored because `inst-ft-fallback`
+/// refuses a usage floor without one -- so this fixture is a row the publish
+/// rules would also accept, not merely one the store will hold.
+#[tokio::test]
+async fn a_create_carrying_every_slice_ten_primitive_stores_all_of_them() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let mut body = create_body("EU");
+    body["scope_key"]["charge_kind"] = serde_json::json!("usage");
+    body["content"] = serde_json::json!({
+        "model_kind": "per_unit",
+        "amount_minor": 1_500,
+        "tax_inclusive": false,
+        "meter": "storage.gb",
+        "billing_granularity": "per_hour",
+        "reserved_rate_minor": 250,
+        "reservation_flavor": "capacity",
+        "min_qty_purchase": 7,
+        "min_qty_usage": 11,
+        "min_qty_usage_fallback": "exception",
+        "discount_ref": "promo/spring"
+    });
+
+    let created = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("slice-10-primitives"),
+        ))
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let rows = price_rows(&harness, plan_id).await;
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0].row;
+
+    assert_eq!(
+        row.reserved_rate_minor.map(MinorAmount::get),
+        Some(250),
+        "the reserved rate the caller authored"
+    );
+    assert_eq!(
+        row.reservation_flavor,
+        Some(ReservationFlavor::Capacity),
+        "the flavor decides whether the reserved quantity leaves Q at all"
+    );
+    assert_eq!(row.min_qty_purchase, Some(7));
+    assert_eq!(row.min_qty_usage, Some(11));
+    assert_eq!(
+        row.min_qty_usage_fallback,
+        Some(MinQtyUsageFallback::Exception)
+    );
+    assert_eq!(row.discount_ref.as_deref(), Some("promo/spring"));
+}
+
+/// The vocabulary is closed at the surface: an unknown flavor is a malformed
+/// request naming the field, not a stored value and not a fault.
+///
+/// The paired negative for the case above -- without it, a surface that accepted
+/// anything and stored nothing would pass the positive case if the enum ever
+/// gained a permissive parse.
+#[tokio::test]
+async fn a_create_naming_an_unknown_reservation_flavor_is_refused() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let mut body = create_body("EU");
+    body["scope_key"]["charge_kind"] = serde_json::json!("usage");
+    body["content"]["meter"] = serde_json::json!("storage.gb");
+    body["content"]["billing_granularity"] = serde_json::json!("per_hour");
+    body["content"]["reserved_rate_minor"] = serde_json::json!(250);
+    body["content"]["reservation_flavor"] = serde_json::json!("burst");
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("unknown-flavor"),
+        ))
+        .await;
+
+    assert_refused_naming(response, "reservation_flavor").await;
+    assert!(
+        price_rows(&harness, plan_id).await.is_empty(),
+        "a refused create stores nothing"
     );
 }

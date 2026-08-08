@@ -66,20 +66,25 @@ use tracing::error;
 use crate::domain::error::DomainError;
 use crate::domain::price_row::{PriceRow, model_kind_wire};
 
-/// Whether the publishing row carries a reservation — **the named hole**.
+/// Whether the publishing row carries a reservation.
 ///
-/// `reservationFlavor` and `reservedRateMinor` are Slice-10 fields and
-/// [`PriceRow`] is the Slice-3 shape, so this gear cannot yet look at a row and
-/// tell. That fact is a parameter rather than an omission: the reservation
-/// variant is a stated gate (`inst-fx-kinds` — "the reservation variant of a
-/// usage row requires its own fixture (Slice 10 registers it into this gate)"),
-/// and a gate that silently never asked would be indistinguishable from a gate
-/// that asked and was always answered "no".
+/// It stays a **parameter** rather than becoming a plain read inside
+/// [`required_variants`], now that Slice 10 has landed `reserved_rate_minor` /
+/// `reservation_flavor` and [`Reservation::of_slice3_row`] answers from the row.
+/// Two reasons, and neither is inertia:
 ///
-/// So the caller must say, at every call site, which of the two it means. When
-/// Slice 10 lands, [`Reservation::of_slice3_row`] starts reading the row's own
-/// flavor and every caller keeps compiling — see its docs for the one line that
-/// changes.
+/// - the mapping from a row to the variants it needs is a statement of the
+///   design set, and keeping the reservation an argument is what lets a test
+///   assert `required_variants` for a reserved row without constructing one —
+///   the separability [`required_variants`] is a free function for;
+/// - a future caller holding a reservation the row does not carry (a compiled
+///   or overlay-derived one) can still ask the gate the right question, which is
+///   the property the parameter was introduced for and which outliving the hole
+///   does not invalidate.
+///
+/// The production path does **not** exercise that freedom: `infra::publish`
+/// calls `Reservation::of_slice3_row(&record.row)`, so a reserved row is gated
+/// on `Variant::Reserved` by reading itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Reservation {
     /// The row reserves nothing.
@@ -90,25 +95,32 @@ pub enum Reservation {
 }
 
 impl Reservation {
-    /// What a Slice-3 row can say about itself: **nothing**.
+    /// What the row says about itself — **a real read since Slice 10**.
     ///
-    /// A constant, and that is the hole stated in code. [`PriceRow`] carries
-    /// neither `reservedRateMinor` nor `reservationFlavor` — the corpus's own
-    /// `reserved` snapshots are declined by the publish validator for exactly
-    /// that reason (`consumption-on-level-rejected` is `declined_until`
-    /// Slice 10) — so there is no field to read and inventing one would be the
-    /// gear guessing at an axis it does not own.
+    /// This body was `{ Unreserved }`, a constant, for as long as [`PriceRow`]
+    /// was the Slice-3 shape and carried neither `reserved_rate_minor` nor
+    /// `reservation_flavor`. The hole was stated here rather than left silent
+    /// precisely so that closing it would be one function: Slice 10 added the
+    /// pair, this reads it, and `infra::publish`'s single call site — which
+    /// already asked through this function rather than assuming — began gating
+    /// reserved rows with **no call site moving**, exactly as the note it
+    /// replaced promised.
     ///
-    /// The day Slice 10 adds the pair to [`PriceRow`], this body becomes a match
-    /// on `row.reservation_flavor` and the gate starts demanding
-    /// [`Variant::Reserved`] of reserved rows without any call site moving.
-    /// Until then a caller that *knows* it holds a reserved row passes
-    /// [`Reservation::Reserved`] explicitly, and the gate answers correctly
-    /// today — which is what `a_reserved_row_is_gated_on_its_own_variant` in the
-    /// sibling test file proves.
+    /// **Either half counts.** [`PriceRow::is_reserved`] is a disjunction
+    /// because the pairing is a publish rule
+    /// ([`RESERVATION_PAIR_INCOMPLETE`](crate::domain::publish::rules::RESERVATION_PAIR_INCOMPLETE)),
+    /// so a half-authored reservation is a state a draft can legitimately be in.
+    /// Reading it as a conjunction would let a flavor-without-rate row past this
+    /// gate on its way to that refusal — the wrong order to meet the two
+    /// problems in, and a row that publishes against no reservation fixture at
+    /// all if the pairing rule were ever weakened.
     #[must_use]
-    pub const fn of_slice3_row(_row: &PriceRow) -> Self {
-        Self::Unreserved
+    pub const fn of_slice3_row(row: &PriceRow) -> Self {
+        if row.is_reserved() {
+            Self::Reserved
+        } else {
+            Self::Unreserved
+        }
     }
 }
 
@@ -131,7 +143,13 @@ impl Reservation {
 ///   usage kind (alongside that kind's own fixture)". Both halves are required:
 ///   `is_tiered` because the fixture is about a tier counter, and `is_usage`
 ///   because a non-usage row has no counter to continue.
-/// - [`Variant::Reserved`] when the caller states the row is reserved — see
+/// - [`Variant::Reserved`] on a reserved row — `inst-rv-fixture`: "the
+///   reservation variant requires its own joint golden fixture before publish
+///   (registered into Slice 3's `FixtureGate`)". **This clause is that
+///   registration**, and it is the half of `inst-rv-fixture` this gear owns; the
+///   other half — negotiated RI-style rates — stays in Contracts (D-108 clause
+///   (b)) and no rate path here reaches it. Read through
+///   [`Reservation::of_slice3_row`] on the production path — see
 ///   [`Reservation`] for why that is a parameter.
 ///
 /// It is deliberately a free function and not a method on [`FixtureGate`]: what

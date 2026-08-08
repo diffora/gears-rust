@@ -206,8 +206,9 @@ use crate::domain::plan_shape::{
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
-    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
-    QuantitySource, TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
+    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance,
+    MinQtyUsageFallback, PriceRow, QuantitySource, ReservationFlavor, TierAggregationWindow,
+    TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::read_model::OverlayIndexShard;
 use crate::domain::scope_key::{Meter, PlanId, ScopeKey};
@@ -909,6 +910,12 @@ fn row_value(row: &PriceRow) -> JsonValue {
         aggregation_granularity,
         max_hold_granules,
         included_allowance,
+        reserved_rate_minor,
+        reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
     } = row;
     json!({
         "chargeKind": charge_kind.as_str(),
@@ -934,6 +941,21 @@ fn row_value(row: &PriceRow) -> JsonValue {
             } = allowance;
             json!({ "quantity": quantity, "rolloverPolicy": rollover_policy.as_str() })
         }),
+        // The reservation pair (`inst-rv-attrs`), flat beside the row's other
+        // authored facts for this function's stated reason. Rating sources the
+        // self-service reserved rate from here rather than from Contracts
+        // (`inst-rv-runtime`); the reserved *quantity* is runtime input and is
+        // deliberately absent -- the catalog neither meters nor allocates it.
+        "reservedRateMinor": reserved_rate_minor.map(crate::domain::money::MinorAmount::get),
+        "reservationFlavor": reservation_flavor.map(ReservationFlavor::as_str),
+        // The typed floors and the discount hook. Enforcement is downstream --
+        // Subscriptions at order time, Tariffs/Rating at eligibility, Promotions
+        // for the instrument -- so the snapshot's job is to carry them verbatim
+        // (`inst-ft-both`, `inst-dr-boundary`).
+        "minQtyPurchase": min_qty_purchase,
+        "minQtyUsage": min_qty_usage,
+        "minQtyUsageFallback": min_qty_usage_fallback.map(MinQtyUsageFallback::as_str),
+        "discountRef": discount_ref,
     })
 }
 

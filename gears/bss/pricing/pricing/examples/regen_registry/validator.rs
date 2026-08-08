@@ -51,8 +51,8 @@ use bss_fixtures_conformance::{EvalError, PublishReport, PublishValidator, run_p
 use bss_pricing::domain::money::MinorAmount;
 use bss_pricing::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
-    PriceRow, QuantitySource, RolloverPolicy, TierAggregationWindow, TierBand,
-    TierQualificationWindow,
+    PriceRow, QuantitySource, ReservationFlavor as GearReservationFlavor, RolloverPolicy,
+    TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use bss_pricing::domain::rules::{SupersessionPair, price_row_rules, supersession_rules};
 use bss_pricing::domain::scope_key::ChargeKind;
@@ -183,7 +183,33 @@ pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
             .map(aggregation_granularity),
         max_hold_granules: snapshot.max_hold_granules,
         included_allowance: snapshot.included_allowance.map(included_allowance),
+        // Slice 10's pair. The corpus and the gear spell the flavor with two
+        // different enums for the reason the module doc gives -- the corpus model
+        // sits behind a feature this gear does not enable -- so it is mapped
+        // rather than passed through.
+        reserved_rate_minor: optional_amount(snapshot.reserved_rate_minor, "reserved_rate_minor")?,
+        reservation_flavor: snapshot.reservation_flavor.map(reservation_flavor),
+        // **The corpus has no counterpart for any of these four**, and that is a
+        // statement about the corpus rather than a mapping shortcut. The typed
+        // floors and the `discountRef` hook are enforced entirely downstream --
+        // Subscriptions at order time, Tariffs/Rating at eligibility, Promotions
+        // for the instrument -- so no joint fixture between this catalog and
+        // Rating pins a number that depends on them, and `reject_unrepresentable`
+        // has nothing to decline. If a case ever authors one, `Snapshot` gains
+        // the field first and this mapping follows it.
+        min_qty_purchase: None,
+        min_qty_usage: None,
+        min_qty_usage_fallback: None,
+        discount_ref: None,
     })
+}
+
+/// The corpus flavor as the gear's.
+const fn reservation_flavor(flavor: ReservationFlavor) -> GearReservationFlavor {
+    match flavor {
+        ReservationFlavor::Consumption => GearReservationFlavor::Consumption,
+        ReservationFlavor::Capacity => GearReservationFlavor::Capacity,
+    }
 }
 
 /// The `chargeKind` axis, **read** from the snapshot.
@@ -215,21 +241,10 @@ const fn charge_kind(kind: CorpusChargeKind) -> ChargeKind {
 /// silently dropping one would let a case pass on a row that is not the row the
 /// corpus described.
 fn reject_unrepresentable(snapshot: &Snapshot) -> Result<(), EvalError> {
-    // Slice 10. `PriceRow` is the Slice-3 shape and carries neither field, so a
-    // reservation case cannot be assessed against it at all -- including the one
-    // whose whole point is that `consumption` must fail publish.
-    if let Some(rate) = snapshot.reserved_rate_minor {
-        return Err(EvalError::UnrepresentableField {
-            field: "reserved_rate_minor",
-            value: rate.to_string(),
-        });
-    }
-    if let Some(flavor) = snapshot.reservation_flavor {
-        return Err(EvalError::UnrepresentableField {
-            field: "reservation_flavor",
-            value: reservation_flavor_wire(flavor).to_owned(),
-        });
-    }
+    // Slice 10's reservation pair **is** representable as of 2026-08-08: the two
+    // fields are on `PriceRow` and `rules::reservation` judges them, so the
+    // arms that declined every reserved snapshot here are gone and
+    // `reserved/consumption-on-level-rejected` earns its evidence again.
     // The apportionment convention for a partial period. Frozen in the snapshot
     // and consumed by Rating; no Slice-3 row field holds it.
     if let Some(basis) = snapshot.proration_basis {
@@ -367,15 +382,6 @@ const fn included_allowance(allowance: CorpusIncludedAllowance) -> IncludedAllow
             CorpusRolloverPolicy::None => RolloverPolicy::None,
             CorpusRolloverPolicy::Carry => RolloverPolicy::Carry,
         },
-    }
-}
-
-/// The wire spelling of a reservation flavor, for a diagnostic that must not
-/// lean on `Debug`.
-const fn reservation_flavor_wire(flavor: ReservationFlavor) -> &'static str {
-    match flavor {
-        ReservationFlavor::Consumption => "consumption",
-        ReservationFlavor::Capacity => "capacity",
     }
 }
 

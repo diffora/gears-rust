@@ -217,8 +217,9 @@ use crate::domain::plan_shape::{
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
-    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
-    QuantitySource, TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
+    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance,
+    MinQtyUsageFallback, PriceRow, QuantitySource, ReservationFlavor, TierAggregationWindow,
+    TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{Meter, PhaseId, PlanId, ScopeKey};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
@@ -392,7 +393,39 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// three bumps rather than one because each records a distinct re-freeze, and a
 /// counter that skipped any would leave a later reader unable to tell which
 /// change moved the bytes.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v8\x1f";
+/// # `v9`: Slice 10's reservation pair joined the row's framing (2026-08-08)
+///
+/// `v4`'s and `v6`'s case once more: [`put_price_row`] gained two framed fields,
+/// so every preimage containing a price row produces different bytes. The pair
+/// is authored draft content a `PATCH` moves, and the hole it closes is a
+/// **money** one of the most direct kind available on this table — a reviewer
+/// who approved a reserved rate of 1 000 minor units and a commit that publishes
+/// 100, with every digest equal. `reservation_flavor` travels with it because it
+/// decides whether the reserved quantity leaves the on-demand tier counter at
+/// all (`inst-rv-tier-q`) or never enters it (`inst-rv-level`, D-139), so
+/// flipping it moves the charge without moving the rate.
+///
+/// **`v6` through `v9` all collapse for anyone deploying**: nothing durable held
+/// any of them, and all four landed in one unshipped series. They are four bumps
+/// rather than one for the reason `v8` states — each records a distinct
+/// re-freeze, and a counter that skipped any would leave a later reader unable
+/// to tell which change moved the bytes.
+/// # `v10`: Slice 10's typed floors and discount hook joined it (2026-08-08)
+///
+/// `v9`'s case, four fields over and in one group with it. Each closes a
+/// distinct hole: `min_qty_purchase` decides who may buy the plan at all,
+/// `min_qty_usage` decides what quantity is billable, `min_qty_usage_fallback`
+/// decides whether below-floor usage becomes a rating exception or nothing, and
+/// `discount_ref` names the instrument that discounts the line. All four are
+/// authored draft content a `PATCH` moves, so all four were mutable between
+/// submit and approve with every digest equal.
+///
+/// **`v6` through `v10` all collapse for anyone deploying**: nothing durable
+/// held any of them, and all five landed in one unshipped series. They are five
+/// bumps rather than one for `v8`'s reason -- each records a distinct re-freeze,
+/// and a counter that skipped any would leave a later reader unable to tell
+/// which change moved the bytes.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v10\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1032,6 +1065,12 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
         aggregation_granularity,
         max_hold_granules,
         included_allowance,
+        reserved_rate_minor,
+        reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
     } = row;
     put_str(buf, charge_kind.as_str());
     put_opt_str(buf, model_kind.map(model_kind_wire));
@@ -1084,6 +1123,23 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
             put_str(buf, rollover_policy.as_str());
         }
     }
+
+    // The reservation pair (`inst-rv-attrs`). Framed as two independent optional
+    // fields rather than as one optional pair, because that is what the row
+    // holds: the pairing is a publish rule, so a half-authored reservation is a
+    // state a *draft* can be in and a reviewer can be shown. Framing it as a
+    // pair would make the two half-states frame alike.
+    put_opt_i64(buf, reserved_rate_minor.map(MinorAmount::get));
+    put_opt_str(buf, reservation_flavor.map(ReservationFlavor::as_str));
+
+    // The typed floors and the discount hook (`inst-ft-typed`,
+    // `inst-ft-fallback`, `inst-dr-referential`). Four independent optional
+    // fields: the floors are distinct facts (`inst-ft-both` permits both on one
+    // row) and the fallback is a third, so nothing here is a pair.
+    put_opt_u64(buf, *min_qty_purchase);
+    put_opt_u64(buf, *min_qty_usage);
+    put_opt_str(buf, min_qty_usage_fallback.map(MinQtyUsageFallback::as_str));
+    put_opt_str(buf, discount_ref.as_deref());
 }
 
 fn put_tier_band(buf: &mut Vec<u8>, band: &TierBand) {
