@@ -1,12 +1,40 @@
 //! Cloning a plan into a new draft (`design/12-operator-efficiency.md` §3
 //! `algo-clone`, `inst-cl-copy`, `inst-cl-resets`, `inst-cl-discount`,
-//! `inst-cl-draft`, `inst-cl-windows`; D-19, D-264).
+//! `inst-cl-draft`, `inst-cl-windows`; D-19, D-264, D-268, D-269).
 //!
 //! The clone copies **configuration** and nothing else. What separates the two
 //! is not a list to memorize: configuration is what an author wrote, and
 //! everything left behind is *lifecycle state* — where the plan got to, not what
 //! it is. Windows, grandfathered generations and superseded history are all the
 //! second kind, and `inst-cl-resets` says so in the same breath for all three.
+//!
+//! # Both cutover-made eligibility classes are lifecycle state (D-268)
+//!
+//! `inst-cl-resets` excludes `existing_grandfathered` rows *because* copying
+//! them under its own reset would collapse two rows onto one canonical scope
+//! key. **The identical collapse happens for `new_subscriptions_only`**, and the
+//! clause named only the first class. Both are made by a cutover rather than
+//! authored, and on a clone the second is meaningless twice over: every
+//! subscription on a brand-new plan is new. So both are excluded, and each is
+//! reported on the receipt.
+//!
+//! The consequence is that the eligibility reset itself now has **no operand**:
+//! every row that reaches [`reset_key`] already carries `all_subscriptions`,
+//! because the only two classes that could carry anything else are excluded
+//! first. It is kept as a structural fence beside `Cohort::None` and
+//! `grandfather_until` (D-266), not as behaviour a test can prove.
+//!
+//! # A clone of a bundle is a bundle (D-269)
+//!
+//! §3's copy set predates Slice 8 and names none of the bundle tables, while
+//! `plan_repo::open_revision` copies the composition as one of the plan's child
+//! tables — *a bundle rides its plan's revisions*. The two paths that reproduce
+//! a plan disagreed, and this one produced a plan holding a bundle's price rows
+//! and none of its composition. It now copies: a **new `bundle_id`**
+//! (`pricing_bundle.plan_id` is unique per plan), and the components and
+//! rev-share groups under it. `bundle_component.component_plan_id` names
+//! **other** plans and is carried unchanged — those are different plans, not the
+//! clone's phases, and the phase remap has nothing to do with them.
 //!
 //! # The phase remap is the whole difficulty, and it has three sites
 //!
@@ -64,6 +92,7 @@ use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::domain::audit::AuditStamp;
+use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{EntitlementGrants, GrantSet};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
@@ -72,8 +101,8 @@ use crate::domain::plan_shape::PlanPhase;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{PhaseId, PlanId, PriceEligibility, ScopeKey};
 use crate::infra::storage::repo::{
-    BundleRepo, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo,
-    plan_shape_repo, price_repo,
+    BundleRepo, NewBundle, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo,
+    plan_repo, plan_shape_repo, price_repo,
 };
 use crate::infra::storage::repo_failure;
 use std::collections::BTreeMap;
@@ -100,15 +129,13 @@ pub enum CloneNotice {
     /// rows onto one canonical scope key and guarantee a duplicate-scope failure
     /// at the clone's first publish.
     GrandfatheredRowsNotCopied { rows: usize },
-    /// **The source is a bundle and its composition did not come across.**
-    ///
-    /// §3's copy set predates Slice 8 and names `pricing_bundle` nowhere, while
-    /// `plan_repo::open_revision` treats the composition as one of the plan's
-    /// child tables and copies it — so the two paths that reproduce a plan
-    /// disagree, and this one produces a plan that holds the bundle's price rows
-    /// and none of its composition. Reported rather than copied *or* refused,
-    /// because both of those are edges the design set does not draw; see D-266.
-    BundleCompositionNotCopied,
+    /// `inst-cl-resets` under D-268: `new_subscriptions_only` rows are lifecycle
+    /// state for the same two reasons, and the clause named only the first
+    /// class. They are made by a cutover rather than authored, they collapse
+    /// onto the `all_subscriptions` row's canonical key under the reset exactly
+    /// as a grandfathered generation does, and on a clone the class means
+    /// nothing anyway: every subscription on a new plan is new.
+    NewSubscriptionsOnlyRowsNotCopied { rows: usize },
 }
 
 /// What a clone produced.
@@ -132,8 +159,8 @@ pub struct PlanCloner {
     plans: PlanRepo,
     shapes: PlanShapeRepo,
     prices: PriceRepo,
-    /// Read-only here, and only to notice that the source **is** a bundle. This
-    /// path copies no composition; see [`CloneNotice::BundleCompositionNotCopied`].
+    /// The source's bundle identity and composition, copied onto the clone under
+    /// a new `bundle_id` (D-269).
     bundles: BundleRepo,
 }
 
@@ -340,6 +367,21 @@ impl PlanCloner {
                 .row_version;
         }
 
+        // **A bundle rides its plan's revisions, so a clone of a bundle is a
+        // bundle** (D-269). Ahead of the patch below because the composition
+        // write is a compare-and-swap on the same revision tag, and it returns
+        // the version the patch then has to hold.
+        version = self
+            .copy_bundle(
+                scope,
+                tenant_id,
+                (source, source_revision),
+                (target, revision),
+                version,
+                stamp,
+            )
+            .await?;
+
         // **The two authored facts `NewPlanDraft` cannot express**, patched onto
         // the created draft: the grant set with the per-phase map's keys remapped
         // (C-7), and the plan-change contract, which the create path drops
@@ -361,67 +403,150 @@ impl PlanCloner {
             .await
             .map_err(|e| repo_failure(&e))?;
 
-        let (prices_copied, grandfathered) = self
+        let rows = self
             .copy_rows(scope, tenant_id, source, target, &remap, now, stamp)
             .await?;
-
-        let mut notices = Vec::new();
-        notices.extend(self.bundle_notice(scope, tenant_id, source).await?);
-        if prices_copied > 0 {
-            notices.push(CloneNotice::NoCoverageScheduled {
-                rows: prices_copied,
-            });
-        }
-        if grandfathered > 0 {
-            notices.push(CloneNotice::GrandfatheredRowsNotCopied {
-                rows: grandfathered,
-            });
-        }
 
         Ok(CloneReceipt {
             plan_id: target,
             cloned_from: source,
             phases_copied: source_phases.len(),
-            prices_copied,
+            prices_copied: rows.copied,
             composites_copied,
-            notices,
+            notices: rows.notices(),
         })
     }
 }
 
+/// What [`PlanCloner::copy_rows`] did with the source's published price rows.
+///
+/// Three counts rather than a tuple, because two of the three are exclusions and
+/// a caller reading `(usize, usize, usize)` positionally is one transposition
+/// away from telling the operator that the wrong class stayed behind.
+struct CopiedRows {
+    /// Rows written onto the clone.
+    copied: usize,
+    /// `existing_grandfathered` rows left behind (`inst-cl-resets`).
+    grandfathered: usize,
+    /// `new_subscriptions_only` rows left behind (D-268).
+    new_subscriptions_only: usize,
+}
+
+impl CopiedRows {
+    /// What the operator is told: one notice per class that had rows, and none
+    /// for a class that had none.
+    ///
+    /// Here rather than inline in [`PlanCloner::clone_plan`] because the third
+    /// arm took that method to a cognitive complexity of 21 against a cap of 20
+    /// — and because "what the receipt says" is a different question from "what
+    /// the copy did", which is the whole reason the receipt carries notices.
+    fn notices(&self) -> Vec<CloneNotice> {
+        let mut notices = Vec::new();
+        if self.copied > 0 {
+            notices.push(CloneNotice::NoCoverageScheduled { rows: self.copied });
+        }
+        if self.grandfathered > 0 {
+            notices.push(CloneNotice::GrandfatheredRowsNotCopied {
+                rows: self.grandfathered,
+            });
+        }
+        if self.new_subscriptions_only > 0 {
+            notices.push(CloneNotice::NewSubscriptionsOnlyRowsNotCopied {
+                rows: self.new_subscriptions_only,
+            });
+        }
+        notices
+    }
+}
+
 impl PlanCloner {
-    /// Copy the source's published price rows onto the clone, resetting each.
+    /// Copy the source bundle's identity and composition onto the clone (D-269).
     ///
-    /// Returns `(copied, left behind)`. Separate from [`PlanCloner::clone_plan`]
-    /// because it is the *rows* rather than the shape, and because the exclusion
-    /// branch is the one place this path decides not to copy something.
+    /// Returns the clone revision's row version — **unchanged** when the source
+    /// is not a bundle, which is the ordinary answer: the overwhelming majority
+    /// of plans are not bundles, and `BundleRepo` takes the same posture in
+    /// every one of its own entry points.
+    ///
+    /// The `bundle_id` is **new**. `pricing_bundle.plan_id` is unique per plan,
+    /// so the identity cannot be shared; and it is the bundle's own identity
+    /// rather than a revision-scoped row, exactly as `composite_id` is (D-106).
+    /// What is *not* re-minted is `component_plan_id`: those name **other**
+    /// plans, which the clone did not copy and must not repoint.
+    ///
+    /// Its own method rather than a branch inside [`PlanCloner::clone_plan`],
+    /// which is already at the cognitive-complexity cap, and because the two
+    /// plans arrive here as a pair with the revision each is read at — the shape
+    /// both `load_composition` and `replace_composition` take.
     ///
     /// # Errors
-    /// Whatever the price repository refuses with, and
-    /// [`DomainError::ValidationFailed`] if a reset key is not constructible.
-    /// Whether the source is a bundle, as the one notice this path owes about a
-    /// table it does not copy.
-    ///
-    /// Its own method rather than a branch inside `clone_plan`, because it is a
-    /// different question from anything else there: not *what did the copy do*
-    /// but *what is the source that this copy set cannot express*.
-    ///
-    /// # Errors
-    /// Whatever the bundle repository refuses with.
-    async fn bundle_notice(
+    /// Whatever the bundle repository refuses with — including its
+    /// [`crate::infra::storage::RepoError::StaleRowVersion`] when a concurrent
+    /// writer moved the clone's own draft between this call and the shape write
+    /// before it.
+    async fn copy_bundle(
         &self,
         scope: &AccessScope,
         tenant_id: Uuid,
-        source: PlanId,
-    ) -> Result<Option<CloneNotice>, DomainError> {
-        Ok(self
+        from: (PlanId, u64),
+        onto: (PlanId, u64),
+        version: RowVersion,
+        stamp: AuditStamp,
+    ) -> Result<RowVersion, DomainError> {
+        let (source, source_revision) = from;
+        let (target, revision) = onto;
+        let Some(bundle) = self
             .bundles
             .find_by_plan(scope, tenant_id, source)
             .await
             .map_err(|e| repo_failure(&e))?
-            .map(|_| CloneNotice::BundleCompositionNotCopied))
+        else {
+            return Ok(version);
+        };
+        let composition = self
+            .bundles
+            .load_composition(scope, tenant_id, source, source_revision)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+        self.bundles
+            .create(
+                scope,
+                NewBundle {
+                    bundle_id: Uuid::new_v4(),
+                    tenant_id,
+                    plan_id: target,
+                    price_basis: bundle.price_basis,
+                    invoice_itemization: bundle.invoice_itemization,
+                },
+                stamp,
+            )
+            .await
+            .map_err(|e| repo_failure(&e))?;
+        Ok(self
+            .bundles
+            .replace_composition(
+                scope,
+                tenant_id,
+                target,
+                revision,
+                version,
+                composition,
+                stamp,
+            )
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .row_version)
     }
 
+    /// Copy the source's published price rows onto the clone, resetting each.
+    ///
+    /// Returns what was copied and what was left behind, per class. Separate
+    /// from [`PlanCloner::clone_plan`] because it is the *rows* rather than the
+    /// shape, and because the exclusion arms are the one place this path decides
+    /// not to copy something.
+    ///
+    /// # Errors
+    /// Whatever the price repository refuses with, and
+    /// [`DomainError::ValidationFailed`] if a reset key is not constructible.
     #[allow(
         clippy::too_many_arguments,
         reason = "every argument is a fact only the caller holds: the scope, the tenant, the two \
@@ -438,7 +563,7 @@ impl PlanCloner {
         remap: &BTreeMap<Uuid, PhaseId>,
         now: DateTime<Utc>,
         stamp: AuditStamp,
-    ) -> Result<(usize, usize), DomainError> {
+    ) -> Result<CopiedRows, DomainError> {
         let conn = self
             .db
             .conn()
@@ -447,12 +572,26 @@ impl PlanCloner {
             price_repo::load_for_plan(&conn, scope, tenant_id, source, COPIED_ROW_STATES)
                 .await
                 .map_err(|e| repo_failure(&e))?;
-        let mut copied = 0_usize;
-        let mut grandfathered = 0_usize;
+        let mut counts = CopiedRows {
+            copied: 0,
+            grandfathered: 0,
+            new_subscriptions_only: 0,
+        };
         for row in source_rows {
-            if row.scope_key.price_eligibility() == PriceEligibility::ExistingGrandfathered {
-                grandfathered += 1;
-                continue;
+            // **Both cutover-made classes stay behind** (D-268), and the match is
+            // exhaustive rather than two `if`s so that a fourth class added to
+            // `PriceEligibility` has to be classified here instead of defaulting
+            // into the copy.
+            match row.scope_key.price_eligibility() {
+                PriceEligibility::ExistingGrandfathered => {
+                    counts.grandfathered += 1;
+                    continue;
+                }
+                PriceEligibility::NewSubscriptionsOnly => {
+                    counts.new_subscriptions_only += 1;
+                    continue;
+                }
+                PriceEligibility::AllSubscriptions => {}
             }
             self.prices
                 .create_draft(
@@ -469,9 +608,9 @@ impl PlanCloner {
                 )
                 .await
                 .map_err(|e| repo_failure(&e))?;
-            copied += 1;
+            counts.copied += 1;
         }
-        Ok((copied, grandfathered))
+        Ok(counts)
     }
 }
 
@@ -527,6 +666,13 @@ fn remapped_grants(
 /// `inst-cl-resets` (O1): `priceEligibility` goes to `all_subscriptions` because
 /// eligibility must be re-decided, and the cohort follows it to `none` — the two
 /// are one fact, and `ScopeKey::new` refuses the pair that disagrees.
+///
+/// **Both resets are structural fences and neither has an operand** since D-268:
+/// the only two classes that could carry another value are excluded before a row
+/// reaches here, so every key this sees already reads `all_subscriptions` /
+/// `none`. Kept because a later change admitting either class would need them —
+/// the same posture D-266 took for the cohort and `grandfather_until` — and not
+/// claimed as behaviour a test proves.
 fn reset_key(
     key: &ScopeKey,
     target: PlanId,

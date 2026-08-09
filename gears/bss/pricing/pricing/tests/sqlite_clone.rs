@@ -1,6 +1,6 @@
 //! What a clone copies, what it remaps and what it deliberately leaves behind
 //! (`design/12-operator-efficiency.md` §3 `algo-clone`, `inst-cl-*`; D-19,
-//! D-264).
+//! D-264, D-268, D-269).
 //!
 //! Driven through the real repositories rather than over a hand-built world,
 //! because every claim here is about what the *store* ends up holding — and this
@@ -17,12 +17,27 @@
 //! exist only in the source, and fails `GRANT_SET_PHASE_UNKNOWN` on its first
 //! publish — which is a refusal the *operator* has no way to act on, the dangling
 //! ids being invisible to them.
+//!
+//! # What is asserted about the resets, and what is not
+//!
+//! Since D-268 both cutover-made eligibility classes are excluded, so **every
+//! row that reaches the reset already carries `all_subscriptions` and
+//! `cohort = none`**. Those two assertions are therefore fences rather than
+//! evidence — true of a value nothing had to move — and are marked as such where
+//! they stand, beside the pair D-266 already demoted. What the suite proves
+//! instead is the **exclusion**: the clone holds no row on the market only a
+//! `new_subscriptions_only` row occupied, the receipt names each class it left
+//! behind, and a source holding both classes on **one** market clones without
+//! the collapse `inst-cl-resets` names only for grandfathered rows.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 mod common;
 
 use bss_pricing::domain::audit::AuditStamp;
+use bss_pricing::domain::bundle::{
+    Absorber, InvoiceItemization, Party, PartyShare, PriceBasis, RevShareGroup,
+};
 use bss_pricing::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
 };
@@ -38,8 +53,8 @@ use bss_pricing::domain::scope_key::{
 use bss_pricing::infra::clone::{CloneNotice, PlanCloner};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
-    BundleRepo, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo,
-    plan_shape_repo, price_repo,
+    BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, NewPriceDraft,
+    PlanRepo, PlanShapeRepo, PriceRepo, plan_repo, plan_shape_repo, price_repo,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
@@ -53,6 +68,13 @@ const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const ACTOR: Uuid = Uuid::from_u128(0xac_10);
 const CORRELATION: Uuid = Uuid::from_u128(0xc0_11);
 const SOURCE_COMPOSITE: Uuid = Uuid::from_u128(0xc0_f1);
+const SOURCE_BUNDLE: Uuid = Uuid::from_u128(0xb_11d);
+/// The two plans the source bundle includes. **Other plans**, which the clone
+/// did not copy: `component_plan_id` is the one id in the composition that must
+/// travel unchanged (D-269).
+const COMPONENT_A: Uuid = Uuid::from_u128(0xc0_a1);
+const COMPONENT_B: Uuid = Uuid::from_u128(0xc0_b1);
+const VENDOR_SKU: Uuid = Uuid::from_u128(0x5e_11);
 
 fn source_plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x50_c1))
@@ -154,9 +176,63 @@ fn flat_row() -> PriceContent {
     }
 }
 
+/// The source bundle's composition: two components on two **other** plans, one
+/// of them qty-bounded, and one rev-share group whose residual is absorbed by a
+/// named party rather than by the platform default.
+///
+/// Every value here is off the default: a copier that wrote a fresh
+/// [`CompositionDraft`] instead of the source's would differ on all of them.
+fn source_composition() -> CompositionDraft {
+    CompositionDraft {
+        components: vec![
+            BundleComponentDraft {
+                component_plan_id: COMPONENT_A,
+                included_sku_id: Uuid::from_u128(0x_5c_0a),
+                min_qty: Some(1),
+                max_qty: Some(4),
+            },
+            BundleComponentDraft {
+                component_plan_id: COMPONENT_B,
+                included_sku_id: Uuid::from_u128(0x_5c_0b),
+                min_qty: None,
+                max_qty: None,
+            },
+        ],
+        rev_share_groups: vec![RevShareGroup {
+            vendor_sku_id: VENDOR_SKU,
+            platform_cut_bp: 1_500,
+            residual_absorber: Absorber::Party(Party::new("vendor").expect("a party name")),
+            parties: vec![
+                PartyShare {
+                    party: Party::new("reseller").expect("a party name"),
+                    share_bp: 2_500,
+                },
+                PartyShare {
+                    party: Party::new("vendor").expect("a party name"),
+                    share_bp: 6_000,
+                },
+            ],
+        }],
+    }
+}
+
 /// A published source plan: two phases, a grant set keyed on the trial phase, and
 /// one published price row on each phase.
 async fn seed_source(h: &Harness) {
+    seed(h, None).await;
+}
+
+/// The same source, made a bundle carrying [`source_composition`].
+///
+/// The composition is written while the source revision is still a **draft**:
+/// all three composition tables refuse an INSERT against a published parent, so
+/// a bundle seeded after the publish could carry no components at all — which is
+/// how a copier asserted against nothing would look green.
+async fn seed_bundle_source(h: &Harness) {
+    seed(h, Some(source_composition())).await;
+}
+
+async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
     let created = h
         .plans
         .create_draft(
@@ -253,7 +329,8 @@ async fn seed_source(h: &Harness) {
         .expect("attach the composite");
 
     // A per-phase grant set keyed on the trial phase — C-7's subject.
-    h.plans
+    let after_grants = h
+        .plans
         .update_draft(
             &h.scope,
             TENANT,
@@ -287,6 +364,37 @@ async fn seed_source(h: &Harness) {
         .await
         .expect("author the grant set");
 
+    if let Some(draft) = composition {
+        h.bundles
+            .create(
+                &h.scope,
+                NewBundle {
+                    bundle_id: SOURCE_BUNDLE,
+                    tenant_id: TENANT,
+                    plan_id: source_plan(),
+                    // Neither value is its enum's first variant, so a clone that
+                    // wrote a constant pair would differ on at least one.
+                    price_basis: PriceBasis::OwnPrice,
+                    invoice_itemization: InvoiceItemization::Aggregate,
+                },
+                stamp(),
+            )
+            .await
+            .expect("make the source a bundle");
+        h.bundles
+            .replace_composition(
+                &h.scope,
+                TENANT,
+                source_plan(),
+                created.revision,
+                after_grants.row_version,
+                draft,
+                stamp(),
+            )
+            .await
+            .expect("author the source composition");
+    }
+
     for (id, phase, eligibility) in [
         (
             Uuid::from_u128(0xb_0001),
@@ -298,14 +406,16 @@ async fn seed_source(h: &Harness) {
             terminal_phase(),
             PriceEligibility::AllSubscriptions,
         ),
-        // **The row the reset is actually about**, and it sits in its own market.
-        // Every other seeded row already carries `all_subscriptions`, so without
-        // this one "resets to all_subscriptions" asserts a value nothing had to
-        // move — a probe caught exactly that, staying green with the reset
-        // removed. The separate region is not decoration: reset onto the *same*
-        // market it would collapse onto the `all_subscriptions` row's canonical
-        // key, which is the collision `inst-cl-resets` names for grandfathered
-        // rows and does not name for this class. See D-265.
+        // **The row D-268 leaves behind**, and it sits in its own market so that
+        // the exclusion is observable as an *absence* rather than only as a
+        // count: nothing else in the seed occupies `us`, so a clone holding a
+        // `us` row copied a class it was told not to.
+        //
+        // It was seeded by D-265 to give the eligibility reset an operand. D-268
+        // took that operand away — this class is now excluded, and no row that
+        // reaches the reset can carry anything but `all_subscriptions`. The
+        // collapse D-265 measured, both classes on one market, is
+        // `both_eligibility_classes_on_one_market_survive_the_clone`'s.
         (
             Uuid::from_u128(0xb_0004),
             trial_phase(),
@@ -366,7 +476,11 @@ async fn every_phase_reference_is_remapped_including_the_grant_map() {
         .await
         .expect("the clone runs");
     assert_eq!(receipt.phases_copied, 2);
-    assert_eq!(receipt.prices_copied, 3);
+    assert_eq!(
+        receipt.prices_copied, 2,
+        "the two all_subscriptions rows; the new_subscriptions_only row stays \
+         behind (D-268)"
+    );
 
     let conn = h.provider.conn().expect("conn");
     let clone_phases = plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
@@ -401,7 +515,7 @@ async fn every_phase_reference_is_remapped_including_the_grant_map() {
     )
     .await
     .expect("read the clone's rows");
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 2);
     for row in &rows {
         assert!(
             new_ids.contains(&row.scope_key.phase()),
@@ -469,16 +583,17 @@ async fn the_clone_is_a_draft_that_names_its_source() {
     );
 }
 
-/// **`inst-cl-resets` (O1): eligibility is re-decided, and grandfathered rows are
-/// not copied at all.**
+/// **Both cutover-made classes stay behind, and the receipt names each** —
+/// `inst-cl-resets` for grandfathered rows, D-268 for `new_subscriptions_only`.
 ///
-/// The two are one rule read from both ends. A grandfathered row copied *with*
-/// its eligibility reset would land on the same canonical scope key as the
-/// `all_subscriptions` row that supersedes it, and the clone's first publish
-/// would fail on the duplicate — so the row is left behind and the operator is
-/// told, rather than the clone being quietly unpublishable.
+/// One rule read from both ends. A row of either class copied *with* its
+/// eligibility reset lands on the same canonical scope key as the
+/// `all_subscriptions` row beside it, and the clone's first publish fails on the
+/// duplicate — so the row is left behind and the operator is told, rather than
+/// the clone being quietly unpublishable. The second class is meaningless on a
+/// clone twice over: every subscription on a new plan is new.
 #[tokio::test]
-async fn eligibility_resets_and_grandfathered_rows_stay_behind() {
+async fn both_cutover_classes_stay_behind_and_the_receipt_names_each() {
     let h = harness().await;
     seed_source(&h).await;
 
@@ -520,14 +635,23 @@ async fn eligibility_resets_and_grandfathered_rows_stay_behind() {
         .expect("the clone runs");
 
     assert_eq!(
-        receipt.prices_copied, 3,
-        "the three ordinary rows copy and the grandfathered one does not"
+        receipt.prices_copied, 2,
+        "the two all_subscriptions rows copy; the grandfathered row and the \
+         new_subscriptions_only row do not"
     );
     assert!(
         receipt
             .notices
             .contains(&CloneNotice::GrandfatheredRowsNotCopied { rows: 1 }),
         "and the operator is told which rows stayed behind: {:?}",
+        receipt.notices
+    );
+    assert!(
+        receipt
+            .notices
+            .contains(&CloneNotice::NewSubscriptionsOnlyRowsNotCopied { rows: 1 }),
+        "each class is named on its own, so the operator can tell a retained \
+         generation from a cutover's going-forward row: {:?}",
         receipt.notices
     );
 
@@ -541,26 +665,97 @@ async fn eligibility_resets_and_grandfathered_rows_stay_behind() {
     )
     .await
     .expect("read the clone's rows");
+
+    // **The exclusion, as an absence.** Only the `new_subscriptions_only` row
+    // occupies `us` in the seed, so a clone holding one copied the class it was
+    // told to leave. This is the assertion that bites; the loop below no longer
+    // does.
+    assert!(
+        rows.iter()
+            .all(|row| row.scope_key.region().as_str() != "us"),
+        "the clone holds a row on the market only the new_subscriptions_only \
+         row occupied: {:?}",
+        rows.iter()
+            .map(|row| row.scope_key.region().as_str().to_owned())
+            .collect::<Vec<_>>()
+    );
+
+    // **Four structural fences, and none of them is evidence.** Every row that
+    // reaches the reset already carries all four values, because the two classes
+    // that could carry anything else are excluded above (D-266 demoted the
+    // cohort and `grandfatherUntil` for that reason; D-268 does the same to the
+    // eligibility). Kept so that a later change admitting either class fails
+    // here rather than at a clone's first publish, and claimed as nothing more.
     for row in &rows {
         assert_eq!(
             row.scope_key.price_eligibility(),
-            PriceEligibility::AllSubscriptions,
-            "eligibility must be re-decided, so every copied row resets to \
-             all_subscriptions"
+            PriceEligibility::AllSubscriptions
         );
-        assert!(
-            row.scope_key.cohort().is_none(),
-            "and the cohort follows it -- the two are one fact"
-        );
-        assert!(
-            row.content().grandfather_until.is_none(),
-            "grandfatherUntil is the source's tombstone and says nothing here"
-        );
-        assert!(
-            row.content().supersedes_price_id.is_none(),
-            "a clone's first row supersedes nothing"
-        );
+        assert!(row.scope_key.cohort().is_none());
+        assert!(row.content().grandfather_until.is_none());
+        assert!(row.content().supersedes_price_id.is_none());
     }
+}
+
+/// **A source holding both eligibility classes on one market clones cleanly** —
+/// the collapse `inst-cl-resets` names only for grandfathered rows, closed for
+/// the class it did not name (D-268).
+///
+/// `(EUR, eu, terminal, recurring)` carries an `all_subscriptions` row and a
+/// `new_subscriptions_only` row: two distinct keys the published plane admits,
+/// which the reset would send onto one. Measured under D-265: seeding exactly
+/// this pair reddened most of the suite with a driver refusal on the draft
+/// plane's unique index. It is the reason the class is excluded rather than
+/// reset, so it is the case that proves the exclusion is load-bearing and not
+/// merely tidy.
+#[tokio::test]
+async fn both_eligibility_classes_on_one_market_survive_the_clone() {
+    let h = harness().await;
+    seed_source(&h).await;
+
+    let colliding = Uuid::from_u128(0xb_0005);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: colliding,
+                scope_key: key_on(
+                    source_plan(),
+                    terminal_phase(),
+                    PriceEligibility::NewSubscriptionsOnly,
+                    Cohort::None,
+                ),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("author the cutover's going-forward row beside the row it closed");
+    common::publish_row_directly(&h.provider, &h.scope, colliding).await;
+
+    let receipt = h
+        .cloner
+        .clone_plan(
+            &h.scope,
+            TENANT,
+            source_plan(),
+            target_plan(),
+            at(11),
+            stamp(),
+        )
+        .await
+        .expect("the clone runs rather than colliding with itself");
+    assert_eq!(receipt.prices_copied, 2);
+    assert!(
+        receipt
+            .notices
+            .contains(&CloneNotice::NewSubscriptionsOnlyRowsNotCopied { rows: 2 }),
+        "both rows of the class are left behind and counted: {:?}",
+        receipt.notices
+    );
 }
 
 /// **`inst-cl-windows`: schedules are never cloned, and the operator is told.**
@@ -591,7 +786,7 @@ async fn no_window_is_cloned_and_the_receipt_says_so() {
     assert!(
         receipt
             .notices
-            .contains(&CloneNotice::NoCoverageScheduled { rows: 3 }),
+            .contains(&CloneNotice::NoCoverageScheduled { rows: 2 }),
         "the receipt must say the clone has no coverage: {:?}",
         receipt.notices
     );
@@ -708,34 +903,24 @@ async fn the_whole_copy_set_comes_across_contract_descriptors_and_composites() {
     assert_eq!(composites[0].constituent_units.len(), 2);
 }
 
-/// The source is a bundle and its composition does not come across, so the
-/// receipt says so rather than handing back a plan that silently is not one.
+/// **A clone of a bundle is a bundle** (D-269): a new `bundle_id`, and the whole
+/// composition under it.
 ///
 /// §3's copy set predates Slice 8 and names none of the bundle tables, while
-/// `plan_repo::open_revision` copies them as the plan's child tables — the two
-/// paths that reproduce a plan disagree, and D-266 records that rather than this
-/// path picking a side.
+/// `plan_repo::open_revision` copies them as the plan's child tables — a bundle
+/// rides its plan's revisions. The two paths that reproduce a plan disagreed,
+/// and this one handed back a plan holding the bundle's price rows and none of
+/// its composition.
+///
+/// The identity is re-minted because `pricing_bundle.plan_id` is unique per
+/// plan; `component_plan_id` is **not**, because it names other plans — the
+/// clone copied one plan, not the catalogue around it.
 #[tokio::test]
-async fn a_bundle_source_is_reported_rather_than_silently_flattened() {
+async fn a_bundle_clone_is_a_bundle_under_its_own_identity() {
     let h = harness().await;
-    seed_source(&h).await;
-    h.bundles
-        .create(
-            &h.scope,
-            bss_pricing::infra::storage::repo::NewBundle {
-                bundle_id: Uuid::from_u128(0xb_11d),
-                tenant_id: TENANT,
-                plan_id: source_plan(),
-                price_basis: bss_pricing::domain::bundle::PriceBasis::SumOfParts,
-                invoice_itemization: bss_pricing::domain::bundle::InvoiceItemization::Itemize,
-            },
-            stamp(),
-        )
-        .await
-        .expect("make the source a bundle");
+    seed_bundle_source(&h).await;
 
-    let receipt = h
-        .cloner
+    h.cloner
         .clone_plan(
             &h.scope,
             TENANT,
@@ -746,20 +931,57 @@ async fn a_bundle_source_is_reported_rather_than_silently_flattened() {
         )
         .await
         .expect("the clone runs");
-    assert!(
-        receipt
-            .notices
-            .contains(&CloneNotice::BundleCompositionNotCopied),
-        "cloning a bundle must say the composition stayed behind: {:?}",
-        receipt.notices
-    );
 
-    // And an ordinary plan raises no such notice, so the assertion above is
-    // about the source being a bundle rather than about a constant.
+    let bundle = h
+        .bundles
+        .find_by_plan(&h.scope, TENANT, target_plan())
+        .await
+        .expect("read the clone's bundle")
+        .expect("a clone of a bundle is a bundle");
+    assert_ne!(
+        bundle.bundle_id, SOURCE_BUNDLE,
+        "the clone mints its own bundle id"
+    );
+    assert_eq!(
+        bundle.price_basis,
+        PriceBasis::OwnPrice,
+        "the declared basis is authored configuration and comes across"
+    );
+    assert_eq!(bundle.invoice_itemization, InvoiceItemization::Aggregate);
+
+    let composition = h
+        .bundles
+        .load_composition(&h.scope, TENANT, target_plan(), 0)
+        .await
+        .expect("read the clone's composition");
+    assert_eq!(
+        composition,
+        source_composition(),
+        "the whole composition rides the clone: components in their authored \
+         order with their qty bounds, and the rev-share group with its cut, its \
+         named absorber and both typed shares"
+    );
+    assert_eq!(
+        composition.components[0].component_plan_id, COMPONENT_A,
+        "component_plan_id names another plan and must never be remapped -- \
+         those are different plans, not the clone's phases"
+    );
+    assert_eq!(composition.components[1].component_plan_id, COMPONENT_B);
+
+    // The source keeps its own bundle, under its own id: the copy is a copy.
+    let source_bundle = h
+        .bundles
+        .find_by_plan(&h.scope, TENANT, source_plan())
+        .await
+        .expect("read the source's bundle")
+        .expect("the source is still a bundle");
+    assert_eq!(source_bundle.bundle_id, SOURCE_BUNDLE);
+
+    // And an ordinary plan clones to an ordinary plan, so the assertions above
+    // are about the source being a bundle rather than about a constant.
     let h2 = harness().await;
     seed_source(&h2).await;
-    let plain = h2
-        .cloner
+    h2.cloner
         .clone_plan(
             &h2.scope,
             TENANT,
@@ -771,10 +993,11 @@ async fn a_bundle_source_is_reported_rather_than_silently_flattened() {
         .await
         .expect("the clone runs");
     assert!(
-        !plain
-            .notices
-            .contains(&CloneNotice::BundleCompositionNotCopied),
-        "an ordinary plan is not a bundle: {:?}",
-        plain.notices
+        h2.bundles
+            .find_by_plan(&h2.scope, TENANT, target_plan())
+            .await
+            .expect("read the plain clone's bundle")
+            .is_none(),
+        "an ordinary plan is not a bundle, and its clone must not become one"
     );
 }
