@@ -1,8 +1,11 @@
 //! `SeaORM` entity for `bss.pricing_price` — the price rows and, in the same
 //! table, the price **history** (`design/01-foundation.md` §3.7).
 //!
-//! The ten canonical scope-key columns come first and in normative order
-//! (§4.1). `cohort` is a `String` holding the domain token (`none`, or the
+//! **Eight** of the ten canonical scope-key columns come first and in normative
+//! order (§4.1); the usage pair D-196 added — `meter` and `dimension_key` — sits
+//! in the content block below, where the axes it also serves as content put it.
+//! This is a claim about *this table's layout*, not about the axis count: the
+//! 2026-08-09 stale-figure sweep changed it to "ten" and made it false (D-289). `cohort` is a `String` holding the domain token (`none`, or the
 //! cutover instant) rather than an `Option<DateTime<Utc>>`, because it is a
 //! column of a partial `UNIQUE` index and distinct `NULL`s do not collide.
 //!

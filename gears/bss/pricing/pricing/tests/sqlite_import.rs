@@ -428,6 +428,37 @@ async fn a_held_key_does_not_taint_its_neighbours() {
 }
 
 #[tokio::test]
+async fn the_report_is_in_batch_order_however_the_halves_reached_it() {
+    // **The other half of the ordering claim, and it was pinned by nothing**
+    // (D-289). Every earlier case adds rows in ascending index order, so
+    // `binary_search_by_key` + `insert(at, …)` could be replaced by `push` and
+    // the suite would stay green. Here the batch-only half fails **row 1** (a
+    // Slice-10 primitive) and the store half fails **row 0** (a published key),
+    // so `add` is called out of order and the report has to sort it out.
+    let h = harness().await;
+    publish(&h, key("eu"), 9_900).await;
+    let mut carrier = row(key("us"), 12_500);
+    carrier.content.row.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+
+    let report = judged(&h, &[row(key("eu"), 12_500), carrier]).await;
+
+    assert_eq!(
+        report
+            .rows()
+            .iter()
+            .map(|outcome| outcome.row)
+            .collect::<Vec<_>>(),
+        vec![0, 1],
+        "in batch order, not in the order the halves happened to write"
+    );
+    assert_eq!(codes(&report, 0), vec![IMPORT_TARGETS_PUBLISHED]);
+    assert_eq!(codes(&report, 1), vec![PRIMITIVE_RULES_UNBUILT]);
+}
+
+#[tokio::test]
 async fn the_two_halves_write_one_report_and_a_row_hears_both() {
     // The merge API's whole point: a row can be a duplicate *and* aimed at a
     // published key, and the operator has to be told both or they fix one and

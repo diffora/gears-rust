@@ -110,7 +110,7 @@
 //!
 //! §6 requires "non-overlap per canonical scope key enforced inside every
 //! mutation". No **declarative** schema object can state it: the canonical scope
-//! key is eight columns of `pricing_price` and this table carries `price_id` and
+//! key is ten columns of `pricing_price` and this table carries `price_id` and
 //! nothing else of it, so a `UNIQUE` index has no columns to name, a
 //! partial-index predicate sees only its own row (neither the parent's key nor a
 //! sibling window's interval), and a range exclusion constraint would need

@@ -13,9 +13,9 @@
 //! # The import's domain is the draft plane, and that is the rule (D-118)
 //!
 //! An import row lands as a **draft**: on a key nothing holds, or over an
-//! existing draft under its version. A row aimed at a **published** row's key
-//! with changed content is refused per-row, and the refusal names its remedy — a
-//! **repricing run** — because the remedy exists and is the sibling flow.
+//! existing draft under its version. A row aimed at a **published** row's key is
+//! refused per-row — whatever its content, see below — and the refusal names its
+//! remedy, a **repricing run**, because the remedy exists and is the sibling flow.
 //!
 //! Published rows are append-only and move only through D-88's supersession
 //! units at a bounded changeover instant. This path has neither: no instant in
@@ -26,32 +26,39 @@
 //! # The refusal is **unconditional**, and that departs from the clause's wording
 //!
 //! `inst-bk-phase1` says "with changed content", and this rule refuses whatever
-//! the content is. **Flagged for veto (D-287.)** Three reasons, in order of
-//! weight:
+//! the content is. **Flagged for veto (D-287, reasons rewritten by D-289 — the
+//! first three were wrong as written and are not what the decision rests on).**
 //!
-//! 1. **Three other places assert the refusal unconditionally, and one of them is
-//!    a correctness argument in shipped code.** `infra::publish`'s
+//! 1. **The only door that authors a draft already refuses an occupied key,
+//!    published or draft.** `PriceRepo::create_draft` asks `find_key_occupant`,
+//!    which counts either. So a row the carve-out let through Phase 1 would be
+//!    refused at commit by the store — Phase 1 passing a row nothing can write is
+//!    the failure `inst-bk-phase1` exists to prevent ("nothing partially validated
+//!    sneaks through").
+//! 2. **Two other places assert the refusal unconditionally, and one is a
+//!    correctness argument in shipped code.** `infra::publish`'s
 //!    `validated_draft_rows` is a no-op "on every world that predates the second
 //!    door — nothing else can put a draft on an occupied key (`inst-pr-return`
-//!    refuses it at save, `IMPORT_TARGETS_PUBLISHED` per row on the bulk plane)".
-//!    `03-price-structure.md` §6's two-doors argument and
-//!    `07-pricewindow-linkage.md`'s `inst-su-compose` say the same.
-//! 2. **The carve-out made keys unsupersedable, silently.** An unchanged row
-//!    authors a no-op draft beside the published row, which the draft plane's
-//!    partial `UNIQUE` admits — and `price_repo`'s supersession door **refuses a
-//!    draft occupant**. So running the same batch twice would block the repricing
-//!    run this rule's own message names as the remedy.
-//! 3. **Idempotency already serves the case the carve-out was for.**
-//!    `inst-bk-idem` replays the client key to the original report, so re-running
-//!    an unchanged file is not an error and never reaches these rules at all. The
-//!    carve-out solved a problem something else solves and created one nothing
-//!    does.
+//!    refuses it at save, `IMPORT_TARGETS_PUBLISHED` per row on the bulk plane)",
+//!    and `07-pricewindow-linkage.md`'s `inst-su-compose` says the same. (D-287
+//!    counted three and mis-cited `03-price-structure.md` §6, which carries the
+//!    D-148 disjoint-index argument, not this one.)
+//! 3. **The case the carve-out was for barely exists.** An import authors
+//!    *drafts*. A second run meets a **published** row on a key only if the first
+//!    run's draft was published in between — at which point the operator has
+//!    published, and re-importing the old file over it is not an ordinary act. A
+//!    second run against the first run's own drafts is untouched by this rule,
+//!    which `a_draft_row_on_the_key_is_not_a_published_row` shows.
 //!
-//! A fourth, smaller: `PriceRecord::content` carries `supersedes_price_id` and
-//! `grandfather_until`, which the **store** stamps. A row the operator authored
-//! identically to a superseded-into published row compared unequal anyway, so the
-//! message "whose content it changes" was false in exactly the case the carve-out
-//! existed for.
+//! **D-287 argued this from `inst-bk-idem` and that was wrong**: the client key is
+//! a TTL'd at-most-once gate, so a deliberate re-run carries a fresh key and takes
+//! Phase 1 in full. Idempotency serves retries, not re-runs.
+//!
+//! A smaller point, true of one field rather than two: `PriceRecord::content`
+//! carries `supersedes_price_id`, which the store stamps on a successor — so a
+//! file authored identically to a superseded-into row compared unequal anyway, and
+//! "whose content it changes" was false in that case. `grandfather_until` is
+//! **not** store-stamped on the draft plane, which D-287 also claimed.
 
 use std::collections::{BTreeSet, HashMap};
 
