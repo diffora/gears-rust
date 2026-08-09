@@ -204,7 +204,7 @@ async fn an_import_cannot_await_an_approval_that_can_never_come() {
     must_succeed(&conn, &move_to("awaiting_approval")).await;
 }
 
-/// The three terminal states are terminal: a record that left one would re-drive
+/// The four terminal states are terminal: a record that left one would re-drive
 /// a commit whose rows are already applied.
 #[tokio::test]
 async fn a_terminal_run_never_moves_again() {

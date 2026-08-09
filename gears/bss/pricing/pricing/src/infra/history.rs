@@ -100,10 +100,32 @@ use crate::infra::storage::repo::price_repo::HistoryPosition;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HistoryPageRequest {
     /// How many entries the page may carry, already clamped to D-125's cap.
-    pub limit: u64,
+    ///
+    /// **Private, and that is the invariant rather than a style choice.** A
+    /// `limit` of zero makes the walk report itself exhausted at row 0: the probe
+    /// row is the only row fetched, `has_more` is true, the probe is popped, and
+    /// the caller gets an empty page with no cursor — a silent end to a history
+    /// that has not ended. [`HistoryPageRequest::parse`] refuses zero for exactly
+    /// that reason, and while the fields were public a struct literal skipped the
+    /// refusal. Found by review; nothing reached it, there being no route yet.
+    limit: u64,
     /// The position the previous page ended at; the walk resumes strictly after
     /// it.
-    pub after: Option<HistoryPosition>,
+    after: Option<HistoryPosition>,
+}
+
+impl HistoryPageRequest {
+    /// The clamped page size this request was parsed to.
+    #[must_use]
+    pub const fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    /// Where the previous page ended, when there was one.
+    #[must_use]
+    pub const fn after(&self) -> Option<&HistoryPosition> {
+        self.after.as_ref()
+    }
 }
 
 impl HistoryPageRequest {
@@ -144,6 +166,25 @@ impl HistoryPageRequest {
         };
         let after = cursor.map(decode).transpose()?;
         Ok(Self { limit, after })
+    }
+
+    /// The same request from a position already in hand rather than from a token.
+    ///
+    /// The resume path — and every caller that holds a [`HistoryPosition`]
+    /// because a previous page handed it over — has nothing to decode. It still
+    /// goes through the same three branches, so there is **no construction site
+    /// that skips them**: that was the point of making the fields private, and a
+    /// second unchecked door would have given the invariant back.
+    ///
+    /// # Errors
+    /// [`DomainError::InvalidRequest`] when `limit` is zero.
+    pub fn resuming(
+        limit: Option<u64>,
+        after: Option<HistoryPosition>,
+    ) -> Result<Self, DomainError> {
+        let mut request = Self::parse(limit, None)?;
+        request.after = after;
+        Ok(request)
     }
 }
 

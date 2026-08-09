@@ -680,12 +680,23 @@ async fn both_cutover_classes_stay_behind_and_the_receipt_names_each() {
             .collect::<Vec<_>>()
     );
 
-    // **Four structural fences, and none of them is evidence.** Every row that
-    // reaches the reset already carries all four values, because the two classes
-    // that could carry anything else are excluded above (D-266 demoted the
-    // cohort and `grandfatherUntil` for that reason; D-268 does the same to the
-    // eligibility). Kept so that a later change admitting either class fails
-    // here rather than at a clone's first publish, and claimed as nothing more.
+    // **Three structural fences, and a fourth assertion that is not one.**
+    //
+    // The eligibility, the cohort and `grandfatherUntil` are already true of
+    // every row that reaches the reset, because the two classes that could carry
+    // anything else are excluded above — D-266 demoted the cohort and the
+    // grandfather tombstone for that reason, and D-268 does the same to the
+    // eligibility. Those three are kept so that a later change admitting either
+    // class fails here rather than at a clone's first publish, and are claimed as
+    // nothing more.
+    //
+    // **`supersedes_price_id` is a different thing and the sentence above used to
+    // cover it, wrongly.** A published row that superseded a predecessor really
+    // does carry one — `price_repo::insert_successor_draft_on` and
+    // `infra::supersession` both set it — and those are exactly the published
+    // `all_subscriptions` rows the clone copies. So the reset has a live operand,
+    // and `a_superseding_row_loses_its_predecessor_link` below is what holds it;
+    // filing it as a fence is how a real rule gets deleted by someone tidying.
     for row in &rows {
         assert_eq!(
             row.scope_key.price_eligibility(),
@@ -693,7 +704,102 @@ async fn both_cutover_classes_stay_behind_and_the_receipt_names_each() {
         );
         assert!(row.scope_key.cohort().is_none());
         assert!(row.content().grandfather_until.is_none());
-        assert!(row.content().supersedes_price_id.is_none());
+    }
+}
+
+/// **A copied row supersedes nothing** — the reset D-266 recorded as having a real
+/// operand and no case, given one.
+///
+/// A published source row that superseded a predecessor carries
+/// `supersedesPriceId` pointing into the **source's** chain. Copied unchanged, the
+/// clone's first draft row would claim to supersede a row belonging to another
+/// plan — a chain the clone was never part of, and one its own first publish has
+/// no business continuing.
+///
+/// The seed goes through the store rather than through the supersession engine:
+/// what is under test is that the cloner clears the field, not how it came to be
+/// set, and `update_draft` on a draft row is the cheapest way to put a real value
+/// there.
+#[tokio::test]
+async fn a_superseding_row_loses_its_predecessor_link() {
+    let h = harness().await;
+    seed_source(&h).await;
+
+    // A published row that supersedes a predecessor, authored through the
+    // ordinary path: `PriceContent` carries the link, so no raw SQL is needed.
+    let predecessor = Uuid::from_u128(0xb_00fe);
+    let successor = Uuid::from_u128(0xb_00ff);
+    let mut content = flat_row();
+    content.supersedes_price_id = Some(predecessor);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: successor,
+                scope_key: key_in(
+                    source_plan(),
+                    terminal_phase(),
+                    PriceEligibility::AllSubscriptions,
+                    Cohort::None,
+                    "de",
+                ),
+                content,
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("author a superseding row");
+    common::publish_row_directly(&h.provider, &h.scope, successor).await;
+
+    let conn = h.provider.conn().expect("conn");
+    let before = price_repo::load_for_plan(
+        &conn,
+        &h.scope,
+        TENANT,
+        source_plan(),
+        &[LifecycleState::Published],
+    )
+    .await
+    .expect("read the source");
+    assert!(
+        before
+            .iter()
+            .any(|row| row.content().supersedes_price_id == Some(predecessor)),
+        "the seed must actually carry a predecessor link, or this case proves \
+         nothing about clearing one"
+    );
+
+    h.cloner
+        .clone_plan(
+            &h.scope,
+            TENANT,
+            source_plan(),
+            target_plan(),
+            at(11),
+            stamp(),
+        )
+        .await
+        .expect("the clone runs");
+
+    let rows = price_repo::load_for_plan(
+        &conn,
+        &h.scope,
+        TENANT,
+        target_plan(),
+        &[LifecycleState::Draft],
+    )
+    .await
+    .expect("read the clone's rows");
+    assert!(!rows.is_empty(), "the clone copied rows at all");
+    for row in &rows {
+        assert!(
+            row.content().supersedes_price_id.is_none(),
+            "a clone's first row supersedes nothing, and least of all a row of \
+             the plan it was copied from"
+        );
     }
 }
 

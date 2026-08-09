@@ -296,7 +296,7 @@ affected plan publish** (coalesced per O5 — never per row).
 Alarms: `pricing.bulk.run_stalled` (Warn — a run without progress past a horizon),
 `pricing.bulk.conflict_rate_high` (Info — a batch with an unusually high conflicted-row
 share, signalling concurrent-editing contention),
-`pricing.bulk.run_failed` (Warn — a run reaching a terminal state with **all** rows `failed`,
+`pricing.bulk.run_failed` (Warn — a run reaching a terminal state with **all** rows `failed`, **excluding `rejected`** (D-267): a refused run holds no journal rows at all, and "all rows failed" is *vacuously* true over an empty set, so without the exclusion every refusal raises a Warn for a decision a human took deliberately,
 or a failed-row share above a tenant-configurable threshold; reads
 `pricing_bulk_rows_total{outcome}`. 2026-07-31d review fix, C-6: the D-111/D-124
 aggregate-fail shape — a plan's whole row set failing promptly with one shared reason — is
@@ -325,8 +325,8 @@ canonical scope key under a reset eligibility), superseded/closed historical row
 scheduled), copying `discountRef` only when it still resolves (else dropped + notice), and
 leaving source subscriptions untouched.
 
-**Two of those clauses have no operand in the gear as built, and are named rather than
-implemented** (D-265): `pricing_plan_grant` is Slice 10's *credit* table (D-52) and is unbuilt,
+**Three of those clauses have no operand in the gear as built, and are named rather than
+implemented** (D-265, D-268): `pricing_plan_grant` is Slice 10's *credit* table (D-52) and is unbuilt,
 so D-130's recompile rule has nothing to range over; and `discountRef`'s conditional copy rests
 on `inst-dr-referential`, which `m20260802_000056` records as **not buildable** for want of an
 instrument registry — so the ref copies unconditionally. **And the eligibility reset itself now

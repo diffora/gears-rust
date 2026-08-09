@@ -251,7 +251,11 @@ async fn read(
     after: Option<HistoryPosition>,
 ) -> HistoryPage {
     exporter
-        .read_page(&scope(), TENANT, HistoryPageRequest { limit, after })
+        .read_page(
+            &scope(),
+            TENANT,
+            HistoryPageRequest::resuming(Some(limit), after).expect("a page of at least one row"),
+        )
         .await
         .expect("the history read must succeed")
 }
@@ -354,7 +358,7 @@ async fn a_cursor_serialized_and_read_back_resumes_the_same_walk() {
     let token = encode(first.next.expect("three rows remain"));
     let resumed = HistoryPageRequest::parse(Some(100), Some(&token)).expect("our own token");
 
-    let page = read(&exporter, resumed.limit, resumed.after).await;
+    let page = read(&exporter, resumed.limit(), resumed.after().copied()).await;
 
     assert_eq!(ids(&page), CHRONOLOGICAL[1..]);
 }
