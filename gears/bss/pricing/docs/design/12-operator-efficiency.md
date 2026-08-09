@@ -313,12 +313,25 @@ Clone **MUST** produce a new draft `planId` with new price ids and `clonedFrom`,
 **every** `phase_id` reference — the copied rows' `phase` axis *and* the D-41
 `entitlement_grants.perPhase` keys (C-7) — copying the plan's grant and composite-meter rows
 under new ids while **recompiling** rather than copying `source = compiled_allowance` grants
-(D-130), resetting
+(D-130), copying the **plan-change contract** (D-266: `NewPlanDraft` has no field for it, so a
+create-then-patch path drops it silently and no rule downstream refuses the result), copying the
+**bundle composition** under a new `bundleId` where the source is a bundle (D-269 — a clone of a
+bundle is a bundle, and `component_plan_id` names *other* plans and is never remapped), resetting
 eligibility state (`priceEligibility`/`grandfatherUntil`), never copying contract locks,
-`existing_grandfathered` rows, superseded/closed historical rows, or `PriceWindow` schedules
-(the clone's publish stays coverage-blocked until fresh windows are scheduled), copying
-`discountRef` only when it still resolves (else dropped + notice), and leaving
-source subscriptions untouched.
+`existing_grandfathered` **or `new_subscriptions_only`** rows (D-268 — both are cutover
+lifecycle state rather than configuration, and both would collapse onto the surviving row's
+canonical scope key under a reset eligibility), superseded/closed historical rows, or
+`PriceWindow` schedules (the clone's publish stays coverage-blocked until fresh windows are
+scheduled), copying `discountRef` only when it still resolves (else dropped + notice), and
+leaving source subscriptions untouched.
+
+**Two of those clauses have no operand in the gear as built, and are named rather than
+implemented** (D-265): `pricing_plan_grant` is Slice 10's *credit* table (D-52) and is unbuilt,
+so D-130's recompile rule has nothing to range over; and `discountRef`'s conditional copy rests
+on `inst-dr-referential`, which `m20260802_000056` records as **not buildable** for want of an
+instrument registry — so the ref copies unconditionally. **And the eligibility reset itself now
+has no operand** (D-268): `priceEligibility` has three values and two are excluded, so every
+copied row already carries the third.
 
 **Implements**: `cpt-cf-bss-pricing-algo-clone`
 
