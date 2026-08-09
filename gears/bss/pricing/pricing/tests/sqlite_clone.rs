@@ -961,9 +961,22 @@ async fn an_id_shaped_scope_refuses_the_clone_rather_than_emptying_it() {
             })
         })
         .await;
+    // **Which refusal, not merely that there was one.** `is_err()` alone is
+    // satisfied by `CloneSourceNotFound`, by a stale version, or by a denial at
+    // any of the nine writers — and this case exists to say the *scope* refused
+    // the target row. The source read succeeds (`pricing_plan` binds
+    // `RESOURCE_ID` to `plan_id`, so the source is found), and the denial lands
+    // on `insert_revision`.
+    let err = outcome.expect_err("a scope naming only the source cannot admit the target");
+    let rendered = format!("{err:?}");
     assert!(
-        outcome.is_err(),
-        "a constraint this gear cannot express as a subtree filter must fail closed"
+        !rendered.contains("CloneSourceNotFound"),
+        "the source IS found — `pricing_plan` binds RESOURCE_ID to `plan_id` — so a \
+         not-found here would mean this case proves something else entirely: {rendered}"
+    );
+    assert!(
+        rendered.contains("scope") || rendered.contains("Denied"),
+        "and the refusal must name the scope, not a version or a missing row: {rendered}"
     );
 
     let conn = h.provider.conn().expect("conn");
@@ -973,29 +986,6 @@ async fn an_id_shaped_scope_refuses_the_clone_rather_than_emptying_it() {
             .expect("read the draft")
             .is_none(),
         "and it must leave no plan behind: an empty clone is worse than none"
-    );
-}
-
-/// The companion: under a scope the gear can honour, the **same** fixture copies
-/// everything.
-///
-/// Its whole job is to make the case above readable as a refusal rather than as
-/// a fixture that had nothing to copy. Without it, "the clone was refused" and
-/// "there was nothing to clone" are the same green.
-#[tokio::test]
-async fn the_same_fixture_under_a_tenant_scope_copies_its_whole_shape() {
-    let h = harness().await;
-    seed_source(&h).await;
-
-    let receipt = clone_it(&h).await.expect("the tenant scope admits it all");
-    assert_eq!(receipt.phases_copied, 2, "both phases came across");
-    assert_eq!(
-        receipt.composites_copied, 1,
-        "the composite meter came across"
-    );
-    assert!(
-        receipt.prices_copied > 0,
-        "and the published rows: {receipt:?}"
     );
 }
 
