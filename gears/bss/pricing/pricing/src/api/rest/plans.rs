@@ -61,7 +61,7 @@ use crate::domain::plan_shape::{
     AddonRule, BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
 use crate::domain::scope_key::{PhaseId, PlanId};
-use crate::infra::clone::{CloneNotice, CloneReceipt, CloneScopes, clone_plan_on};
+use crate::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo};
 use crate::infra::storage::{RepoError, repo_failure};
@@ -636,15 +636,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              reference to them remapped, new `priceId`s, a new `compositeId` per meter and, \
              where the source is a bundle, a new `bundleId` over a copied composition (D-269). \
              `clonedFrom` records the source. The **whole clone is one transaction** - a \
-             failure part way leaves no plan behind (D-275). \
-             What is copied is *configuration*; what is left behind is *lifecycle state*, and \
+             failure part way leaves no plan behind (D-275).\n\nWhat is copied is *configuration*; what is left behind is *lifecycle state*, and \
              the response says so rather than leaving it to be discovered at the clone's first \
              publish: `PriceWindow` schedules are never cloned, so the clone's billable rows \
              have no coverage and its publish stays blocked until fresh windows are scheduled \
              (`inst-cl-windows`); and both cutover-made eligibility classes - \
              `existing_grandfathered` and `new_subscriptions_only` - stay behind, counted per \
-             class (`inst-cl-resets`, D-268). \
-             The clone is an ordinary draft: no rule reads `clonedFrom`, and its first publish \
+             class (`inst-cl-resets`, D-268).\n\nThe clone is an ordinary draft: no rule reads `clonedFrom`, and its first publish \
              takes the full pipeline and an approval like any other first publish \
              (`inst-cl-draft`). Guarded at-most-once on the `Idempotency-Key`; a replay answers \
              the first caller's plan id rather than cloning twice.",
@@ -1442,31 +1440,26 @@ fn notice_view(notice: &CloneNotice) -> CloneNoticeView {
 /// point of storing the response body is that the second caller learns the
 /// *first* caller's plan.
 ///
-/// # Two scopes, because a scope has two jobs and this is the route where they
-/// diverge
+/// # One scope, gated on the source, and D-279 is why it is not two
 ///
-/// A compiled [`AccessScope`] is both the authorization answer **and** the
-/// `SecureORM` row filter — `pricing_plan` binds `RESOURCE_ID` to `plan_id`, and
-/// `validate_insert_scope` fails closed on an INSERT the constraints do not
-/// admit. Every other mutating route on this path gates on the plan it writes,
-/// so the two jobs coincide and nobody has had to notice. **This one reads plan
-/// A and writes plan B.**
+/// A compiled [`AccessScope`] is the authorization answer **and** the `SecureORM`
+/// row filter, and this route reads plan A while writing plan B — so D-278 split
+/// it in two, a source scope for the reads and `create_plan`'s resource-less one
+/// for the writes. **That remedy was wrong and is reverted.** The child tables
+/// bind `RESOURCE_ID` to their own id, not to `plan_id`, so a scope naming a
+/// *plan* filters `plan_phase`, `pricing_price`, `composite_meter` and
+/// `pricing_bundle` to zero rows; a separate source scope could not read the
+/// source's own children, and the clone became a silently empty plan where it had
+/// been a loud denial.
 ///
-/// So it compiles two. The **source** scope is the decision — `plan x write`
-/// with `resource_id = Some(source)`, which is the question actually being asked
-/// (may this principal make a plan out of *this* one) and which filters every
-/// read the copy makes. The **target** scope is `create_plan`'s exactly —
-/// `resource_id = None` — because the row being written carries an id no
-/// constraint could have named, the surface having just minted it. Handing the
-/// source's scope to the writers would deny the clone for a principal the PDP
-/// had just authorized, the moment the PDP answers with the id-shaped constraint
-/// this gear's PEP advertises it accepts (`authz::SUPPORTED_PROPERTIES`).
-///
-/// `owner_tenant_id` is the caller's tenant on both, so `access_scope`'s
-/// membership assertion refuses a source outside the compiled scope rather than
-/// trusting that the PDP filtered it — `create_plan`'s note, and a clone is a
-/// write. Two PDP round trips on an operator action that copies a whole plan is
-/// not the cost worth optimizing away.
+/// One scope, `plan x write` with `resource_id = Some(source)` — the question
+/// actually being asked, may this principal make a plan out of *this* one — and
+/// `owner_tenant_id` the caller's tenant, so `access_scope`'s membership
+/// assertion refuses a source outside the compiled scope rather than trusting the
+/// PDP filtered it. Under an id-shaped answer the clone is refused at its first
+/// write, which is correct: this gear cannot express "that plan's subtree" as a
+/// `RESOURCE_ID` constraint on any route, and failing closed beats writing half a
+/// plan.
 ///
 /// # What the digest covers, and why it is not the empty body
 ///
@@ -1494,18 +1487,7 @@ async fn clone_plan(
     let correlation = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let source = PlanId::new(plan_id);
-    let source_scope = write_scope(&enforcer, &ctx, source.get(), tenant).await?;
-    let target_scope = crate::authz::access_scope(
-        &enforcer,
-        &ctx,
-        &crate::authz::resource_types::PLAN,
-        crate::authz::actions::WRITE,
-        /* owner_tenant_id */ Some(tenant),
-        /* resource_id */ None,
-        /* require_constraints */ true,
-    )
-    .await
-    .map_err(authz_error_to_canonical)?;
+    let scope = write_scope(&enforcer, &ctx, source.get(), tenant).await?;
 
     let client_key = preconditions::idempotency_key(&headers)?;
     let request_hash =
@@ -1521,16 +1503,11 @@ async fn clone_plan(
         status: StatusCode::CREATED.as_u16().into(),
         now,
     };
-    // The **target** scope guards the idempotency claim: the claim row is written
-    // by the same transaction as the clone, so a scope that could not admit the
-    // clone's own rows could not admit its receipt either.
-    let claim_scope = target_scope.clone();
-    let source_for_body = source_scope.clone();
-    let target_for_body = target_scope;
+    let scope_for_body = scope.clone();
     let outcome = idempotent::guarded(
         &state.db,
         &state.idempotency,
-        &claim_scope,
+        &scope,
         guard,
         move |txn: &DbTx<'_>| -> TxFuture<'_, CloneReceipt> {
             Box::pin(async move {
@@ -1540,10 +1517,7 @@ async fn clone_plan(
                 // the cloner that could open a second transaction here.
                 Box::pin(clone_plan_on(
                     txn,
-                    CloneScopes {
-                        source: &source_for_body,
-                        target: &target_for_body,
-                    },
+                    &scope_for_body,
                     tenant,
                     source,
                     PlanId::new(Uuid::now_v7()),

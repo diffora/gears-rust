@@ -497,8 +497,8 @@ pub enum DomainError {
     /// configuration a clone could take — and an operator told only "not found"
     /// would go looking for a missing id. It was deliberately not minted until
     /// the route that returns it existed, so that a wire code the design set
-    /// declares could not end up in two spellings (D-146's posture, paid by
-    /// D-277).
+    /// declares could not end up in two spellings (D-146's posture; D-277 built the
+    /// route and D-278 minted this).
     #[error("clone source not found: {0}")]
     CloneSourceNotFound(String),
     /// A decision was asked of an approval record that is no longer pending

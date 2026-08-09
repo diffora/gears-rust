@@ -51,7 +51,7 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, CloneScopes, clone_plan_on};
+use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, NewPriceDraft,
@@ -140,8 +140,7 @@ async fn harness() -> Harness {
 /// task-local `IN_TX`. So every case here composes the clone the way the route
 /// does, which also means a case cannot pass over a path production never takes.
 async fn clone_it(h: &Harness) -> Result<CloneReceipt, DomainError> {
-    let source_scope = h.scope.clone();
-    let target_scope = h.scope.clone();
+    let scope = h.scope.clone();
     let (_, outcome) = h
         .provider
         .db()
@@ -149,10 +148,7 @@ async fn clone_it(h: &Harness) -> Result<CloneReceipt, DomainError> {
             Box::pin(async move {
                 Box::pin(clone_plan_on(
                     txn,
-                    CloneScopes {
-                        source: &source_scope,
-                        target: &target_scope,
-                    },
+                    &scope,
                     TENANT,
                     source_plan(),
                     target_plan(),
@@ -922,25 +918,31 @@ async fn no_window_is_cloned_and_the_receipt_says_so() {
     );
 }
 
-/// **The source's scope cannot be the target's, and this is the case that says
-/// why** (D-278).
+/// **An id-shaped scope refuses the clone outright, and that is the correct
+/// answer** (D-279).
 ///
 /// A compiled `AccessScope` is both the authorization answer and the `SecureORM`
-/// row filter, and `pricing_plan` binds `RESOURCE_ID` to `plan_id`. A PDP
-/// answering the clone's `plan x write` gate with the id-shaped constraint this
-/// gear's PEP advertises — `authz::SUPPORTED_PROPERTIES` names `RESOURCE_ID` —
-/// compiles a scope naming the **source**. Handing that to the writers denies the
-/// INSERT of the target, for a principal the PDP had just authorized.
+/// row filter, and this gear's PEP advertises `RESOURCE_ID` as a shape it accepts
+/// (`authz::SUPPORTED_PROPERTIES`). D-278 read that as a reason to give the clone
+/// two scopes — one naming the source for the reads, a resource-less one for the
+/// writes. **The remedy was wrong.** The child tables bind `RESOURCE_ID` to their
+/// own id, not to `plan_id`: `plan_phase` to `phase_id`, `pricing_price` to
+/// `price_id`, `composite_meter` to `composite_id`, `pricing_bundle` to
+/// `bundle_id`. So a scope naming a *plan* filters four of the seven tables to
+/// **zero rows**, the source reads come back empty, and the split produced a
+/// committed plan with no phases, no prices, no composites and no bundle — with a
+/// grant set still keyed on the source's phase ids, which is verbatim the C-7
+/// defect this module says it fixed.
 ///
-/// So the source scope here is exactly that shape. The clone must still run,
-/// because the target scope is the tenant-shaped one a create carries.
+/// One scope, and the refusal lands on the first write. This case is the
+/// evidence, and its companion below is the other half: the same fixture under
+/// a scope the gear *can* honour copies everything.
 #[tokio::test]
-async fn a_source_scope_naming_only_the_source_still_clones() {
+async fn an_id_shaped_scope_refuses_the_clone_rather_than_emptying_it() {
     let h = harness().await;
     seed_source(&h).await;
 
-    let source_scope = AccessScope::for_resources(vec![source_plan().get()]);
-    let target_scope = h.scope.clone();
+    let scope = AccessScope::for_resources(vec![source_plan().get()]);
     let (_, outcome) = h
         .provider
         .db()
@@ -948,57 +950,7 @@ async fn a_source_scope_naming_only_the_source_still_clones() {
             Box::pin(async move {
                 Box::pin(clone_plan_on(
                     txn,
-                    CloneScopes {
-                        source: &source_scope,
-                        target: &target_scope,
-                    },
-                    TENANT,
-                    source_plan(),
-                    target_plan(),
-                    at(11),
-                    stamp(),
-                ))
-                .await
-            })
-        })
-        .await;
-    let receipt = outcome.expect("an id-shaped source scope still authorizes the copy");
-    assert_eq!(receipt.cloned_from, source_plan());
-
-    let conn = h.provider.conn().expect("conn");
-    assert!(
-        plan_repo::load_open_draft(&conn, &h.scope, TENANT, target_plan())
-            .await
-            .expect("read the draft")
-            .is_some(),
-        "the target row was written under a scope that could admit it"
-    );
-}
-
-/// The other half, and the reason the split is not tidiness: **one scope in both
-/// roles refuses the clone** (D-278).
-///
-/// Kept as a case rather than run once as a probe, because it is the whole
-/// evidence that the two parameters are load-bearing. Delete the split — pass one
-/// scope to both — and this is what a principal the PDP authorized would get.
-#[tokio::test]
-async fn one_id_shaped_scope_in_both_roles_refuses_the_clone() {
-    let h = harness().await;
-    seed_source(&h).await;
-
-    let one = AccessScope::for_resources(vec![source_plan().get()]);
-    let also = one.clone();
-    let (_, outcome) = h
-        .provider
-        .db()
-        .in_transaction::<CloneReceipt, DomainError, _>(move |txn| {
-            Box::pin(async move {
-                Box::pin(clone_plan_on(
-                    txn,
-                    CloneScopes {
-                        source: &one,
-                        target: &also,
-                    },
+                    &scope,
                     TENANT,
                     source_plan(),
                     target_plan(),
@@ -1011,7 +963,7 @@ async fn one_id_shaped_scope_in_both_roles_refuses_the_clone() {
         .await;
     assert!(
         outcome.is_err(),
-        "a scope naming only the source cannot admit the target's INSERT"
+        "a constraint this gear cannot express as a subtree filter must fail closed"
     );
 
     let conn = h.provider.conn().expect("conn");
@@ -1020,7 +972,30 @@ async fn one_id_shaped_scope_in_both_roles_refuses_the_clone() {
             .await
             .expect("read the draft")
             .is_none(),
-        "and the refusal left nothing behind"
+        "and it must leave no plan behind: an empty clone is worse than none"
+    );
+}
+
+/// The companion: under a scope the gear can honour, the **same** fixture copies
+/// everything.
+///
+/// Its whole job is to make the case above readable as a refusal rather than as
+/// a fixture that had nothing to copy. Without it, "the clone was refused" and
+/// "there was nothing to clone" are the same green.
+#[tokio::test]
+async fn the_same_fixture_under_a_tenant_scope_copies_its_whole_shape() {
+    let h = harness().await;
+    seed_source(&h).await;
+
+    let receipt = clone_it(&h).await.expect("the tenant scope admits it all");
+    assert_eq!(receipt.phases_copied, 2, "both phases came across");
+    assert_eq!(
+        receipt.composites_copied, 1,
+        "the composite meter came across"
+    );
+    assert!(
+        receipt.prices_copied > 0,
+        "and the published rows: {receipt:?}"
     );
 }
 
@@ -1045,8 +1020,7 @@ async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
     let h = harness().await;
     seed_source(&h).await;
 
-    let source_scope = h.scope.clone();
-    let target_scope = h.scope.clone();
+    let scope = h.scope.clone();
     let (_, outcome) = h
         .provider
         .db()
@@ -1054,10 +1028,7 @@ async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
             Box::pin(async move {
                 Box::pin(clone_plan_on(
                     txn,
-                    CloneScopes {
-                        source: &source_scope,
-                        target: &target_scope,
-                    },
+                    &scope,
                     TENANT,
                     source_plan(),
                     target_plan(),
