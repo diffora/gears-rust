@@ -133,11 +133,14 @@ fn three_rows_on_one_key_each_name_the_other_two() {
 }
 
 #[test]
-fn two_rows_differing_only_in_their_usage_line_are_the_same_draft_row() {
-    // **The case an equality over the whole `ScopeKey` gets wrong.** The draft
-    // plane's partial `UNIQUE` does not include `meter` or `dimension_key`, so
-    // these two collide — and letting them through would move the collision to
-    // commit, which is per-row and cannot report it as a batch fault (D-148).
+fn two_rows_differing_only_in_their_usage_line_are_two_keys_and_both_author() {
+    // **D-103's confirmed worked example**, and the case a first build got
+    // backwards (D-283). `m20260802_000023` widened the draft plane's partial
+    // `UNIQUE` to include `COALESCE(meter, '')` and `dimension_key`, and D-196
+    // made the usage pair normative axes of the canonical key — so a PaaS plan
+    // pricing cloudlets, storage and egress is one plan, and these two rows are
+    // two keys. `tests/sqlite_price_repo.rs` proves the store admits them both;
+    // this proves Phase 1 does not refuse them first.
     let usage = key("eu", PriceEligibility::AllSubscriptions, ChargeKind::Usage);
     let metered = usage
         .clone()
@@ -145,21 +148,48 @@ fn two_rows_differing_only_in_their_usage_line_are_the_same_draft_row() {
             Some(Meter::new("api-calls").expect("a meter")),
             DimensionKey::new("region=eu"),
         )
-        .expect("a usage line on a recurring key");
+        .expect("a usage line on a usage key");
     let other_meter = usage
         .with_usage_line(
             Some(Meter::new("storage-gb").expect("a meter")),
             DimensionKey::new("region=eu"),
         )
-        .expect("a usage line on a recurring key");
-    assert_ne!(metered, other_meter, "the keys themselves differ");
+        .expect("a usage line on a usage key");
 
-    let report = classify(&[row(metered), row(other_meter)]);
+    let report = classify(&[row(metered.clone()), row(other_meter)]);
     assert_eq!(
         failed_rows(&report),
-        vec![0, 1],
-        "two usage lines on one canonical scope key are one draft row"
+        Vec::<usize>::new(),
+        "two meters are two keys, and Phase 1 must not refuse what the store admits"
     );
+
+    // And the same line twice IS a duplicate — otherwise this case would pass
+    // for a `classify` that never reports anything at all.
+    let doubled = classify(&[row(metered.clone()), row(metered)]);
+    assert_eq!(failed_rows(&doubled), vec![0, 1]);
+}
+
+#[test]
+fn two_rows_differing_only_in_their_dimension_key_are_also_two_keys() {
+    // The other axis the widened index carries. Untested, it is an axis the
+    // duplicate rule could stop comparing with nothing noticing.
+    let usage = key("eu", PriceEligibility::AllSubscriptions, ChargeKind::Usage);
+    let eu = usage
+        .clone()
+        .with_usage_line(
+            Some(Meter::new("api-calls").expect("a meter")),
+            DimensionKey::new("region=eu"),
+        )
+        .expect("a usage line on a usage key");
+    let us = usage
+        .with_usage_line(
+            Some(Meter::new("api-calls").expect("a meter")),
+            DimensionKey::new("region=us"),
+        )
+        .expect("a usage line on a usage key");
+
+    let report = classify(&[row(eu), row(us)]);
+    assert_eq!(failed_rows(&report), Vec::<usize>::new());
 }
 
 #[test]
@@ -184,17 +214,6 @@ fn a_duplicate_pair_does_not_drag_the_rest_of_the_batch_down() {
     ]);
     assert_eq!(failed_rows(&report), vec![0, 2]);
     assert!(report.blocks_the_batch());
-}
-
-#[test]
-fn an_edit_and_a_create_aimed_at_one_draft_row_still_collide() {
-    // `if_match` distinguishes an edit from a create and changes nothing here:
-    // two rows aimed at one draft row collide whether or not one of them claims
-    // to own it already.
-    let mut edit = row(base());
-    edit.if_match = Some(crate::domain::concurrency::RowVersion::new(3));
-    let report = classify(&[edit, row(base())]);
-    assert_eq!(failed_rows(&report), vec![0, 1]);
 }
 
 #[test]

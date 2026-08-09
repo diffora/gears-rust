@@ -747,65 +747,6 @@ impl ScopeKey {
     }
 }
 
-/// The axes that decide whether two rows occupy **one draft row**.
-///
-/// Every axis of the key except `meter` and `dimension_key` — which is exactly
-/// the column list of `uq_pricing_price_scope_key_draft`
-/// (`m20260802_000002`). Two rows differing only in their usage line therefore
-/// share this identity and collide, which is the case an equality over the whole
-/// key would call distinct and let through to fail at commit instead.
-///
-/// A **type** rather than a predicate so a caller can group a batch in one pass:
-/// the bulk import's in-batch duplicate check (D-148) is over a set, and a
-/// pairwise predicate makes it quadratic in the batch size for no reason.
-#[domain_model]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DraftRowIdentity {
-    plan_id: PlanId,
-    currency: CurrencyCode,
-    region: Region,
-    price_overlay: PriceOverlay,
-    phase: PhaseId,
-    price_eligibility: PriceEligibility,
-    charge_kind: ChargeKind,
-    cohort: Cohort,
-}
-
-impl ScopeKey {
-    /// Which draft row this key would occupy.
-    ///
-    /// The `let Self { .. }` below carries **no** rest pattern, for
-    /// [`ScopeKey::is_sibling_of`]'s stated reason: a comparison spelled "every
-    /// axis except two" cannot be maintained at a distance, and an eleventh axis
-    /// must be a compile error here rather than an input that silently stops
-    /// being compared.
-    #[must_use]
-    pub fn draft_row_identity(&self) -> DraftRowIdentity {
-        let Self {
-            plan_id,
-            currency,
-            region,
-            price_overlay,
-            phase,
-            price_eligibility,
-            charge_kind,
-            cohort,
-            meter: _,
-            dimension_key: _,
-        } = self;
-        DraftRowIdentity {
-            plan_id: *plan_id,
-            currency: currency.clone(),
-            region: region.clone(),
-            price_overlay: *price_overlay,
-            phase: *phase,
-            price_eligibility: *price_eligibility,
-            charge_kind: *charge_kind,
-            cohort: *cohort,
-        }
-    }
-}
-
 impl fmt::Display for ScopeKey {
     /// The canonical rendering: ten axes, normative order, one separator.
     /// This is the string a `DUPLICATE_SCOPE_KEY` rejection names, so it has to

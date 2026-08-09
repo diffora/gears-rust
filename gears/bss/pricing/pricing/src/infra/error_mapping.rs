@@ -230,7 +230,7 @@ impl From<DomainError> for CanonicalError {
 
             // -- Aborted (409) -- conflicts the caller can resolve and retry.
             D::DuplicateScopeKey(detail) => PlanResource::aborted(detail)
-                .with_reason("DUPLICATE_SCOPE_KEY")
+                .with_reason(crate::domain::import::DUPLICATE_SCOPE_KEY)
                 .create(),
             D::StaleVersion(detail) => PlanResource::aborted(detail)
                 .with_reason("STALE_VERSION")

@@ -22,13 +22,20 @@
 //! # The in-batch duplicate, and the key it is judged on (D-148)
 //!
 //! Two rows on one canonical scope key are a duplicate **inside** the batch and
-//! fail Phase 1 per-row. The subtlety is which key: not the whole [`ScopeKey`],
-//! but [`ScopeKey::draft_row_identity`] — every axis except `meter` and
-//! `dimension_key`, which is the column list of the draft plane's partial
-//! `UNIQUE`. **Two rows differing only in their usage line collide**, and an
-//! equality over the whole key would call them distinct and let both through to
-//! fail at commit, which is the outcome D-148 moved into Phase 1 precisely
-//! because commit is per-row and cannot report a collision as a batch fault.
+//! fail Phase 1 per-row. The key is the **whole** [`ScopeKey`], usage line
+//! included, which is the column list of `uq_pricing_price_scope_key_draft` as
+//! `m20260802_000023` **widened** it: `COALESCE(meter, '')` and `dimension_key`
+//! are in the index, so two rows differing only in their usage line are two
+//! keys and both author.
+//!
+//! **This was got wrong once and the wrong answer is worth keeping visible**
+//! (D-283). The first build read `m20260802_000002`, which created the index in
+//! its original eight-axis form, and judged the duplicate on those eight — so it
+//! refused a batch the store admits, and the batch it refused was D-103's
+//! confirmed worked example, a `PaaS` plan pricing cloudlets, storage and egress.
+//! D-196 made the usage pair normative axes of the canonical key precisely to
+//! make that plan expressible. **Read the schema, not a migration**: a `CREATE
+//! INDEX` is a statement about the day it ran.
 //!
 //! # Both sides of a duplicate are named
 //!
@@ -116,14 +123,21 @@ impl BatchReport {
     /// sneaks through" untrue by construction.
     #[must_use]
     pub fn blocks_the_batch(&self) -> bool {
-        !self.rows.is_empty()
+        self.rows
+            .iter()
+            .any(|outcome| !outcome.violations.is_empty())
     }
 }
 
 /// Run Phase 1's **batch-only** rules over the submitted rows.
 ///
-/// Every rule answers for every row; nothing short-circuits. The store-dependent
-/// rules are the caller's to add to the same report.
+/// Every rule answers for every row; nothing short-circuits.
+///
+/// The store-dependent rules will join the same report, and there is **no merge
+/// API yet** — this function is the only thing that establishes
+/// [`BatchReport`]'s one-entry-per-row invariant, and a caller appending to
+/// `rows` would break it silently. Whoever builds that half owes the merge, not
+/// an append.
 #[must_use]
 pub fn classify(rows: &[ImportRow]) -> BatchReport {
     let mut violations: HashMap<usize, Vec<RowViolation>> = HashMap::new();
@@ -186,7 +200,7 @@ fn duplicate_scope_keys(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     let mut occupants: HashMap<_, Vec<usize>> = HashMap::new();
     for (index, row) in rows.iter().enumerate() {
         occupants
-            .entry(row.scope_key.draft_row_identity())
+            .entry(row.scope_key.clone())
             .or_default()
             .push(index);
     }
