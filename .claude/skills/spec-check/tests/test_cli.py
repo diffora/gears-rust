@@ -106,7 +106,13 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # closing it that way is a false payment. Checked by removing the register
     # mention and confirming the finding stayed closed. Debt is now 21
     # propagation gaps + 32 unreferenced codes. Live findings unchanged at 2.
-    assert payload["known_debt_suppressed"] == 53
+    # 53 until 2026-08-09, when D-291 built Phase 2 and `inst-bk-phase2` named
+    # `BULK_ROW_CONFLICT` -- the rule that raises it. Named in the RULE and not
+    # only in the register: the register mention alone closes this finding too,
+    # and that is a false payment. Checked by rewording the mention and
+    # confirming the finding stayed closed -- the third time this trap has been
+    # sprung, see REGENERATE.md entries 24 and 25.
+    assert payload["known_debt_suppressed"] == 52
     assert payload["known_debt_tracked_as"] == "D-69"
 
 

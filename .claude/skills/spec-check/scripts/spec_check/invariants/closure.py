@@ -312,7 +312,6 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "AVAILABILITY_OUTSIDE_COVERAGE", "design/07-pricewindow-linkage.md"),
     ("pricing", "BACKDATE_GRANT_REQUIRED", "design/05-governance.md"),
     ("pricing", "BASIS_MISSING", "design/08-bundles.md"),
-    ("pricing", "BULK_ROW_CONFLICT", "design/12-operator-efficiency.md"),
     ("pricing", "CHANGE_TARGET_UNPUBLISHED", "design/06-consumer-contracts.md"),
     ("pricing", "COMPONENT_UNPUBLISHED", "design/08-bundles.md"),
     # Three paid down 2026-08-08 by D-256, which built the composite meter:

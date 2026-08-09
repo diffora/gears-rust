@@ -2,6 +2,7 @@
 //! mappings the domain deliberately knows nothing about.
 
 pub mod approval;
+pub mod bulk;
 pub mod bundle;
 pub mod change_graph;
 pub mod clone;

@@ -933,6 +933,31 @@ was temporarily rewritten to name the refusal in words, the checker re-run, and
 the finding confirmed **still closed** — so the rule is the closer and the
 register is not load-bearing. Restore-and-verify, not inspection.
 
+### 25. 2026-08-09 — Phase 2, and the same trap a third time
+
+**What moved:** one `P3/code-unreferenced` member, `BULK_ROW_CONFLICT` /
+`design/12-operator-efficiency.md`. Suppressed known debt 53 → 52; pinned code
+list 32 → 31. Live findings unchanged at 2.
+
+**Why it moved.** D-291 built the bulk import's Phase 2, which raises the code —
+a stale `ETag`, a row a neighbouring run holds, or a row whose assertion and the
+draft plane disagree. But the *first* thing that closed the finding was the
+register entry mentioning the code, exactly as in entry 24. **Third time.**
+
+The real payment is `inst-bk-phase2`, which now names the code and enumerates the
+three facts it covers.
+
+**Verified the same way**: the register mention was reworded to prose, the checker
+re-run, and the finding confirmed still closed. Restore-and-verify, not
+inspection.
+
+**On the recurrence.** Two entries now record this trap and it was sprung again,
+which suggests the guard should not be a habit. The cheapest structural fix would
+be a spec-check rule that ignores `DECISIONS.md` when deciding whether a declared
+code is *referenced* — the register is where decisions about codes are recorded,
+not where rules live. Noted here rather than built: it is a change to what the
+checker means by "referenced", and that is the skill's contract.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

@@ -15,6 +15,6 @@
       "message": "design/15-rated-output-balance-effects.md declares error codes without a `**Problem responses (RFC 9457):**` block; the rest of the design set uses that convention"
     }
   ],
-  "known_debt_suppressed": 53,
+  "known_debt_suppressed": 52,
   "known_debt_tracked_as": "D-69"
 }

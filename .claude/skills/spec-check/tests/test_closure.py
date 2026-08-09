@@ -212,7 +212,9 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # `code-unreferenced` finding just as effectively and closing it that way is
     # a false payment. Verified by removing the register mention and confirming
     # the finding stayed closed.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 32
+    # 32 until 2026-08-09, when D-291 paid down `BULK_ROW_CONFLICT` by building
+    # Phase 2 and naming the code in `inst-bk-phase2`, the rule that raises it.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 31
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():
