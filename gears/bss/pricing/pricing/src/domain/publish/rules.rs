@@ -118,8 +118,6 @@
 use std::collections::BTreeSet;
 
 use toolkit_macros::domain_model;
-
-use crate::domain::price_row::PriceRow;
 use uuid::Uuid;
 
 use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
@@ -129,6 +127,7 @@ use crate::domain::currency_binding::{AddonCoverage, RequiredAddonsCoverMarkets}
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::plan_shape::PlanShape;
+use crate::domain::price_row::PriceRow;
 use crate::domain::rules::price_row_rules;
 use crate::domain::scope_key::{PriceEligibility, Region};
 use crate::domain::tax_display::{
@@ -688,7 +687,7 @@ impl ValidationRule<PlanShape> for NoUnjudgedPrimitive {
                     PRIMITIVE_RULES_UNBUILT,
                     record.price_id.to_string(),
                     format!(
-                        "this row carries a {field} and the Slice-10 rules that would judge it \
+                        "this row carries `{field}`, and the Slice-10 rules that would judge it \
                          are unbuilt, as is {missing}; publish stops rather than freezing an \
                          unjudged value into an immutable version"
                     ),

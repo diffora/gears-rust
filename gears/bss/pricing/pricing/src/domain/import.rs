@@ -28,6 +28,13 @@
 //! are in the index, so two rows differing only in their usage line are two
 //! keys and both author.
 //!
+//! The index also carries `tenant_id`, which [`ScopeKey`] does not, so this rule
+//! is **stricter than the index by one column** — harmless because a bulk
+//! operation carries one tenant (`pricing_bulk_operation` has a `tenant_id` and
+//! no `plan_id`, so a run is single-tenant and may span plans). That premise is
+//! written here rather than left implicit, an unstated premise about the schema
+//! being exactly how the first version of this rule went wrong.
+//!
 //! **This was got wrong once and the wrong answer is worth keeping visible**
 //! (D-283). The first build read `m20260802_000002`, which created the index in
 //! its original eight-axis form, and judged the duplicate on those eight — so it
@@ -61,6 +68,16 @@ use crate::domain::scope_key::ScopeKey;
 /// different fault.
 pub const DUPLICATE_SCOPE_KEY: &str = "DUPLICATE_SCOPE_KEY";
 
+/// The wire code for a row aimed at a **published** row's scope key.
+///
+/// D-118 pins the import to the draft plane: an import row lands as a draft, on
+/// a new key or over an existing draft. Published rows are append-only and change
+/// only through D-88's supersession units at a bounded changeover instant —
+/// machinery this path has none of, having no instant in its API and no window
+/// operations. The remediation is named in the refusal because it exists: a
+/// **repricing run**, the sibling that was explicitly built on those units.
+pub const IMPORT_TARGETS_PUBLISHED: &str = "IMPORT_TARGETS_PUBLISHED";
+
 /// One row an operator submitted.
 ///
 /// `if_match` is `None` for a row claiming a **new** scope key and `Some` for a
@@ -86,7 +103,14 @@ pub struct ImportRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RowViolation {
     /// The machine-readable code, which is the discriminator a client acts on.
-    pub code: &'static str,
+    ///
+    /// A `String` rather than the `&'static str` the constants are, because
+    /// `inst-bk-idem` **replays this report**: it is stored on
+    /// `pricing_bulk_operation.report` and handed back verbatim to the retry, and
+    /// a borrowed-static field cannot come back out of a JSON column. Changing it
+    /// after the route freezes the shape would be a migration; changing it now is
+    /// an allocation per violation, on a path that has just done a database read.
+    pub code: String,
     /// The sentence an operator reads.
     pub detail: String,
 }
@@ -116,6 +140,34 @@ pub struct BatchReport {
 }
 
 impl BatchReport {
+    /// Record one violation against one row, keeping the report's invariants.
+    ///
+    /// **The merge API D-283 said was owed.** The store-dependent rules run in
+    /// `infra::import`, after `classify`, and a caller appending to `rows`
+    /// directly would produce two entries for one row — breaking the
+    /// one-entry-per-row invariant this type's doc states and
+    /// [`RowOutcome`]'s leans on. Both halves go through here, so there is one
+    /// place that establishes it.
+    ///
+    /// Violations sort by code and rows by index, so a report is a function of
+    /// the batch rather than of the order the rules happened to run in.
+    pub fn add(&mut self, row: usize, violation: RowViolation) {
+        match self.rows.binary_search_by_key(&row, |outcome| outcome.row) {
+            Ok(at) => {
+                let found = &mut self.rows[at];
+                found.violations.push(violation);
+                found.violations.sort_by(|a, b| a.code.cmp(&b.code));
+            }
+            Err(at) => self.rows.insert(
+                at,
+                RowOutcome {
+                    row,
+                    violations: vec![violation],
+                },
+            ),
+        }
+    }
+
     /// Whether Phase 1 blocks the batch (`inst-bk-phase1`, O2).
     ///
     /// Any violation at all blocks it: all-or-nothing is the whole posture, and a
@@ -133,33 +185,19 @@ impl BatchReport {
 ///
 /// Every rule answers for every row; nothing short-circuits.
 ///
-/// The store-dependent rules will join the same report, and there is **no merge
-/// API yet** — this function is the only thing that establishes
-/// [`BatchReport`]'s one-entry-per-row invariant, and a caller appending to
-/// `rows` would break it silently. Whoever builds that half owes the merge, not
-/// an append.
+/// The store-dependent rules join the same report through
+/// [`BatchReport::add`], which is what keeps the one-entry-per-row invariant
+/// true of a report both halves have written to.
 #[must_use]
 pub fn classify(rows: &[ImportRow]) -> BatchReport {
-    let mut violations: HashMap<usize, Vec<RowViolation>> = HashMap::new();
+    let mut report = BatchReport::default();
     for (row, found) in duplicate_scope_keys(rows) {
-        violations.entry(row).or_default().push(found);
+        report.add(row, found);
     }
     for (row, found) in unbuilt_primitives(rows) {
-        violations.entry(row).or_default().push(found);
+        report.add(row, found);
     }
-    for found in violations.values_mut() {
-        // A stable order, so a report is a function of the batch and not of the
-        // order the rules happen to run in. Rows already sort by index; this is
-        // the same claim one level down.
-        found.sort_by_key(|violation| violation.code);
-    }
-
-    let mut outcomes: Vec<RowOutcome> = violations
-        .into_iter()
-        .map(|(row, violations)| RowOutcome { row, violations })
-        .collect();
-    outcomes.sort_by_key(|outcome| outcome.row);
-    BatchReport { rows: outcomes }
+    report
 }
 
 /// Rows carrying a Slice-10 primitive whose rules are unbuilt (D-177).
@@ -181,9 +219,9 @@ fn unbuilt_primitives(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
             found.push((
                 index,
                 RowViolation {
-                    code: PRIMITIVE_RULES_UNBUILT,
+                    code: PRIMITIVE_RULES_UNBUILT.to_owned(),
                     detail: format!(
-                        "this row carries a {field} and the Slice-10 rules that would judge it \
+                        "this row carries `{field}`, and the Slice-10 rules that would judge it \
                          are unbuilt, as is {missing}; the batch stops here, where the row can \
                          still be fixed, rather than at the publish that would otherwise catch it"
                     ),
@@ -194,7 +232,7 @@ fn unbuilt_primitives(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     found
 }
 
-/// Rows sharing one draft-row identity, each told which other rows it collides
+/// Rows sharing one canonical scope key, each told which other rows it collides
 /// with.
 fn duplicate_scope_keys(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     let mut occupants: HashMap<_, Vec<usize>> = HashMap::new();
@@ -219,11 +257,12 @@ fn duplicate_scope_keys(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
             found.push((
                 index,
                 RowViolation {
-                    code: DUPLICATE_SCOPE_KEY,
+                    code: DUPLICATE_SCOPE_KEY.to_owned(),
                     detail: format!(
-                        "this row occupies the same draft row as row(s) {} — {}; the draft \
-                         plane admits one row per canonical scope key, and two rows differing \
-                         only in their usage line are the same row",
+                        "this row's canonical scope key is the same as row(s) {}'s — {}; the \
+                         draft plane admits one row per key, so one of them has to change or \
+                         go. Two rows differing in their meter or dimension key are **not** \
+                         this case: those are two keys and both author (D-196, D-283).",
                         others.join(", "),
                         rows[index].scope_key
                     ),

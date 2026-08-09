@@ -436,9 +436,13 @@ contiguity/non-overlap enforced by the `TierBandValidator` at publish (order-dep
 expressible as a row CHECK); unique `(price_id, from_qty)`.
 
 **Scope-key uniqueness is guarded on the draft plane too (normative, D-148, 2026-08-02, found
-while building the draft-authoring plane):** a **second** partial `UNIQUE` over the same eight
+while building the draft-authoring plane):** a **second** partial `UNIQUE` over the same
 canonical scope-key columns, predicated `WHERE lifecycle_state = 'draft'`, sits beside Foundation
-§3.7's published-plane index. The two are independent by construction — their predicates are
+§3.7's published-plane index. **All ten axes since D-196**, the usage pair included —
+`m20260802_000023` widened both indexes to `COALESCE(meter, '')` and `dimension_key`, and this
+clause read "the same eight" until 2026-08-09, when a bulk-import rule built from that count
+refused work the store admits (D-283). It is the third place the eight-axis figure lived; the
+other two were the migration that created the index and the register entry citing it. The two are independent by construction — their predicates are
 disjoint — so a draft successor still coexists with the published row it will supersede, and
 §3.7's only-expressible-form argument is untouched: it was an argument about which rows the
 *published* index can see, never an argument against a second predicate. A violation renders as

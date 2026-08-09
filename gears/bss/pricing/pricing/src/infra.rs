@@ -11,6 +11,7 @@ pub mod error_mapping;
 pub mod fixture_gate;
 pub mod history;
 pub mod idempotent;
+pub mod import;
 pub mod jobs;
 pub mod metrics;
 pub mod migration;

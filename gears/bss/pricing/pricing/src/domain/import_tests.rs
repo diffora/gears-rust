@@ -188,8 +188,13 @@ fn two_rows_differing_only_in_their_dimension_key_are_also_two_keys() {
         )
         .expect("a usage line on a usage key");
 
-    let report = classify(&[row(eu), row(us)]);
+    let report = classify(&[row(eu.clone()), row(us)]);
     assert_eq!(failed_rows(&report), Vec::<usize>::new());
+
+    // The same companion its sibling carries, and for the same reason: without
+    // it this passes for a `classify` that never reports anything at all.
+    let doubled = classify(&[row(eu.clone()), row(eu)]);
+    assert_eq!(failed_rows(&doubled), vec![0, 1]);
 }
 
 #[test]
@@ -281,7 +286,7 @@ fn a_row_can_carry_two_different_faults_and_hears_about_both() {
     let codes: Vec<&str> = report.rows[0]
         .violations
         .iter()
-        .map(|violation| violation.code)
+        .map(|violation| violation.code.as_str())
         .collect();
     assert_eq!(
         codes,
@@ -292,7 +297,7 @@ fn a_row_can_carry_two_different_faults_and_hears_about_both() {
         report.rows[1]
             .violations
             .iter()
-            .map(|violation| violation.code)
+            .map(|violation| violation.code.as_str())
             .collect::<Vec<_>>(),
         vec![DUPLICATE_SCOPE_KEY],
         "row 1 carries no primitive and must not inherit its neighbour's fault"
