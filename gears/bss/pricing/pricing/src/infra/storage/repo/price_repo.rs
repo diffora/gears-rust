@@ -2825,9 +2825,10 @@ async fn record_price_mutation(
 /// Create a draft price row and its bands through whichever runner the caller
 /// holds.
 ///
-/// [`PriceRepo::create_draft`] supplies its own transaction; the other caller is
-/// `infra::idempotent`, which must run the insert inside the **same**
-/// transaction as the idempotency claim guarding it — see
+/// [`PriceRepo::create_draft`] supplies its own transaction; the other callers —
+/// `infra::idempotent` (reached through `api::rest::prices`), `infra::cutover`
+/// and `infra::clone` — each already own one, and the first must run the insert
+/// inside the **same** transaction as the idempotency claim guarding it — see
 /// [`create_draft_on`](super::plan_repo::create_draft_on)'s sibling note and
 /// `idempotency_repo`'s module doc for why splitting the two inverts the
 /// guarantee. The row-and-bands-in-one-transaction invariant this module's doc

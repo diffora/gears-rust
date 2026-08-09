@@ -105,7 +105,7 @@ Inherits Foundation C-set. Slice-12-specific:
 
 | Name | Meaning |
 |------|---------|
-| `PlanCloner` | Deep-copies a plan into `draft` with new ids under the O1 reset rules |
+| `clone_plan_on` | Deep-copies a plan into `draft` with new ids under the O1 reset rules, on the caller's transaction. A free function and not a type: it was `PlanCloner`, and a type holding a connection provider opens its own transaction, which nests silently inside the caller's and commits what the caller rolls back (D-276) |
 | `BulkImporter` | The two-phase import: batch validation → per-row optimistic commit + conflict report; holds the bulk optimistic lock |
 | `MassRepricer` | The idempotent bulk adjustment run (row-level progress journal; event dedup; version coalescing) |
 | `HistoryExporter` | Chronological immutable history read + export under Auditor/Finance filters |
@@ -115,7 +115,7 @@ Inherits Foundation C-set. Slice-12-specific:
 ```mermaid
 flowchart TB
     subgraph s12["Slice 12 — Operator Efficiency"]
-        PC["PlanCloner"]
+        PC["clone_plan_on"]
         BI["BulkImporter"]
         MR["MassRepricer"]
         HE["HistoryExporter"]
@@ -338,7 +338,7 @@ copied row already carries the third.
 **Touches**:
 - API: `POST /bss-pricing/v1/plans/{planId}/clone`
 - DB: `pricing_plan.cloned_from`
-- Entities: `PlanCloner`
+- Entities: `clone_plan_on` (a free function; see §1.7)
 
 ### Bulk Import DoD
 

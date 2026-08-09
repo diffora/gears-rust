@@ -77,6 +77,7 @@ const COMPONENT_A: Uuid = Uuid::from_u128(0xc0_a1);
 const COMPONENT_B: Uuid = Uuid::from_u128(0xc0_b1);
 const VENDOR_SKU: Uuid = Uuid::from_u128(0x5e_11);
 const ADDON_SKU: Uuid = Uuid::from_u128(0xad_11);
+const ADDON_PRICE_REF: Uuid = Uuid::from_u128(0xad_f1);
 
 fn source_plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x50_c1))
@@ -380,9 +381,13 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
 
     // **The one child class no clone case reached** until the 2026-08-09 review
     // pointed it out: `replace_addon_rules` had no operand here, so the writer
-    // whose faithfulness D-274 called measured was measured by nothing. Every
-    // field is off its default, so a copier writing a fresh `AddonRule` would
-    // differ on all of them.
+    // whose faithfulness D-274 called measured was measured by nothing.
+    //
+    // Five of `AddonRule`'s eight fields are off their defaults, which is enough
+    // to catch a copier writing a fresh one. The other three are left at theirs
+    // deliberately: `depends_on` and `conflicts_with` name **other add-on rules'**
+    // SKUs, and this fixture holds one rule, so filling them would author a set
+    // the `ADDON_CYCLE` walk has no second member to range over.
     let after_rules = h
         .shapes
         .replace_addon_rules(
@@ -397,7 +402,7 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
                 min_qty: Some(1),
                 max_qty: Some(3),
                 step_qty: Some(1),
-                price_override_ref: None,
+                price_override_ref: Some(ADDON_PRICE_REF),
                 depends_on: Vec::new(),
                 conflicts_with: Vec::new(),
             }],
@@ -1058,8 +1063,6 @@ async fn the_whole_copy_set_comes_across_contract_descriptors_and_composites() {
         .expect("it came across");
     assert_eq!(descriptors.gl_code.as_deref(), Some("4000"));
 
-    // The composite, under a **new** id: `composite_id` is stable across
-    // revisions of one plan (D-106), not across plans.
     // The add-on rule travels whole and is **not** remapped: `AddonRule` carries
     // no phase, so the rule set is a copy rather than a remap — asserted rather
     // than assumed, which is the module doc's own standard for that claim.
@@ -1075,7 +1078,15 @@ async fn the_whole_copy_set_comes_across_contract_descriptors_and_composites() {
     assert_eq!(rules[0].min_qty, Some(1));
     assert_eq!(rules[0].max_qty, Some(3));
     assert_eq!(rules[0].step_qty, Some(1));
+    assert_eq!(
+        rules[0].price_override_ref,
+        Some(ADDON_PRICE_REF),
+        "the alternative price ref travels: it names a row on the add-on SKU's own plan \
+         (D-97/D-116), not anything the clone re-minted"
+    );
 
+    // The composite, under a **new** id: `composite_id` is stable across
+    // revisions of one plan (D-106), not across plans.
     let composites = plan_shape_repo::load_composite_set(&conn, &h.scope, TENANT, target_plan(), 0)
         .await
         .expect("read the composites");

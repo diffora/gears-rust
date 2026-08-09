@@ -197,8 +197,8 @@ impl CopiedRows {
 /// **This is the whole clone, and it is the only door.** Until D-275 the steps
 /// were repository *methods*, each opening its own transaction, so a failure at
 /// the composition copy left a committed draft plan carrying committed phases,
-/// rules and composites — not prices, which are copied last and so were the one
-/// child class such a failure could not have reached. Every write below is now a
+/// add-on rules, a descriptor set and composites — not prices, which are copied
+/// last and so were the one child class such a failure could not have reached. Every write below is now a
 /// runner-taking form on the caller's single transaction, and the reads are on it
 /// too, so what the copy reads is what the copy is protected against changing.
 /// D-274 built the runner-taking forms this composes; it did not itself make the

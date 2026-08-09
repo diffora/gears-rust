@@ -951,14 +951,15 @@ pub(super) fn tx_failure(err: TxError<RepoError>) -> RepoError {
 
 /// Create a plan's revision `0` through whichever runner the caller holds.
 ///
-/// **Both callers supply a transaction, and neither may not.** This function
+/// **Every caller supplies a transaction, and none may not.** This function
 /// writes **two** rows — the revision and its audit record (D-135) — so a bare
 /// connection would make them two autocommit statements and an append failure
 /// would leave a committed revision nobody recorded creating.
 /// [`PlanRepo::create_draft`] therefore opens one of its own (it used to delegate
-/// here on a plain connection, which is what the audit record made unsafe), and
-/// the other caller is `infra::idempotent`, which has to run the insert inside
-/// the **same** transaction as the idempotency claim that guards it — split
+/// here on a plain connection, which is what the audit record made unsafe). The
+/// other callers are `infra::idempotent`, reached through `api::rest::plans`, and
+/// `infra::clone` since D-275; the first has to run the insert inside the
+/// **same** transaction as the idempotency claim that guards it — split
 /// across two transactions the claim commits while the mutation does not, and
 /// every retry of a request that never happened is answered "already done",
 /// forever (`idempotency_repo`'s module doc). One implementation with two

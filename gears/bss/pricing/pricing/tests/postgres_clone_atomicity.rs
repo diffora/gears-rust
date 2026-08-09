@@ -2,18 +2,26 @@
 //!
 //! **Why this exists as its own suite.** `tests/sqlite_clone.rs` proves the whole
 //! copy set and proves the rollback, but it proves them on `SQLite`. What the
-//! clone does between BEGIN and the caller's failure is eight writers issuing
-//! DELETEs and INSERTs into six tables, every one of them under append-only
-//! triggers and `CHECK` constraints that are **written twice** in this gear —
-//! once in PL/pgSQL and once as `RAISE(ABORT, …)` — and the two spellings are
-//! only ever as equal as the suites that hold them to it.
+//! clone does between BEGIN and the caller's failure is **nine** write functions
+//! issuing DELETEs and INSERTs across **eleven** tables — the plan, its four
+//! child shape tables, the four bundle tables, the price row, and the D-135 audit
+//! log every one of those writers appends to. Eight of the eleven carry
+//! append-only triggers and `CHECK` constraints this gear spells **twice**, once
+//! in PL/pgSQL and once as `RAISE(ABORT, …)`, and two spellings are only ever as
+//! equal as the suites that hold them to it. (`pricing_bundle` itself carries
+//! none — only its three children do — and `pricing_price_tier_band` is a twelfth
+//! table, reached when a copied row has bands, which this seed's flat row does
+//! not.)
 //!
 //! So the seed carries phases, an add-on rule, a descriptor set, a composite
-//! meter, a bundle with components and a rev-share group, and a published price
-//! row: enough that **every** writer `clone_plan_on` can reach actually runs
-//! here. It began as a plan and one price row, which reached three writers of
-//! eight and skipped every guarded branch — a seed small enough to make the suite
-//! agree with itself while testing almost none of what it claimed.
+//! meter, a bundle with two components and a rev-share group, and a published
+//! price row: enough that **every** writer `clone_plan_on` can reach actually
+//! runs here. It began as a plan and one price row, which reached three writers
+//! of nine and skipped every guarded branch — a seed small enough to make the
+//! suite agree with itself while testing almost none of what it claimed. The
+//! assertions came second and were narrower than the seed for one round: the
+//! add-on rule and the composition were authored and never read back, so two of
+//! those writers could have been deleted with this suite still green.
 //!
 //! **What is under test is the rollback arm, not statement failure.** Both cases
 //! run the clone to completion and then fail the *closure*; no SQL statement
@@ -69,6 +77,7 @@ const SOURCE_ROW: Uuid = Uuid::from_u128(0xb_1001);
 const SOURCE_BUNDLE: Uuid = Uuid::from_u128(0xb_21d);
 const SOURCE_COMPOSITE: Uuid = Uuid::from_u128(0xc0_f2);
 const COMPONENT_PLAN: Uuid = Uuid::from_u128(0xc0_a2);
+const COMPONENT_PLAN_B: Uuid = Uuid::from_u128(0xc0_b2);
 const ADDON_SKU: Uuid = Uuid::from_u128(0xad_01);
 const VENDOR_SKU: Uuid = Uuid::from_u128(0x5e_21);
 
@@ -276,12 +285,20 @@ async fn seed(provider: &DBProvider<DbError>) {
             created.revision,
             after_composites.row_version,
             CompositionDraft {
-                components: vec![BundleComponentDraft {
-                    component_plan_id: COMPONENT_PLAN,
-                    included_sku_id: Uuid::from_u128(0x_5c_02),
-                    min_qty: Some(1),
-                    max_qty: Some(4),
-                }],
+                components: vec![
+                    BundleComponentDraft {
+                        component_plan_id: COMPONENT_PLAN,
+                        included_sku_id: Uuid::from_u128(0x_5c_02),
+                        min_qty: Some(1),
+                        max_qty: Some(4),
+                    },
+                    BundleComponentDraft {
+                        component_plan_id: COMPONENT_PLAN_B,
+                        included_sku_id: Uuid::from_u128(0x_5c_03),
+                        min_qty: None,
+                        max_qty: None,
+                    },
+                ],
                 rev_share_groups: vec![RevShareGroup {
                     vendor_sku_id: VENDOR_SKU,
                     platform_cut_bp: 1_500,
@@ -398,11 +415,30 @@ async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
         "nor the descriptor set it copied"
     );
     assert!(
+        plan_shape_repo::load_addon_rule_set(&conn, &scope(), TENANT, target_plan(), 0)
+            .await
+            .expect("read the add-on rules")
+            .is_empty(),
+        "nor the add-on rule it copied"
+    );
+    assert!(
         bundle_repo::find_by_plan_on(&conn, &scope(), TENANT, target_plan())
             .await
             .expect("read the bundle")
             .is_none(),
         "nor the bundle identity it minted"
+    );
+    // The composition is asserted separately from the identity because they are
+    // written by different functions: `create_on` mints the row above, and
+    // `replace_composition_on` fills the three tables under it. A clone that
+    // minted the identity and copied an empty composition satisfies the
+    // assertion above and not this one.
+    let composition = bundle_repo::load_composition_on(&conn, &scope(), TENANT, target_plan(), 0)
+        .await
+        .expect("read the composition");
+    assert!(
+        composition.components.is_empty() && composition.rev_share_groups.is_empty(),
+        "nor the components and rev-share groups under it"
     );
 }
 
@@ -461,7 +497,7 @@ async fn the_same_clone_committed_writes_every_class_the_rollback_removed() {
         1,
         "the one published source row came across as a draft"
     );
-    // **The same four the rollback case asserts absent.** Together the pair is
+    // **The same six the rollback case asserts absent.** Together the pair is
     // the evidence that the seed reaches every writer: each class is present
     // here and gone there, so neither reading can be satisfied by a clone that
     // never touched that class at all.
@@ -488,6 +524,11 @@ async fn the_same_clone_committed_writes_every_class_the_rollback_removed() {
             .is_some(),
         "the descriptor set came across"
     );
+    let rules = plan_shape_repo::load_addon_rule_set(&conn, &scope(), TENANT, target_plan(), 0)
+        .await
+        .expect("read the add-on rules")
+        .len();
+    assert_eq!(rules, 1, "the add-on rule came across");
     let bundle = bundle_repo::find_by_plan_on(&conn, &scope(), TENANT, target_plan())
         .await
         .expect("read the bundle")
@@ -495,5 +536,22 @@ async fn the_same_clone_committed_writes_every_class_the_rollback_removed() {
     assert_ne!(
         bundle.bundle_id, SOURCE_BUNDLE,
         "under its own identity (D-269)"
+    );
+    let composition = bundle_repo::load_composition_on(&conn, &scope(), TENANT, target_plan(), 0)
+        .await
+        .expect("read the composition");
+    assert_eq!(
+        composition.components.len(),
+        2,
+        "both components came across under the new identity"
+    );
+    assert_eq!(
+        composition.rev_share_groups.len(),
+        1,
+        "and the rev-share group with them"
+    );
+    assert_eq!(
+        composition.components[0].component_plan_id, COMPONENT_PLAN,
+        "component_plan_id names another plan and is the one id not re-minted (D-269)"
     );
 }
