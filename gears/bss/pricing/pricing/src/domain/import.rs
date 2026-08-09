@@ -43,6 +43,7 @@ use toolkit_macros::domain_model;
 
 use crate::domain::concurrency::RowVersion;
 use crate::domain::price_record::PriceContent;
+use crate::domain::publish::rules::{PRIMITIVE_RULES_UNBUILT, unjudged_primitives};
 use crate::domain::scope_key::ScopeKey;
 
 /// The wire code for two rows on one canonical scope key.
@@ -129,6 +130,15 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
     for (row, found) in duplicate_scope_keys(rows) {
         violations.entry(row).or_default().push(found);
     }
+    for (row, found) in unbuilt_primitives(rows) {
+        violations.entry(row).or_default().push(found);
+    }
+    for found in violations.values_mut() {
+        // A stable order, so a report is a function of the batch and not of the
+        // order the rules happen to run in. Rows already sort by index; this is
+        // the same claim one level down.
+        found.sort_by_key(|violation| violation.code);
+    }
 
     let mut outcomes: Vec<RowOutcome> = violations
         .into_iter()
@@ -136,6 +146,38 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
         .collect();
     outcomes.sort_by_key(|outcome| outcome.row);
     BatchReport { rows: outcomes }
+}
+
+/// Rows carrying a Slice-10 primitive whose rules are unbuilt (D-177).
+///
+/// **The refusal moves earlier, it does not move.** `domain::publish::rules`
+/// already refuses these fields at publish on its own authority (D-179), whatever
+/// put the value there, and that backstop stays — its removal has an order, and
+/// this is not it. What building this arm changes is *where the operator hears*:
+/// in the per-row Phase 1 report, where the batch can still be fixed, instead of
+/// at a publish that rejects work already committed.
+///
+/// It **inherits** `PRIMITIVE_RULES_UNBUILT` rather than minting a second code,
+/// which the design set states outright: the code names the reason, not the
+/// field, and one reason wants one code however many surfaces notice it.
+fn unbuilt_primitives(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
+    let mut found = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        for (field, missing) in unjudged_primitives(&row.content.row) {
+            found.push((
+                index,
+                RowViolation {
+                    code: PRIMITIVE_RULES_UNBUILT,
+                    detail: format!(
+                        "this row carries a {field} and the Slice-10 rules that would judge it \
+                         are unbuilt, as is {missing}; the batch stops here, where the row can \
+                         still be fixed, rather than at the publish that would otherwise catch it"
+                    ),
+                },
+            ));
+        }
+    }
+    found
 }
 
 /// Rows sharing one draft-row identity, each told which other rows it collides

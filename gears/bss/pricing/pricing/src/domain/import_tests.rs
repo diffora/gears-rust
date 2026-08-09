@@ -10,7 +10,10 @@
 use super::{BatchReport, DUPLICATE_SCOPE_KEY, ImportRow, classify};
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::PriceContent;
-use crate::domain::price_row::{ModelKind, PriceRow};
+use crate::domain::price_row::{
+    IncludedAllowance, ModelKind, PriceRow, RolloverPolicy, TierQualificationWindow,
+};
+use crate::domain::publish::rules::PRIMITIVE_RULES_UNBUILT;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
@@ -192,6 +195,89 @@ fn an_edit_and_a_create_aimed_at_one_draft_row_still_collide() {
     edit.if_match = Some(crate::domain::concurrency::RowVersion::new(3));
     let report = classify(&[edit, row(base())]);
     assert_eq!(failed_rows(&report), vec![0, 1]);
+}
+
+#[test]
+fn a_row_carrying_an_unbuilt_primitive_fails_and_inherits_the_publish_code() {
+    // **The refusal moves earlier, it does not move** (D-177/D-179): publish
+    // still refuses these fields on its own authority. What this arm changes is
+    // that the operator hears it while the batch can still be fixed.
+    let mut row = row(base());
+    row.content.row.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+
+    let report = classify(&[row]);
+    assert_eq!(failed_rows(&report), vec![0]);
+    assert_eq!(report.rows[0].violations[0].code, PRIMITIVE_RULES_UNBUILT);
+    assert!(
+        report.rows[0].violations[0]
+            .detail
+            .contains("includedAllowance"),
+        "the sentence names the field the operator has to remove: {}",
+        report.rows[0].violations[0].detail
+    );
+    assert!(report.blocks_the_batch());
+}
+
+#[test]
+fn a_row_carrying_both_unbuilt_primitives_is_told_about_both() {
+    // The all-or-nothing posture only pays for itself if the report is complete
+    // — a row fixed one field at a time is a second batch for nothing.
+    let mut row = row(base());
+    row.content.row.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+    row.content.row.tier_qualification_window = Some(TierQualificationWindow::TrailingPeriod);
+
+    let report = classify(&[row]);
+    assert_eq!(report.rows[0].violations.len(), 2, "both, not the first");
+    let details: Vec<&str> = report.rows[0]
+        .violations
+        .iter()
+        .map(|violation| violation.detail.as_str())
+        .collect();
+    assert!(details.iter().any(|d| d.contains("includedAllowance")));
+    assert!(
+        details
+            .iter()
+            .any(|d| d.contains("tierQualificationWindow"))
+    );
+}
+
+#[test]
+fn a_row_can_carry_two_different_faults_and_hears_about_both() {
+    // The two rules are independent and both answer for every row. A report that
+    // stopped at the first would send the operator round twice.
+    let mut first = row(base());
+    first.content.row.included_allowance = Some(IncludedAllowance {
+        quantity: 100,
+        rollover_policy: RolloverPolicy::Carry,
+    });
+    let report = classify(&[first, row(base())]);
+
+    assert_eq!(failed_rows(&report), vec![0, 1]);
+    let codes: Vec<&str> = report.rows[0]
+        .violations
+        .iter()
+        .map(|violation| violation.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec![DUPLICATE_SCOPE_KEY, PRIMITIVE_RULES_UNBUILT],
+        "row 0 is both a duplicate and unjudged, and the order is stable"
+    );
+    assert_eq!(
+        report.rows[1]
+            .violations
+            .iter()
+            .map(|violation| violation.code)
+            .collect::<Vec<_>>(),
+        vec![DUPLICATE_SCOPE_KEY],
+        "row 1 carries no primitive and must not inherit its neighbour's fault"
+    );
 }
 
 #[test]

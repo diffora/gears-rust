@@ -118,6 +118,8 @@
 use std::collections::BTreeSet;
 
 use toolkit_macros::domain_model;
+
+use crate::domain::price_row::PriceRow;
 use uuid::Uuid;
 
 use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
@@ -642,6 +644,38 @@ impl ValidationRule<PlanShape> for BundleMarketBasisUnmixed {
 #[derive(Clone, Copy, Debug)]
 struct NoUnjudgedPrimitive;
 
+/// Which unjudged Slice-10 primitives a row carries, and what is missing for each.
+///
+/// **One list, two refusals.** This rule is the publish backstop (D-179); the
+/// bulk import's Phase-1 arm (D-177) refuses the same fields at authoring, where
+/// the operator can still fix the batch. A second spelling of the pair is a
+/// second thing to update when Slice 10 lands — and [`PRIMITIVE_RULES_UNBUILT`]
+/// names the **reason** rather than the field precisely so that a third
+/// rostered-but-unauthorable field needs no second code. It needs no second list
+/// either.
+///
+/// The second element is what is missing, which differs per field and is what
+/// makes the two refusals readable rather than generic; each caller wraps it in
+/// its own sentence, because "publish stops" and "the batch stops" are different
+/// acts.
+#[must_use]
+pub fn unjudged_primitives(row: &PriceRow) -> Vec<(&'static str, &'static str)> {
+    let mut carried = Vec::new();
+    if row.included_allowance.is_some() {
+        carried.push((
+            "includedAllowance",
+            "the compile that gives the value meaning",
+        ));
+    }
+    if row.tier_qualification_window.is_some() {
+        carried.push((
+            "tierQualificationWindow",
+            "the rate lock that gives the value meaning",
+        ));
+    }
+    carried
+}
+
 impl ValidationRule<PlanShape> for NoUnjudgedPrimitive {
     fn name(&self) -> &'static str {
         "foundation.no_unjudged_primitive"
@@ -649,24 +683,15 @@ impl ValidationRule<PlanShape> for NoUnjudgedPrimitive {
 
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
         for record in &subject.rows {
-            if record.row.included_allowance.is_some() {
+            for (field, missing) in unjudged_primitives(&record.row) {
                 report.violate(
                     PRIMITIVE_RULES_UNBUILT,
                     record.price_id.to_string(),
-                    "this row carries an includedAllowance and the Slice-10 rules that would \
-                     judge it are unbuilt, as is the compile that gives the value meaning; \
-                     publish stops rather than freezing an unjudged value into an immutable \
-                     version",
-                );
-            }
-            if record.row.tier_qualification_window.is_some() {
-                report.violate(
-                    PRIMITIVE_RULES_UNBUILT,
-                    record.price_id.to_string(),
-                    "this row carries a tierQualificationWindow and the Slice-10 rules that \
-                     would judge it are unbuilt, as is the rate lock that gives the value \
-                     meaning; publish stops rather than freezing an unjudged value into an \
-                     immutable version",
+                    format!(
+                        "this row carries a {field} and the Slice-10 rules that would judge it \
+                         are unbuilt, as is {missing}; publish stops rather than freezing an \
+                         unjudged value into an immutable version"
+                    ),
                 );
             }
         }
