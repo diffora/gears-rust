@@ -6,6 +6,7 @@
 
 pub mod approval;
 pub mod audit;
+pub mod bulk;
 pub mod bundle;
 pub mod bundle_rules;
 pub mod bundle_sellability;

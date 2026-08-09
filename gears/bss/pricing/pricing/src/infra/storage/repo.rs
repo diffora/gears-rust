@@ -40,6 +40,7 @@
 
 pub mod approval_repo;
 pub mod audit_repo;
+pub mod bulk_repo;
 pub mod bundle_repo;
 pub mod catalog_version_ref_repo;
 pub mod idempotency_repo;
@@ -64,6 +65,7 @@ use crate::infra::storage::RepoError;
 
 pub use approval_repo::{ApprovalRecord, NewApproval};
 pub use audit_repo::NewAuditEntry;
+pub use bulk_repo::{BulkOperationRecord, BulkRepo, NewBulkOperation};
 pub use bundle_repo::{
     BundleComponentDraft, BundleRecord, BundleRepo, CompositionDraft, NewBundle,
 };

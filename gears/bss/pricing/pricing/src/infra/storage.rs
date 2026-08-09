@@ -212,6 +212,27 @@ pub enum RepoError {
     /// that do not actually share a key.
     #[error("pricing repo: duplicate canonical scope key: {0}")]
     DuplicateScopeKey(String),
+
+    /// The price row is already held by an **in-flight bulk operation**
+    /// (`uq`/PK on `pricing_bulk_row_lock`, `inst-bk-lock`).
+    ///
+    /// The mutual exclusion is the key `(tenant_id, price_id)` itself: two runs
+    /// cannot hold one row because the second insert collides. Raised by the key
+    /// rather than by a read, [`RepoError::PendingKeyHeld`]'s arrangement — and
+    /// unlike that variant this one **does** carry the holder, because a lock row
+    /// is inserted by the run that is already `committing` and therefore already
+    /// committed. Naming it is the whole of `fr-concurrent-edit`'s requirement:
+    /// an interactive edit refused by a bulk run has to say which run.
+    #[error(
+        "pricing repo: price row {price_id} is held by bulk operation {bulk_operation_id}; wait \
+         for it to finish or abort it"
+    )]
+    BulkRowLocked {
+        /// The row somebody tried to take or edit.
+        price_id: String,
+        /// The run holding it — what the conflict names.
+        bulk_operation_id: String,
+    },
     /// The `(scope_class, precedence)` slot is already held by another
     /// **published** overlay (`uq_pricing_price_overlay_precedence`, L2).
     ///
@@ -826,7 +847,14 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         RepoError::IdempotencyKeyInFlight { .. } => {
             DomainError::IdempotencyKeyInFlight(err.to_string())
         }
-        RepoError::ConcurrentMutation { .. } => DomainError::ConcurrentMutation(err.to_string()),
+        // `inst-bk-lock` and §5 together: an edit hitting a row under the bulk
+        // lock "surfaces as the Foundation's concurrent-edit conflict **naming
+        // the bulk operation**". So it joins `ConcurrentMutation` rather than
+        // minting a code — the operator's situation is the one that variant
+        // already describes, and the run's id is in the sentence.
+        RepoError::BulkRowLocked { .. } | RepoError::ConcurrentMutation { .. } => {
+            DomainError::ConcurrentMutation(err.to_string())
+        }
         // Two shapes of one answer: a value arriving on a request that no column
         // will hold, which the author can reshape. `WindowIntervalEmpty` is the
         // window plane's — section 5 declares no window code for an empty
