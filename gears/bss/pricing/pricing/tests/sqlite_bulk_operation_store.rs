@@ -2,11 +2,12 @@
 //! machine, driven as raw SQL because what is under test is the store's own
 //! guarantee and not any repository's use of it.
 //!
-//! §4 gives six states and five edges. A caller that walked a sixth edge would
-//! re-drive a commit whose rows are already applied, or strand a record in a
-//! state nothing can leave, and neither is a mistake a caller should be trusted
-//! not to make: the run's report is an operator-facing record of money that
-//! moved.
+//! §4 gives seven states and six edges — `rejected` and
+//! `awaiting_approval → rejected` are D-267's, and the rest are as built. A
+//! caller that walked a seventh edge would re-drive a commit whose rows are
+//! already applied, or strand a record in a state nothing can leave, and neither
+//! is a mistake a caller should be trusted not to make: the run's report is an
+//! operator-facing record of money that moved.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -42,12 +43,23 @@ fn seed(kind: &str) -> String {
 }
 
 fn move_to(state: &str) -> String {
-    let completed = matches!(
+    move_to_with(state, terminal(state).then_some("'2026-08-08T01:00:00Z'"))
+}
+
+/// The states that end a run, which is also the set
+/// `chk_pricing_bulk_operation_completed_at` names. `rejected` joined it with
+/// D-267: a refused batch approval is an outcome, not a pause.
+fn terminal(state: &str) -> bool {
+    matches!(
         state,
-        "validation_failed" | "completed" | "completed_with_conflicts"
+        "validation_failed" | "completed" | "completed_with_conflicts" | "rejected"
     )
-    .then_some("'2026-08-08T01:00:00Z'")
-    .unwrap_or("NULL");
+}
+
+/// The same move with the end instant chosen by the caller, so a case can ask
+/// what the `completed_at` agreement refuses rather than only what it admits.
+fn move_to_with(state: &str, completed: Option<&str>) -> String {
+    let completed = completed.unwrap_or("NULL");
     format!(
         "UPDATE pricing_bulk_operation SET state = '{state}', completed_at = {completed} \
          WHERE operation_id = '{OP}'"
@@ -70,6 +82,8 @@ async fn every_sanctioned_edge_is_walkable() {
             ],
         ),
         ("import", vec!["validation_failed"]),
+        // D-267's edge: the approval was refused, and the run ends there.
+        ("repricing", vec!["awaiting_approval", "rejected"]),
     ] {
         let conn = migrated_db().await;
         must_succeed(&conn, &seed(kind)).await;
@@ -77,6 +91,101 @@ async fn every_sanctioned_edge_is_walkable() {
             must_succeed(&conn, &move_to(state)).await;
         }
     }
+}
+
+/// **A rejected run is over, so it carries an end instant** — D-267 put
+/// `rejected` in `chk_pricing_bulk_operation_completed_at`'s terminal set, and
+/// this is the case that gives that half of the migration an operand. Reachable
+/// at `UPDATE` and *not* at `INSERT`: the born-validating trigger is strictly
+/// narrower and answers first, so a case expecting the constraint at insert
+/// would be reading the trigger's refusal instead (D-261's shadowing, met again).
+#[tokio::test]
+async fn a_rejected_run_carries_the_instant_it_ended() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed("repricing")).await;
+    must_succeed(&conn, &move_to("awaiting_approval")).await;
+    must_be_rejected(
+        &conn,
+        &move_to_with("rejected", None),
+        "chk_pricing_bulk_operation_completed_at",
+    )
+    .await;
+    must_succeed(&conn, &move_to("rejected")).await;
+}
+
+/// **`rejected` is terminal**, and nothing takes a run back out of it: a
+/// re-drive of an approval that was refused would commit rows the approver
+/// declined, which is the one outcome a rejection exists to prevent.
+#[tokio::test]
+async fn a_rejected_run_never_moves_again() {
+    for onward in ["committing", "completed", "awaiting_approval", "validating"] {
+        let conn = migrated_db().await;
+        must_succeed(&conn, &seed("repricing")).await;
+        must_succeed(&conn, &move_to("awaiting_approval")).await;
+        must_succeed(&conn, &move_to("rejected")).await;
+        must_be_rejected(&conn, &move_to(onward), "not an edge").await;
+    }
+}
+
+/// **`awaiting_approval` is the only state that reaches `rejected`.** The edge
+/// is an approval decision, so a run that never asked for one cannot be refused
+/// one — and a run already committing has rows applied that a rejection could
+/// not take back.
+#[tokio::test]
+async fn nothing_but_a_pending_approval_can_be_rejected() {
+    // From the initial state, with no approval outstanding.
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed("repricing")).await;
+    must_be_rejected(&conn, &move_to("rejected"), "not an edge").await;
+
+    // From `committing`, where the decision has already been taken.
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed("repricing")).await;
+    must_succeed(&conn, &move_to("committing")).await;
+    must_be_rejected(&conn, &move_to("rejected"), "not an edge").await;
+
+    // From a terminal state, which `a_terminal_run_never_moves_again` covers for
+    // `committing` and this covers for the state D-267 added.
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed("repricing")).await;
+    must_succeed(&conn, &move_to("committing")).await;
+    must_succeed(&conn, &move_to("completed")).await;
+    must_be_rejected(&conn, &move_to("rejected"), "not an edge").await;
+
+    // The remaining way in would be birth, and
+    // `a_run_cannot_be_born_past_the_state_machine` carries `rejected` in its
+    // list rather than this case restating it.
+}
+
+/// **An import can never be rejected, and D-267 adds no clause saying so.**
+/// `rejected` is reachable only from `awaiting_approval`, which
+/// `chk_pricing_bulk_operation_import_never_awaits` already forbids an import —
+/// so the new edge inherits D-137 rather than restating it. Verified rather than
+/// argued: a second constraint repeating a rule that already holds is a rule
+/// that can never fail, and this suite would not be able to tell it from one
+/// that does.
+#[tokio::test]
+async fn an_import_can_never_be_rejected() {
+    // The direct move, refused by the edge list rather than by the import
+    // `CHECK` — the import never gets far enough for that `CHECK` to be asked.
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed("import")).await;
+    must_be_rejected(&conn, &move_to("rejected"), "not an edge").await;
+
+    // And the only state that could reach `rejected` is the one an import is
+    // refused, so the path is closed at both ends. Named rather than asserted as
+    // a bare `CHECK`: four constraints sit on this table and only one of them is
+    // D-137's, so a rewrite that let a different one answer would stay green.
+    must_be_rejected(
+        &conn,
+        &move_to("awaiting_approval"),
+        "chk_pricing_bulk_operation_import_never_awaits",
+    )
+    .await;
+
+    let conn = migrated_db().await;
+    let born = seed("import").replace("'validating'", "'rejected'");
+    must_be_rejected(&conn, &born, "born validating").await;
 }
 
 /// **An import can never park awaiting approval** (D-137): draft-plane authoring
@@ -186,6 +295,7 @@ async fn a_run_cannot_be_born_past_the_state_machine() {
         "completed",
         "completed_with_conflicts",
         "validation_failed",
+        "rejected",
     ] {
         let conn = migrated_db().await;
         let born = seed("repricing").replace("'validating'", &format!("'{state}'"));

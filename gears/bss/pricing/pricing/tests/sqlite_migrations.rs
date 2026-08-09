@@ -646,8 +646,10 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         8_228_055_037_257_075_408_u64,
     ),
     // Slice 12's bulk operation. Read back off the built schema, as this census
-    // requires: the transitions arm carries section 4's five edges, so a lost
-    // disjunct here is a state move the store would silently start admitting.
+    // requires: the transitions arm carries section 4's six edges — five from
+    // `m20260802_000047` and D-267's rejection exit from `m20260802_000063` — so
+    // a lost disjunct here is a state move the store would silently start
+    // admitting.
     (
         "trg_pricing_bulk_operation_born_validating",
         15_400_506_675_831_746_121_u64,
@@ -660,9 +662,17 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         "trg_pricing_bulk_operation_no_delete",
         11_270_963_154_713_380_806_u64,
     ),
+    // Re-pinned 2026-08-09 by `m20260802_000063` (D-267): the edge list gains
+    // `awaiting_approval -> rejected`, the one exit a refused batch approval had
+    // nowhere to take. Read off the built schema and copied out of this census's
+    // own failure, as the roster requires — hand-deriving it would pin whatever
+    // the deriver believed the rebuild re-created. It is also the **only** digest
+    // that moved: the rebuild re-creates six other trigger bodies verbatim, three
+    // of them on two other tables, and a typo in any of them would have shown up
+    // right here. Was `18_200_341_525_936_192_938`.
     (
         "trg_pricing_bulk_operation_transitions",
-        18_200_341_525_936_192_938_u64,
+        9_041_683_707_027_372_812_u64,
     ),
     // Slice 12's bulk lock. Read back off the built schema — twice, because the
     // two parent-reading arms gained their `EXISTS` deferral after the first
