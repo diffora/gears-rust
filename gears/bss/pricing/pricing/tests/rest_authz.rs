@@ -41,7 +41,7 @@ use bss_pricing::api::rest::history::HISTORY;
 use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
 use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
-use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLANS};
+use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLAN_CLONE, PLANS};
 use bss_pricing::api::rest::preview::PLAN_PREVIEW;
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
@@ -169,6 +169,13 @@ fn census() -> Vec<Route> {
         Route {
             method: "POST",
             path: PLAN_ABANDON,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "POST",
+            path: PLAN_CLONE,
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
@@ -773,6 +780,10 @@ fn drive(
             vec![("if-match", "\"0\"")],
         ),
         ("POST", PLAN_ABANDON | PLAN_PUBLISH) => (None, vec![("if-match", version)]),
+        // The clone holds no version of the source — it reads the source's
+        // current revision and writes nothing to it — so the precondition it
+        // carries is the idempotency key, not an `If-Match`.
+        ("POST", PLAN_CLONE) => (None, vec![("idempotency-key", key)]),
         ("DELETE", PLAN_PRICE) => (None, vec![("if-match", "\"0\"")]),
         // The `Idempotency-Key` is required on the schedule (D-171) and is read
         // before anything is resolved, so a request without one never reaches the

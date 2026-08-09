@@ -79,7 +79,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::overlays::{
         PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS,
     };
-    use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
+    use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLAN_CLONE, PLANS};
     use bss_pricing::api::rest::preview::PLAN_PREVIEW;
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
@@ -98,6 +98,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("POST", PLANS),
         ("PATCH", PLAN),
         ("POST", PLAN_ABANDON),
+        ("POST", PLAN_CLONE),
         ("POST", PLAN_PRICES),
         ("GET", PLAN_PRICES),
         ("PATCH", PLAN_PRICE),
@@ -506,7 +507,7 @@ async fn an_unconfigured_gear_reserves_its_prefix_and_answers_404_under_it() {
 /// `the_window_cancel_declares_no_precondition_header` is what keeps a later group
 /// from adding one to be helpful.
 fn if_match_routes() -> Vec<(&'static str, &'static str)> {
-    use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLANS};
+    use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLAN_CLONE, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
@@ -538,19 +539,26 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         ("POST", PLANS),
         ("POST", PLAN_PRICES),
         ("POST", PRICE_WINDOWS),
+        // The clone is a create too, and the one whose classification is worth
+        // stating: it addresses an **existing** plan in its path, so it reads
+        // like a route that would hold that plan's version. It does not — it
+        // writes nothing to the source, and there is no version of a plan that
+        // does not exist yet to assert about the target (D-275).
+        ("POST", PLAN_CLONE),
     ]
 }
 
 /// The creates, each of which requires an `Idempotency-Key` (D-141/D-142, and §5's
 /// Idempotency column for the window schedule).
 fn idempotency_key_routes() -> Vec<(&'static str, &'static str)> {
-    use bss_pricing::api::rest::plans::PLANS;
+    use bss_pricing::api::rest::plans::{PLAN_CLONE, PLANS};
     use bss_pricing::api::rest::prices::PLAN_PRICES;
     use bss_pricing::api::rest::windows::PRICE_WINDOWS;
     vec![
         ("POST", PLANS),
         ("POST", PLAN_PRICES),
         ("POST", PRICE_WINDOWS),
+        ("POST", PLAN_CLONE),
     ]
 }
 

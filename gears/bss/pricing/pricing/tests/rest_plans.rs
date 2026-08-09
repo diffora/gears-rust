@@ -20,6 +20,10 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::plans::PLANS;
+
+fn clone_path(plan_id: Uuid) -> String {
+    format!("{PLANS}/{plan_id}/clone")
+}
 use rest_support::{
     Harness, audit_rows, body_json, etag_of, location_of, plan_count, plan_row_version, plan_state,
     problem_code, request, seed_current_plan, seed_draft_plan, with_headers,
@@ -312,6 +316,184 @@ async fn a_create_without_an_idempotency_key_is_refused_and_writes_nothing() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(plan_count(&harness).await, 0);
+}
+
+// ---------------------------------------------------------------------------
+// The clone route (§5 `algo-clone`; D-19, D-275).
+// ---------------------------------------------------------------------------
+
+/// A clone answers `201`, the new plan's `Location`, and a receipt naming both
+/// plans.
+///
+/// The `Location` matters more here than on the create: the caller did not
+/// choose the id and has no other way to learn it, the receipt being the only
+/// place it appears.
+#[tokio::test]
+async fn a_clone_answers_201_with_the_new_plans_location_and_its_receipt() {
+    let harness = Harness::new().await;
+    let source = Uuid::now_v7();
+    seed_current_plan(&harness, source).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            None,
+            &keyed("clone-1"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let location = location_of(&response);
+    let body = body_json(response).await;
+    let plan_id = body["plan_id"].as_str().expect("the id is answered");
+    assert_eq!(location, Some(format!("{PLANS}/{plan_id}")));
+    assert_ne!(
+        plan_id,
+        source.to_string(),
+        "a clone is a new plan, not a revision of the source"
+    );
+    assert_eq!(body["cloned_from"], serde_json::json!(source.to_string()));
+    assert_eq!(
+        plan_count(&harness).await,
+        2,
+        "the source and its clone, and nothing else"
+    );
+    assert_eq!(
+        plan_state(&harness, Uuid::parse_str(plan_id).expect("a uuid"), 0).await,
+        Some("draft".to_owned()),
+        "the clone is an ordinary draft (`inst-cl-draft`)"
+    );
+}
+
+/// A replay answers the **first** caller's plan and clones nothing.
+///
+/// The create's reason, sharpened: a caller that retried and got a second plan
+/// would hold a reference to neither, and unlike a create it cannot tell the two
+/// apart by their content — a clone of one source is identical to another.
+#[tokio::test]
+async fn a_replayed_clone_answers_the_first_callers_plan_and_clones_nothing() {
+    let harness = Harness::new().await;
+    let source = Uuid::now_v7();
+    seed_current_plan(&harness, source).await;
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            None,
+            &keyed("clone-2"),
+        ))
+        .await;
+    let first_id = body_json(first).await["plan_id"].clone();
+
+    let replay = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            None,
+            &keyed("clone-2"),
+        ))
+        .await;
+
+    assert_eq!(replay.status(), StatusCode::CREATED);
+    assert_eq!(body_json(replay).await["plan_id"], first_id);
+    assert_eq!(
+        plan_count(&harness).await,
+        2,
+        "an answered key must not have run its mutation again"
+    );
+}
+
+/// **One key against two different sources is a payload mismatch.**
+///
+/// The case the digest exists for. The request carries no body, so without the
+/// source in the hash every clone in a tenant would hash identically and this
+/// caller would be handed the *other* source's clone — a replay of an act
+/// nobody performed.
+#[tokio::test]
+async fn one_key_against_two_different_sources_is_refused_by_its_code() {
+    let harness = Harness::new().await;
+    let first_source = Uuid::now_v7();
+    let second_source = Uuid::now_v7();
+    seed_current_plan(&harness, first_source).await;
+    seed_current_plan(&harness, second_source).await;
+
+    harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(first_source),
+            None,
+            &keyed("clone-3"),
+        ))
+        .await;
+    let second = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(second_source),
+            None,
+            &keyed("clone-3"),
+        ))
+        .await;
+
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(second).await, "IDEMPOTENCY_PAYLOAD_MISMATCH");
+    assert_eq!(
+        plan_count(&harness).await,
+        3,
+        "two sources and one clone: the refused call wrote nothing"
+    );
+}
+
+/// A clone without an `Idempotency-Key` is refused before it writes.
+#[tokio::test]
+async fn a_clone_without_an_idempotency_key_is_refused_and_writes_nothing() {
+    let harness = Harness::new().await;
+    let source = Uuid::now_v7();
+    seed_current_plan(&harness, source).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers("POST", &clone_path(source), None, &[]))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(plan_count(&harness).await, 1);
+}
+
+/// A plan with no **current** revision is not clonable, and the refusal is a
+/// `404` naming the source rather than a `500`.
+///
+/// A draft-only plan is the case: it exists, an author can read it, and there is
+/// nothing published to copy. The clone reads the *current* revision because a
+/// draft is an edit in progress and not configuration the plan has.
+#[tokio::test]
+async fn a_plan_with_nothing_published_cannot_be_cloned() {
+    let harness = Harness::new().await;
+    let source = Uuid::now_v7();
+    seed_draft_plan(&harness, source).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            None,
+            &keyed("clone-4"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        plan_count(&harness).await,
+        1,
+        "the refusal wrote no half-made clone"
+    );
 }
 
 #[tokio::test]

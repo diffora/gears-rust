@@ -61,6 +61,7 @@ use crate::domain::plan_shape::{
     AddonRule, BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
 use crate::domain::scope_key::{PhaseId, PlanId};
+use crate::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo};
 use crate::infra::storage::{RepoError, repo_failure};
@@ -80,6 +81,14 @@ pub const PLANS: &str = "/bss-pricing/v1/plans";
 pub const PLAN: &str = "/bss-pricing/v1/plans/{planId}";
 /// The abandon action, as a sub-resource segment (D-140: never a colon method).
 pub const PLAN_ABANDON: &str = "/bss-pricing/v1/plans/{planId}/abandon";
+
+/// `POST` — clone a plan into a new draft plan (§5, `algo-clone`; D-19, D-275).
+///
+/// A `plans` route rather than a module of its own, and the reason is the path:
+/// the source is a plan and the surface belongs to the plan family, exactly as
+/// `/abandon` does. A separate module would owe a router, a mount, a merge and
+/// two censuses to say the same thing.
+pub const PLAN_CLONE: &str = "/bss-pricing/v1/plans/{planId}/clone";
 
 /// The `If-Match` header, declared so a generated client knows it is mandatory.
 ///
@@ -611,6 +620,53 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(router, openapi);
 
+    router = OperationBuilder::post("/bss-pricing/v1/plans/{planId}/clone")
+        .operation_id("bss_pricing.clone_plan")
+        .summary("Clone a plan into a new draft plan")
+        .description(
+            "Copies the source plan's **current** revision into a brand-new plan at revision \
+             `0` in `draft`, with new ids throughout: a new `planId`, new `phaseId`s with every \
+             reference to them remapped, new `priceId`s, a new `compositeId` per meter and, \
+             where the source is a bundle, a new `bundleId` over a copied composition (D-269). \
+             `clonedFrom` records the source. The **whole clone is one transaction** - a \
+             failure part way leaves no plan behind (D-275). \
+             \
+             What is copied is *configuration*; what is left behind is *lifecycle state*, and \
+             the response says so rather than leaving it to be discovered at the clone's first \
+             publish: `PriceWindow` schedules are never cloned, so the clone's billable rows \
+             have no coverage and its publish stays blocked until fresh windows are scheduled \
+             (`inst-cl-windows`); and both cutover-made eligibility classes - \
+             `existing_grandfathered` and `new_subscriptions_only` - stay behind, counted per \
+             class (`inst-cl-resets`, D-268). \
+             \
+             The clone is an ordinary draft: no rule reads `clonedFrom`, and its first publish \
+             takes the full pipeline and an approval like any other first publish \
+             (`inst-cl-draft`). Guarded at-most-once on the `Idempotency-Key`; a replay answers \
+             the first caller's plan id rather than cloning twice.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param(
+            "planId",
+            "The plan to clone. Its **current** revision is the source.",
+        )
+        .param(idempotency_key_param())
+        .handler(clone_plan)
+        .json_response_with_schema::<CloneReceiptView>(
+            openapi,
+            StatusCode::CREATED,
+            "The new plan, what came across, and what deliberately did not.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
     router = OperationBuilder::get("/bss-pricing/v1/plans/{planId}")
         .operation_id("bss_pricing.get_plan")
         .summary("Read a plan's authoring revision")
@@ -985,6 +1041,13 @@ async fn abandon_plan_draft(
 /// collide: `operation` is part of the dedup table's composite key.
 const CREATE_PLAN_OPERATION: &str = "bss_pricing.create_plan";
 
+/// The idempotency operation the clone claims under.
+///
+/// Distinct from the create's: the two write the same table and a client key is
+/// unique **per operation**, so sharing the name would make a clone and a create
+/// under one key collide as a payload mismatch rather than as two acts.
+const CLONE_PLAN_OPERATION: &str = "bss_pricing.clone_plan";
+
 /// The `plan x write` gate, spelled once for the three mutating routes.
 async fn write_scope(
     enforcer: &authz_resolver_sdk::PolicyEnforcer,
@@ -1287,6 +1350,192 @@ fn created(revision: &PlanRevision) -> Response {
         Json(view),
     )
         .into_response()
+}
+
+/// One thing the clone left behind, on the wire.
+///
+/// A code and a count rather than a sentence: the operator's client renders it,
+/// and a gear that shipped prose here would be deciding the wording for every
+/// locale (`design/12-operator-efficiency.md` §3 `inst-cl-resets`, D-268).
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct CloneNoticeView {
+    /// Which class was left behind — `no_coverage_scheduled`,
+    /// `grandfathered_rows_not_copied` or `new_subscriptions_only_rows_not_copied`.
+    pub code: String,
+    /// How many rows it covers.
+    pub rows: usize,
+}
+
+/// What the clone produced and what it declined to produce.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct CloneReceiptView {
+    /// The new plan, at revision `0` in `draft`.
+    pub plan_id: Uuid,
+    /// The plan it was cloned from — the same value the new row's `cloned_from`
+    /// column carries (D-264).
+    pub cloned_from: Uuid,
+    /// Phase rows copied, each under a new `phase_id` (D-19).
+    pub phases_copied: usize,
+    /// Price rows copied, each under a new `price_id` and a reset scope key.
+    pub prices_copied: usize,
+    /// Composite meters copied, each under a new `composite_id` (D-106).
+    pub composites_copied: usize,
+    /// **What the operator would otherwise learn from a refused publish.** The
+    /// clone's billable rows have no window coverage (`inst-cl-windows`) and both
+    /// cutover-made eligibility classes stay behind (D-268); each is reported
+    /// here, counted per class, rather than discovered later.
+    pub notices: Vec<CloneNoticeView>,
+}
+
+impl From<CloneReceipt> for CloneReceiptView {
+    fn from(receipt: CloneReceipt) -> Self {
+        Self {
+            plan_id: receipt.plan_id.get(),
+            cloned_from: receipt.cloned_from.get(),
+            phases_copied: receipt.phases_copied,
+            prices_copied: receipt.prices_copied,
+            composites_copied: receipt.composites_copied,
+            notices: receipt.notices.iter().map(notice_view).collect(),
+        }
+    }
+}
+
+/// One notice as a code and a count.
+///
+/// Matched exhaustively rather than with a catch-all, so a fourth class added to
+/// [`CloneNotice`] has to be given a wire code here instead of vanishing from the
+/// response — which is the failure mode a notice exists to prevent.
+fn notice_view(notice: &CloneNotice) -> CloneNoticeView {
+    let (code, rows) = match notice {
+        CloneNotice::NoCoverageScheduled { rows } => ("no_coverage_scheduled", *rows),
+        CloneNotice::GrandfatheredRowsNotCopied { rows } => {
+            ("grandfathered_rows_not_copied", *rows)
+        }
+        CloneNotice::NewSubscriptionsOnlyRowsNotCopied { rows } => {
+            ("new_subscriptions_only_rows_not_copied", *rows)
+        }
+    };
+    CloneNoticeView {
+        code: code.to_owned(),
+        rows,
+    }
+}
+
+/// `POST /plans/{planId}/clone`.
+///
+/// # The source is named and the target is minted
+///
+/// The path names the plan being copied; the **new** plan's id is minted here,
+/// inside the guarded body, for `create_plan`'s reason exactly: an id minted
+/// outside the claim is an id a replay would answer differently, and the whole
+/// point of storing the response body is that the second caller learns the
+/// *first* caller's plan.
+///
+/// # The gate addresses the source, and that is the only resource there is
+///
+/// `plan x write` with `resource_id = Some(source)`: the target does not exist
+/// yet, so there is nothing to authorize against it, and the authority to create
+/// a plan from this one is authority over this one. `owner_tenant_id` is the
+/// caller's tenant, so `access_scope`'s membership assertion refuses a source
+/// outside the compiled scope rather than trusting that the PDP filtered it —
+/// `create_plan`'s note, and a clone is a write.
+///
+/// # What the digest covers, and why it is not the empty body
+///
+/// The request carries no body, so the payload hash is taken over the **source
+/// plan id**. Without it every clone in a tenant would hash identically, and a
+/// client reusing a key against a different source would be answered the first
+/// clone's plan instead of `IDEMPOTENCY_PAYLOAD_MISMATCH` — a replay of an act
+/// nobody performed.
+///
+/// # No `If-Match`
+///
+/// The clone reads the source's *current* revision and writes nothing to it, so
+/// there is no version of the source to hold. Its siblings on this path take a
+/// precondition because they mutate the revision the tag names; this one does
+/// not mutate the source at all.
+async fn clone_plan(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
+    Path(plan_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
+    let tenant = ctx.subject_tenant_id();
+    let source = PlanId::new(plan_id);
+    let scope = write_scope(&enforcer, &ctx, source.get(), tenant).await?;
+
+    let client_key = preconditions::idempotency_key(&headers)?;
+    let request_hash =
+        preconditions::request_digest(&serde_json::json!({ "source_plan_id": source.get() }))?;
+    let now = Utc::now();
+    let stamp = audit_stamp(&ctx, now, correlation);
+
+    let guard = GuardedRequest {
+        operation: CLONE_PLAN_OPERATION,
+        client_key,
+        request_hash,
+        tenant_id: tenant,
+        status: StatusCode::CREATED.as_u16().into(),
+        now,
+    };
+    let scope_for_body = scope.clone();
+    let outcome = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        guard,
+        move |txn: &DbTx<'_>| -> TxFuture<'_, CloneReceipt> {
+            Box::pin(async move {
+                // The gate owns the transaction and the clone joins it — which is
+                // the whole of D-275: the eight-writer copy either commits with
+                // the idempotency claim or leaves nothing, and there is no form of
+                // the cloner that could open a second transaction here.
+                Box::pin(clone_plan_on(
+                    txn,
+                    &scope_for_body,
+                    tenant,
+                    source,
+                    PlanId::new(Uuid::now_v7()),
+                    now,
+                    stamp,
+                ))
+                .await
+            })
+        },
+        // The receipt IS the recorded body, so a replay answers the first
+        // caller's plan id and its notices verbatim — which is the only way the
+        // second caller learns that the class it is missing was left behind on
+        // purpose rather than lost by the retry.
+        |receipt: &CloneReceipt| {
+            serde_json::to_value(CloneReceiptView::from(receipt.clone()))
+                .map_err(|e| DomainError::Internal(format!("cannot render the clone receipt: {e}")))
+        },
+    )
+    .await
+    .map_err(CanonicalError::from)?;
+
+    Ok(match outcome {
+        Guarded::Performed(receipt) => cloned(receipt),
+        Guarded::Replayed { status, body } => replayed(status, &body),
+    })
+}
+
+/// `201` with the new plan's location and the receipt.
+///
+/// No `ETag`: the clone answers a *receipt*, not a revision, and a tag on a body
+/// that is not the resource is a precondition token pointing at nothing. A caller
+/// that wants the draft's tag reads it from `Location`, which is the read that
+/// would have to happen anyway before an edit.
+fn cloned(receipt: CloneReceipt) -> Response {
+    let view = CloneReceiptView::from(receipt);
+    let location = format!("{PLANS}/{}", view.plan_id);
+    (StatusCode::CREATED, [(LOCATION, location)], Json(view)).into_response()
 }
 
 /// The recorded answer a replay is handed back, verbatim.
