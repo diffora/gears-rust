@@ -88,7 +88,6 @@
 
 use chrono::{DateTime, Utc};
 use toolkit_db::secure::{AccessScope, DBRunner};
-use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::domain::audit::AuditStamp;
@@ -151,78 +150,7 @@ pub struct CloneReceipt {
     pub notices: Vec<CloneNotice>,
 }
 
-/// Clones a plan's current revision into a new draft plan.
-#[derive(Clone)]
-pub struct PlanCloner {
-    db: DBProvider<DbError>,
-}
-
-impl PlanCloner {
-    /// The database and nothing else.
-    ///
-    /// It used to hold four repositories, and holding them was the reason the
-    /// clone was not atomic: a repository's method opens its own transaction, so
-    /// a caller composed of methods is composed of separate transactions (D-272).
-    /// The runner-taking forms of D-274 are free functions, so the composition
-    /// needs the connection the transaction is opened on and nothing that would
-    /// open another.
-    #[must_use]
-    pub const fn new(db: DBProvider<DbError>) -> Self {
-        Self { db }
-    }
-
-    /// Copy `source`'s **current** revision into `target` as a fresh draft.
-    ///
-    /// The target id is the caller's, for `NewPlanDraft`'s stated reason: an
-    /// authoring surface has to be able to name what it created before the row is
-    /// durable, and a store that minted the id would make an idempotent retry
-    /// create a second plan. The *child* ids — phases, prices, composites — are
-    /// minted here, because no caller can name objects it has not seen.
-    ///
-    /// # Errors
-    /// [`DomainError::NotFound`] when `source` has no current revision — §5's
-    /// `CLONE_SOURCE_NOT_FOUND`, which is **not** a declared code in this crate,
-    /// so it renders through the canonical not-found family with the source named
-    /// in the sentence. The same posture `RepoError::NotSupersedable` took
-    /// (D-146): a gear may mint its own error variants, but a **wire code** is
-    /// the design set's to declare, and minting one ahead of the route that
-    /// returns it is how a code ends up in two spellings.
-    ///
-    /// Otherwise whatever the repositories refuse with.
-    pub async fn clone_plan(
-        &self,
-        scope: &AccessScope,
-        tenant_id: Uuid,
-        source: PlanId,
-        target: PlanId,
-        now: DateTime<Utc>,
-        stamp: AuditStamp,
-    ) -> Result<CloneReceipt, DomainError> {
-        let scope = scope.clone();
-        let (_, outcome) = self
-            .db
-            .db()
-            .in_transaction::<CloneReceipt, DomainError, _>(move |txn| {
-                // **Boxed because the composition is now one future.** Every step
-                // the clone used to take through a separate transaction is a
-                // state in this one, and clippy measured the result at 17 KB —
-                // enough to matter on a task's stack. One heap allocation per
-                // clone, against an act that already makes a dozen round trips.
-                Box::pin(async move {
-                    Box::pin(clone_plan_on(
-                        txn, &scope, tenant_id, source, target, now, stamp,
-                    ))
-                    .await
-                })
-            })
-            .await;
-        outcome.map_err(|err| {
-            err.into_domain(|infra| DomainError::Internal(format!("bss-pricing: clone: {infra}")))
-        })
-    }
-}
-
-/// What [`PlanCloner::copy_rows`] did with the source's published price rows.
+/// What [`copy_rows_on`] did with the source's published price rows.
 ///
 /// Three counts rather than a tuple, because two of the three are exclusions and
 /// a caller reading `(usize, usize, usize)` positionally is one transposition
@@ -240,7 +168,7 @@ impl CopiedRows {
     /// What the operator is told: one notice per class that had rows, and none
     /// for a class that had none.
     ///
-    /// Here rather than inline in [`PlanCloner::clone_plan`] because the third
+    /// Here rather than inline in [`clone_plan_on`] because the third
     /// arm took that method to a cognitive complexity of 21 against a cap of 20
     /// — and because "what the receipt says" is a different question from "what
     /// the copy did", which is the whole reason the receipt carries notices.
@@ -263,23 +191,45 @@ impl CopiedRows {
     }
 }
 
-/// [`PlanCloner::clone_plan`]'s whole act, on a runner the caller owns.
+/// Copy `source`'s **current** revision into `target` as a fresh draft, on a
+/// transaction the caller owns.
 ///
-/// **This is where the clone became one thing.** Until D-274 the steps were
-/// repository *methods*, each opening its own transaction, so a failure at the
-/// composition copy left a committed draft plan carrying committed phases, rules
-/// and prices and no way for the caller to tell — the receipt never arrived, but
-/// the rows did. Every write below is now a runner-taking form on the caller's
-/// single transaction, and the reads are on it too, so what the copy reads is
-/// what the copy is protected against changing.
+/// **This is the whole clone, and it is the only door.** Until D-275 the steps
+/// were repository *methods*, each opening its own transaction, so a failure at
+/// the composition copy left a committed draft plan carrying committed phases,
+/// rules and composites — not prices, which are copied last and so were the one
+/// child class such a failure could not have reached. Every write below is now a
+/// runner-taking form on the caller's single transaction, and the reads are on it
+/// too, so what the copy reads is what the copy is protected against changing.
+/// D-274 built the runner-taking forms this composes; it did not itself make the
+/// clone atomic, and said so.
 ///
-/// Runner-taking rather than transaction-opening for the reason the route needs:
-/// `idempotent::guarded` runs its mutation inside a transaction it opens itself,
-/// and a cloner that could only open its own would meet that one head-on.
+/// # `runner` must be a transaction, and there is deliberately no wrapper that
+/// opens one
+///
+/// There was, and it was a trap. A method holding a `DBProvider` and opening its
+/// own transaction is *silently nested* when called from inside another one:
+/// `Db::in_transaction` does not consult the task-local `IN_TX`, so the inner
+/// transaction commits on its own and the outer rollback cannot reach it. What
+/// used to make that safe was an accident — the old entry point's first statement
+/// was `DBProvider::conn()`, which **is** guarded and answers
+/// `ConnRequestedInsideTx` — and the composition removed the accident along with
+/// the connection. So the wrapper went too, rather than being kept behind a
+/// warning nobody reads at the call site.
+///
+/// The target id is the caller's, for `NewPlanDraft`'s stated reason: an
+/// authoring surface has to be able to name what it created before the row is
+/// durable, and a store that minted the id would make an idempotent retry create
+/// a second plan. The *child* ids — phases, prices, composites — are minted here,
+/// because no caller can name objects it has not seen.
 ///
 /// # Errors
-/// [`DomainError::NotFound`] when `source` has no current revision; otherwise
-/// whatever the repository forms refuse with.
+/// [`DomainError::NotFound`] when `source` has no current revision — §5's
+/// `CLONE_SOURCE_NOT_FOUND`, which is **not** a declared code in this crate, so it
+/// renders through the canonical not-found family with the source named in the
+/// sentence. The same posture `RepoError::NotSupersedable` took (D-146): a gear
+/// may mint its own error variants, but a **wire code** is the design set's to
+/// declare. Otherwise whatever the repository forms refuse with.
 pub async fn clone_plan_on(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -491,8 +441,11 @@ pub async fn clone_plan_on(
 ///
 /// Returns the clone revision's row version — **unchanged** when the source is
 /// not a bundle, which is the ordinary answer: the overwhelming majority of plans
-/// are not bundles, and `BundleRepo` takes the same posture in every one of its
-/// own entry points.
+/// are not bundles, and `BundleRepo`'s three reads take the same posture,
+/// answering `None` or an empty composition rather than refusing. Its *writer*
+/// does not — `replace_composition_on` answers `NotFound` for a plan carrying no
+/// bundle — which is why the absence is decided here, by the read, before any
+/// write is attempted.
 ///
 /// The `bundle_id` is **new**. `pricing_bundle.plan_id` is unique per plan, so the
 /// identity cannot be shared; and it is the bundle's own identity rather than a
@@ -505,9 +458,15 @@ pub async fn clone_plan_on(
 /// as a pair with the revision each is read at.
 ///
 /// # Errors
-/// Whatever the bundle repository refuses with — including
-/// [`crate::infra::storage::RepoError::StaleRowVersion`] when a concurrent writer
-/// moved the clone's own draft between this call and the shape write before it.
+/// Whatever the bundle repository refuses with.
+///
+/// It used to say "including `StaleRowVersion` when a concurrent writer moved the
+/// clone's own draft" — which the composition made unreachable and the sentence
+/// outlived. The clone's draft is inserted inside this same uncommitted
+/// transaction, so no other session can see the row, let alone bump its version.
+/// The compare-and-swap still runs, and still has to: it is the one guard that
+/// would answer if `runner` were ever a bare connection rather than a
+/// transaction, which is the misuse [`clone_plan_on`] documents.
 async fn copy_bundle_on(
     runner: &impl DBRunner,
     scope: &AccessScope,

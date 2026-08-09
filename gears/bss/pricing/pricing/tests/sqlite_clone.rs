@@ -45,13 +45,13 @@ use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::PlanShapePatch;
-use bss_pricing::domain::plan_shape::{PhaseKind, PlanPhase};
+use bss_pricing::domain::plan_shape::{AddonRule, PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::clone::{CloneNotice, PlanCloner, clone_plan_on};
+use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, NewPriceDraft,
@@ -76,6 +76,7 @@ const SOURCE_BUNDLE: Uuid = Uuid::from_u128(0xb_11d);
 const COMPONENT_A: Uuid = Uuid::from_u128(0xc0_a1);
 const COMPONENT_B: Uuid = Uuid::from_u128(0xc0_b1);
 const VENDOR_SKU: Uuid = Uuid::from_u128(0x5e_11);
+const ADDON_SKU: Uuid = Uuid::from_u128(0xad_11);
 
 fn source_plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x50_c1))
@@ -106,7 +107,6 @@ struct Harness {
     plans: PlanRepo,
     shapes: PlanShapeRepo,
     prices: PriceRepo,
-    cloner: PlanCloner,
     scope: AccessScope,
 }
 
@@ -121,16 +121,46 @@ async fn harness() -> Harness {
     let plans = PlanRepo::new(provider.clone());
     let shapes = PlanShapeRepo::new(provider.clone());
     let prices = PriceRepo::new(provider.clone());
-    let cloner = PlanCloner::new(provider.clone());
     Harness {
         provider: provider.clone(),
         bundles: BundleRepo::new(provider),
         plans,
         shapes,
         prices,
-        cloner,
         scope: AccessScope::for_tenant(TENANT),
     }
+}
+
+/// The clone, on a transaction this test owns — the only way in (D-275).
+///
+/// There is no wrapper that opens its own transaction, deliberately: one existed,
+/// and a method holding a `DBProvider` is silently nested when called from inside
+/// another transaction, because `Db::in_transaction` does not consult the
+/// task-local `IN_TX`. So every case here composes the clone the way the route
+/// does, which also means a case cannot pass over a path production never takes.
+async fn clone_it(h: &Harness) -> Result<CloneReceipt, DomainError> {
+    let scope = h.scope.clone();
+    let (_, outcome) = h
+        .provider
+        .db()
+        .in_transaction::<CloneReceipt, DomainError, _>(move |txn| {
+            Box::pin(async move {
+                Box::pin(clone_plan_on(
+                    txn,
+                    &scope,
+                    TENANT,
+                    source_plan(),
+                    target_plan(),
+                    at(11),
+                    stamp(),
+                ))
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| {
+        err.into_domain(|infra| DomainError::Internal(format!("bss-pricing: clone: {infra}")))
+    })
 }
 
 fn key_on(plan: PlanId, phase: PhaseId, eligibility: PriceEligibility, cohort: Cohort) -> ScopeKey {
@@ -227,6 +257,69 @@ async fn seed_bundle_source(h: &Harness) {
     seed(h, Some(source_composition())).await;
 }
 
+/// The source's published price rows: two copied, one excluded.
+///
+/// Its own function because [`seed`] outgrew the line cap when the add-on rule
+/// joined it, and this is the seam that leaves both halves readable — the shape
+/// above authors *one* revision through a version chain, and this authors rows
+/// that hang off it and are published individually.
+async fn seed_published_rows(h: &Harness) {
+    for (id, phase, eligibility) in [
+        (
+            Uuid::from_u128(0xb_0001),
+            trial_phase(),
+            PriceEligibility::AllSubscriptions,
+        ),
+        (
+            Uuid::from_u128(0xb_0002),
+            terminal_phase(),
+            PriceEligibility::AllSubscriptions,
+        ),
+        // **The row D-268 leaves behind**, and it sits in its own market so that
+        // the exclusion is observable as an *absence* rather than only as a
+        // count: nothing else in the seed occupies `us`, so a clone holding a
+        // `us` row copied a class it was told not to.
+        //
+        // It was seeded by D-265 to give the eligibility reset an operand. D-268
+        // took that operand away — this class is now excluded, and no row that
+        // reaches the reset can carry anything but `all_subscriptions`. The
+        // collapse D-265 measured, both classes on one market, is
+        // `both_eligibility_classes_on_one_market_survive_the_clone`'s.
+        (
+            Uuid::from_u128(0xb_0004),
+            trial_phase(),
+            PriceEligibility::NewSubscriptionsOnly,
+        ),
+    ] {
+        h.prices
+            .create_draft(
+                &h.scope,
+                TENANT,
+                NewPriceDraft {
+                    price_id: id,
+                    scope_key: key_in(
+                        source_plan(),
+                        phase,
+                        eligibility,
+                        Cohort::None,
+                        if eligibility == PriceEligibility::NewSubscriptionsOnly {
+                            "us"
+                        } else {
+                            "eu"
+                        },
+                    ),
+                    content: flat_row(),
+                    created_by: ACTOR,
+                    created_at_utc: at(10),
+                    correlation_id: CORRELATION,
+                },
+            )
+            .await
+            .expect("author a source row");
+        common::publish_row_directly(&h.provider, &h.scope, id).await;
+    }
+}
+
 async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
     let created = h
         .plans
@@ -285,6 +378,34 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
         .await
         .expect("attach the chain");
 
+    // **The one child class no clone case reached** until the 2026-08-09 review
+    // pointed it out: `replace_addon_rules` had no operand here, so the writer
+    // whose faithfulness D-274 called measured was measured by nothing. Every
+    // field is off its default, so a copier writing a fresh `AddonRule` would
+    // differ on all of them.
+    let after_rules = h
+        .shapes
+        .replace_addon_rules(
+            &h.scope,
+            TENANT,
+            source_plan(),
+            created.revision,
+            after_phases.row_version,
+            vec![AddonRule {
+                addon_sku_id: ADDON_SKU,
+                required: true,
+                min_qty: Some(1),
+                max_qty: Some(3),
+                step_qty: Some(1),
+                price_override_ref: None,
+                depends_on: Vec::new(),
+                conflicts_with: Vec::new(),
+            }],
+            stamp(),
+        )
+        .await
+        .expect("attach the add-on rule");
+
     let after_descriptors = h
         .shapes
         .set_descriptor_set(
@@ -292,7 +413,7 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
             TENANT,
             source_plan(),
             created.revision,
-            after_phases.row_version,
+            after_rules.row_version,
             bss_pricing::domain::plan_shape::DescriptorSet {
                 invoice_line_template: Some("{plan}".to_owned()),
                 gl_code: Some("4000".to_owned()),
@@ -390,60 +511,7 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
             .expect("author the source composition");
     }
 
-    for (id, phase, eligibility) in [
-        (
-            Uuid::from_u128(0xb_0001),
-            trial_phase(),
-            PriceEligibility::AllSubscriptions,
-        ),
-        (
-            Uuid::from_u128(0xb_0002),
-            terminal_phase(),
-            PriceEligibility::AllSubscriptions,
-        ),
-        // **The row D-268 leaves behind**, and it sits in its own market so that
-        // the exclusion is observable as an *absence* rather than only as a
-        // count: nothing else in the seed occupies `us`, so a clone holding a
-        // `us` row copied a class it was told not to.
-        //
-        // It was seeded by D-265 to give the eligibility reset an operand. D-268
-        // took that operand away — this class is now excluded, and no row that
-        // reaches the reset can carry anything but `all_subscriptions`. The
-        // collapse D-265 measured, both classes on one market, is
-        // `both_eligibility_classes_on_one_market_survive_the_clone`'s.
-        (
-            Uuid::from_u128(0xb_0004),
-            trial_phase(),
-            PriceEligibility::NewSubscriptionsOnly,
-        ),
-    ] {
-        h.prices
-            .create_draft(
-                &h.scope,
-                TENANT,
-                NewPriceDraft {
-                    price_id: id,
-                    scope_key: key_in(
-                        source_plan(),
-                        phase,
-                        eligibility,
-                        Cohort::None,
-                        if eligibility == PriceEligibility::NewSubscriptionsOnly {
-                            "us"
-                        } else {
-                            "eu"
-                        },
-                    ),
-                    content: flat_row(),
-                    created_by: ACTOR,
-                    created_at_utc: at(10),
-                    correlation_id: CORRELATION,
-                },
-            )
-            .await
-            .expect("author a source row");
-        common::publish_row_directly(&h.provider, &h.scope, id).await;
-    }
+    seed_published_rows(h).await;
     common::publish_plan_directly(&h.provider, &h.scope, source_plan(), created.revision).await;
 }
 
@@ -458,18 +526,7 @@ async fn every_phase_reference_is_remapped_including_the_grant_map() {
     let h = harness().await;
     seed_source(&h).await;
 
-    let receipt = h
-        .cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
-        .await
-        .expect("the clone runs");
+    let receipt = clone_it(&h).await.expect("the clone runs");
     assert_eq!(receipt.phases_copied, 2);
     assert_eq!(
         receipt.prices_copied, 2,
@@ -550,17 +607,7 @@ async fn every_phase_reference_is_remapped_including_the_grant_map() {
 async fn the_clone_is_a_draft_that_names_its_source() {
     let h = harness().await;
     seed_source(&h).await;
-    h.cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
-        .await
-        .expect("the clone runs");
+    clone_it(&h).await.expect("the clone runs");
 
     let conn = h.provider.conn().expect("conn");
     let revision = plan_repo::load_open_draft(&conn, &h.scope, TENANT, target_plan())
@@ -616,18 +663,7 @@ async fn both_cutover_classes_stay_behind_and_the_receipt_names_each() {
         .expect("author the grandfathered row");
     common::publish_row_directly(&h.provider, &h.scope, grandfathered).await;
 
-    let receipt = h
-        .cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
-        .await
-        .expect("the clone runs");
+    let receipt = clone_it(&h).await.expect("the clone runs");
 
     assert_eq!(
         receipt.prices_copied, 2,
@@ -767,17 +803,7 @@ async fn a_superseding_row_loses_its_predecessor_link() {
          nothing about clearing one"
     );
 
-    h.cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
-        .await
-        .expect("the clone runs");
+    clone_it(&h).await.expect("the clone runs");
 
     let rows = price_repo::load_for_plan(
         &conn,
@@ -837,16 +863,7 @@ async fn both_eligibility_classes_on_one_market_survive_the_clone() {
         .expect("author the cutover's going-forward row beside the row it closed");
     common::publish_row_directly(&h.provider, &h.scope, colliding).await;
 
-    let receipt = h
-        .cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
+    let receipt = clone_it(&h)
         .await
         .expect("the clone runs rather than colliding with itself");
     assert_eq!(receipt.prices_copied, 2);
@@ -872,18 +889,7 @@ async fn no_window_is_cloned_and_the_receipt_says_so() {
     common::schedule_coverage_window(&conn, &h.scope, TENANT, Uuid::from_u128(0xb_0001), stamp())
         .await;
 
-    let receipt = h
-        .cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
-        .await
-        .expect("the clone runs");
+    let receipt = clone_it(&h).await.expect("the clone runs");
     assert!(
         receipt
             .notices
@@ -907,21 +913,22 @@ async fn no_window_is_cloned_and_the_receipt_says_so() {
     );
 }
 
-/// A plan with no current revision is not clonable, and the refusal names it.
 /// **A clone that fails partway leaves nothing behind.**
 ///
-/// The property D-274 exists for, and one no test could state while the steps
+/// The property D-275 exists for, and one no test could state while the steps
 /// were repository *methods*: each opened its own transaction, so a plan draft
-/// carrying phases, rules, composites and prices committed step by step, and a
-/// caller that failed afterwards had no way to take any of it back.
+/// carrying phases, rules and composites committed step by step, and a caller
+/// that failed afterwards had no way to take any of it back. (D-274 built the
+/// runner-taking forms this composes; it did not make the clone atomic.)
 ///
 /// The failure is the **caller's**, deliberately, because every failure the
-/// clone could raise from its own data is unreachable: the three axes the reset
-/// changes — eligibility, cohort and overlay — are each operand-free by the time
-/// a row gets here (D-266, D-268), so there is no source a valid author can
-/// write that makes the copy refuse halfway. This is also the route's own shape:
-/// `idempotent::guarded` owns the transaction, and what fails after the clone is
-/// the guard's own bookkeeping.
+/// clone could raise from its own data is unreachable. Of the four scope-key axes
+/// the reset changes — plan, phase, eligibility, cohort — the two that could
+/// collapse two source rows onto one target key are operand-free by the time a
+/// row gets here (D-266, D-268), and the phase remap is injective. So there is no
+/// source a valid author can write that makes the copy refuse halfway. This is
+/// also the route's own shape: `idempotent::guarded` owns the transaction, and
+/// what fails after the clone is the guard's own bookkeeping.
 #[tokio::test]
 async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
     let h = harness().await;
@@ -988,19 +995,11 @@ async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
     );
 }
 
+/// A plan with no current revision is not clonable, and the refusal names it.
 #[tokio::test]
 async fn a_plan_with_nothing_published_cannot_be_cloned() {
     let h = harness().await;
-    let err = h
-        .cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
+    let err = clone_it(&h)
         .await
         .expect_err("a plan that has never published has no current revision");
     let rendered = format!("{err:?}");
@@ -1028,18 +1027,7 @@ async fn a_plan_with_nothing_published_cannot_be_cloned() {
 async fn the_whole_copy_set_comes_across_contract_descriptors_and_composites() {
     let h = harness().await;
     seed_source(&h).await;
-    let receipt = h
-        .cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
-        .await
-        .expect("the clone runs");
+    let receipt = clone_it(&h).await.expect("the clone runs");
     assert_eq!(receipt.composites_copied, 1);
 
     let conn = h.provider.conn().expect("conn");
@@ -1072,6 +1060,22 @@ async fn the_whole_copy_set_comes_across_contract_descriptors_and_composites() {
 
     // The composite, under a **new** id: `composite_id` is stable across
     // revisions of one plan (D-106), not across plans.
+    // The add-on rule travels whole and is **not** remapped: `AddonRule` carries
+    // no phase, so the rule set is a copy rather than a remap — asserted rather
+    // than assumed, which is the module doc's own standard for that claim.
+    let rules = plan_shape_repo::load_addon_rule_set(&conn, &h.scope, TENANT, target_plan(), 0)
+        .await
+        .expect("read the clone's add-on rules");
+    assert_eq!(rules.len(), 1, "the source's one rule came across");
+    assert_eq!(
+        rules[0].addon_sku_id, ADDON_SKU,
+        "naming the same add-on SKU: it is another SKU, not one of the clone's own children"
+    );
+    assert!(rules[0].required);
+    assert_eq!(rules[0].min_qty, Some(1));
+    assert_eq!(rules[0].max_qty, Some(3));
+    assert_eq!(rules[0].step_qty, Some(1));
+
     let composites = plan_shape_repo::load_composite_set(&conn, &h.scope, TENANT, target_plan(), 0)
         .await
         .expect("read the composites");
@@ -1101,17 +1105,7 @@ async fn a_bundle_clone_is_a_bundle_under_its_own_identity() {
     let h = harness().await;
     seed_bundle_source(&h).await;
 
-    h.cloner
-        .clone_plan(
-            &h.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
-        .await
-        .expect("the clone runs");
+    clone_it(&h).await.expect("the clone runs");
 
     let bundle = h
         .bundles
@@ -1162,17 +1156,7 @@ async fn a_bundle_clone_is_a_bundle_under_its_own_identity() {
     // are about the source being a bundle rather than about a constant.
     let h2 = harness().await;
     seed_source(&h2).await;
-    h2.cloner
-        .clone_plan(
-            &h2.scope,
-            TENANT,
-            source_plan(),
-            target_plan(),
-            at(11),
-            stamp(),
-        )
-        .await
-        .expect("the clone runs");
+    clone_it(&h2).await.expect("the clone runs");
     assert!(
         h2.bundles
             .find_by_plan(&h2.scope, TENANT, target_plan())

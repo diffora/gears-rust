@@ -714,6 +714,12 @@ pub async fn create_on(
 
 /// [`BundleRepo::replace_composition`]'s body on a runner the caller owns.
 ///
+/// **The runner must be a transaction.** This writes the child rows *and*
+/// the revision's D-135 audit record, so on a bare connection they would be
+/// separate autocommit statements and a failure part way would leave a
+/// committed edit nobody recorded making — the property `create_draft_on`
+/// states as the house rule. Every current caller supplies one.
+///
 /// The method opens its own transaction; this form joins one already open, which
 /// is what a caller composing several writers into a single atomic act needs
 /// (D-272, D-274). The two are the same statements in the same order — the method

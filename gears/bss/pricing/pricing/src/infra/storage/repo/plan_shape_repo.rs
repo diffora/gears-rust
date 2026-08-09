@@ -1530,6 +1530,12 @@ fn stored_revision(revision: u64) -> Option<i64> {
 
 /// [`PlanShapeRepo::replace_phases`]'s body, on a runner the caller owns.
 ///
+/// **The runner must be a transaction.** This writes the child rows *and*
+/// the revision's D-135 audit record, so on a bare connection they would be
+/// separate autocommit statements and a failure part way would leave a
+/// committed edit nobody recorded making — the property `create_draft_on`
+/// states as the house rule. Every current caller supplies one.
+///
 /// # Errors
 /// Whatever the method's own documentation states — this is that method,
 /// minus the transaction it opens for itself.
@@ -1584,6 +1590,12 @@ pub async fn replace_phases_on(
 }
 
 /// [`PlanShapeRepo::replace_addon_rules`]'s body, on a runner the caller owns.
+///
+/// **The runner must be a transaction.** This writes the child rows *and*
+/// the revision's D-135 audit record, so on a bare connection they would be
+/// separate autocommit statements and a failure part way would leave a
+/// committed edit nobody recorded making — the property `create_draft_on`
+/// states as the house rule. Every current caller supplies one.
 ///
 /// # Errors
 /// Whatever the method's own documentation states — this is that method,
@@ -1640,6 +1652,12 @@ pub async fn replace_addon_rules_on(
 
 /// [`PlanShapeRepo::set_descriptor_set`]'s body, on a runner the caller owns.
 ///
+/// **The runner must be a transaction.** This writes the child rows *and*
+/// the revision's D-135 audit record, so on a bare connection they would be
+/// separate autocommit statements and a failure part way would leave a
+/// committed edit nobody recorded making — the property `create_draft_on`
+/// states as the house rule. Every current caller supplies one.
+///
 /// # Errors
 /// Whatever the method's own documentation states — this is that method,
 /// minus the transaction it opens for itself.
@@ -1694,6 +1712,12 @@ pub async fn set_descriptor_set_on(
 }
 
 /// [`PlanShapeRepo::replace_composites`]'s body, on a runner the caller owns.
+///
+/// **The runner must be a transaction.** This writes the child rows *and*
+/// the revision's D-135 audit record, so on a bare connection they would be
+/// separate autocommit statements and a failure part way would leave a
+/// committed edit nobody recorded making — the property `create_draft_on`
+/// states as the house rule. Every current caller supplies one.
 ///
 /// # Errors
 /// Whatever the method's own documentation states — this is that method,

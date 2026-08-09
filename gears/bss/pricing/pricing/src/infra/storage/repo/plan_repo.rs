@@ -2166,10 +2166,21 @@ pub async fn retire_revision(
 
 /// [`PlanRepo::update_draft`]'s body, on a runner the caller owns.
 ///
-/// The pre-transaction refusals come first here as they do there: a value
-/// the store cannot hold is refused whether or not the caller also holds a
-/// current row version, and refusing it before the swap leaves the row's tag
-/// where it was.
+/// **The runner must be a transaction**, for [`create_draft_on`]'s reason: this
+/// writes the revision's columns *and* its D-135 audit record, so on a bare
+/// connection an append failure would leave a committed edit nobody recorded
+/// making. Both current callers supply one.
+///
+/// The value refusals come first here, as they did in the method — but they are
+/// no longer *ahead of the transaction*, and that is a real change D-274 did not
+/// name. The method is now a delegation, so a patch refused on its value alone
+/// costs a `BEGIN` and a `ROLLBACK` where it used to cost neither. Error identity
+/// is preserved (`tx_failure` unwraps `TxError::Domain` untouched), and the
+/// alternative — keeping the checks in the method and duplicating them for the
+/// transaction-owning caller — is the two-implementations shape this whole
+/// extraction exists to remove. `PriceRepo::create_draft` makes the opposite
+/// trade with `prepare_draft` and says so; the difference is that its check is
+/// a whole rendering pass, and these three are comparisons.
 ///
 /// # Errors
 /// Whatever [`PlanRepo::update_draft`] documents — this is that method, minus
@@ -2188,10 +2199,11 @@ pub async fn update_draft_on(
     patch: PlanShapePatch,
     stamp: AuditStamp,
 ) -> Result<PlanRevision, RepoError> {
-    // Ahead of the compare-and-swap and ahead of the transaction: a value the
-    // store cannot hold is refused whether or not the caller also holds a
-    // current row version, and refusing it here leaves the row's tag where it
-    // was.
+    // Ahead of the compare-and-swap: a value the store cannot hold is refused
+    // whether or not the caller also holds a current row version, and refusing
+    // it here leaves the row's tag where it was. It used to say "and ahead of
+    // the transaction" as well, which stopped being true when the method became
+    // a delegation — see this function's doc.
     check_authored_instant("availableFrom", patch.available_from)?;
     check_authored_instant("availableTo", patch.available_to)?;
     let columns = patched_columns(patch)?;
@@ -2203,10 +2215,12 @@ pub async fn update_draft_on(
         return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
     };
 
-    // **A transaction, where this used to be a bare statement.** D-135 puts
-    // the audit record inside the mutation's own transaction, so a rolled-back
-    // edit leaves no record of having happened - which is the property a
-    // post-hoc writer passes by accident and fails under contention.
+    // **The caller's transaction, where this used to be a bare statement.**
+    // D-135 puts the audit record inside the mutation's own transaction, so a
+    // rolled-back edit leaves no record of having happened - which is the
+    // property a post-hoc writer passes by accident and fails under contention.
+    // This function opens none of its own; it is the doc's requirement that the
+    // runner be one, and every caller that holds this to it.
     let mut update = plan::Entity::update_many().secure().scope_with(scope);
     for (column, value) in columns {
         update = update.col_expr(column, value);
