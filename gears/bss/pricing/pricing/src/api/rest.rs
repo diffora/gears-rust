@@ -12,6 +12,7 @@ pub mod cursor;
 pub mod cutovers;
 pub mod error;
 pub mod frontier;
+pub mod history;
 pub mod migrated_origin_snapshots;
 pub mod migrations;
 pub mod overlays;

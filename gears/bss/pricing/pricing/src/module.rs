@@ -39,6 +39,7 @@ use toolkit_db::{DBProvider, DbError};
 use tracing::info;
 
 use crate::api::rest::frontier::ApiState as CatalogVersionApiState;
+use crate::api::rest::history::ApiState as HistoryApiState;
 use crate::api::rest::state::{AuthoringState, GovernanceState};
 use crate::config::BssPricingConfig;
 use crate::domain::ports::{CatalogVersionRegistryV1, UnconfiguredCatalogVersionRegistryV1};
@@ -112,6 +113,11 @@ pub(crate) struct PricingRuntime {
     /// Per-request state for the catalog-version REST surface, built here so
     /// `register_rest` composes routers and does no wiring of its own.
     pub catalog_version_api: Arc<CatalogVersionApiState>,
+    /// Slice 12's price-history read (D-270). Its own state rather than a field
+    /// on the authoring one, for `frontier`'s reason: it is a read, it carries no
+    /// correlation edge and it opens no transaction, so sharing a state with the
+    /// mutating surfaces would give it reach it has no use for.
+    pub history_api: Arc<HistoryApiState>,
     /// Per-request state for the plan and price authoring surfaces, built here
     /// for the same reason: one place wires, one place composes.
     pub authoring_api: Arc<AuthoringState>,
@@ -652,6 +658,10 @@ impl Gear for BssPricingGear {
         // The catalog-version REST surface's state. The repository is cheap to
         // clone (it holds the provider), so the runtime keeps `db` for the
         // background work and the API layer gets its own handle.
+        let history_api = Arc::new(HistoryApiState {
+            history: crate::infra::history::HistoryExporter::new(db.clone()),
+        });
+
         let catalog_version_api = Arc::new(CatalogVersionApiState {
             pin_frontier: PinFrontierRepo::new(db.clone()),
         });
@@ -780,6 +790,7 @@ impl Gear for BssPricingGear {
             enforcer,
             catalog_version_registry,
             catalog_version_api,
+            history_api,
             authoring_api,
             governance_api,
             metrics,
@@ -882,6 +893,13 @@ impl RestApiCapability for BssPricingGear {
         Ok(router
             .merge(crate::api::rest::frontier::router(
                 Arc::clone(&rt.catalog_version_api),
+                openapi,
+            ))
+            // Slice 12's first reachable surface. A read, so it is merged like
+            // the frontier rather than like the authoring routers: no
+            // correlation edge, nothing behind it writing an audit record.
+            .merge(crate::api::rest::history::router(
+                Arc::clone(&rt.history_api),
                 openapi,
             ))
             .merge(crate::api::rest::plans::router(

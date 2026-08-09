@@ -35,6 +35,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, Response};
 use bss_fixtures::ModelKind;
 use bss_pricing::api::rest::frontier::ApiState as FrontierState;
+use bss_pricing::api::rest::history::ApiState as HistoryState;
 use bss_pricing::api::rest::state::{AuthoringState, GovernanceState};
 use bss_pricing::config::LimitsConfig;
 use bss_pricing::domain::concurrency::RowVersion;
@@ -350,6 +351,9 @@ pub struct Harness {
     /// would be a census with a hole in exactly the place a census exists to
     /// close.
     pub frontier: Arc<FrontierState>,
+    /// The state the read-only history route is built over, here for the
+    /// frontier's reason: the router this file builds is the whole gear.
+    pub history: Arc<HistoryState>,
     /// The one registry both services hold, kept concretely so a suite can script a
     /// commit on it. See [`RegistryDouble::commit`].
     pub registry: Arc<RegistryDouble>,
@@ -451,6 +455,9 @@ impl Harness {
         let frontier = Arc::new(FrontierState {
             pin_frontier: PinFrontierRepo::new(db.clone()),
         });
+        let history = Arc::new(HistoryState {
+            history: bss_pricing::infra::history::HistoryExporter::new(db.clone()),
+        });
         let tenant = Uuid::now_v7();
         // **The tenant declares the regions its fixtures sell in.**
         // `inst-tx-region` is registered in the Foundation rule set and C2 is
@@ -471,6 +478,7 @@ impl Harness {
             governance,
             metrics: metrics_harness,
             frontier,
+            history,
             registry,
         }
     }
@@ -525,6 +533,13 @@ impl Harness {
     ) -> Client {
         let openapi = OpenApiRegistryImpl::new();
         let router = bss_pricing::api::rest::frontier::router(Arc::clone(&self.frontier), &openapi)
+            // Slice 12's history read. Merged here rather than only in the two
+            // censuses, because this is the router the gate properties drive:
+            // one absent from it is one no authz property is asked about.
+            .merge(bss_pricing::api::rest::history::router(
+                Arc::clone(&self.history),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::plans::router(
                 Arc::clone(&self.state),
                 &openapi,

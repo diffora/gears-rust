@@ -37,6 +37,7 @@ use bss_pricing::api::rest::approvals::{
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
+use bss_pricing::api::rest::history::HISTORY;
 use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
 use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
@@ -91,11 +92,29 @@ struct Route {
     mutating: bool,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "a flat catalogue whose length IS its content: one row per route, each naming the \
+              (resource, action) pair that route must ask for. Splitting it would have to split \
+              on something other than its own meaning -- reads from writes, or slice from slice \
+              -- and then a reader checking whether a route is catalogued has two places to \
+              look and a census has two ways to be incomplete. It crossed the limit when Slice \
+              12's history read was catalogued."
+)]
 fn census() -> Vec<Route> {
     let mut rows = vec![
         Route {
             method: "GET",
             path: FRONTIER,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
+        // D-12: history is plan and price data, Finance-readable by
+        // construction, and the Auditor-only audit trail is a separate surface.
+        Route {
+            method: "GET",
+            path: HISTORY,
             resource_type: labels::PLAN,
             action: actions::READ,
             mutating: false,
@@ -885,6 +904,13 @@ async fn registered_paths() -> Vec<String> {
     let openapi = OpenApiRegistryImpl::new();
     drop(
         bss_pricing::api::rest::frontier::router(Arc::clone(&harness.frontier), &openapi)
+            // Slice 12's history read, in this census for the frontier's reason:
+            // the census is about paths, and a router absent from it is a router
+            // whose path nothing here checks.
+            .merge(bss_pricing::api::rest::history::router(
+                Arc::clone(&harness.history),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::plans::router(
                 Arc::clone(&harness.state),
                 &openapi,

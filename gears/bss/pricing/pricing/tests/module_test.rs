@@ -73,6 +73,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
     use bss_pricing::api::rest::frontier::FRONTIER;
+    use bss_pricing::api::rest::history::HISTORY;
     use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
     use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
     use bss_pricing::api::rest::overlays::{
@@ -92,6 +93,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     };
     vec![
         ("GET", FRONTIER),
+        ("GET", HISTORY),
         ("GET", PLAN),
         ("POST", PLANS),
         ("PATCH", PLAN),
@@ -205,6 +207,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
     let frontier_state = Arc::new(bss_pricing::api::rest::frontier::ApiState {
         pin_frontier: PinFrontierRepo::new(db.clone()),
     });
+    let history_db = db.clone();
     let approvals = ApprovalService::new(db.clone());
     let authoring = Arc::new(AuthoringState {
         approvals: approvals.clone(),
@@ -288,6 +291,16 @@ async fn registered_operations() -> OpenApiRegistryImpl {
 
     drop(
         bss_pricing::api::rest::frontier::router(frontier_state, &openapi)
+            // Slice 12's history read, mounted here for the same reason every
+            // other router is: this drop-built tree is what proves the OpenAPI
+            // registrations do not collide, and a router absent from it is a
+            // router whose operation id nothing checks.
+            .merge(bss_pricing::api::rest::history::router(
+                Arc::new(bss_pricing::api::rest::history::ApiState {
+                    history: bss_pricing::infra::history::HistoryExporter::new(history_db),
+                }),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::plans::router(
                 Arc::clone(&authoring),
                 &openapi,
