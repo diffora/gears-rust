@@ -242,6 +242,39 @@ pub struct NewPriceDraft {
     pub correlation_id: Uuid,
 }
 
+/// Where a commit-ordered walk over the tenant's price history resumes.
+///
+/// **A pair, because neither column alone is a total order.**
+/// `created_at_utc` ties for every pair of rows one request authored together —
+/// a publish unit, a clone, a repricing run's plan transaction all write several
+/// rows at one instant — so a walk keyed on it alone would either skip the rest
+/// of a tied group or return it twice. `price_id` alone is a total order but is
+/// not commit order, and D-125 asks history for commit order specifically. The
+/// tie-break is `price_id` because it is the only other column of the row that
+/// is unique.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryPosition {
+    /// The authoring instant of the row the previous page ended at.
+    pub authored_at: DateTime<Utc>,
+    /// That row's id — the tie-break within one instant.
+    pub price_id: Uuid,
+}
+
+impl HistoryPosition {
+    /// The position a page's last record leaves the walk at.
+    ///
+    /// Taken from the record the store handed back rather than from anything
+    /// the caller holds, so the instant in the token is the one the column
+    /// actually compares against on the next page.
+    #[must_use]
+    pub const fn of(record: &PriceRecord) -> Self {
+        Self {
+            authored_at: record.created_at_utc,
+            price_id: record.price_id,
+        }
+    }
+}
+
 /// `SeaORM`-backed repository over draft price rows and their tier bands.
 #[derive(Clone)]
 pub struct PriceRepo {
@@ -418,6 +451,65 @@ impl PriceRepo {
             Some(limit),
         )
         .await
+    }
+
+    /// One **page** of the tenant's price history, in commit order.
+    ///
+    /// This is `inst-he-read`'s store half: the append-only `pricing_price` rows
+    /// themselves, which is the whole of the history — `inst-he-nostore` adds no
+    /// second store because the Foundation's immutability already is one. Every
+    /// row of every lifecycle state is in scope, since a draft that was later
+    /// published and a superseded predecessor are both things that happened.
+    ///
+    /// # Why this is not [`PriceRepo::list_for_plan_page`]
+    ///
+    /// That one is D-125's **catalog list** branch and this is D-125's
+    /// **history** branch; the decision names the two separately and gives them
+    /// different orders. `list_for_plan_page` walks `price_id ASC` — deterministic
+    /// key order, which is what a catalog list wants and what makes its page
+    /// stable — and is scoped to one plan and filtered to a state set. A history
+    /// read wants neither: `price_id` is a v4 UUID and its order is unrelated to
+    /// the order the rows were authored in, so a chronological read over it would
+    /// be chronological in name only.
+    ///
+    /// # What "commit order" is here, and exactly where the guarantee stops
+    ///
+    /// The order is `(created_at_utc, price_id)` ascending, and `created_at_utc`
+    /// is the **authoring instant carried on the request** ([`NewPriceDraft`]
+    /// states why the column is caller-supplied), not the instant the row's
+    /// transaction committed. The two agree for the walk's purpose in every
+    /// ordinary case and can disagree in one: a row authored at `T1` whose
+    /// transaction commits after a row authored at `T2 > T1` becomes visible
+    /// *behind* a walk that has already passed `T1`, and is never returned.
+    ///
+    /// That is a real gap in D-125's "never skips a row at or before the cursor",
+    /// and it is **stated rather than papered over**, because closing it needs a
+    /// column this table does not have: a monotonic commit sequence assigned in
+    /// the writing transaction, the way `pricing_price_window.mutation_seq` is
+    /// assigned per act. Adding one is a migration. See `infra::history` for the
+    /// same statement in the shape a caller meets it.
+    ///
+    /// **The caller asks for `limit + 1`** to learn whether another page exists
+    /// without a second query, exactly as [`PriceRepo::list_for_plan_page`]'s
+    /// caller does; deciding `next_cursor` is the surface's.
+    ///
+    /// There is deliberately **no unbounded form**. `list_for_plan` has one
+    /// because a plan's row set is bounded by the plan; this one walks an
+    /// append-only history of seven years and more, where the unbounded read is
+    /// the query that takes the gear down.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when a stored row cannot be read as the domain
+    /// value its columns are `CHECK`-constrained to hold.
+    pub async fn list_history_page(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        after: Option<HistoryPosition>,
+        limit: u64,
+    ) -> Result<Vec<PriceRecord>, RepoError> {
+        load_history_page(&self.conn()?, scope, tenant_id, after, limit).await
     }
 
     /// Replace an open draft's content, and its band set, under the caller's
@@ -1458,9 +1550,65 @@ async fn load_page(
         .await
         .map_err(|e| RepoError::Db(format!("list plan price rows: {e}")))?;
 
-    // One band query for the whole page rather than one per row: the bands
-    // arrive already sorted, so grouping preserves the `from_qty` order the
-    // read-side guarantee promises.
+    hydrate_bands(runner, scope, tenant_id, &rows).await
+}
+
+/// One **page** of the tenant's price history, in commit order, resuming
+/// strictly after `after`.
+///
+/// The keyset walk under [`PriceRepo::list_history_page`]; its doc carries the
+/// argument for the order and for what the order cannot promise.
+async fn load_history_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    after: Option<HistoryPosition>,
+    limit: u64,
+) -> Result<Vec<PriceRecord>, RepoError> {
+    let mut filter = Condition::all().add(price::Column::TenantId.eq(tenant_id));
+    // The keyset predicate of a **composite** order, and it has to be written
+    // out: `created_at_utc > c` alone would skip every row that shares the
+    // cursor's instant, and `>=` would return the cursor's own row again on
+    // every page.
+    if let Some(position) = after {
+        filter = filter.add(
+            Condition::any()
+                .add(price::Column::CreatedAtUtc.gt(position.authored_at))
+                .add(
+                    Condition::all()
+                        .add(price::Column::CreatedAtUtc.eq(position.authored_at))
+                        .add(price::Column::PriceId.gt(position.price_id)),
+                ),
+        );
+    }
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .order_by(price::Column::CreatedAtUtc, Order::Asc)
+        .order_by(price::Column::PriceId, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list price history: {e}")))?;
+
+    hydrate_bands(runner, scope, tenant_id, &rows).await
+}
+
+/// Attach each row's band set and map the pair into the domain value.
+///
+/// **One band query for the whole page rather than one per row**: the bands
+/// arrive already sorted, so grouping preserves the `from_qty` order the
+/// read-side guarantee promises. Shared by the two page walks above so that a
+/// row read by either arrives with the same geometry — a second copy of this
+/// join is a second answer to "what bands does this row have", and the band
+/// order is the read-side guarantee `inst-tb-order` was amended to make single.
+async fn hydrate_bands(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    rows: &[price::Model],
+) -> Result<Vec<PriceRecord>, RepoError> {
     let ids: Vec<Uuid> = rows.iter().map(|row| row.price_id).collect();
     let mut grouped: HashMap<Uuid, Vec<price_tier_band::Model>> = HashMap::new();
     if !ids.is_empty() {
