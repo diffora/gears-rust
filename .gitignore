@@ -52,6 +52,9 @@ dist/
 # Claude Code local settings
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+# Worktree isolation creates real git repositories here. Untracked, they are one
+# `git add -A` away from being committed as a gitlink that no clone can resolve.
+.claude/worktrees/
 
 # Cypilot per-task plan artifacts (scratch data; not tracked)
 .cypilot/.plans/
