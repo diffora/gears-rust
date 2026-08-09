@@ -225,7 +225,7 @@ flowchart TB
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-pricing-state-bulk-operation`
 
-**States**: validating, validation_failed, awaiting_approval (R-09 — a material **repricing run** parks here until its batch approval lands; **unreachable for `kind = import`** since D-137, a draft-plane import being never material), committing, completed, completed_with_conflicts
+**States**: validating, validation_failed, awaiting_approval (R-09 — a material **repricing run** parks here until its batch approval lands; **unreachable for `kind = import`** since D-137, a draft-plane import being never material), committing, completed, completed_with_conflicts, rejected (D-267 — the batch approval was **refused**; terminal, reachable **only** from awaiting_approval, and therefore unreachable for `kind = import` by D-137's existing rule rather than by a second one)
 **Initial State**: validating (Phase 1)
 
 **Transitions**:
@@ -234,6 +234,7 @@ flowchart TB
 3. [ ] - `p2` - **FROM** validating **TO** committing **WHEN** all rows pass and no approval is required (every import; a non-material run); **FROM** awaiting_approval **TO** committing **WHEN** approved — the bulk lock takes effect on entry to `committing`, and a repricing run's per-plan transactions (D-134) run inside it - `inst-bs-commit`
 4. [ ] - `p2` - **FROM** committing **TO** completed / completed_with_conflicts **WHEN** every row committed / some rows ETag-conflicted (listed for retry; lock released either way) - `inst-bs-done`
 5. [ ] - `p2` - **FROM** committing **TO** completed_with_conflicts **WHEN** the operator **aborts** a stalled run (D-37): uncommitted rows reported `not-attempted`, lock cleared; crash recovery is lease takeover + journal re-drive, not abort - `inst-bs-abort`
+6. [ ] - `p2` - **FROM** awaiting_approval **TO** rejected **WHEN** the batch approval is **refused** (D-267): nothing is committed and no bulk lock was ever taken (transition 3 is what takes it), the run carries a `completed_at` because it is over, and the state is terminal — a refused run is never re-driven, since re-entering `committing` would apply precisely the rows the approver declined. The operator's remedy is a **fresh** run under a new client key: O4's per-tenant uniqueness holds the old key against the rejected record, which is what makes the refusal auditable rather than erasable - `inst-bs-reject`
 
 ## 5. API Surface
 

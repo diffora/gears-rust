@@ -63,14 +63,23 @@ fn seed(kind: &str, state: &str) -> String {
 }
 
 fn move_to(state: &str) -> String {
-    let completed = if matches!(
+    move_to_with(state, terminal(state).then_some("now()"))
+}
+
+/// The states that end a run, which is also the set
+/// `chk_pricing_bulk_operation_completed_at` names. `rejected` joined it with
+/// D-267: a refused batch approval is an outcome, not a pause.
+fn terminal(state: &str) -> bool {
+    matches!(
         state,
-        "validation_failed" | "completed" | "completed_with_conflicts"
-    ) {
-        "now()"
-    } else {
-        "NULL"
-    };
+        "validation_failed" | "completed" | "completed_with_conflicts" | "rejected"
+    )
+}
+
+/// The same move with the end instant chosen by the caller, so a case can ask
+/// what the `completed_at` agreement refuses rather than only what it admits.
+fn move_to_with(state: &str, completed: Option<&str>) -> String {
+    let completed = completed.unwrap_or("NULL");
     format!(
         "UPDATE bss.pricing_bulk_operation SET state = '{state}', completed_at = {completed} \
          WHERE operation_id = '{OP}'"
@@ -96,15 +105,93 @@ async fn every_sanctioned_edge_is_walkable() {
             ],
         ),
         ("import", vec!["validation_failed"]),
+        // D-267's edge: the approval was refused, and the run ends there.
+        ("repricing", vec!["awaiting_approval", "rejected"]),
     ] {
         // A fresh database per path: the run is undeletable by design, so the
-        // three paths cannot share one.
+        // four paths cannot share one.
         let conn = applied().await;
         must_succeed(&conn, &seed(kind, "validating")).await;
         for state in path {
             must_succeed(&conn, &move_to(state)).await;
         }
     }
+}
+
+/// **A rejected run is over, so it carries an end instant** (D-267) — the half
+/// of the migration that lives in `chk_pricing_bulk_operation_completed_at`
+/// rather than in the edge list, and the one Postgres names in the refusal.
+/// Asked through the update path because a `BEFORE` trigger answers ahead of a
+/// `CHECK`: at `INSERT` the born-validating arm would reply instead.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn a_rejected_run_carries_the_instant_it_ended() {
+    let conn = applied().await;
+    must_succeed(&conn, &seed("repricing", "validating")).await;
+    must_succeed(&conn, &move_to("awaiting_approval")).await;
+    must_be_rejected(
+        &conn,
+        &move_to_with("rejected", None),
+        "chk_pricing_bulk_operation_completed_at",
+    )
+    .await;
+    must_succeed(&conn, &move_to("rejected")).await;
+}
+
+/// **`rejected` is terminal and only `awaiting_approval` reaches it** — the two
+/// properties that make D-267 one state rather than an escape hatch, on the
+/// engine that ships. A run that left `rejected` would commit rows an approver
+/// declined; a run that entered it from anywhere else was never refused
+/// anything.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn rejected_is_terminal_and_reachable_only_from_a_pending_approval() {
+    let conn = applied().await;
+    must_succeed(&conn, &seed("repricing", "validating")).await;
+    // Not from the initial state: no approval is outstanding.
+    must_be_rejected(&conn, &move_to("rejected"), "not an edge").await;
+    // Not from `committing`: the decision has already been taken.
+    must_succeed(&conn, &move_to("committing")).await;
+    must_be_rejected(&conn, &move_to("rejected"), "not an edge").await;
+    // Nor from a terminal state.
+    must_succeed(&conn, &move_to("completed")).await;
+    must_be_rejected(&conn, &move_to("rejected"), "not an edge").await;
+
+    // And nothing leaves `rejected`.
+    let conn = applied().await;
+    must_succeed(&conn, &seed("repricing", "validating")).await;
+    must_succeed(&conn, &move_to("awaiting_approval")).await;
+    must_succeed(&conn, &move_to("rejected")).await;
+    for onward in ["committing", "completed", "awaiting_approval", "validating"] {
+        must_be_rejected(&conn, &move_to(onward), "not an edge").await;
+    }
+}
+
+/// **An import can never be rejected, and D-267 adds no clause saying so.**
+/// `rejected` is reachable only from `awaiting_approval`, which
+/// `chk_pricing_bulk_operation_import_never_awaits` already forbids an import,
+/// so the new edge inherits D-137. Verified rather than argued — a constraint
+/// repeating a rule that already holds could never fail, and nothing here would
+/// tell it from one that does.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn an_import_can_never_be_rejected() {
+    let conn = applied().await;
+    // Birth is asked first, on an empty table: with the row already seeded, the
+    // primary key would be a second reason to refuse and the case could not say
+    // which arm answered.
+    must_be_rejected(&conn, &seed("import", "rejected"), "born validating").await;
+
+    must_succeed(&conn, &seed("import", "validating")).await;
+    // Refused by the edge list, not by the import `CHECK`: an import never gets
+    // to the state that `CHECK` is about.
+    must_be_rejected(&conn, &move_to("rejected"), "not an edge").await;
+    must_be_rejected(
+        &conn,
+        &move_to("awaiting_approval"),
+        "chk_pricing_bulk_operation_import_never_awaits",
+    )
+    .await;
 }
 
 /// A run is born `validating` and in no other state — the arm that was missing
@@ -119,6 +206,7 @@ async fn a_run_cannot_be_born_past_the_state_machine() {
         "completed",
         "completed_with_conflicts",
         "validation_failed",
+        "rejected",
     ] {
         must_be_rejected(&conn, &seed("repricing", state), "born validating").await;
     }

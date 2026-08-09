@@ -28,8 +28,9 @@ pub struct Model {
     pub tenant_id: Uuid,
     /// `import | repricing`, `CHECK`-constrained.
     pub kind: String,
-    /// One of §4's six states, `CHECK`-constrained; the edges between them are
-    /// the table's trigger, not a caller's convention.
+    /// One of §4's seven states, `CHECK`-constrained; the edges between them are
+    /// the table's trigger, not a caller's convention. `rejected` is D-267's,
+    /// reachable only from `awaiting_approval` and left by nothing.
     pub state: String,
     /// O4's idempotency key, unique per tenant.
     pub client_key: String,
@@ -38,8 +39,9 @@ pub struct Model {
     pub report: Json,
     pub submitted_by: Uuid,
     pub submitted_at: DateTimeUtc,
-    /// Set exactly on the terminal states, and the `CHECK` keeps the two from
-    /// disagreeing about whether the run is over.
+    /// Set exactly on the terminal states — `rejected` among them since D-267,
+    /// a refused batch approval ending the run — and the `CHECK` keeps the two
+    /// from disagreeing about whether the run is over.
     pub completed_at: Option<DateTimeUtc>,
 }
 

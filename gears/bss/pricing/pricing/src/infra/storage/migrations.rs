@@ -94,6 +94,7 @@ pub mod m20260802_000058_guard_pricing_plan_later_columns;
 pub mod m20260802_000060_add_price_overlay_published_event_name;
 pub mod m20260802_000061_add_pricing_plan_cloned_from;
 pub mod m20260802_000062_guard_pricing_plan_cloned_from;
+pub mod m20260802_000063_add_bulk_operation_rejected_state;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -290,6 +291,13 @@ impl MigratorTrait for Migrator {
             // naming a column that does not exist yet does not create.
             Box::new(m20260802_000061_add_pricing_plan_cloned_from::Migration),
             Box::new(m20260802_000062_guard_pricing_plan_cloned_from::Migration),
+            // D-267's seventh state: `rejected` joins the bulk-operation
+            // vocabulary and `awaiting_approval` gains its second exit. Sorts
+            // after `000047` builds the table and after `000048`/`000049` create
+            // the two child tables whose triggers read it -- the `SQLite` half is
+            // a rebuild, and a rebuild re-creates guards it can only re-create
+            // once they exist.
+            Box::new(m20260802_000063_add_bulk_operation_rejected_state::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),
