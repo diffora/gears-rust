@@ -167,47 +167,10 @@ impl PlanShapeRepo {
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    };
-                    let Some(parent) =
-                        mutable_draft(txn, &scope, tenant_id, plan_id, revision, expected).await?
-                    else {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    };
-                    // The tenant every child row carries is the parent
-                    // revision's, taken off the row just read.
-                    let rows = phase_models(&parent, &phases)?;
-                    delete_phases(txn, &scope, tenant_id, plan_id, revision).await?;
-                    insert_phases(txn, &scope, rows).await?;
-                    let result = plan_revision_bump(txn, &scope, guard).await?;
-                    // The read above is not the guard - a concurrent publish can
-                    // land between it and this statement - so a swap that
-                    // matched nothing is still resolved, and the phase set it
-                    // has already replaced is restored by the rollback.
-                    if result == 0 {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    }
-                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
-                        .await?
-                        .ok_or_else(|| not_found(plan_id, revision))?;
-                    record_revision_mutation(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        &updated,
-                        AuditAction::Update,
-                        expected,
-                        stamp,
+                    replace_phases_on(
+                        txn, &scope, tenant_id, plan_id, revision, expected, phases, stamp,
                     )
-                    .await?;
-                    Ok(updated)
+                    .await
                 })
             })
             .await;
@@ -276,40 +239,10 @@ impl PlanShapeRepo {
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    };
-                    if mutable_draft(txn, &scope, tenant_id, plan_id, revision, expected)
-                        .await?
-                        .is_none()
-                    {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    }
-                    write_composites(txn, &scope, tenant_id, plan_id, revision, composites).await?;
-                    let result = plan_revision_bump(txn, &scope, guard).await?;
-                    if result == 0 {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    }
-                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
-                        .await?
-                        .ok_or_else(|| not_found(plan_id, revision))?;
-                    record_revision_mutation(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        &updated,
-                        AuditAction::Update,
-                        expected,
-                        stamp,
+                    replace_composites_on(
+                        txn, &scope, tenant_id, plan_id, revision, expected, composites, stamp,
                     )
-                    .await?;
-                    Ok(updated)
+                    .await
                 })
             })
             .await;
@@ -397,47 +330,10 @@ impl PlanShapeRepo {
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    };
-                    let Some(parent) =
-                        mutable_draft(txn, &scope, tenant_id, plan_id, revision, expected).await?
-                    else {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    };
-                    // The tenant every child row carries is the parent
-                    // revision's, taken off the row just read.
-                    let rows = addon_rule_models(&parent, &rules)?;
-                    delete_addon_rules(txn, &scope, tenant_id, plan_id, revision).await?;
-                    insert_addon_rules(txn, &scope, rows).await?;
-                    let result = plan_revision_bump(txn, &scope, guard).await?;
-                    // The read above is not the guard - a concurrent publish can
-                    // land between it and this statement - so a swap that
-                    // matched nothing is still resolved, and the set it has
-                    // already replaced is restored by the rollback.
-                    if result == 0 {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    }
-                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
-                        .await?
-                        .ok_or_else(|| not_found(plan_id, revision))?;
-                    record_revision_mutation(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        &updated,
-                        AuditAction::Update,
-                        expected,
-                        stamp,
+                    replace_addon_rules_on(
+                        txn, &scope, tenant_id, plan_id, revision, expected, rules, stamp,
                     )
-                    .await?;
-                    Ok(updated)
+                    .await
                 })
             })
             .await;
@@ -523,47 +419,17 @@ impl PlanShapeRepo {
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    };
-                    let Some(parent) =
-                        mutable_draft(txn, &scope, tenant_id, plan_id, revision, expected).await?
-                    else {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    };
-                    // The tenant the row carries is the parent revision's, taken
-                    // off the row just read.
-                    let row = descriptor_model(&parent, &descriptors);
-                    delete_descriptor_set(txn, &scope, tenant_id, plan_id, revision).await?;
-                    insert_descriptor_set(txn, &scope, row).await?;
-                    let result = plan_revision_bump(txn, &scope, guard).await?;
-                    // The read above is not the guard - a concurrent publish can
-                    // land between it and this statement - so a swap that
-                    // matched nothing is still resolved, and the row it has
-                    // already replaced is restored by the rollback.
-                    if result == 0 {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    }
-                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
-                        .await?
-                        .ok_or_else(|| not_found(plan_id, revision))?;
-                    record_revision_mutation(
+                    set_descriptor_set_on(
                         txn,
                         &scope,
                         tenant_id,
-                        &updated,
-                        AuditAction::Update,
+                        plan_id,
+                        revision,
                         expected,
+                        descriptors,
                         stamp,
                     )
-                    .await?;
-                    Ok(updated)
+                    .await
                 })
             })
             .await;
@@ -1660,4 +1526,218 @@ fn read_count(column: &str, stored: Option<i32>) -> Result<Option<u32>, RepoErro
 /// revision.
 fn stored_revision(revision: u64) -> Option<i64> {
     i64::try_from(revision).ok()
+}
+
+/// [`PlanShapeRepo::replace_phases`]'s body, on a runner the caller owns.
+///
+/// # Errors
+/// Whatever the method's own documentation states — this is that method,
+/// minus the transaction it opens for itself.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, revision, expected-version) the compare-and-swap addresses, the payload and the D-135 audit stamp. The method above carries the same set; this form exists so a caller that already owns a transaction can join it rather than open a second (D-272)."
+)]
+pub async fn replace_phases_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+    phases: Vec<PlanPhase>,
+    stamp: AuditStamp,
+) -> Result<PlanRevision, RepoError> {
+    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    let Some(parent) = mutable_draft(runner, scope, tenant_id, plan_id, revision, expected).await?
+    else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    // The tenant every child row carries is the parent
+    // revision's, taken off the row just read.
+    let rows = phase_models(&parent, &phases)?;
+    delete_phases(runner, scope, tenant_id, plan_id, revision).await?;
+    insert_phases(runner, scope, rows).await?;
+    let result = plan_revision_bump(runner, scope, guard).await?;
+    // The read above is not the guard - a concurrent publish can
+    // land between it and this statement - so a swap that
+    // matched nothing is still resolved, and the phase set it
+    // has already replaced is restored by the rollback.
+    if result == 0 {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    let updated = load_revision(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))?;
+    record_revision_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &updated,
+        AuditAction::Update,
+        expected,
+        stamp,
+    )
+    .await?;
+    Ok(updated)
+}
+
+/// [`PlanShapeRepo::replace_addon_rules`]'s body, on a runner the caller owns.
+///
+/// # Errors
+/// Whatever the method's own documentation states — this is that method,
+/// minus the transaction it opens for itself.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, revision, expected-version) the compare-and-swap addresses, the payload and the D-135 audit stamp. The method above carries the same set; this form exists so a caller that already owns a transaction can join it rather than open a second (D-272)."
+)]
+pub async fn replace_addon_rules_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+    rules: Vec<AddonRule>,
+    stamp: AuditStamp,
+) -> Result<PlanRevision, RepoError> {
+    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    let Some(parent) = mutable_draft(runner, scope, tenant_id, plan_id, revision, expected).await?
+    else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    // The tenant every child row carries is the parent
+    // revision's, taken off the row just read.
+    let rows = addon_rule_models(&parent, &rules)?;
+    delete_addon_rules(runner, scope, tenant_id, plan_id, revision).await?;
+    insert_addon_rules(runner, scope, rows).await?;
+    let result = plan_revision_bump(runner, scope, guard).await?;
+    // The read above is not the guard - a concurrent publish can
+    // land between it and this statement - so a swap that
+    // matched nothing is still resolved, and the set it has
+    // already replaced is restored by the rollback.
+    if result == 0 {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    let updated = load_revision(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))?;
+    record_revision_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &updated,
+        AuditAction::Update,
+        expected,
+        stamp,
+    )
+    .await?;
+    Ok(updated)
+}
+
+/// [`PlanShapeRepo::set_descriptor_set`]'s body, on a runner the caller owns.
+///
+/// # Errors
+/// Whatever the method's own documentation states — this is that method,
+/// minus the transaction it opens for itself.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, revision, expected-version) the compare-and-swap addresses, the payload and the D-135 audit stamp. The method above carries the same set; this form exists so a caller that already owns a transaction can join it rather than open a second (D-272)."
+)]
+pub async fn set_descriptor_set_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+    descriptors: DescriptorSet,
+    stamp: AuditStamp,
+) -> Result<PlanRevision, RepoError> {
+    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    let Some(parent) = mutable_draft(runner, scope, tenant_id, plan_id, revision, expected).await?
+    else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    // The tenant the row carries is the parent revision's, taken
+    // off the row just read.
+    let row = descriptor_model(&parent, &descriptors);
+    delete_descriptor_set(runner, scope, tenant_id, plan_id, revision).await?;
+    insert_descriptor_set(runner, scope, row).await?;
+    let result = plan_revision_bump(runner, scope, guard).await?;
+    // The read above is not the guard - a concurrent publish can
+    // land between it and this statement - so a swap that
+    // matched nothing is still resolved, and the row it has
+    // already replaced is restored by the rollback.
+    if result == 0 {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    let updated = load_revision(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))?;
+    record_revision_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &updated,
+        AuditAction::Update,
+        expected,
+        stamp,
+    )
+    .await?;
+    Ok(updated)
+}
+
+/// [`PlanShapeRepo::replace_composites`]'s body, on a runner the caller owns.
+///
+/// # Errors
+/// Whatever the method's own documentation states — this is that method,
+/// minus the transaction it opens for itself.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, revision, expected-version) the compare-and-swap addresses, the payload and the D-135 audit stamp. The method above carries the same set; this form exists so a caller that already owns a transaction can join it rather than open a second (D-272)."
+)]
+pub async fn replace_composites_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+    composites: Vec<CompositeMeter>,
+    stamp: AuditStamp,
+) -> Result<PlanRevision, RepoError> {
+    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    if mutable_draft(runner, scope, tenant_id, plan_id, revision, expected)
+        .await?
+        .is_none()
+    {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    write_composites(runner, scope, tenant_id, plan_id, revision, composites).await?;
+    let result = plan_revision_bump(runner, scope, guard).await?;
+    if result == 0 {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    let updated = load_revision(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))?;
+    record_revision_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &updated,
+        AuditAction::Update,
+        expected,
+        stamp,
+    )
+    .await?;
+    Ok(updated)
 }

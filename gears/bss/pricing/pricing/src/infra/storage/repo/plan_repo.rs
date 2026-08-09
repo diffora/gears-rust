@@ -332,60 +332,16 @@ impl PlanRepo {
         patch: PlanShapePatch,
         stamp: AuditStamp,
     ) -> Result<PlanRevision, RepoError> {
-        // Ahead of the compare-and-swap and ahead of the transaction: a value the
-        // store cannot hold is refused whether or not the caller also holds a
-        // current row version, and refusing it here leaves the row's tag where it
-        // was.
-        check_authored_instant("availableFrom", patch.available_from)?;
-        check_authored_instant("availableTo", patch.available_to)?;
-        let columns = patched_columns(patch)?;
-        let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-            let conn = self.conn()?;
-            return Err(refuse(&conn, scope, tenant_id, plan_id, revision, expected).await);
-        };
-
-        // **A transaction, where this used to be a bare statement.** D-135 puts
-        // the audit record inside the mutation's own transaction, so a rolled-back
-        // edit leaves no record of having happened - which is the property a
-        // post-hoc writer passes by accident and fails under contention.
         let scope = scope.clone();
         let (_, outcome) = self
             .db
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    let mut update = plan::Entity::update_many().secure().scope_with(&scope);
-                    for (column, value) in columns {
-                        update = update.col_expr(column, value);
-                    }
-                    let result = update
-                        .col_expr(
-                            plan::Column::RowVersion,
-                            Expr::col(plan::Column::RowVersion).add(1_i64),
-                        )
-                        .filter(guard)
-                        .exec(txn)
-                        .await
-                        .map_err(|e| RepoError::Db(format!("update plan draft: {e}")))?;
-                    if result.rows_affected == 0 {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    }
-                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
-                        .await?
-                        .ok_or_else(|| not_found(plan_id, revision))?;
-                    record_revision_mutation(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        &updated,
-                        AuditAction::Update,
-                        expected,
-                        stamp,
+                    update_draft_on(
+                        txn, &scope, tenant_id, plan_id, revision, expected, patch, stamp,
                     )
-                    .await?;
-                    Ok(updated)
+                    .await
                 })
             })
             .await;
@@ -2206,4 +2162,79 @@ pub async fn retire_revision(
     load_revision(txn, scope, tenant_id, plan_id, revision)
         .await?
         .ok_or_else(|| not_found(plan_id, revision))
+}
+
+/// [`PlanRepo::update_draft`]'s body, on a runner the caller owns.
+///
+/// The pre-transaction refusals come first here as they do there: a value
+/// the store cannot hold is refused whether or not the caller also holds a
+/// current row version, and refusing it before the swap leaves the row's tag
+/// where it was.
+///
+/// # Errors
+/// Whatever [`PlanRepo::update_draft`] documents — this is that method, minus
+/// the transaction it opens for itself.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, revision, expected-version) the compare-and-swap addresses, the patch and the D-135 audit stamp. The method above carries the same set; this form exists so a caller that already owns a transaction can join it rather than open a second (D-272)."
+)]
+pub async fn update_draft_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+    patch: PlanShapePatch,
+    stamp: AuditStamp,
+) -> Result<PlanRevision, RepoError> {
+    // Ahead of the compare-and-swap and ahead of the transaction: a value the
+    // store cannot hold is refused whether or not the caller also holds a
+    // current row version, and refusing it here leaves the row's tag where it
+    // was.
+    check_authored_instant("availableFrom", patch.available_from)?;
+    check_authored_instant("availableTo", patch.available_to)?;
+    let columns = patched_columns(patch)?;
+    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+        // The method above opens a fresh connection here because it has not
+        // entered its transaction yet; this form is already on the caller's
+        // runner, so the refusal is read there — which is also the more honest
+        // read, being the state the mutation would have seen.
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+
+    // **A transaction, where this used to be a bare statement.** D-135 puts
+    // the audit record inside the mutation's own transaction, so a rolled-back
+    // edit leaves no record of having happened - which is the property a
+    // post-hoc writer passes by accident and fails under contention.
+    let mut update = plan::Entity::update_many().secure().scope_with(scope);
+    for (column, value) in columns {
+        update = update.col_expr(column, value);
+    }
+    let result = update
+        .col_expr(
+            plan::Column::RowVersion,
+            Expr::col(plan::Column::RowVersion).add(1_i64),
+        )
+        .filter(guard)
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("update plan draft: {e}")))?;
+    if result.rows_affected == 0 {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    let updated = load_revision(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))?;
+    record_revision_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &updated,
+        AuditAction::Update,
+        expected,
+        stamp,
+    )
+    .await?;
+    Ok(updated)
 }
