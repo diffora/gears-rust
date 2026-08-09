@@ -208,10 +208,9 @@ async fn seeded(h: &Harness) -> Uuid {
 /// 404 from a mistyped path and a 404 from an unsold market are different facts
 /// and only the code separates them.
 async fn absent_code(response: axum::http::Response<axum::body::Body>) -> String {
-    body_json(response).await["context"]["resource_name"]
-        .as_str()
-        .expect("a 404 from this surface names its code")
-        .to_owned()
+    // The reading moved to `rest_support::not_found_code` when a second surface
+    // needed it (D-278). This stays as the name this suite's cases read by.
+    rest_support::not_found_code(response).await
 }
 
 // ---------------------------------------------------------------------------

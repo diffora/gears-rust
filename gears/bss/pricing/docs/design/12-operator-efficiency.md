@@ -186,6 +186,7 @@ flowchart TB
 3. [ ] - `p2` - `discountRef` copies only if it still resolves to a registered instrument — else dropped with an operator notice (Slice 10 resolver reused) - `inst-cl-discount`
 4. [ ] - `p2` - The clone is an ordinary draft: full pipeline + approval on its first publish (always material — first publish, G1) - `inst-cl-draft`
 5. [ ] - `p2` - **Windows are not configuration:** `PriceWindow` schedules are Slice 7-owned (gear-owned, D-03) runtime state and are **never cloned** — the clone's billable rows have no coverage until the operator schedules fresh windows, and the Slice 7 coverage check blocks its publish until then (expected, surfaced in the clone response) - `inst-cl-windows`
+6. [ ] - `p2` - **The source is the plan's *current* revision, and a plan that has none cannot be cloned:** the clone answers `CLONE_SOURCE_NOT_FOUND` (404) — not a bare not-found, because the plan named in the path may exist and be perfectly editable while holding only a draft, and an operator told only "not found" goes looking for a missing id. A **retired** plan does hold a current revision and is therefore clonable, deliberately: retirement closes the plan to further revisions and the clone is the route forward an operator has instead (D-145 as amended, D-278, 2026-08-09 — the code was declared in §5 from the start and named by no rule until the route that raises it existed) - `inst-cl-source`
 
 ### Bulk Import (validate-all, commit-per-row)
 

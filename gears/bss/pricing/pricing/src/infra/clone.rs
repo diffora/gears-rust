@@ -105,6 +105,30 @@ use crate::infra::storage::repo::{
 use crate::infra::storage::repo_failure;
 use std::collections::BTreeMap;
 
+/// The two scopes a clone needs, because a scope has two jobs (D-278).
+///
+/// A compiled [`AccessScope`] is the authorization answer **and** the `SecureORM`
+/// row filter. Every other mutating path in this gear gates on the row it writes,
+/// so the two coincide and the distinction never had to be named. A clone reads
+/// plan A and writes plan B, so it needs one scope that admits the source and one
+/// that admits a row whose id was minted a moment ago.
+///
+/// A type rather than two parameters **because the pairing is the point**: two
+/// `&AccessScope` arguments in a row are two arguments a caller can transpose,
+/// and transposing them is the exact defect this exists to prevent — the target
+/// written under a scope naming the source is refused for a principal the PDP
+/// authorized.
+#[derive(Clone, Copy)]
+pub struct CloneScopes<'a> {
+    /// Filters every read of the source, and is the authorization decision:
+    /// `plan x write` addressed at the plan being copied.
+    pub source: &'a AccessScope,
+    /// Filters every write of the target. `create_plan`'s scope — compiled with
+    /// no resource id, because the row carries one no constraint could have
+    /// named.
+    pub target: &'a AccessScope,
+}
+
 /// The states a source row is copied from.
 ///
 /// `published` only. A `draft` row of the source belongs to an edit its author
@@ -232,19 +256,20 @@ impl CopiedRows {
 /// declare. Otherwise whatever the repository forms refuse with.
 pub async fn clone_plan_on(
     runner: &impl DBRunner,
-    scope: &AccessScope,
+    scopes: CloneScopes<'_>,
     tenant_id: Uuid,
     source: PlanId,
     target: PlanId,
     now: DateTime<Utc>,
     stamp: AuditStamp,
 ) -> Result<CloneReceipt, DomainError> {
-    let current = plan_repo::load_current(runner, scope, tenant_id, source)
+    let current = plan_repo::load_current(runner, scopes.source, tenant_id, source)
         .await
         .map_err(|e| repo_failure(&e))?
-        .ok_or_else(|| DomainError::NotFound {
-            subject: "clonable plan".to_owned(),
-            id: source.to_string(),
+        .ok_or_else(|| {
+            DomainError::CloneSourceNotFound(format!(
+                "plan {source} holds no published revision to clone"
+            ))
         })?;
 
     let source_revision = current.revision;
@@ -286,14 +311,14 @@ pub async fn clone_plan_on(
     } = current;
 
     let source_phases =
-        plan_shape_repo::load_phase_set(runner, scope, tenant_id, source, source_revision)
+        plan_shape_repo::load_phase_set(runner, scopes.source, tenant_id, source, source_revision)
             .await
             .map_err(|e| repo_failure(&e))?;
     let remap = phase_remap(&source_phases);
 
     let created = plan_repo::create_draft_on(
         runner,
-        scope,
+        scopes.target,
         NewPlanDraft {
             plan_id: target,
             tenant_id,
@@ -325,20 +350,39 @@ pub async fn clone_plan_on(
             .map(|phase| remapped_phase(phase, &remap))
             .collect();
         version = plan_shape_repo::replace_phases_on(
-            runner, scope, tenant_id, target, revision, version, phases, stamp,
+            runner,
+            scopes.target,
+            tenant_id,
+            target,
+            revision,
+            version,
+            phases,
+            stamp,
         )
         .await
         .map_err(|e| repo_failure(&e))?
         .row_version;
     }
 
-    let rules =
-        plan_shape_repo::load_addon_rule_set(runner, scope, tenant_id, source, source_revision)
-            .await
-            .map_err(|e| repo_failure(&e))?;
+    let rules = plan_shape_repo::load_addon_rule_set(
+        runner,
+        scopes.source,
+        tenant_id,
+        source,
+        source_revision,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
     if !rules.is_empty() {
         version = plan_shape_repo::replace_addon_rules_on(
-            runner, scope, tenant_id, target, revision, version, rules, stamp,
+            runner,
+            scopes.target,
+            tenant_id,
+            target,
+            revision,
+            version,
+            rules,
+            stamp,
         )
         .await
         .map_err(|e| repo_failure(&e))?
@@ -346,13 +390,13 @@ pub async fn clone_plan_on(
     }
 
     if let Some(descriptors) =
-        plan_shape_repo::load_descriptor(runner, scope, tenant_id, source, source_revision)
+        plan_shape_repo::load_descriptor(runner, scopes.source, tenant_id, source, source_revision)
             .await
             .map_err(|e| repo_failure(&e))?
     {
         version = plan_shape_repo::set_descriptor_set_on(
             runner,
-            scope,
+            scopes.target,
             tenant_id,
             target,
             revision,
@@ -365,10 +409,15 @@ pub async fn clone_plan_on(
         .row_version;
     }
 
-    let source_composites =
-        plan_shape_repo::load_composite_set(runner, scope, tenant_id, source, source_revision)
-            .await
-            .map_err(|e| repo_failure(&e))?;
+    let source_composites = plan_shape_repo::load_composite_set(
+        runner,
+        scopes.source,
+        tenant_id,
+        source,
+        source_revision,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
     let composites_copied = source_composites.len();
     if composites_copied > 0 {
         let composites = source_composites
@@ -382,7 +431,14 @@ pub async fn clone_plan_on(
             })
             .collect();
         version = plan_shape_repo::replace_composites_on(
-            runner, scope, tenant_id, target, revision, version, composites, stamp,
+            runner,
+            scopes.target,
+            tenant_id,
+            target,
+            revision,
+            version,
+            composites,
+            stamp,
         )
         .await
         .map_err(|e| repo_failure(&e))?
@@ -395,7 +451,7 @@ pub async fn clone_plan_on(
     // the version the patch then has to hold.
     version = copy_bundle_on(
         runner,
-        scope,
+        scopes,
         tenant_id,
         (source, source_revision),
         (target, revision),
@@ -410,7 +466,7 @@ pub async fn clone_plan_on(
     // because its struct has no field for it.
     plan_repo::update_draft_on(
         runner,
-        scope,
+        scopes.target,
         tenant_id,
         target,
         revision,
@@ -425,7 +481,10 @@ pub async fn clone_plan_on(
     .await
     .map_err(|e| repo_failure(&e))?;
 
-    let rows = copy_rows_on(runner, scope, tenant_id, source, target, &remap, now, stamp).await?;
+    let rows = copy_rows_on(
+        runner, scopes, tenant_id, source, target, &remap, now, stamp,
+    )
+    .await?;
 
     Ok(CloneReceipt {
         plan_id: target,
@@ -469,7 +528,7 @@ pub async fn clone_plan_on(
 /// transaction, which is the misuse [`clone_plan_on`] documents.
 async fn copy_bundle_on(
     runner: &impl DBRunner,
-    scope: &AccessScope,
+    scopes: CloneScopes<'_>,
     tenant_id: Uuid,
     from: (PlanId, u64),
     onto: (PlanId, u64),
@@ -478,19 +537,19 @@ async fn copy_bundle_on(
 ) -> Result<RowVersion, DomainError> {
     let (source, source_revision) = from;
     let (target, revision) = onto;
-    let Some(bundle) = bundle_repo::find_by_plan_on(runner, scope, tenant_id, source)
+    let Some(bundle) = bundle_repo::find_by_plan_on(runner, scopes.source, tenant_id, source)
         .await
         .map_err(|e| repo_failure(&e))?
     else {
         return Ok(version);
     };
     let composition =
-        bundle_repo::load_composition_on(runner, scope, tenant_id, source, source_revision)
+        bundle_repo::load_composition_on(runner, scopes.source, tenant_id, source, source_revision)
             .await
             .map_err(|e| repo_failure(&e))?;
     bundle_repo::create_on(
         runner,
-        scope,
+        scopes.target,
         NewBundle {
             bundle_id: Uuid::new_v4(),
             tenant_id,
@@ -504,7 +563,7 @@ async fn copy_bundle_on(
     .map_err(|e| repo_failure(&e))?;
     Ok(bundle_repo::replace_composition_on(
         runner,
-        scope,
+        scopes.target,
         tenant_id,
         target,
         revision,
@@ -528,14 +587,14 @@ async fn copy_bundle_on(
 /// [`DomainError::ValidationFailed`] if a reset key is not constructible.
 #[allow(
     clippy::too_many_arguments,
-    reason = "every argument is a fact only the caller holds: the runner, the scope, the tenant, \
+    reason = "every argument is a fact only the caller holds: the runner, the two scopes, the tenant, \
               the two plans, the phase remap the shape copy already built, the clone instant and \
               the D-135 audit stamp. `plan_repo::update_draft_on` carries the same allow for the \
               same reason"
 )]
 async fn copy_rows_on(
     runner: &impl DBRunner,
-    scope: &AccessScope,
+    scopes: CloneScopes<'_>,
     tenant_id: Uuid,
     source: PlanId,
     target: PlanId,
@@ -544,7 +603,7 @@ async fn copy_rows_on(
     stamp: AuditStamp,
 ) -> Result<CopiedRows, DomainError> {
     let source_rows =
-        price_repo::load_for_plan(runner, scope, tenant_id, source, COPIED_ROW_STATES)
+        price_repo::load_for_plan(runner, scopes.source, tenant_id, source, COPIED_ROW_STATES)
             .await
             .map_err(|e| repo_failure(&e))?;
     let mut counts = CopiedRows {
@@ -570,7 +629,7 @@ async fn copy_rows_on(
         }
         price_repo::create_draft_on(
             runner,
-            scope,
+            scopes.target,
             tenant_id,
             NewPriceDraft {
                 price_id: Uuid::new_v4(),

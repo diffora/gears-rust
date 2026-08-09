@@ -1035,6 +1035,26 @@ pub async fn problem_code(response: Response<Body>) -> String {
     code_in(&body)
 }
 
+/// The wire code off a **404** problem document.
+///
+/// Not [`problem_code`], and the difference is a property of the platform rather
+/// than a helper preference: that one reads the `reason` an
+/// `aborted`/`failed_precondition` document carries, and the canonical
+/// **not-found** family has no such slot — so a 404's code rides
+/// `context.resource_name`. §5 declares code and status together and does not say
+/// where the code sits, so this is a divergence in *rendering* rather than in the
+/// contract; it is recorded as `T-11`.
+///
+/// Here rather than in each suite because two suites now read it — `rest_preview`
+/// for `PRICE_ROW_ABSENT` and `rest_plans` for `CLONE_SOURCE_NOT_FOUND` — and two
+/// spellings of one reading are two things that can disagree about the platform.
+pub async fn not_found_code(response: Response<Body>) -> String {
+    body_json(response).await["context"]["resource_name"]
+        .as_str()
+        .expect("a 404 that declares a code names it")
+        .to_owned()
+}
+
 /// The same code, off a problem document a caller already holds.
 ///
 /// [`problem_code`] consumes the response, so a case that asserts the code **and**

@@ -488,6 +488,19 @@ pub enum DomainError {
     /// is nothing else to answer with (`inst-mc-nofx`).
     #[error("price row absent: {0}")]
     PriceRowAbsent(String),
+
+    /// §5's `CLONE_SOURCE_NOT_FOUND`: the plan named in a clone's path holds no
+    /// **current** revision, so there is nothing published to copy.
+    ///
+    /// Distinct from the generic not-found because the *plan* may well exist —
+    /// a draft-only plan is readable and editable and simply has no
+    /// configuration a clone could take — and an operator told only "not found"
+    /// would go looking for a missing id. It was deliberately not minted until
+    /// the route that returns it existed, so that a wire code the design set
+    /// declares could not end up in two spellings (D-146's posture, paid by
+    /// D-277).
+    #[error("clone source not found: {0}")]
+    CloneSourceNotFound(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///

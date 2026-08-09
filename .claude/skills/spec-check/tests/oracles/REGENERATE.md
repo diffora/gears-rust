@@ -907,6 +907,32 @@ separately-justified commit — never a way to make a failing change look green.
     strands are also in flight and will hand back decisions of their own, so a backfill now is a
     backfill done twice. Recorded here as owed work with its cost stated.
 
+### 24. 2026-08-09 — the clone route, and a pin that would have been paid falsely
+
+**What moved:** one `P3/code-unreferenced` member, `CLONE_SOURCE_NOT_FOUND` /
+`design/12-operator-efficiency.md`. Suppressed known debt 54 → 53; pinned code
+list 33 → 32. Live findings unchanged at 2, both rating-side.
+
+**Why it moved, and why that sentence needed checking.** D-277 built
+`POST /plans/{planId}/clone`; D-278 minted the code the route answers when the
+source holds no current revision. But the *first* thing that closed this finding
+was neither: it was the **register entry mentioning the code**. P3 asks whether
+any document references the code, and D-278's prose does, so the pin moved before
+a single rule had been written. That is a false payment, and it is the second
+time this program has walked into it — the first was caught by noticing the
+baseline slide from 54 to 53 with no rule changed.
+
+The real payment is `inst-cl-source`, a new clause 6 in §3's clone list, which
+states the rule that raises the code: the source is the plan's **current**
+revision, a plan holding only a draft has none and answers
+`CLONE_SOURCE_NOT_FOUND` rather than a bare not-found, and a retired plan *does*
+hold a current revision and is therefore clonable.
+
+**How the difference was established rather than assumed:** the register mention
+was temporarily rewritten to name the refusal in words, the checker re-run, and
+the finding confirmed **still closed** — so the rule is the closer and the
+register is not load-bearing. Restore-and-verify, not inspection.
+
 ## How they were produced (2026-07-31 capture)
 
 Run from the repository root:

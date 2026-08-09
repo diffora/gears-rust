@@ -25,8 +25,9 @@ fn clone_path(plan_id: Uuid) -> String {
     format!("{PLANS}/{plan_id}/clone")
 }
 use rest_support::{
-    Harness, audit_rows, body_json, etag_of, location_of, plan_count, plan_row_version, plan_state,
-    problem_code, request, seed_current_plan, seed_draft_plan, with_headers,
+    Harness, audit_rows, body_json, etag_of, location_of, not_found_code, plan_count,
+    plan_row_version, plan_state, problem_code, request, seed_current_plan, seed_draft_plan,
+    seed_foreign_plan, seed_price, with_headers,
 };
 use uuid::Uuid;
 
@@ -490,9 +491,135 @@ async fn a_plan_with_nothing_published_cannot_be_cloned() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(
+        not_found_code(response).await,
+        "CLONE_SOURCE_NOT_FOUND",
+        "section 5 declares the code, and a bare 404 sends the operator looking for a missing \
+         id: the plan is right there, it just has nothing published"
+    );
+    assert_eq!(
         plan_count(&harness).await,
         1,
         "the refusal wrote no half-made clone"
+    );
+}
+
+/// **The receipt's counts and its notices, on the wire.**
+///
+/// Every other clone case here clones a bare plan, so every count is
+/// structurally zero and `notice_view`'s three wire codes are never rendered —
+/// they could be typoed or swapped with the suite green. This is the case that
+/// runs them: a source with a shape and a published price row, whose clone
+/// copies phases and rows and whose windows deliberately do not travel.
+#[tokio::test]
+async fn the_receipt_carries_its_counts_and_names_what_stayed_behind() {
+    let harness = Harness::new().await;
+    let source = Uuid::now_v7();
+    seed_draft_plan(&harness, source).await;
+    harness.attach_shape(source, 0).await;
+    let price = seed_price(&harness, source, "eu").await;
+    harness.publish_price(source, price.price_id).await;
+    harness.publish(source, 0).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            None,
+            &keyed("clone-5"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = body_json(response).await;
+    assert!(
+        body["phases_copied"].as_u64().expect("a count") > 0,
+        "the source's phase chain came across: {body}"
+    );
+    assert_eq!(
+        body["prices_copied"],
+        serde_json::json!(1),
+        "the one published row came across as a draft"
+    );
+    let notices = body["notices"].as_array().expect("an array");
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice["code"] == "no_coverage_scheduled"),
+        "windows are Slice 7 runtime state and never travel, so the clone is \
+         coverage-blocked and the receipt has to say so: {notices:?}"
+    );
+}
+
+/// The response carries **no** `ETag`, and that is a decision rather than an
+/// omission.
+///
+/// Asserted for `module_test`'s reason about deliberate absences: a decision no
+/// test reads is one a later group undoes by being helpful. The clone answers a
+/// receipt, not a revision, and a tag on a body that is not the resource is a
+/// precondition token pointing at nothing.
+#[tokio::test]
+async fn the_clone_answers_no_etag_because_its_body_is_not_the_resource() {
+    let harness = Harness::new().await;
+    let source = Uuid::now_v7();
+    seed_current_plan(&harness, source).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            None,
+            &keyed("clone-6"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(etag_of(&response), None);
+}
+
+/// A source in **another tenant** answers exactly like an absent one.
+///
+/// The existence-leak probe, on the one route that takes a plan id from a caller
+/// and creates something out of it. `load_current`'s tenant filter is what
+/// closes it, and this is what says the filter is there.
+#[tokio::test]
+async fn a_foreign_tenants_plan_cannot_be_cloned_and_reads_like_an_absent_one() {
+    let harness = Harness::new().await;
+    let foreign = Uuid::now_v7();
+    let absent = Uuid::now_v7();
+    seed_foreign_plan(&harness, foreign).await;
+
+    let foreign_answer = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(foreign),
+            None,
+            &keyed("clone-7"),
+        ))
+        .await;
+    let absent_answer = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &clone_path(absent),
+            None,
+            &keyed("clone-8"),
+        ))
+        .await;
+
+    assert_eq!(foreign_answer.status(), StatusCode::NOT_FOUND);
+    assert_eq!(absent_answer.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        not_found_code(foreign_answer).await,
+        not_found_code(absent_answer).await,
+        "a foreign plan and an absent one must be indistinguishable, code included"
+    );
+    assert_eq!(
+        plan_count(&harness).await,
+        0,
+        "the foreign plan is another tenant's and neither call wrote anything here"
     );
 }
 

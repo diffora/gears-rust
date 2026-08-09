@@ -294,6 +294,12 @@ impl From<DomainError> for CanonicalError {
             D::PriceRowAbsent(detail) => PlanResource::not_found(detail)
                 .with_resource(crate::api::rest::preview::PRICE_ROW_ABSENT)
                 .create(),
+            // A 404 that carries a code, for the line above's reason: the plan in
+            // the path may exist and be perfectly editable, holding only a draft.
+            // "Not found" alone sends an operator looking for a missing id.
+            D::CloneSourceNotFound(detail) => PlanResource::not_found(detail)
+                .with_resource(crate::api::rest::plans::CLONE_SOURCE_NOT_FOUND)
+                .create(),
             D::RegionUnknown(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation(
                     "scope_key.region",

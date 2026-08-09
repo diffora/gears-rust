@@ -314,7 +314,6 @@ PINNED_UNREFERENCED_CODES_2026_07_29 = (
     ("pricing", "BASIS_MISSING", "design/08-bundles.md"),
     ("pricing", "BULK_ROW_CONFLICT", "design/12-operator-efficiency.md"),
     ("pricing", "CHANGE_TARGET_UNPUBLISHED", "design/06-consumer-contracts.md"),
-    ("pricing", "CLONE_SOURCE_NOT_FOUND", "design/12-operator-efficiency.md"),
     ("pricing", "COMPONENT_UNPUBLISHED", "design/08-bundles.md"),
     # Three paid down 2026-08-08 by D-256, which built the composite meter:
     # `inst-cm-constituents` and `inst-cm-formula` now name the two codes their

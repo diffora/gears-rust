@@ -205,7 +205,14 @@ def test_the_pinned_code_baseline_has_exactly_fifty_entries():
     # by naming it in `inst-ft-typed` -- the rule that would raise it -- together
     # with the reason it cannot fire in the two-field floor shape the slice built.
     # Note beside the list.
-    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 33
+    # 33 until 2026-08-09, when D-278 paid down `CLONE_SOURCE_NOT_FOUND` by
+    # building the clone route, minting the code, and naming it in
+    # `inst-cl-source` -- the rule that raises it. Named in the RULE, not only in
+    # the register: a bare code token in register prose closes a
+    # `code-unreferenced` finding just as effectively and closing it that way is
+    # a false payment. Verified by removing the register mention and confirming
+    # the finding stayed closed.
+    assert len(PINNED_UNREFERENCED_CODES_2026_07_29) == 32
 
 
 def test_is_pinned_baseline_matches_only_the_recorded_gear():

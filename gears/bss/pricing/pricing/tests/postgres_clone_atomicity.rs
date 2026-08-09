@@ -58,7 +58,7 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::clone::clone_plan_on;
+use bss_pricing::infra::clone::{CloneScopes, clone_plan_on};
 use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, NewPriceDraft,
     PlanRepo, PlanShapeRepo, PriceRepo, bundle_repo, plan_repo, plan_shape_repo, price_repo,
@@ -354,7 +354,10 @@ async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
             Box::pin(async move {
                 Box::pin(clone_plan_on(
                     txn,
-                    &scope(),
+                    CloneScopes {
+                        source: &scope(),
+                        target: &scope(),
+                    },
                     TENANT,
                     source_plan(),
                     target_plan(),
@@ -463,7 +466,10 @@ async fn the_same_clone_committed_writes_every_class_the_rollback_removed() {
             Box::pin(async move {
                 Box::pin(clone_plan_on(
                     txn,
-                    &scope(),
+                    CloneScopes {
+                        source: &scope(),
+                        target: &scope(),
+                    },
                     TENANT,
                     source_plan(),
                     target_plan(),

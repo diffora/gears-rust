@@ -99,7 +99,14 @@ def test_the_run_reports_seven_live_findings_and_seventy_three_suppressed():
     # two-field floor shape the slice actually built. Debt is now 21 propagation
     # gaps + 33 unreferenced codes (36 until D-256 paid down the three composite
     # entries). Live findings unchanged at 2, both rating-side.
-    assert payload["known_debt_suppressed"] == 54
+    # 54 until 2026-08-09, when D-278 paid down `CLONE_SOURCE_NOT_FOUND` /
+    # design/12 -- the clone route was built, the code minted, and the raising
+    # rule named it (`inst-cl-source`). Named in the RULE and not only in the
+    # register: a bare code token in register prose closes this finding too, and
+    # closing it that way is a false payment. Checked by removing the register
+    # mention and confirming the finding stayed closed. Debt is now 21
+    # propagation gaps + 32 unreferenced codes. Live findings unchanged at 2.
+    assert payload["known_debt_suppressed"] == 53
     assert payload["known_debt_tracked_as"] == "D-69"
 
 
