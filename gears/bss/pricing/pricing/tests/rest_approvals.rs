@@ -602,6 +602,7 @@ async fn a_moved_subject_is_shown_as_not_matching_the_pin() {
             before[0].row_version,
             content,
             rest_support::seed_stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect("move the subject");

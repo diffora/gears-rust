@@ -431,6 +431,7 @@ async fn the_band_set_comes_back_in_quantity_order_however_the_rows_were_written
         RowVersion::new(0),
         content,
         stamp(),
+        /* on_behalf_of */ None,
     )
     .await
     .expect("replace the band set, descending");
@@ -823,6 +824,7 @@ async fn a_grandfathering_horizon_off_its_class_is_the_callers_mistake_not_the_s
             RowVersion::new(0),
             content,
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect_err("a horizon submitted onto a non-grandfathered row must be refused");
@@ -929,6 +931,7 @@ async fn an_authored_instant_finer_than_the_quantum_is_refused_on_both_write_pat
             RowVersion::new(0),
             content,
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect_err("a sub-millisecond horizon must be refused on the edit path too");
@@ -1010,6 +1013,7 @@ async fn a_draft_may_shed_its_bands_and_its_tiered_kind_in_one_edit() {
         RowVersion::new(0),
         content,
         stamp(),
+        /* on_behalf_of */ None,
     )
     .await
     .expect("a tiered draft may become a flat one in a single edit");
@@ -1221,6 +1225,7 @@ async fn an_edit_advances_the_tag_and_the_previous_tag_stops_working() {
             RowVersion::new(0),
             content,
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect("the first edit holds the current version");
@@ -1239,6 +1244,7 @@ async fn an_edit_advances_the_tag_and_the_previous_tag_stops_working() {
             RowVersion::new(0),
             stale,
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect_err("a submit against a superseded tag must be refused");
@@ -1300,6 +1306,7 @@ async fn a_frozen_row_refuses_by_name_and_an_absent_one_is_not_found() {
             RowVersion::new(0),
             graduated_content(),
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect_err("a published row is frozen in content");
@@ -1344,6 +1351,7 @@ async fn a_frozen_row_refuses_by_name_and_an_absent_one_is_not_found() {
             RowVersion::new(0),
             flat_content(),
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect_err("that row was never authored");
@@ -1385,6 +1393,7 @@ async fn an_update_replaces_the_whole_band_set() {
             RowVersion::new(0),
             content,
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect("replace the band set");
@@ -1457,6 +1466,7 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
         RowVersion::new(0),
         content,
         stamp(),
+        /* on_behalf_of */ None,
     )
     .await
     .expect("replace the whole content");
@@ -1572,6 +1582,7 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
         RowVersion::new(0),
         resized,
         stamp(),
+        /* on_behalf_of */ None,
     )
     .await
     .expect("re-block the package row");
@@ -1625,6 +1636,7 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
         RowVersion::new(0),
         seated,
         stamp(),
+        /* on_behalf_of */ None,
     )
     .await
     .expect("re-price the per-unit row");
@@ -1787,6 +1799,7 @@ async fn another_tenants_price_row_is_invisible_and_unwritable() {
             RowVersion::new(0),
             flat_content(),
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect_err("a foreign draft is not writable");
@@ -2847,6 +2860,7 @@ async fn a_row_whose_content_moved_since_validation_is_refused_by_its_own_tag() 
         RowVersion::new(0),
         edited,
         stamp(),
+        /* on_behalf_of */ None,
     )
     .await
     .expect("edit the draft");
@@ -3217,6 +3231,7 @@ async fn every_price_record_carries_the_correlation_its_caller_supplied() {
         RowVersion::new(0),
         flat_content(),
         stamp_correlated(EDITED_BY_CALL),
+        /* on_behalf_of */ None,
     )
     .await
     .expect("edit it");
@@ -3537,6 +3552,7 @@ async fn an_update_may_not_move_the_row_to_another_line() {
             created.row_version,
             usage_line_content(Some("egress_gb"), ""),
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect_err("an update may not move the row's line");
@@ -3625,6 +3641,7 @@ async fn editing_and_deleting_a_draft_emit_nothing_further() {
         created.row_version,
         edited,
         stamp(),
+        /* on_behalf_of */ None,
     )
     .await
     .expect("edit it");

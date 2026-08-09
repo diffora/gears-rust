@@ -366,6 +366,89 @@ async fn a_row_another_run_holds_conflicts_the_whole_batch_and_commits_nothing()
 }
 
 #[tokio::test]
+async fn an_interactive_edit_is_refused_by_the_lock_and_told_which_run() {
+    // `fr-concurrent-edit`'s other end, in the door rather than on a surface: a
+    // rule that lives on one authoring path is not a rule, and this is the second
+    // path onto the same rows.
+    let h = harness().await;
+    let (price_id, version) = seed_draft(&h, key("eu"), 9_900).await;
+    let run = open_run(&h, "c-10").await;
+    let conn = h.provider.conn().expect("conn");
+    bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        BulkState::Committing,
+        serde_json::json!({}),
+        at(11),
+    )
+    .await
+    .expect("enter committing");
+    bulk_repo::take_locks(&conn, &scope(), TENANT, run, &[price_id], at(11))
+        .await
+        .expect("hold the row");
+
+    let refused = h
+        .prices
+        .update_draft(
+            &scope(),
+            TENANT,
+            price_id,
+            version,
+            content(12_500),
+            stamp(),
+            None,
+        )
+        .await
+        .expect_err("an interactive edit belongs to no run");
+    let rendered = format!("{refused:?}");
+    assert!(
+        rendered.contains(&run.to_string()),
+        "the conflict names the run holding it: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn the_run_holding_the_row_edits_it_freely() {
+    // **The distinction the guard exists for, and the easy mistake.** Phase 2
+    // edits the very rows it locked, so a guard refusing every locked row would
+    // make the commit refuse its own batch. What the lock excludes is somebody
+    // else.
+    let h = harness().await;
+    let (price_id, version) = seed_draft(&h, key("eu"), 9_900).await;
+    let run = open_run(&h, "c-11").await;
+    let conn = h.provider.conn().expect("conn");
+    bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        BulkState::Committing,
+        serde_json::json!({}),
+        at(11),
+    )
+    .await
+    .expect("enter committing");
+    bulk_repo::take_locks(&conn, &scope(), TENANT, run, &[price_id], at(11))
+        .await
+        .expect("hold the row");
+
+    h.prices
+        .update_draft(
+            &scope(),
+            TENANT,
+            price_id,
+            version,
+            content(12_500),
+            stamp(),
+            Some(run),
+        )
+        .await
+        .expect("its own holder passes");
+}
+
+#[tokio::test]
 async fn the_stored_report_carries_both_halves() {
     // `inst-bk-idem` replays this report to a retry, so what the run *stores* is
     // the contract — not merely what `commit_batch` returned to its caller.

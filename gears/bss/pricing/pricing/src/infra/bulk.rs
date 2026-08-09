@@ -150,21 +150,30 @@ pub async fn commit_batch(
     .await
     .map_err(|e| repo_failure(&e))?;
 
-    let receipt = match bulk_repo::take_locks(&conn, scope, tenant_id, operation_id, &targets, now)
-        .await
-    {
-        Ok(()) => {
-            let receipt = commit_rows(prices, scope, tenant_id, rows, &drafts, stamp, now).await?;
-            bulk_repo::release_locks(&conn, scope, tenant_id, operation_id)
-                .await
-                .map_err(|e| repo_failure(&e))?;
-            receipt
-        }
-        // Another run holds one of the rows. Nothing committed, and §4 offers no
-        // failure edge out of `committing` — see the module doc.
-        Err(held @ RepoError::BulkRowLocked { .. }) => every_row_conflicted(rows, &held),
-        Err(other) => return Err(repo_failure(&other)),
-    };
+    let receipt =
+        match bulk_repo::take_locks(&conn, scope, tenant_id, operation_id, &targets, now).await {
+            Ok(()) => {
+                let receipt = commit_rows(
+                    prices,
+                    scope,
+                    tenant_id,
+                    operation_id,
+                    rows,
+                    &drafts,
+                    stamp,
+                    now,
+                )
+                .await?;
+                bulk_repo::release_locks(&conn, scope, tenant_id, operation_id)
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                receipt
+            }
+            // Another run holds one of the rows. Nothing committed, and §4 offers no
+            // failure edge out of `committing` — see the module doc.
+            Err(held @ RepoError::BulkRowLocked { .. }) => every_row_conflicted(rows, &held),
+            Err(other) => return Err(repo_failure(&other)),
+        };
 
     bulk_repo::advance(
         &conn,
@@ -181,10 +190,16 @@ pub async fn commit_batch(
 }
 
 /// Commit each row on its own, collecting what landed and what did not.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the repository, the scope, the tenant, the run whose lock its own edits are \
+              allowed through, the batch, the drafts already read, the stamp and the instant"
+)]
 async fn commit_rows(
     prices: &PriceRepo,
     scope: &AccessScope,
     tenant_id: Uuid,
+    operation_id: Uuid,
     rows: &[ImportRow],
     drafts: &HashMap<ScopeKey, PriceRecord>,
     stamp: AuditStamp,
@@ -213,6 +228,10 @@ async fn commit_rows(
                     expected,
                     row.content.clone(),
                     stamp,
+                    // The run that locked this row is the one editing it, which is
+                    // the whole distinction: the lock excludes somebody else, not
+                    // its own holder.
+                    Some(operation_id),
                 )
                 .await
                 .map(|record| record.price_id)

@@ -1143,6 +1143,7 @@ async fn patching_a_price_row_voids_the_pending_unit() {
             seeded.price_version,
             content,
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect("patch the row");
@@ -1420,6 +1421,7 @@ async fn approving_a_unit_the_guard_voided_is_refused_as_not_pending() {
             seeded.price_version,
             content,
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect("somebody edits the row");
@@ -2079,6 +2081,7 @@ async fn the_supersession_unit_pins_the_plan_shape_a_reviewer_is_shown() {
             seeded.price_version,
             moved,
             stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect("edit the plan's row");

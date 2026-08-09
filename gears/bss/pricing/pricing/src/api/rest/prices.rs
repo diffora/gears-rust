@@ -771,6 +771,10 @@ async fn patch_price(
             expected,
             content,
             audit_stamp(&ctx, Utc::now(), correlation),
+            // An interactive edit belongs to no run, so the bulk lock excludes it
+            // whoever holds the row (`inst-bk-lock`).
+            /* on_behalf_of */
+            None,
         )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;

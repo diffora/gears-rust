@@ -447,6 +447,7 @@ async fn a_row_edited_after_the_approve_does_not_publish_under_the_stale_decisio
             before[0].row_version,
             content,
             rest_support::seed_stamp(),
+            /* on_behalf_of */ None,
         )
         .await
         .expect("re-price the row after the approve");

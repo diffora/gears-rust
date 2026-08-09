@@ -563,6 +563,12 @@ impl PriceRepo {
     /// scope or storage failure, including the band table's refusal of a band
     /// set on a kind that may not carry one; [`RepoError::CorruptRow`] when the
     /// updated row reads back unusable.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the compare-and-swap's coordinate, the content, the D-135 stamp and the run \
+                  the edit belongs to; the last is what tells an interactive edit from the \
+                  bulk run that locked the row (`inst-bk-lock`)"
+    )]
     pub async fn update_draft(
         &self,
         scope: &AccessScope,
@@ -571,6 +577,7 @@ impl PriceRepo {
         expected: RowVersion,
         content: PriceContent,
         stamp: AuditStamp,
+        on_behalf_of: Option<Uuid>,
     ) -> Result<PriceRecord, RepoError> {
         let horizon = content.grandfather_until;
         // Before the row is even read: an instant the catalog cannot compare is
@@ -591,6 +598,11 @@ impl PriceRepo {
             .db()
             .in_transaction::<PriceRecord, RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // `inst-bk-lock`, in the door rather than on a surface: a rule
+                    // that lives on one authoring path is not a rule, and this is
+                    // the second path onto the same rows.
+                    refuse_if_locked_elsewhere(txn, &scope, tenant_id, price_id, on_behalf_of)
+                        .await?;
                     let Some(row) =
                         mutable_draft(txn, &scope, tenant_id, price_id, expected).await?
                     else {
@@ -753,6 +765,40 @@ impl PriceRepo {
 /// key has to reach the caller as `DUPLICATE_SCOPE_KEY`, not as "the store
 /// failed". What arrives as infrastructure is only what happens outside the
 /// body — beginning the transaction, and committing it.
+/// Refuse an edit to a row an **other** bulk run holds (`inst-bk-lock`).
+///
+/// `on_behalf_of` is the run the edit belongs to, or `None` for an interactive
+/// one. **The distinction is load-bearing and easy to miss**: Phase 2 edits the
+/// very rows it locked, so a guard that refused every locked row would make the
+/// commit refuse its own batch. What the lock excludes is *somebody else*.
+///
+/// Read inside the caller's transaction, and the holder is nameable: a lock row is
+/// inserted by a run already `committing`, so it is durable — which is what lets
+/// the conflict say which run, as `fr-concurrent-edit` requires.
+///
+/// # Errors
+/// [`RepoError::BulkRowLocked`] naming the holder; [`RepoError::Db`] on a scope or
+/// storage failure.
+async fn refuse_if_locked_elsewhere(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+    on_behalf_of: Option<Uuid>,
+) -> Result<(), RepoError> {
+    let Some(holder) = super::bulk_repo::lock_holder(runner, scope, tenant_id, price_id).await?
+    else {
+        return Ok(());
+    };
+    if on_behalf_of == Some(holder) {
+        return Ok(());
+    }
+    Err(RepoError::BulkRowLocked {
+        price_id: price_id.to_string(),
+        bulk_operation_id: holder.to_string(),
+    })
+}
+
 fn tx_failure(err: TxError<RepoError>) -> RepoError {
     err.into_domain(|infra| RepoError::Db(format!("price draft transaction: {infra}")))
 }
