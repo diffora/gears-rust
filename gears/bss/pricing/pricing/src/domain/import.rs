@@ -134,9 +134,16 @@ pub struct RowOutcome {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BatchReport {
     /// One entry per row that failed, in batch order. A row that passed every
-    /// batch-only rule has **no** entry — the report is of violations, and a
-    /// clean row's absence is what "nothing to fix here" looks like.
-    pub rows: Vec<RowOutcome>,
+    /// rule has **no** entry — the report is of violations, and a clean row's
+    /// absence is what "nothing to fix here" looks like.
+    ///
+    /// **Private, and that is the invariant made structural rather than hoped
+    /// for.** [`BatchReport::add`] binary-searches this vector, so an out-of-order
+    /// or appended-to `rows` silently produces the two-entries-per-row state
+    /// `add` exists to prevent. D-283's defect was an invariant nobody could see;
+    /// this one is enforced by the module boundary instead of by a doc asking the
+    /// next author nicely.
+    rows: Vec<RowOutcome>,
 }
 
 impl BatchReport {
@@ -166,6 +173,12 @@ impl BatchReport {
                 },
             ),
         }
+    }
+
+    /// The outcomes, in batch order.
+    #[must_use]
+    pub fn rows(&self) -> &[RowOutcome] {
+        &self.rows
     }
 
     /// Whether Phase 1 blocks the batch (`inst-bk-phase1`, O2).

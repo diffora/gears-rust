@@ -72,7 +72,7 @@ fn row(scope_key: ScopeKey) -> ImportRow {
 }
 
 fn failed_rows(report: &BatchReport) -> Vec<usize> {
-    report.rows.iter().map(|outcome| outcome.row).collect()
+    report.rows().iter().map(|outcome| outcome.row).collect()
 }
 
 #[test]
@@ -108,19 +108,19 @@ fn two_rows_on_one_key_both_fail_and_each_names_the_other() {
         vec![0, 1],
         "a collision has two rows in it and neither is more at fault"
     );
-    for outcome in &report.rows {
+    for outcome in report.rows() {
         assert_eq!(outcome.violations.len(), 1);
         assert_eq!(outcome.violations[0].code, DUPLICATE_SCOPE_KEY);
     }
     assert!(
-        report.rows[0].violations[0].detail.contains("row(s) 1"),
+        report.rows()[0].violations[0].detail.contains("row(s) 1"),
         "row 0 must name row 1: {}",
-        report.rows[0].violations[0].detail
+        report.rows()[0].violations[0].detail
     );
     assert!(
-        report.rows[1].violations[0].detail.contains("row(s) 0"),
+        report.rows()[1].violations[0].detail.contains("row(s) 0"),
         "row 1 must name row 0: {}",
-        report.rows[1].violations[0].detail
+        report.rows()[1].violations[0].detail
     );
     assert!(report.blocks_the_batch());
 }
@@ -129,7 +129,11 @@ fn two_rows_on_one_key_both_fail_and_each_names_the_other() {
 fn three_rows_on_one_key_each_name_the_other_two() {
     let report = classify(&[row(base()), row(base()), row(base())]);
     assert_eq!(failed_rows(&report), vec![0, 1, 2]);
-    assert!(report.rows[1].violations[0].detail.contains("row(s) 0, 2"));
+    assert!(
+        report.rows()[1].violations[0]
+            .detail
+            .contains("row(s) 0, 2")
+    );
 }
 
 #[test]
@@ -234,13 +238,13 @@ fn a_row_carrying_an_unbuilt_primitive_fails_and_inherits_the_publish_code() {
 
     let report = classify(&[row]);
     assert_eq!(failed_rows(&report), vec![0]);
-    assert_eq!(report.rows[0].violations[0].code, PRIMITIVE_RULES_UNBUILT);
+    assert_eq!(report.rows()[0].violations[0].code, PRIMITIVE_RULES_UNBUILT);
     assert!(
-        report.rows[0].violations[0]
+        report.rows()[0].violations[0]
             .detail
             .contains("includedAllowance"),
         "the sentence names the field the operator has to remove: {}",
-        report.rows[0].violations[0].detail
+        report.rows()[0].violations[0].detail
     );
     assert!(report.blocks_the_batch());
 }
@@ -257,8 +261,8 @@ fn a_row_carrying_both_unbuilt_primitives_is_told_about_both() {
     row.content.row.tier_qualification_window = Some(TierQualificationWindow::TrailingPeriod);
 
     let report = classify(&[row]);
-    assert_eq!(report.rows[0].violations.len(), 2, "both, not the first");
-    let details: Vec<&str> = report.rows[0]
+    assert_eq!(report.rows()[0].violations.len(), 2, "both, not the first");
+    let details: Vec<&str> = report.rows()[0]
         .violations
         .iter()
         .map(|violation| violation.detail.as_str())
@@ -283,7 +287,7 @@ fn a_row_can_carry_two_different_faults_and_hears_about_both() {
     let report = classify(&[first, row(base())]);
 
     assert_eq!(failed_rows(&report), vec![0, 1]);
-    let codes: Vec<&str> = report.rows[0]
+    let codes: Vec<&str> = report.rows()[0]
         .violations
         .iter()
         .map(|violation| violation.code.as_str())
@@ -294,7 +298,7 @@ fn a_row_can_carry_two_different_faults_and_hears_about_both() {
         "row 0 is both a duplicate and unjudged, and the order is stable"
     );
     assert_eq!(
-        report.rows[1]
+        report.rows()[1]
             .violations
             .iter()
             .map(|violation| violation.code.as_str())

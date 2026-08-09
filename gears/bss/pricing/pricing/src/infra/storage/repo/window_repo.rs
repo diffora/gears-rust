@@ -246,7 +246,7 @@ pub struct WindowRecord {
     pub tenant_id: Uuid,
     /// The price row this interval belongs to.
     pub price_id: Uuid,
-    /// The eight axes that row is filed under — resolved from `pricing_price` on
+    /// The ten axes that row is filed under — resolved from `pricing_price` on
     /// every read, never stored here.
     pub scope_key: ScopeKey,
     /// Inclusive start, UTC.

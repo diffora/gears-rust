@@ -1,7 +1,7 @@
 //! `SeaORM` entity for `bss.pricing_price` — the price rows and, in the same
 //! table, the price **history** (`design/01-foundation.md` §3.7).
 //!
-//! The eight canonical scope-key columns come first and in normative order
+//! The ten canonical scope-key columns come first and in normative order
 //! (§4.1). `cohort` is a `String` holding the domain token (`none`, or the
 //! cutover instant) rather than an `Option<DateTime<Utc>>`, because it is a
 //! column of a partial `UNIQUE` index and distinct `NULL`s do not collide.

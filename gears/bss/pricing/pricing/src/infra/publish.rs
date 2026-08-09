@@ -763,7 +763,7 @@ impl PublishService {
 /// case moves.
 fn validated_draft_rows(shape: &PlanShape) -> Vec<(Uuid, RowVersion)> {
     // Compared by canonical **rendering**, the way `infra::window`'s pending-key check
-    // does: `ScopeKey` is not `Ord`, and the rendering is the eight axes in a fixed
+    // does: `ScopeKey` is not `Ord`, and the rendering is the ten axes in a fixed
     // order — the same string a `DUPLICATE_SCOPE_KEY` refusal names, so two equal
     // renderings are one key by construction.
     let occupied: std::collections::BTreeSet<String> = shape

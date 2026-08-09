@@ -738,7 +738,7 @@ pub fn plan_publish_degraded_dedup_key(plan_id: PlanId, catalog_version: Catalog
 /// dropping the field mints nothing and removes nothing anything agreed to; it is
 /// decided by the rule this file already wrote down.
 ///
-/// It carries **no canonical scope key**. The key is eight axes of
+/// It carries **no canonical scope key**. The key is ten axes of
 /// `pricing_price` and resolving one per event would put a query per flip on a
 /// sweep's path; a consumer that needs the key has the `priceId` and the pinned
 /// delta, which carries the window facts grouped by key already (D-121).

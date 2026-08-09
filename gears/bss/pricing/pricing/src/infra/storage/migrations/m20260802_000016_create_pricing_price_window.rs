@@ -120,7 +120,7 @@
 //! **A trigger could carry it, and saying otherwise would be overstating the
 //! case.** `pricing_price_tier_band_parent_kind` in `m20260802_000011` is
 //! already a cross-table trigger in this chain: a `BEFORE INSERT OR UPDATE` arm
-//! here could join `pricing_price` on the eight axes and scan the key's
+//! here could join `pricing_price` on the ten axes and scan the key's
 //! occupying windows. It is not built, and the reason is scope rather than
 //! impossibility — the rule needs the same key resolution, the same
 //! occupying-state set and the same half-open arithmetic

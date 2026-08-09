@@ -224,7 +224,7 @@ pub const ROLLOVER_POLICIES: &[RolloverPolicy] = &[RolloverPolicy::None, Rollove
 pub struct NewPriceDraft {
     /// The row being created.
     pub price_id: Uuid,
-    /// The eight axes it is filed under.
+    /// The ten axes it is filed under.
     pub scope_key: ScopeKey,
     /// What the row says.
     pub content: PriceContent,

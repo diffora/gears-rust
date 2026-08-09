@@ -140,7 +140,7 @@
 //! `actor_principal_id` is a non-null column precisely so it is never a
 //! synthetic. Neither takes a stamp, and neither is a decision.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
@@ -228,7 +228,9 @@ pub struct NewApproval {
     /// `Vec` would make the register's primary key the deduplicator and turn an
     /// ordinary shape into a spurious conflict with the unit's own insert.
     ///
-    /// **The canonical eight-axis rendering, not `ScopeKey`.** That is the register's
+    /// **The canonical rendering, not `ScopeKey`** — ten axes since D-196, which is
+    /// what `ScopeKey`'s `Display` writes (this doc said "eight-axis" until
+    /// 2026-08-09; D-285's grep). That is the register's
     /// own column, the string a publish refusal names a key by, and the only
     /// ordering over keys this gear has ever meant — `ScopeKey` deliberately derives
     /// no `Ord`, its axis order being a *rendering* order rather than a comparison
@@ -627,8 +629,39 @@ pub async fn find_pending_key_holder(
     if keys.is_empty() {
         return Ok(None);
     }
+    Ok(find_pending_key_holders(runner, scope, tenant_id, keys)
+        .await?
+        .into_iter()
+        .next())
+}
+
+/// **Every** pending holder among `keys`, in the same canonical order.
+///
+/// [`find_pending_key_holder`]'s plural, and the one implementation both use —
+/// that function is now its first element. The singular answers a *submit*, which
+/// stops at the first conflict because one is enough to refuse; the plural answers
+/// the bulk import's Phase 1, which owes a verdict on **every** row and cannot
+/// stop at the first (`inst-bk-phase1`: one invalid row blocks the batch, and the
+/// report enumerates every violation).
+///
+/// One query for the register and one `read` per **distinct** unit, not per key: a
+/// unit holding forty of the batch's keys is one read.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`] on a
+/// register row whose unit has vanished — impossible, `DELETE` being refused on
+/// both tables, which is why it is a corrupt store rather than an empty answer.
+pub async fn find_pending_key_holders(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    keys: &BTreeSet<String>,
+) -> Result<Vec<(ApprovalRecord, String)>, RepoError> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
     let rendered: Vec<String> = keys.iter().cloned().collect();
-    let Some(held) = approval_key::Entity::find()
+    let held = approval_key::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
@@ -638,22 +671,29 @@ pub async fn find_pending_key_holder(
                 .add(approval_key::Column::ScopeKey.is_in(rendered)),
         )
         .order_by(approval_key::Column::ScopeKey, Order::Asc)
-        .one(runner)
+        .all(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("read the pending key register: {e}")))?
-    else {
-        return Ok(None);
-    };
-    // The unit itself, so the refusal can name what to decide or withdraw. A
-    // register row whose unit has vanished is impossible — `DELETE` is refused on
-    // both tables — so an absent parent is a corrupt store and not an empty answer.
-    let Some(record) = read(runner, scope, tenant_id, held.approval_id).await? else {
-        return Err(RepoError::CorruptRow(format!(
-            "pricing_approval_key: scope key {} is held by approval {}, which does not exist",
-            held.scope_key, held.approval_id
-        )));
-    };
-    Ok(Some((record, held.scope_key)))
+        .map_err(|e| RepoError::Db(format!("read the pending key register: {e}")))?;
+
+    let mut units: BTreeMap<Uuid, ApprovalRecord> = BTreeMap::new();
+    let mut holders = Vec::with_capacity(held.len());
+    for row in held {
+        let record = match units.entry(row.approval_id) {
+            std::collections::btree_map::Entry::Occupied(found) => found.get().clone(),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                let Some(record) = read(runner, scope, tenant_id, row.approval_id).await? else {
+                    return Err(RepoError::CorruptRow(format!(
+                        "pricing_approval_key: scope key {} is held by approval {}, which does \
+                         not exist",
+                        row.scope_key, row.approval_id
+                    )));
+                };
+                slot.insert(record).clone()
+            }
+        };
+        holders.push((record, row.scope_key));
+    }
+    Ok(holders)
 }
 
 /// Every canonical scope key `approval_id` holds, in canonical order.
@@ -664,7 +704,7 @@ pub async fn find_pending_key_holder(
 /// tenant — the observability twin of `find_pending_key_holder`.
 ///
 /// Rendered keys and not `ScopeKey`s: this reads the register's own column, and
-/// re-parsing eight axes out of it to hand back a type the caller renders again
+/// re-parsing ten axes out of it to hand back a type the caller renders again
 /// would put a second parser on the one string the store keeps.
 ///
 /// # Errors

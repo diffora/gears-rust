@@ -4,7 +4,7 @@
 //! [`PriceRow`] is the **shape** the thirteen Slice-3 rules judge, and it
 //! deliberately carries no identity and no key — a rule able to see which row it
 //! was looking at would be free to reach a different verdict for two rows that
-//! are the same shape. [`ScopeKey`] carries the eight axes. Neither is enough on
+//! are the same shape. [`ScopeKey`] carries the ten axes. Neither is enough on
 //! its own for a caller that has to name a row, tag it, or decide whether it may
 //! still be edited, so this module composes them with exactly the columns that
 //! answer those three questions.
@@ -93,7 +93,10 @@ pub struct PriceRecord {
     /// id before the row is durable, and a store that minted ids would make an
     /// idempotent retry create a second row.
     pub price_id: Uuid,
-    /// The eight axes this row is the (at most one) current row on.
+    /// The ten axes this row is the (at most one) current row on — eight until
+    /// D-196 added the usage pair, which `m20260802_000023` widened both indexes
+    /// to. The count matters: a rule built from the stale one refused work the
+    /// store admits (D-283).
     pub scope_key: ScopeKey,
     /// The authored shape the Slice-3 rules judge.
     pub row: PriceRow,
