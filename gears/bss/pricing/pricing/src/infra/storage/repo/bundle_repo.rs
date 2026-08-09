@@ -489,49 +489,11 @@ impl BundleRepo {
         new: NewBundle,
         stamp: AuditStamp,
     ) -> Result<Uuid, RepoError> {
-        let _ = stamp;
         let conn = self
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("pricing_bundle conn: {e}")))?;
-        // The read is the explanatory path and the index is the guarantee — the
-        // read-then-index arrangement D-148 describes, here for a uniqueness the
-        // caller can be told about in its own words.
-        if bundle_of_plan(&conn, scope, new.tenant_id, new.plan_id)
-            .await?
-            .is_some()
-        {
-            return Err(RepoError::DuplicateBundleOnPlan {
-                plan_id: new.plan_id.get().to_string(),
-            });
-        }
-        let row = bundle::ActiveModel {
-            bundle_id: Set(new.bundle_id),
-            tenant_id: Set(new.tenant_id),
-            plan_id: Set(new.plan_id.get()),
-            price_basis: Set(new.price_basis.as_str().to_owned()),
-            invoice_itemization: Set(new.invoice_itemization.as_str().to_owned()),
-        };
-        bundle::Entity::insert(row.clone())
-            .secure()
-            .scope_with_model(scope, &row)
-            .map_err(|e| RepoError::Db(format!("pricing_bundle scope: {e}")))?
-            .exec(&conn)
-            .await
-            .map_err(|e| {
-                // The index is the guarantee; a racing creator loses here rather
-                // than on the read above.
-                if e.to_string().contains("uq_pricing_bundle_plan")
-                    || e.to_string().contains("pricing_bundle.plan_id")
-                {
-                    RepoError::DuplicateBundleOnPlan {
-                        plan_id: new.plan_id.get().to_string(),
-                    }
-                } else {
-                    RepoError::Db(format!("insert pricing_bundle: {e}"))
-                }
-            })?;
-        Ok(new.bundle_id)
+        create_on(&conn, scope, new, stamp).await
     }
 
     /// The bundle on this plan, if it is one.
@@ -550,10 +512,7 @@ impl BundleRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("pricing_bundle conn: {e}")))?;
-        let Some(row) = bundle_row_of_plan(&conn, scope, tenant_id, plan_id).await? else {
-            return Ok(None);
-        };
-        record_of(&row).map(Some)
+        find_by_plan_on(&conn, scope, tenant_id, plan_id).await
     }
 
     /// The plan a bundle rides, by the bundle's own id.
@@ -627,59 +586,10 @@ impl BundleRepo {
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    };
-                    if mutable_draft(txn, &scope, tenant_id, plan_id, revision, expected)
-                        .await?
-                        .is_none()
-                    {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    }
-                    let Some(bundle_id) = bundle_of_plan(txn, &scope, tenant_id, plan_id).await?
-                    else {
-                        return Err(RepoError::NotFound {
-                            subject: "bundle".to_owned(),
-                            id: plan_id.get().to_string(),
-                        });
-                    };
-                    let Some(number) = stored_revision(revision) else {
-                        return Err(RepoError::CorruptRow(format!(
-                            "bundle {bundle_id} revision {revision} exceeds the storable range"
-                        )));
-                    };
-
-                    drop_composition(txn, &scope, bundle_id, tenant_id, number).await?;
-                    write_composition(txn, &scope, bundle_id, tenant_id, number, &draft).await?;
-
-                    let moved = plan_revision_bump(txn, &scope, guard).await?;
-                    // The read above is not the guard — a concurrent publish can
-                    // land between it and this statement — so a swap that matched
-                    // nothing is still resolved, and the composition it has
-                    // already replaced is restored by the rollback.
-                    if moved == 0 {
-                        return Err(
-                            refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
-                        );
-                    }
-                    let updated = load_revision(txn, &scope, tenant_id, plan_id, revision)
-                        .await?
-                        .ok_or_else(|| not_found(plan_id, revision))?;
-                    record_revision_mutation(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        &updated,
-                        AuditAction::Update,
-                        expected,
-                        stamp,
+                    replace_composition_on(
+                        txn, &scope, tenant_id, plan_id, revision, expected, draft, stamp,
                     )
-                    .await?;
-                    Ok(updated)
+                    .await
                 })
             })
             .await;
@@ -703,14 +613,177 @@ impl BundleRepo {
             .db
             .conn()
             .map_err(|e| RepoError::Db(format!("pricing_bundle conn: {e}")))?;
-        let Some(bundle_id) = bundle_of_plan(&conn, scope, tenant_id, plan_id).await? else {
-            return Ok(CompositionDraft::default());
-        };
-        let Some(number) = stored_revision(revision) else {
-            return Ok(CompositionDraft::default());
-        };
-        read_composition(&conn, scope, bundle_id, tenant_id, number).await
+        load_composition_on(&conn, scope, tenant_id, plan_id, revision).await
     }
+}
+
+/// [`BundleRepo::find_by_plan`]'s read on a runner the caller owns.
+///
+/// # Errors
+/// Exactly [`BundleRepo::find_by_plan`]'s.
+pub async fn find_by_plan_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<Option<BundleRecord>, RepoError> {
+    let Some(row) = bundle_row_of_plan(runner, scope, tenant_id, plan_id).await? else {
+        return Ok(None);
+    };
+    record_of(&row).map(Some)
+}
+
+/// [`BundleRepo::load_composition`]'s read on a runner the caller owns.
+///
+/// Runner-taking so that a caller copying a composition reads the source through
+/// the same transaction it writes the copy in (D-274) — otherwise the read is of
+/// a state the write is not protected against changing.
+///
+/// # Errors
+/// Exactly [`BundleRepo::load_composition`]'s.
+pub async fn load_composition_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+) -> Result<CompositionDraft, RepoError> {
+    let Some(bundle_id) = bundle_of_plan(runner, scope, tenant_id, plan_id).await? else {
+        return Ok(CompositionDraft::default());
+    };
+    let Some(number) = stored_revision(revision) else {
+        return Ok(CompositionDraft::default());
+    };
+    read_composition(runner, scope, bundle_id, tenant_id, number).await
+}
+
+/// [`BundleRepo::create`]'s body on a runner the caller owns.
+///
+/// The method reads its own connection; this form takes the caller's, so a
+/// creator composing the bundle identity with the composition that follows it
+/// gets both or neither (D-272, D-274).
+///
+/// # Errors
+/// Exactly [`BundleRepo::create`]'s.
+pub async fn create_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    new: NewBundle,
+    stamp: AuditStamp,
+) -> Result<Uuid, RepoError> {
+    let _ = stamp;
+    // The read is the explanatory path and the index is the guarantee — the
+    // read-then-index arrangement D-148 describes, here for a uniqueness the
+    // caller can be told about in its own words.
+    if bundle_of_plan(runner, scope, new.tenant_id, new.plan_id)
+        .await?
+        .is_some()
+    {
+        return Err(RepoError::DuplicateBundleOnPlan {
+            plan_id: new.plan_id.get().to_string(),
+        });
+    }
+    let row = bundle::ActiveModel {
+        bundle_id: Set(new.bundle_id),
+        tenant_id: Set(new.tenant_id),
+        plan_id: Set(new.plan_id.get()),
+        price_basis: Set(new.price_basis.as_str().to_owned()),
+        invoice_itemization: Set(new.invoice_itemization.as_str().to_owned()),
+    };
+    bundle::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .map_err(|e| RepoError::Db(format!("pricing_bundle scope: {e}")))?
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            // The index is the guarantee; a racing creator loses here rather
+            // than on the read above.
+            if e.to_string().contains("uq_pricing_bundle_plan")
+                || e.to_string().contains("pricing_bundle.plan_id")
+            {
+                RepoError::DuplicateBundleOnPlan {
+                    plan_id: new.plan_id.get().to_string(),
+                }
+            } else {
+                RepoError::Db(format!("insert pricing_bundle: {e}"))
+            }
+        })?;
+    Ok(new.bundle_id)
+}
+
+/// [`BundleRepo::replace_composition`]'s body on a runner the caller owns.
+///
+/// The method opens its own transaction; this form joins one already open, which
+/// is what a caller composing several writers into a single atomic act needs
+/// (D-272, D-274). The two are the same statements in the same order — the method
+/// is a delegation, so there is no second copy to drift.
+///
+/// # Errors
+/// Exactly [`BundleRepo::replace_composition`]'s, less the transaction-driver
+/// failure the caller now owns.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the compare-and-swap needs the whole coordinate beside the payload \
+              and the stamp; this is the method's own list, and a struct invented \
+              to shorten it would exist only to satisfy a count (D-274)"
+)]
+pub async fn replace_composition_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+    draft: CompositionDraft,
+    stamp: AuditStamp,
+) -> Result<PlanRevision, RepoError> {
+    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    };
+    if mutable_draft(runner, scope, tenant_id, plan_id, revision, expected)
+        .await?
+        .is_none()
+    {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    let Some(bundle_id) = bundle_of_plan(runner, scope, tenant_id, plan_id).await? else {
+        return Err(RepoError::NotFound {
+            subject: "bundle".to_owned(),
+            id: plan_id.get().to_string(),
+        });
+    };
+    let Some(number) = stored_revision(revision) else {
+        return Err(RepoError::CorruptRow(format!(
+            "bundle {bundle_id} revision {revision} exceeds the storable range"
+        )));
+    };
+
+    drop_composition(runner, scope, bundle_id, tenant_id, number).await?;
+    write_composition(runner, scope, bundle_id, tenant_id, number, &draft).await?;
+
+    let moved = plan_revision_bump(runner, scope, guard).await?;
+    // The read above is not the guard — a concurrent publish can
+    // land between it and this statement — so a swap that matched
+    // nothing is still resolved, and the composition it has
+    // already replaced is restored by the rollback.
+    if moved == 0 {
+        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
+    }
+    let updated = load_revision(runner, scope, tenant_id, plan_id, revision)
+        .await?
+        .ok_or_else(|| not_found(plan_id, revision))?;
+    record_revision_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &updated,
+        AuditAction::Update,
+        expected,
+        stamp,
+    )
+    .await?;
+    Ok(updated)
 }
 
 // ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ use bss_pricing::domain::bundle::{
 use bss_pricing::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
 };
+use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::PlanShapePatch;
@@ -50,11 +51,11 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::clone::{CloneNotice, PlanCloner};
+use bss_pricing::infra::clone::{CloneNotice, PlanCloner, clone_plan_on};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, NewPriceDraft,
-    PlanRepo, PlanShapeRepo, PriceRepo, plan_repo, plan_shape_repo, price_repo,
+    PlanRepo, PlanShapeRepo, PriceRepo, bundle_repo, plan_repo, plan_shape_repo, price_repo,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
@@ -120,13 +121,7 @@ async fn harness() -> Harness {
     let plans = PlanRepo::new(provider.clone());
     let shapes = PlanShapeRepo::new(provider.clone());
     let prices = PriceRepo::new(provider.clone());
-    let cloner = PlanCloner::new(
-        provider.clone(),
-        plans.clone(),
-        shapes.clone(),
-        prices.clone(),
-        BundleRepo::new(provider.clone()),
-    );
+    let cloner = PlanCloner::new(provider.clone());
     Harness {
         provider: provider.clone(),
         bundles: BundleRepo::new(provider),
@@ -913,6 +908,86 @@ async fn no_window_is_cloned_and_the_receipt_says_so() {
 }
 
 /// A plan with no current revision is not clonable, and the refusal names it.
+/// **A clone that fails partway leaves nothing behind.**
+///
+/// The property D-274 exists for, and one no test could state while the steps
+/// were repository *methods*: each opened its own transaction, so a plan draft
+/// carrying phases, rules, composites and prices committed step by step, and a
+/// caller that failed afterwards had no way to take any of it back.
+///
+/// The failure is the **caller's**, deliberately, because every failure the
+/// clone could raise from its own data is unreachable: the three axes the reset
+/// changes — eligibility, cohort and overlay — are each operand-free by the time
+/// a row gets here (D-266, D-268), so there is no source a valid author can
+/// write that makes the copy refuse halfway. This is also the route's own shape:
+/// `idempotent::guarded` owns the transaction, and what fails after the clone is
+/// the guard's own bookkeeping.
+#[tokio::test]
+async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
+    let h = harness().await;
+    seed_source(&h).await;
+
+    let scope = h.scope.clone();
+    let (_, outcome) = h
+        .provider
+        .db()
+        .in_transaction::<(), DomainError, _>(move |txn| {
+            Box::pin(async move {
+                Box::pin(clone_plan_on(
+                    txn,
+                    &scope,
+                    TENANT,
+                    source_plan(),
+                    target_plan(),
+                    at(11),
+                    stamp(),
+                ))
+                .await?;
+                Err(DomainError::Internal(
+                    "the caller fails after the clone".to_owned(),
+                ))
+            })
+        })
+        .await;
+    assert!(outcome.is_err(), "the caller's failure stands");
+
+    let conn = h.provider.conn().expect("conn");
+    assert!(
+        plan_repo::load_open_draft(&conn, &h.scope, TENANT, target_plan())
+            .await
+            .expect("read the draft")
+            .is_none(),
+        "the draft plan the clone created must not survive its caller's rollback"
+    );
+    assert!(
+        price_repo::load_for_plan(
+            &conn,
+            &h.scope,
+            TENANT,
+            target_plan(),
+            &[LifecycleState::Draft],
+        )
+        .await
+        .expect("read the rows")
+        .is_empty(),
+        "and neither may the price rows it copied"
+    );
+    assert!(
+        bundle_repo::find_by_plan_on(&conn, &h.scope, TENANT, target_plan())
+            .await
+            .expect("read the bundle")
+            .is_none(),
+        "nor the bundle identity it minted"
+    );
+    assert!(
+        plan_shape_repo::load_phase_set(&conn, &h.scope, TENANT, target_plan(), 0)
+            .await
+            .expect("read the phases")
+            .is_empty(),
+        "nor the phases it remapped"
+    );
+}
+
 #[tokio::test]
 async fn a_plan_with_nothing_published_cannot_be_cloned() {
     let h = harness().await;

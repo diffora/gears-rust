@@ -87,7 +87,7 @@
 //! rather than prevented.
 
 use chrono::{DateTime, Utc};
-use toolkit_db::secure::AccessScope;
+use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
@@ -101,8 +101,7 @@ use crate::domain::plan_shape::PlanPhase;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{PhaseId, PlanId, PriceEligibility, ScopeKey};
 use crate::infra::storage::repo::{
-    BundleRepo, NewBundle, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo,
-    plan_repo, plan_shape_repo, price_repo,
+    NewBundle, NewPlanDraft, NewPriceDraft, bundle_repo, plan_repo, plan_shape_repo, price_repo,
 };
 use crate::infra::storage::repo_failure;
 use std::collections::BTreeMap;
@@ -156,30 +155,20 @@ pub struct CloneReceipt {
 #[derive(Clone)]
 pub struct PlanCloner {
     db: DBProvider<DbError>,
-    plans: PlanRepo,
-    shapes: PlanShapeRepo,
-    prices: PriceRepo,
-    /// The source's bundle identity and composition, copied onto the clone under
-    /// a new `bundle_id` (D-269).
-    bundles: BundleRepo,
 }
 
 impl PlanCloner {
+    /// The database and nothing else.
+    ///
+    /// It used to hold four repositories, and holding them was the reason the
+    /// clone was not atomic: a repository's method opens its own transaction, so
+    /// a caller composed of methods is composed of separate transactions (D-272).
+    /// The runner-taking forms of D-274 are free functions, so the composition
+    /// needs the connection the transaction is opened on and nothing that would
+    /// open another.
     #[must_use]
-    pub const fn new(
-        db: DBProvider<DbError>,
-        plans: PlanRepo,
-        shapes: PlanShapeRepo,
-        prices: PriceRepo,
-        bundles: BundleRepo,
-    ) -> Self {
-        Self {
-            db,
-            plans,
-            shapes,
-            prices,
-            bundles,
-        }
+    pub const fn new(db: DBProvider<DbError>) -> Self {
+        Self { db }
     }
 
     /// Copy `source`'s **current** revision into `target` as a fresh draft.
@@ -209,211 +198,26 @@ impl PlanCloner {
         now: DateTime<Utc>,
         stamp: AuditStamp,
     ) -> Result<CloneReceipt, DomainError> {
-        let conn = self
+        let scope = scope.clone();
+        let (_, outcome) = self
             .db
-            .conn()
-            .map_err(|e| DomainError::Internal(format!("bss-pricing: clone: {e}")))?;
-        let current = plan_repo::load_current(&conn, scope, tenant_id, source)
-            .await
-            .map_err(|e| repo_failure(&e))?
-            .ok_or_else(|| DomainError::NotFound {
-                subject: "clonable plan".to_owned(),
-                id: source.to_string(),
-            })?;
-
-        let source_revision = current.revision;
-        // **Destructured, so a field added to `PlanRevision` and forgotten here
-        // is a compile error** — D-259's remedy, applied to the second place in
-        // this crate that rebuilds a revision from another one. It is here
-        // because this path was written field by field and **lost
-        // `change_contract` on its first draft**: the clone dropped the plan's
-        // `allowedChangeTargets`, its `comparabilityRank` and D-113's carry flag,
-        // and nothing refused it — with no edges K4 asks for no rank, so the
-        // clone published clean and wrong. `open_revision` had already written
-        // the comment explaining why an edge list that resets itself is a silent
-        // drop; this path did not read it.
-        //
-        // The five ignored fields are ignored **by name**: the source's own
-        // `plan_id` and `revision` (the clone is a different plan starting at 0),
-        // its `cloned_from` (lineage is to the source, not through it), and the
-        // three provenance fields the create stamps itself.
-        let crate::domain::plan::PlanRevision {
-            plan_id: _,
-            revision: _,
-            cloned_from: _,
-            sku_id,
-            plan_tier,
-            billing_cycle,
-            frequency,
-            plan_tier_override,
-            purchase_min_qty,
-            purchase_max_qty,
-            invoice_grouping_key,
-            available_from,
-            available_to,
-            entitlement_grants,
-            change_contract,
-            lifecycle_state: _,
-            created_by: _,
-            created_at_utc: _,
-            row_version: _,
-        } = current;
-
-        let source_phases =
-            plan_shape_repo::load_phase_set(&conn, scope, tenant_id, source, source_revision)
-                .await
-                .map_err(|e| repo_failure(&e))?;
-        let remap = phase_remap(&source_phases);
-
-        let created = self
-            .plans
-            .create_draft(
-                scope,
-                NewPlanDraft {
-                    plan_id: target,
-                    tenant_id,
-                    created_by: stamp.actor_principal_id,
-                    created_at_utc: now,
-                    sku_id,
-                    plan_tier,
-                    billing_cycle,
-                    frequency,
-                    plan_tier_override,
-                    purchase_min_qty,
-                    purchase_max_qty,
-                    invoice_grouping_key,
-                    available_from,
-                    available_to,
-                    cloned_from: Some(source),
-                    correlation_id: stamp.correlation_id,
-                },
-            )
-            .await
-            .map_err(|e| repo_failure(&e))?;
-
-        let mut version = created.row_version;
-        let revision = created.revision;
-
-        if !source_phases.is_empty() {
-            let phases = source_phases
-                .iter()
-                .map(|phase| remapped_phase(phase, &remap))
-                .collect();
-            version = self
-                .shapes
-                .replace_phases(scope, tenant_id, target, revision, version, phases, stamp)
-                .await
-                .map_err(|e| repo_failure(&e))?
-                .row_version;
-        }
-
-        let rules =
-            plan_shape_repo::load_addon_rule_set(&conn, scope, tenant_id, source, source_revision)
-                .await
-                .map_err(|e| repo_failure(&e))?;
-        if !rules.is_empty() {
-            version = self
-                .shapes
-                .replace_addon_rules(scope, tenant_id, target, revision, version, rules, stamp)
-                .await
-                .map_err(|e| repo_failure(&e))?
-                .row_version;
-        }
-
-        if let Some(descriptors) =
-            plan_shape_repo::load_descriptor(&conn, scope, tenant_id, source, source_revision)
-                .await
-                .map_err(|e| repo_failure(&e))?
-        {
-            version = self
-                .shapes
-                .set_descriptor_set(
-                    scope,
-                    tenant_id,
-                    target,
-                    revision,
-                    version,
-                    descriptors,
-                    stamp,
-                )
-                .await
-                .map_err(|e| repo_failure(&e))?
-                .row_version;
-        }
-
-        let source_composites =
-            plan_shape_repo::load_composite_set(&conn, scope, tenant_id, source, source_revision)
-                .await
-                .map_err(|e| repo_failure(&e))?;
-        let composites_copied = source_composites.len();
-        if composites_copied > 0 {
-            let composites = source_composites
-                .into_iter()
-                .map(|mut composite| {
-                    // A new id: the definition is the same, the row is not, and
-                    // `composite_id` is stable across *revisions of one plan*
-                    // (D-106) rather than across plans.
-                    composite.composite_id = Uuid::new_v4();
-                    composite
+            .db()
+            .in_transaction::<CloneReceipt, DomainError, _>(move |txn| {
+                // **Boxed because the composition is now one future.** Every step
+                // the clone used to take through a separate transaction is a
+                // state in this one, and clippy measured the result at 17 KB —
+                // enough to matter on a task's stack. One heap allocation per
+                // clone, against an act that already makes a dozen round trips.
+                Box::pin(async move {
+                    Box::pin(clone_plan_on(
+                        txn, &scope, tenant_id, source, target, now, stamp,
+                    ))
+                    .await
                 })
-                .collect();
-            version = self
-                .shapes
-                .replace_composites(
-                    scope, tenant_id, target, revision, version, composites, stamp,
-                )
-                .await
-                .map_err(|e| repo_failure(&e))?
-                .row_version;
-        }
-
-        // **A bundle rides its plan's revisions, so a clone of a bundle is a
-        // bundle** (D-269). Ahead of the patch below because the composition
-        // write is a compare-and-swap on the same revision tag, and it returns
-        // the version the patch then has to hold.
-        version = self
-            .copy_bundle(
-                scope,
-                tenant_id,
-                (source, source_revision),
-                (target, revision),
-                version,
-                stamp,
-            )
-            .await?;
-
-        // **The two authored facts `NewPlanDraft` cannot express**, patched onto
-        // the created draft: the grant set with the per-phase map's keys remapped
-        // (C-7), and the plan-change contract, which the create path drops
-        // because its struct has no field for it.
-        self.plans
-            .update_draft(
-                scope,
-                tenant_id,
-                target,
-                revision,
-                version,
-                PlanShapePatch {
-                    entitlement_grants: Some(remapped_grants(&entitlement_grants, &remap)),
-                    change_contract: Some(change_contract),
-                    ..PlanShapePatch::default()
-                },
-                stamp,
-            )
-            .await
-            .map_err(|e| repo_failure(&e))?;
-
-        let rows = self
-            .copy_rows(scope, tenant_id, source, target, &remap, now, stamp)
-            .await?;
-
-        Ok(CloneReceipt {
-            plan_id: target,
-            cloned_from: source,
-            phases_copied: source_phases.len(),
-            prices_copied: rows.copied,
-            composites_copied,
-            notices: rows.notices(),
+            })
+            .await;
+        outcome.map_err(|err| {
+            err.into_domain(|infra| DomainError::Internal(format!("bss-pricing: clone: {infra}")))
         })
     }
 }
@@ -459,159 +263,370 @@ impl CopiedRows {
     }
 }
 
-impl PlanCloner {
-    /// Copy the source bundle's identity and composition onto the clone (D-269).
-    ///
-    /// Returns the clone revision's row version — **unchanged** when the source
-    /// is not a bundle, which is the ordinary answer: the overwhelming majority
-    /// of plans are not bundles, and `BundleRepo` takes the same posture in
-    /// every one of its own entry points.
-    ///
-    /// The `bundle_id` is **new**. `pricing_bundle.plan_id` is unique per plan,
-    /// so the identity cannot be shared; and it is the bundle's own identity
-    /// rather than a revision-scoped row, exactly as `composite_id` is (D-106).
-    /// What is *not* re-minted is `component_plan_id`: those name **other**
-    /// plans, which the clone did not copy and must not repoint.
-    ///
-    /// Its own method rather than a branch inside [`PlanCloner::clone_plan`],
-    /// which is already at the cognitive-complexity cap, and because the two
-    /// plans arrive here as a pair with the revision each is read at — the shape
-    /// both `load_composition` and `replace_composition` take.
-    ///
-    /// # Errors
-    /// Whatever the bundle repository refuses with — including its
-    /// [`crate::infra::storage::RepoError::StaleRowVersion`] when a concurrent
-    /// writer moved the clone's own draft between this call and the shape write
-    /// before it.
-    async fn copy_bundle(
-        &self,
-        scope: &AccessScope,
-        tenant_id: Uuid,
-        from: (PlanId, u64),
-        onto: (PlanId, u64),
-        version: RowVersion,
-        stamp: AuditStamp,
-    ) -> Result<RowVersion, DomainError> {
-        let (source, source_revision) = from;
-        let (target, revision) = onto;
-        let Some(bundle) = self
-            .bundles
-            .find_by_plan(scope, tenant_id, source)
-            .await
-            .map_err(|e| repo_failure(&e))?
-        else {
-            return Ok(version);
-        };
-        let composition = self
-            .bundles
-            .load_composition(scope, tenant_id, source, source_revision)
+/// [`PlanCloner::clone_plan`]'s whole act, on a runner the caller owns.
+///
+/// **This is where the clone became one thing.** Until D-274 the steps were
+/// repository *methods*, each opening its own transaction, so a failure at the
+/// composition copy left a committed draft plan carrying committed phases, rules
+/// and prices and no way for the caller to tell — the receipt never arrived, but
+/// the rows did. Every write below is now a runner-taking form on the caller's
+/// single transaction, and the reads are on it too, so what the copy reads is
+/// what the copy is protected against changing.
+///
+/// Runner-taking rather than transaction-opening for the reason the route needs:
+/// `idempotent::guarded` runs its mutation inside a transaction it opens itself,
+/// and a cloner that could only open its own would meet that one head-on.
+///
+/// # Errors
+/// [`DomainError::NotFound`] when `source` has no current revision; otherwise
+/// whatever the repository forms refuse with.
+pub async fn clone_plan_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    source: PlanId,
+    target: PlanId,
+    now: DateTime<Utc>,
+    stamp: AuditStamp,
+) -> Result<CloneReceipt, DomainError> {
+    let current = plan_repo::load_current(runner, scope, tenant_id, source)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "clonable plan".to_owned(),
+            id: source.to_string(),
+        })?;
+
+    let source_revision = current.revision;
+    // **Destructured, so a field added to `PlanRevision` and forgotten here
+    // is a compile error** — D-259's remedy, applied to the second place in
+    // this crate that rebuilds a revision from another one. It is here
+    // because this path was written field by field and **lost
+    // `change_contract` on its first draft**: the clone dropped the plan's
+    // `allowedChangeTargets`, its `comparabilityRank` and D-113's carry flag,
+    // and nothing refused it — with no edges K4 asks for no rank, so the
+    // clone published clean and wrong. `open_revision` had already written
+    // the comment explaining why an edge list that resets itself is a silent
+    // drop; this path did not read it.
+    //
+    // The five ignored fields are ignored **by name**: the source's own
+    // `plan_id` and `revision` (the clone is a different plan starting at 0),
+    // its `cloned_from` (lineage is to the source, not through it), and the
+    // three provenance fields the create stamps itself.
+    let crate::domain::plan::PlanRevision {
+        plan_id: _,
+        revision: _,
+        cloned_from: _,
+        sku_id,
+        plan_tier,
+        billing_cycle,
+        frequency,
+        plan_tier_override,
+        purchase_min_qty,
+        purchase_max_qty,
+        invoice_grouping_key,
+        available_from,
+        available_to,
+        entitlement_grants,
+        change_contract,
+        lifecycle_state: _,
+        created_by: _,
+        created_at_utc: _,
+        row_version: _,
+    } = current;
+
+    let source_phases =
+        plan_shape_repo::load_phase_set(runner, scope, tenant_id, source, source_revision)
             .await
             .map_err(|e| repo_failure(&e))?;
-        self.bundles
-            .create(
-                scope,
-                NewBundle {
-                    bundle_id: Uuid::new_v4(),
-                    tenant_id,
-                    plan_id: target,
-                    price_basis: bundle.price_basis,
-                    invoice_itemization: bundle.invoice_itemization,
-                },
-                stamp,
-            )
-            .await
-            .map_err(|e| repo_failure(&e))?;
-        Ok(self
-            .bundles
-            .replace_composition(
-                scope,
-                tenant_id,
-                target,
-                revision,
-                version,
-                composition,
-                stamp,
-            )
-            .await
-            .map_err(|e| repo_failure(&e))?
-            .row_version)
+    let remap = phase_remap(&source_phases);
+
+    let created = plan_repo::create_draft_on(
+        runner,
+        scope,
+        NewPlanDraft {
+            plan_id: target,
+            tenant_id,
+            created_by: stamp.actor_principal_id,
+            created_at_utc: now,
+            sku_id,
+            plan_tier,
+            billing_cycle,
+            frequency,
+            plan_tier_override,
+            purchase_min_qty,
+            purchase_max_qty,
+            invoice_grouping_key,
+            available_from,
+            available_to,
+            cloned_from: Some(source),
+            correlation_id: stamp.correlation_id,
+        },
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    let mut version = created.row_version;
+    let revision = created.revision;
+
+    if !source_phases.is_empty() {
+        let phases = source_phases
+            .iter()
+            .map(|phase| remapped_phase(phase, &remap))
+            .collect();
+        version = plan_shape_repo::replace_phases_on(
+            runner, scope, tenant_id, target, revision, version, phases, stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .row_version;
     }
 
-    /// Copy the source's published price rows onto the clone, resetting each.
-    ///
-    /// Returns what was copied and what was left behind, per class. Separate
-    /// from [`PlanCloner::clone_plan`] because it is the *rows* rather than the
-    /// shape, and because the exclusion arms are the one place this path decides
-    /// not to copy something.
-    ///
-    /// # Errors
-    /// Whatever the price repository refuses with, and
-    /// [`DomainError::ValidationFailed`] if a reset key is not constructible.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "every argument is a fact only the caller holds: the scope, the tenant, the two \
-                  plans, the phase remap the shape copy already built, the clone instant and the \
-                  D-135 audit stamp. `plan_repo::update_draft` carries the same allow for the \
-                  same reason"
-    )]
-    async fn copy_rows(
-        &self,
-        scope: &AccessScope,
-        tenant_id: Uuid,
-        source: PlanId,
-        target: PlanId,
-        remap: &BTreeMap<Uuid, PhaseId>,
-        now: DateTime<Utc>,
-        stamp: AuditStamp,
-    ) -> Result<CopiedRows, DomainError> {
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| DomainError::Internal(format!("bss-pricing: clone rows: {e}")))?;
-        let source_rows =
-            price_repo::load_for_plan(&conn, scope, tenant_id, source, COPIED_ROW_STATES)
-                .await
-                .map_err(|e| repo_failure(&e))?;
-        let mut counts = CopiedRows {
-            copied: 0,
-            grandfathered: 0,
-            new_subscriptions_only: 0,
-        };
-        for row in source_rows {
-            // **Both cutover-made classes stay behind** (D-268), and the match is
-            // exhaustive rather than two `if`s so that a fourth class added to
-            // `PriceEligibility` has to be classified here instead of defaulting
-            // into the copy.
-            match row.scope_key.price_eligibility() {
-                PriceEligibility::ExistingGrandfathered => {
-                    counts.grandfathered += 1;
-                    continue;
-                }
-                PriceEligibility::NewSubscriptionsOnly => {
-                    counts.new_subscriptions_only += 1;
-                    continue;
-                }
-                PriceEligibility::AllSubscriptions => {}
-            }
-            self.prices
-                .create_draft(
-                    scope,
-                    tenant_id,
-                    NewPriceDraft {
-                        price_id: Uuid::new_v4(),
-                        scope_key: reset_key(&row.scope_key, target, remap)?,
-                        content: reset_content(&row),
-                        created_by: stamp.actor_principal_id,
-                        created_at_utc: now,
-                        correlation_id: stamp.correlation_id,
-                    },
-                )
-                .await
-                .map_err(|e| repo_failure(&e))?;
-            counts.copied += 1;
-        }
-        Ok(counts)
+    let rules =
+        plan_shape_repo::load_addon_rule_set(runner, scope, tenant_id, source, source_revision)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+    if !rules.is_empty() {
+        version = plan_shape_repo::replace_addon_rules_on(
+            runner, scope, tenant_id, target, revision, version, rules, stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .row_version;
     }
+
+    if let Some(descriptors) =
+        plan_shape_repo::load_descriptor(runner, scope, tenant_id, source, source_revision)
+            .await
+            .map_err(|e| repo_failure(&e))?
+    {
+        version = plan_shape_repo::set_descriptor_set_on(
+            runner,
+            scope,
+            tenant_id,
+            target,
+            revision,
+            version,
+            descriptors,
+            stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .row_version;
+    }
+
+    let source_composites =
+        plan_shape_repo::load_composite_set(runner, scope, tenant_id, source, source_revision)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+    let composites_copied = source_composites.len();
+    if composites_copied > 0 {
+        let composites = source_composites
+            .into_iter()
+            .map(|mut composite| {
+                // A new id: the definition is the same, the row is not, and
+                // `composite_id` is stable across *revisions of one plan*
+                // (D-106) rather than across plans.
+                composite.composite_id = Uuid::new_v4();
+                composite
+            })
+            .collect();
+        version = plan_shape_repo::replace_composites_on(
+            runner, scope, tenant_id, target, revision, version, composites, stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .row_version;
+    }
+
+    // **A bundle rides its plan's revisions, so a clone of a bundle is a
+    // bundle** (D-269). Ahead of the patch below because the composition
+    // write is a compare-and-swap on the same revision tag, and it returns
+    // the version the patch then has to hold.
+    version = copy_bundle_on(
+        runner,
+        scope,
+        tenant_id,
+        (source, source_revision),
+        (target, revision),
+        version,
+        stamp,
+    )
+    .await?;
+
+    // **The two authored facts `NewPlanDraft` cannot express**, patched onto
+    // the created draft: the grant set with the per-phase map's keys remapped
+    // (C-7), and the plan-change contract, which the create path drops
+    // because its struct has no field for it.
+    plan_repo::update_draft_on(
+        runner,
+        scope,
+        tenant_id,
+        target,
+        revision,
+        version,
+        PlanShapePatch {
+            entitlement_grants: Some(remapped_grants(&entitlement_grants, &remap)),
+            change_contract: Some(change_contract),
+            ..PlanShapePatch::default()
+        },
+        stamp,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    let rows = copy_rows_on(runner, scope, tenant_id, source, target, &remap, now, stamp).await?;
+
+    Ok(CloneReceipt {
+        plan_id: target,
+        cloned_from: source,
+        phases_copied: source_phases.len(),
+        prices_copied: rows.copied,
+        composites_copied,
+        notices: rows.notices(),
+    })
+}
+
+/// Copy the source bundle's identity and composition onto the clone (D-269).
+///
+/// Returns the clone revision's row version — **unchanged** when the source is
+/// not a bundle, which is the ordinary answer: the overwhelming majority of plans
+/// are not bundles, and `BundleRepo` takes the same posture in every one of its
+/// own entry points.
+///
+/// The `bundle_id` is **new**. `pricing_bundle.plan_id` is unique per plan, so the
+/// identity cannot be shared; and it is the bundle's own identity rather than a
+/// revision-scoped row, exactly as `composite_id` is (D-106). What is *not*
+/// re-minted is `component_plan_id`: those name **other** plans, which the clone
+/// did not copy and must not repoint.
+///
+/// Its own function rather than a branch inside [`clone_plan_on`], which is
+/// already at the cognitive-complexity cap, and because the two plans arrive here
+/// as a pair with the revision each is read at.
+///
+/// # Errors
+/// Whatever the bundle repository refuses with — including
+/// [`crate::infra::storage::RepoError::StaleRowVersion`] when a concurrent writer
+/// moved the clone's own draft between this call and the shape write before it.
+async fn copy_bundle_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    from: (PlanId, u64),
+    onto: (PlanId, u64),
+    version: RowVersion,
+    stamp: AuditStamp,
+) -> Result<RowVersion, DomainError> {
+    let (source, source_revision) = from;
+    let (target, revision) = onto;
+    let Some(bundle) = bundle_repo::find_by_plan_on(runner, scope, tenant_id, source)
+        .await
+        .map_err(|e| repo_failure(&e))?
+    else {
+        return Ok(version);
+    };
+    let composition =
+        bundle_repo::load_composition_on(runner, scope, tenant_id, source, source_revision)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+    bundle_repo::create_on(
+        runner,
+        scope,
+        NewBundle {
+            bundle_id: Uuid::new_v4(),
+            tenant_id,
+            plan_id: target,
+            price_basis: bundle.price_basis,
+            invoice_itemization: bundle.invoice_itemization,
+        },
+        stamp,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    Ok(bundle_repo::replace_composition_on(
+        runner,
+        scope,
+        tenant_id,
+        target,
+        revision,
+        version,
+        composition,
+        stamp,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?
+    .row_version)
+}
+
+/// Copy the source's published price rows onto the clone, resetting each.
+///
+/// Returns what was copied and what was left behind, per class. Separate from
+/// [`clone_plan_on`] because it is the *rows* rather than the shape, and because
+/// the exclusion arms are the one place this path decides not to copy something.
+///
+/// # Errors
+/// Whatever the price repository refuses with, and
+/// [`DomainError::ValidationFailed`] if a reset key is not constructible.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the runner, the scope, the tenant, \
+              the two plans, the phase remap the shape copy already built, the clone instant and \
+              the D-135 audit stamp. `plan_repo::update_draft_on` carries the same allow for the \
+              same reason"
+)]
+async fn copy_rows_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    source: PlanId,
+    target: PlanId,
+    remap: &BTreeMap<Uuid, PhaseId>,
+    now: DateTime<Utc>,
+    stamp: AuditStamp,
+) -> Result<CopiedRows, DomainError> {
+    let source_rows =
+        price_repo::load_for_plan(runner, scope, tenant_id, source, COPIED_ROW_STATES)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+    let mut counts = CopiedRows {
+        copied: 0,
+        grandfathered: 0,
+        new_subscriptions_only: 0,
+    };
+    for row in source_rows {
+        // **Both cutover-made classes stay behind** (D-268), and the match is
+        // exhaustive rather than two `if`s so that a fourth class added to
+        // `PriceEligibility` has to be classified here instead of defaulting
+        // into the copy.
+        match row.scope_key.price_eligibility() {
+            PriceEligibility::ExistingGrandfathered => {
+                counts.grandfathered += 1;
+                continue;
+            }
+            PriceEligibility::NewSubscriptionsOnly => {
+                counts.new_subscriptions_only += 1;
+                continue;
+            }
+            PriceEligibility::AllSubscriptions => {}
+        }
+        price_repo::create_draft_on(
+            runner,
+            scope,
+            tenant_id,
+            NewPriceDraft {
+                price_id: Uuid::new_v4(),
+                scope_key: reset_key(&row.scope_key, target, remap)?,
+                content: reset_content(&row),
+                created_by: stamp.actor_principal_id,
+                created_at_utc: now,
+                correlation_id: stamp.correlation_id,
+            },
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+        counts.copied += 1;
+    }
+    Ok(counts)
 }
 
 /// Old `phase_id` -> new `phase_id`, one entry per source phase.
