@@ -1033,3 +1033,104 @@ async fn an_approved_overlay_publishes_on_the_second_call_to_the_same_route() {
         "the receipt names the registry handle, which is not a CatalogVersion: {published}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D-125's collection contract on the overlay list.
+//
+// The decision is a Foundation convention "inherited by every slice surface":
+// every collection GET returns pages -- `limit` (default 100, hard cap 1,000)
+// plus an opaque `cursor`, with `next_cursor` until the result is exhausted.
+// `api::rest::cursor` says the same in its own words, "decided once for every
+// list surface this gear serves".
+//
+// This surface did not serve it, and nothing here noticed for a simple reason:
+// every case in this file was written from the handler, so it asserted the shape
+// the handler produced. The gap surfaced from the other side -- an e2e suite
+// authored against the design set rather than against this code.
+// ---------------------------------------------------------------------------
+
+/// Seed `n` overlays on distinct precedences, returning their ids in id order.
+async fn seed_overlays(harness: &Harness, n: usize) -> Vec<Uuid> {
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        ids.push(seed_overlay(harness, 1_000 + i32::try_from(i).expect("small")).await);
+    }
+    ids.sort_unstable();
+    ids
+}
+
+#[tokio::test]
+async fn the_list_answers_a_page_envelope_with_a_cursor() {
+    // The contract's shape. A bare array is the pre-D-125 answer, and a caller
+    // handed one has no way to ask for the next page at all.
+    let harness = Harness::new().await;
+    seed_overlays(&harness, 3).await;
+
+    let response = harness
+        .allowed()
+        .send(request("GET", PRICE_OVERLAYS, None))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert!(
+        body.get("page_info").is_some(),
+        "D-125 requires a page envelope on every collection GET: {body}"
+    );
+    assert_eq!(
+        body["page_info"]["limit"],
+        serde_json::json!(100),
+        "the server default is 100 (D-125)"
+    );
+}
+
+#[tokio::test]
+async fn a_limit_bounds_the_page_and_names_where_to_resume() {
+    // Two rows asked for out of three: the page carries two and says there is
+    // more. A surface that ignored `limit` would return all three and a client
+    // walking it would never terminate a page loop.
+    let harness = Harness::new().await;
+    let ids = seed_overlays(&harness, 3).await;
+
+    let response = harness
+        .allowed()
+        .send(request("GET", &format!("{PRICE_OVERLAYS}?limit=2"), None))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let rows = body["overlays"].as_array().expect("the list");
+    assert_eq!(rows.len(), 2, "`limit` bounds the page: {body}");
+    assert!(
+        body["page_info"]["next_cursor"].is_string(),
+        "a page with more behind it must name where to resume: {body}"
+    );
+
+    // And the walk resumes strictly after the row the cursor names.
+    let cursor = body["page_info"]["next_cursor"].as_str().expect("token");
+    let second = harness
+        .allowed()
+        .send(request(
+            "GET",
+            &format!("{PRICE_OVERLAYS}?limit=2&cursor={cursor}"),
+            None,
+        ))
+        .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second = body_json(second).await;
+    let tail = second["overlays"].as_array().expect("the list");
+    assert_eq!(
+        tail.len(),
+        1,
+        "the last page carries the remainder: {second}"
+    );
+    assert_eq!(
+        tail[0]["price_overlay_id"],
+        serde_json::json!(ids[2].to_string()),
+        "the walk resumes strictly after the cursor, in key order"
+    );
+    assert!(
+        second["page_info"]["next_cursor"].is_null(),
+        "an exhausted walk says so rather than pointing at an empty page: {second}"
+    );
+}

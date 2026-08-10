@@ -737,6 +737,8 @@ impl OverlayRepo {
         scope: &AccessScope,
         tenant_id: Uuid,
         class: Option<ScopeClass>,
+        after: Option<Uuid>,
+        limit: u64,
     ) -> Result<Vec<OverlayRecord>, RepoError> {
         let conn = self
             .db
@@ -746,13 +748,30 @@ impl OverlayRepo {
         if let Some(class) = class {
             condition = condition.add(price_overlay::Column::ScopeClass.eq(class.as_str()));
         }
+        // The keyset walk resumes strictly after the row the cursor names.
+        if let Some(after) = after {
+            condition = condition.add(price_overlay::Column::PriceOverlayId.gt(after));
+        }
+        // **Ordered by the cursor's key, not by precedence.** This list answered
+        // `precedence ASC, id ASC, revision ASC` before D-125's contract reached
+        // it, and that order cannot carry a keyset walk: the cursor is a single
+        // id (`api::rest::cursor` declares the encoding once, over 16 bytes), so
+        // a precedence-first order would resume in the wrong place and the walk
+        // would skip rows -- exactly what D-125 forbids.
+        //
+        // Precedence ordering is not lost information: it is a property of each
+        // row, still on the wire, and a caller that assembles a stack reads it
+        // from there. What a caller cannot do any more is assume the *sequence*
+        // it receives is precedence order -- across pages that was never true
+        // for any keyset walk, and within one page it was an accident of the
+        // seed rather than a promise.
         let rows = price_overlay::Entity::find()
             .secure()
             .scope_with(scope)
             .filter(condition)
-            .order_by(price_overlay::Column::Precedence, Order::Asc)
             .order_by(price_overlay::Column::PriceOverlayId, Order::Asc)
             .order_by(price_overlay::Column::Revision, Order::Asc)
+            .limit(limit)
             .all(&conn)
             .await
             .map_err(|e| RepoError::Db(format!("list pricing_price_overlay: {e}")))?;

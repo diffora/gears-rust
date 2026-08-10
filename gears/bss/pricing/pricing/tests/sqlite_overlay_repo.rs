@@ -752,6 +752,11 @@ async fn the_customer_group_class_has_no_universe_and_is_refused() {
 /// L6 governs consumer-facing exposure and §3 step 7 is explicit that operator
 /// and service reads are unaffected. A `restricted` overlay hidden from this
 /// surface would hide it from the operator who authored it.
+/// A page wide enough that these cases are about the list's content, not its
+/// paging. The walk itself is pinned in `tests/rest_overlays.rs`, where the
+/// cursor is on the wire and D-125's contract is the subject.
+const PAGE: u64 = 1_000;
+
 #[tokio::test]
 async fn the_list_returns_every_revision_and_hides_no_restricted_overlay() {
     let (repo, scope) = seeded().await;
@@ -763,7 +768,7 @@ async fn the_list_returns_every_revision_and_hides_no_restricted_overlay() {
         .expect("a successor opens");
 
     let all = repo
-        .list(&scope, TENANT, None)
+        .list(&scope, TENANT, None, None, PAGE)
         .await
         .expect("the list succeeds");
     assert_eq!(all.len(), 2, "both revisions are listed");
@@ -773,12 +778,12 @@ async fn the_list_returns_every_revision_and_hides_no_restricted_overlay() {
     );
 
     let narrowed = repo
-        .list(&scope, TENANT, Some(ScopeClass::Brand))
+        .list(&scope, TENANT, Some(ScopeClass::Brand), None, PAGE)
         .await
         .expect("the list succeeds");
     assert_eq!(narrowed.len(), 2);
     let none = repo
-        .list(&scope, TENANT, Some(ScopeClass::Partner))
+        .list(&scope, TENANT, Some(ScopeClass::Partner), None, PAGE)
         .await
         .expect("the list succeeds");
     assert!(

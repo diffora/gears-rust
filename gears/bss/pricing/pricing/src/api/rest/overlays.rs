@@ -57,12 +57,14 @@ use axum::{Json, Router, http::HeaderMap, http::StatusCode};
 use chrono::{DateTime, Utc};
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit_odata::PageInfo;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::approvals::{ApprovalView, MaterialityView};
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
+use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
 use crate::api::rest::state::{AuthoringState, GovernanceState};
@@ -187,6 +189,10 @@ pub struct AmountRequest {
 pub struct ListOverlaysQuery {
     /// Narrow to one scope class.
     pub scope_class: Option<String>,
+    /// Rows per page; server default 100, hard cap 1,000 (D-125).
+    pub limit: Option<u64>,
+    /// The opaque token a previous page returned (D-125).
+    pub cursor: Option<String>,
 }
 
 /// One overlay revision, as the read surface renders it.
@@ -245,8 +251,16 @@ pub struct OverlayLineView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
 pub struct OverlayListView {
-    /// The overlays, ordered by precedence then id then revision.
+    /// The overlays, ordered by id then revision -- the cursor's own key order.
+    ///
+    /// **Not precedence order.** See the repository's `list`: a keyset walk has
+    /// to be ordered by the key its cursor names, and D-125's cursor is a single
+    /// id. Each row still carries its `precedence`, so a caller assembling a
+    /// stack reads it from the row rather than from the sequence.
     pub overlays: Vec<OverlayView>,
+    /// D-125's page block: the limit in force and the token for the next page,
+    /// `null` once the walk is exhausted.
+    pub page_info: PageInfo,
 }
 
 /// What an edit answers with.
@@ -1065,14 +1079,27 @@ async fn list_overlays(
         })?),
     };
 
-    let overlays = state
+    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    // One row more than the page, so "is there another page" is answered without
+    // a second query and without a `next_cursor` pointing at nothing.
+    let probe = page.limit.saturating_add(1);
+    let mut overlays = state
         .overlays
-        .list(&scope, tenant, class)
+        .list(&scope, tenant, class, page.after, probe)
         .await
         .map_err(|e| crate::infra::storage::repo_failure(&e))?;
 
+    let has_more = u64::try_from(overlays.len()).unwrap_or(u64::MAX) > page.limit;
+    if has_more {
+        overlays.pop();
+    }
+    let next = has_more
+        .then(|| overlays.last().map(|row| row.price_overlay_id))
+        .flatten();
+
     Ok(Json(OverlayListView {
         overlays: overlays.iter().map(view_of).collect(),
+        page_info: cursor::page_info(next, page.limit),
     })
     .into_response())
 }
