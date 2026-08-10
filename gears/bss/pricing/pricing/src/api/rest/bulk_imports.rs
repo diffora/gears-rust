@@ -519,13 +519,39 @@ async fn write_scope(
 }
 
 /// The submitted body as the domain's rows.
+///
+/// **The usage line is derived here, through the store's own derivation** (D-306).
+/// `ScopeKeyRequest` carries six axes and the pair `(meter, dimensionKey)` is
+/// authored on the *content* (D-196 clause (3)), so a key built from the request
+/// alone is line-less — and every Phase-1 rule that groups or looks up by key was
+/// then comparing keys the store would never file these rows under.
+///
+/// Two consequences, both live before this: `duplicate_scope_keys` grouped two
+/// rows differing **only** in their meter as one key and refused them as
+/// duplicates, which its own sentence says they are not — *"those are two keys
+/// and both author"*; and `draft_rows`' lookup could never match a metered draft,
+/// so a bulk import could not edit one at all — the row took the create path and
+/// came back `DUPLICATE_SCOPE_KEY`.
+///
+/// It goes through `price_repo::resolve_authored_usage_line` rather than a
+/// spelling of its own, because a second derivation of the same pair is the
+/// hazard the interactive plane's version already records: the store has one home
+/// for the columns, so a disagreement between two derivations would survive
+/// exactly as far as the first metered import.
 fn rows_of(body: &BulkImportRequest) -> Result<Vec<ImportRow>, CanonicalError> {
     body.rows
         .iter()
         .map(|row| {
+            let content = content_of(&row.content)?;
+            let key = scope_key_of(PlanId::new(row.plan_id), &row.scope_key)?;
+            let scope_key = crate::infra::storage::repo::price_repo::resolve_authored_usage_line(
+                &key,
+                &content.row,
+            )
+            .map_err(|e| repo_failure(&e))?;
             Ok(ImportRow {
-                scope_key: scope_key_of(PlanId::new(row.plan_id), &row.scope_key)?,
-                content: content_of(&row.content)?,
+                scope_key,
+                content,
                 if_match: row.if_match.map(RowVersion::new),
             })
         })

@@ -513,3 +513,124 @@ async fn an_abort_without_an_idempotency_key_is_refused() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+/// Two usage rows differing **only** in their meter are two keys, and a batch
+/// carrying both must not be refused as a duplicate (D-306).
+///
+/// `ScopeKeyRequest` carries six axes and the `(meter, dimensionKey)` pair is
+/// authored on the *content* (D-196 clause (3)), so `rows_of` built a **line-less**
+/// key until this case existed — and `duplicate_scope_keys` then grouped these two
+/// rows as one key and refused the batch, which the very sentence in its own doc
+/// says is wrong: *"Two rows differing in their meter or dimension key are **not**
+/// this case: those are two keys and both author."*
+///
+/// D-103's confirmed shape is the fixture: a plan pricing several meters is one
+/// plan, not three.
+fn usage_row(plan_id: Uuid, meter: &str, amount: i64) -> serde_json::Value {
+    serde_json::json!({
+        "plan_id": plan_id,
+        "scope_key": {
+            "currency": "USD",
+            "region": "eu",
+            "phase": rest_support::seeded_phase().get().to_string(),
+            "price_eligibility": "all_subscriptions",
+            "charge_kind": "usage",
+            "cohort": serde_json::Value::Null
+        },
+        "content": {
+            "model_kind": "flat",
+            "amount_minor": amount,
+            "tax_inclusive": false,
+            "meter": meter,
+            "billing_timing": "arrears",
+            "rounding_policy_ref": "half_up"
+        }
+    })
+}
+
+#[tokio::test]
+async fn two_usage_rows_on_different_meters_are_two_keys_and_both_author() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[
+                usage_row(plan, "cloudlets", 1_500),
+                usage_row(plan, "egress-gb", 2_500),
+            ])),
+            &keyed("bulk-meters"),
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "a batch of two meters is not a duplicate batch"
+    );
+    let run = body_json(response).await;
+    assert_eq!(
+        run["report"]["committed"]
+            .as_array()
+            .expect("an array")
+            .len(),
+        2,
+        "and both rows author, on keys the store files them under separately: {run}"
+    );
+}
+
+#[tokio::test]
+async fn a_metered_draft_is_found_by_the_batch_that_names_its_key() {
+    // The other half of D-306, and the two are told apart by **which** conflict
+    // answers. With a line-less key `draft_rows`' lookup could never match a
+    // metered draft, so the row took the *create* path, the store derived the line
+    // for itself and the collision came back `DUPLICATE_SCOPE_KEY` — a bulk import
+    // could not edit a metered row at all. With the line on the key the lookup
+    // finds it, and what answers is the per-row conflict about a **missing
+    // version**, which is a different sentence and a different remedy.
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[usage_row(plan, "cloudlets", 1_500)])),
+            &keyed("meter-create"),
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+    // The same key again, with no `if_match`: the draft is there, so the answer is
+    // "re-read it and resubmit with its ETag", not the store's duplicate-key
+    // refusal.
+    let second = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[usage_row(plan, "cloudlets", 9_900)])),
+            &keyed("meter-edit"),
+        ))
+        .await;
+    assert_eq!(second.status(), StatusCode::ACCEPTED);
+    let run = body_json(second).await;
+
+    let detail = run["report"]["conflicted"][0]["violations"][0]["detail"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the row conflicted and says why: {run}"));
+    assert!(
+        detail.contains("already holds this key"),
+        "the lookup found the metered draft: {detail}"
+    );
+    assert!(
+        !detail.contains("DUPLICATE_SCOPE_KEY"),
+        "and it did not fall through to the create path: {detail}"
+    );
+}

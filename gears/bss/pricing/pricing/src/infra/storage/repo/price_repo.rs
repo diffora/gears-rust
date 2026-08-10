@@ -2366,7 +2366,10 @@ fn check_grandfather_horizon(
 /// columns are both the key's axes and the row's fields — so a disagreement
 /// cannot survive a round trip. It exists only between a [`ScopeKey`] value and
 /// a [`PriceRow`] value, which is where it is still cheap to answer.
-fn resolve_authored_usage_line(key: &ScopeKey, row: &PriceRow) -> Result<ScopeKey, RepoError> {
+pub(crate) fn resolve_authored_usage_line(
+    key: &ScopeKey,
+    row: &PriceRow,
+) -> Result<ScopeKey, RepoError> {
     let row_meter = row
         .meter
         .as_deref()
