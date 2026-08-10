@@ -99,10 +99,19 @@ fn seed_run_of_kind(op: &str, tenant: &str, kind: &str) -> String {
     )
 }
 
+/// Move a run, stamping the end instant exactly on the states that end it.
+///
+/// **The terminal set is `chk_pricing_bulk_operation_completed_at`'s**, and
+/// `rejected` joined it with D-267. A helper that had not been widened with the
+/// migration would send `completed_at = NULL` on that move, the `CHECK` would
+/// refuse it, and the case would fail while *arranging* its fixture -- so a run
+/// this suite meant to find holding a lock in `rejected` would never reach
+/// `rejected` at all, and the rule under test would be one the fixture made
+/// unreachable rather than one the store enforces.
 fn advance(op: &str, state: &str) -> String {
     let completed = if matches!(
         state,
-        "validation_failed" | "completed" | "completed_with_conflicts"
+        "validation_failed" | "completed" | "completed_with_conflicts" | "rejected"
     ) {
         "now()"
     } else {
@@ -180,6 +189,12 @@ async fn a_lock_may_only_be_taken_while_its_run_commits() {
         "validation_failed",
         "completed",
         "completed_with_conflicts",
+        // D-267's state. The custody arm keys on `run_state <> 'committing'`, so
+        // this disjunct is already covered by the rule as written -- but a rule
+        // and the set of states it is *asked* about are two different things, and
+        // an arm narrowed to an explicit whitelist would leave `rejected` the one
+        // state a lock could be taken in with nothing to say so.
+        "rejected",
     ] {
         let conn = applied().await;
         must_succeed(&conn, &seed_price(TENANT)).await;
@@ -188,6 +203,12 @@ async fn a_lock_may_only_be_taken_while_its_run_commits() {
         // run must not keep its lock across that edge either.
         if matches!(state, "completed" | "completed_with_conflicts") {
             must_succeed(&conn, &advance(RUN, "committing")).await;
+        }
+        // And `rejected` only from a pending approval: each state is walked to by
+        // its own real path, because a run parked in a state it could not have
+        // reached is not a fixture this rule is ever asked about.
+        if state == "rejected" {
+            must_succeed(&conn, &advance(RUN, "awaiting_approval")).await;
         }
         if state != "validating" {
             must_succeed(&conn, &advance(RUN, state)).await;

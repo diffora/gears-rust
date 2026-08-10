@@ -273,12 +273,22 @@ pub async fn advance(
 /// key is the mutual exclusion, and a read-then-write would be the check-then-act
 /// race it exists to close.
 ///
-/// **`runner` must be an autocommit connection, not a transaction.** The read that
-/// names the holder happens *after* a failed insert, and Postgres aborts an
-/// enclosing transaction on a failed statement — so inside one, that read would
-/// itself fail and the refusal would degrade from [`RepoError::BulkRowLocked`] to
+/// **`runner` must be an autocommit connection, not a transaction.** Postgres
+/// aborts an enclosing transaction on a failed statement, and everything this
+/// function does after a refused insert is a further statement — so inside a
+/// transaction the refusal degrades from [`RepoError::BulkRowLocked`] to
 /// [`RepoError::Db`], losing exactly the holder `fr-concurrent-edit` requires it
-/// to name. The partial release below has the same requirement.
+/// to name.
+///
+/// **Measured on Postgres rather than reasoned about** (`postgres_bulk_repo`,
+/// D-297): the statement that dies is the **release**, not the holder read. The
+/// release carries a `?` and runs first, so the read is never reached at all and
+/// the error reads `release pricing_bulk_row_lock: … current transaction is
+/// aborted`. This paragraph said the holder read was what failed, which was true
+/// of the order that stood *before* D-294 put the release in front of it — the
+/// same wave's own correction moved the statement and left the sentence
+/// describing the code it replaced. The case pins both halves of the message so
+/// the two cannot drift apart again.
 ///
 /// Either every lock is taken or none is: a refusal partway releases what this run
 /// already took, so a caller cannot be left holding rows it does not know about.
