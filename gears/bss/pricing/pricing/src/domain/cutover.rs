@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use toolkit_macros::domain_model;
 
 use crate::domain::error::DomainError;
-use crate::domain::scope_key::{Cohort, PriceEligibility, ScopeKey};
+use crate::domain::scope_key::{Cohort, ScopeKey};
 use crate::domain::supersession::{ChangeoverMoment, NamedWindow, WindowShorten, changeover_floor};
 use crate::domain::window::{OCCUPYING_STATES, WindowInterval, WindowState};
 
@@ -214,11 +214,15 @@ pub fn grandfathered_copy_key(
 ///
 /// Split out in D-300 because a caller needs to recognise *this act's* staged copy
 /// before it knows the generation set, and the check needs the set — so the two
-/// cannot be one function for that caller. It is also the only place that knows
-/// which two axes a cutover moves (`price_eligibility` and `cohort`, everything
-/// else carried across), which is exactly the knowledge a second hand-written
-/// spelling would lose the next time the key grows an axis — D-205's lesson, and
-/// D-296 was that lesson unlearned two sites over.
+/// cannot be one function for that caller.
+///
+/// **It builds nothing itself any more** (D-309). The first spelling read the
+/// predecessor's axes through accessors one call at a time, which compiles
+/// unchanged when the key grows and drops the new axis from every grandfathered
+/// copy in silence — D-205's defect, minted in the wave that repaired its fifth
+/// and sixth instances. [`ScopeKey::to_generation`] owns the construction now and
+/// destructures with no rest pattern, so an eleventh axis is a compile error
+/// there. This function is the name the cutover's vocabulary calls it by.
 ///
 /// # Errors
 ///
@@ -228,19 +232,7 @@ pub fn generation_key(
     predecessor: &ScopeKey,
     cutover: DateTime<Utc>,
 ) -> Result<ScopeKey, DomainError> {
-    ScopeKey::new(
-        predecessor.plan_id(),
-        predecessor.currency().clone(),
-        predecessor.region().clone(),
-        predecessor.phase(),
-        PriceEligibility::ExistingGrandfathered,
-        predecessor.charge_kind(),
-        Cohort::Generation(cutover),
-    )?
-    .with_usage_line(
-        predecessor.meter().cloned(),
-        predecessor.dimension_key().clone(),
-    )
+    predecessor.to_generation(cutover)
 }
 
 #[cfg(test)]

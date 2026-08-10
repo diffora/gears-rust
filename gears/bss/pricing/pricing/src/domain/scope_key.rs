@@ -704,6 +704,63 @@ impl ScopeKey {
         &self.dimension_key
     }
 
+    /// This key's **grandfathered generation** at `cutover` (D-309).
+    ///
+    /// A cutover moves exactly two axes — `price_eligibility` to
+    /// `existing_grandfathered` and `cohort` to the generation — and carries the
+    /// other eight across. That is the whole of what a copy key is, and it lives
+    /// here for [`is_sibling_of`]'s reason: **the destructure below has no rest
+    /// pattern**, so an eleventh axis is a compile error until somebody decides
+    /// whether a generation carries it.
+    ///
+    /// It was `domain::cutover::generation_key` first, reading the predecessor's
+    /// axes through accessors one call at a time — which compiles unchanged when
+    /// the key grows and drops the new axis from every grandfathered copy in
+    /// silence. That is D-205's defect verbatim, minted in the same wave that
+    /// repaired its fifth and sixth instances (D-296, D-300), and it is why the
+    /// construction belongs to the type that owns the fields rather than to a
+    /// caller reaching in through getters.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::TimestampPrecisionExceeded`] when `cutover` is finer than
+    /// the millisecond quantum (D-144) — this axis is matched for **equality**
+    /// against an instant another gear produced, so an unquantized value builds a
+    /// key nobody can find. The cohort/eligibility biconditional is satisfied by
+    /// construction and re-checked anyway, because a check that costs nothing and
+    /// documents an invariant is cheaper than the invariant going unstated.
+    pub fn to_generation(&self, cutover: DateTime<Utc>) -> Result<Self, DomainError> {
+        let Self {
+            plan_id,
+            currency,
+            region,
+            price_overlay,
+            phase,
+            price_eligibility: _,
+            charge_kind,
+            cohort: _,
+            meter,
+            dimension_key,
+        } = self;
+
+        let cohort = Cohort::Generation(cutover);
+        check_cohort_eligibility(PriceEligibility::ExistingGrandfathered, cohort)?;
+        instant::check_quantum("cohort", cutover)?;
+
+        Ok(Self {
+            plan_id: *plan_id,
+            currency: currency.clone(),
+            region: region.clone(),
+            price_overlay: *price_overlay,
+            phase: *phase,
+            price_eligibility: PriceEligibility::ExistingGrandfathered,
+            charge_kind: *charge_kind,
+            cohort,
+            meter: meter.clone(),
+            dimension_key: dimension_key.clone(),
+        })
+    }
+
     /// Do these two keys compete for **one** sale — equal on every axis but the
     /// eligibility class and the cohort?
     ///

@@ -1048,11 +1048,21 @@ fn a_pinned_versions_contract_set_renders_identically_twice() {
 
 #[test]
 fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
-    // **The half the destructure cannot cover** (D-303). `partition_delta_members`
-    // has no rest pattern, so a member added to `PlanSubjectDelta` is a compile
-    // error there — but naming it in the pattern and forgetting it in *both* lists
-    // compiles fine, and the classification is the point rather than the pattern.
-    // This case is what makes the omission fail.
+    // **What this still covers, after D-309 moved the rest to the compiler.**
+    // `partition_delta_members` binds every field by name and hands each to
+    // `named` exactly once, so a member added to `PlanSubjectDelta` is a compile
+    // error (no rest pattern) and a member left out of both lists is an *unused
+    // variable*, which this crate denies — measured: `error: unused variable`.
+    //
+    // What the compiler does **not** catch is a member classified **twice**: the
+    // bindings are references and references are `Copy`, so handing one to `named`
+    // in both lists compiles. That is what the dedup assertion below is for.
+    //
+    // The count is now a secondary reading rather than the guard. Its first
+    // spelling was the guard and was armed backwards (D-303, corrected by D-309):
+    // a forgotten member left the total at 22 and passed, while classifying it
+    // correctly made 23 and failed — it fired on the fix and was silent on the
+    // omission.
     let (reached, not_reached) = super::partition_delta_members(&shape_only());
 
     let mut all: Vec<&str> = reached.iter().chain(not_reached.iter()).copied().collect();
@@ -1066,8 +1076,8 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
     );
     assert_eq!(
         named, 22,
-        "every member of the payload is named exactly once; a member added to the delta and \
-         left out of both lists lands here, and the number moves with the payload on purpose"
+        "the payload's member count, read back: it moves with the payload on purpose, and a \
+         member left unclassified is caught by the compiler before it reaches here"
     );
 
     // The two the roster genuinely reaches, through the guards that own them.

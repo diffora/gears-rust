@@ -1218,34 +1218,52 @@ fn merge(into: &mut JsonValue, from: JsonValue) {
               distance that let `composites` land unclassified"
 )]
 pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, Vec<&'static str>) {
+    /// Consume one destructured binding and yield the name it is classified
+    /// under.
+    ///
+    /// **This is the guard, and D-309 is why it is a function rather than a
+    /// literal list.** Every field below is bound by name and handed to this
+    /// exactly once, so a member named in the pattern and forgotten in both
+    /// classifications is an **unused variable** — denied, because this crate
+    /// denies warnings. The first spelling counted the classified names against
+    /// `22` and was armed backwards: a forgotten member left the count at 22 and
+    /// passed, while classifying it correctly made 23 and failed. It fired on the
+    /// fix and was silent on the omission.
+    fn named<T>(name: &'static str, _binding: T) -> &'static str {
+        name
+    }
+
     let PlanSubjectDelta {
-        plan_id: _,
-        revision: _,
-        lifecycle_state: _,
-        sku_id: _,
-        plan_tier: _,
-        plan_tier_override: _,
-        billing_cycle: _,
-        frequency: _,
-        available_from: _,
-        available_to: _,
-        purchase_min_qty: _,
-        purchase_max_qty: _,
-        invoice_grouping_key: _,
-        phases: _,
-        addon_rules: _,
-        descriptor_set: _,
-        composites: _,
-        entitlement_grants: _,
-        change_contract: _,
-        prices: _,
-        tax_projection: _,
-        windows: _,
+        plan_id,
+        revision,
+        lifecycle_state,
+        sku_id,
+        plan_tier,
+        plan_tier_override,
+        billing_cycle,
+        frequency,
+        available_from,
+        available_to,
+        purchase_min_qty,
+        purchase_max_qty,
+        invoice_grouping_key,
+        phases,
+        addon_rules,
+        descriptor_set,
+        composites,
+        entitlement_grants,
+        change_contract,
+        prices,
+        tax_projection,
+        windows,
     } = delta;
 
     // The roster reaches these two through the guards that own them, so a field
     // added inside either is already a compile error one level down.
-    let reached = vec!["prices", "change_contract"];
+    let reached = vec![
+        named("prices", prices),
+        named("change_contract", change_contract),
+    ];
 
     // Everything else, and each for a stated reason. `plan_tier` and its override
     // are the registry taxonomy and its audited divergence; the purchase bounds
@@ -1264,26 +1282,26 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
     // holds that section: a log line and the bump it implies, or a sentence
     // putting plan-scoped derived-meter definitions outside the roster on purpose.
     let not_reached = vec![
-        "plan_id",
-        "revision",
-        "lifecycle_state",
-        "sku_id",
-        "plan_tier",
-        "plan_tier_override",
-        "billing_cycle",
-        "frequency",
-        "available_from",
-        "available_to",
-        "purchase_min_qty",
-        "purchase_max_qty",
-        "invoice_grouping_key",
-        "phases",
-        "addon_rules",
-        "descriptor_set",
-        "composites",
-        "entitlement_grants",
-        "tax_projection",
-        "windows",
+        named("plan_id", plan_id),
+        named("revision", revision),
+        named("lifecycle_state", lifecycle_state),
+        named("sku_id", sku_id),
+        named("plan_tier", plan_tier),
+        named("plan_tier_override", plan_tier_override),
+        named("billing_cycle", billing_cycle),
+        named("frequency", frequency),
+        named("available_from", available_from),
+        named("available_to", available_to),
+        named("purchase_min_qty", purchase_min_qty),
+        named("purchase_max_qty", purchase_max_qty),
+        named("invoice_grouping_key", invoice_grouping_key),
+        named("phases", phases),
+        named("addon_rules", addon_rules),
+        named("descriptor_set", descriptor_set),
+        named("composites", composites),
+        named("entitlement_grants", entitlement_grants),
+        named("tax_projection", tax_projection),
+        named("windows", windows),
     ];
     (reached, not_reached)
 }
