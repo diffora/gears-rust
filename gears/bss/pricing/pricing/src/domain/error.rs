@@ -510,8 +510,19 @@ pub enum DomainError {
     /// 422 category. The per-row report is not in the refusal: it is on the run,
     /// which the `GET` serves, and a batch's answer lives there for the first
     /// caller and every replay alike (`inst-bi-return`).
-    #[error("bulk validation failed: {0}")]
-    BulkValidationFailed(String),
+    ///
+    /// **`operation_id` is a field and not a phrase inside `detail`** (D-294).
+    /// The report the refusal points at is only reachable through the ref, so a
+    /// ref a client has to parse out of a sentence makes the whole of Phase 1's
+    /// answer unreadable by anything but a human — and this is the one refusal
+    /// whose entire value is the report behind it.
+    #[error("bulk validation failed: {detail} (operation {operation_id})")]
+    BulkValidationFailed {
+        /// The run that holds the per-row report.
+        operation_id: String,
+        /// What was refused, in the operator's terms.
+        detail: String,
+    },
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///
@@ -599,7 +610,7 @@ pub enum DomainError {
     /// caller told the key was duplicated would go looking for a row to retire.
     ///
     /// It is **not** raised by any constraint. §6 puts non-overlap "inside every
-    /// mutation" because the key is eight columns of `pricing_price` and none of
+    /// mutation" because the key is ten columns of `pricing_price` and none of
     /// them is on the window row, so the sole producer is
     /// [`window_repo`](crate::infra::storage::repo::window_repo) — see that
     /// module and the migration's own note.

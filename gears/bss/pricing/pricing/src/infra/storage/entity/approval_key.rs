@@ -31,7 +31,7 @@ pub struct Model {
     /// The unit that holds the key.
     #[sea_orm(primary_key, auto_increment = false)]
     pub approval_id: Uuid,
-    /// The key it holds, in the **canonical eight-axis rendering** — the same
+    /// The key it holds, in the **canonical ten-axis rendering** — the same
     /// string a publish refusal names a key by, and the same
     /// `ScopeKey::to_string` produces. The migration's doc says why the axes are
     /// not spread into columns.

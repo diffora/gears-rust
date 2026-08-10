@@ -90,7 +90,8 @@ pub const BULK_VALIDATION_FAILED: &str = "BULK_VALIDATION_FAILED";
 pub struct BulkImportRowRequest {
     /// The plan this row prices.
     pub plan_id: Uuid,
-    /// The seven axes the caller authors.
+    /// The six axes authored as a key; `plan_id` above is the seventh, and the
+    /// usage pair is derived from `content` rather than authored here.
     pub scope_key: ScopeKeyRequest,
     /// The row's whole content.
     pub content: PriceContentView,
@@ -275,6 +276,24 @@ async fn submit_bulk_import(
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?
     {
+        // **A replay answers what the first call answered** (D-294). A batch
+        // refused in Phase 1 was answered `400`, so a retry that answered `202`
+        // would tell a client the resubmit succeeded where the original failed —
+        // the one conclusion idempotency exists to prevent, and precisely the
+        // client that retried on a timeout and cannot otherwise tell. The report
+        // is replayed either way: the run holds it and the `GET` serves it.
+        //
+        // The message also states what the key now costs, because this is where
+        // an operator meets it: the key is **spent on the run**, so a corrected
+        // batch resubmitted under it would import nothing and be told nothing.
+        if existing.state == BulkState::ValidationFailed {
+            return Err(CanonicalError::from(DomainError::BulkValidationFailed {
+                operation_id: existing.operation_id.to_string(),
+                detail: "this key opened a batch that was refused in validation; a corrected \
+                         batch is a new batch and needs its own idempotency key"
+                    .to_owned(),
+            }));
+        }
         return Ok((StatusCode::ACCEPTED, Json(run_view(&existing))).into_response());
     }
 
@@ -321,15 +340,15 @@ async fn submit_bulk_import(
         // architectural 422 reaches the wire as a 400 carrying its code. The
         // per-row report is not lost — the run holds it and the `GET` serves it,
         // which is where a caller reads a batch's answer anyway.
-        return Err(CanonicalError::from(DomainError::BulkValidationFailed(
-            format!(
-                "{} of {} row(s) were refused before anything was committed; operation {} holds \
-             the per-row report",
+        return Err(CanonicalError::from(DomainError::BulkValidationFailed {
+            operation_id: run.operation_id.to_string(),
+            detail: format!(
+                "{} of {} row(s) were refused before anything was committed; the run holds the \
+                 per-row report",
                 report.rows().len(),
-                rows.len(),
-                run.operation_id
+                rows.len()
             ),
-        )));
+        }));
     }
 
     commit_batch(

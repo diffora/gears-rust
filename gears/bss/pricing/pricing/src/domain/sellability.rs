@@ -336,7 +336,7 @@ pub struct PredicateOutcome {
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeySellability {
-    /// The eight axes this answer is filed under.
+    /// The ten axes this answer is filed under.
     pub scope_key: ScopeKey,
     /// The key's frozen intervals, ordered, exactly as the version froze them.
     pub intervals: Vec<WindowInterval>,

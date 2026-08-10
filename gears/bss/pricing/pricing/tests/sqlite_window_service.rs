@@ -730,7 +730,7 @@ fn frozen_key(payload: &serde_json::Value) -> KeyWindows {
     KeyWindows {
         // The key's identity is not what any case here asserts — the delta carries one
         // key and the assertions are about its intervals — so it is filled in rather
-        // than reconstructed from eight axes the payload spells its own way.
+        // than reconstructed from ten axes the payload spells its own way.
         scope_key: rest_support::publishable_scope_key(
             PlanId::new(Uuid::now_v7()),
             rest_support::seeded_phase(),

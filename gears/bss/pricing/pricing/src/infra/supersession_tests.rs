@@ -85,7 +85,7 @@ fn the_subject_names_the_plan_the_act_and_the_whole_key() {
     assert!(subject.contains("supersession"), "got: {subject}");
     assert!(
         subject.contains(&key(PriceEligibility::AllSubscriptions).to_string()),
-        "the whole eight-axis key, so two classes of one plan cannot collide: {subject}"
+        "the whole ten-axis key, so two classes of one plan cannot collide: {subject}"
     );
     assert!(subject.contains("2099-04-01"), "got: {subject}");
 }

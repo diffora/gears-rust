@@ -139,7 +139,7 @@ fn keys_of(report: &serde_json::Value) -> Vec<String> {
 /// the key the report calls uncovered, spelled identically.
 ///
 /// An operator reads `WINDOW_COVERAGE_MISSING` on a key, opens this report, and has
-/// to find that key without transcribing eight axes. Two renderings of one key
+/// to find that key without transcribing ten axes. Two renderings of one key
 /// would make the remediation surface unusable while every test of each half
 /// passed — so the assertion is that the two strings are **equal**, taken from the
 /// two responses rather than from a fixture either of them could disagree with.
@@ -2461,7 +2461,7 @@ async fn the_document_carries_intervals_and_a_coverage_end_and_no_boolean_anywhe
         serde_json::json!({ "kind": "open_ended", "at": serde_json::Value::Null })
     );
     // The key's rendering is the coverage report's own, so an operator matches the
-    // two surfaces without transcribing eight axes.
+    // two surfaces without transcribing ten axes.
     assert_eq!(
         key["scope_key"].as_str(),
         Some(

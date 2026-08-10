@@ -17,7 +17,7 @@
 //!
 //! §6: *"non-overlap per canonical scope key enforced **inside every
 //! mutation**"*. That is not a stylistic choice and this module is not where a
-//! constraint was skipped. The canonical scope key is eight columns of
+//! constraint was skipped. The canonical scope key is ten columns of
 //! `pricing_price`; `pricing_price_window` carries `price_id` and none of the
 //! eight. So no `UNIQUE` index can state the rule, no partial-index predicate can
 //! (a predicate sees only its own row's columns — neither the parent's key nor a
@@ -1139,7 +1139,7 @@ pub async fn adjust_effective_to(
 ///   sibling read cannot be taken under a lock either.
 ///
 /// A constraint is out for its own reason, which the module doc already gives and
-/// which G4 did not change: the canonical scope key is eight columns of
+/// which G4 did not change: the canonical scope key is ten columns of
 /// `pricing_price` and **none of them is on the window row**, so no unique index
 /// reaches it; a Postgres exclusion constraint would additionally need `btree_gist`
 /// *and* the key denormalised onto this table, and `SQLite` has no exclusion

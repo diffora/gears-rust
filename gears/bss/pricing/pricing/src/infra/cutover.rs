@@ -1023,14 +1023,24 @@ async fn read_cutover_context(
     // onto an instant one of them carries is refused at compose, and a *superseded*
     // generation still holds its instant — the key is immutable history, not a slot
     // that frees.
+    //
+    // **Through `is_sibling_of`, and that is the whole point** (D-296). This
+    // predicate spelled `currency` and `region` by hand and matched **two of ten
+    // axes**, so on any plan carrying a second key in one market — a hybrid
+    // recurring/usage plan, or D-103's multi-meter one — a cutover on key A found
+    // the grandfathered draft staged for key B, took the "already staged" arm and
+    // **never minted A's copy at all**, reporting B's row id as A's. The
+    // comparison that knows what it excludes lives on the key and destructures
+    // with no rest pattern; a hand-written one here is the same defect D-205
+    // repaired at four other sites, in the two places its sweep could not see
+    // because neither carries the word *axes*.
     let staged_copy = shape
         .rows
         .iter()
         .find(|row| {
             row.lifecycle_state == LifecycleState::Draft
                 && row.scope_key.price_eligibility() == PriceEligibility::ExistingGrandfathered
-                && row.scope_key.currency() == key.currency()
-                && row.scope_key.region() == key.region()
+                && key.is_sibling_of(&row.scope_key)
         })
         .cloned();
 
@@ -1047,12 +1057,14 @@ async fn read_cutover_context(
         .rows
         .iter()
         .filter(|row| Some(row.price_id) != staged_copy_id)
+        // Six of ten by hand until D-296: `meter` and `dimension_key` were absent,
+        // so on D-103's confirmed plan — several usage lines, one `charge_kind`,
+        // one market — the generations of *every* line counted as this line's. A
+        // cutover onto an instant that only a neighbouring meter's generation held
+        // was refused `DUPLICATE_SCOPE_KEY` on a key that was genuinely free: the
+        // fail-closed twin of the site above, and the same class as D-283.
         .filter(|row| {
-            row.scope_key.plan_id() == plan_id
-                && row.scope_key.currency() == key.currency()
-                && row.scope_key.region() == key.region()
-                && row.scope_key.phase() == key.phase()
-                && row.scope_key.charge_kind() == key.charge_kind()
+            key.is_sibling_of(&row.scope_key)
                 && row.scope_key.price_eligibility() == PriceEligibility::ExistingGrandfathered
         })
         .map(|row| row.scope_key.cohort())

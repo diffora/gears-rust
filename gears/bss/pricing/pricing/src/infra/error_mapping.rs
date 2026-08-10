@@ -64,6 +64,22 @@ fn precondition(field: &'static str, detail: &str, code: &'static str) -> Canoni
         .create()
 }
 
+/// Phase 1's refusal, carrying **two** violations under one code: what was
+/// refused, and the run that holds the per-row report.
+///
+/// The ref is a violation rather than a phrase inside the detail because the
+/// report is the entire value of this refusal and nothing else points at it — a
+/// ref a client has to parse out of a sentence leaves Phase 1's answer readable
+/// by a human and by nothing else (D-294). One code, because these are two
+/// halves of one refusal rather than two things that went wrong.
+fn bulk_refusal(operation_id: &str, detail: &str) -> CanonicalError {
+    let code = crate::api::rest::bulk_imports::BULK_VALIDATION_FAILED;
+    PlanResource::failed_precondition()
+        .with_precondition_violation("rows", detail, code)
+        .with_precondition_violation("operation_id", operation_id, code)
+        .create()
+}
+
 impl From<DomainError> for CanonicalError {
     fn from(err: DomainError) -> Self {
         use DomainError as D;
@@ -87,11 +103,10 @@ impl From<DomainError> for CanonicalError {
             // file, not about any one row, which is what all-or-nothing means.
             // Through the helper for its stated reason: this ladder is bounded at
             // 200 lines and an inline builder is five.
-            D::BulkValidationFailed(detail) => precondition(
-                "rows",
-                &detail,
-                crate::api::rest::bulk_imports::BULK_VALIDATION_FAILED,
-            ),
+            D::BulkValidationFailed {
+                operation_id,
+                detail,
+            } => bulk_refusal(&operation_id, &detail),
             // The temporal sibling of the line above, and classified with it
             // rather than as a malformed argument: the instant parses, it is
             // simply finer than the quantum the catalog compares instants at

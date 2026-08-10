@@ -37,8 +37,8 @@
 //! # The caller names the **predecessor row**, not the scope key
 //!
 //! `inst-su-api` offers both — *"the target scope key (or the current `priceId`)"* — and
-//! the row id is taken. Three reasons, in order of weight: the key is eight axes and
-//! re-spelling it on the wire is eight chances to name a key the caller did not mean,
+//! the row id is taken. Three reasons, in order of weight: the key is ten axes and
+//! re-spelling it on the wire is ten chances to name a key the caller did not mean,
 //! while `PriceRowView` already hands the caller the id it is looking at; the row is
 //! what the operator is actually superseding, so a row that has since left the published
 //! plane is refused by name rather than resolving to a key whose occupant is a different
@@ -128,7 +128,7 @@ const TAG: &str = "Price Windows";
 pub struct SupersedeRequest {
     /// The row being superseded — the key's current published row.
     ///
-    /// A row id rather than the eight axes; the module doc has the three reasons.
+    /// A row id rather than the ten axes; the module doc has the three reasons.
     pub predecessor_price_id: Uuid,
     /// When coverage hands over. Strictly future at submit, and at least D-47's max
     /// batching delay ahead at the approval commit (`inst-su-instant`).
@@ -379,7 +379,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              standard per-currency price-delta evaluation makes the change material and no \
              independent approve covers it yet, `superseded` when the unit committed. \
              \
-             The body names the **current `priceId`** rather than the eight scope-key axes, and \
+             The body names the **current `priceId`** rather than the ten scope-key axes, and \
              the `{planId}` segment is checked against the row's own plan - a row of another plan \
              answers `404`. The changeover must be strictly future at submit and at least D-47's \
              max batching delay (5 min) ahead at the approval commit \

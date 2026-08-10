@@ -9,7 +9,7 @@
 //! # This is where non-overlap is proved, and it is proved nowhere else
 //!
 //! §6 puts non-overlap per canonical scope key "inside every mutation" because no
-//! constraint can reach it: the key is eight columns of `pricing_price` and none of
+//! constraint can reach it: the key is ten columns of `pricing_price` and none of
 //! them is on the window row. So the rule has no schema object, `tests/postgres_window.rs`
 //! cannot execute a statement that trips it, and this suite carries the whole
 //! proof.
@@ -59,7 +59,7 @@ const PHASE: Uuid = Uuid::from_u128(0x40_a5);
 const ROW: Uuid = Uuid::from_u128(0xa0_01);
 /// A `superseded` predecessor **on the same canonical scope key** as [`ROW`].
 const PREDECESSOR: Uuid = Uuid::from_u128(0xa0_02);
-/// A row on a **different** key — a different `charge_kind`, so the eight axes
+/// A row on a **different** key — a different `charge_kind`, so the ten axes
 /// differ in exactly one place.
 const OTHER_KEY_ROW: Uuid = Uuid::from_u128(0xa0_03);
 
@@ -216,7 +216,7 @@ async fn a_scheduled_window_reads_back_as_it_was_written_carrying_its_rows_key()
     assert_eq!(read.activated_at, None);
     assert_eq!(read.expired_at, None);
     assert_eq!(read.cancelled_at, None);
-    // The key is the price row's eight axes, not anything this file spelled.
+    // The key is the price row's ten axes, not anything this file spelled.
     assert_eq!(read.scope_key.plan_id(), PlanId::new(PLAN));
     assert_eq!(read.scope_key.currency().as_str(), "USD");
 }

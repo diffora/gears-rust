@@ -533,9 +533,12 @@ impl Harness {
     ) -> Client {
         let openapi = OpenApiRegistryImpl::new();
         let router = bss_pricing::api::rest::frontier::router(Arc::clone(&self.frontier), &openapi)
-            // Slice 12's history read. Merged here rather than only in the two
-            // censuses, because this is the router the gate properties drive:
-            // one absent from it is one no authz property is asked about.
+            // Slice 12's bulk import and its history read. Both merged here
+            // rather than only in the two censuses, because this is the router
+            // the gate properties drive: one absent from it is one no authz
+            // property is asked about. (D-293 inserted the bulk mount **above**
+            // the history one and left the history comment sitting over it, so
+            // this block named the wrong router for two commits.)
             .merge(bss_pricing::api::rest::bulk_imports::router(
                 Arc::new(bss_pricing::api::rest::bulk_imports::ApiState {
                     authoring: Arc::clone(&self.state),
@@ -1092,6 +1095,35 @@ fn find_code(value: &serde_json::Value) -> Option<String> {
         serde_json::Value::Array(items) => items.iter().find_map(find_code),
         _ => None,
     }
+}
+
+/// The `description` of the precondition violation filed under `subject`.
+///
+/// Here rather than in a suite for [`code_in`]'s stated reason: a second reading
+/// of the same document would be free to disagree with this one. The array is
+/// found by key at any depth because its enclosing wrapper is the platform's to
+/// name, and a case pinning a violation should fail when the violation is gone,
+/// not when the envelope is renamed.
+///
+/// The key is the **rendered** `violations`, not the builder's
+/// `precondition_violations`: the two differ, and only the first is on the wire.
+#[must_use]
+pub fn violation_for(body: &serde_json::Value, subject: &str) -> Option<String> {
+    fn violations(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+        match value {
+            serde_json::Value::Object(map) => map
+                .get("violations")
+                .and_then(serde_json::Value::as_array)
+                .or_else(|| map.values().find_map(violations)),
+            serde_json::Value::Array(items) => items.iter().find_map(violations),
+            _ => None,
+        }
+    }
+    violations(body)?
+        .iter()
+        .find(|violation| violation["subject"] == serde_json::json!(subject))
+        .and_then(|violation| violation["description"].as_str())
+        .map(ToOwned::to_owned)
 }
 
 /// A seeded instant, quantized to the millisecond the catalog compares at.

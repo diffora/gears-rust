@@ -329,10 +329,10 @@ async fn an_approval_row_cannot_be_deleted() {
 // `pricing_approval_key` — the register's own guards
 // ---------------------------------------------------------------------------
 
-/// One canonical scope key, as the register renders it: the eight axes, piped.
-const KEY: &str = "3f2a|EUR|eu|base|9c1|all_subscriptions|recurring|none";
+/// One canonical scope key, as the register renders it: the ten axes, piped.
+const KEY: &str = "3f2a|EUR|eu|base|9c1|all_subscriptions|recurring|none|none|none";
 /// A second key on the same plan, for the case that must still be admitted.
-const OTHER_KEY: &str = "3f2a|USD|us|base|9c1|all_subscriptions|recurring|none";
+const OTHER_KEY: &str = "3f2a|USD|us|base|9c1|all_subscriptions|recurring|none|none|none";
 /// A second pending unit, for the one re-point case its own guard cannot answer
 /// without it — see [`a_register_row_cannot_be_re_pointed`].
 const SECOND_UNIT: &str = "00000000-0000-0000-0000-0000000000dd";

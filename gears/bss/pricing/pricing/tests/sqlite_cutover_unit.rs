@@ -22,12 +22,15 @@ use std::sync::Arc;
 
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::money::MinorAmount;
+use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
-use bss_pricing::domain::scope_key::{PlanId, PriceEligibility, ScopeKey};
+use bss_pricing::domain::price_row::{ModelKind, PriceRow};
+use bss_pricing::domain::scope_key::{
+    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+};
 use bss_pricing::infra::cutover::{CutoverOutcome, CutoverRequest, CutoverService};
 use bss_pricing::infra::storage::entity::price;
-use bss_pricing::infra::storage::repo::approval_repo;
+use bss_pricing::infra::storage::repo::{NewPriceDraft, approval_repo};
 use chrono::{DateTime, TimeZone, Utc};
 use rest_support::{Harness, Publishable};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
@@ -127,6 +130,201 @@ async fn state_of(h: &Harness, price_id: Uuid) -> String {
         .expect("read the row")
         .expect("the row is there")
         .lifecycle_state
+}
+
+/// A second published row on this plan and market, differing from the seeded one
+/// only in its **phase** — one of the eight axes `ScopeKey::is_sibling_of`
+/// compares, and one the hand-written predicate in `read_cutover_context` did
+/// not (D-296).
+async fn second_published_key(h: &Harness, plan_id: PlanId) -> ScopeKey {
+    let key = rest_support::publishable_scope_key(plan_id, PhaseId::new(Uuid::now_v7()), "eu");
+    let price_id = Uuid::now_v7();
+    h.state
+        .prices
+        .create_draft(
+            &h.scope(),
+            h.tenant,
+            NewPriceDraft {
+                price_id,
+                scope_key: key.clone(),
+                content: rest_support::publishable_row(),
+                created_by: SUBMITTER,
+                created_at_utc: now(),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the neighbouring row");
+    let conn = h.db.conn().expect("conn");
+    common::schedule_coverage_window(&conn, &h.scope(), h.tenant, price_id, stamp_of(SUBMITTER))
+        .await;
+    h.publish_price(plan_id.get(), price_id).await;
+    key
+}
+
+#[tokio::test]
+async fn a_cutover_does_not_adopt_the_copy_staged_for_a_neighbouring_key() {
+    // **The fail-open half of D-296.** `staged_copy` compared `currency` and
+    // `region` — two of the ten axes — so on any plan carrying a second key in one
+    // market (a hybrid recurring/usage plan, or D-103's confirmed multi-meter one)
+    // a cutover adopted whatever grandfathered draft some *other* key had staged.
+    // The act then took the "already staged" arm and **never minted its own copy
+    // at all**: the retained subscribers on this key have nothing to resolve to,
+    // and the receipt reports another key's row as this act's copy.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let neighbour_key = second_published_key(&h, plan_id).await;
+
+    // The neighbour is cut over first, so its grandfathered draft is standing
+    // when the act under test reads the plan.
+    let neighbour = cut_over(&h, request_of(&neighbour_key, 7_700), SUBMITTER)
+        .await
+        .expect("the neighbour's cutover composes");
+    let neighbours_copy = pending(&neighbour).copy_price_id;
+
+    let request = request_of(&key_of(plan_id, &seeded), 8_800);
+    let asked_for = request.copy_price_id;
+    let outcome = cut_over(&h, request, SUBMITTER)
+        .await
+        .expect("and this key's cutover composes too");
+
+    assert_eq!(
+        pending(&outcome).copy_price_id,
+        asked_for,
+        "this act mints its own copy; adopting the neighbour's leaves this key's \
+         grandfathered subscribers with no row at all"
+    );
+    assert_ne!(
+        pending(&outcome).copy_price_id,
+        neighbours_copy,
+        "and the two acts are two copies"
+    );
+    assert_eq!(
+        state_of(&h, asked_for).await,
+        LifecycleState::Draft.as_str(),
+        "the copy this act asked for exists"
+    );
+}
+
+/// A usage key on this plan's market, discriminated only by its **meter** —
+/// D-103's confirmed shape: "a `PaaS` plan pricing cloudlets, storage and egress is
+/// one plan, not three".
+fn usage_key(plan_id: PlanId, phase: PhaseId, meter: &str) -> ScopeKey {
+    ScopeKey::new(
+        plan_id,
+        CurrencyCode::new("EUR").expect("three letters"),
+        Region::new("eu").expect("a non-blank region"),
+        phase,
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("the class pairs with cohort none")
+    .with_usage_line(
+        Some(Meter::new(meter).expect("a non-blank meter")),
+        DimensionKey::none(),
+    )
+    .expect("a usage line names its meter")
+}
+
+/// A flat usage row whose own line agrees with its key — the store refuses
+/// `UsageLineDisagrees` otherwise.
+fn usage_content(meter: &str, amount: i64) -> PriceContent {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Flat));
+    row.amount_minor = Some(MinorAmount::new(amount).expect("a non-negative amount"));
+    row.meter = Some(meter.to_owned());
+    PriceContent {
+        row,
+        tax_inclusive: false,
+        tax_category_ref: None,
+        billing_timing: Some("arrears".to_owned()),
+        proration_contract: None,
+        rounding_policy_ref: Some("half_up".to_owned()),
+        grandfather_until: None,
+        supersedes_price_id: None,
+    }
+}
+
+/// One published, covered usage line on the plan's market.
+async fn published_usage_line(h: &Harness, key: &ScopeKey, meter: &str) -> Uuid {
+    let price_id = Uuid::now_v7();
+    h.state
+        .prices
+        .create_draft(
+            &h.scope(),
+            h.tenant,
+            NewPriceDraft {
+                price_id,
+                scope_key: key.clone(),
+                content: usage_content(meter, 9_900),
+                created_by: SUBMITTER,
+                created_at_utc: now(),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the usage row");
+    let conn = h.db.conn().expect("conn");
+    common::schedule_coverage_window(&conn, &h.scope(), h.tenant, price_id, stamp_of(SUBMITTER))
+        .await;
+    common::publish_row_directly(&h.db, &h.scope(), price_id).await;
+    price_id
+}
+
+/// The same act, on a usage key: the successor has to carry the key's own line.
+fn usage_request(key: &ScopeKey, meter: &str, amount: i64) -> CutoverRequest {
+    CutoverRequest {
+        predecessor_key: key.clone(),
+        cutover_at: cutover_at(),
+        successor: usage_content(meter, amount),
+        successor_price_id: Uuid::now_v7(),
+        successor_window_id: Uuid::now_v7(),
+        copy_price_id: Uuid::now_v7(),
+        copy_window_id: Uuid::now_v7(),
+        reason_code: "grandfatheringCutover".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn a_generation_on_a_neighbouring_meter_does_not_occupy_this_line_s_instant() {
+    // **The fail-closed half of D-296**, and its twin above is the fail-open one.
+    // `existing_generations` compared six of the ten axes, omitting `meter` and
+    // `dimension_key`, so on D-103's plan every usage line's generations counted
+    // as every other line's. A cutover onto an instant that only a *neighbouring*
+    // meter's generation held was refused `DUPLICATE_SCOPE_KEY` on a key that was
+    // genuinely free — the same class as D-283, where a rule built from a stale
+    // axis count refused work the store admits.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let cloudlets = usage_key(plan_id, seeded.phase, "cloudlets");
+    let egress = usage_key(plan_id, seeded.phase, "egress-gb");
+    published_usage_line(&h, &cloudlets, "cloudlets").await;
+    published_usage_line(&h, &egress, "egress-gb").await;
+
+    // One line takes the instant. Its grandfathered generation now stands on the
+    // plan, on a key of its own.
+    cut_over(&h, usage_request(&cloudlets, "cloudlets", 7_700), SUBMITTER)
+        .await
+        .expect("the first line's cutover composes");
+
+    // The other line asks for the **same** instant, which nothing on its own key
+    // holds.
+    let outcome = cut_over(&h, usage_request(&egress, "egress-gb", 8_800), SUBMITTER)
+        .await
+        .expect("a free instant on this line's own key is free");
+
+    assert_eq!(
+        pending(&outcome).copy_key.price_eligibility(),
+        PriceEligibility::ExistingGrandfathered,
+        "and the generation it minted stands on its own line: {:?}",
+        pending(&outcome).copy_key
+    );
+    assert_eq!(
+        pending(&outcome).copy_key.meter().map(Meter::as_str),
+        Some("egress-gb"),
+        "on this meter, not the neighbour's: {:?}",
+        pending(&outcome).copy_key
+    );
 }
 
 // ---------------------------------------------------------------------------

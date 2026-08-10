@@ -206,12 +206,12 @@ pub struct SellabilityQuery {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct KeyCoverageView {
-    /// The key's canonical rendering — the eight axes, pipe-separated, exactly as
+    /// The key's canonical rendering — the ten axes, pipe-separated, exactly as
     /// the violation subjects of a publish refusal name it.
     ///
     /// The **same string** on both surfaces on purpose: an operator who was told
     /// `WINDOW_COVERAGE_MISSING` on a key has to be able to find that key here
-    /// without transcribing eight axes.
+    /// without transcribing ten axes.
     pub scope_key: String,
     /// Does a billable row of this plan sit on the key? `false` on a key only
     /// history occupies, which is reported and never refused.
@@ -490,7 +490,7 @@ impl From<&PredicateOutcome> for PredicateAnswerView {
 pub struct KeySellabilityView {
     /// The key's canonical rendering — the **same string** the coverage report and
     /// a publish refusal use, so an operator matches keys across the three
-    /// surfaces without transcribing eight axes.
+    /// surfaces without transcribing ten axes.
     pub scope_key: String,
     /// How far this key's coverage runs, as the three-armed answer.
     pub coverage_end: CoverageEndView,

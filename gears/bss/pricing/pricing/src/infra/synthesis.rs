@@ -11,7 +11,7 @@
 //!
 //! "The `pricing_price` row, **current or superseded**, whose `PriceWindow`
 //! covered `t` on that key". Every part of that is on one record:
-//! `window_repo::list_for_plan` resolves each window's eight-axis
+//! `window_repo::list_for_plan` resolves each window's ten-axis
 //! [`ScopeKey`](crate::domain::scope_key::ScopeKey) from `pricing_price` on read,
 //! so the key match, the interval test and the row id all come from one query and
 //! there is no join to get wrong.

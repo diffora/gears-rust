@@ -46,12 +46,16 @@
 //!   and is owed by Presentation and the Tariffs preview (F-34). Stated here
 //!   rather than left as a missing rule, because an absent arm reads as an
 //!   oversight.
-//! * **`inst-plv-class-tiebreak` and `inst-plv-member-preview`.** Two further
-//!   `inst-plv-*` ids §3 declares that are outside this strand's census. The
-//!   class order the first of them publishes **is** here —
-//!   [`ScopeClass`]'s derived `Ord` — because the read model has to carry it;
-//!   the cross-class equal-precedence *warning* it also asks for is not, and is
-//!   owed.
+//! * **`inst-plv-class-tiebreak`** is here in **both** its halves: the class
+//!   order it publishes is [`ScopeClass`]'s derived `Ord`, because the read
+//!   model has to carry it, and the cross-class equal-precedence *warning* it
+//!   also asks for is [`EQUAL_PRECEDENCE_CROSS_CLASS_TIE`], raised by
+//!   [`check_cross_class_tie`] over the ties `overlay_repo` collects. *(This
+//!   paragraph called the warning "owed" for as long as it existed beside the
+//!   rule that raises it — an owed-arm note is read as a to-do list, so one
+//!   naming something already built sends a reader to write it twice.)*
+//! * **`inst-plv-member-preview`** is outside this strand's census: it belongs
+//!   to the Tariffs preview and has no subject in this crate.
 //!
 //! # The direction D-138's warning needs, and does not have
 //!

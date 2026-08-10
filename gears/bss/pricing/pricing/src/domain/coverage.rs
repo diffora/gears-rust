@@ -202,7 +202,7 @@ pub struct KeyCoverage {
 }
 
 impl KeyCoverage {
-    /// The eight axes this coverage is filed under.
+    /// The ten axes this coverage is filed under.
     #[must_use]
     pub const fn scope_key(&self) -> &ScopeKey {
         &self.windows.scope_key

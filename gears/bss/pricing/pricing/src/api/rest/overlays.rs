@@ -875,9 +875,13 @@ async fn submit_overlay(
     // committed while its trail rolled back would leave `pricing_audit_log` answering
     // "who submitted this" with nothing.
     //
-    // The **publish** unit `inst-pl-commit` also names (D-06) is still not wired, and
-    // that half is what keeps D-225 open: an approved overlay does not yet reach the
-    // Foundation engine, so nothing publishes.
+    // This arm is reached when **no** approved unit covers this revision and this
+    // content. The publish half `inst-pl-commit` also names (D-06) is the early
+    // return above, built 2026-08-07 and closing D-225 with it. *(This comment read
+    // "still not wired … nothing publishes" while sitting in the else-branch of code
+    // that publishes — a sentence that was true when written and false one commit
+    // later. It is the same defect as a register entry describing a pipeline that
+    // exists as one that does not, and it is corrected here for the same reason.)*
     let (reason, stored_materiality) = rendered_materiality(&overlay_submit_materiality())?;
     let content = record.content();
     let opened = state

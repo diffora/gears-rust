@@ -741,7 +741,7 @@ fn empty_interval(
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyWindows {
-    /// The eight axes this set is filed under.
+    /// The ten axes this set is filed under.
     pub scope_key: ScopeKey,
     /// The key's windows, ordered.
     pub intervals: Vec<WindowInterval>,

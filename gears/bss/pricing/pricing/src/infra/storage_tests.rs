@@ -233,10 +233,10 @@ fn a_retired_plan_and_a_taken_draft_slot_are_told_apart_without_reading_prose() 
 
 #[test]
 fn an_occupied_scope_key_keeps_its_rendering_verbatim() {
-    // The eight-axis rendering is the whole diagnostic: re-wrapping it in
+    // The ten-axis rendering is the whole diagnostic: re-wrapping it in
     // another sentence, or dropping an axis, would report a collision between
     // rows that do not actually share a key.
-    let key = "3f2a|USD|EU|base|9c1|all_subscriptions|recurring|none";
+    let key = "3f2a|USD|EU|base|9c1|all_subscriptions|recurring|none|none|none";
     let err = RepoError::DuplicateScopeKey(key.to_owned());
 
     assert_eq!(
@@ -350,7 +350,7 @@ fn a_duplicate_meeting_an_unanswered_claim_is_its_own_refusal() {
 #[test]
 fn an_overlap_on_a_canonical_scope_key_carries_the_window_code() {
     // `WINDOW_OVERLAP` (§5, 409) is the one window refusal with no schema object at
-    // all — §6 puts it inside every mutation because the key is eight columns of
+    // all — §6 puts it inside every mutation because the key is ten columns of
     // `pricing_price` — so this arm is the *only* thing between the repository's
     // refusal and the wire. All three parts of the sentence survive, because an
     // operator needs the key to know which of a plan's keys refused, the requested
@@ -476,7 +476,7 @@ fn a_key_the_register_refused_a_second_hold_on_is_a_pending_unit_conflict() {
     // things about one condition depending on which of two transactions committed
     // first.
     let err = RepoError::PendingKeyHeld {
-        key: "3f2a|EUR|eu|base|9c1|all_subscriptions|recurring|none".to_owned(),
+        key: "3f2a|EUR|eu|base|9c1|all_subscriptions|recurring|none|none|none".to_owned(),
     };
 
     let DomainError::PendingChangeUnitExists(detail) = repo_failure(&err) else {

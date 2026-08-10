@@ -477,7 +477,7 @@ pub enum RepoError {
     ///
     /// **The only guarantee of this store that no constraint carries**, and the
     /// only one this crate could not have written as one: the canonical scope key
-    /// is eight columns of `pricing_price` and none of them is on the window row,
+    /// is ten columns of `pricing_price` and none of them is on the window row,
     /// so no unique index reaches it, a partial-index predicate sees only its own
     /// row, and an exclusion constraint would need `btree_gist` on Postgres and
     /// has no `SQLite` expression at all. §6 says "enforced inside every

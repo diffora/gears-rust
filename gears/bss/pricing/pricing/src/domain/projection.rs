@@ -1020,7 +1020,7 @@ fn band_value(band: &TierBand) -> JsonValue {
     })
 }
 
-/// The eight canonical axes, in the normative order §4.1 fixes.
+/// The ten canonical axes, in the normative order §4.1 fixes.
 ///
 /// Rendered axis by axis rather than through [`ScopeKey`]'s `Display`: the
 /// display form is one string for a log line, and a consumer resolving a row

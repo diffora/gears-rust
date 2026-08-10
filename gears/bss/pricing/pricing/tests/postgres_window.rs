@@ -34,7 +34,7 @@
 //! # What this suite cannot prove, and where that proof lives
 //!
 //! **Non-overlap per canonical scope key.** §6 enforces it inside every mutation
-//! rather than as a constraint, because the key is eight columns of `pricing_price`
+//! rather than as a constraint, because the key is ten columns of `pricing_price`
 //! and none of them is on the window row — no unique index reaches it, no
 //! partial-index predicate can see a sibling's interval, and an exclusion
 //! constraint would need `btree_gist` and has no `SQLite` form. **No *declarative*
@@ -802,7 +802,7 @@ async fn a_windows_end_cannot_be_moved_into_or_out_of_the_past() {
 /// # What it pins, and why it is written in the negative
 ///
 /// `window_repo::refuse_overlap` is the only invariant of this table guarded at a
-/// single layer: the canonical scope key is eight columns of `pricing_price` and none
+/// single layer: the canonical scope key is ten columns of `pricing_price` and none
 /// of them is on the window row, so no unique index, no partial-index predicate and
 /// no `SQLite`-expressible exclusion constraint reaches it. The check therefore reads
 /// the key's siblings and then inserts, with nothing in between — and under

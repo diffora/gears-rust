@@ -179,9 +179,9 @@
 //! **Three** types this cannot be done for, all because their fields are private
 //! and reached through accessors:
 //!
-//! - [`ScopeKey`](crate::domain::scope_key::ScopeKey), whose eight axes are
-//!   frozen by the canonical key itself and by eight columns of `pricing_price`,
-//!   so a ninth would not arrive quietly.
+//! - [`ScopeKey`](crate::domain::scope_key::ScopeKey), whose ten axes are
+//!   frozen by the canonical key itself and by ten columns of `pricing_price`,
+//!   so an eleventh would not arrive quietly.
 //! - [`PhaseGraph`](crate::domain::plan_shape::PhaseGraph), read through
 //!   `phases()`. It holds one field today — the phase vector — and a second
 //!   would be a graph-level fact this encoder would silently omit. The

@@ -309,6 +309,196 @@ async fn aborting_a_run_that_finished_with_conflicts_is_refused_too() {
 }
 
 #[tokio::test]
+async fn the_refusal_names_the_run_and_the_run_serves_the_per_row_report() {
+    // **The ref is a field, not a phrase** (D-294). Phase 1's entire value is the
+    // per-row report, and the only thing pointing at it is the operation ref — so
+    // a ref readable only by parsing an English sentence leaves that report
+    // unreachable by every client that is not a person. The **shape** the GET
+    // then serves is pinned here for the first time: `inst-bk-idem` makes the
+    // stored report a wire contract, and until now no case named a field in it
+    // beyond `committed`, so a rename would have been invisible.
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500), row(plan, "eu", 2_500)])),
+            &keyed("bulk-6"),
+        ))
+        .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(refused).await;
+    assert_eq!(rest_support::code_in(&problem), "BULK_VALIDATION_FAILED");
+    let operation_id = rest_support::violation_for(&problem, "operation_id")
+        .unwrap_or_else(|| panic!("the refusal has to name the run it opened: {problem}"));
+
+    let run = body_json(
+        harness
+            .allowed()
+            .send(with_headers("GET", &import_path(&operation_id), None, &[]))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        run["state"],
+        serde_json::json!("validation_failed"),
+        "the ref the refusal handed back has to be the run that was refused: {run}"
+    );
+
+    let rows = run["report"]["rows"]
+        .as_array()
+        .unwrap_or_else(|| panic!("Phase 1's report is a list of rows: {run}"));
+    assert!(!rows.is_empty(), "and it names the rows: {run}");
+    for outcome in rows {
+        assert!(
+            outcome["row"].is_u64(),
+            "each outcome carries its position: {outcome}"
+        );
+        let violations = outcome["violations"]
+            .as_array()
+            .unwrap_or_else(|| panic!("and every violation found against it: {outcome}"));
+        assert!(!violations.is_empty(), "never an empty list: {outcome}");
+        for violation in violations {
+            assert!(violation["code"].is_string(), "{violation}");
+            assert!(violation["detail"].is_string(), "{violation}");
+        }
+    }
+    assert!(
+        rows.iter().any(|outcome| {
+            outcome["violations"].as_array().is_some_and(|found| {
+                found
+                    .iter()
+                    .any(|v| v["code"] == serde_json::json!("DUPLICATE_SCOPE_KEY"))
+            })
+        }),
+        "and the duplicate is what this batch was refused for: {run}"
+    );
+}
+
+#[tokio::test]
+async fn a_replay_of_a_refused_key_is_refused_again_and_imports_nothing() {
+    // **A replay answers what the first call answered** (D-294). The refused
+    // batch was a 400; a replay under the same key used to answer 202 with the
+    // failed run, so a client that retried on a timeout — the exact client
+    // idempotency is for — read the retry as having succeeded where the original
+    // failed. The key is also **spent**, which the refusal now says: a corrected
+    // batch under it imports nothing, and the third leg proves nothing landed.
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500), row(plan, "eu", 2_500)])),
+            &keyed("bulk-7"),
+        ))
+        .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+
+    // The same key, a **corrected** body — one row, no duplicate.
+    let replayed = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-7"),
+        ))
+        .await;
+    assert_eq!(
+        replayed.status(),
+        StatusCode::BAD_REQUEST,
+        "a replay may not answer 202 where the first call answered 400"
+    );
+    assert_eq!(problem_code(replayed).await, "BULK_VALIDATION_FAILED");
+
+    // And it imported nothing: the same row under a *fresh* key claims the key
+    // outright, which it could not do had the replay written it.
+    let fresh = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-7-corrected"),
+        ))
+        .await;
+    assert_eq!(fresh.status(), StatusCode::ACCEPTED);
+    let landed = body_json(fresh).await;
+    assert_eq!(
+        landed["report"]["committed"]
+            .as_array()
+            .expect("an array")
+            .len(),
+        1,
+        "the corrected batch lands under its own key, so the replay wrote nothing: {landed}"
+    );
+}
+
+#[tokio::test]
+async fn the_commit_report_names_its_rows_by_field() {
+    // The other half of the wire contract `inst-bk-idem` pins (D-294): a run that
+    // committed one row and conflicted another. Both arms are asserted by field
+    // name, because a report whose readers are all inside this crate today
+    // becomes the operator's only record of what an import did.
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let mut conflicting = row(plan, "us", 2_500);
+    conflicting["if_match"] = serde_json::json!(7);
+    let submitted = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500), conflicting])),
+            &keyed("bulk-8"),
+        ))
+        .await;
+    assert_eq!(submitted.status(), StatusCode::ACCEPTED);
+    let run = body_json(submitted).await;
+    assert_eq!(
+        run["state"],
+        serde_json::json!("completed_with_conflicts"),
+        "the fixture has to reach both arms or this case pins one: {run}"
+    );
+
+    let committed = run["report"]["committed"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the committed arm: {run}"));
+    assert_eq!(committed.len(), 1, "{run}");
+    assert_eq!(committed[0]["row"], serde_json::json!(0));
+    assert!(
+        committed[0]["price_id"].is_string(),
+        "a committed row names the draft it wrote: {run}"
+    );
+
+    let conflicted = run["report"]["conflicted"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the conflicted arm: {run}"));
+    assert_eq!(conflicted.len(), 1, "{run}");
+    assert_eq!(
+        conflicted[0]["row"],
+        serde_json::json!(1),
+        "and it is the row that conflicted, not the one that landed: {run}"
+    );
+    let violations = conflicted[0]["violations"]
+        .as_array()
+        .unwrap_or_else(|| panic!("carrying its violation: {run}"));
+    assert_eq!(violations.len(), 1, "{run}");
+    assert!(violations[0]["code"].is_string(), "{run}");
+    assert!(violations[0]["detail"].is_string(), "{run}");
+}
+
+#[tokio::test]
 async fn an_abort_without_an_idempotency_key_is_refused() {
     let harness = Harness::new().await;
     let response = harness

@@ -555,7 +555,8 @@ impl PriceRepo {
     /// [`RepoError::NotFound`] when no such row is visible to `scope`;
     /// [`RepoError::NotDraft`] when it is visible but frozen;
     /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
-    /// one is not current;
+    /// one is not current; [`RepoError::BulkRowLocked`] when an in-flight bulk
+    /// run other than `on_behalf_of` holds the row, naming the run;
     /// [`RepoError::GrandfatherHorizonOffClass`] when a grandfathering horizon
     /// is submitted for a row whose key is not an `existing_grandfathered`
     /// generation; [`RepoError::ValueOutOfRange`] when an authored
@@ -687,8 +688,10 @@ impl PriceRepo {
     /// [`RepoError::NotFound`] when no such row is visible to `scope`;
     /// [`RepoError::NotDraft`] when it is visible but frozen;
     /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
-    /// one is not current; [`RepoError::Db`] on a scope or storage failure;
-    /// [`RepoError::CorruptRow`] when the row reads back unusable.
+    /// one is not current; [`RepoError::BulkRowLocked`] when an in-flight bulk
+    /// run holds the row, naming the run; [`RepoError::Db`] on a scope or
+    /// storage failure; [`RepoError::CorruptRow`] when the row reads back
+    /// unusable.
     pub async fn delete_draft(
         &self,
         scope: &AccessScope,
@@ -765,13 +768,6 @@ impl PriceRepo {
 // Transaction plumbing.
 // ---------------------------------------------------------------------------
 
-/// Flatten the transaction wrapper back into this repository's vocabulary.
-///
-/// The body's error type is [`RepoError`] rather than the driver's precisely so
-/// a typed refusal survives the rollback: a `create_draft` that met an occupied
-/// key has to reach the caller as `DUPLICATE_SCOPE_KEY`, not as "the store
-/// failed". What arrives as infrastructure is only what happens outside the
-/// body — beginning the transaction, and committing it.
 /// Refuse an edit to a row an **other** bulk run holds (`inst-bk-lock`).
 ///
 /// `on_behalf_of` is the run the edit belongs to, or `None` for an interactive
@@ -806,6 +802,13 @@ async fn refuse_if_locked_elsewhere(
     })
 }
 
+/// Flatten the transaction wrapper back into this repository's vocabulary.
+///
+/// The body's error type is [`RepoError`] rather than the driver's precisely so
+/// a typed refusal survives the rollback: a `create_draft` that met an occupied
+/// key has to reach the caller as `DUPLICATE_SCOPE_KEY`, not as "the store
+/// failed". What arrives as infrastructure is only what happens outside the
+/// body — beginning the transaction, and committing it.
 fn tx_failure(err: TxError<RepoError>) -> RepoError {
     err.into_domain(|infra| RepoError::Db(format!("price draft transaction: {infra}")))
 }
@@ -1800,7 +1803,7 @@ async fn load_row(
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
 /// when a stored axis is outside the enumeration its CHECK admits, or when the
-/// eight axes together do not form a legal key.
+/// ten axes together do not form a legal key.
 pub async fn load_scope_key(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1865,10 +1868,10 @@ pub async fn load_scope_keys_for_plan(
 /// a `price_id` and no plan — so a cross-tenant sweep holding a page of due
 /// windows needs exactly this map and nothing else on the row.
 ///
-/// **Deliberately not [`load_scope_key`] per row.** The key is eight axes and
+/// **Deliberately not [`load_scope_key`] per row.** The key is ten axes and
 /// resolving it costs one query per window; the sweep needs one column, and a
 /// pass over a thousand due windows would otherwise take a thousand round trips
-/// to discard seven axes each time. The window *mutation* paths still resolve
+/// to discard nine axes each time. The window *mutation* paths still resolve
 /// the whole key, because non-overlap and coverage are per key — this is the one
 /// caller whose question really is "which aggregate does this event belong to".
 ///
@@ -2403,7 +2406,7 @@ fn resolve_authored_usage_line(key: &ScopeKey, row: &PriceRow) -> Result<ScopeKe
 /// asymmetry is the point: **create** derives the key's line from the content,
 /// because that is the author's only way to state it; **update** compares the
 /// submitted line against the stored one and refuses a move, because by then the
-/// row is filed under a key and the pair are two of its axes. The seven axes an
+/// row is filed under a key and the pair are two of its axes. The eight axes an
 /// update cannot touch are simply absent from `PriceContent`; these two are not,
 /// which is the whole reason this check has to exist as code rather than as a
 /// property of the type.
@@ -2481,7 +2484,7 @@ fn swap_guard(tenant_id: Uuid, price_id: Uuid, expected: RowVersion) -> Option<C
     )
 }
 
-/// The eight axes as a filter, in normative order.
+/// The ten axes as a filter, in normative order.
 ///
 /// One spelling, so no statement here can decide "the same key" by fewer axes
 /// than the key actually has — the mistake that would report a collision
@@ -2522,7 +2525,7 @@ fn not_found(price_id: Uuid) -> RepoError {
 
 /// The occupied-key refusal.
 ///
-/// The key's own eight-axis rendering leads, verbatim, because that is what a
+/// The key's own ten-axis rendering leads, verbatim, because that is what a
 /// `DUPLICATE_SCOPE_KEY` response has to carry; the occupant's id and state
 /// follow, because "this key is taken" without saying by what leaves the author
 /// to go looking.
@@ -3195,7 +3198,7 @@ fn to_record(
     })
 }
 
-/// Rebuild the canonical key from its eight columns.
+/// Rebuild the canonical key from its ten columns.
 ///
 /// The cohort / eligibility biconditional is re-established here rather than
 /// assumed: the two axes are read back as two independent columns, so the

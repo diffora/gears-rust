@@ -454,7 +454,7 @@ pub struct PinnedContentView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct PinnedWindowsView {
-    /// The eight axes the windows are filed under.
+    /// The ten axes the windows are filed under.
     pub scope_key: ScopeKeyView,
     /// The key's intervals, in the order the pin frames them.
     pub intervals: Vec<WindowIntervalView>,

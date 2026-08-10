@@ -2957,9 +2957,15 @@ async fn draft_row_on_the_same_key(h: &Harness, source: &price::Model, draft_id:
     let row = price::ActiveModel {
         price_id: Set(draft_id),
         tenant_id: Set(source.tenant_id),
-        // The eight axes, copied rather than restated: a literal here that drifted
+        // The ten axes, copied rather than restated: a literal here that drifted
         // from the fixture's key would put the draft on a key of its own and the
         // test would pass against the defect.
+        //
+        // **`meter` and `dimension_key` were left to the column defaults until
+        // D-296**, which is that drift by another route: eight axes copied, two
+        // taken from the table. Correct only for as long as the seeded source
+        // stayed `recurring` — a usage source would have put the "same key" draft
+        // on a different key, silently.
         plan_id: Set(source.plan_id),
         currency: Set(source.currency.clone()),
         region: Set(source.region.clone()),
@@ -2968,6 +2974,8 @@ async fn draft_row_on_the_same_key(h: &Harness, source: &price::Model, draft_id:
         price_eligibility: Set(source.price_eligibility.clone()),
         charge_kind: Set(source.charge_kind.clone()),
         cohort: Set(source.cohort.clone()),
+        meter: Set(source.meter.clone()),
+        dimension_key: Set(source.dimension_key.clone()),
         amount_minor: Set(source.amount_minor),
         model_kind: Set(source.model_kind.clone()),
         lifecycle_state: Set(LifecycleState::Draft.as_str().to_owned()),

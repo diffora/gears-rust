@@ -133,7 +133,9 @@ const AUTHORING_STATES: &[LifecycleState] = &[LifecycleState::Draft, LifecycleSt
 // Views and requests.
 // ---------------------------------------------------------------------------
 
-/// The eight axes a row is filed under, as a caller authors them.
+/// The six axes a caller authors. The stored key is ten: `planId` is the path
+/// segment, `priceOverlay` is always `base` on this plane, and the usage pair is
+/// derived from the row's content (D-196 clause (3)).
 ///
 /// `price_overlay` is **not** a member: every row this gear authors carries
 /// `base`, and partner / orgTier / brand overlays are separate overlay rows
@@ -401,7 +403,7 @@ impl From<&PriceRecord> for PriceContentView {
 pub struct PriceRowView {
     /// The row's identity, minted by the surface at creation.
     pub price_id: Uuid,
-    /// The eight axes it is filed under.
+    /// The ten axes it is filed under.
     pub scope_key: ScopeKeyView,
     /// What the row says.
     pub content: PriceContentView,
@@ -434,7 +436,7 @@ impl From<&PriceRecord> for PriceRowView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
 pub struct CreatePriceRequest {
-    /// The seven axes a caller authors; the eighth is the `{planId}` segment.
+    /// The six axes a caller authors; the seventh is the `{planId}` segment.
     pub scope_key: ScopeKeyRequest,
     /// The row's whole content.
     pub content: PriceContentView,
