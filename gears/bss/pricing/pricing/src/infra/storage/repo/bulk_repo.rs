@@ -273,6 +273,16 @@ pub async fn advance(
 /// key is the mutual exclusion, and a read-then-write would be the check-then-act
 /// race it exists to close.
 ///
+/// **`runner` must be an autocommit connection, not a transaction.** The read that
+/// names the holder happens *after* a failed insert, and Postgres aborts an
+/// enclosing transaction on a failed statement — so inside one, that read would
+/// itself fail and the refusal would degrade from [`RepoError::BulkRowLocked`] to
+/// [`RepoError::Db`], losing exactly the holder `fr-concurrent-edit` requires it
+/// to name. The partial release below has the same requirement.
+///
+/// Either every lock is taken or none is: a refusal partway releases what this run
+/// already took, so a caller cannot be left holding rows it does not know about.
+///
 /// # Errors
 /// [`RepoError::BulkRowLocked`] naming the run that already holds a row;
 /// [`RepoError::Db`] on a scope or storage failure.
@@ -298,6 +308,15 @@ pub async fn take_locks(
             .exec(runner)
             .await;
         if let Err(e) = taken {
+            // **All or none.** The inserts above are independent statements on
+            // whatever runner the caller holds, so a refusal partway leaves this
+            // run holding the rows it already took — and if the caller then ends
+            // the run, those rows are frozen by an operation that is over. That is
+            // the freeze `inst-bs-done`'s "lock released either way" and D-37's
+            // release path both exist to prevent, so the release happens here,
+            // where the partial set is known to be exactly this run's.
+            release_locks(runner, scope, tenant_id, operation_id).await?;
+
             // The key refused it, so somebody holds it. Read the holder — it is
             // committed, its run being `committing` — and name it.
             let Some(holder) = lock_holder(runner, scope, tenant_id, price_id).await? else {

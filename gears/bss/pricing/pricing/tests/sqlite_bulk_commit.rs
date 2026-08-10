@@ -449,6 +449,73 @@ async fn the_run_holding_the_row_edits_it_freely() {
 }
 
 #[tokio::test]
+async fn a_run_that_cannot_take_every_lock_releases_the_ones_it_took() {
+    // **The leak the first arrangement hid** (D-294). The earlier case put the
+    // contended row FIRST, so the very first insert collided and nothing partial
+    // existed. Here it is second: the run takes one lock, collides on the next,
+    // and the first must not be left held by an operation that is over — which is
+    // the freeze `inst-bs-done`'s "lock released either way" exists to prevent.
+    let h = harness().await;
+    let (free_row, free_version) = seed_draft(&h, key("us"), 5_000).await;
+    let (held_row, held_version) = seed_draft(&h, key("eu"), 9_900).await;
+
+    let neighbour = open_run(&h, "c-12").await;
+    let conn = h.provider.conn().expect("conn");
+    bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        neighbour,
+        BulkState::Committing,
+        serde_json::json!({}),
+        at(11),
+    )
+    .await
+    .expect("the neighbour enters committing");
+    bulk_repo::take_locks(&conn, &scope(), TENANT, neighbour, &[held_row], at(11))
+        .await
+        .expect("it holds the second row");
+
+    let run = open_run(&h, "c-13").await;
+    let receipt = run_phase_2(
+        &h,
+        run,
+        &[
+            row(key("us"), 7_500, Some(free_version)),
+            row(key("eu"), 12_500, Some(held_version)),
+        ],
+    )
+    .await;
+
+    assert_eq!(conflicted_rows(&receipt), vec![0, 1]);
+    assert_eq!(committed_rows(&receipt), Vec::<usize>::new());
+    assert_eq!(
+        bulk_repo::lock_holder(&conn, &scope(), TENANT, free_row)
+            .await
+            .expect("read the lock"),
+        None,
+        "the row this run did take must be free again"
+    );
+
+    // And nothing was written: the seeded amounts stand.
+    let rows = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
+        &conn,
+        &scope(),
+        TENANT,
+        plan(),
+        &[bss_pricing::domain::lifecycle::LifecycleState::Draft],
+    )
+    .await
+    .expect("read the drafts");
+    for record in rows {
+        assert!(
+            record.row.amount_minor.expect("an amount").get() < 9_901,
+            "no row moved: {record:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn the_stored_report_carries_both_halves() {
     // `inst-bk-idem` replays this report to a retry, so what the run *stores* is
     // the contract — not merely what `commit_batch` returned to its caller.

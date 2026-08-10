@@ -100,15 +100,21 @@ pub struct ImportRow {
 
 /// One violation against one row.
 #[domain_model]
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct RowViolation {
     /// The machine-readable code, which is the discriminator a client acts on.
     ///
-    /// `Serialize`/`Deserialize` on these three because `inst-bk-idem` **replays
+    /// `Serialize` on these three because `inst-bk-idem` **replays
     /// this report**: it is stored on `pricing_bulk_operation.report` and handed
     /// back verbatim to a retry. Deriving them is what makes the stored shape
     /// *this* type rather than a hand-built JSON object beside it — the second
     /// spelling D-285 named and did not remove.
+    ///
+    /// **`Serialize` only.** `Deserialize` would build `rows` from arbitrary JSON —
+    /// two entries for one row, or out of batch order — which is exactly the
+    /// invariant the private field exists to make structural. Nothing in the crate
+    /// reads a report back into these types; the stored column leaves as an opaque
+    /// value, so the round trip `inst-bk-idem` needs is served by one direction.
     ///
     /// A `String` rather than the `&'static str` the constants are, because
     /// `inst-bk-idem` **replays this report**: it is stored on
@@ -127,7 +133,7 @@ pub struct RowViolation {
 /// is the problem cannot be named by that key without ambiguity — that is the
 /// duplicate case exactly, where two rows share one.
 #[domain_model]
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct RowOutcome {
     /// Zero-based position in the submitted batch.
     pub row: usize,
@@ -137,7 +143,7 @@ pub struct RowOutcome {
 
 /// Phase 1's per-row report over a batch.
 #[domain_model]
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct BatchReport {
     /// One entry per row that failed, in batch order. A row that passed every
     /// rule has **no** entry — the report is of violations, and a clean row's

@@ -233,11 +233,13 @@ async fn aborting_a_finished_run_is_refused_by_the_state_machine() {
         ))
         .await;
 
-    assert_ne!(
+    assert_eq!(
         aborted.status(),
-        StatusCode::OK,
-        "a completed run is not abortable"
+        StatusCode::BAD_REQUEST,
+        "a completed run is not abortable, and the refusal is a lifecycle conflict rather \
+         than a 500 saying the store is broken"
     );
+    assert_eq!(problem_code(aborted).await, "LIFECYCLE_FORBIDDEN");
     let still = harness
         .allowed()
         .send(with_headers("GET", &import_path(&operation_id), None, &[]))
@@ -246,6 +248,63 @@ async fn aborting_a_finished_run_is_refused_by_the_state_machine() {
         body_json(still).await["state"],
         serde_json::json!("completed"),
         "and the refusal left it where it was"
+    );
+}
+
+#[tokio::test]
+async fn aborting_a_run_that_finished_with_conflicts_is_refused_too() {
+    // **The hole the first abort case could not see** (D-294). It used a
+    // `completed` run, where the state machine genuinely refuses. But a move to
+    // the state a run is already IN returns early on both engines, so
+    // `completed_with_conflicts` — the ordinary terminal state of any partially
+    // conflicted import — would have been rewritten: a fresh `completed_at` and an
+    // abort note stamped over a report where every row was attempted.
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    // A batch with one row that cannot commit: it asserts a version over a key
+    // nothing holds, so Phase 2 conflicts it and the run ends with conflicts.
+    let mut conflicting = row(plan, "eu", 1_500);
+    conflicting["if_match"] = serde_json::json!(7);
+    let submitted = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[conflicting])),
+            &keyed("bulk-5"),
+        ))
+        .await;
+    let body = body_json(submitted).await;
+    assert_eq!(
+        body["state"],
+        serde_json::json!("completed_with_conflicts"),
+        "the fixture has to reach that state or this case tests nothing: {body}"
+    );
+    let operation_id = body["operation_id"].as_str().expect("the ref").to_owned();
+
+    let aborted = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &abort_path(&operation_id),
+            None,
+            &keyed("abort-2"),
+        ))
+        .await;
+    assert_eq!(aborted.status(), StatusCode::BAD_REQUEST);
+
+    let still = body_json(
+        harness
+            .allowed()
+            .send(with_headers("GET", &import_path(&operation_id), None, &[]))
+            .await,
+    )
+    .await;
+    assert!(
+        still["report"].get("aborted").is_none(),
+        "and no abort note was stamped over a report whose rows were all attempted: {still}"
     );
 }
 

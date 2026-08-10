@@ -59,7 +59,7 @@ use crate::infra::storage::{RepoError, repo_failure};
 pub const BULK_ROW_CONFLICT: &str = "BULK_ROW_CONFLICT";
 
 /// One row that landed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CommittedRow {
     /// Its position in the submitted batch.
     pub row: usize,
@@ -73,7 +73,7 @@ pub struct CommittedRow {
 /// `{committed, conflicted}` is `inst-bi-commit`'s own shape. The conflicted half
 /// carries [`RowOutcome`]s rather than bare indices so the report a retry reads is
 /// the report Phase 1 produces — one type, whichever phase filled it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CommitReceipt {
     /// Rows that landed, in batch order.
     pub committed: Vec<CommittedRow>,
@@ -133,10 +133,15 @@ pub async fn commit_batch(
     // Resolved before the run moves: the read is Phase 2's own and tells it which
     // rows are edits (and therefore which rows there are to lock at all).
     let drafts = draft_rows(&conn, scope, tenant_id, rows).await?;
-    let targets: Vec<Uuid> = rows
+    let mut targets: Vec<Uuid> = rows
         .iter()
         .filter_map(|row| drafts.get(&row.scope_key).map(|found| found.price_id))
         .collect();
+    // Deduped, or a batch naming one draft twice collides with **its own** lock and
+    // conflicts every row against itself. Phase 1 refuses in-batch duplicates, but
+    // this function is `pub` and a caller is not obliged to have run it.
+    targets.sort_unstable();
+    targets.dedup();
 
     bulk_repo::advance(
         &conn,
@@ -144,16 +149,27 @@ pub async fn commit_batch(
         tenant_id,
         operation_id,
         BulkState::Committing,
-        serde_json::json!({ "phase": "committing" }),
+        // **Not a placeholder.** This column is what an abort reports from, and
+        // overwriting it on entry left a run that died mid-flight with nothing
+        // but `{"phase":"committing"}` — every committed row invisible. It now
+        // carries how many rows the run is about, so an abort can say how many
+        // were not attempted.
+        serde_json::json!({ "phase": "committing", "rows": rows.len() }),
         now,
     )
     .await
     .map_err(|e| repo_failure(&e))?;
 
-    let receipt =
+    // **Everything from here lands the run terminal and releases its locks, on
+    // every path.** §4 offers no failure edge out of `committing`, so a run that
+    // enters it and stops has no exit — holding its rows against every interactive
+    // editor, with no operator remedy until D-37's lease takeover exists, which it
+    // does not. `inst-bs-done` says the lock is released "either way"; the `?` that
+    // used to sit on `commit_rows` made that false.
+    let outcome =
         match bulk_repo::take_locks(&conn, scope, tenant_id, operation_id, &targets, now).await {
             Ok(()) => {
-                let receipt = commit_rows(
+                let committed = commit_rows(
                     prices,
                     scope,
                     tenant_id,
@@ -163,17 +179,25 @@ pub async fn commit_batch(
                     stamp,
                     now,
                 )
-                .await?;
+                .await;
                 bulk_repo::release_locks(&conn, scope, tenant_id, operation_id)
                     .await
                     .map_err(|e| repo_failure(&e))?;
-                receipt
+                committed
             }
-            // Another run holds one of the rows. Nothing committed, and §4 offers no
-            // failure edge out of `committing` — see the module doc.
-            Err(held @ RepoError::BulkRowLocked { .. }) => every_row_conflicted(rows, &held),
-            Err(other) => return Err(repo_failure(&other)),
+            // Another run holds one of the rows, and `take_locks` released what this
+            // one had taken. Nothing committed; every row is un-attempted.
+            Err(held @ RepoError::BulkRowLocked { .. }) => Ok(not_attempted(rows, &held)),
+            Err(other) => Err(repo_failure(&other)),
         };
+
+    // The receipt a run-level failure leaves is the abort's: nothing committed,
+    // every row un-attempted. The run reaches a terminal state either way and the
+    // caller still learns the failure — both survive, which is what a state machine
+    // with no failure edge forces.
+    let receipt = outcome
+        .as_ref()
+        .map_or_else(|_| not_attempted_all(rows), std::clone::Clone::clone);
 
     bulk_repo::advance(
         &conn,
@@ -186,7 +210,7 @@ pub async fn commit_batch(
     )
     .await
     .map_err(|e| repo_failure(&e))?;
-    Ok(receipt)
+    outcome
 }
 
 /// Commit each row on its own, collecting what landed and what did not.
@@ -272,7 +296,18 @@ async fn commit_rows(
             // **Only a row's own refusal is a conflict.** A storage failure is the
             // run's, and swallowing it here would report a batch as conflicted
             // when the database was down.
-            Err(e @ (RepoError::StaleRowVersion { .. } | RepoError::NotDraft { .. })) => {
+            // **`DuplicateScopeKey` is per-row, and the design says so outright**:
+            // "one racing a concurrent author fails at commit on the draft-plane
+            // partial UNIQUE, reported per-row like every other row outcome".
+            // `NotFound` is the same shape — a concurrent author deleted the draft
+            // this row named. D-291 caught neither and took the whole run down for
+            // a fact about one row.
+            Err(
+                e @ (RepoError::StaleRowVersion { .. }
+                | RepoError::NotDraft { .. }
+                | RepoError::DuplicateScopeKey(_)
+                | RepoError::NotFound { .. }),
+            ) => {
                 receipt.conflicted.push(conflicted(index, e.to_string()));
             }
             Err(other) => return Err(repo_failure(&other)),
@@ -318,12 +353,36 @@ fn conflicted(row: usize, detail: String) -> RowOutcome {
     }
 }
 
-/// Every row conflicted, because the run could not take its locks.
-fn every_row_conflicted(rows: &[ImportRow], held: &RepoError) -> CommitReceipt {
+/// Nothing committed, every row un-attempted, because the run could not take its
+/// locks.
+///
+/// **Each row's sentence is true of that row.** The first version put the holder's
+/// `price_id` on all of them, so row 3's violation asserted something about row
+/// 0's price. §4's reading of a run that committed nothing is "uncommitted rows
+/// reported as not-attempted"; the contended row is named once, as context.
+fn not_attempted(rows: &[ImportRow], held: &RepoError) -> CommitReceipt {
+    let detail = format!(
+        "not attempted: the run could not take its row locks and committed nothing. {held}"
+    );
     CommitReceipt {
         committed: Vec::new(),
         conflicted: (0..rows.len())
-            .map(|row| conflicted(row, held.to_string()))
+            .map(|row| conflicted(row, detail.clone()))
+            .collect(),
+    }
+}
+
+/// The same, for a failure that is the run's rather than any row's.
+fn not_attempted_all(rows: &[ImportRow]) -> CommitReceipt {
+    CommitReceipt {
+        committed: Vec::new(),
+        conflicted: (0..rows.len())
+            .map(|row| {
+                conflicted(
+                    row,
+                    "not attempted: the run failed before this row was reached".to_owned(),
+                )
+            })
             .collect(),
     }
 }

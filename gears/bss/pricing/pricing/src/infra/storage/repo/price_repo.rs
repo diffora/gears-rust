@@ -708,6 +708,13 @@ impl PriceRepo {
             .db()
             .in_transaction::<(), RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // `inst-bk-lock` in this door too. D-292 identified two
+                    // authoring paths and guarded one — by its own standard, "a
+                    // rule that lives on one authoring path is not a rule". A
+                    // delete is not exempt: the foreign key refuses it anyway, so
+                    // without this the operator gets a 500 saying the store is
+                    // broken instead of a conflict naming the run.
+                    refuse_if_locked_elsewhere(txn, &scope, tenant_id, price_id, None).await?;
                     let Some(_) = mutable_draft(txn, &scope, tenant_id, price_id, expected).await?
                     else {
                         return Err(refuse(txn, &scope, tenant_id, price_id, expected).await);

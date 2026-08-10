@@ -12,10 +12,12 @@
 //! open to learn what happened. `GET /bulk-imports/{id}` is where the answer
 //! lives, for the first call and for every replay alike.
 //!
-//! A Phase-1 failure is the exception: `BULK_VALIDATION_FAILED`, 422, with the
-//! per-row report in the response, because nothing was committed and the operator
-//! has to fix the file before anything can be. The run is left
-//! `validation_failed`, so the same report is also at the `GET`.
+//! A Phase-1 failure is the exception: `BULK_VALIDATION_FAILED`, and it is a
+//! **400** — Foundation §3.3 gives the platform no 422 category, so every
+//! architectural 422 reaches the wire as a 400 carrying its code. The refusal
+//! carries a sentence and not the per-row report: the run is left
+//! `validation_failed` holding it, and the `GET` is where a batch's answer lives
+//! for every other outcome too.
 //!
 //! # The client key is the run's, not the gate's
 //!
@@ -150,8 +152,8 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Submit a bulk price import")
         .description(
             "Runs the two-phase import. Phase 1 validates the whole batch and refuses it if any \
-             row is invalid, answering `422` `BULK_VALIDATION_FAILED` with the per-row report \
-             and committing nothing. Phase 2 then commits row by row under each row's own ETag: \
+             row is invalid, answering `400` `BULK_VALIDATION_FAILED` and committing nothing; \
+             the per-row report is on the run, which the `GET` serves. Phase 2 then commits row by row under each row's own ETag: \
              a conflict fails only that row, committed rows stand, and the report lists the \
              conflicted for retry. The answer is `202` with the operation ref; the report is at \
              `GET /bss-pricing/v1/bulk-imports/{operationId}`. The import authors **drafts** \
@@ -227,7 +229,6 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
-        .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
@@ -403,8 +404,8 @@ async fn abort_bulk_import(
     let ctx = require_authenticated(extension_ctx)?;
     let tenant = ctx.subject_tenant_id();
     let scope = write_scope(&enforcer, &ctx).await?;
-    // Read for its refusal, not for a value: an abort with no key is a request
-    // the operator cannot safely retry.
+    // Read for its refusal, not for a value: an abort with no key is a request the
+    // operator cannot safely retry.
     preconditions::idempotency_key(&headers)?;
 
     let conn = state
@@ -422,8 +423,26 @@ async fn abort_bulk_import(
             })
         })?;
 
-    // The locks first: if the state move is refused, nothing was released, and a
-    // run that kept its locks is the state the abort exists to leave.
+    // **The trigger does not refuse this one, and D-293 claimed it did.** A move
+    // to the state a run is already in returns early on both engines, so an abort
+    // against a run already in `completed_with_conflicts` — the ordinary terminal
+    // state of any partially-conflicted import — would rewrite `completed_at` and
+    // stamp an abort note over a report where every row WAS attempted. §4 makes
+    // abort an edge out of `committing`; a run that is over is refused here,
+    // because the state machine cannot see the difference between a move and a
+    // no-op.
+    if run.state != BulkState::Committing {
+        return Err(CanonicalError::from(DomainError::LifecycleForbidden(
+            format!(
+                "bulk operation {operation_id} is {}; abort acts on a run that is still \
+                 committing, and a run that is over has no locks to clear and no work to stop",
+                run.state.as_str()
+            ),
+        )));
+    }
+
+    // The report the abort adds to is the one the run reached, so what it
+    // committed survives the note.
     let mut report = run.report.clone();
     if let Some(object) = report.as_object_mut() {
         object.insert(
