@@ -86,9 +86,11 @@ resp = http.post("/v1/subscriptions", json={
             "topic":           "gts.cf.core.events.topic.v1~yourorg.orders.v1",
             "tenant_id":       tenant_id,
             "types":           ["gts.cf.core.events.event.v1~yourorg.orders.*"],
-            # Optional paired filter — omit both for "no expression filter":
-            "expression_type": "gts.cf.core.events.filter.v1~cf.core.expression.cel.v1",
-            "expression":      "event.data.amount > 100",
+            # Optional filter object — omit entirely for "no expression filter":
+            "filter": {
+                "engine":     "gts.cf.core.events.filter.v1~cf.core.expression.cel.v1",
+                "expression": "event.data.amount > 100",
+            },
         },
     ],
 })
@@ -107,9 +109,9 @@ def join(req):
     return Subscription(id=sub_id, assigned=gs.active_members[sub_id].assigned,
                         topology_version=gs.topology_version)
 
-# Step 2 — pre-stream SEEK (required; OffsetManager-driven)
+# Step 2 — pre-stream SEEK (required; OffsetStore-driven)
 # The SDK resolves a starting position per assigned (topic, partition) via
-# OffsetManager.position(...). For a fresh group the manager returns the
+# OffsetStore.load_position(...). For a fresh group the store returns the
 # configured Fallback sentinel; for a re-running consumer with committed
 # cursors it returns Exact(last_processed_offset).
 positions = {}
@@ -378,9 +380,9 @@ The lock around `cluster.distributed_lock("evbk.group.<G>")` is the serializatio
 - **AC-6 (filter mutation)**: a partition handoff from v1 to v2 member preserves the cursor; no events are double-delivered to v1 after handoff.
 - **AC-7 (session timeout)**: a consumer that stops polling for `session_timeout + 1s` finds its subscription reaped on next attempt; re-JOIN succeeds.
 - **AC-8 (shard ownership change)**: graceful shutdown of owning shard delivers 410 to all in-flight pollers within 1s; ungraceful kill results in transport error within the cluster lock's session TTL.
-- **AC-9 (typed filter happy path)**: JOIN with an interest carrying `expression_type: "gts.cf.core.events.filter.v1~cf.core.expression.cel.v1"` + `expression: "event.data.amount > 100"` succeeds; subsequent polls deliver only events matching the predicate; non-matching events are silently dropped.
-- **AC-10 (no filter)**: JOIN with an interest omitting `expression_type` + `expression` succeeds; subsequent polls deliver every event matching topic + tenant + types (no engine invocation).
-- **AC-11 (paired-optional violation)**: JOIN with an interest supplying `expression_type` without `expression` (or vice versa) is rejected with `400 BadRequest`.
+- **AC-9 (typed filter happy path)**: JOIN with an interest carrying `filter: { engine: "gts.cf.core.events.filter.v1~cf.core.expression.cel.v1", expression: "event.data.amount > 100" }` succeeds; subsequent polls deliver only events matching the predicate; non-matching events are silently dropped.
+- **AC-10 (no filter)**: JOIN with an interest omitting `filter` succeeds; subsequent polls deliver every event matching topic + tenant + types (no engine invocation).
+- **AC-11 (malformed filter object)**: JOIN with an interest supplying a `filter` object missing `engine` or `expression` is rejected with `400 BadRequest`.
 - **AC-12 (invalid type pattern)**: JOIN with `types: ["gts.cf.core.events.event.v1~yourorg.*.placed.v1"]` (mid-pattern wildcard) is rejected with `400 BadTypePattern`.
 - **AC-13 (zero-match type pattern)**: JOIN with a `types[]` pattern matching no registered types under the declared topic is rejected with `400 NoTypesMatched`.
 - **AC-14 (type-belongs-to-topic)**: JOIN with a `types[]` pattern that would resolve to a type whose `parent_topic` differs from `interest.topic` is rejected with `400 TypeNotInTopic` (defense-in-depth).
@@ -394,7 +396,7 @@ The lock around `cluster.distributed_lock("evbk.group.<G>")` is the serializatio
 - **topology_version monotonicity**: each mutation increments by exactly 1; concurrent mutations serialize through the lock.
 - **filter evaluation order**: per-member filter applies AFTER partition assignment; events for non-assigned partitions are never evaluated.
 - **interest prerequisites**: per-event delivery checks `event.topic == interest.topic`, then `event.tenant_id == interest.tenant_id`, then `event.type ∈ resolved_type_set` BEFORE invoking `engine.eval`. Non-matching prerequisite → skip interest without engine call.
-- **paired-optional shape**: parameterize over (`expression_type`, `expression`) ∈ {(set, set), (set, absent), (absent, set), (absent, absent)} — first and last accepted; middle two rejected with `400 BadRequest`.
+- **filter-object shape**: parameterize over `filter` ∈ {absent, `{engine, expression}`, `{engine}` only, `{expression}` only} — absent and complete accepted; partial (missing `engine` or `expression`) rejected with `400 BadRequest`.
 - **GTS pattern syntax**: parameterize over valid (exact, trailing `.*`, trailing `~*`, `v*` at trailing) and invalid (mid-pattern `*`, `**`, substring `vendor*`, two `*` occurrences) patterns; valid → accept; invalid → `400 BadTypePattern`.
 - **Version resolution**: parameterize over (registered types, pattern) tuples and assert resolved set matches per-name-latest + minor-version-omitted rule from ADR-0005.
 - **Filter context (CEL engine)**: assert `event.id` / `event.type` / ... visible; `event.meta` reference → `FilterError::CompileFailed`.

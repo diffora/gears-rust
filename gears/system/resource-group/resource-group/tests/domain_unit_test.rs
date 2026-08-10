@@ -487,6 +487,14 @@ fn domain_error_group_not_found_format() {
 }
 
 #[test]
+fn domain_error_group_already_exists_format() {
+    let id = uuid::Uuid::now_v7();
+    let err = DomainError::group_already_exists(id);
+    assert!(matches!(err, DomainError::GroupAlreadyExists { .. }));
+    assert!(err.to_string().contains(&id.to_string()));
+}
+
+#[test]
 fn domain_error_cycle_detected_format() {
     let err = DomainError::cycle_detected("A -> B -> A");
     assert!(matches!(err, DomainError::CycleDetected { .. }));
@@ -604,6 +612,16 @@ fn domain_to_sdk_type_already_exists() {
     use resource_group_sdk::ResourceGroupError;
     match project(DomainError::type_already_exists("code")) {
         ResourceGroupError::AlreadyExists { name, .. } => assert_eq!(name, "code"),
+        other => panic!("expected AlreadyExists, got {other:?}"),
+    }
+}
+
+#[test]
+fn domain_to_sdk_group_already_exists() {
+    use resource_group_sdk::ResourceGroupError;
+    let id = uuid::Uuid::now_v7();
+    match project(DomainError::group_already_exists(id)) {
+        ResourceGroupError::AlreadyExists { name, .. } => assert_eq!(name, id.to_string()),
         other => panic!("expected AlreadyExists, got {other:?}"),
     }
 }
@@ -728,6 +746,16 @@ fn domain_to_problem_type_already_exists_is_409() {
     assert_eq!(problem.problem_type, ALREADY_EXISTS_TYPE);
     assert_eq!(problem.context["resource_type"], RG_GTS);
     assert_eq!(problem.context["resource_name"], "dup");
+}
+
+#[test]
+fn domain_to_problem_group_already_exists_is_409() {
+    let id = uuid::Uuid::now_v7();
+    let problem = wire(DomainError::group_already_exists(id));
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.problem_type, ALREADY_EXISTS_TYPE);
+    assert_eq!(problem.context["resource_type"], RG_GTS);
+    assert_eq!(problem.context["resource_name"], id.to_string());
 }
 
 #[test]

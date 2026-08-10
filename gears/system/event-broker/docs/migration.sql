@@ -55,7 +55,7 @@ CREATE INDEX idx_evbk_event_topic_partition_offset ON evbk_event (topic, partiti
 -- the silent-collision bug after a cache wipe).
 --
 -- Two creation paths, one table — each path exclusive to one shape:
---  * `POST /v1/consumer_groups`  — anonymous-only (`id` is broker-minted ~<uuid>;
+--  * `POST /v1/consumer-groups`  — anonymous-only (`id` is broker-minted ~<uuid>;
 --    request body MUST NOT carry `id`); `tenant_id` and `owner_principal` come
 --    from SecurityContext at create time. JOIN authz is owner-tenant equality.
 --  * `types_registry` upsert     — named-only. At startup the broker reads

@@ -78,7 +78,7 @@ The **producer client library** (`cf-gears-event-broker-sdk`) is built on top of
 
 **Architecture Decision Records**:
 
-- future ADR (service-decomposition) — Multi-service composite (ingest, delivery, dispatcher, storage backends)
+- `cpt-cf-evbk-adr-service-decomposition` — Multi-service composite (ingest, delivery, dispatcher, storage backends); single-binary/multi-mode process shape; per-mode `cluster` gear resolution. See [`ADR/0007-service-decomposition.md`](ADR/0007-service-decomposition.md).
 - future ADR (storage-backend-plugin) — Storage backends as ModKit plugins with GTS discovery and self-describing config schemas
 - `cpt-cf-evbk-design-sequence-assignment` — Three-sequence model: producer chain (`previous`, `sequence`) for ingest-side dedup (chained / monotonic / stateless modes); outbox sequence (toolkit-db) for in-pipeline order preservation; offset (backend) for consumer-visible ordering
 - future ADR (idempotent-producers) — Idempotent producers via Producer-Id + per-`(producer_id, topic, partition)` sequence tracking. No epoch fencing — sequence ordering itself acts as the fence.
@@ -106,7 +106,7 @@ The consumption transport surface (`/events:stream` for `multipart/mixed`, `/eve
 | **Transport** (`api/rest/`) | HTTP handling, request parsing, response serialization | Axum handlers, DTOs, extractors, OperationBuilder route registration |
 | **Domain** (`domain/`) | Business logic, service traits, repository contracts | `IngestService`, `DeliveryService`, `SpecificationManager`, domain models, repository traits |
 | **Infrastructure** (`infra/`) | Persistence, cluster coordination, GTS provisioning | Storage backends, ClusterCapabilities integration, type provisioning |
-| **SDK** (`event-broker-sdk/`) | Public API for inter-module communication | `EventBrokerApi` trait (unified), `IngestApi` / `DeliveryApi` (split), SDK models, error types |
+| **SDK** (`event-broker-sdk/`) | Public API for inter-module communication | `EventBrokerApi` trait, SDK models, error types |
 
 **ID**: `cpt-cf-evbk-tech-dependencies`
 
@@ -564,7 +564,7 @@ modules/system/event-broker/
 ├── event-broker-sdk/              # Public API: traits, models, errors, producer client
 │   └── src/
 │       ├── lib.rs                 # Re-exports
-│       ├── api.rs                 # EventBrokerApi (unified), IngestApi, DeliveryApi traits
+│       ├── api.rs                 # EventBrokerApi trait
 │       ├── models.rs              # SDK types (Topic, EventType, Event, Subscription, Cursor)
 │       ├── producer.rs            # Outbox-based producer client (wraps toolkit-db outbox)
 │       └── error.rs               # EventBrokerError
@@ -603,9 +603,9 @@ modules/system/event-broker/
         │   │       └── memory.rs  # InMemoryStorageBackend
         │   ├── cluster/           # ClusterCapabilities integration
         │   │   └── notifications.rs # Event notification via cluster.publish/subscribe
-        │   ├── workers/           # Background workers
-        │   │   ├── cleaner.rs     # Fully-consumed event cleanup
-        │   │   ├── retention.rs   # Retention policy enforcement
+        │   ├── workers/           # Background workers (broker-owned only;
+        │   │   │                 # event deletion is the storage backend's
+        │   │   │                 # responsibility, see §3.7 Key Invariants)
         │   │   └── reaper.rs      # Expired subscription + idempotency cleanup
         │   ├── dispatcher/        # Optional HTTP gateway
         │   │   ├── proxy.rs       # Proxy handler (routes to ingest service)
@@ -778,6 +778,8 @@ Storage backends follow the **ModKit plugin pattern**: each backend is a GTS typ
 The event broker SDK defines the storage backend contract following the `Backend` contract type semantics from [PR #1536](https://github.com/cyberfabric/cyberfabric-core/pull/1536) — remote-capable, independent failure domain, errors as RFC 9457 Problem Details, `SecurityContext` as first argument on every method.
 
 The trait is deliberately minimal — **four async data methods**. Per-call metadata (config schema, capability flags) lives in the GTS type registration, not on the trait. The backend knows nothing about cluster coordination, notifications, idempotency, or subscriptions. It is pure storage.
+
+> **Deferred (M5b-flattening):** the block below is the *intended* backend contract. The shipped SDK currently exposes it as `EventBrokerBackend` with a different surface (`persist/read/query/list_partition_leaders`, plain `StorageBackendError`) — and `query`/`read` are swapped relative to the names here. Reconciling the trait name, method set, and error model (this doc ⇄ SDK) is deferred to the backend-contract reshape during implementation; it is not part of the docs/review-fixes pass.
 
 ```rust
 /// Storage backend contract. Implemented by built-in or third-party backend crates,
@@ -1124,23 +1126,29 @@ The `toolkit-db` transactional outbox is the foundation for both the **producer 
 
 ##### Producer Client (SDK)
 
-Modules that produce events use the SDK's `EventProducer`, which wraps the outbox:
+Modules that produce events use the SDK's `DbProducer`, which owns a transactional producer outbox:
 
 ```rust
-// Inside a business transaction:
-let producer = hub.get::<dyn EventBrokerApi>()?.producer();
-producer.enqueue(&txn, "gts.cf.core.events.topic.v1~vendor.users.v1", Event {
-    id: Uuid::new_v4(),
-    event_type: "gts.cf.core.events.event_type.v1~vendor.users.user_created.v1",
-    subject: user_id.to_string(),
-    subject_type: "gts.vendor.users.user.v1~",
-    data: serde_json::to_value(&payload)?,
-    ..Default::default()
-}).await?;
-// Event is only published if the business transaction commits.
+// Built once at startup; wires the producer to its outbox queue.
+let producer = DbProducer::builder()
+    .broker(Arc::clone(&broker))
+    .db(db.clone())
+    .identity(ProducerIdentity::new().source("user-service").client_agent("user-service/1.0"))
+    .deduplication(DbDeduplication::managed(ProducerMode::Chained).key("users.created"))
+    .topics(["gts.cf.core.events.topic.v1~vendor.users.v1"])
+    .prepare_all()
+    .await?;
+let outbox = producer.outbox_queue("event-broker-producer", Partitions::of(16))?;
+let handle = outbox.register(Outbox::builder(db.clone())).start().await?;
+let producer_outbox = outbox.bind(&handle);
+
+// Inside a business transaction: enqueue a typed event.
+let mut txn = db.begin().await?;
+producer_outbox.enqueue(&txn, UserCreated { user_id, /* … */ }).await?;
+txn.commit().await?; // published only if the business transaction commits
 ```
 
-Under the hood, `EventProducer.enqueue()` calls `outbox.enqueue()` with the topic as the outbox queue name and a hash-based partition key. The outbox handler then delivers the event to the ingest service (in-process call in standalone mode, HTTP/gRPC in cluster mode).
+Under the hood, `ProducerOutbox::enqueue()` writes an outbox row (topic as the outbox queue name, hash-based partition key) inside the caller's transaction. The outbox handler then delivers the event to the ingest service (in-process call in standalone mode, HTTP/gRPC in cluster mode).
 
 This gives producers:
 - **Transactional safety** — events are only visible if the business transaction commits
@@ -1560,7 +1568,8 @@ GET    /v1/producers/{id}/cursors                # RECOVERY — read broker's la
                                                  # Use when local chain state is lost or diverged
                                                  # (DB restore, restart, 400 SequenceViolation).
        Returns 200:
-         [{topic, partition, last_sequence}]     # reconcile local counter against broker's view
+         {producer_id, client_agent,             # reconcile local counter against broker's view
+          topics:[{topic, partitions:[{partition, last_sequence}]}]}
 
 POST   /v1/producers/{id}:reset                  # RESET (operator) — clear chain state
                                                  # Preserves producer_id; audited.
@@ -1584,7 +1593,7 @@ Subsequent `POST /v1/events` requests with this `Producer-Id` header are accepte
 Response (`200 OK`):
 > _Illustrative example removed; authoritative shape: [openapi.yaml](openapi.yaml)._
 
-Per-partition entries; future fields (e.g., `last_seen_at`, `mode`) are additive — extending without breaking.
+Object grouped by topic (carries the echoed `producer_id` / `client_agent`), with per-partition `last_sequence` entries; future fields (e.g., `last_seen_at`, `mode`) are additive — extending without breaking.
 
 Errors:
 - `403 Forbidden` — Caller's principal doesn't own this producer
@@ -1622,7 +1631,7 @@ Errors:
 
 **Pre-stream SEEK and start-position resolution** (per ADR-0006). Consumer progress is owned by the consumer. See [ADR-0006](ADR/0006-offset-authority.md).
 
-The SDK's `OffsetManager` trait owns the "where do I start?" decision. Its `position(ctx, group, topic, partition)` method returns a [`ResolvedPosition`]:
+The SDK's `OffsetStore` trait owns the "where do I start?" decision. Its `load_position(group, topic, partition)` method returns a [`ResolvedPosition`]:
 
 - `Exact(i64)` — the last offset the consumer has already processed, read from its own persistent store. The broker emits from `offset + 1`.
 - `Earliest` — server-resolved sentinel. The broker sets the cursor to `retention_floor - 1` at admission, so subsequent emission begins at `retention_floor`.
@@ -2230,7 +2239,7 @@ In cluster mode:
   - The dispatcher resolves `subscription_id` → `consumer_group` via the subscription resolution cache (§3.2 Subscription Resolution Cache). JOIN endpoints (`POST /v1/subscriptions`) carry `consumer_group` and `topics` in the body so the first lookup is skipped.
   - Dispatchers discover ingest/delivery instances via `cluster.discover_shards()`. All dispatcher instances see the same shard membership.
 - **Event notifications** flow directly from ingest to delivery via `cluster.publish()` / `cluster.subscribe()` — they do NOT pass through the dispatcher. This means multiple dispatcher instances require no shared state for notifications.
-- **Worker leader election** uses `cluster.leader_election()` — only one node runs the cleaner for a given `(topic, partition)`, etc.
+- **Worker leader election** uses `cluster.leader_election()` — only one node runs the `reaper` cluster-wide (`evbk.worker.reaper`).
 - All instances share the same database. The ClusterCapabilities provider is the only external dependency beyond the database.
 
 #### Deployment Variants
@@ -2376,8 +2385,6 @@ modules:
       min_session_timeout: PT1S
 
     workers:
-      cleaner_interval_secs: 60
-      retention_interval_secs: 300
       reaper_interval_secs: 60
 ```
 
@@ -2528,7 +2535,7 @@ The MVP is shaped so that all of the following are **additive non-breaking chang
 
 ## 5. Traceability
 
-This DESIGN traces back to the [PRD.md](PRD.md) functional and non-functional requirements, forward to the partition-selection ADR, and laterally to standards / external references. Architectural-review findings (a non-canonical audit trail) are preserved in [REVIEW.md](REVIEW.md). Consumer use cases, walked scenarios, and the v1 rebalance algorithm (also non-canonical for DESIGN) are documented in [USE_CASES.md](USE_CASES.md).
+This DESIGN traces back to the [PRD.md](PRD.md) functional and non-functional requirements, forward to the partition-selection ADR, and laterally to standards / external references. Consumer use cases, walked scenarios, and the v1 rebalance algorithm (non-canonical for DESIGN) are documented in [USE_CASES.md](USE_CASES.md).
 
 ### 5.1 PRD ↔ DESIGN Traceability
 
@@ -2568,6 +2575,7 @@ This DESIGN traces back to the [PRD.md](PRD.md) functional and non-functional re
 - [ADR/0002-partition-selection.md](ADR/0002-partition-selection.md) — `cpt-cf-evbk-adr-partition-selection`. **Revised** to drop the explicit `partition` producer override; the broker is now authoritative for partition assignment, deriving from `partition_key` (when present) or `tenant_id` (default). Realizes the Event-schema partition derivation referenced in §3.1 Event Schema and §3.6 Two Sequences. Native Kafka producer partitioner compatibility is not a supported producer contract.
 - [ADR/0003-event-schema.md](ADR/0003-event-schema.md) — `cpt-cf-evbk-adr-event-schema`. Defines the canonical event schema: single JSON Schema with field-level `readOnly` / `writeOnly` markers (no separate read-side file), optional versioned `meta` block for transport mechanics (marked `writeOnly`), `tenant_id` as producer-supplied, `subject_type` retained, `created_at` dropped, `offset`/`offset_time` renamed to `sequence`/`sequence_time` (`readOnly`), broker-native naming (no CloudEvents conformance), ASCII event-field encoding rule. Realized by `schemas/event.v1.schema.json`.
 - [ADR/0004-idempotent-producer-protocol.md](ADR/0004-idempotent-producer-protocol.md) — `cpt-cf-evbk-adr-idempotent-producer-protocol`. Mode declared at registration (`POST /v1/producers { mode }`), enforced per request. Mode-shape hard errors at the wire boundary. Producer-registration TTL + operator-driven `POST :reset`. Single-writer concurrency. Realized by §3.2 Producer Modes (shrunk) and `docs/features/0001-idempotent-producers.md`.
+- [ADR/0007-service-decomposition.md](ADR/0007-service-decomposition.md) — `cpt-cf-evbk-adr-service-decomposition`. Single binary, multi-mode (not a three-binary split); `domain/cluster.rs` resolves the platform `cluster` gear's real `cluster-sdk` facades directly rather than a bespoke `ClusterCapabilities` abstraction; no dispatcher is constructed in standalone mode. Realized by the `event-broker` crate skeleton and `DeploymentMode`'s per-mode activation predicates (`ingest_active()` etc.) - structure and mode-decision scaffolding only; real service construction and route gating land with #4345/#4346/#4347.
 
 The remaining ADR identifiers referenced in §1.2 (future ADR (cluster-capabilities), future ADR (long-polling), future ADR (topic-sharding), future ADR (dispatcher), `cpt-cf-evbk-design-sequence-assignment`, future ADR (outbox-ingest)) are documented inline in this DESIGN.md and will be extracted into standalone canonical ADR files in follow-up design iterations.
 
@@ -2584,5 +2592,4 @@ The remaining ADR identifiers referenced in §1.2 (future ADR (cluster-capabilit
 
 - [PRD.md](PRD.md) — product requirements, actors, scope, use cases, acceptance criteria.
 - [USE_CASES.md](USE_CASES.md) — consumer state machine, producer / consumer profiles, walked scenarios, v1 rebalance algorithm. (Non-canonical extension to DESIGN.)
-- [REVIEW.md](REVIEW.md) — architectural-review findings (RESOLVED / DEFERRED / DROPPED / PARTIALLY MITIGATED). Audit trail of decisions made during design evolution. (Non-canonical appendix to DESIGN.)
 - [ADR/0002-partition-selection.md](ADR/0002-partition-selection.md) — partition-selection ADR.

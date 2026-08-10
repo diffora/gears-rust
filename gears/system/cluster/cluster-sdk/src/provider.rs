@@ -36,6 +36,17 @@ use crate::lock::DistributedLockBackend;
 /// it and awaits it once during shutdown — typically a plugin handle's `stop()`.
 pub type StopHook = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
+/// The cache provider-options key the omit-default service-discovery auto-wrap
+/// reads for a non-default poll cadence (PGR-D3): a cache provider whose
+/// options carry this key (e.g. the Postgres plugin's `sd_poll_interval_ms`)
+/// gets that cadence threaded into `with_prefix_watch_polling` instead of the
+/// SDK-default backend's own default. A documented convention over the raw
+/// options map, not a schema field the SDK enforces — a provider opts in
+/// simply by naming its own config field to match this constant, single-
+/// sourcing the key so a rename is a compile error here rather than a
+/// silent fallback to the default cadence at the wiring read site.
+pub const SD_POLL_INTERVAL_MS_OPTION: &str = "sd_poll_interval_ms";
+
 /// Builds the cache backend for one provider.
 ///
 /// The cache backend is the foundational primitive; the wiring auto-wraps it with

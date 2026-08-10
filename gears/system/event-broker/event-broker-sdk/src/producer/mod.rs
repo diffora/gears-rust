@@ -18,7 +18,7 @@ mod db;
 #[cfg(feature = "outbox")]
 mod outbox;
 
-pub use crate::api::{IngestOutcome, ProducerCursor, ProducerMode};
+pub use crate::api::{IngestOutcome, PartitionCursor, ProducerCursors, ProducerMode, TopicCursors};
 pub use direct::{Producer, ProducerBuilder};
 pub use types::{DirectDeduplication, ProducerIdentity, ValidationTiming};
 

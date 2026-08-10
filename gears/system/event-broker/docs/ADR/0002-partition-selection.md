@@ -43,7 +43,7 @@ A topic in the Gears event broker is divided into a fixed number of partitions d
 The existing design imposes hard constraints on this decision:
 
 - `Topic.partitions` is **fixed at topic creation** and cannot be grown or shrunk on a live topic. Re-partitioning would break per-key ordering for every key already published; the migration path is "create new topic, dual-write, cut consumers over." Partition selection MUST therefore behave deterministically across the topic's full lifetime.
-- The broker assigns the consumer-visible `event.sequence` per `(topic, partition)`. Producers never set `sequence`; they only carry chain state for ingest-side dedup in `meta.previous` and `meta.sequence` (see [ADR-0003 Event Schema](0002-event-schema.md)).
+- The broker assigns the consumer-visible `event.sequence` per `(topic, partition)`. Producers never set `sequence`; they only carry chain state for ingest-side dedup in `meta.previous` and `meta.sequence` (see [ADR-0003 Event Schema](0003-event-schema.md)).
 - `Event` carries `subject` (a per-event entity identifier) and `subject_type`. A dedicated `partition_key` field exists as an optional producer-supplied grouping input.
 - Idempotent-producer state is keyed by `(producer_id, topic, partition)` (`evbk_producer_state`). The same producer publishing "the same logical event" on a retry MUST land on the same partition, otherwise the chain check fires against a state row that does not contain the previous attempt and the duplicate is admitted.
 
@@ -85,7 +85,7 @@ partition       = local_derivation(ascii_bytes(partition_input)) % partition_cou
 
 - Current first-party SDK/broker implementation: **MurmurHash3 (32-bit, x86 variant)** with a fixed seed of `0x00000000`, masked with `& 0x7FFFFFFF` before modulo. This pins first-party SDK hints to broker validation but is not a native Kafka producer compatibility promise.
 - The mask `& 0x7FFFFFFF` strips the sign bit so the modulo operates on a non-negative `u31` value and avoids the negative-modulo edge case in languages with signed `%`.
-- The bytes hashed MUST be the **ASCII byte representation** of the input. Per the platform convention recorded in [ADR-0003 Event Schema § Event Field Encoding](0002-event-schema.md#event-field-encoding-ascii-only), all event string fields (`partition_key`, `subject`, etc.) are ASCII; UTF-8 is permitted only inside `data`. This eliminates UTF-8-vs-ASCII determinism concerns in the hash path.
+- The bytes hashed MUST be the **ASCII byte representation** of the input. Per the platform convention recorded in [ADR-0003 Event Schema § Event Field Encoding](0003-event-schema.md#event-field-encoding-ascii-only), all event string fields (`partition_key`, `subject`, etc.) are ASCII; UTF-8 is permitted only inside `data`. This eliminates UTF-8-vs-ASCII determinism concerns in the hash path.
 - Producers MUST NOT provide a top-level topic `partition`. First-party SDKs that send an internal `meta.partition_hint` MUST compute it with the broker-supported local derivation for that broker version.
 
 ### Partition-Key Source
@@ -147,7 +147,7 @@ On `POST /v1/events` and `POST /v1/events:batch`, the ingest service MUST:
 
 ### Encoding
 
-All inputs to the hash are ASCII per [ADR-0003 § Event Field Encoding](0002-event-schema.md#event-field-encoding-ascii-only). The broker rejects publishes with non-ASCII bytes in `partition_key` or `tenant_id` with `400 InvalidEventFieldEncoding` before partition computation is attempted. `partition_key` is additionally length-capped at 1024 bytes (`400 EventFieldTooLong` on overflow).
+All inputs to the hash are ASCII per [ADR-0003 § Event Field Encoding](0003-event-schema.md#event-field-encoding-ascii-only). The broker rejects publishes with non-ASCII bytes in `partition_key` or `tenant_id` with `400 InvalidEventFieldEncoding` before partition computation is attempted. `partition_key` is additionally length-capped at 1024 bytes (`400 EventFieldTooLong` on overflow).
 
 ### Consequences
 
@@ -257,9 +257,9 @@ External references:
   - §1.1 Architectural Vision — per-topic ordering centrality
   - §2.1 Design Principles — Per-topic ordering, Immutable log
   - §3.1 Domain Model — `Topic.partitions`, "Partition Count" subsection
-  - §3.2 Producer Modes — references [ADR-0004](0003-idempotent-producer-protocol.md)
-  - §3.6 Two Sequences — producer chain in `meta` / server-assigned `sequence` (per [ADR-0003](0002-event-schema.md))
+  - §3.2 Producer Modes — references [ADR-0004](0004-idempotent-producer-protocol.md)
+  - §3.6 Two Sequences — producer chain in `meta` / server-assigned `sequence` (per [ADR-0003](0003-event-schema.md))
   - `evbk_producer_state` — keyed by `(producer_id, topic, partition)`
 - **Related ADRs**:
-  - [`0002-event-schema`](0002-event-schema.md) — canonical event shape; `partition_key` placement (body, optional); `partition` is `readOnly` (server-stamped on read)
-  - [`0003-idempotent-producer-protocol`](0003-idempotent-producer-protocol.md) — chain dedup is keyed by `(producer_id, topic, partition)`; partition determinism is the chain-correctness invariant
+  - [`0003-event-schema`](0003-event-schema.md) — canonical event shape; `partition_key` placement (body, optional); `partition` is `readOnly` (server-stamped on read)
+  - [`0004-idempotent-producer-protocol`](0004-idempotent-producer-protocol.md) — chain dedup is keyed by `(producer_id, topic, partition)`; partition determinism is the chain-correctness invariant

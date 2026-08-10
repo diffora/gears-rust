@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use event_broker_sdk::api::EventBroker;
+use event_broker_sdk::api::EventBrokerApi;
 use event_broker_sdk::mock::MockBroker;
 use event_broker_sdk::{
     DirectDeduplication, IngestOutcome, Producer, ProducerIdentity, ProducerMode, TypedEvent,
@@ -102,7 +102,7 @@ async fn register_on_start_chained_mints_id_and_publishes_first_sequence() {
         .get_producer_cursors(&toolkit_security::SecurityContext::anonymous(), producer_id)
         .await
         .unwrap();
-    assert_eq!(cursors[0].last_sequence, 0);
+    assert_eq!(cursors.last_sequence(TOPIC, TENANT_PARTITION), Some(0));
     assert_eq!(handle.stored(TOPIC, TENANT_PARTITION).await.len(), 1);
 }
 
@@ -148,7 +148,7 @@ async fn reuse_monotonic_primes_from_broker_cursor() {
         .get_producer_cursors(&ctx, producer_id)
         .await
         .unwrap();
-    assert_eq!(cursors[0].last_sequence, 1);
+    assert_eq!(cursors.last_sequence(TOPIC, TENANT_PARTITION), Some(1));
 }
 
 #[tokio::test]
@@ -197,7 +197,7 @@ async fn batch_publish_routes_through_event_broker() {
 }
 
 async fn broker() -> (
-    Arc<dyn EventBroker>,
+    Arc<dyn EventBrokerApi>,
     event_broker_sdk::mock::MockBrokerHandle,
 ) {
     let mock = Arc::new(MockBroker::new());

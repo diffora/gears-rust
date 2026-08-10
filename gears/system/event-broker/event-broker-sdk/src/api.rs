@@ -40,12 +40,45 @@ pub enum IngestOutcome {
     Duplicate,
 }
 
-/// Broker cursor for one `(topic, partition)` pair.
+/// Broker `last_sequence` for one partition of a topic.
 #[derive(Debug, Clone)]
-pub struct ProducerCursor {
-    pub topic: String,
+pub struct PartitionCursor {
     pub partition: u32,
     pub last_sequence: i64,
+}
+
+/// Broker cursors for one topic - the `last_sequence` of each of its partitions.
+#[derive(Debug, Clone)]
+pub struct TopicCursors {
+    pub topic: String,
+    pub partitions: Vec<PartitionCursor>,
+}
+
+/// Producer cursor snapshot: the broker's known `last_sequence` per
+/// `(topic, partition)`, grouped by topic, plus the echoed producer identity.
+/// Object-shaped (not a bare array) so producer-level fields can be carried and
+/// the response stays extensible.
+#[derive(Debug, Clone)]
+pub struct ProducerCursors {
+    pub producer_id: ProducerId,
+    pub client_agent: String,
+    pub topics: Vec<TopicCursors>,
+}
+
+impl ProducerCursors {
+    /// True when the producer has no recorded cursor on any topic/partition.
+    pub fn is_empty(&self) -> bool {
+        self.topics.iter().all(|topic| topic.partitions.is_empty())
+    }
+
+    /// The broker's known `last_sequence` for a `(topic, partition)`, if any.
+    pub fn last_sequence(&self, topic: &str, partition: u32) -> Option<i64> {
+        self.topics
+            .iter()
+            .find(|t| t.topic == topic)
+            .and_then(|t| t.partitions.iter().find(|p| p.partition == partition))
+            .map(|p| p.last_sequence)
+    }
 }
 
 /// Where the consumer wants the broker to begin emitting for an assigned
@@ -163,7 +196,7 @@ pub enum WireFrame {
     },
 }
 
-/// Boxed stream returned by [`EventBroker::stream`].
+/// Boxed stream returned by [`EventBrokerApi::stream`].
 pub type FrameStream =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<WireFrame, EventBrokerError>> + Send>>;
 
@@ -390,13 +423,13 @@ pub struct SeekResult {
     pub offset: i64,
 }
 
-// --- EventBroker - client-facing interface ------------------------------------
+// --- EventBrokerApi - client-facing interface ------------------------------------
 
 /// The Event Broker client interface - one method per broker operation.
 ///
 /// Resolved from `ClientHub`:
 /// ```ignore
-/// let broker = hub.get::<dyn EventBroker>()?;
+/// let broker = hub.get::<dyn EventBrokerApi>()?;
 /// ```
 ///
 /// Implemented by: the in-process direct backend, the remote HTTP backend,
@@ -405,7 +438,7 @@ pub struct SeekResult {
 /// HTTP verbs/paths (and their renames) live solely in `openapi.yaml` and the HTTP
 /// backend, the single source of truth.
 #[async_trait]
-pub trait EventBroker: Send + Sync {
+pub trait EventBrokerApi: Send + Sync {
     // -- Producer --------------------------------------------------------------
     /// Register a producer; returns the broker-issued producer id. (On the HTTP
     /// wire the response body field is `id`, not `producer_id`.)
@@ -446,7 +479,7 @@ pub trait EventBroker: Send + Sync {
         &self,
         ctx: &SecurityContext,
         producer_id: ProducerId,
-    ) -> Result<Vec<ProducerCursor>, EventBrokerError>;
+    ) -> Result<ProducerCursors, EventBrokerError>;
 
     async fn reset_producer_chain(
         &self,

@@ -2,9 +2,9 @@
 //!
 //! High-level typed event publishing and consumption for the Cyberfabric Event Broker.
 //!
-//! See [`EventBroker`] for the entry point; obtain it from `ClientHub`:
+//! See [`EventBrokerApi`] for the entry point; obtain it from `ClientHub`:
 //! ```ignore
-//! let broker = hub.get::<dyn EventBroker>()?;
+//! let broker = hub.get::<dyn EventBrokerApi>()?;
 //! ```
 
 #![forbid(unsafe_code)]
@@ -27,9 +27,9 @@ mod api_tests;
 pub mod mock;
 
 pub use api::{
-    AssignedPartition, BarrierMode, EventBroker, EventBrokerBackend, IngestOutcome, JoinRequest,
-    ProducerCursor, ProducerMode, ResolvedPosition, SeekResult, StorageBackendConfig,
-    SubscriptionAssignment, TenantTraversalDepth,
+    AssignedPartition, BarrierMode, EventBrokerApi, EventBrokerBackend, IngestOutcome, JoinRequest,
+    PartitionCursor, ProducerCursors, ProducerMode, ResolvedPosition, SeekResult,
+    StorageBackendConfig, SubscriptionAssignment, TenantTraversalDepth, TopicCursors,
 };
 pub use consumer::{
     BatchHandlerOutcome, CommitOffset, ConnectionDropReason, Consumer, ConsumerBatching,

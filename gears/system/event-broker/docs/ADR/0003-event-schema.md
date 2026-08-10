@@ -268,10 +268,10 @@ External references:
 - **PRD**: [PRD.md](../PRD.md)
   - `cpt-cf-evbk-fr-publish-single` — single-event publish accepts the event shape defined here
   - `cpt-cf-evbk-fr-publish-batch` — batch publish accepts the event with per-event `meta`
-  - `cpt-cf-evbk-fr-producer-modes` — producer modes consume `meta.{producer_id, previous, sequence}` per [ADR-0004](0003-idempotent-producer-protocol.md)
+  - `cpt-cf-evbk-fr-producer-modes` — producer modes consume `meta.{producer_id, previous, sequence}` per [ADR-0004](0004-idempotent-producer-protocol.md)
 - **DESIGN**: [DESIGN.md](../DESIGN.md)
   - §3.1 Domain Model — `Event` field table is updated against this ADR
-  - §3.2 Producer Modes — references [ADR-0004](0003-idempotent-producer-protocol.md)
+  - §3.2 Producer Modes — references [ADR-0004](0004-idempotent-producer-protocol.md)
   - §3.1 Validation Pipeline — end-to-end discovery + validation walkthrough
   - §3.6 Three Sequences → "Two Sequences" (producer chain in `meta` + server-assigned `sequence`)
 - **Related ADRs**:

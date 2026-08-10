@@ -27,11 +27,11 @@ fn normalize_path(path: &Path) -> String {
 pub enum VendorConfigError {
     #[error("vendor '{vendor}' not found in configuration")]
     NotFound { vendor: String },
-    #[error("invalid config for vendor '{vendor}': {source}")]
+    // Intentionally not named `source`; doing so would duplicate chained error output.
+    #[error("invalid config for vendor '{vendor}': {cause}")]
     InvalidConfig {
         vendor: String,
-        #[source]
-        source: serde_json::Error,
+        cause: serde_json::Error,
     },
 }
 
@@ -117,6 +117,13 @@ pub struct AppConfig {
     /// Allows vendors to add their own typed configuration sections.
     #[serde(default)]
     pub vendor: VendorConfig,
+    /// Out-of-process HTTP server configuration.
+    ///
+    /// When present, an `OoP` gear starts an Axum HTTP server (probes,
+    /// gear routes, self-registration, dependency resolution, graceful drain)
+    /// instead of the legacy gRPC-only lifecycle (`cpt-cf-component-oop-bootstrap`).
+    #[serde(default)]
+    pub oop_http: Option<OopHttpConfig>,
 }
 
 impl Default for AppConfig {
@@ -130,8 +137,57 @@ impl Default for AppConfig {
             gears_dir: None,
             gears: HashMap::new(),
             vendor: VendorConfig::new(),
+            oop_http: None,
         }
     }
+}
+
+/// Out-of-process HTTP server configuration (`cpt-cf-component-oop-bootstrap`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OopHttpConfig {
+    /// Address the main HTTP server binds to (gear routes + probes),
+    /// e.g. `"0.0.0.0:8080"`.
+    pub listen_addr: String,
+    /// Optional separate bind address for probe endpoints (sidecar port).
+    /// When set, `/healthz` and `/readyz` are also served here.
+    #[serde(default)]
+    pub probe_bind_addr: Option<String>,
+    /// Maximum seconds to wait for in-flight requests to drain on shutdown.
+    #[serde(default = "default_drain_timeout_secs")]
+    pub drain_timeout_secs: u64,
+    /// Per-check timeout (ms) for readiness healthchecks on `/readyz`; raise for
+    /// slow dependencies. Mirrors the `api-gateway` `healthcheck_timeout_ms`.
+    #[serde(default = "default_healthcheck_timeout_ms")]
+    pub healthcheck_timeout_ms: u64,
+    /// Base URL other services use to reach this instance (registered as the
+    /// instance's REST endpoint). Defaults to `http://<listen_addr>` with an
+    /// unspecified host (`0.0.0.0`) rewritten to `127.0.0.1`.
+    #[serde(default)]
+    pub advertise_uri: Option<String>,
+    /// Platform-plane (`InternalAuthenticator`) configuration. When present and
+    /// the `k8s-auth` feature is enabled, the bootstrap installs the Kubernetes
+    /// `TokenReview` authenticator on incoming system calls.
+    #[serde(default)]
+    pub internal_auth: Option<InternalAuthConfig>,
+}
+
+fn default_drain_timeout_secs() -> u64 {
+    30
+}
+
+fn default_healthcheck_timeout_ms() -> u64 {
+    500
+}
+
+/// Platform-plane authentication configuration for the `OoP` HTTP server.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InternalAuthConfig {
+    /// Expected token audiences for Kubernetes `TokenReview`. When empty, the
+    /// API server's default audience validation applies.
+    #[serde(default)]
+    pub audiences: Vec<String>,
 }
 
 impl ConfigProvider for AppConfig {
@@ -416,7 +472,7 @@ impl AppConfig {
             })?;
         T::deserialize(raw).map_err(|e| VendorConfigError::InvalidConfig {
             vendor: vendor_name.to_owned(),
-            source: e,
+            cause: e,
         })
     }
 
@@ -434,7 +490,7 @@ impl AppConfig {
         };
         T::deserialize(raw).map_err(|e| VendorConfigError::InvalidConfig {
             vendor: vendor_name.to_owned(),
-            source: e,
+            cause: e,
         })
     }
 
@@ -2057,6 +2113,7 @@ logging:
                 pool: None,
                 file: None,
                 path: None,
+                lock_keepalive: None,
                 server: None,
             },
         );
@@ -3215,10 +3272,11 @@ vendor:
 
         let invalid = VendorConfigError::InvalidConfig {
             vendor: "bad".to_owned(),
-            source: serde_json::from_str::<TestVendorConfig>("invalid").unwrap_err(),
+            cause: serde_json::from_str::<TestVendorConfig>("invalid").unwrap_err(),
         };
         let msg = invalid.to_string();
         assert!(msg.starts_with("invalid config for vendor 'bad':"));
+        assert!(std::error::Error::source(&invalid).is_none());
     }
 
     #[test]

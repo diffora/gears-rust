@@ -8,7 +8,7 @@ use tokio::time::{Instant, sleep};
 use uuid::Uuid;
 
 use event_broker_sdk::ProducerId;
-use event_broker_sdk::api::EventBroker;
+use event_broker_sdk::api::EventBrokerApi;
 use event_broker_sdk::error::EventBrokerError;
 use event_broker_sdk::mock::{MockBroker, MockBrokerHandle};
 use event_broker_sdk::models::{Event, ProducerMeta, ResetScope};
@@ -332,7 +332,7 @@ async fn producer_outbox_and_broker_topic_partition_counts_can_differ() {
     handle
         .register_event_type(TOPIC2, EVENT_TYPE2, billing_schema(), &[SUBJECT_TYPE])
         .await;
-    let broker: Arc<dyn EventBroker> = mock;
+    let broker: Arc<dyn EventBrokerApi> = mock;
     let producer = stateless_producer(db, broker).await;
 
     let event = order(Some("explicit-key"));
@@ -541,13 +541,8 @@ async fn outbox_processor_recovers_chained_cursor_on_startup() {
         .get_producer_cursors(&toolkit_security::SecurityContext::anonymous(), producer_id)
         .await
         .unwrap();
-    let cursor = cursors
-        .iter()
-        .find(|cursor| cursor.topic == TOPIC && cursor.partition == TENANT_PARTITION)
-        .unwrap();
-
     assert_message_ok(result);
-    assert_eq!(cursor.last_sequence, 4);
+    assert_eq!(cursors.last_sequence(TOPIC, TENANT_PARTITION), Some(4));
 }
 
 #[tokio::test]
@@ -566,13 +561,8 @@ async fn outbox_processor_recovers_chained_sequence_violation_by_refreshing_curs
         .get_producer_cursors(&toolkit_security::SecurityContext::anonymous(), producer_id)
         .await
         .unwrap();
-    let cursor = cursors
-        .iter()
-        .find(|cursor| cursor.topic == TOPIC && cursor.partition == TENANT_PARTITION)
-        .unwrap();
-
     assert_message_ok(result);
-    assert_eq!(cursor.last_sequence, 4);
+    assert_eq!(cursors.last_sequence(TOPIC, TENANT_PARTITION), Some(4));
 }
 
 #[tokio::test]
@@ -608,12 +598,12 @@ async fn outbox_processor_rotates_future_registration_when_broker_forgot_produce
     producer_handle.stop().await;
 }
 
-async fn fixture() -> (toolkit_db::Db, Arc<dyn EventBroker>) {
+async fn fixture() -> (toolkit_db::Db, Arc<dyn EventBrokerApi>) {
     let (db, broker, _) = fixture_with_handle().await;
     (db, broker)
 }
 
-async fn fixture_with_handle() -> (toolkit_db::Db, Arc<dyn EventBroker>, MockBrokerHandle) {
+async fn fixture_with_handle() -> (toolkit_db::Db, Arc<dyn EventBrokerApi>, MockBrokerHandle) {
     let db = db().await;
     let mock = Arc::new(MockBroker::new());
     let handle = mock.handle();
@@ -669,7 +659,7 @@ async fn db_without_producer_migrations() -> toolkit_db::Db {
     db
 }
 
-async fn stateless_producer(db: toolkit_db::Db, broker: Arc<dyn EventBroker>) -> DbProducer {
+async fn stateless_producer(db: toolkit_db::Db, broker: Arc<dyn EventBrokerApi>) -> DbProducer {
     DbProducer::builder()
         .broker(broker)
         .db(db)
@@ -683,13 +673,13 @@ async fn stateless_producer(db: toolkit_db::Db, broker: Arc<dyn EventBroker>) ->
         .unwrap()
 }
 
-async fn managed_producer(db: toolkit_db::Db, broker: Arc<dyn EventBroker>) -> DbProducer {
+async fn managed_producer(db: toolkit_db::Db, broker: Arc<dyn EventBrokerApi>) -> DbProducer {
     managed_producer_with_unknown(db, broker, UnknownProducerRegistration::Fail).await
 }
 
 async fn managed_producer_with_unknown(
     db: toolkit_db::Db,
-    broker: Arc<dyn EventBroker>,
+    broker: Arc<dyn EventBrokerApi>,
     unknown: UnknownProducerRegistration,
 ) -> DbProducer {
     DbProducer::builder()
@@ -799,7 +789,7 @@ async fn managed_envelope_payload(producer: &DbProducer) -> Vec<u8> {
 }
 
 async fn seed_chained_cursor(
-    broker: &Arc<dyn EventBroker>,
+    broker: &Arc<dyn EventBrokerApi>,
     producer_id: ProducerId,
     last_sequence: i64,
 ) {

@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 #[cfg(feature = "db")]
 use super::commit::TxCommitHandleParts;
 use crate::api::{
-    AssignedPartition, EventBroker, JoinRequest, ResolvedPosition, SubscriptionAssignment,
+    AssignedPartition, EventBrokerApi, JoinRequest, ResolvedPosition, SubscriptionAssignment,
 };
 use crate::api::{
     BarrierMode, ControlCode, Filter, PartitionPosition, PartitionSlot, SeekPosition,
@@ -302,7 +302,7 @@ where
     OM: CommitOffset + 'static,
 {
     pub slot_idx: u32,
-    pub broker: Arc<dyn EventBroker>,
+    pub broker: Arc<dyn EventBrokerApi>,
     pub offset_manager: Arc<OM>,
     pub handler: Arc<H>,
     pub group_ref: ConsumerGroupRef,
@@ -341,7 +341,7 @@ where
     OM: CommitOffsetInTx + 'static,
 {
     pub slot_idx: u32,
-    pub broker: Arc<dyn EventBroker>,
+    pub broker: Arc<dyn EventBrokerApi>,
     pub offset_manager: Arc<OM>,
     pub handler: Arc<H>,
     pub group_ref: ConsumerGroupRef,
@@ -1979,7 +1979,7 @@ where
     }
 
     /// Translate `(topic, partition)` pairs reported by `409 PositionsNotSet`
-    /// into the public assignment shape used by `EventBroker::join`.
+    /// into the public assignment shape used by `EventBrokerApi::join`.
     fn slots_for_unseeded(&self, unseeded: &[(String, u32)]) -> Vec<AssignedPartition> {
         unseeded
             .iter()

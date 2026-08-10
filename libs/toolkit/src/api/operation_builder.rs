@@ -182,14 +182,53 @@ pub struct RequestBodySpec {
     pub required: bool,
 }
 
+/// Response body schema variants.
+///
+/// Mirrors [`RequestBodySchema`]. `Array` exists because utoipa's default
+/// `ToSchema::name()` strips generic arguments, so `Vec<A>` and `Vec<B>` both
+/// resolve to the component name `Vec` and clobber each other in
+/// `components.schemas`. A top-level array is therefore emitted **inline** —
+/// `{type: array, items: {$ref: T}}` — registering only the item type as a
+/// named component. That is both the `OpenAPI` norm and what utoipa's own
+/// `#[utoipa::path]` produces for a `Vec<T>` body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResponseSchema {
+    /// Reference to a component schema in `#/components/schemas/{schema_name}`
+    Ref { schema_name: String },
+    /// Inline array whose items `$ref` the named item component.
+    Array { items_schema_name: String },
+}
+
+impl ResponseSchema {
+    /// The component name this response ultimately references: the type itself
+    /// for [`Self::Ref`], the item type for [`Self::Array`].
+    #[must_use]
+    pub fn schema_name(&self) -> &str {
+        match self {
+            Self::Ref { schema_name } => schema_name,
+            Self::Array { items_schema_name } => items_schema_name,
+        }
+    }
+}
+
 /// Response specification for API operations
 #[derive(Clone, Debug)]
 pub struct ResponseSpec {
     pub status: u16,
     pub content_type: &'static str,
     pub description: String,
-    /// Name of a registered component schema (if any).
-    pub schema_name: Option<String>,
+    /// Schema of the response body (if any).
+    pub schema: Option<ResponseSchema>,
+}
+
+impl ResponseSpec {
+    /// Name of the component schema this response references, if any.
+    ///
+    /// For an array response this is the **item** component, not the array.
+    #[must_use]
+    pub fn schema_name(&self) -> Option<&str> {
+        self.schema.as_ref().map(ResponseSchema::schema_name)
+    }
 }
 
 /// License requirement specification for an operation
@@ -1069,7 +1108,7 @@ where
             status: status.as_u16(),
             content_type: "application/json",
             description: description.into(),
-            schema_name: None,
+            schema: None,
         });
         OperationBuilder {
             spec: self.spec,
@@ -1098,7 +1137,7 @@ where
             status: status.as_u16(),
             content_type: "",
             description: description.into(),
-            schema_name: None,
+            schema: None,
         });
         OperationBuilder {
             spec: self.spec,
@@ -1126,7 +1165,45 @@ where
             status: status.as_u16(),
             content_type: "application/json",
             description: description.into(),
-            schema_name: Some(name),
+            schema: Some(ResponseSchema::Ref { schema_name: name }),
+        });
+        OperationBuilder {
+            spec: self.spec,
+            method_router: self.method_router,
+            _has_handler: self._has_handler,
+            _has_response: PhantomData::<Present>,
+            _state: self._state,
+            _auth_state: self._auth_state,
+            _license_state: self._license_state,
+        }
+    }
+
+    /// Add a JSON response whose body is a **top-level array** of `T`
+    /// (transitions from Missing to Present).
+    ///
+    /// `T` is the *item* type — pass `GearDto`, not `Vec<GearDto>`. Registers
+    /// `T` as a named component and emits an inline
+    /// `{type: array, items: {$ref: T}}` schema for the response body.
+    ///
+    /// Never pass `Vec<T>` to [`Self::json_response_with_schema`]: utoipa's
+    /// default `ToSchema::name()` strips generic arguments, so every `Vec<_>`
+    /// registers under the single component name `Vec` and two such responses
+    /// collide fatally in `OpenApiRegistryImpl::ensure_schema_raw`.
+    pub fn json_array_response_with_schema<T>(
+        mut self,
+        registry: &dyn OpenApiRegistry,
+        status: http::StatusCode,
+        description: impl Into<String>,
+    ) -> OperationBuilder<H, Present, S, A, L>
+    where
+        T: utoipa::ToSchema + utoipa::PartialSchema + api_dto::ResponseApiDto + 'static,
+    {
+        let items_schema_name = ensure_schema::<T>(registry);
+        self.spec.responses.push(ResponseSpec {
+            status: status.as_u16(),
+            content_type: "application/json",
+            description: description.into(),
+            schema: Some(ResponseSchema::Array { items_schema_name }),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1161,7 +1238,7 @@ where
             status: status.as_u16(),
             content_type,
             description: description.into(),
-            schema_name: None,
+            schema: None,
         });
         OperationBuilder {
             spec: self.spec,
@@ -1184,7 +1261,7 @@ where
             status: status.as_u16(),
             content_type: "text/html",
             description: description.into(),
-            schema_name: None,
+            schema: None,
         });
         OperationBuilder {
             spec: self.spec,
@@ -1210,7 +1287,9 @@ where
             status: status.as_u16(),
             content_type: problem::APPLICATION_PROBLEM_JSON,
             description: description.into(),
-            schema_name: Some(problem_name),
+            schema: Some(ResponseSchema::Ref {
+                schema_name: problem_name,
+            }),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1237,7 +1316,7 @@ where
             status: http::StatusCode::OK.as_u16(),
             content_type: "text/event-stream",
             description: description.into(),
-            schema_name: Some(name),
+            schema: Some(ResponseSchema::Ref { schema_name: name }),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1270,7 +1349,7 @@ where
             status: status.as_u16(),
             content_type: "application/json",
             description: description.into(),
-            schema_name: None,
+            schema: None,
         });
         self
     }
@@ -1285,7 +1364,7 @@ where
             status: status.as_u16(),
             content_type: "",
             description: description.into(),
-            schema_name: None,
+            schema: None,
         });
         self
     }
@@ -1305,7 +1384,31 @@ where
             status: status.as_u16(),
             content_type: "application/json",
             description: description.into(),
-            schema_name: Some(name),
+            schema: Some(ResponseSchema::Ref { schema_name: name }),
+        });
+        self
+    }
+
+    /// Add a JSON response whose body is a **top-level array** of `T` (additional).
+    ///
+    /// `T` is the *item* type — pass `GearDto`, not `Vec<GearDto>`. See
+    /// [`OperationBuilder::json_array_response_with_schema`] on the
+    /// `Missing`-response builder for why arrays are emitted inline.
+    pub fn json_array_response_with_schema<T>(
+        mut self,
+        registry: &dyn OpenApiRegistry,
+        status: http::StatusCode,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        T: utoipa::ToSchema + utoipa::PartialSchema + api_dto::ResponseApiDto + 'static,
+    {
+        let items_schema_name = ensure_schema::<T>(registry);
+        self.spec.responses.push(ResponseSpec {
+            status: status.as_u16(),
+            content_type: "application/json",
+            description: description.into(),
+            schema: Some(ResponseSchema::Array { items_schema_name }),
         });
         self
     }
@@ -1332,7 +1435,7 @@ where
             status: status.as_u16(),
             content_type,
             description: description.into(),
-            schema_name: None,
+            schema: None,
         });
         self
     }
@@ -1347,7 +1450,7 @@ where
             status: status.as_u16(),
             content_type: "text/html",
             description: description.into(),
-            schema_name: None,
+            schema: None,
         });
         self
     }
@@ -1365,7 +1468,9 @@ where
             status: status.as_u16(),
             content_type: problem::APPLICATION_PROBLEM_JSON,
             description: description.into(),
-            schema_name: Some(problem_name),
+            schema: Some(ResponseSchema::Ref {
+                schema_name: problem_name,
+            }),
         });
         self
     }
@@ -1384,7 +1489,7 @@ where
             status: http::StatusCode::OK.as_u16(),
             content_type: "text/event-stream",
             description: description.into(),
-            schema_name: Some(name),
+            schema: Some(ResponseSchema::Ref { schema_name: name }),
         });
         self
     }
@@ -1450,7 +1555,9 @@ where
                 status: status.as_u16(),
                 content_type: problem::APPLICATION_PROBLEM_JSON,
                 description: description.to_owned(),
-                schema_name: Some(problem_name.clone()),
+                schema: Some(ResponseSchema::Ref {
+                    schema_name: problem_name.clone(),
+                }),
             });
         }
 
@@ -1500,7 +1607,9 @@ where
             status: http::StatusCode::BAD_REQUEST.as_u16(),
             content_type: problem::APPLICATION_PROBLEM_JSON,
             description: "Validation Error".to_owned(),
-            schema_name: Some(problem_name),
+            schema: Some(ResponseSchema::Ref {
+                schema_name: problem_name,
+            }),
         });
 
         self
@@ -1898,7 +2007,7 @@ mod tests {
                 resp.content_type,
                 toolkit_canonical_errors::problem::APPLICATION_PROBLEM_JSON
             );
-            assert!(resp.schema_name.is_some());
+            assert!(resp.schema_name().is_some());
         }
     }
 
@@ -2016,7 +2125,7 @@ mod tests {
             validation_response.content_type,
             toolkit_canonical_errors::problem::APPLICATION_PROBLEM_JSON
         );
-        assert!(validation_response.schema_name.is_some());
+        assert!(validation_response.schema_name().is_some());
     }
 
     #[test]

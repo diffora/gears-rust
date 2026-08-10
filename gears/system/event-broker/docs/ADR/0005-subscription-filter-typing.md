@@ -75,8 +75,10 @@ Adopt **topic-anchored `interests[]` with GTS-typed filter engines**. The JOIN b
       "topic":           "gts.cf.core.events.topic.v1~yourorg.orders.v1",
       "tenant_id":       "<uuid>",
       "types":           ["gts.cf.core.events.event.v1~yourorg.orders.placed.v1"],
-      "expression_type": "gts.cf.core.events.filter.v1~cf.core.expression.cel.v1",
-      "expression":      "event.data.amount > 100"
+      "filter": {
+        "engine":     "gts.cf.core.events.filter.v1~cf.core.expression.cel.v1",
+        "expression": "event.data.amount > 100"
+      }
     },
     {
       // No filter expression — match every event of these types under this tenant.
@@ -90,17 +92,16 @@ Adopt **topic-anchored `interests[]` with GTS-typed filter engines**. The JOIN b
 
 ### Interest Body Shape
 
-Three required fields + two paired-optional fields. No capability flags.
+Three required fields + one optional `filter` object. No capability flags.
 
 | Field | Cardinality | Description |
 |---|---|---|
 | `topic` | required | Full GTS topic identifier. Partition / rebalance / authz unit (Kafka-style). |
 | `tenant_id` | required | UUID. Tenant scope. Authz-validated by the platform tenant resolver. Different interests MAY declare different tenant_ids. |
 | `types` | required, non-empty | Array of GTS event-type-instance patterns. Scoped to `topic`. Wildcards per GTS §10. |
-| `expression_type` | optional (paired with `expression`) | Full GTS identifier extending `gts.cf.core.events.filter.v1~`. Always full GTS — no short-discriminator shortcut. |
-| `expression` | optional (paired with `expression_type`) | Engine-specific source string. |
+| `filter` | optional | Consolidated engine-typed filter object with required `engine` (full GTS identifier extending `gts.cf.core.events.filter.v1~`, always full GTS — no short-discriminator shortcut) and `expression` (engine-specific source string). Absent means no filter. |
 
-**Paired-optional rule**: `expression_type` and `expression` are both present (engine-typed filter) or both absent (no filter beyond topic + tenant + types). Exactly one present → `400 BadRequest`. An interest without the paired filter fields delivers every event matching topic + tenant + types — no engine round-trip.
+**Filter object rule**: `filter` is either present or absent. When present, both `engine` and `expression` are required (enforced by the schema; a `filter` object missing either → `400 BadRequest`). An interest without `filter` delivers every event matching topic + tenant + types — no engine round-trip.
 
 **Multiple interests OR together**: an event matches a subscription if at least one interest matches. Consumers wanting AND-of-two-predicates encode both in the single `expression`.
 
@@ -190,7 +191,7 @@ pub enum FilterError {
 }
 ```
 
-- **Resolution at JOIN**: broker reads `interest.expression_type`, resolves the engine via `ClientHub`, calls `engine.compile(interest.expression, MAX_EXPRESSION_LENGTH_BYTES)`, stores the compiled handle in the subscription's cache entry alongside the resolved type set and tenant_id.
+- **Resolution at JOIN**: broker reads `interest.filter.engine`, resolves the engine via `ClientHub`, calls `engine.compile(interest.filter.expression, MAX_EXPRESSION_LENGTH_BYTES)`, stores the compiled handle in the subscription's cache entry alongside the resolved type set and tenant_id.
 - **Per-event delivery**: broker iterates `(prerequisite_check, compiled_handle)` pairs; on first match, short-circuit.
 
 ### CEL Engine Filter Context (v1)
@@ -242,7 +243,7 @@ POST /v1/subscriptions { consumer_group, client_agent, session_timeout, interest
    5b. tenant_id authz via platform tenant resolver → 403 TenantIdNotAuthorized.
    5c. topic-level consume authz → 403 TopicNotAuthorized.
    5d. types[] length cap → 400 TooManyTypes.
-   5e. expression length cap (only if expression supplied) → 400 ExpressionTooLong.
+   5e. expression length cap (only if `filter.expression` supplied) → 400 ExpressionTooLong.
    5f. For each pattern in types[]:
        - Pattern syntax valid per GTS spec → else 400 BadTypePattern.
        - Resolve via types_registry filtered to parent_topic == interest.topic:
@@ -250,11 +251,19 @@ POST /v1/subscriptions { consumer_group, client_agent, session_timeout, interest
          - Otherwise expand to concrete type GTS instances; apply per-name-latest + minor-version-omitted.
        - Defense-in-depth: every resolved type's parent_topic == interest.topic → else 400 TypeNotInTopic.
        - Per-resolved-type consume authz → 403 EventTypeNotAuthorized on any miss.
-   5g. Paired-optional check: exactly-one of (expression_type, expression) → 400 BadRequest.
-       If both absent, skip 5h–5i; this interest has no compiled filter.
-   5h. If both present: resolve expression_type via ClientHub → 400 UnknownFilterEngine on miss.
-   5i. If both present: engine.compile(expression, MAX_EXPRESSION_LENGTH) → 400 InvalidFilterExpression
+   5g. Filter-object check: if `filter` present, both `engine` and `expression` required
+       (schema-enforced) → 400 BadRequest on a malformed `filter`. If `filter` absent, skip
+       5h–5i; this interest has no compiled filter.
+   5h. If `filter` present: resolve `filter.engine` via ClientHub → 400 UnknownFilterEngine on miss.
+   5i. If `filter` present: engine.compile(`filter.expression`, MAX_EXPRESSION_LENGTH_BYTES) → 400 InvalidFilterExpression
        on err; 400 CompiledFilterTooLarge on size budget exceed.
+
+   > Note on ordering: the steps above are listed in their canonical evaluation order for
+   > readability, but the `filter` object's shape is validated *earlier*, at request
+   > deserialization — the JSON schema (`filter.required: [engine, expression]`,
+   > `additionalProperties: false`) rejects a malformed `filter` (e.g. an `expression` with no
+   > `engine`) with `400 BadRequest` before any of steps 5a–5i run. So step 5e cannot be
+   > reached with a half-populated `filter`; the 5e/5g ordering is not load-bearing.
 6. Collect the topic set from interest.topic across all interests (no derivation; topics are explicit).
 7. Run rebalance with this member's (topic, partition) interest set.
 8. Persist subscription cache entry: { compiled_filters_or_None[], resolved_type_sets[], topic_set, assignments }.
@@ -272,7 +281,7 @@ For each interest I in S.compiled_interests:
   if E.topic       != I.topic              → skip this interest, continue
   if E.tenant_id   != I.tenant_id          → skip this interest, continue
   if E.type not in I.resolved_type_set     → skip this interest, continue
-  if I.compiled is None:                    // no paired-optional fields supplied at JOIN
+  if I.compiled is None:                    // no filter object supplied at JOIN
     → INCLUDE E in this subscription's batch; short-circuit (other interests not evaluated)
   else:
     match I.engine.eval(I.compiled, FilterContext::from(E)) {
@@ -305,7 +314,7 @@ Two layers, both all-or-nothing:
 - Good, because topic is explicit (Kafka-style) — partition assignment, rebalance, and authz operate on the same unit the consumer declared.
 - Good, because filter engines are extensible via the same GTS-typed plugin registry used for storage backends + OAGW plugins.
 - Good, because event-type filtering happens before engine eval — the broker skips non-matching events cheaply.
-- Good, because paired-optional `expression_type` + `expression` lets the common case (no filter beyond topic+tenant+types) be the simplest wire.
+- Good, because the optional `filter` object lets the common case (no filter beyond topic+tenant+types) be the simplest wire.
 - Good, because GTS-spec-compliant patterns mean every other system that handles GTS identifiers (types_registry, authz resolver, observability) understands the broker's patterns natively.
 - Good, because per-name-latest + minor-version-omitted matching gives consumers a stable major-pinned subscription that gracefully picks up minor-version updates.
 - Bad / accepted, because two-level addressing (topic + type-patterns) is more surface than topic-only. Mitigation: documented; the `types: ["gts.cf.core.events.event.v1~*"]` idiom is the "all types in this topic" pattern.
@@ -316,7 +325,7 @@ Two layers, both all-or-nothing:
 ### Confirmation
 
 - **GTS spec compliance test**: every example pattern in ADRs, DESIGN, scenarios, schemas, and fixtures is verified against the GTS spec's wildcard rules (single trailing `*`, segment-boundary, no `**`, no substring-within-segment).
-- **JOIN wire-shape test**: schema codegen produces a strongly-typed `Interest` struct with `topic`, `tenant_id`, `types` required and `expression_type` + `expression` as a paired Option group.
+- **JOIN wire-shape test**: schema codegen produces a strongly-typed `Interest` struct with `topic`, `tenant_id`, `types` required and an optional `filter { engine, expression }` object.
 - **JOIN validation test matrix**: each step in the JOIN validation order has a test asserting the documented error code on a triggering input.
 - **Per-event delivery test**: short-circuit on first match; no-filter interest matches by prerequisites alone; eval timeout drops event silently + metric.
 - **Rolling-deploy test**: v1 + v2 members with different interests in the same group; partition handoff preserves the per-member filter on subsequent events; cursor preserves position.
@@ -329,7 +338,7 @@ Two layers, both all-or-nothing:
 * Good, because topic is explicit on the wire (Kafka-style) — partition assignment, rebalance, and authz all key on the same identifier.
 * Good, because filter engines are pluggable via the platform's standard GTS-typed registry pattern.
 * Good, because per-name-latest + minor-version-omitted matching gives stable major-pinned subscriptions.
-* Good, because paired-optional `expression_type` + `expression` keeps the no-filter common case simple.
+* Good, because the optional `filter` object keeps the no-filter common case simple.
 * Bad, because the wire is slightly larger than the parallel-array shape (5 fields vs. 2 arrays).
 * Bad, because two-level addressing (topic + types) is more surface than single-level routing — but it's the right surface for both broker-side filtering optimization AND consumer-side declarativeness.
 
@@ -381,8 +390,8 @@ External references:
 - **Scenario and test coverage**: JOIN shape, interest body, pattern syntax, version resolution, topic / tenant / type authz, filter-engine resolution, expression compilation, per-event delivery, limits, and rolling deploy are covered by repository scenarios and tests.
 - **Related ADRs**:
   - [`0002-partition-selection`](0002-partition-selection.md) — partition derivation; the subscription rebalance still operates on `(topic, partition)`.
-  - [`0002-event-schema`](0002-event-schema.md) — read-side event fields exposed to the CEL filter context (the `event.v1.schema.json` resource with `readOnly` fields populated and `writeOnly` `meta` stripped).
-  - [`0003-idempotent-producer-protocol`](0003-idempotent-producer-protocol.md) — `client_agent` field convention on resource-creating endpoints; JOIN reuses the consumer-group's `client_agent` rather than re-declaring per subscription.
+  - [`0003-event-schema`](0003-event-schema.md) — read-side event fields exposed to the CEL filter context (the `event.v1.schema.json` resource with `readOnly` fields populated and `writeOnly` `meta` stripped).
+  - [`0004-idempotent-producer-protocol`](0004-idempotent-producer-protocol.md) — `client_agent` field convention on resource-creating endpoints; JOIN reuses the consumer-group's `client_agent` rather than re-declaring per subscription.
 - **Feature doc**: [`docs/features/0002-consumer-subscription-lifecycle.md`](../features/0002-consumer-subscription-lifecycle.md) — CDSL flows, ACs, test plans.
 - **Schemas**:
   - [`schemas/subscription.v1.schema.json`](../schemas/subscription.v1.schema.json) — subscription resource (updated for interests[]).

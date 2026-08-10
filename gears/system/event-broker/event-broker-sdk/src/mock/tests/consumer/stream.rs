@@ -6,7 +6,7 @@ use toolkit_gts::gts_id;
 
 use super::super::helpers::{broker_with_topic, ctx, ctx2, join_group, make_group, wire_event};
 use crate::ResolvedPosition;
-use crate::api::EventBroker;
+use crate::api::EventBrokerApi;
 use crate::api::{ControlCode, SeekPosition, WireFrame};
 use crate::ids::SubscriptionId;
 use futures_util::StreamExt;

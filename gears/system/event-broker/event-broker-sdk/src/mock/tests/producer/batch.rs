@@ -4,7 +4,7 @@
 use super::super::helpers::*;
 
 use super::super::helpers::{broker_with_topic, ctx, wire_event};
-use crate::api::{EventBroker, IngestOutcome};
+use crate::api::{EventBrokerApi, IngestOutcome};
 
 /// Scenario: producer/batch/1.01-positive-publish-batch.md
 #[tokio::test]

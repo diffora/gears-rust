@@ -4,7 +4,7 @@
 use super::super::helpers::*;
 
 use super::super::helpers::{broker_with_topic, ctx, wire_event};
-use crate::api::{EventBroker, IngestOutcome, ProducerMode};
+use crate::api::{EventBrokerApi, IngestOutcome, ProducerMode};
 use crate::error::EventBrokerError;
 use crate::models::{Event, ProducerMeta};
 use uuid::Uuid;
@@ -163,11 +163,7 @@ async fn s1_03_chained_mode_sequence() {
         .get_producer_cursors(&c, crate::ids::ProducerId(pid))
         .await
         .unwrap();
-    let c0 = cursors
-        .iter()
-        .find(|cur| cur.topic == TOPIC && cur.partition == 0)
-        .expect("cursor for (topic, 0) present");
-    assert_eq!(c0.last_sequence, 8);
+    assert_eq!(cursors.last_sequence(TOPIC, 0), Some(8));
 }
 
 /// Scenario: producer/flows/1.04-positive-idempotency-key-dedup.md
@@ -207,8 +203,7 @@ async fn s1_04_idempotency_key_dedup() {
         .get_producer_cursors(&c, crate::ids::ProducerId(pid))
         .await
         .unwrap();
-    let c0 = cursors.iter().find(|cur| cur.partition == 0).unwrap();
-    assert_eq!(c0.last_sequence, 8);
+    assert_eq!(cursors.last_sequence(TOPIC, 0), Some(8));
 
     // Chain not poisoned: next sequence still admits.
     assert_eq!(
@@ -266,14 +261,7 @@ async fn s1_05_chained_sequence_violation() {
         .get_producer_cursors(&c, crate::ids::ProducerId(pid))
         .await
         .unwrap();
-    assert_eq!(
-        cursors
-            .iter()
-            .find(|cur| cur.partition == 0)
-            .unwrap()
-            .last_sequence,
-        7
-    );
+    assert_eq!(cursors.last_sequence(TOPIC, 0), Some(7));
 }
 
 /// Scenario: producer/flows/1.06-positive-cursor-recovery.md
@@ -312,16 +300,8 @@ async fn s1_06_cursor_recovery() {
         .get_producer_cursors(&c, crate::ids::ProducerId(pid))
         .await
         .unwrap();
-    let c0 = cursors
-        .iter()
-        .find(|cur| cur.partition == 0)
-        .expect("cursor for p0");
-    let c1 = cursors
-        .iter()
-        .find(|cur| cur.partition == 1)
-        .expect("cursor for p1");
-    assert_eq!(c0.last_sequence, 7);
-    assert_eq!(c1.last_sequence, 3);
+    assert_eq!(cursors.last_sequence(TOPIC, 0), Some(7));
+    assert_eq!(cursors.last_sequence(TOPIC, 1), Some(3));
 }
 
 /// Scenario: producer/flows/1.07-positive-chain-reset.md
@@ -439,13 +419,13 @@ async fn s1_09_chained_producer_desync_recovery() {
         .get_producer_cursors(&c, crate::ids::ProducerId(pid))
         .await
         .unwrap();
-    let c0 = cursors.iter().find(|cur| cur.partition == 0).unwrap();
-    assert_eq!(c0.last_sequence, 7);
+    let c0_last = cursors.last_sequence(TOPIC, 0).expect("cursor for p0");
+    assert_eq!(c0_last, 7);
 
     // Exchange 3: republish with corrected previous=7, sequence=8 → Accepted.
     assert_eq!(
         broker
-            .publish(&c, &chained_event(&c, TOPIC, pid, 8, c0.last_sequence))
+            .publish(&c, &chained_event(&c, TOPIC, pid, 8, c0_last))
             .await
             .unwrap(),
         IngestOutcome::Accepted
@@ -454,14 +434,7 @@ async fn s1_09_chained_producer_desync_recovery() {
         .get_producer_cursors(&c, crate::ids::ProducerId(pid))
         .await
         .unwrap();
-    assert_eq!(
-        cursors
-            .iter()
-            .find(|cur| cur.partition == 0)
-            .unwrap()
-            .last_sequence,
-        8
-    );
+    assert_eq!(cursors.last_sequence(TOPIC, 0), Some(8));
 }
 
 // -- Test-local helper ---------------------------------------------------------

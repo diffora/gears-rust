@@ -5,7 +5,7 @@ use super::super::helpers::*;
 
 use super::super::helpers::{broker_with_topic, ctx, ctx2, join_group, make_group, wire_event};
 use crate::ResolvedPosition;
-use crate::api::EventBroker;
+use crate::api::EventBrokerApi;
 use crate::api::{ControlCode, SeekPosition, WireFrame};
 use futures_util::StreamExt;
 use std::time::Duration;

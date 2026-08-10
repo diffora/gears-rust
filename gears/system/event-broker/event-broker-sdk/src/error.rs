@@ -103,7 +103,7 @@ pub enum EventBrokerError {
     },
 
     #[error(
-        "schema not prepared for {type_id}; call `producer.prepare::<E>(&ctx)` before opening the txn"
+        "schema not prepared for {type_id}; call `producer.prepare::<E>()` before opening the txn"
     )]
     SchemaNotPrepared {
         type_id: String,

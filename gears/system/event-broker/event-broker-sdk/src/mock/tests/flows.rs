@@ -4,7 +4,7 @@ use super::helpers::*;
 
 use super::helpers::{broker_with_topic, ctx, join_group, make_group, wire_event};
 use crate::ResolvedPosition;
-use crate::api::{EventBroker, IngestOutcome, SeekPosition, WireFrame};
+use crate::api::{EventBrokerApi, IngestOutcome, SeekPosition, WireFrame};
 use futures_util::StreamExt;
 
 /// Scenario: flows/1.01-flow-publish-subscribe-consume.md

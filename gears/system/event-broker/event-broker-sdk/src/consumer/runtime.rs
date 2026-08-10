@@ -230,9 +230,14 @@ impl ConsumerHandle {
     }
 }
 
+impl Default for Consumer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Consumer {
-    pub fn new(parallelism: u32) -> Self {
-        let _ = parallelism;
+    pub fn new() -> Self {
         Self { slots: Vec::new() }
     }
 
@@ -272,7 +277,8 @@ impl Consumer {
         let parallelism = builder.parallelism;
         let broker = builder.broker.ok_or_else(|| {
             EventBrokerError::Internal(
-                "ConsumerBuilder: broker not wired; use EventBroker::consumer_builder()".into(),
+                "ConsumerBuilder: broker not wired; construct it with ConsumerBuilder::new(broker)"
+                    .into(),
             )
         })?;
         let handler = Arc::new(handler);
@@ -375,7 +381,8 @@ impl Consumer {
         let parallelism = builder.parallelism;
         let broker = builder.broker.ok_or_else(|| {
             EventBrokerError::Internal(
-                "ConsumerBuilder: broker not wired; use EventBroker::consumer_builder()".into(),
+                "ConsumerBuilder: broker not wired; construct it with ConsumerBuilder::new(broker)"
+                    .into(),
             )
         })?;
         let handler = Arc::new(handler);

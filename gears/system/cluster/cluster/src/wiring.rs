@@ -3,11 +3,12 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cluster_sdk::{
     ClusterCacheBackend, ClusterError, ClusterProfile, DistributedLockBackend,
-    LeaderElectionBackend, ServiceDiscoveryBackend, StopHook, deregister_cache_backend,
-    deregister_leader_election_backend, deregister_lock_backend,
+    LeaderElectionBackend, SD_POLL_INTERVAL_MS_OPTION, ServiceDiscoveryBackend, StopHook,
+    deregister_cache_backend, deregister_leader_election_backend, deregister_lock_backend,
     deregister_service_discovery_backend, register_cache_backend, register_leader_election_backend,
     register_lock_backend, register_service_discovery_backend,
 };
@@ -32,6 +33,12 @@ pub struct ProfileBackends {
     leader_election: Option<Arc<dyn LeaderElectionBackend>>,
     lock: Option<Arc<dyn DistributedLockBackend>>,
     service_discovery: Option<Arc<dyn ServiceDiscoveryBackend>>,
+    /// Operator-configured poll cadence for the auto-wrapped
+    /// [`CacheBasedServiceDiscoveryBackend`]'s `PollingPrefixWatch` polyfill,
+    /// used only when `service_discovery` is left to the SDK default over a
+    /// cache without native prefix watch. `None` keeps `DEFAULT_PREFIX_WATCH_POLL`
+    /// (PGR-D3).
+    sd_poll_interval: Option<Duration>,
 }
 
 impl ProfileBackends {
@@ -44,7 +51,17 @@ impl ProfileBackends {
             leader_election: None,
             lock: None,
             service_discovery: None,
+            sd_poll_interval: None,
         }
+    }
+
+    /// Sets the service-discovery poll interval honoured when the SD primitive is
+    /// auto-wrapped over a non-native-prefix-watch cache (PGR-D3). Ignored when a
+    /// native `service_discovery` backend is bound.
+    #[must_use]
+    pub fn with_sd_poll_interval(mut self, interval: Duration) -> Self {
+        self.sd_poll_interval = Some(interval);
+        self
     }
 
     /// Binds a native leader-election backend, overriding the SDK default.
@@ -124,6 +141,23 @@ impl ClusterWiring {
             builder = builder.on_stop(move || async move { cache_stop().await });
 
             let mut backends = ProfileBackends::new(Arc::clone(&cache));
+
+            // Honour an operator-configured service-discovery poll cadence for
+            // the omit-default auto-wrap (PGR-D3). The interval lives in the
+            // cache provider's own options (e.g. the Postgres plugin's
+            // `sd_poll_interval_ms`, cf. `SD_POLL_INTERVAL_MS_OPTION`); read it
+            // generically here so a non-default cadence reaches
+            // `with_prefix_watch_polling` instead of being silently forced to
+            // the 5s default. A zero/absent value keeps the default.
+            if let Some(interval_ms) = profile
+                .cache
+                .options
+                .get(SD_POLL_INTERVAL_MS_OPTION)
+                .and_then(serde_json::Value::as_u64)
+                .filter(|&ms| ms > 0)
+            {
+                backends = backends.with_sd_poll_interval(Duration::from_millis(interval_ms));
+            }
 
             if let Some(binding) = &profile.leader_election {
                 let provider = providers
@@ -304,7 +338,18 @@ fn resolve_profile_backends(
         if let Some(backend) = backends.service_discovery {
             backend
         } else {
-            let default = Arc::new(CacheBasedServiceDiscoveryBackend::new(Arc::clone(&cache)));
+            // Over a cache with no native prefix watch (`prefix_watch: false`,
+            // e.g. the Postgres backend) the default SD backend drives its
+            // topology watch through the `PollingPrefixWatch` polyfill. The
+            // operator-configured cadence (e.g. the Postgres plugin's
+            // `sd_poll_interval_ms`, surfaced through
+            // [`ProfileBackends::with_sd_poll_interval`]) is threaded in here;
+            // when unset it keeps `DEFAULT_PREFIX_WATCH_POLL` (5s) (PGR-D3).
+            let mut sd = CacheBasedServiceDiscoveryBackend::new(Arc::clone(&cache));
+            if let Some(interval) = backends.sd_poll_interval {
+                sd = sd.with_prefix_watch_polling(interval);
+            }
+            let default = Arc::new(sd);
             revokers.push(Arc::clone(&default) as Arc<dyn ShutdownRevoke>);
             default as Arc<dyn ServiceDiscoveryBackend>
         };

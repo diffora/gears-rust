@@ -4,15 +4,21 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use toolkit_security::SecurityContext;
 
-use crate::api::{EventBroker, ProducerMode};
+use crate::api::EventBrokerApi;
+#[cfg(feature = "outbox")]
+use crate::api::ProducerMode;
 use crate::error::EventBrokerError;
 use crate::ids::ProducerId;
-use crate::models::{ProducerMeta, ResetScope};
+#[cfg(feature = "outbox")]
+use crate::models::ProducerMeta;
+use crate::models::ResetScope;
 use crate::sdk::EventBrokerSdk;
 use crate::typed_event::TypedEvent;
 
 use super::direct::{Has, Missing};
+#[cfg(feature = "outbox")]
 use super::event_factory::prepare_event;
+#[cfg(feature = "outbox")]
 use super::outbox::{ProducerOutboxEnvelope, ProducerOutboxQueue};
 use super::registration::{ProducerRegistration, ProducerRegistrationStore};
 use super::schema_cache::ProducerSchemaCache;
@@ -33,7 +39,7 @@ pub struct DbProducerBuilder<
     Topics = Missing,
     Patterns = Missing,
 > {
-    broker: Option<Arc<dyn EventBroker>>,
+    broker: Option<Arc<dyn EventBrokerApi>>,
     db: Option<toolkit_db::Db>,
     ctx: Option<SecurityContext>,
     identity: Option<ProducerIdentity>,
@@ -62,7 +68,10 @@ impl DbProducerBuilder {
 
 impl<B, Db, C, I, D, T, P> DbProducerBuilder<B, Db, C, I, D, T, P> {
     #[must_use]
-    pub fn broker(self, broker: Arc<dyn EventBroker>) -> DbProducerBuilder<Has, Db, C, I, D, T, P> {
+    pub fn broker(
+        self,
+        broker: Arc<dyn EventBrokerApi>,
+    ) -> DbProducerBuilder<Has, Db, C, I, D, T, P> {
         DbProducerBuilder {
             broker: Some(broker),
             db: self.db,
@@ -263,14 +272,20 @@ impl DbProducerBuilder<Has, Has, Has, Has, Has, Has, Has> {
 
 #[derive(Clone)]
 pub struct DbProducer {
-    pub(crate) broker: Arc<dyn EventBroker>,
+    pub(crate) broker: Arc<dyn EventBrokerApi>,
     pub(crate) ctx: SecurityContext,
+    // Read only by `outbox_envelope`; kept on the producer so the outbox path can
+    // stamp the client agent without re-deriving it from the builder.
+    #[cfg_attr(not(feature = "outbox"), allow(dead_code))]
     pub(crate) identity: ProducerIdentity,
     pub(crate) deduplication: DbDeduplication,
     pub(crate) registration_state: Arc<Mutex<RegistrationState>>,
     registration_store: ProducerRegistrationStore,
     topics: Vec<String>,
     event_type_patterns: Vec<String>,
+    // Only the outbox path re-checks the timing at publish time; the direct path
+    // resolves it once in `build_inner`.
+    #[cfg_attr(not(feature = "outbox"), allow(dead_code))]
     validation_timing: ValidationTiming,
     cache: Arc<ProducerSchemaCache>,
 }
@@ -304,6 +319,7 @@ impl DbProducer {
             .await
     }
 
+    #[cfg(feature = "outbox")]
     pub fn outbox_queue(
         &self,
         queue: impl Into<String>,
@@ -383,6 +399,7 @@ impl DbProducer {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "outbox")]
     pub async fn outbox_envelope<E: TypedEvent>(
         &self,
         event: E,
@@ -483,7 +500,7 @@ pub enum UnknownProducerAction {
 }
 
 async fn resolve_managed_registration(
-    broker: &Arc<dyn EventBroker>,
+    broker: &Arc<dyn EventBrokerApi>,
     ctx: &SecurityContext,
     store: &ProducerRegistrationStore,
     managed: &super::types::ManagedDeduplication,

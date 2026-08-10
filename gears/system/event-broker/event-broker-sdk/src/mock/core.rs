@@ -82,6 +82,7 @@ impl TopicState {
 #[derive(Debug, Clone)]
 pub(super) struct ProducerReg {
     pub mode: ProducerMode,
+    pub client_agent: String,
 }
 
 // --- Consumer group -----------------------------------------------------------
@@ -208,8 +209,8 @@ pub struct Core {
 
 // --- MockBroker ---------------------------------------------------------------
 
-/// In-memory mock Event Broker. Implements `EventBrokerTransport`, `EventBroker`,
-/// and `EventBrokerStorageBackend`. All state is shared behind `Arc<Mutex<Core>>`.
+/// In-memory mock Event Broker. Implements `EventBrokerTransport`, `EventBrokerApi`,
+/// and `EventBrokerBackend`. All state is shared behind `Arc<Mutex<Core>>`.
 ///
 /// Obtain via `MockBroker::new()` and pass to producers:
 /// ```ignore

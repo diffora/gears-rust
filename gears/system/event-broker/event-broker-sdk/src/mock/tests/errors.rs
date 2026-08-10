@@ -11,7 +11,7 @@ use super::helpers::*;
 use toolkit_gts::gts_id;
 
 use super::helpers::{broker_with_topic, ctx, wire_event};
-use crate::api::{EventBroker, ProducerMode};
+use crate::api::{EventBrokerApi, ProducerMode};
 use crate::error::EventBrokerError;
 use crate::ids::{ConsumerGroupId, SubscriptionId};
 use uuid::Uuid;

@@ -4,13 +4,13 @@ High-level Rust SDK for the Cyberfabric Event Broker.
 
 Wire concerns (JSON serialisation, partition selection, producer-chain bookkeeping,
 subscription lifecycle recovery, canonical error handling) are handled inside the
-SDK. Callers work with their own typed event structs, a single `EventBroker` trait,
+SDK. Callers work with their own typed event structs, a single `EventBrokerApi` trait,
 and structured `Producer` / `Consumer` builders.
 
 ## Error model
 
 The SDK traits and wrappers use domain-readable local errors in-process:
-`EventBroker` returns `EventBrokerError`, `EventBrokerBackend` returns
+`EventBrokerApi` returns `EventBrokerError`, `EventBrokerBackend` returns
 `StorageBackendError`, and producer/consumer wrappers return `EventBrokerError`
 for local typed validation, retry, and dispatch. Those errors are canonical-error
 compatible: before errors cross an API or transport boundary they convert to the
@@ -41,7 +41,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use event_broker_sdk::{
-    DirectDeduplication, EventBroker, Producer, ProducerIdentity, TypedEvent,
+    DirectDeduplication, EventBrokerApi, Producer, ProducerIdentity, TypedEvent,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -56,7 +56,7 @@ impl TypedEvent for OrderCreated {
 }
 
 // Obtain from ClientHub.
-let broker = hub.get::<dyn EventBroker>()?;
+let broker = hub.get::<dyn EventBrokerApi>()?;
 
 let producer = Producer::builder()
     .broker(Arc::clone(&broker))
@@ -191,8 +191,7 @@ impl SingleEventHandler for BillingProjector {
     }
 }
 
-let handle = broker
-    .consumer_builder()
+let handle = ConsumerBuilder::new(broker.clone())
     .group(ConsumerGroupRef::auto_anonymous("billing-projector"))
     .subscription_interests([SubscriptionInterest::builder()
         .topic(TopicRef::gts("gts.cf.core.events.topic.v1~orders.v1"))
@@ -210,7 +209,7 @@ handle.stop().await?;
 ### Batch consumer
 
 ```rust
-use event_broker_sdk::{BatchHandlerOutcome, ConsumerBatching, ConsumerError, ConsumerHandler, EventBatch};
+use event_broker_sdk::{BatchHandlerOutcome, ConsumerBatching, ConsumerBuilder, ConsumerError, ConsumerHandler, EventBatch};
 use std::time::Duration;
 
 struct BatchProjector;
@@ -230,8 +229,7 @@ impl ConsumerHandler for BatchProjector {
     }
 }
 
-let handle = broker
-    .consumer_builder()
+let handle = ConsumerBuilder::new(broker.clone())
     .group(ConsumerGroupRef::auto_anonymous("billing-batch"))
     .subscription_interests([orders_interest])
     .batching(ConsumerBatching { max_events: 128, max_wait: Duration::from_millis(250) })
@@ -244,8 +242,7 @@ let handle = broker
 ### Routed handlers
 
 ```rust
-let handle = broker
-    .consumer_builder()
+let handle = ConsumerBuilder::new(broker.clone())
     .group(ConsumerGroupRef::auto_anonymous("commerce-router"))
     .subscription_interests([orders_interest])
     .offset_manager(InMemoryOffsetManager::new(Fallback::Earliest))
@@ -265,7 +262,7 @@ use std::sync::Arc;
 
 use event_broker_sdk::dlq::{ConsumerDlqOutbox, DeadLetterRecord};
 use event_broker_sdk::{
-    ConsumerError, Fallback, HandlerOutcome, LocalDbOffsetManager, RawEvent,
+    ConsumerBuilder, ConsumerError, Fallback, HandlerOutcome, LocalDbOffsetManager, RawEvent,
     TxCommitHandle, TxSingleEventHandler,
 };
 
@@ -320,8 +317,7 @@ let dlq = ConsumerDlqOutbox::builder(Arc::clone(outbox_handle.outbox()))
     .partitions(4)
     .build();
 
-let handle = broker
-    .consumer_builder()
+let handle = ConsumerBuilder::new(broker.clone())
     .group(...)
     .subscription_interests([...])
     .offset_manager(LocalDbOffsetManager::new(db.clone(), Fallback::Earliest))

@@ -50,24 +50,24 @@ pub enum BatchHandlerOutcome {
     Retry { reason: String },
 }
 
-/// Batch cursor over events from one topic partition.
+/// Read-only view over one topic-partition batch. Stateless: each delivery constructs
+/// a fresh view, and progress is tracked externally via the handler outcome offset and
+/// the committed partition frontier (not by any per-batch cursor).
 pub struct EventBatch<'a> {
     events: &'a [RawEvent],
-    cursor: usize,
 }
 
 impl<'a> EventBatch<'a> {
     pub fn new(events: &'a [RawEvent]) -> Self {
-        Self { events, cursor: 0 }
+        Self { events }
     }
 
     pub fn next_event(&self) -> Option<&'a RawEvent> {
-        self.events.get(self.cursor)
+        self.events.first()
     }
 
     pub fn next_chunk(&self, n: usize) -> &'a [RawEvent] {
-        let end = self.cursor.saturating_add(n).min(self.events.len());
-        &self.events[self.cursor..end]
+        &self.events[..n.min(self.events.len())]
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &'a RawEvent> {

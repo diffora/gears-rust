@@ -4,7 +4,7 @@ use super::super::helpers::*;
 use toolkit_gts::gts_id;
 
 use crate::api::{BarrierMode, Filter, SubscriptionInterest};
-use crate::api::{EventBroker, JoinRequest};
+use crate::api::{EventBrokerApi, JoinRequest};
 use crate::error::EventBrokerError;
 use crate::ids::SubscriptionId;
 use uuid::Uuid;

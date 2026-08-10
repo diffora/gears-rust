@@ -1,4 +1,4 @@
-use crate::api::EventBroker;
+use crate::api::EventBrokerApi;
 use crate::mock::MockBroker;
 use toolkit_gts::gts_id;
 

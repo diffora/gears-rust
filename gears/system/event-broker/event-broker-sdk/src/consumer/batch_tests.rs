@@ -1,8 +1,10 @@
 use chrono::Utc;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use toolkit_gts::gts_id;
 use uuid::Uuid;
 
+use super::progress::processed_count_from_outcome;
 use super::{
     BatchHandlerOutcome, ConsumerHandler, EventBatch, HandlerOutcome, RawEvent, SingleEventHandler,
     SingleEventHandlerAdapter,
@@ -118,4 +120,123 @@ async fn single_handler_adapter_reports_retry_without_progress() {
     assert!(matches!(outcome, BatchHandlerOutcome::Retry { .. }));
     assert_eq!(batch.next_event().map(|event| event.offset), Some(41));
     assert_eq!(*calls.lock().unwrap(), vec![41]);
+}
+
+/// Batch handler that reads a fixed-size chunk from the front of the batch,
+/// records the offsets it saw on each call, and returns a scripted outcome per call.
+struct ChunkingHandler {
+    chunk: usize,
+    seen: Arc<Mutex<Vec<Vec<i64>>>>,
+    scripted: Arc<Mutex<VecDeque<BatchHandlerOutcome>>>,
+}
+
+#[async_trait::async_trait]
+impl ConsumerHandler for ChunkingHandler {
+    async fn handle_batch(
+        &self,
+        batch: &EventBatch<'_>,
+        _attempts: u16,
+    ) -> Result<BatchHandlerOutcome, ConsumerError> {
+        let chunk: Vec<i64> = batch
+            .next_chunk(self.chunk)
+            .iter()
+            .map(|event| event.offset)
+            .collect();
+        self.seen.lock().unwrap().push(chunk);
+        Ok(self
+            .scripted
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("scripted outcome"))
+    }
+}
+
+/// Drive a handler through the dispatcher's redelivery model: each round hands the
+/// handler a fresh `EventBatch` over the not-yet-advanced tail; the committed frontier
+/// advances by `processed_count_from_outcome` (Retry advances nothing). Returns the
+/// per-round outcome tags once the batch is fully processed.
+async fn drive_redelivery(events: &[RawEvent], handler: &ChunkingHandler, max_rounds: usize) {
+    let mut remaining: Vec<RawEvent> = events.to_vec();
+    let mut rounds = 0;
+    while !remaining.is_empty() {
+        rounds += 1;
+        assert!(rounds <= max_rounds, "redelivery did not converge");
+        let batch = EventBatch::new(&remaining);
+        let outcome = handler.handle_batch(&batch, rounds as u16).await.unwrap();
+        match processed_count_from_outcome(&outcome, &remaining).unwrap() {
+            None => { /* Retry: frontier unchanged, redeliver the same tail */ }
+            Some(n) => {
+                remaining.drain(0..n);
+            }
+        }
+    }
+}
+
+// chunk -> error(retry) -> retry(readvance from front) -> partial advance -> success.
+// Demonstrates that "advance" is carried by the outcome offset + the committed frontier
+// (redelivery re-anchors a fresh batch), NOT by any per-batch cursor.
+#[tokio::test]
+async fn chunk_retry_then_partial_advance_then_success_redelivers_from_front() {
+    let events = vec![raw_event(10), raw_event(11), raw_event(12), raw_event(13)];
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let handler = ChunkingHandler {
+        chunk: 2,
+        seen: seen.clone(),
+        scripted: Arc::new(Mutex::new(VecDeque::from(vec![
+            BatchHandlerOutcome::Retry {
+                reason: "downstream unavailable".to_owned(),
+            },
+            BatchHandlerOutcome::AdvanceThrough { offset: 12 },
+            BatchHandlerOutcome::Success,
+        ]))),
+    };
+
+    drive_redelivery(&events, &handler, 5).await;
+
+    // Round 1: front chunk [10,11], Retry -> frontier unchanged.
+    // Round 2: SAME front chunk [10,11] (fresh batch, cursor re-anchored), advance through 12
+    //          -> tail becomes [13].
+    // Round 3: front chunk [13], Success -> done.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![vec![10, 11], vec![10, 11], vec![13]],
+    );
+}
+
+// A partial AdvanceThrough redelivers only the un-acked tail.
+#[tokio::test]
+async fn partial_advance_redelivers_only_unacked_tail() {
+    let events = vec![raw_event(20), raw_event(21), raw_event(22)];
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let handler = ChunkingHandler {
+        chunk: 8,
+        seen: seen.clone(),
+        scripted: Arc::new(Mutex::new(VecDeque::from(vec![
+            BatchHandlerOutcome::AdvanceThrough { offset: 21 },
+            BatchHandlerOutcome::Success,
+        ]))),
+    };
+
+    drive_redelivery(&events, &handler, 5).await;
+
+    // Round 1 sees the whole batch; advancing through 21 leaves [22] for round 2.
+    assert_eq!(*seen.lock().unwrap(), vec![vec![20, 21, 22], vec![22]]);
+}
+
+// A Retry advances nothing: the committed frontier is unchanged, so the same tail redelivers.
+#[tokio::test]
+async fn retry_outcome_leaves_frontier_unchanged() {
+    let events = vec![raw_event(30), raw_event(31)];
+    let batch = EventBatch::new(&events);
+    let outcome = BatchHandlerOutcome::Retry {
+        reason: "not yet".to_owned(),
+    };
+
+    let processed = processed_count_from_outcome(&outcome, &events).unwrap();
+
+    assert_eq!(processed, None);
+    // Nothing advanced -> the full batch would be redelivered from the front.
+    assert_eq!(batch.next_chunk(events.len()).len(), 2);
+    assert_eq!(batch.next_event().map(|event| event.offset), Some(30));
 }

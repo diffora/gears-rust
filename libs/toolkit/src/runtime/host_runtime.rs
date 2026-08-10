@@ -660,6 +660,46 @@ impl HostRuntime {
         Ok(())
     }
 
+    /// Run the stop phase with a watchdog that force-exits the process if the
+    /// stop phase hangs on a blocking syscall. The watchdog is disarmed whether
+    /// the stop phase succeeds or fails, so a failing stop phase does not leave
+    /// the watchdog active and eventually force-exit the process.
+    async fn run_stop_phase_guarded(&self) -> Result<(), RegistryError> {
+        let gear_count = u32::try_from(self.registry.gears().len().max(1)).unwrap_or(1);
+        let stop_timeout = self
+            .shutdown_deadline
+            .checked_mul(gear_count)
+            .and_then(|d| d.checked_add(std::time::Duration::from_secs(5)))
+            .unwrap_or(self.shutdown_deadline);
+
+        // Use a channel to arm/disarm the watchdog. If the lifecycle future is
+        // dropped before the stop phase finishes (e.g. an outer timeout), the
+        // sender is dropped and the watchdog exits without killing the process.
+        let (disarm_tx, disarm_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            match disarm_rx.recv_timeout(stop_timeout) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    // Stop phase completed, or the lifecycle future was cancelled.
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    tracing::warn!(
+                        timeout_secs = stop_timeout.as_secs(),
+                        "shutdown: stop phase timed out, force exiting"
+                    );
+                    std::process::exit(1);
+                }
+            }
+        });
+
+        let stop_result = self.run_stop_phase().await;
+        // Disarm the watchdog before propagating the stop-phase result. This runs
+        // for both success and failure so a failing stop phase does not leave the
+        // watchdog armed and eventually force-exit the process.
+        let _ = disarm_tx.send(()).ok();
+
+        stop_result
+    }
+
     /// `OoP` SPAWN phase: spawn out-of-process gears after start phase.
     ///
     /// This phase runs after `grpc-hub` is already listening, so we can pass
@@ -856,30 +896,186 @@ impl HostRuntime {
         self.cancel.cancelled().await;
 
         // 10. Stop phase with hard timeout.
-        //     Blocking syscalls (e.g. libc getaddrinfo in tokio spawn_blocking)
-        //     can saturate all tokio worker threads, preventing tokio timers
-        //     from firing. Use an OS thread so the watchdog works even when
-        //     the tokio runtime is fully blocked.
-        let stop_timeout = std::time::Duration::from_secs(15);
-        let disarm = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let disarm_clone = std::sync::Arc::clone(&disarm);
-        std::thread::spawn(move || {
-            std::thread::sleep(stop_timeout);
-            if !disarm_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                tracing::warn!(
-                    timeout_secs = stop_timeout.as_secs(),
-                    "shutdown: stop phase timed out, force exiting"
-                );
-                std::process::exit(1);
-            }
-        });
-
-        self.run_stop_phase().await?;
-        disarm.store(true, std::sync::atomic::Ordering::Relaxed);
-
+        //     Blocking stop implementations are guarded by a watchdog thread so
+        //     a hang cannot block shutdown, whether in the in-process or OoP path.
+        self.run_stop_phase_guarded().await?;
         Ok(())
     }
 }
+
+/// Out-of-process HTTP serving lifecycle (`cpt-cf-component-oop-bootstrap`).
+#[cfg(feature = "bootstrap")]
+impl HostRuntime {
+    /// Declared dependencies that are **not** satisfied in-process and must be
+    /// resolved via `DirectoryService` (or k8s DNS). In-process deps are already
+    /// guaranteed by the topo-sorted lifecycle, so they are excluded.
+    fn external_deps(&self) -> Vec<String> {
+        use std::collections::{BTreeSet, HashSet};
+
+        let present: HashSet<&str> = self.registry.gears().iter().map(|e| e.name).collect();
+        let mut deps = BTreeSet::new();
+        for entry in self.registry.gears() {
+            for dep in entry.deps() {
+                if !present.contains(dep) {
+                    deps.insert((*dep).to_owned());
+                }
+            }
+        }
+        deps.into_iter().collect()
+    }
+
+    /// Compose a **host-less** REST router from all `RestApiCap` gears, plus the
+    /// gear's generated `OpenAPI` document (serialized JSON).
+    ///
+    /// Unlike [`run_rest_phase`](Self::run_rest_phase), this does not require an
+    /// `ApiGatewayCap` host: `OoP` gears serve their own routes directly.
+    async fn compose_oop_router(
+        &self,
+        options: &crate::runtime::OopServeOptions,
+        hc_registry: &Arc<crate::healthcheck::RestHealthcheckRegistry>,
+    ) -> anyhow::Result<(Router, String)> {
+        use crate::api::{OpenApiInfo, OpenApiRegistryImpl};
+        use anyhow::Context as _;
+
+        let registry = OpenApiRegistryImpl::new();
+        let mut router = Router::new();
+
+        for entry in self.registry.gears() {
+            if let Some(rest) = entry.caps.query::<RestApiCap>() {
+                let ctx = self
+                    .ctx_builder
+                    .for_gear(entry.name)
+                    .await
+                    .with_context(|| format!("OoP router: build context for '{}'", entry.name))?;
+                router = rest
+                    .register_rest(&ctx, router, &registry)
+                    .with_context(|| format!("OoP router: register_rest for '{}'", entry.name))?;
+
+                // Register the gear's readiness healthcheck (the same mechanism
+                // the api-gateway host uses), so /readyz reflects it identically
+                // whether the gear runs in-process or OoP.
+                if let Some(hc) = rest.healthcheck(&ctx) {
+                    hc_registry.register(entry.name, hc);
+                }
+            }
+        }
+
+        let info = OpenApiInfo {
+            title: options.gear_name.clone(),
+            version: options
+                .version
+                .clone()
+                .unwrap_or_else(|| "0.0.0".to_owned()),
+            description: None,
+            servers: vec![],
+        };
+        let openapi = registry
+            .build_openapi(&info)
+            .context("OoP router: build OpenAPI document")?;
+        let json = serde_json::to_string(&openapi).context("OoP router: serialize OpenAPI")?;
+
+        Ok((router, json))
+    }
+
+    /// Run the full `OoP` gear lifecycle: phases (`pre_init` … `start`), then
+    /// serve the composed router with framework probes, background
+    /// self-registration, dependency resolution, and graceful drain, then the
+    /// `stop` phase.
+    ///
+    /// # Errors
+    /// Returns an error if any lifecycle phase or the HTTP server fails.
+    pub async fn run_oop_serving(
+        self,
+        options: crate::runtime::OopServeOptions,
+    ) -> anyhow::Result<()> {
+        use crate::runtime::{ReadinessState, ResolvedRestEndpoints};
+
+        tracing::info!("Running OoP serving lifecycle");
+
+        // Shared gear healthcheck registry (same mechanism as the api-gateway
+        // host path). Seeded with the root cancellation token so in-flight
+        // checks are aborted on shutdown. Populated during router composition.
+        let hc_registry = Arc::new(
+            crate::healthcheck::RestHealthcheckRegistry::with_cancellation(self.cancel.clone()),
+        );
+
+        // External deps gate readiness; the healthcheck registry supplies the
+        // per-gear readiness dimension. Both feed the /readyz aggregate.
+        let deps = self.external_deps();
+        let readiness = ReadinessState::with_check_timeout(
+            deps.clone(),
+            Arc::clone(&hc_registry),
+            options.healthcheck_timeout,
+        );
+
+        // Expose resolved dependency endpoints to gears via the ClientHub.
+        let resolved = Arc::new(ResolvedRestEndpoints::new());
+        self.client_hub
+            .register::<ResolvedRestEndpoints>(Arc::clone(&resolved));
+
+        // Bind the HTTP server and serve probes BEFORE the (possibly slow)
+        // lifecycle phases, so the kubelet's liveness probe (`/healthz`) passes
+        // immediately instead of getting connection-refused during `start()`.
+        // Gear routes reply `503 starting` until attached below.
+        let mut server = super::oop_serve::OopHttpServer::start(
+            Arc::clone(&readiness),
+            Arc::clone(&resolved),
+            options,
+            self.cancel.clone(),
+        )
+        .await?;
+
+        // Lifecycle phases up to start, then compose the host-less REST router +
+        // OpenAPI spec (collecting each gear's healthcheck into the shared
+        // registry). Grouped so a failure tears the probe server down cleanly.
+        let mut started = false;
+        let composed: anyhow::Result<(Router, String)> = async {
+            self.run_pre_init_phase()?;
+            #[cfg(feature = "db")]
+            self.run_db_phase().await?;
+            self.run_init_phase().await?;
+            self.run_post_init_phase().await?;
+            self.run_grpc_phase().await?;
+            self.run_start_phase().await?;
+            started = true;
+            self.compose_oop_router(server.options(), &hc_registry)
+                .await
+        }
+        .await;
+
+        let serve_result = match composed {
+            Ok((gear_router, openapi_json)) => {
+                // Publish gear routes (they go live) + start presence/dep resolution.
+                server.attach(gear_router, openapi_json, deps);
+                // Serve until cancelled, drain, then deregister.
+                server.join().await
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "OoP startup failed before serving gear routes");
+                // Tear down the probe server that is already bound.
+                self.cancel.cancel();
+                if let Err(join_err) = server.join().await {
+                    tracing::warn!(error = %join_err, "OoP probe server teardown after startup failure errored");
+                }
+                Err(e)
+            }
+        };
+
+        // Stop phase runs only if start completed successfully. Errors are logged
+        // but do not fail the shutdown process (same contract as run_stop_phase).
+        if started && let Err(e) = self.run_stop_phase_guarded().await {
+            tracing::warn!(error = %e, "OoP stop phase reported an error");
+        }
+
+        serve_result
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "bootstrap")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "host_runtime_oop_tests.rs"]
+mod host_runtime_oop_tests;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

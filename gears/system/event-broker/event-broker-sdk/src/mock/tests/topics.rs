@@ -4,7 +4,7 @@ use super::helpers::*;
 use toolkit_gts::gts_id;
 
 use super::helpers::{broker_with_topic, ctx, wire_event};
-use crate::api::EventBroker;
+use crate::api::EventBrokerApi;
 use crate::models::PartitionRange;
 
 /// Scenario: topics/1.01-positive-list-topics.md
@@ -104,7 +104,7 @@ async fn s1_03_negative_segments_unknown_topic() {
 /// Scenario: topics/1.04-positive-list-event-types.md
 #[tokio::test]
 async fn s1_04_positive_list_event_types() {
-    // GET /v1/event_types → registered types, each anchored to its parent topic.
+    // GET /v1/event-types → registered types, each anchored to its parent topic.
     let (broker, h) = broker_with_topic(TOPIC, 1).await;
     let c = ctx();
 

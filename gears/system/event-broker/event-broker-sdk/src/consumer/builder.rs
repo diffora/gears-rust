@@ -5,7 +5,7 @@ use std::time::Duration;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::api::EventBroker;
+use crate::api::EventBrokerApi;
 use crate::api::{BarrierMode, Filter, TenantTraversalDepth};
 use crate::error::EventBrokerError;
 use crate::sdk::EventBrokerSdk;
@@ -78,13 +78,13 @@ pub struct ConsumerBuilder<M = ()> {
     pub(crate) listeners: Vec<Arc<dyn ConsumerRuntimeListener>>,
     pub(crate) offset_manager: M,
     /// Broker client resolved from ClientHub or supplied by tests.
-    pub(crate) broker: Option<Arc<dyn EventBroker>>,
-    /// Security context used by the SDK runtime for EventBroker calls.
+    pub(crate) broker: Option<Arc<dyn EventBrokerApi>>,
+    /// Security context used by the SDK runtime for EventBrokerApi calls.
     pub(crate) security_context: SecurityContext,
 }
 
 impl ConsumerBuilder<()> {
-    pub fn new(broker: Arc<dyn EventBroker>) -> Self {
+    pub fn new(broker: Arc<dyn EventBrokerApi>) -> Self {
         Self {
             group: None,
             topics: Vec::new(),

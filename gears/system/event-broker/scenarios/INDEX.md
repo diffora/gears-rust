@@ -19,7 +19,7 @@ To publish and consume events through the broker, follow these steps. Each step 
 
 Anonymous groups are broker-minted via REST. Named groups are registered via `types_registry` at startup — no REST call needed.
 
-- [Create anonymous group](consumer/groups/1.01-positive-create-anonymous-group.md) — `POST /v1/consumer_groups` → broker mints GTS id; distribute it to your consumer fleet out-of-band.
+- [Create anonymous group](consumer/groups/1.01-positive-create-anonymous-group.md) — `POST /v1/consumer-groups` → broker mints GTS id; distribute it to your consumer fleet out-of-band.
 - [JOIN a named group](consumer/groups/1.08-positive-named-group-join.md) — no creation step; JOIN with the well-known GTS identifier directly.
 
 #### Step 2 — Publish events
@@ -69,7 +69,7 @@ Open the long-lived multipart stream and consume frames as they arrive.
 
 Multiple consumer instances share a group by JOINing with the same `consumer_group` identifier. The broker rebalances partitions across all active members automatically.
 
-**Anonymous group**: one instance calls `POST /v1/consumer_groups` and distributes the returned id out-of-band (shared DB row, ConfigMap, env var). All instances then JOIN with that id.
+**Anonymous group**: one instance calls `POST /v1/consumer-groups` and distributes the returned id out-of-band (shared DB row, ConfigMap, env var). All instances then JOIN with that id.
 
 **Named group**: no creation step. All instances JOIN with the well-known GTS identifier — no coordination needed.
 
@@ -93,18 +93,18 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 - [positive-1.2 — Register monotonic producer](producer/flows/1.02-positive-register-monotonic-producer.md) — `POST /v1/producers { mode: monotonic }` → `201`.
 - [positive-1.3 — Chained-mode sequence](producer/flows/1.03-positive-chained-mode-sequence.md) — `POST /v1/events` with `Producer-Id` header and `meta.previous/sequence`; broker deduplicates.
 - [positive-1.4 — Idempotency key dedup](producer/flows/1.04-positive-idempotency-key-dedup.md) — duplicate event id returns `200` with original event; no second write.
-- [positive-1.6 — Cursor recovery](producer/flows/1.06-positive-cursor-recovery.md) — `GET /v1/producers/{id}/cursors` → `[{topic, partition, last_sequence}]`; feeds next SEEK after desync.
+- [positive-1.6 — Cursor recovery](producer/flows/1.06-positive-cursor-recovery.md) — `GET /v1/producers/{id}/cursors` → `{producer_id, client_agent, topics:[{topic, partitions:[{partition, last_sequence}]}]}`; feeds next SEEK after desync.
 - [positive-1.7 — Chain reset](producer/flows/1.07-positive-chain-reset.md) — `POST /v1/producers/{id}:reset` → `200`; chain state cleared, audited.
 
 ---
 
 ### consumer/ — Consume events
 
-#### consumer/groups/ — `POST/GET/DELETE /v1/consumer_groups`
-- [positive-1.1 — Create anonymous group](consumer/groups/1.01-positive-create-anonymous-group.md) — `POST /v1/consumer_groups` → `201` with broker-minted GTS id.
-- [positive-1.2 — Get group by id](consumer/groups/1.02-positive-get-group-by-id.md) — `GET /v1/consumer_groups/{id}` → full group record.
-- [positive-1.3 — List groups](consumer/groups/1.03-positive-list-groups.md) — `GET /v1/consumer_groups` → paged list of caller-visible groups.
-- [positive-1.4 — Delete empty group](consumer/groups/1.04-positive-delete-empty-group.md) — `DELETE /v1/consumer_groups/{id}` → `204`; only when no active subscriptions.
+#### consumer/groups/ — `POST/GET/DELETE /v1/consumer-groups`
+- [positive-1.1 — Create anonymous group](consumer/groups/1.01-positive-create-anonymous-group.md) — `POST /v1/consumer-groups` → `201` with broker-minted GTS id.
+- [positive-1.2 — Get group by id](consumer/groups/1.02-positive-get-group-by-id.md) — `GET /v1/consumer-groups/{id}` → full group record.
+- [positive-1.3 — List groups](consumer/groups/1.03-positive-list-groups.md) — `GET /v1/consumer-groups` → paged list of caller-visible groups.
+- [positive-1.4 — Delete empty group](consumer/groups/1.04-positive-delete-empty-group.md) — `DELETE /v1/consumer-groups/{id}` → `204`; only when no active subscriptions.
 - [positive-1.8 — Named group JOIN (no create step)](consumer/groups/1.08-positive-named-group-join.md) — JOIN with `types_registry`-provisioned identifier; broker validates `:consume` grant.
 
 #### consumer/subscriptions/ — `POST/GET/DELETE /v1/subscriptions`
@@ -145,7 +145,7 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 
 - [positive-1.1 — List topics](topics/1.01-positive-list-topics.md) — `GET /v1/topics` → paged list; `partitions` field exposes partition count.
 - [positive-1.2 — List topic segments](topics/1.02-positive-list-topic-segments.md) — `GET /v1/topics/segments?topic=...&partition=...` → segment manifest with RF/HWM per segment.
-- [positive-1.4 — List event types](topics/1.04-positive-list-event-types.md) — `GET /v1/event_types?topic=...` → paged list of event type registrations.
+- [positive-1.4 — List event types](topics/1.04-positive-list-event-types.md) — `GET /v1/event-types?topic=...` → paged list of event type registrations.
 
 ---
 
@@ -200,7 +200,7 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 ### Consumer group errors
 
 - [negative-1.5 — Delete group with active members](consumer/groups/1.05-negative-delete-group-with-active-members.md) — `DELETE` while subscriptions exist → `409 Failed Precondition`.
-- [negative-1.7 — Get unknown group](consumer/groups/1.07-negative-get-unknown-group.md) — `GET /v1/consumer_groups/{id}` for non-existent id → `404 Not Found`.
+- [negative-1.7 — Get unknown group](consumer/groups/1.07-negative-get-unknown-group.md) — `GET /v1/consumer-groups/{id}` for non-existent id → `404 Not Found`.
 - [negative-1.8 — LEAVE unknown subscription](consumer/subscriptions/1.08-negative-leave-unknown-subscription.md) — `DELETE /v1/subscriptions/{id}` for expired/unknown id → `404 Not Found`.
 
 ### Topics / segments errors

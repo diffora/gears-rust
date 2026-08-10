@@ -7,7 +7,7 @@ use event_broker_sdk::mock::{MockBroker, MockBrokerHandle};
 use event_broker_sdk::{
     BatchHandlerOutcome, CommitOffset, ConnectionDropReason, ConsumerBuffering, ConsumerBuilder,
     ConsumerError, ConsumerGroupId, ConsumerGroupRef, ConsumerHandler, ConsumerRuntimeEvent,
-    ConsumerRuntimeListener, EventBatch, EventBroker, Fallback, InMemoryOffsetManager,
+    ConsumerRuntimeListener, EventBatch, EventBrokerApi, Fallback, InMemoryOffsetManager,
     OffsetManagerError, OffsetStore, ResolvedPosition, TopicId,
 };
 use uuid::Uuid;
@@ -105,7 +105,7 @@ impl ConsumerHandler for RecordingBatchHandler {
 }
 
 async fn broker_with_slow_and_fast_topics() -> (
-    Arc<dyn EventBroker>,
+    Arc<dyn EventBrokerApi>,
     MockBrokerHandle,
     toolkit_security::SecurityContext,
 ) {

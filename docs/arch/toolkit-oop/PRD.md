@@ -308,8 +308,10 @@ The ToolKit OoP runtime MUST manage the full gear startup lifecycle without gear
 3. In the background, resolve all dependencies declared in the gear's `deps` via DirectoryService. Wire REST clients
    into ClientHub as dependencies become available.
 4. Serve readiness probe (`/readyz`) returning 503 with unresolved dependency list until all critical `deps` are
-   resolved; then 200.
-5. Gear developers MUST NOT write retry loops, health-check polling, or registration code. The `deps` declaration in
+   resolved and the gear's registered healthcheck reports `Healthy`/`Degraded`; then 200.
+5. Serve diagnostics endpoint (`/health`) returning the full `HealthcheckReport` (`status` + per-component `components`),
+   `200` for `Healthy`/`Degraded` and `503` for `Unhealthy`.
+6. Gear developers MUST NOT write retry loops, health-check polling, or registration code. The `deps` declaration in
    `#[toolkit::gear(deps = [...])]` is the only input required.
 
 Gears with no `deps` (e.g., Flight Control, types-registry) become ready immediately after `start()`.

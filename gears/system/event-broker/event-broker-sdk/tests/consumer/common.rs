@@ -3,20 +3,20 @@ use std::time::Duration;
 
 use event_broker_sdk::mock::stubs::test_ctx_for_tenant;
 use event_broker_sdk::mock::{MockBroker, MockBrokerHandle};
-use event_broker_sdk::{Event, EventBroker};
+use event_broker_sdk::{Event, EventBrokerApi};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 pub const TENANT: &str = "00000000-0000-0000-0000-000000000001";
 
 pub struct TopicFixture {
-    pub broker: Arc<dyn EventBroker>,
+    pub broker: Arc<dyn EventBrokerApi>,
     pub control: MockBrokerHandle,
     pub ctx: SecurityContext,
 }
 
 pub struct PublishJson<'a> {
-    pub broker: &'a Arc<dyn EventBroker>,
+    pub broker: &'a Arc<dyn EventBrokerApi>,
     pub ctx: &'a SecurityContext,
     pub topic: &'a str,
     pub event_type: &'a str,
@@ -50,7 +50,7 @@ pub async fn topic_fixture(topic: &str, event_type: &str, partitions: u32) -> To
 }
 
 pub async fn publish_json(
-    broker: &Arc<dyn EventBroker>,
+    broker: &Arc<dyn EventBrokerApi>,
     ctx: &SecurityContext,
     topic: &str,
     event_type: &str,

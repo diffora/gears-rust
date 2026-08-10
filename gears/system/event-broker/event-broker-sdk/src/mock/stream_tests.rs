@@ -5,7 +5,8 @@ use uuid::Uuid;
 
 use crate::ResolvedPosition;
 use crate::api::{
-    BarrierMode, EventBroker, JoinRequest, SeekPosition, SubscriptionInterest, TenantTraversalDepth,
+    BarrierMode, EventBrokerApi, JoinRequest, SeekPosition, SubscriptionInterest,
+    TenantTraversalDepth,
 };
 use crate::mock::MockBroker;
 use crate::mock::stubs::test_ctx_for_tenant;

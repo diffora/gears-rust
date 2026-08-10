@@ -649,9 +649,16 @@ impl GroupRepositoryTrait for GroupRepository {
             ..Default::default()
         };
 
+        // The group PK is global, so a caller-supplied `id` may already be taken.
         toolkit_db::secure::secure_insert::<ResourceGroupEntity>(model, &scope, db)
             .await
-            .map_err(|e| DomainError::database(e.to_string()))?;
+            .map_err(|e| {
+                if e.is_unique_violation() {
+                    DomainError::group_already_exists(id)
+                } else {
+                    DomainError::database(e.to_string())
+                }
+            })?;
 
         self.find_model_by_id(db, id)
             .await?

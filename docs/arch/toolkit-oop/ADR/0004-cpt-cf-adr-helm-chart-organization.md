@@ -23,8 +23,8 @@ DRY (no duplicated templates), and (d) users with existing k8s clusters can easi
 
 * **Independent deployability**: each gear is a separate microservice in Profile 3 — its chart must be self-contained
   and installable standalone.
-* **DRY templates**: all ToolKit gears share the same structure (HTTP server on configurable port, `/healthz` +
-  `/readyz` probe endpoints provided by ToolKit runtime, optional gRPC, config via env/ConfigMap). Duplicating
+* **DRY templates**: all ToolKit gears share the same structure (HTTP server on configurable port, `/healthz`,
+  `/readyz`, and `/health` probe endpoints provided by ToolKit runtime, optional gRPC, config via env/ConfigMap). Duplicating
   Deployment/Service/Ingress templates across 20+ gears is unmaintainable.
 * **One-command platform install**: operators deploying the full platform should not need to install 15 charts manually.
   An umbrella chart with sensible defaults is essential.

@@ -44,7 +44,7 @@ OoP gear lifecycle, discovery coordination, and gateway registration. The archit
    similar) registers routes via the gateway's admin API or CRDs.
 
 4. **SecurityContext propagates across process boundaries** (tenant plane) by forwarding `Authorization: Bearer <jwt>`,
-   which each hop **re-validates** via AuthN Resolver (ADR-0008). Infra calls use a separate tenant-less platform-plane
+   which each hop **re-validates** via AuthN Resolver (cpt-cf-adr-two-plane-auth). Infra calls use a separate tenant-less platform-plane
    identity (SA token first phase, mTLS+SPIFFE next). `x-secctx-bin` is not used over HTTP.
 
 ### 1.2 Architecture Drivers
@@ -57,7 +57,7 @@ OoP gear lifecycle, discovery coordination, and gateway registration. The archit
 | `cpt-cf-fr-client-transparency`    | ClientHub returns in-process impl or generated `RestXxxClient` based on DirectoryService resolution. Callers use the same SDK trait.                                                     |
 | `cpt-cf-fr-rest-primary`           | Each OoP gear runs Axum with full ToolKit middleware. No gRPC bridge or transcoding layer.                                                                                              |
 | `cpt-cf-fr-direct-communication`   | Generated REST clients resolve target endpoints via DirectoryService (or k8s DNS) and call directly. Gateway is not in the inter-gear path.                                            |
-| `cpt-cf-fr-secctx-propagation`     | `toolkit-http` forwards `Authorization: Bearer <jwt>`; OoP `security_context_middleware` re-validates it via AuthN Resolver and reconstructs SecurityContext (ADR-0008). No `x-secctx-bin` over HTTP.                                                          |
+| `cpt-cf-fr-secctx-propagation`     | `toolkit-http` forwards `Authorization: Bearer <jwt>`; OoP `security_context_middleware` re-validates it via AuthN Resolver and reconstructs SecurityContext (cpt-cf-adr-two-plane-auth). No `x-secctx-bin` over HTTP.                                                          |
 | `cpt-cf-fr-gateway-registration`   | OoP bootstrap calls `GatewayProvider::register_routes()` after HTTP server starts.                                                                                                       |
 | `cpt-cf-fr-gateway-abstraction`    | `GatewayProvider` trait with `ToolKitGatewayProvider` as first implementation.                                                                                                            |
 | `cpt-cf-fr-rest-client-gen`        | Trait-first codegen: `#[toolkit::rest_contract]` emits `RestXxxClient` from the SDK trait (`openapi.json` is a published output, not a codegen input).                                     |
@@ -68,7 +68,7 @@ OoP gear lifecycle, discovery coordination, and gateway registration. The archit
 | NFR ID                            | NFR Summary                  | Allocated To                                               | Design Response                                                                           | Verification Approach                                            |
 |-----------------------------------|------------------------------|------------------------------------------------------------|-------------------------------------------------------------------------------------------|------------------------------------------------------------------|
 | `cpt-cf-nfr-oop-latency`          | OoP call overhead < 5 ms p95 (localhost; 10 ms k8s) | `toolkit-http`, OoP HTTP server                             | Connection pooling in `toolkit-http`; Axum's zero-copy routing; UDS transport on same-host | Automated benchmark: 1000 echo requests, measure p95             |
-| `cpt-cf-nfr-per-hop-revalidation`  | One JWT verify per hop (~0.5 ms) | `api-gateway` authn + OoP `security_context_middleware` | Each hop re-validates via `authn-resolver` with cached JWKS (ADR-0008); single IdP trust root | Latency benchmark + forged-signature rejection test |
+| `cpt-cf-nfr-per-hop-revalidation`  | One JWT verify per hop (~0.5 ms) | `api-gateway` authn + OoP `security_context_middleware` | Each hop re-validates via `authn-resolver` with cached JWKS (cpt-cf-adr-two-plane-auth); single IdP trust root | Latency benchmark + forged-signature rejection test |
 | `cpt-cf-nfr-graceful-degradation` | Unavailable OoP → 503        | Generated REST client, `toolkit-http`                       | `toolkit-http` timeout + connection error → mapped to 503 Problem response                 | Integration test: stop target, assert 503                        |
 
 #### Key ADRs
@@ -209,7 +209,7 @@ MUST continue to work without modification.
 - [ ] `p1` - **ID**: `cpt-cf-constraint-secctx-serde`
 
 The `bearer_token` field on SecurityContext is `#[serde(skip)]`. Per
-[ADR-0008](ADR/0008-cpt-cf-adr-two-plane-auth.md), HTTP propagation carries only `Authorization: Bearer <jwt>`; the
+[cpt-cf-adr-two-plane-auth](ADR/0008-cpt-cf-adr-two-plane-auth.md), HTTP propagation carries only `Authorization: Bearer <jwt>`; the
 receiving gear re-validates it via AuthN Resolver and reconstructs the full SecurityContext (including the bearer
 token). `encode_bin` / `decode_bin` (which exclude `bearer_token`) remain in use only for in-process gRPC metadata
 (Profile 1).
@@ -231,7 +231,7 @@ token). `encode_bin` / `decode_bin` (which exclude `bearer_token`) remain in use
 | ServiceEndpoint          | Extended with `rest_url` field. Represents a discovered gear's HTTP endpoint.                   |
 | RegisterInstanceInfo     | Extended with `rest_endpoint` and `openapi_spec` fields for REST service registration.            |
 | GatewayRouteRegistration | Struct carrying gear name, OpenAPI spec, and target endpoint for gateway registration.          |
-| SecurityContextHeaders   | Helper for single-header tenant-plane propagation (`Authorization: Bearer <jwt>`), re-validated per hop (ADR-0008). |
+| SecurityContextHeaders   | Helper for single-header tenant-plane propagation (`Authorization: Bearer <jwt>`), re-validated per hop (cpt-cf-adr-two-plane-auth). |
 
 ### 3.2 Component Model
 
@@ -291,7 +291,7 @@ The host side (`libs/toolkit/src/runtime/host_runtime.rs`, `run_oop_spawn_phase`
 What is **missing** and needs to be added:
 
 - Starting an Axum HTTP server from the gear's OperationBuilder routes.
-- Framework-managed `/healthz` (liveness) and `/readyz` (readiness) probe endpoints.
+- Framework-managed `/healthz` (liveness), `/readyz` (readiness), and `/health` (diagnostics) probe endpoints.
 - Background self-registration with Flight Control (DirectoryService) — retry with exponential backoff, re-register on
   connection loss.
 - Background dependency resolution — poll DirectoryService for each `deps` entry, wire REST clients into ClientHub as
@@ -306,29 +306,44 @@ What is **missing** and needs to be added:
 ##### Responsibility scope
 
 - Start an Axum HTTP server from the gear's OperationBuilder routes.
-- **Provide `/healthz` and `/readyz` probe endpoints** (framework-level, not gear code):
-    - `/healthz` → `200` as soon as HTTP server is listening (process alive).
-    - `/readyz` → `503` with unresolved deps list until all `deps` are resolved AND every registered custom check
-      returns `Ready`; then `200`.
+- **Provide `/healthz`, `/readyz`, and `/health` probe endpoints** (framework-level, not gear code):
+    - `/healthz` → `200` from the moment the listener binds — **before** `start()`. The framework serves probes first
+      (gear routes reply `503 starting`) and atomically swaps the composed gear routes in after `start()` (no port
+      rebind), so liveness survives a slow startup without needing a `startupProbe`.
+    - `/readyz` → `503` with unresolved deps list until all `deps` are resolved AND the gear's registered
+      healthcheck reports it can serve (`Healthy`/`Degraded`); then `200`. The JSON body is state-tagged
+      (`{"state":"starting|ready|degraded|draining", ...}`) — see cpt-cf-adr-eventual-readiness for the schema.
+      The body does not include the full health report; that belongs on `/health`.
+    - `/health` → full per-component `HealthcheckReport` (`status` + `components`). `200` for `Healthy`/`Degraded`,
+      `503` for `Unhealthy` — identical to the in-process `api-gateway` `/health` body.
     - **Probes MAY be exposed on a separate bind address** via `probe_bind_addr` config (default: same as main
-      HTTP server). Operators typically route `/healthz`, `/readyz`, `/metrics` to a sidecar port that is NOT
+      HTTP server). Operators typically route `/healthz`, `/readyz`, `/health`, `/metrics` to a sidecar port that is NOT
       mapped through the k8s Service so external traffic cannot reach them.
-- **Custom readiness checks**: gears MAY register additional checks via the runtime API:
+- **Custom readiness checks**: readiness reuses the framework's standard healthcheck mechanism, so a gear expresses
+  readiness once and it is honored identically whether the gear is hosted in-process by `api-gateway` or run OoP. A
+  gear returns **one composite healthcheck** from its REST capability:
 
     ```rust
-    ctx.runtime().register_readiness_check("cache_warm", Arc::new(MyCacheCheck));
-    ctx.runtime().register_readiness_check("indexer_bootstrapped", Arc::new(MyIndexerCheck));
+    impl RestApiCapability for MyGear {
+        fn healthcheck(&self, ctx: &GearCtx) -> Option<Arc<dyn Healthcheck>> {
+            Some(Arc::new(MyGearHealthcheck { /* deps snapshot */ }))
+        }
+    }
 
     #[async_trait]
-    pub trait ReadinessCheck: Send + Sync {
-        async fn check(&self) -> CheckResult; // Ready / NotReady { reason } / Degraded { reason }
+    pub trait Healthcheck: Send + Sync + 'static {
+        fn name(&self) -> &'static str;
+        async fn check(&self) -> HealthcheckResult; // healthy / degraded(msg) / unhealthy(msg)
     }
     ```
 
-    Registered checks are evaluated on every `/readyz` request (cached for 1s to avoid storm). `NotReady` from any
-    check forces `/readyz → 503` and lists the failing check name + reason. `Degraded` is reported in the JSON body
-    but still returns `200` — distinguishes "can serve traffic but with reduced functionality" from "can't serve
-    traffic at all" (Spring Boot-style health groups).
+    The OoP bootstrap collects each gear's `healthcheck()` into a shared `RestHealthcheckRegistry` (the same registry
+    the `api-gateway` host uses) during router composition. The registry is evaluated on both `/readyz` and `/health`
+    requests, with the same run behavior — timeout-bounded, panic-isolated, message-sanitized, and cached (2s) to
+    avoid storm. `ReadinessState` layers the OoP-only concerns (unresolved-deps gating + drain flip) on top. `Unhealthy`
+    forces `/readyz → 503`; `Degraded` still returns `200` (`state = degraded`) but the per-component detail stays on
+    `/health`. `/health` returns the full per-component report (Spring Boot-style health groups). The per-check timeout is configurable via
+    `oop_http.healthcheck_timeout_ms` (default 500ms).
 - **Background self-registration** with Flight Control (DirectoryService):
     - Retry `RegisterInstance()` with exponential backoff (100ms → 200ms → ... → 30s cap).
     - Re-register on connection loss or Flight Control restart.
@@ -342,10 +357,12 @@ What is **missing** and needs to be added:
 - **Initialize `InternalCredential`** from configuration (bootstrap token from env, SA token from projected volume) and
   attach to all system-level outgoing calls automatically.
 - **Install `InternalAuthMiddleware`** (platform plane) to validate incoming system calls — SA token in the first
-  phase; sets `PeerAuthenticated` for workload policy (ADR-0006).
-- Attach `security_context_middleware` (tenant plane) that re-validates the forwarded JWT via AuthN Resolver and reconstructs
-  SecurityContext.
-- Send heartbeats to DirectoryService (already implemented).
+  phase; sets `PeerAuthenticated` for workload policy (cpt-cf-adr-platform-plane-auth).
+- Attach `security_context_middleware` (tenant plane) that delegates forwarded-JWT validation to the AuthN Resolver and reconstructs
+  `SecurityContext` from the resolver result; it does not perform validation itself.
+- Maintain DirectoryService presence via a **single** background task (`oop_registration::presence_loop`) that owns
+  registration, periodic heartbeats, and idempotent self-heal re-registration — one writer per instance record, so
+  heartbeat and re-registration can never race to conflicting liveness state.
 - Deregister from DirectoryService on graceful shutdown.
 - Call GatewayProvider to register/deregister public routes.
 
@@ -369,7 +386,8 @@ extended for the cross-process case:
    process this is the in-process `HostRuntime` topo order; across processes it relies on (4) — the orchestrator /
    k8s preStop hook is responsible for ordering pod termination via dependency-aware shutdown, NOT via simultaneous
    `SIGTERM` blasts.
-6. **Stop runtime services** — heartbeat task, registration retry task, internal-auth refresh task.
+6. **Stop runtime services** — the presence task (heartbeat + registration/self-heal, stopped when the root token is
+   cancelled) and the internal-auth refresh task.
 7. **Close HTTP listener and exit.**
 
 In Profile 1 (in-process), steps 1-3 are no-ops (no LB to flip); the reverse-topo STOP loop in `HostRuntime` handles
@@ -378,7 +396,7 @@ reverse-dependency order; this is documented as an operator requirement, not enf
 
 ##### Responsibility boundaries
 
-- Does NOT validate JWTs (that is the gateway's job).
+- Does NOT validate JWTs itself — it delegates forwarded-JWT validation to the AuthN Resolver and reconstructs `SecurityContext` from the result.
 - Does NOT manage gear business logic (delegates to the Gear trait).
 - Does NOT implement service discovery (delegates to DirectoryService).
 - Does NOT require gear developers to write any retry, probe, registration, or internal auth code — all handled by the
@@ -505,7 +523,7 @@ gears, the gateway needs to reverse-proxy requests to remote OoP gears.
 - Provide `ToolKitGatewayProvider`: parses the OpenAPI spec to extract public route paths (where
   `OperationSpec.is_public == true`), adds reverse-proxy routes to the built-in api-gateway using
   `toolkit-http::HttpClient` to forward requests to OoP gears. Must forward the `Authorization: Bearer <jwt>` header
-  (re-validated downstream per ADR-0008) on the proxied request.
+  (re-validated downstream per cpt-cf-adr-two-plane-auth) on the proxied request.
 - Future: `KongGatewayProvider`, `TykGatewayProvider`.
 
 ##### Responsibility boundaries
@@ -643,7 +661,7 @@ Pipeline:
 ##### Why this component exists
 
 When a gear runs out-of-process, the tenant `SecurityContext` must be rebuilt on the far side of each hop. The chosen
-model (ADR-0008) forwards the original `Authorization: Bearer <jwt>` as-is and **re-validates** it at every hop,
+model (cpt-cf-adr-two-plane-auth) forwards the original `Authorization: Bearer <jwt>` as-is and **re-validates** it at every hop,
 reconstructing `SecurityContext` from the validated claims — rather than serializing the context into an envelope. This
 component owns that single-header propagation + re-validation path. Because `bearer_token` is `#[serde(skip)]`, there is
 no serialized context on the wire anyway: the JWT in the header is the only thing carried, and the receiving gear
@@ -678,7 +696,7 @@ rebuilds the full context (including the bearer token) from it.
 
 ##### Responsibility boundaries
 
-- Re-validates the JWT at each hop (the gateway validated it too — intentional defense in depth per ADR-0008).
+- Re-validates the JWT at each hop (the gateway validated it too — intentional defense in depth per cpt-cf-adr-two-plane-auth).
 - Does NOT decide whether to propagate (callers decide by including SecurityContext in the call context).
 
 ##### Related components (by ID)
@@ -692,12 +710,12 @@ rebuilds the full context (including the bearer token) from it.
 
 ##### Why this component exists
 
-The tenant plane (per-hop JWT re-validation, ADR-0008) covers user-initiated traffic (JWT → SecurityContext). But
+The tenant plane (per-hop JWT re-validation, cpt-cf-adr-two-plane-auth) covers user-initiated traffic (JWT → SecurityContext). But
 system-level calls — registration with DirectoryService, heartbeats, background inter-gear calls — have no user context.
 Without authentication, any process that can reach DirectoryService can register as a gear or deregister others. This
 component implements the platform-plane authentication mechanism defined in
-[ADR-0006](ADR/0006-cpt-cf-adr-platform-plane-auth.md) (SA tokens first, mTLS+SPIFFE next); the `PlatformSecurityContext`
-contract it carries is defined by the two-plane model ([ADR-0008](ADR/0008-cpt-cf-adr-two-plane-auth.md)).
+[cpt-cf-adr-platform-plane-auth](ADR/0006-cpt-cf-adr-platform-plane-auth.md) (SA tokens first, mTLS+SPIFFE next); the `PlatformSecurityContext`
+contract it carries is defined by the two-plane model ([cpt-cf-adr-two-plane-auth](ADR/0008-cpt-cf-adr-two-plane-auth.md)).
 
 ##### Current state
 
@@ -738,7 +756,7 @@ pub enum InternalCredential {
 4. Flight Control validates via k8s TokenReview API (cached, configurable TTL).
 5. Response includes gear identity: `{namespace, serviceAccountName, podName}`.
 
-**One plane per request** (per [ADR-0008](ADR/0008-cpt-cf-adr-two-plane-auth.md)): a request carries either the tenant
+**One plane per request** (per [cpt-cf-adr-two-plane-auth](ADR/0008-cpt-cf-adr-two-plane-auth.md)): a request carries either the tenant
 plane (user JWT) or the platform plane (gear identity), not both. The two planes travel in distinct headers.
 
 | Call type                            | Plane          | Header                                                       |
@@ -773,7 +791,7 @@ Neither is ever passed to the tenant `PolicyEnforcer`, and neither substitutes f
 ###### Platform SecurityContext (non-tenant operations)
 
 Platform-scoped operations carry a dedicated **`PlatformSecurityContext`** — a type **distinct** from the tenant
-`SecurityContext`, per [ADR-0008](ADR/0008-cpt-cf-adr-two-plane-auth.md). It is **not** a tenant context with a
+`SecurityContext`, per [cpt-cf-adr-two-plane-auth](ADR/0008-cpt-cf-adr-two-plane-auth.md). It is **not** a tenant context with a
 nil/sentinel tenant id. The separation is deliberate: reusing the request-scoped tenant context for platform
 calls is the seam where confused-deputy / cross-tenant-leak regressions begin, so a separate type makes "no tenant"
 unrepresentable-as-a-tenant.
@@ -842,7 +860,7 @@ belong on the tenant plane — they are *not* candidates for `PlatformSecurityCo
 
 ##### Responsibility boundaries
 
-- Does NOT replace tenant-plane SecurityContext propagation (ADR-0008) — those are complementary layers.
+- Does NOT replace tenant-plane SecurityContext propagation (cpt-cf-adr-two-plane-auth) — those are complementary layers.
 - Does NOT manage k8s ServiceAccount creation (that's the Helm chart / operator's job).
 - Does NOT implement mTLS (P2 scope for multi-node Profile 2).
 
@@ -955,8 +973,9 @@ Key design decisions:
 
 | Method | Path               | Description                                  | Response                                                             | Stability |
 |--------|--------------------|----------------------------------------------|----------------------------------------------------------------------|-----------|
-| `GET`  | `/healthz`         | Liveness probe — process alive               | `200` always (once HTTP server up)                                   | stable    |
-| `GET`  | `/readyz`          | Readiness probe — deps resolved              | `200` when all `deps` resolved; `503` with unresolved list otherwise | stable    |
+| `GET`  | `/healthz`         | Liveness probe — process is up               | `200` + plain text body `ok` (from listener bind, before `start()`)    | stable    |
+| `GET`  | `/readyz`          | Readiness probe — critical `deps` resolved **and** gear healthcheck reports `Healthy` or `Degraded` | `200` + state-tagged JSON (`state: ready` or `state: degraded`) when ready; `503` + JSON (`state: starting` with `unresolved_deps`, or `state: draining` during shutdown) otherwise | stable    |
+| `GET`  | `/health`          | Diagnostic health report                     | `200`/`503` + full `HealthcheckReport` JSON (`status` + `components`) | stable    |
 | `GET`  | `/.well-known/openapi.json` | Gear's OpenAPI spec (canonical discovery path; fetched by the service directory at registration) | `200` + JSON                                                         | stable    |
 | `*`    | `/{gear-routes}` | Gear-specific routes from OperationBuilder | per-gear                                                           |
 
@@ -1064,7 +1083,7 @@ sequenceDiagram
 
 **Description**: An external request enters through api-gateway, which validates the JWT via authn-resolver and
 reverse-proxies to the target OoP gear, forwarding `Authorization: Bearer <jwt>`. The worker **re-validates** the JWT
-(per ADR-0008) to reconstruct SecurityContext and executes the handler.
+(per cpt-cf-adr-two-plane-auth) to reconstruct SecurityContext and executes the handler.
 
 #### Inter-Gear Call (OoP → OoP)
 
@@ -1371,7 +1390,7 @@ gears/<group>/<name>/
 
 #### Library Chart — `toolkit-common`
 
-All ToolKit gears share the same process structure: an HTTP server on a configurable port, `/healthz` and `/readyz`
+All ToolKit gears share the same process structure: an HTTP server on a configurable port, `/healthz`, `/readyz`, and `/health`
 probe endpoints (provided by ToolKit runtime), optional gRPC port, config via `TOOLKIT_MODULE_CONFIG` env var, and Flight
 Control's `TOOLKIT_DIRECTORY_ENDPOINT` for service registration. The `toolkit-common` library chart codifies these
 conventions into reusable named templates.
@@ -1383,7 +1402,7 @@ conventions into reusable named templates.
 | Container image    | `image.registry/image.repository:image.tag` pattern                       | `image.registry`, `image.repository`, `image.tag` |
 | HTTP port          | Named `http` port on container and Service                                | `service.port` (default: `8080`)                  |
 | gRPC port          | Conditional named `grpc` port                                             | `grpc.enabled`, `grpc.port` (default: `50051`)    |
-| Health probes      | `/healthz` (liveness), `/readyz` (readiness) — provided by ToolKit runtime | `health.liveness.*`, `health.readiness.*`         |
+| Health probes      | `/healthz` (liveness), `/readyz` (readiness), `/health` (diagnostics) — provided by ToolKit runtime | `health.liveness.*`, `health.readiness.*`         |
 | Gear config      | `TOOLKIT_MODULE_CONFIG` from ConfigMap                                     | `gearConfig` (arbitrary map → JSON)             |
 | Directory endpoint | `TOOLKIT_DIRECTORY_ENDPOINT` env var                                       | `global.directoryEndpoint`                        |
 | Internal auth      | Projected SA token volume (audience: `toolkit-internal`) for Profile 3     | `internalAuth.audience`, `internalAuth.tokenPath` |
@@ -1595,7 +1614,7 @@ is transparent to application code.
 | Tenant resolution (`subject_id` → `tenant_id`, membership)       | identity-broker (P2)                | Tenant lifecycle                               |
 | Platform token issuance                                          | identity-broker (P2)                | Issues tokens that authn-resolver validates    |
 | Token exchange (external credential → platform token)            | identity-broker (P2)                | Mode B2 integration endpoint                   |
-| External gateway route registration                              | GatewayProvider adapters (ADR-0003) | Kong/Tyk admin API calls                       |
+| External gateway route registration                              | GatewayProvider adapters (cpt-cf-adr-gateway-abstraction) | Kong/Tyk admin API calls                       |
 
 #### api-gateway — Explicit Scope Constraint
 

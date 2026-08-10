@@ -705,7 +705,17 @@ Multi-consumer, partitioned, append-only event streaming for Cyber Ware modules.
 Typed events, at-least-once delivery, idempotent producers (chained/monotonic/stateless),
 pluggable storage backends, consumer-group cursor tracking.
 
-**Status**: SDK landed (`cyberware-event-broker-sdk`) — impl crate TODO.
+**Status**: SDK landed (`cf-gears-event-broker-sdk`) — impl crate TODO.
+
+#### High Level Scenarios
+- [x] p0 - SDK + in-memory mock broker landed against a frozen wire contract (openapi + schemas)
+- [ ] p1 - ingest: single/batch publish, per-topic outbox, idempotent producers (chained/monotonic/stateless), partition + sequence assignment
+- [ ] p1 - storage backend trait + first backend (Postgres): retention floor, durable offsets and producer cursors, pluggable for additional backends
+- [ ] p2 - dispatcher: consumer-group rebalance + topology versioning, per-partition cursor/frontier tracking, per-member CEL filtering, at-least-once fan-out
+- [ ] p2 - delivery: JOIN/subscription lifecycle, multipart/mixed + SSE streaming, seek + offset commit, graceful terminal frames
+- [ ] p3 - performance suite: publish-throughput and end-to-end-latency benchmarks, load/soak under rebalance, backpressure + DoS limits, CI regression gates
+- [ ] p3 - dead-letter path, retention/compaction, observability (metrics, tracing, structured logs)
+- [ ] p4 - production hardening: migrations, deployment, second storage backend + second filter engine as plugin proofs
 
 #### More details
 - [PRD](../gears/system/event-broker/docs/PRD.md)

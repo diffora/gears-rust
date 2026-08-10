@@ -1,5 +1,5 @@
 use crate::api::SubscriptionInterest;
-use crate::api::{EventBroker, JoinRequest, SubscriptionAssignment};
+use crate::api::{EventBrokerApi, JoinRequest, SubscriptionAssignment};
 use crate::ids::ConsumerGroupId;
 use crate::mock::stubs::test_ctx_for_tenant;
 use crate::mock::{MockBroker, MockBrokerHandle};

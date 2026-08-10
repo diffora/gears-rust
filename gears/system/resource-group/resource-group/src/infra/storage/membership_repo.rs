@@ -114,8 +114,7 @@ impl MembershipRepositoryTrait for MembershipRepository {
         toolkit_db::secure::secure_insert::<MembershipEntity>(model, &scope, db)
             .await
             .map_err(|e| {
-                let msg = e.to_string();
-                if msg.contains("duplicate key") || msg.contains("UNIQUE constraint") {
+                if e.is_unique_violation() {
                     DomainError::duplicate_membership(
                         format!("({group_id}, type_id={gts_type_id}, {resource_id})"),
                         format!(
@@ -123,7 +122,7 @@ impl MembershipRepositoryTrait for MembershipRepository {
                         ),
                     )
                 } else {
-                    DomainError::database(msg)
+                    DomainError::database(e.to_string())
                 }
             })?;
 

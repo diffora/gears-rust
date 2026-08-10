@@ -4,7 +4,7 @@
 use super::super::helpers::*;
 
 use super::super::helpers::{broker_with_topic, ctx, wire_event};
-use crate::api::{EventBroker, IngestOutcome};
+use crate::api::{EventBrokerApi, IngestOutcome};
 use crate::error::EventBrokerError;
 use crate::mock::{MockBrokerHandle, stubs::test_ctx_for_tenant};
 use uuid::Uuid;

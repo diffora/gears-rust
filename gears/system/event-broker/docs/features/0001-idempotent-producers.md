@@ -179,9 +179,9 @@ def publish_chained_window(events, last_acked_sequence):
 # Ack-polling loop (runs independently of publish)
 async def chained_ack_poll(producer_id):
     while True:
-        cursors = await http.GET(f"/v1/producers/{producer_id}/cursors")
-        # cursors = [{topic, partition, last_sequence}, ...]
-        update_local_view(cursors)
+        resp = await http.GET(f"/v1/producers/{producer_id}/cursors")
+        # resp = {producer_id, client_agent, topics: [{topic, partitions: [{partition, last_sequence}]}]}
+        update_local_view(resp["topics"])
         await sleep(POLL_INTERVAL)
         # If last_sequence has not advanced past the producer's window end,
         # re-publish from the broker's last_sequence + 1.
@@ -271,13 +271,14 @@ Scenario: producer's local `last_sequence` view is no longer trustworthy (proces
 
 ```python
 async def desync_recover(producer_id):
-    cursors = await http.GET(f"/v1/producers/{producer_id}/cursors")
-    # 200 OK: [{topic, partition, last_sequence}, ...]
+    resp = await http.GET(f"/v1/producers/{producer_id}/cursors")
+    # 200 OK: {producer_id, client_agent, topics: [{topic, partitions: [{partition, last_sequence}]}]}
     # 403 ProducerPrincipalMismatch — calling with a non-owning principal
     # 404 ProducerNotFound — producer aged out by TTL or never existed
 
-    for c in cursors:
-        local_state[(c.topic, c.partition)] = c.last_sequence
+    for t in resp["topics"]:
+        for p in t["partitions"]:
+            local_state[(t["topic"], p["partition"])] = p["last_sequence"]
     # Resume publishing from local_state values
 ```
 

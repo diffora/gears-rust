@@ -97,7 +97,7 @@ pub struct Page<T> {
     pub limit: u32,
 }
 
-/// Query parameters for [`EventBroker::list_consumer_groups`](crate::api::EventBroker::list_consumer_groups).
+/// Query parameters for [`EventBrokerApi::list_consumer_groups`](crate::api::EventBrokerApi::list_consumer_groups).
 /// Built fluently; `ConsumerGroupQuery::default()` requests the first page with the
 /// broker's default limit and no filter/order.
 ///
@@ -144,7 +144,7 @@ impl ConsumerGroupQuery {
 }
 
 /// Scope of a producer chain reset
-/// ([`EventBroker::reset_producer_chain`](crate::api::EventBroker::reset_producer_chain)).
+/// ([`EventBrokerApi::reset_producer_chain`](crate::api::EventBrokerApi::reset_producer_chain)).
 /// Models the valid combinations directly - a partition reset always names its topic,
 /// so "partition without topic" is unrepresentable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +158,7 @@ pub enum ResetScope<'a> {
 }
 
 /// The event envelope. Matches `event.v1.schema.json` in the design and is the
-/// parameter/return type on the public [`EventBroker`](crate::api::EventBroker)
+/// parameter/return type on the public [`EventBrokerApi`](crate::api::EventBrokerApi)
 /// (publish/storage side). Broker-stamped fields (`partition`, `sequence`,
 /// `sequence_time`, `offset`, `offset_time`) are `None` on publish payloads; the
 /// broker populates them on receipt.

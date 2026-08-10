@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use toolkit_gts::gts_id;
@@ -13,27 +13,28 @@ use super::dispatcher::{
 };
 use super::runtime::RoutedBatchHandler;
 use super::{
-    BatchHandlerOutcome, CommitOffset, ConnectionDropReason, ConsumerBuffering, ConsumerBuilder,
-    ConsumerCommitMode, ConsumerGroupRef, ConsumerHandler, ConsumerListenerSettings,
-    ConsumerRuntimeEvent, ConsumerRuntimeListener, ConsumerSlowDetection, EventBatch, EventTypeRef,
-    Fallback, HandlerOutcome, InMemoryOffsetManager, OffsetManagerError, OffsetStore,
-    PartitionBufferState, RawEvent, ResolvedPosition, SingleEventHandlerAdapter,
-    SlowConsumerTrigger, TopicRef,
+    BatchHandlerOutcome, ConsumerHandler, EventBatch, EventTypeRef, HandlerOutcome, RawEvent,
+    SingleEventHandlerAdapter, TopicRef,
 };
 use crate::error::ConsumerError;
-use crate::ids::{ConsumerGroupId, TopicId};
+use crate::ids::TopicId;
+#[cfg(feature = "test-util")]
+use {
+    super::dispatcher_test_util::*,
+    super::{
+        CommitOffset, ConnectionDropReason, ConsumerBuffering, ConsumerBuilder, ConsumerCommitMode,
+        ConsumerGroupRef, ConsumerListenerSettings, ConsumerRuntimeEvent, ConsumerSlowDetection,
+        Fallback, InMemoryOffsetManager, OffsetManagerError, OffsetStore, PartitionBufferState,
+        ResolvedPosition, SlowConsumerTrigger,
+    },
+    crate::ids::ConsumerGroupId,
+    std::collections::BTreeSet,
+};
 
 type SharedOffsets = Arc<Mutex<Vec<i64>>>;
 type SharedNamedOffsets = Arc<Mutex<Vec<(&'static str, i64)>>>;
 type PartitionCall = (String, u32, i64);
 type SharedPartitionCalls = Arc<Mutex<Vec<PartitionCall>>>;
-type SharedAttempts = Arc<Mutex<Vec<u16>>>;
-type SharedTimeline = Arc<Mutex<Vec<&'static str>>>;
-type CommitRecord = (ConsumerGroupId, TopicId, u32, i64);
-type SharedCommits = Arc<Mutex<Vec<CommitRecord>>>;
-type SharedScopes = Arc<Mutex<Vec<(String, u32, usize)>>>;
-type SharedViolations = Arc<Mutex<Vec<String>>>;
-type SharedRuntimeEvents = Arc<Mutex<Vec<ConsumerRuntimeEvent>>>;
 type TestPartitionBuffers =
     Arc<RwLock<HashMap<TopicPartitionKey, super::dispatcher::PartitionEventBuffer>>>;
 
@@ -58,16 +59,6 @@ fn raw_event_on(topic: &str, type_id: &str, partition: u32, offset: i64) -> RawE
         trace_parent: None,
         data: serde_json::json!({ "offset": offset }),
     }
-}
-
-fn partition_key_for_partition(target: u32, partitions: u32) -> String {
-    assert_eq!(partitions, 2, "only the two-partition fixture is supported");
-    match target {
-        0 => "partition-key-0-1",
-        1 => "partition-key-1-0",
-        _ => panic!("two-partition fixture cannot target partition {target}"),
-    }
-    .to_owned()
 }
 
 struct RecordingSingleHandler {
@@ -124,262 +115,6 @@ impl ConsumerHandler for AckAllBatchHandler {
                 .iter()
                 .map(|event| (event.topic.clone(), event.partition, event.offset)),
         );
-        Ok(chunk
-            .last()
-            .map(|event| BatchHandlerOutcome::AdvanceThrough {
-                offset: event.offset,
-            })
-            .unwrap_or(BatchHandlerOutcome::Success))
-    }
-}
-
-struct SleepingBatchHandler {
-    calls: SharedPartitionCalls,
-    delay: Duration,
-}
-
-#[async_trait::async_trait]
-impl ConsumerHandler for SleepingBatchHandler {
-    async fn handle_batch(
-        &self,
-        batch: &EventBatch<'_>,
-        _attempts: u16,
-    ) -> Result<BatchHandlerOutcome, ConsumerError> {
-        tokio::time::sleep(self.delay).await;
-        let chunk = batch.next_chunk(batch.len());
-        self.calls.lock().unwrap().extend(
-            chunk
-                .iter()
-                .map(|event| (event.topic.clone(), event.partition, event.offset)),
-        );
-        Ok(chunk
-            .last()
-            .map(|event| BatchHandlerOutcome::AdvanceThrough {
-                offset: event.offset,
-            })
-            .unwrap_or(BatchHandlerOutcome::Success))
-    }
-}
-
-struct FailingThenCommitBatchHandler {
-    failures_remaining: Arc<Mutex<usize>>,
-    calls: SharedAttempts,
-}
-
-#[async_trait::async_trait]
-impl ConsumerHandler for FailingThenCommitBatchHandler {
-    async fn handle_batch(
-        &self,
-        _batch: &EventBatch<'_>,
-        attempts: u16,
-    ) -> Result<BatchHandlerOutcome, ConsumerError> {
-        {
-            let mut guard = self.failures_remaining.lock().unwrap();
-            if *guard > 0 {
-                *guard -= 1;
-                return Err(ConsumerError::Internal(
-                    "intentional representative handler failure".to_owned(),
-                ));
-            }
-        }
-
-        self.calls.lock().unwrap().push(attempts);
-        Ok(BatchHandlerOutcome::Success)
-    }
-}
-
-struct SequencedOffsetManager {
-    timeline: SharedTimeline,
-}
-
-#[async_trait::async_trait]
-impl OffsetStore for SequencedOffsetManager {
-    async fn load_position(
-        &self,
-        _group: &ConsumerGroupId,
-        _topic: &TopicId,
-        _partition: u32,
-    ) -> Result<ResolvedPosition, OffsetManagerError> {
-        self.timeline.lock().unwrap().push("load");
-        Ok(ResolvedPosition::Earliest)
-    }
-}
-
-#[async_trait::async_trait]
-impl CommitOffset for SequencedOffsetManager {
-    async fn commit(
-        &self,
-        _group: &ConsumerGroupId,
-        _topic: &TopicId,
-        _partition: u32,
-        _offset: i64,
-    ) -> Result<(), OffsetManagerError> {
-        Ok(())
-    }
-}
-
-#[derive(Clone, Default)]
-struct RecordingCommitOffsetManager {
-    commits: SharedCommits,
-}
-
-#[async_trait::async_trait]
-impl OffsetStore for RecordingCommitOffsetManager {
-    async fn load_position(
-        &self,
-        _group: &ConsumerGroupId,
-        _topic: &TopicId,
-        _partition: u32,
-    ) -> Result<ResolvedPosition, OffsetManagerError> {
-        Ok(ResolvedPosition::Earliest)
-    }
-}
-
-#[async_trait::async_trait]
-impl CommitOffset for RecordingCommitOffsetManager {
-    async fn commit(
-        &self,
-        group: &ConsumerGroupId,
-        topic: &TopicId,
-        partition: u32,
-        offset: i64,
-    ) -> Result<(), OffsetManagerError> {
-        self.commits
-            .lock()
-            .unwrap()
-            .push((*group, *topic, partition, offset));
-        Ok(())
-    }
-}
-
-struct SequencedBatchHandler {
-    timeline: SharedTimeline,
-}
-
-#[async_trait::async_trait]
-impl ConsumerHandler for SequencedBatchHandler {
-    async fn handle_batch(
-        &self,
-        _batch: &EventBatch<'_>,
-        _attempts: u16,
-    ) -> Result<BatchHandlerOutcome, ConsumerError> {
-        self.timeline.lock().unwrap().push("handle");
-        Ok(BatchHandlerOutcome::Success)
-    }
-}
-
-#[derive(Default)]
-struct BatchScopeRecorder {
-    scopes: SharedScopes,
-    violations: SharedViolations,
-}
-
-#[derive(Clone, Default)]
-struct RecordingRuntimeListener {
-    events: SharedRuntimeEvents,
-}
-
-#[async_trait::async_trait]
-impl ConsumerRuntimeListener for RecordingRuntimeListener {
-    async fn on_consumer_event(&self, event: &ConsumerRuntimeEvent) -> Result<(), ConsumerError> {
-        self.events.lock().unwrap().push(event.clone());
-        Ok(())
-    }
-}
-
-struct FailingRuntimeListener;
-
-#[async_trait::async_trait]
-impl ConsumerRuntimeListener for FailingRuntimeListener {
-    async fn on_consumer_event(&self, _event: &ConsumerRuntimeEvent) -> Result<(), ConsumerError> {
-        Err(ConsumerError::Internal(
-            "intentional listener failure".to_owned(),
-        ))
-    }
-}
-
-struct SlowRuntimeListener {
-    delay: Duration,
-}
-
-#[async_trait::async_trait]
-impl ConsumerRuntimeListener for SlowRuntimeListener {
-    async fn on_consumer_event(&self, _event: &ConsumerRuntimeEvent) -> Result<(), ConsumerError> {
-        tokio::time::sleep(self.delay).await;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum RuntimeEventKind {
-    SubscriptionJoining,
-    SubscriptionStarted,
-    SubscriptionRejoining,
-    SubscriptionTerminated,
-    SubscriptionConnectionDropped,
-    AssignmentChanged,
-    ProgressAdvanced,
-    PartitionBufferStateChanged,
-    HandlerBatchStarted,
-    HandlerBatchCompleted,
-    HandlerFailed,
-    OffsetLoaded,
-    OffsetCommitted,
-    RetryScheduled,
-}
-
-fn runtime_event_kind(event: &ConsumerRuntimeEvent) -> RuntimeEventKind {
-    match event {
-        ConsumerRuntimeEvent::SubscriptionJoining { .. } => RuntimeEventKind::SubscriptionJoining,
-        ConsumerRuntimeEvent::SubscriptionStarted { .. } => RuntimeEventKind::SubscriptionStarted,
-        ConsumerRuntimeEvent::SubscriptionRejoining { .. } => {
-            RuntimeEventKind::SubscriptionRejoining
-        }
-        ConsumerRuntimeEvent::SubscriptionTerminated { .. } => {
-            RuntimeEventKind::SubscriptionTerminated
-        }
-        ConsumerRuntimeEvent::SubscriptionConnectionDropped { .. } => {
-            RuntimeEventKind::SubscriptionConnectionDropped
-        }
-        ConsumerRuntimeEvent::AssignmentChanged { .. } => RuntimeEventKind::AssignmentChanged,
-        ConsumerRuntimeEvent::ProgressAdvanced { .. } => RuntimeEventKind::ProgressAdvanced,
-        ConsumerRuntimeEvent::PartitionBufferStateChanged { .. } => {
-            RuntimeEventKind::PartitionBufferStateChanged
-        }
-        ConsumerRuntimeEvent::HandlerBatchStarted { .. } => RuntimeEventKind::HandlerBatchStarted,
-        ConsumerRuntimeEvent::HandlerBatchCompleted { .. } => {
-            RuntimeEventKind::HandlerBatchCompleted
-        }
-        ConsumerRuntimeEvent::HandlerFailed { .. } => RuntimeEventKind::HandlerFailed,
-        ConsumerRuntimeEvent::OffsetLoaded { .. } => RuntimeEventKind::OffsetLoaded,
-        ConsumerRuntimeEvent::OffsetCommitted { .. } => RuntimeEventKind::OffsetCommitted,
-        ConsumerRuntimeEvent::RetryScheduled { .. } => RuntimeEventKind::RetryScheduled,
-    }
-}
-
-#[async_trait::async_trait]
-impl ConsumerHandler for BatchScopeRecorder {
-    async fn handle_batch(
-        &self,
-        batch: &EventBatch<'_>,
-        _attempts: u16,
-    ) -> Result<BatchHandlerOutcome, ConsumerError> {
-        let chunk = batch.next_chunk(batch.len());
-        if let Some(first) = chunk.first() {
-            if chunk
-                .iter()
-                .any(|event| event.topic != first.topic || event.partition != first.partition)
-            {
-                self.violations
-                    .lock()
-                    .unwrap()
-                    .push("batch mixed topic IDs or partitions".to_owned());
-            }
-            self.scopes
-                .lock()
-                .unwrap()
-                .push((first.topic.clone(), first.partition, chunk.len()));
-        }
         Ok(chunk
             .last()
             .map(|event| BatchHandlerOutcome::AdvanceThrough {
@@ -726,7 +461,7 @@ async fn routed_dispatch_retry_does_not_advance_past_earlier_unprocessed_event()
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn runtime_dispatch_never_mixes_topics_or_partitions_in_handler_batches() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -762,7 +497,7 @@ async fn runtime_dispatch_never_mixes_topics_or_partitions_in_handler_batches() 
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let recorder = BatchScopeRecorder::default();
     let scopes = recorder.scopes.clone();
@@ -839,7 +574,7 @@ async fn runtime_dispatch_never_mixes_topics_or_partitions_in_handler_batches() 
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn parallelism_creates_independent_slots_with_shared_group_and_interests() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::ids::ConsumerGroupId;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use std::collections::{BTreeSet, HashSet};
@@ -857,7 +592,7 @@ async fn parallelism_creates_independent_slots_with_shared_group_and_interests()
         .await;
 
     let group = ConsumerGroupId::from_gts(GROUP);
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let handle = ConsumerBuilder::new(broker)
         .group(ConsumerGroupRef::id(group))
         .topics([TOPIC])
@@ -939,7 +674,7 @@ async fn wait_for_parallel_assignments(
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn slow_detection_emits_listener_events_and_drops_subscription_stream() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -962,7 +697,7 @@ async fn slow_detection_emits_listener_events_and_drops_subscription_stream() {
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let listener = RecordingRuntimeListener::default();
     let recorded = listener.events.clone();
@@ -1084,7 +819,7 @@ async fn slow_detection_emits_listener_events_and_drops_subscription_stream() {
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn slow_drop_reports_other_assignments_owned_by_same_subscription_slot() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -1109,7 +844,7 @@ async fn slow_drop_reports_other_assignments_owned_by_same_subscription_slot() {
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let listener = RecordingRuntimeListener::default();
     let recorded = listener.events.clone();
@@ -1210,7 +945,7 @@ async fn wait_for_slow_drop_affected_assignments(
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn runtime_listener_observes_representative_non_dlq_event_variants() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -1234,7 +969,7 @@ async fn runtime_listener_observes_representative_non_dlq_event_variants() {
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let listener = RecordingRuntimeListener::default();
     let recorded = listener.events.clone();
@@ -1348,7 +1083,7 @@ async fn wait_for_runtime_event_kinds(
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn listener_failure_does_not_commit_drop_or_stop_consumer_events() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -1372,7 +1107,7 @@ async fn listener_failure_does_not_commit_drop_or_stop_consumer_events() {
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let recorder = RecordingRuntimeListener::default();
     let recorded_events = recorder.events.clone();
@@ -1481,7 +1216,7 @@ async fn listener_failure_does_not_commit_drop_or_stop_consumer_events() {
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn slow_listener_timeout_does_not_block_runtime_delivery_or_handler_processing() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -1505,7 +1240,7 @@ async fn slow_listener_timeout_does_not_block_runtime_delivery_or_handler_proces
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let recorder = RecordingRuntimeListener::default();
     let recorded_events = recorder.events.clone();
@@ -1600,7 +1335,7 @@ async fn slow_listener_timeout_does_not_block_runtime_delivery_or_handler_proces
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn handler_latency_strikes_emit_listener_events_and_drop_subscription_stream() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -1623,7 +1358,7 @@ async fn handler_latency_strikes_emit_listener_events_and_drop_subscription_stre
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let listener = RecordingRuntimeListener::default();
     let recorded = listener.events.clone();
@@ -1751,7 +1486,7 @@ async fn handler_latency_strikes_emit_listener_events_and_drop_subscription_stre
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn slow_drop_drains_buffer_before_rejoin_load_position() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -1775,7 +1510,7 @@ async fn slow_drop_drains_buffer_before_rejoin_load_position() {
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let timeline = Arc::new(Mutex::new(Vec::new()));
 
@@ -1883,7 +1618,7 @@ async fn wait_for_drain_rejoin_timeline(timeline: &SharedTimeline) -> Vec<&'stat
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn async_auto_commit_uses_resolved_group_topic_partition_and_frontier_offset() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::stubs::test_ctx_for_tenant;
     use crate::mock::{MockBroker, MockBrokerHandle};
     use crate::models::Event;
@@ -1940,7 +1675,7 @@ async fn async_auto_commit_uses_resolved_group_topic_partition_and_frontier_offs
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: Arc<dyn EventBroker> = Arc::new(mock);
+    let broker: Arc<dyn EventBrokerApi> = Arc::new(mock);
     let ctx = test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let offset_manager = RecordingOffsetManager::default();
     let commits = offset_manager.commits.clone();

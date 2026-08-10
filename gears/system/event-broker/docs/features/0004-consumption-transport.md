@@ -111,7 +111,7 @@ Notes:
 - Each multipart part carries **exactly one** event (no server-side batching).
 - Heartbeats arrive at the broker's configured cadence (default 5 s) on idle subscriptions; busy subscriptions suppress them.
 - Cursor advance (SEEK) is out-of-band via `POST /v1/subscriptions/{id}:seek`. The stream connection plays no role in cursor management.
-- **Pre-stream SEEK is required.** The SDK MUST call `POST /v1/subscriptions/{id}:seek` after JOIN (with positions resolved via `OffsetManager::position(...)`) before opening the stream. Opening `:stream` without seeded cursors returns `409 PositionsNotSet { unseeded: [(topic, partition), ...], recovery_hint }` — a defensive backstop the well-behaved SDK never observes on the happy path. See `features/0002-consumer-subscription-lifecycle.md` §2.1 for the full flow and `DESIGN.md` §3.3 for the start-position resolution semantics.
+- **Pre-stream SEEK is required.** The SDK MUST call `POST /v1/subscriptions/{id}:seek` after JOIN (with positions resolved via `OffsetStore::load_position(...)`) before opening the stream. Opening `:stream` without seeded cursors returns `409 PositionsNotSet { unseeded: [(topic, partition), ...], recovery_hint }` — a defensive backstop the well-behaved SDK never observes on the happy path. See `features/0002-consumer-subscription-lifecycle.md` §2.1 for the full flow and `DESIGN.md` §3.3 for the start-position resolution semantics.
 
 ### 2.2 Server-Sent Events (`/events:sse`)
 

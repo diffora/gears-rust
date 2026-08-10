@@ -368,9 +368,11 @@ impl ProducerOutboxProcessor {
             .get_producer_cursors(&self.producer.ctx, producer_id)
             .await?;
         let last_sequence = cursors
+            .topics
             .into_iter()
-            .find(|cursor| cursor.topic == topic && cursor.partition == partition)
-            .map_or(-1, |cursor| cursor.last_sequence);
+            .find(|t| t.topic == topic)
+            .and_then(|t| t.partitions.into_iter().find(|p| p.partition == partition))
+            .map_or(-1, |p| p.last_sequence);
         self.cursor_state
             .lock()
             .expect("producer outbox cursor state lock poisoned")

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use toolkit_security::SecurityContext;
 
-use crate::api::{EventBroker, IngestOutcome, ProducerMode};
+use crate::api::{EventBrokerApi, IngestOutcome, ProducerMode};
 use crate::error::EventBrokerError;
 use crate::ids::ProducerId;
 use crate::models::{ProducerMeta, ResetScope};
@@ -32,7 +32,7 @@ pub struct ProducerBuilder<
     Topics = Missing,
     Patterns = Missing,
 > {
-    broker: Option<Arc<dyn EventBroker>>,
+    broker: Option<Arc<dyn EventBrokerApi>>,
     ctx: Option<SecurityContext>,
     identity: Option<ProducerIdentity>,
     deduplication: Option<DirectDeduplication>,
@@ -59,7 +59,7 @@ impl ProducerBuilder {
 
 impl<B, C, I, D, T, P> ProducerBuilder<B, C, I, D, T, P> {
     #[must_use]
-    pub fn broker(self, broker: Arc<dyn EventBroker>) -> ProducerBuilder<Has, C, I, D, T, P> {
+    pub fn broker(self, broker: Arc<dyn EventBrokerApi>) -> ProducerBuilder<Has, C, I, D, T, P> {
         ProducerBuilder {
             broker: Some(broker),
             ctx: self.ctx,
@@ -220,7 +220,7 @@ impl ProducerBuilder<Has, Has, Has, Has, Has, Has> {
 }
 
 pub struct Producer {
-    broker: Arc<dyn EventBroker>,
+    broker: Arc<dyn EventBrokerApi>,
     ctx: SecurityContext,
     identity: ProducerIdentity,
     mode: ProducerMode,
@@ -431,11 +431,14 @@ impl Producer {
         self.sequence_state
             .write()
             .expect("producer sequence state lock poisoned")
-            .extend(cursors.into_iter().map(|cursor| {
-                (
-                    (producer_id, cursor.topic, cursor.partition),
-                    cursor.last_sequence,
-                )
+            .extend(cursors.topics.into_iter().flat_map(|topic| {
+                let topic_id = topic.topic;
+                topic.partitions.into_iter().map(move |p| {
+                    (
+                        (producer_id, topic_id.clone(), p.partition),
+                        p.last_sequence,
+                    )
+                })
             }));
         Ok(())
     }

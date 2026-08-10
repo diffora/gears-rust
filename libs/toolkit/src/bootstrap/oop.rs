@@ -36,6 +36,7 @@
 //!         verbose: 0,
 //!         print_config: false,
 //!         heartbeat_interval_secs: 5,
+//!         version: None,
 //!     };
 //!
 //!     run_oop_with_options(opts).await
@@ -58,8 +59,8 @@ use super::config::{
 };
 use crate::bootstrap::host::{init_logging_unified, init_panic_tracing};
 use crate::runtime::{
-    ClientRegistration, DbOptions, RunOptions, ShutdownOptions, TOOLKIT_DIRECTORY_ENDPOINT_ENV,
-    run, shutdown,
+    ClientRegistration, DbOptions, OopServeOptions, RunOptions, ShutdownOptions,
+    TOOLKIT_DIRECTORY_ENDPOINT_ENV, run, run_oop_serving, shutdown,
 };
 use cf_system_sdks::directory::{DirectoryClient, DirectoryGrpcClient};
 
@@ -86,6 +87,10 @@ pub struct OopRunOptions {
 
     /// Heartbeat interval in seconds (default: 5)
     pub heartbeat_interval_secs: u64,
+
+    /// Gear version (used for `DirectoryService` registration and `OpenAPI` version).
+    /// Defaults to `None`.
+    pub version: Option<String>,
 }
 
 impl Default for OopRunOptions {
@@ -106,6 +111,7 @@ impl Default for OopRunOptions {
             verbose: 0,
             print_config: false,
             heartbeat_interval_secs: 5,
+            version: None,
         }
     }
 }
@@ -382,6 +388,7 @@ fn merge_json_objects(target: &mut serde_json::Value, source: &serde_json::Value
 ///         verbose: 1,
 ///         print_config: false,
 ///         heartbeat_interval_secs: 5,
+///         version: None,
 ///     };
 ///
 ///     run_oop_with_options(opts).await
@@ -537,64 +544,72 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
 
     info!("Successfully connected to directory service");
 
-    // Start heartbeat loop in background using a child token from the root.
-    // This allows the heartbeat to be cancelled when the root token is cancelled.
-    let heartbeat_directory = Arc::clone(&directory_api);
-    let heartbeat_gear = opts.gear_name.clone();
-    let heartbeat_instance_id_str = instance_id.to_string();
-    let heartbeat_interval = Duration::from_secs(opts.heartbeat_interval_secs);
-    let heartbeat_cancel = cancel.child_token();
-
-    tokio::spawn(async move {
-        info!(
-            interval_secs = opts.heartbeat_interval_secs,
-            "Starting heartbeat loop"
-        );
-
-        loop {
-            tokio::select! {
-                () = heartbeat_cancel.cancelled() => {
-                    info!("Heartbeat loop stopping due to cancellation");
-                    break;
-                }
-                () = sleep(heartbeat_interval) => {
-                    match heartbeat_directory
-                        .send_heartbeat(&heartbeat_gear, &heartbeat_instance_id_str)
-                        .await
-                    {
-                        Ok(()) => {
-                            tracing::debug!("Heartbeat sent successfully");
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to send heartbeat, will retry");
-                        }
-                    }
-                }
-            }
-        }
-    });
+    // Capture OoP HTTP config (if any) before moving the config into the provider.
+    let oop_http = final_config.oop_http.clone();
 
     // Build config provider for gears
     let config_provider = Arc::new(final_config);
 
-    // Keep a reference to directory_api for deregistration after shutdown
-    // Run the gear lifecycle with the root cancellation token.
-    // Shutdown is driven by the signal handler spawned above, not by ShutdownOptions::Signals.
     // The DirectoryClient (gRPC client) is injected into the ClientHub so gears can access it.
-    info!("Starting gear lifecycle");
     let run_options = RunOptions {
         gears_cfg: config_provider,
         db: db_options,
         shutdown: ShutdownOptions::Token(cancel.clone()),
-        clients: vec![ClientRegistration::new::<dyn DirectoryClient>(
-            directory_api,
-        )],
+        clients: vec![ClientRegistration::new::<dyn DirectoryClient>(Arc::clone(
+            &directory_api,
+        ))],
         instance_id,
         oop: None, // OoP gears don't spawn other OoP gears
         shutdown_deadline: None,
     };
 
-    let result = run(run_options).await;
+    // When `oop_http` is configured, run the HTTP-serving lifecycle:
+    // Axum server + probes + directory presence (registration + heartbeat +
+    // self-heal, owned by `presence_loop`) + dependency resolution + drain.
+    // Otherwise fall back to the legacy gRPC-only lifecycle.
+    let result = if let Some(http_cfg) = oop_http {
+        info!("Starting OoP HTTP-serving lifecycle");
+        let serve = build_oop_serve_options(
+            &http_cfg,
+            &opts.gear_name,
+            instance_id,
+            opts.version.clone(),
+            Duration::from_secs(opts.heartbeat_interval_secs),
+            Arc::clone(&directory_api),
+        )
+        .await?;
+        run_oop_serving(run_options, serve).await
+    } else {
+        info!("Starting gear lifecycle (legacy gRPC-only)");
+        // Legacy path: presence is not self-managed by an HTTP serve lifecycle,
+        // so run a standalone heartbeat on a child token. (A no-op unless the
+        // instance is registered by an external orchestrator.)
+        let heartbeat_directory = Arc::clone(&directory_api);
+        let heartbeat_gear = opts.gear_name.clone();
+        let heartbeat_instance_id_str = instance_id.to_string();
+        let heartbeat_interval = Duration::from_secs(opts.heartbeat_interval_secs.max(1));
+        let heartbeat_cancel = cancel.child_token();
+        tokio::spawn(async move {
+            info!(interval_secs = ?heartbeat_interval, "Starting legacy heartbeat loop");
+            loop {
+                tokio::select! {
+                    () = heartbeat_cancel.cancelled() => {
+                        info!("Heartbeat loop stopping due to cancellation");
+                        break;
+                    }
+                    () = sleep(heartbeat_interval) => {
+                        if let Err(e) = heartbeat_directory
+                            .send_heartbeat(&heartbeat_gear, &heartbeat_instance_id_str)
+                            .await
+                        {
+                            warn!(error = %e, "Failed to send heartbeat, will retry");
+                        }
+                    }
+                }
+            }
+        });
+        run(run_options).await
+    };
 
     if let Err(ref e) = result {
         error!(error = %e, "Gear runtime failed");
@@ -603,6 +618,107 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
     }
 
     result
+}
+
+/// Build [`OopServeOptions`] from configuration.
+///
+/// The tenant-plane `BearerAuthenticator` injection point is left unset here;
+/// the app/gear binary supplies that adapter when it needs the tenant-plane
+/// middleware installed. The platform-plane authenticator is constructed from
+/// `oop_http.internal_auth` when the `k8s-auth` feature is enabled.
+async fn build_oop_serve_options(
+    cfg: &super::config::OopHttpConfig,
+    gear_name: &str,
+    instance_id: Uuid,
+    version: Option<String>,
+    heartbeat_interval: Duration,
+    directory: Arc<dyn DirectoryClient>,
+) -> Result<OopServeOptions> {
+    let listen_addr: std::net::SocketAddr = cfg
+        .listen_addr
+        .parse()
+        .with_context(|| format!("invalid oop_http.listen_addr: {}", cfg.listen_addr))?;
+
+    let probe_bind_addr = cfg
+        .probe_bind_addr
+        .as_deref()
+        .map(|s| {
+            s.parse::<std::net::SocketAddr>()
+                .with_context(|| format!("invalid oop_http.probe_bind_addr: {s}"))
+        })
+        .transpose()?;
+
+    let advertise_uri = cfg
+        .advertise_uri
+        .clone()
+        .unwrap_or_else(|| default_advertise_uri(listen_addr));
+
+    let internal_authenticator = build_internal_authenticator(cfg.internal_auth.as_ref()).await?;
+
+    Ok(OopServeOptions {
+        gear_name: gear_name.to_owned(),
+        instance_id: instance_id.to_string(),
+        version,
+        advertise_uri,
+        listen_addr,
+        probe_bind_addr,
+        drain_timeout: Duration::from_secs(cfg.drain_timeout_secs),
+        heartbeat_interval,
+        healthcheck_timeout: Duration::from_millis(cfg.healthcheck_timeout_ms),
+        directory,
+        bearer_authenticator: None,
+        internal_authenticator,
+    })
+}
+
+/// Construct the platform-plane authenticator from configuration.
+///
+/// With the `k8s-auth` feature enabled and `internal_auth` configured, this
+/// initializes the Kubernetes `TokenReview` authenticator. Without the feature,
+/// a configured `internal_auth` is an error; `Ok(None)` is returned only when no
+/// `internal_auth` is configured.
+#[cfg_attr(not(feature = "k8s-auth"), allow(clippy::unused_async))]
+async fn build_internal_authenticator(
+    cfg: Option<&super::config::InternalAuthConfig>,
+) -> Result<Option<crate::runtime::DynInternalAuthenticator>> {
+    #[cfg(feature = "k8s-auth")]
+    {
+        if let Some(internal_auth) = cfg {
+            info!("Initializing Kubernetes TokenReview platform-plane authenticator");
+            let authenticator = toolkit_k8s_auth::K8sTokenReviewAuthenticator::try_default(
+                internal_auth.audiences.clone(),
+            )
+            .await
+            .context("failed to initialize Kubernetes TokenReview authenticator")?;
+            return Ok(Some(crate::runtime::DynInternalAuthenticator::new(
+                authenticator,
+            )));
+        }
+        Ok(None)
+    }
+    #[cfg(not(feature = "k8s-auth"))]
+    {
+        if cfg.is_some() {
+            anyhow::bail!(
+                "oop_http.internal_auth is configured but the `k8s-auth` feature is disabled"
+            );
+        }
+        Ok(None)
+    }
+}
+
+/// Derive a default advertise URI from the bind address. Unspecified hosts
+/// (`0.0.0.0` / `[::]`) are rewritten to loopback, and every IPv6 host is
+/// enclosed in brackets so the resulting URI is valid when registered as a
+/// REST endpoint.
+fn default_advertise_uri(listen_addr: std::net::SocketAddr) -> String {
+    let host = match listen_addr {
+        std::net::SocketAddr::V4(addr) if addr.ip().is_unspecified() => "127.0.0.1".to_owned(),
+        std::net::SocketAddr::V4(addr) => addr.ip().to_string(),
+        std::net::SocketAddr::V6(addr) if addr.ip().is_unspecified() => "[::1]".to_owned(),
+        std::net::SocketAddr::V6(addr) => format!("[{}]", addr.ip()),
+    };
+    format!("http://{host}:{}", listen_addr.port())
 }
 
 #[allow(unknown_lints, de1301_no_print_macros)] // direct stdout config print before exit

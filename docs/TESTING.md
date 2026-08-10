@@ -20,7 +20,7 @@ build whenever feasible.
 | **Integration** | Cross-crate or DB-backed logic (SQLite, Postgres, MySQL) | `cargo test -p <pkg> --features integration` | `#[cfg(feature = "integration")]` | Every PR (`ci.yml` — `integration` job, Ubuntu) |
 | **E2E** | Full HTTP request → response through a running server | pytest + httpx against `cf-gears-e2e-server` | n/a (Python tests) | PRs to `main`, nightly schedule (`e2e.yml`) |
 | **Fuzz** | Parser / validator robustness against arbitrary input | `cargo-fuzz` (libFuzzer) | nightly toolchain | PRs + nightly (`clusterfuzzlite.yml`) |
-| **Static analysis** | Architectural rules, unsafe code, dependency licenses | clippy, dylint, cargo-deny, cargo-kani, cargo-geiger | varies | Every PR (`ci.yml` — `test`, `security`, `dylint` jobs) |
+| **Static analysis** | Architectural rules, unsafe code, dependency licenses | clippy, `cargo gears lint`, cargo-deny, cargo-kani, cargo-geiger | varies | Every PR (`ci.yml` — `test`, `security`, `lint` jobs) |
 
 Additional testing categories such as performance (#4054), upgrade / migration (#4117), and long-haul (#4118) or soak testing are expected to be added over time, but they are not yet implemented or enforced as part of the current project test matrix.
 
@@ -41,6 +41,9 @@ make e2e-docker            # E2E — Docker environment
 make e2e-docker-smoke      # E2E — Docker environment (smoke subset only)
 make e2e-local             # E2E — local server (builds + starts automatically)
 make e2e-local-smoke       # E2E — smoke subset only
+make e2e-mini-chat         # E2E — mini-chat lane (dedicated binary, offline mode)
+make e2e-tr-authz          # E2E — AuthZ -> TR -> RG chain (local mode, e2e-tr-authz.yaml)
+make e2e-usage-collector   # E2E — usage-collector lane (dedicated binary; needs Docker)
 make fuzz                  # fuzz — 30 s smoke per target
 make check                 # full quality gate (fmt + clippy + test + security)
 make all                   # full pipeline (build + check + test-sqlite + e2e-local)
@@ -164,13 +167,26 @@ The `e2e.yml` workflow runs:
 - **On PRs to `main`**: full E2E suite (local mode).
 - **Nightly**: full E2E suite. Failures auto-create a GitHub issue assigned to the last commit author.
 - **Manual dispatch**: smoke or full, selectable.
-- **Specialized lanes**: the same workflow also runs the mini-chat E2E suite and the
-  RG + AuthZ end-to-end chain tests.
+- **Specialized lanes**: the same workflow also runs the mini-chat E2E suite, the
+  RG + AuthZ end-to-end chain tests, and the usage-collector suite.
+
+The `tr-authz` lane is ordinary local mode with a different config
+(`config/e2e-tr-authz.yaml`) and a `-k resource_group` selection. The `mini-chat` and
+`usage-collector` lanes each build their own `cf-gears-example-server` with a feature
+set the default local-mode binary does not carry, so a plain `make e2e-local` collects
+their tests but skips them all: both gate on `E2E_BINARY`, which only their own make
+target sets.
+
+The usage-collector lane additionally needs a reachable Docker daemon — its storage
+plugin connects and migrates a real TimescaleDB at gear init, which `lib/sidecars.py`
+supplies as a throwaway container on a dynamically mapped port. When Docker is
+unreachable the suite skips rather than fails, so verify the skip count before reading
+a green run as coverage.
 
 Other quality-related GitHub Actions under `.github/workflows` complement the E2E
 workflow:
 - **`ci.yml`** runs the main cross-platform quality gates: linting, unit tests,
-  integration tests, FIPS verification, coverage, security checks, Dylint, and Cypilot
+  integration tests, FIPS verification, coverage, security checks, architecture lints, and Cypilot
   validation.
 - **`fmt.yml`** runs dedicated Rust formatting validation.
 - **`docs.yml`** checks Markdown links for documentation changes.
@@ -237,7 +253,7 @@ python tools/scripts/ci.py fmt            # check formatting
 python tools/scripts/ci.py fmt --fix      # auto-format code
 python tools/scripts/ci.py clippy         # run linter
 python tools/scripts/ci.py clippy --fix   # attempt to fix warnings
-python tools/scripts/ci.py dylint         # custom project compliance lints
+python tools/scripts/ci.py lint           # custom project compliance lints (via cargo gears lint)
 python tools/scripts/ci.py audit          # security audit
 python tools/scripts/ci.py deny           # license & dependency checks
 python tools/scripts/ci.py e2e-local      # build server + run E2E tests locally
@@ -278,10 +294,10 @@ make fmt        # formatting check (cargo fmt --all -- --check)
 make dev-fmt    # auto-format (cargo fmt --all)
 make clippy     # linting (clippy --workspace --all-targets --all-features)
 make lint       # compile with -D warnings
-make dylint     # custom architectural lints
+make gears-lint # custom architectural lints (via cargo gears lint)
 make deny       # cargo deny check
 make kani       # Kani formal verification (optional)
-make safety     # clippy + kani + lint + dylint
+make safety     # clippy + kani + lint + gears-lint
 ```
 
 ## 7.3 CI Pipeline Summary
@@ -294,14 +310,15 @@ PR opened / updated
   │     ├── test-fips     — FIPS verification / platform-specific FIPS test lanes
   │     ├── security      — cargo-deny
   │     ├── coverage      — cargo-llvm-cov → Codecov upload
-  │     ├── dylint        — custom architectural lints
+  │     ├── lint          — custom architectural lints (cargo gears lint)
   │     └── cypilot       — artifact / specification validation
   │
   ├── fmt.yml             — dedicated cargo fmt validation for Rust changes
   ├── docs.yml            — Markdown link checking for docs changes
   ├── gts-validation.yml  — GTS identifier validation for docs / schema changes
   └── e2e.yml (PRs to main only)
-        └── e2e           — full E2E suite (local mode), plus mini-chat and TR/AuthZ E2E lanes
+        └── e2e           — full E2E suite (local mode), plus mini-chat, TR/AuthZ
+                            and usage-collector E2E lanes
 
 Additional quality workflows
   ├── codeql.yml          — security and quality code scanning
@@ -318,25 +335,25 @@ Nightly (schedule)
 
 ---
 
-## 8. Dylint
+## 8. Custom Architecture Lints
 
-`Dylint` is the main project-specific lint layer. Unlike generic linting tools such as
-`clippy`, it enforces Gears-specific architectural and repository rules: layer
-separation, DTO placement, REST conventions, security-sensitive patterns, documentation
-constraints, and GTS-related validation.
+Custom architecture lints are the main project-specific lint layer. Unlike generic
+linting tools such as `clippy`, they enforce Gears-specific architectural and repository
+rules: layer separation, DTO placement, REST conventions, security-sensitive patterns,
+documentation constraints, and GTS-related validation.
+
+The lints are shipped as part of the `cargo-gears` CLI (crate `cargo-gears-lints` in the
+separate `cf-cli` repository) and are run via `cargo gears lint`.
 
 Useful local commands include:
 
 ```bash
-make dylint        # run custom lints across the workspace
-make dylint-list   # list available Dylint lints
-make dylint-test   # run lint UI / golden tests
-make gts-docs      # validate GTS identifiers in docs and schema files
+cargo gears lint          # run custom lints across the workspace
+make gears-lint           # Makefile shortcut for the above
+make gts-docs             # validate GTS identifiers in docs and schema files
 ```
 
-The CI `dylint` job both tests the lint crates themselves and applies the lints to the
-workspace. For the current lint catalog and development notes, see
-[`tools/dylint_lints/README.md`](../tools/dylint_lints/README.md).
+The CI `lint` job applies the architecture lints to the workspace on every PR.
 
 ---
 
@@ -346,7 +363,7 @@ workspace. For the current lint catalog and development notes, see
 |------|---------|---------|--------|
 | **clippy** | Lint for correctness and performance | `make clippy` | `test` |
 | **rustfmt** | Formatting enforcement | `make fmt` | `test` |
-| **dylint** | Project-specific architectural lints (layer separation, DTO placement) | `make dylint` | `dylint` |
+| **cargo gears lint** | Project-specific architectural lints (layer separation, DTO placement) | `cargo gears lint` | `lint` |
 | **cargo-deny** | License compliance, advisories, banned crates | `make deny` | `security` |
 | **cargo-kani** | Formal verification of unsafe code and invariants | `make kani` | `test` (via `safety`) |
 | **cargo-geiger** | Audit of `unsafe` usage in dependencies | `make geiger` | manual |
@@ -372,6 +389,6 @@ Before opening a PR, verify:
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — development workflow, commit conventions, PR process
 - [testing/e2e/README.md](../testing/e2e/README.md) — E2E test guide, fixtures, advanced usage
 - [fuzz/README.md](../tools/fuzz/README.md) — fuzz target reference, corpus management
-- [tools/dylint_lints/README.md](../tools/dylint_lints/README.md) — Dylint lint catalog, commands, and development notes
+- `cargo-gears-lints` (in the `cf-cli` repository) — architecture lint catalog and development notes
 - [guidelines/SECURITY.md](../guidelines/SECURITY.md) — secure coding practices
 - [docs/QUICKSTART_GUIDE.md](./QUICKSTART_GUIDE.md) — getting started with the project

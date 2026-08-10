@@ -12,10 +12,31 @@ OPENAPI_OUT ?= docs/api/api.json
 E2E_FEATURES ?= $(strip $(shell cat config/e2e-features.txt 2>/dev/null))
 E2E_ARGS ?= $(if $(E2E_FEATURES),--features $(E2E_FEATURES),)
 
+# Nightly toolchain for targets that need unstable rustc flags (currently only
+# `shear`, which drives -Zunpretty=expanded). This default serves local runs;
+# CI overrides it via `make shear RUST_NIGHTLY=...` so the toolchain it installs
+# and caches cannot drift from the one that actually compiles.
+RUST_NIGHTLY ?= nightly-2026-04-16
+
+# cargo-shear version installed by `make setup`. Pinned because an unused-dep
+# verdict that disagrees with CI is worse than no local check at all.
+# Keep in sync with the `Install cargo-shear` step in shear-nightly.yml.
+SHEAR_VERSION ?= 1.13.1
+
 # -------- Utility macros --------
 
 define check_tool
     @command -v $(1) >/dev/null || (echo "ERROR: $(1) is not installed. Run 'make setup' to install required tools." && exit 1)
+endef
+
+# fips-policy relies on cargo-deny bans-check behavior only available since 0.20.0
+DENY_MIN_VERSION := 0.20.0
+
+define check_deny_version
+    @DENY_VERSION=$$(cargo deny --version 2>/dev/null | awk '{print $$2}'); \
+	if [ -z "$$DENY_VERSION" ] || ! $(PYTHON) -c "import sys; sys.exit(0 if tuple(map(int, '$$DENY_VERSION'.split('.'))) > tuple(map(int, '$(DENY_MIN_VERSION)'.split('.'))) else 1)" 2>/dev/null; then \
+		echo "ERROR: cargo-deny > $(DENY_MIN_VERSION) is required (found: $${DENY_VERSION:-none}). Run 'cargo install --locked cargo-deny' to upgrade." && exit 1; \
+	fi
 endef
 
 define check_rustup_component
@@ -138,10 +159,10 @@ setup: .setup-stamp
 	cargo install lychee
 	cargo install cargo-geiger
 	cargo install cargo-deny
-	cargo install cargo-dylint
-	cargo install dylint-link
+	cargo install cargo-gears
 	cargo install cargo-fuzz
 	cargo install cargo-hack
+	cargo install --locked cargo-shear --version $(SHEAR_VERSION)
 	cargo install gts-validator
 	@if echo "$$OS" | grep -iq windows || [ -n "$$COMSPEC" ]; then \
 		echo "NOTE: kani-verifier is not supported on Windows; skipping (use WSL2/Docker for Kani)."; \
@@ -161,7 +182,7 @@ setup: .setup-stamp
 	@echo "Setup complete. All tools installed."
 	@touch .setup-stamp
 
-# -------- Checks --------
+# -------- Code safety checks --------
 #
 # Tool Comparison - What Each Tool Checks:
 # +-------------+----------------------------------------------------------------------+
@@ -195,22 +216,19 @@ setup: .setup-stamp
 # |             | - Missing documentation warnings                                     |
 # |             | - Ensures clean compilation across all targets and features          |
 # +-------------+----------------------------------------------------------------------+
-# | dylint      | - Project-specific architectural conventions (custom lints)          |
-# |             | - DTO declaration and placement (only in api/rest folders)           |
-# |             | - DTO isolation (no references from domain/contract layers)          |
-# |             | - API endpoint versioning requirements (e.g., /users/v1/users)       |
-# |             | - Contract layer purity (no serde, HTTP types, or ToSchema)          |
-# |             | - Layer separation and dependency rules enforcement                  |
-# |             | - Use 'make dylint-list' to see all available custom lints           |
-# +-------------+----------------------------------------------------------------------+
 
-.PHONY: fmt clippy clippy-deep lychee docs-preview kani geiger safety lint dylint dylint-list dylint-test shear gts-docs cfs-ensure cfs-repair cfs-validate cfs-validate-kits cfs-validate-kit-local cfs-spec-coverage
+.PHONY: fmt clippy clippy-deep lychee docs-preview kani geiger safety lint dylint dylint-list dylint-test shear gts-docs cfs-ensure cfs-repair cfs-validate cfs-validate-kits cfs-validate-kit-local cfs-spec-coverage ensure-submodules
+
+## Verify git submodules (e.g. guidelines/DNA) are initialized; fails otherwise.
+ensure-submodules:
+	@if git submodule status --recursive 2>/dev/null | grep -q '^-'; then \
+		echo "ERROR: Uninitialized git submodules detected. Run 'git submodule update --init --recursive'." && exit 1; \
+	fi
 
 # Check code formatting
 fmt:
 	$(call check_rustup_component,rustfmt)
 	cargo fmt --all --check
-	cargo fmt --all --check --manifest-path tools/dylint_lints/Cargo.toml
 
 CFS ?= cfs
 CFS_PIPX_SPEC ?= git+https://github.com/constructorfabric/studio.git
@@ -246,9 +264,9 @@ clippy-deep:
 	cargo hack clippy --workspace --all-targets --each-feature $(CLIPPY_FLAGS)
 
 # Run markdown checks with 'lychee'
-lychee:
+lychee: ensure-submodules
 	$(call check_tool,lychee)
-	lychee --exclude-path 'docs/web-docs' docs examples tools/dylint_lints guidelines
+	lychee --exclude-path 'docs/web-docs' docs examples guidelines gears/system/event-broker/docs
 
 ## Validate internal links in web-docs.
 # The web-docs pages use Starlight route-relative links (e.g. ../foo/) that only
@@ -288,37 +306,31 @@ gts-docs:
 		--exclude "**/helm/*/templates/*" \
 		docs gears libs examples
 
+# cli_smoke_tests.rs / migrate_command_tests.rs rely on CARGO_BIN_EXE_<name> being
+# set at test runtime, which cargo-nextest only supports from 0.9.130 onward.
+NEXTEST_MIN_VERSION := 0.9.130
+
 install-tools:
-	@command -v cargo-nextest >/dev/null 2>&1 || cargo install --locked cargo-nextest
+	@NEXTEST_VERSION=$$(cargo nextest --version 2>/dev/null | awk '/^cargo-nextest/ {print $$2}'); \
+	if [ -z "$$NEXTEST_VERSION" ] || ! $(PYTHON) -c "import sys; sys.exit(0 if tuple(map(int, '$$NEXTEST_VERSION'.split('.'))) >= tuple(map(int, '$(NEXTEST_MIN_VERSION)'.split('.'))) else 1)" 2>/dev/null; then \
+		echo "Installing/upgrading cargo-nextest (>= $(NEXTEST_MIN_VERSION) required for CARGO_BIN_EXE_* support)..."; \
+		cargo install --locked cargo-nextest; \
+	fi
+	@DENY_VERSION=$$(cargo deny --version 2>/dev/null | awk '{print $$2}'); \
+	if [ -z "$$DENY_VERSION" ] || ! $(PYTHON) -c "import sys; sys.exit(0 if tuple(map(int, '$$DENY_VERSION'.split('.'))) > tuple(map(int, '$(DENY_MIN_VERSION)'.split('.'))) else 1)" 2>/dev/null; then \
+		echo "Installing/upgrading cargo-deny (> $(DENY_MIN_VERSION) required for fips-policy)..."; \
+		cargo install --locked cargo-deny; \
+	fi
 
-## List all custom project compliance lints (see tools/dylint_lints/README.md)
-dylint-list:
-	@cd tools/dylint_lints && \
-	DYLINT_LIBS=$$(find target/release -maxdepth 1 \( -name "libde*@*.so" -o -name "libde*@*.dylib" -o -name "de*@*.dll" \) -type f | sort -u); \
-	if [ -z "$$DYLINT_LIBS" ]; then \
-		echo "ERROR: No dylint libraries found. Run 'make dylint' first to build them."; \
-		exit 1; \
-	fi; \
-	for lib in $$DYLINT_LIBS; do \
-		echo "=== $$lib ==="; \
-		cargo dylint list --lib-path "$$lib"; \
-	done
-
-## Test dylint lints on UI test cases (compile and verify violations)
-dylint-test: install-tools
-	@cd tools/dylint_lints && cargo nextest run
-
-# Run project compliance dylint lints on the workspace (see `make dylint-list`)
+# Run architecture lints via cargo-gears (see Gears.toml for configuration).
 dylint:
-	$(call check_tool,cargo-dylint)
-	$(call check_tool,dylint-link)
-	cargo dylint --all --workspace
+	$(call check_tool,cargo-gears)
+	cargo gears lint --dylint
 
 # Check for unused dependencies with cargo-shear.
 shear:
 	$(call check_tool,cargo-shear)
-	cargo +nightly-2026-04-16 shear --expand --deny-warnings
-	cd tools/dylint_lints && cargo shear --expand --deny-warnings
+	cargo +$(RUST_NIGHTLY) shear --expand --deny-warnings
 
 # Run all code safety checks
 safety: clippy kani lint dylint # geiger
@@ -339,6 +351,7 @@ check-packaging-metadata:
 # Check licenses and dependencies
 deny:
 	$(call check_tool,cargo-deny)
+	$(call check_deny_version)
 	cargo deny check
 
 ## FIPS dependency-graph policy (see deny-fips.toml + ADR 0005).
@@ -347,6 +360,7 @@ deny:
 ## Run on every PR that touches deps.
 fips-policy:
 	$(call check_tool,cargo-deny)
+	$(call check_deny_version)
 	cargo deny --config deny-fips.toml check bans
 
 security: deny fips-policy
@@ -436,14 +450,13 @@ dev-fmt:
 ## Auto-fix clippy warnings
 dev-clippy:
 	cargo clippy --workspace --all-targets --all-features --fix --allow-dirty
-	@cd tools/dylint_lints && cargo clippy --all-targets --workspace
 
 # Auto-fix formatting and clippy warnings
 dev: dev-fmt dev-clippy dev-test
 
 # -------- Tests --------
 
-.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-fips
+.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-fips
 
 # Run all tests
 test: install-tools
@@ -475,6 +488,24 @@ test-db: test-sqlite test-pg test-mysql
 ## Run users-info gear integration tests
 test-users-info-pg: install-tools
 	cargo nextest run -p users-info --features "integration"
+
+## Run TimescaleDB usage-collector plugin integration tests (Docker required;
+## the suite spins up its own timescale/timescaledb container via testcontainers)
+test-usage-collector-pg: install-tools
+	cargo nextest run -p cf-gears-timescaledb-usage-collector-plugin --features postgres
+
+## Run the Postgres cluster plugin's conformance (Layer 2) and Layer 3
+## integration suites (Docker required;
+## each spins up its own postgres container per test via testcontainers —
+## see gears/system/cluster/plugins/postgres-cluster-plugin/docs/TESTING.md §7).
+##
+## `--retries 1` because the container/pool *setup* in tests/common/mod.rs is
+## load-sensitive on a busy host: it already retries `Postgres::start()` itself,
+## and exhausting that budget surfaces as a failure in whichever test drew the
+## short straw. A genuine logic regression fails both attempts, so this absorbs
+## Docker churn without masking one.
+test-cluster-pg: install-tools
+	cargo nextest run -p cf-postgres-cluster-plugin --features integration --retries 1
 
 ## Run FIPS-mode integration tests (requires Go for aws-lc-fips-sys).
 ## Covers:
@@ -567,7 +598,7 @@ bench-db-longhaul: bench-pg-longhaul bench-mysql-longhaul bench-mariadb-longhaul
 
 # -------- E2E tests --------
 
-.PHONY: e2e e2e-local e2e-local-smoke e2e-mini-chat e2e-docker e2e-docker-smoke e2e-tr-authz
+.PHONY: e2e e2e-local e2e-local-smoke e2e-mini-chat e2e-docker e2e-docker-smoke e2e-tr-authz e2e-usage-collector
 
 E2E_TARGET ?=
 
@@ -607,6 +638,14 @@ e2e-mini-chat:
 	cargo build --bin cf-gears-example-server --features=$(MINI_CHAT_FEATURES)
 	E2E_BINARY=target/debug/cf-gears-example-server \
 		$(PYTHON) -m pytest testing/e2e/gears/mini_chat/ --mode offline -vv
+
+UC_E2E_FEATURES = usage-collector,timescaledb-usage-collector,static-tenants,static-authn,static-authz
+
+## Run usage-collector E2E tests (dedicated binary + TimescaleDB container; Docker required)
+e2e-usage-collector:
+	cargo build --bin cf-gears-example-server --features=$(UC_E2E_FEATURES)
+	E2E_BINARY=target/debug/cf-gears-example-server \
+		$(PYTHON) -m pytest testing/e2e/gears/usage_collector/ -vv
 
 # -------- Code coverage --------
 
@@ -829,14 +868,14 @@ oop-example:
 	cargo run --bin cf-gears-example-server --features oop-example,users-info-example,static-authn,static-authz,static-tenants,static-credstore -- --config config/quickstart.yaml run
 
 # Run all quality checks
-check: .setup-stamp fmt cfs-validate clippy lychee security dylint-test dylint gts-docs test
+check: .setup-stamp fmt cfs-validate clippy lychee security dylint gts-docs test
 
 ci_test: fmt clippy
 
 ci_docs: lychee gts-docs
 
 # Run CI pipeline locally, requires docker
-ci: fmt clippy test-no-macros test-macros test-db deny test-users-info-pg lychee gts-docs dylint dylint-test
+ci: fmt clippy test-no-macros test-macros test-db deny test-users-info-pg test-usage-collector-pg lychee gts-docs dylint
 
 ## Build the cf-gears-example-server release binary using a toolchain from the rust-toolchain.toml
 .cargo-build:

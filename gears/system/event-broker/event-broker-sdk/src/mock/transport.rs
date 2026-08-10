@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::ResolvedPosition;
 use crate::api::{
-    AssignedPartition, EventBroker, IngestOutcome, JoinRequest, ProducerCursor, ProducerMode,
-    SeekResult, SubscriptionAssignment,
+    AssignedPartition, EventBrokerApi, IngestOutcome, JoinRequest, PartitionCursor,
+    ProducerCursors, ProducerMode, SeekResult, SubscriptionAssignment, TopicCursors,
 };
 use crate::api::{FrameStream, SeekPosition};
 use crate::error::EventBrokerError;
@@ -168,7 +168,7 @@ impl MockBroker {
 }
 
 #[async_trait]
-impl EventBroker for MockBroker {
+impl EventBrokerApi for MockBroker {
     // -- Producer --------------------------------------------------------------
     async fn register_producer(
         &self,
@@ -178,8 +178,13 @@ impl EventBroker for MockBroker {
     ) -> Result<ProducerId, EventBrokerError> {
         let id = ProducerId(Uuid::new_v4());
         let mut core = self.core.lock().await;
-        core.producers.insert(id, super::core::ProducerReg { mode });
-        let _ = client_agent; // stored for logs in production; no-op in mock
+        core.producers.insert(
+            id,
+            super::core::ProducerReg {
+                mode,
+                client_agent: client_agent.to_owned(),
+            },
+        );
         Ok(id)
     }
 
@@ -241,19 +246,38 @@ impl EventBroker for MockBroker {
         &self,
         _ctx: &SecurityContext,
         producer_id: ProducerId,
-    ) -> Result<Vec<ProducerCursor>, EventBrokerError> {
+    ) -> Result<ProducerCursors, EventBrokerError> {
         let core = self.core.lock().await;
-        let cursors = core
-            .producer_state
-            .iter()
-            .filter(|((pid, _, _), _)| *pid == producer_id)
-            .map(|((_, topic, partition), seq)| ProducerCursor {
-                topic: topic.clone(),
-                partition: *partition,
-                last_sequence: *seq,
+        let client_agent = core
+            .producers
+            .get(&producer_id)
+            .map(|reg| reg.client_agent.clone())
+            .unwrap_or_default();
+        let mut by_topic: std::collections::BTreeMap<String, Vec<PartitionCursor>> =
+            std::collections::BTreeMap::new();
+        for ((pid, topic, partition), seq) in core.producer_state.iter() {
+            if *pid == producer_id {
+                by_topic
+                    .entry(topic.clone())
+                    .or_default()
+                    .push(PartitionCursor {
+                        partition: *partition,
+                        last_sequence: *seq,
+                    });
+            }
+        }
+        let topics = by_topic
+            .into_iter()
+            .map(|(topic, mut partitions)| {
+                partitions.sort_by_key(|p| p.partition);
+                TopicCursors { topic, partitions }
             })
             .collect();
-        Ok(cursors)
+        Ok(ProducerCursors {
+            producer_id,
+            client_agent,
+            topics,
+        })
     }
 
     async fn reset_producer_chain(

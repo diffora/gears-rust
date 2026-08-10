@@ -117,10 +117,14 @@ def maybe_skip_to_earliest(topic, partition, cursor_offset):
 ```python
 # Producer cross-checks its chain state against the broker's persisted state
 def check_publish_pipeline(producer_id, topic, partition):
-    cursors  = http.get(f"/v1/producers/{producer_id}/cursors").json
+    resp     = http.get(f"/v1/producers/{producer_id}/cursors").json
     segments = http.get(f"/v1/topics/segments?topic={topic}&partition={partition}").json
 
-    last_seq = cursors[(topic, partition)]["last_sequence"]
+    last_seq = next(
+        p["last_sequence"]
+        for t in resp["topics"] if t["topic"] == topic
+        for p in t["partitions"] if p["partition"] == partition
+    )
     end_seq  = segments["end_sequence"]
 
     if last_seq < end_seq - LAG_THRESHOLD:

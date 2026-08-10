@@ -3,7 +3,7 @@ use super::super::helpers::*;
 #[cfg(test)]
 use toolkit_gts::gts_id;
 
-use crate::api::EventBroker;
+use crate::api::EventBrokerApi;
 use crate::error::EventBrokerError;
 use crate::ids::ConsumerGroupId;
 use crate::models::{ConsumerGroupKind, CreateConsumerGroupRequest};

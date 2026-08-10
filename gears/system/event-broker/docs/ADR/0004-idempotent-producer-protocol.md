@@ -82,7 +82,7 @@ Adopt **Option B — mode declared at producer registration, enforced per reques
 
 ### Three Modes, Wire Shapes
 
-The `meta` block (per [ADR-0003 Event Schema](0002-event-schema.md)) is the carrier for all producer-protocol fields. Mode determines its shape:
+The `meta` block (per [ADR-0003 Event Schema](0003-event-schema.md)) is the carrier for all producer-protocol fields. Mode determines its shape:
 
 ```jsonc
 // Chained — registered with POST /v1/producers { "mode": "chained" }
@@ -95,7 +95,7 @@ The `meta` block (per [ADR-0003 Event Schema](0002-event-schema.md)) is the carr
 // (no producer_id, no chain state, no broker dedup)
 ```
 
-Within `meta`, `previous` and `sequence` are the producer-chain pair (no naming collision with the body-level `sequence` — the `meta.` qualifier disambiguates per [ADR-0003 § Terminology Cleanup](0002-event-schema.md#terminology-cleanup-offset--sequence)).
+Within `meta`, `previous` and `sequence` are the producer-chain pair (no naming collision with the body-level `sequence` — the `meta.` qualifier disambiguates per [ADR-0003 § Terminology Cleanup](0003-event-schema.md#terminology-cleanup-offset--sequence)).
 
 #### When to Choose Each Mode
 
@@ -117,7 +117,7 @@ Rule of thumb:
 - **Response**: `201 Created`, body `{ "id": "<uuid>", "mode": "<mode>", "client_agent": "<echoed>" }`, header `Location: /v1/producers/<id>`.
 - **Authn**: requires an authenticated principal. The producer row records the principal as `owner_principal`.
 - **Modes other than `chained` / `monotonic`** (including `stateless`) → `400 InvalidMode`. Stateless does not register.
-- **`client_agent`** is an informational diagnostic hint — purely observational. The broker persists it on the producer row, returns it on the cursor and reset endpoints, and surfaces it in operational logs and metric labels. It does **not** participate in deduplication, authorization, ownership, or any other load-bearing decision; collisions across producers are allowed. Validation: ASCII, 1–256 bytes, conforms to RFC 9110 User-Agent grammar (`product *( RWS ( product / comment ) )`). Failure surfaces as the canonical RFC 9457 `400` problem type; no broker-specific error code. Immutable after create — no mutation endpoint exists. The HTTP `User-Agent` request header continues to be captured in access logs on every request independently of `client_agent` and is NOT a fallback for a missing `client_agent`.
+- **`client_agent`** is an informational diagnostic hint — purely observational. The broker persists it on the producer row, echoes it on the registration and cursor responses, and surfaces it in operational logs and metric labels. It does **not** participate in deduplication, authorization, ownership, or any other load-bearing decision; collisions across producers are allowed. Validation: ASCII, 1–256 bytes, conforms to RFC 9110 User-Agent grammar (`product *( RWS ( product / comment ) )`). Failure surfaces as the canonical RFC 9457 `400` problem type; no broker-specific error code. Immutable after create — no mutation endpoint exists. The HTTP `User-Agent` request header continues to be captured in access logs on every request independently of `client_agent` and is NOT a fallback for a missing `client_agent`.
 
 The caller persists the returned `id` (as `producer_id`) and distributes it to its producer fleet (DB, ConfigMap, env var, secret store — caller's choice of coordination mechanism).
 
@@ -140,7 +140,7 @@ On every publish, after authn but before any storage write:
 | `chained` | `producer_id`, `previous`, `sequence` | — | `400 ChainModeFieldsMissing` |
 | `monotonic` | `producer_id`, `sequence` | `previous` | `400 MonotonicModeFieldsViolation` |
 
-3. If `meta.version` exceeds the broker's supported version → reject `400 UnknownMetaVersion` (per [ADR-0003 § Optional Versioned `meta` Block](0002-event-schema.md#optional-versioned-meta-block)).
+3. If `meta.version` exceeds the broker's supported version → reject `400 UnknownMetaVersion` (per [ADR-0003 § Optional Versioned `meta` Block](0003-event-schema.md#optional-versioned-meta-block)).
 
 After validation passes, mode-specific business rules apply:
 
@@ -347,19 +347,19 @@ External references:
 - Apache Kafka — idempotent producer protocol (producer-id + sequence + epoch model): <https://kafka.apache.org/documentation/#producerconfigs_enable.idempotence>
 - RFC 2119 / RFC 8174 — keyword definitions (MUST, SHOULD, MAY)
 - RFC 9457 — Problem Details for HTTP APIs
-- W3C Trace Context (`traceparent`) — referenced by [ADR-0003 § Field-Level Changes](0002-event-schema.md#field-level-changes)
+- W3C Trace Context (`traceparent`) — referenced by [ADR-0003 § Field-Level Changes](0003-event-schema.md#field-level-changes)
 
 ## Traceability
 
 - **PRD**: [PRD.md](../PRD.md)
   - `cpt-cf-evbk-fr-producer-modes` — three producer modes; chained / monotonic dedup; principal binding
   - `cpt-cf-evbk-fr-publish-single` — single-event publish carries `meta` per this ADR's wire shapes
-  - `cpt-cf-evbk-fr-publish-batch` — batch publish carries per-event `meta`; chained-mode batches are contiguous-chain (see [ADR-0003](0002-event-schema.md))
+  - `cpt-cf-evbk-fr-publish-batch` — batch publish carries per-event `meta`; chained-mode batches are contiguous-chain (see [ADR-0003](0003-event-schema.md))
 - **DESIGN**: [DESIGN.md](../DESIGN.md)
   - §3.2 Producer Modes — shrunk to summary + link to `docs/features/0001-idempotent-producers.md`
-  - §3.6 Two Sequences — producer chain in `meta` (per this ADR); server-assigned `sequence` (per [ADR-0003](0002-event-schema.md))
-  - §3.7 Database schemas — `evbk_producer` row shape (this ADR); `evbk_producer_state` row shape (existing); both governed by [ADR-0003](0002-event-schema.md) field-level changes
+  - §3.6 Two Sequences — producer chain in `meta` (per this ADR); server-assigned `sequence` (per [ADR-0003](0003-event-schema.md))
+  - §3.7 Database schemas — `evbk_producer` row shape (this ADR); `evbk_producer_state` row shape (existing); both governed by [ADR-0003](0003-event-schema.md) field-level changes
 - **Related ADRs**:
   - [`0002-partition-selection`](0002-partition-selection.md) — partition derivation contract; chain dedup invariant ((producer_id, topic, partition) determinism on retry)
-  - [`0002-event-schema`](0002-event-schema.md) — canonical event shape; `meta` block placement (`writeOnly`); `tenant_id` flips to producer-supplied; `subject_type` stays; ASCII encoding rule
+  - [`0003-event-schema`](0003-event-schema.md) — canonical event shape; `meta` block placement (`writeOnly`); `tenant_id` flips to producer-supplied; `subject_type` stays; ASCII encoding rule
 - **Feature doc**: [`docs/features/0001-idempotent-producers.md`](../features/0001-idempotent-producers.md) — CDSL flows, mode-choice producer-author guidance, acceptance criteria, test plan

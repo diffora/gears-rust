@@ -75,7 +75,7 @@ pub use profile::{
 };
 pub use provider::{
     ClusterCacheProvider, ClusterLeaderElectionProvider, ClusterLockProvider,
-    ClusterServiceDiscoveryProvider, StopHook,
+    ClusterServiceDiscoveryProvider, SD_POLL_INTERVAL_MS_OPTION, StopHook,
 };
 pub use registration::{
     deregister_cache_backend, deregister_leader_election_backend, deregister_lock_backend,

@@ -9,13 +9,22 @@ use crate::models::{PartitionLeader, PartitionRange, TopicSegment};
 use super::core::MockBroker;
 use super::ingest::ingest_one;
 
-/// The mock implements `EventBrokerStorageBackend` over the same `Core.log` as
+/// The mock implements `EventBrokerBackend` over the same `Core.log` as
 /// the transport seam (O2 - flattening playground). `persist` goes through the
 /// same `ingest_one` pipeline so storage and transport stay in sync.
 ///
 /// `truncate` and `segments` are stubs marked with `TODO(M5b-flattening)` -
 /// they will become the primary surface when the backend-contract is reshaped to
 /// the PRD's `persist/query/truncate/segments` form.
+///
+/// TODO(M5b-flattening): the storage-backend contract is intentionally NOT yet
+/// reconciled with the design docs. The docs (DESIGN §3.2 / PRD) describe the
+/// intended shape - trait `StorageBackend`, methods `persist/query/truncate/segments`,
+/// RFC 9457 `StorageError` - while this SDK currently ships `EventBrokerBackend` with
+/// `persist/read/query/list_partition_leaders` and a plain `StorageBackendError`
+/// (note `query`/`read` are swapped vs the docs' names). Reconcile the name, method
+/// set, and error model here during the M5b backend reshape - it's a real API + wire
+/// change that belongs in its own change, not a docs/review-fixes pass.
 #[async_trait]
 impl EventBrokerBackend for MockBroker {
     async fn persist(

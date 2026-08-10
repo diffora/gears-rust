@@ -49,7 +49,7 @@ fn async_commit_om_does_not_implement_commit_offset_in_tx() {
 
 #[tokio::test]
 async fn consumer_new_unbound_starts_empty() {
-    let consumer = Consumer::new(3);
+    let consumer = Consumer::new();
     // No slots were spawned; subscription_ids is empty.
     assert!(consumer.subscription_ids().is_empty());
     // Shutdown on an unbound consumer is a no-op.

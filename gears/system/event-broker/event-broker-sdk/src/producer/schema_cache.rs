@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use toolkit_security::SecurityContext;
 
-use crate::api::EventBroker;
+use crate::api::EventBrokerApi;
 use crate::error::EventBrokerError;
 use crate::models::EventType;
 
@@ -55,7 +55,7 @@ pub(crate) struct ProducerSchemaCache {
 impl ProducerSchemaCache {
     pub(crate) async fn prepare_all(
         &self,
-        broker: &Arc<dyn EventBroker>,
+        broker: &Arc<dyn EventBrokerApi>,
         ctx: &SecurityContext,
         topics: &[String],
         patterns: &[String],
@@ -102,7 +102,7 @@ impl ProducerSchemaCache {
 
     pub(crate) async fn prepare_one(
         &self,
-        broker: &Arc<dyn EventBroker>,
+        broker: &Arc<dyn EventBrokerApi>,
         ctx: &SecurityContext,
         topics: &[String],
         patterns: &[String],
@@ -198,7 +198,7 @@ impl ProducerSchemaCache {
 
     async fn prepare_topics(
         &self,
-        broker: &Arc<dyn EventBroker>,
+        broker: &Arc<dyn EventBrokerApi>,
         ctx: &SecurityContext,
         topics: &[String],
     ) -> Result<(), EventBrokerError> {

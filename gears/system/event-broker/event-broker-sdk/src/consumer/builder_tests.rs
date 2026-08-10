@@ -1,8 +1,7 @@
 use crate::consumer::{
-    BatchHandlerOutcome, ConsumerBuffering, ConsumerBuilder, ConsumerCommitMode, ConsumerGroupRef,
-    ConsumerHandle, ConsumerHandler, ConsumerListenerSettings, ConsumerProfile, EventBatch,
-    EventTypeRef, Fallback, HandlerOutcome, InMemoryOffsetManager, RawEvent, SingleEventHandler,
-    TopicRef,
+    BatchHandlerOutcome, ConsumerBuffering, ConsumerBuilder, ConsumerGroupRef, ConsumerHandle,
+    ConsumerHandler, ConsumerListenerSettings, ConsumerProfile, EventBatch, EventTypeRef, Fallback,
+    HandlerOutcome, InMemoryOffsetManager, RawEvent, SingleEventHandler, TopicRef,
 };
 use crate::error::{ConsumerError, EventBrokerError};
 use std::time::Duration;
@@ -268,7 +267,7 @@ async fn routed_consumer_rejects_missing_subscription_topics() {
 
 #[tokio::test]
 async fn consumer_handle_exposes_subscription_inspection_and_stop() {
-    let handle = ConsumerHandle::from_consumer(super::runtime::Consumer::new(2));
+    let handle = ConsumerHandle::from_consumer(super::runtime::Consumer::new());
 
     assert!(handle.subscription_ids().is_empty());
     handle.stop().await.expect("empty handle stop");
@@ -277,7 +276,7 @@ async fn consumer_handle_exposes_subscription_inspection_and_stop() {
 #[cfg(feature = "test-util")]
 #[tokio::test]
 async fn multiple_consumer_handles_run_with_independent_lifecycle() {
-    use crate::EventBroker;
+    use crate::EventBrokerApi;
     use crate::mock::{MockBroker, MockBrokerHandle};
 
     const ORDERS_TOPIC: &str = gts_id!("cf.core.events.topic.v1~cf.core.orders.topic.v1");
@@ -291,7 +290,7 @@ async fn multiple_consumer_handles_run_with_independent_lifecycle() {
         .set_heartbeat_interval(Duration::from_millis(10))
         .await;
 
-    let broker: std::sync::Arc<dyn EventBroker> = std::sync::Arc::new(mock);
+    let broker: std::sync::Arc<dyn EventBrokerApi> = std::sync::Arc::new(mock);
     let orders = ConsumerBuilder::new(broker.clone())
         .group(ConsumerGroupRef::auto_anonymous("orders-handle"))
         .topics([ORDERS_TOPIC])
@@ -346,7 +345,9 @@ async fn wait_for_subscription_count(handle: &ConsumerHandle, expected: usize) {
 
 #[cfg(feature = "db")]
 mod tx_typestate {
+    #[cfg(feature = "test-util")]
     use std::sync::Arc;
+    #[cfg(feature = "test-util")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
@@ -398,11 +399,13 @@ mod tx_typestate {
         }
     }
 
+    #[cfg(feature = "test-util")]
     #[derive(Clone, Default)]
     struct CountingTxOffsetManager {
         commits: Arc<AtomicUsize>,
     }
 
+    #[cfg(feature = "test-util")]
     #[async_trait]
     impl OffsetStore for CountingTxOffsetManager {
         async fn load_position(
@@ -415,6 +418,7 @@ mod tx_typestate {
         }
     }
 
+    #[cfg(feature = "test-util")]
     #[async_trait]
     impl CommitOffsetInTx for CountingTxOffsetManager {
         async fn commit_in_tx<TX>(
@@ -433,6 +437,7 @@ mod tx_typestate {
         }
     }
 
+    #[cfg(feature = "test-util")]
     impl ConsumerOffsetManager for CountingTxOffsetManager {
         type BuilderState = WithTx<Self>;
 
@@ -441,8 +446,10 @@ mod tx_typestate {
         }
     }
 
+    #[cfg(feature = "test-util")]
     struct NoCommitTxHandler;
 
+    #[cfg(feature = "test-util")]
     #[async_trait]
     impl TxSingleEventHandler<CountingTxOffsetManager> for NoCommitTxHandler {
         async fn handle(
@@ -515,7 +522,7 @@ mod tx_typestate {
     #[cfg(feature = "test-util")]
     #[tokio::test]
     async fn transactional_consumer_start_paths_return_lifecycle_handles() {
-        use crate::EventBroker;
+        use crate::EventBrokerApi;
         use crate::mock::{MockBroker, MockBrokerHandle};
 
         const TOPIC: &str = gts_id!("cf.core.events.topic.v1~cf.core.orders.topic.v1");
@@ -526,7 +533,7 @@ mod tx_typestate {
         control
             .set_heartbeat_interval(Duration::from_millis(10))
             .await;
-        let broker: std::sync::Arc<dyn EventBroker> = std::sync::Arc::new(mock);
+        let broker: std::sync::Arc<dyn EventBrokerApi> = std::sync::Arc::new(mock);
 
         let single = ConsumerBuilder::new(broker.clone())
             .group(ConsumerGroupRef::auto_anonymous("tx-single-start"))
@@ -570,7 +577,8 @@ mod tx_typestate {
     #[cfg(feature = "test-util")]
     #[tokio::test]
     async fn transactional_consumer_does_not_auto_commit_when_handler_omits_commit_in_tx() {
-        use crate::EventBroker;
+        use crate::EventBrokerApi;
+        use crate::consumer::ConsumerCommitMode;
         use crate::mock::stubs::test_ctx_for_tenant;
         use crate::mock::{MockBroker, MockBrokerHandle};
         use crate::models::Event;
@@ -594,7 +602,7 @@ mod tx_typestate {
         control
             .set_heartbeat_interval(Duration::from_millis(10))
             .await;
-        let broker: std::sync::Arc<dyn EventBroker> = std::sync::Arc::new(mock);
+        let broker: std::sync::Arc<dyn EventBrokerApi> = std::sync::Arc::new(mock);
         let ctx =
             test_ctx_for_tenant(Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
         let manager = CountingTxOffsetManager::default();

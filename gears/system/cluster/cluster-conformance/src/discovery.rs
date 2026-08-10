@@ -9,31 +9,44 @@
 //! instances in an unspecified order.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cluster_sdk::discovery::{
     DiscoveryFilter, InstanceState, MetaMatch, ServiceDiscoveryBackend, ServiceRegistration,
-    ServiceWatchEvent, StateFilter, TopologyChange,
+    StateFilter, TopologyChange,
 };
 
-/// Runs every implemented L2 discovery scenario against a fresh backend from
-/// `make`.
+use crate::factory::{ScenarioBackend, run_scenario};
+use crate::time::TimeControl;
+use crate::watch_poll::poll_watch;
+
+/// Runs every implemented L2 discovery scenario, each against a fresh backend
+/// built by the async factory `make` and torn down afterward (see
+/// [`ScenarioBackend`]).
 ///
-/// # Panics
-/// Requires a `current_thread` Tokio runtime — `scenario_disc_006` calls
-/// `tokio::time::pause()`, which panics under `multi_thread`.
-pub async fn run_discovery_conformance<F>(make: F)
+/// `time` selects the clock model. `SC-DISC-006` runs **only** under
+/// [`TimeControl::Virtual`]: it asserts a registration disappears purely by
+/// letting its TTL (a fixed 30s in the SDK default backend) lapse, driven by a
+/// virtual-time fast-forward. That is not expressible as a bounded real sleep
+/// against a real backend, so it is skipped under [`TimeControl::Real`] (a real
+/// TTL-lapse belongs to L4). `scenario_disc_006` therefore still uses
+/// `tokio::time::pause()` internally and requires a `current_thread` runtime.
+pub async fn run_discovery_conformance<F, Fut>(make: F, time: TimeControl)
 where
-    F: Fn() -> Arc<dyn ServiceDiscoveryBackend>,
+    F: Fn() -> Fut,
+    Fut: Future<Output = ScenarioBackend<dyn ServiceDiscoveryBackend>>,
 {
-    scenario_disc_001(make()).await;
-    scenario_disc_002(make()).await;
-    scenario_disc_003(make()).await;
-    scenario_disc_004(make()).await;
-    scenario_disc_005(make()).await;
-    scenario_disc_006(make()).await;
-    scenario_disc_007(make()).await;
+    run_scenario(make(), scenario_disc_001).await;
+    run_scenario(make(), scenario_disc_002).await;
+    run_scenario(make(), scenario_disc_003).await;
+    run_scenario(make(), scenario_disc_004).await;
+    run_scenario(make(), scenario_disc_005).await;
+    if time == TimeControl::Virtual {
+        run_scenario(make(), scenario_disc_006).await;
+    }
+    run_scenario(make(), scenario_disc_007).await;
 }
 
 /// SC-DISC-001: a registered, enabled instance is returned by `discover` under
@@ -198,11 +211,9 @@ pub async fn scenario_disc_005(backend: Arc<dyn ServiceDiscoveryBackend>) {
         .expect("register");
     // Wait for Joined.
     let id = handle.instance_id().to_owned();
-    wait_for_discovery_event(
-        &mut watch,
-        |e| matches!(e, TopologyChange::Joined(i) if i.instance_id == id),
-    )
-    .await;
+    poll_watch(&mut watch)
+        .until(|e| matches!(e, TopologyChange::Joined(i) if i.instance_id == id))
+        .await;
 
     // Drain.
     handle
@@ -221,10 +232,9 @@ pub async fn scenario_disc_005(backend: Arc<dyn ServiceDiscoveryBackend>) {
     // Deregister.
     handle.deregister().await.expect("deregister");
     assert!(
-        wait_for_discovery_event(&mut watch, |e| {
-            matches!(e, TopologyChange::Left { instance_id } if instance_id == &id)
-        })
-        .await,
+        poll_watch(&mut watch)
+            .until(|e| matches!(e, TopologyChange::Left { instance_id } if instance_id == &id))
+            .await,
         "SC-DISC-005: deregister must emit Left"
     );
     let after_dereg = backend
@@ -277,10 +287,9 @@ pub async fn scenario_disc_007(backend: Arc<dyn ServiceDiscoveryBackend>) {
 
     // Joined.
     assert!(
-        wait_for_discovery_event(&mut watch, |e| {
-            matches!(e, TopologyChange::Joined(i) if i.instance_id == id)
-        })
-        .await,
+        poll_watch(&mut watch)
+            .until(|e| matches!(e, TopologyChange::Joined(i) if i.instance_id == id))
+            .await,
         "SC-DISC-007: register must emit Joined"
     );
 
@@ -292,20 +301,18 @@ pub async fn scenario_disc_007(backend: Arc<dyn ServiceDiscoveryBackend>) {
         .await
         .expect("update metadata");
     assert!(
-        wait_for_discovery_event(&mut watch, |e| {
-            matches!(e, TopologyChange::Updated(i) if i.instance_id == id)
-        })
-        .await,
+        poll_watch(&mut watch)
+            .until(|e| matches!(e, TopologyChange::Updated(i) if i.instance_id == id))
+            .await,
         "SC-DISC-007: update_metadata must emit Updated"
     );
 
     // Left.
     handle.deregister().await.expect("deregister");
     assert!(
-        wait_for_discovery_event(&mut watch, |e| {
-            matches!(e, TopologyChange::Left { instance_id } if instance_id == &id)
-        })
-        .await,
+        poll_watch(&mut watch)
+            .until(|e| matches!(e, TopologyChange::Left { instance_id } if instance_id == &id))
+            .await,
         "SC-DISC-007: deregister must emit Left"
     );
 }
@@ -313,25 +320,6 @@ pub async fn scenario_disc_007(backend: Arc<dyn ServiceDiscoveryBackend>) {
 // TODO(SC-DISC-008): service name is scoped; metadata is not scoped — requires
 //   the `ServiceDiscoveryV1::scoped()` facade (needs `ClientHub`, deferred to L3).
 // TODO(SC-DISC-009) [L4]: recover membership after lag/reset — fault-injection harness.
-
-/// Polls a service watch for up to 64 events, returning `true` once one satisfies
-/// `pred`. Bounded so a missing event fails fast rather than hanging.
-async fn wait_for_discovery_event<P>(
-    watch: &mut cluster_sdk::discovery::ServiceWatch,
-    pred: P,
-) -> bool
-where
-    P: Fn(&TopologyChange) -> bool,
-{
-    for _ in 0..64 {
-        match watch.recv().await {
-            Some(ServiceWatchEvent::Change(change)) if pred(&change) => return true,
-            Some(ServiceWatchEvent::Closed(_)) | None => return false,
-            _ => {}
-        }
-    }
-    false
-}
 
 /// Builds a registration with `metadata` key/value pairs and a backend-assigned
 /// instance id.

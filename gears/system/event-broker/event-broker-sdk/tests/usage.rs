@@ -28,7 +28,7 @@ use event_broker_sdk::mock::MockBroker;
 #[cfg(all(feature = "db", feature = "outbox"))]
 use event_broker_sdk::mock::MockBrokerHandle;
 use event_broker_sdk::{
-    ConsumerBuilder, ConsumerError, ConsumerGroupRef, DirectDeduplication, EventBroker,
+    ConsumerBuilder, ConsumerError, ConsumerGroupRef, DirectDeduplication, EventBrokerApi,
     EventTypeRef, Fallback, HandlerOutcome, InMemoryOffsetManager, IngestOutcome, Producer,
     ProducerIdentity, ProducerMode, RawEvent, SingleEventHandler, SubscriptionInterest, TopicRef,
     TypedEvent,
@@ -183,11 +183,11 @@ impl SingleEventHandler for NamedHandler {
 /// A service can set up the mock broker contract before wiring producers or consumers.
 ///
 /// Preconditions: the mock starts empty.
-/// Expected: the registered topic and event type are visible through the EventBroker API.
+/// Expected: the registered topic and event type are visible through the EventBrokerApi API.
 #[tokio::test]
 async fn mock_registers_order_topic_and_event_type() -> TestResult {
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
     let ctx = SecurityContext::anonymous();
 
@@ -218,7 +218,7 @@ async fn mock_registers_order_topic_and_event_type() -> TestResult {
 #[tokio::test]
 async fn producer_stateless_publish_sends_typed_event() -> TestResult {
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
@@ -260,7 +260,7 @@ async fn producer_stateless_publish_sends_typed_event() -> TestResult {
 #[tokio::test]
 async fn producer_persisted_publish_waits_for_storage() -> TestResult {
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
@@ -298,7 +298,7 @@ async fn producer_persisted_publish_waits_for_storage() -> TestResult {
 #[tokio::test]
 async fn producer_batch_publish_sends_multiple_events() -> TestResult {
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
@@ -341,7 +341,7 @@ async fn producer_batch_publish_sends_multiple_events() -> TestResult {
 #[tokio::test]
 async fn producer_chained_mode_uses_broker_issued_id_and_sequences_events() -> TestResult {
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
     let ctx = SecurityContext::anonymous();
 
@@ -375,12 +375,10 @@ async fn producer_chained_mode_uses_broker_issued_id_and_sequences_events() -> T
     producer.publish(order_created()).await?;
 
     let cursors = broker.get_producer_cursors(&ctx, producer_id).await?;
-    let cursor = cursors
-        .iter()
-        .find(|cursor| cursor.topic == ORDERS_TOPIC && cursor.partition == TENANT_PARTITION)
-        .expect("cursor for orders tenant partition");
-
-    assert_eq!(cursor.last_sequence, 0);
+    assert_eq!(
+        cursors.last_sequence(ORDERS_TOPIC, TENANT_PARTITION),
+        Some(0),
+    );
     assert_eq!(handle.stored(ORDERS_TOPIC, TENANT_PARTITION).await.len(), 1);
 
     Ok(())
@@ -393,7 +391,7 @@ async fn producer_chained_mode_uses_broker_issued_id_and_sequences_events() -> T
 #[tokio::test]
 async fn consumer_with_in_memory_offsets_receives_event_from_mock() -> TestResult {
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
@@ -452,7 +450,7 @@ async fn consumer_with_in_memory_offsets_receives_event_from_mock() -> TestResul
 #[tokio::test]
 async fn consumer_routes_events_by_topic_and_type() -> TestResult {
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
@@ -524,12 +522,12 @@ async fn consumer_routes_events_by_topic_and_type() -> TestResult {
 
 /// A produced event is visible to a consumer reading from the same mock broker.
 ///
-/// Preconditions: producer and consumer share the same `Arc<dyn EventBroker>`.
+/// Preconditions: producer and consumer share the same `Arc<dyn EventBrokerApi>`.
 /// Expected: the consumer observes the exact subject produced by the order service.
 #[tokio::test]
 async fn producer_and_consumer_round_trip_order_created() -> TestResult {
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
@@ -590,7 +588,7 @@ async fn producer_and_consumer_round_trip_order_created() -> TestResult {
 async fn outbox_producer_validates_before_enqueue() -> TestResult {
     let db = sqlite_db_with_outbox_and_producer_migrations().await?;
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
@@ -652,7 +650,7 @@ async fn outbox_producer_validates_before_enqueue() -> TestResult {
 async fn outbox_producer_drains_queue_to_mock_broker() -> TestResult {
     let db = sqlite_db_with_outbox_and_producer_migrations().await?;
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
@@ -707,7 +705,7 @@ async fn outbox_producer_drains_queue_to_mock_broker() -> TestResult {
 async fn single_outbox_queue_can_carry_multiple_topics() -> TestResult {
     let db = sqlite_db_with_outbox_and_producer_migrations().await?;
     let mock = Arc::new(MockBroker::new());
-    let broker: Arc<dyn EventBroker> = mock.clone();
+    let broker: Arc<dyn EventBrokerApi> = mock.clone();
     let handle = mock.handle();
 
     handle.register_topic(ORDERS_TOPIC, 4).await;
