@@ -268,6 +268,32 @@ async fn a_run_is_never_deleted() {
     .await;
 }
 
+/// **`kind` is §4's two flows and nothing else.**
+///
+/// The rule fails **open**: nothing in this suite writes a third token, so a
+/// `CHECK` that stopped refusing would break no path here at all. What it would
+/// break is the read — `bulk_repo` maps a row whose `kind` it cannot parse to
+/// `CorruptRow`, so the run answers a 500 instead of a report, and the report is
+/// the operator's record of money that moved.
+///
+/// Driven at `INSERT` with the state left at `validating`: the born-validating
+/// trigger is strictly narrower and answers ahead of every `CHECK` on this
+/// table, so a case that varied the state as well would be reading the trigger's
+/// refusal (D-261's shadowing). `UPDATE` is closed to it in any case — `kind` is
+/// one of the six frozen columns.
+#[tokio::test]
+async fn a_kind_outside_the_two_flows_is_refused() {
+    let conn = migrated_db().await;
+    must_be_rejected(&conn, &seed("migration"), "chk_pricing_bulk_operation_kind").await;
+    // The near miss, so the constraint is shown to be about the vocabulary and
+    // not merely about the column being non-empty.
+    must_be_rejected(&conn, &seed("Import"), "chk_pricing_bulk_operation_kind").await;
+    // The same statement with only `kind` changed lands, which is what makes the
+    // two refusals above facts about this constraint rather than about the
+    // fixture: with it dropped, both would have landed too.
+    must_succeed(&conn, &seed("import")).await;
+}
+
 /// O4: one operation per client key per tenant.
 #[tokio::test]
 async fn a_client_key_is_idempotent_within_a_tenant() {

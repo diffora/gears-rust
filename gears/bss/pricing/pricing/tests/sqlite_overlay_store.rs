@@ -452,6 +452,30 @@ async fn an_inverted_effective_interval_is_refused() {
     .await;
 }
 
+/// **A revision is a position in a chain, and the chain starts at zero.**
+///
+/// `chk_pricing_price_overlay_revision` fails **open**: `overlay_repo` numbers
+/// revisions itself and can never spell a negative one, so dropping the
+/// constraint breaks no path and admits a row that sorts **ahead of** the
+/// overlay's own origin. `uq_pricing_price_overlay_open_draft` admits one draft
+/// per overlay wherever it sorts, so such a row takes the draft slot while every
+/// latest-revision read answers from the real head — and the line table's
+/// composite foreign key would then let lines hang off a predecessor of
+/// revision 0.
+#[tokio::test]
+async fn a_negative_revision_is_refused() {
+    let conn = migrated_db().await;
+    must_be_rejected(
+        &conn,
+        &draft_overlay(OVERLAY, -1),
+        "chk_pricing_price_overlay_revision",
+    )
+    .await;
+    // Zero is the boundary and is the origin every chain starts at, so the rule
+    // is pinned from below too: `> 0` would refuse every overlay ever authored.
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+}
+
 /// A published revision is frozen in content; only the sanctioned flip moves it
 /// (D-92).
 #[tokio::test]
@@ -969,6 +993,93 @@ async fn the_magnitude_kind_and_the_bp_value_imply_each_other() {
             LINE, OVERLAY, 0, "NULL", "NULL", "NULL", "discount", "amount", "1000",
         ),
         "chk_pricing_price_overlay_line_magnitude_pairing",
+    )
+    .await;
+}
+
+/// **D-08's other half: the magnitude kind is a closed pair.**
+///
+/// `chk_..._magnitude_pairing` only relates `percent_bp` to the presence of a bp
+/// value, so a third token carrying no value satisfies it — which is why this
+/// rule fails **open** with the pairing case green beside it. `ratio` below
+/// passes every other `CHECK` on the row and lands the moment
+/// `chk_..._magnitude_kind` stops refusing, at which point `overlay_rules` reads
+/// a magnitude it has no arm for on a line the store called well formed.
+#[tokio::test]
+async fn a_magnitude_kind_outside_the_declared_pair_is_refused() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+
+    must_be_rejected(
+        &conn,
+        &insert_line(
+            LINE, OVERLAY, 0, "NULL", "NULL", "NULL", "discount", "ratio", "NULL",
+        ),
+        "chk_pricing_price_overlay_line_magnitude_kind",
+    )
+    .await;
+}
+
+/// **The nil uuid is the line key's `plan_id` sentinel, and it is spellable from
+/// the wire.**
+///
+/// `uq_pricing_price_overlay_line_key` coalesces a NULL plan to
+/// `00000000-…-0000`, so a line naming it explicitly keys as the **list-default
+/// line**: it collides with the real default line, or takes the slot first and
+/// makes the default line unauthorable. That is the module doc's *"two of those
+/// three sentinels are spellable from the wire, so the table refuses them
+/// itself"*, and the reason the rule cannot be left to `overlay_repo` — which
+/// refuses a nil plan id too, and is therefore exactly the layer that would keep
+/// every test green while the `CHECK` stopped refusing.
+#[tokio::test]
+async fn the_nil_uuid_cannot_be_spelled_as_a_plan_id() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+
+    must_be_rejected(
+        &conn,
+        &insert_line(
+            LINE,
+            OVERLAY,
+            0,
+            "'00000000-0000-0000-0000-000000000000'",
+            "NULL",
+            "NULL",
+            "discount",
+            "percent_bp",
+            "1500",
+        ),
+        "chk_pricing_price_overlay_line_plan_id_not_nil",
+    )
+    .await;
+}
+
+/// The same argument on the second forgeable sentinel: `COALESCE(target_sku,
+/// '')` means a **blank** SKU keys as "no SKU", so a blank-SKU line collides
+/// with its plan's own per-plan line rather than naming a SKU.
+///
+/// The plan is named on the row because `chk_..._sku_needs_plan` would otherwise
+/// answer first — a mis-arranged fixture here would prove that neighbouring rule
+/// a second time and leave this one untouched.
+#[tokio::test]
+async fn a_blank_target_sku_is_refused() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
+
+    must_be_rejected(
+        &conn,
+        &insert_line(
+            LINE,
+            OVERLAY,
+            0,
+            &format!("'{PLAN}'"),
+            "''",
+            "NULL",
+            "discount",
+            "percent_bp",
+            "1500",
+        ),
+        "chk_pricing_price_overlay_line_target_sku_present",
     )
     .await;
 }

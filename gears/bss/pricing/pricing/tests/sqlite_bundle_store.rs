@@ -273,6 +273,42 @@ async fn one_component_appears_once_per_revision() {
     .await;
 }
 
+/// **A component's minimum quantity has a floor, and it is zero.**
+///
+/// Neither of this table's two quantity `CHECK`s had a case on either engine,
+/// and this is the one that fails **open**: `chk_..._qty_range` only *orders* the
+/// pair, so `min_qty = -1` beside a larger `max_qty` satisfies it and lands the
+/// moment `chk_..._min_qty` stops refusing. A negative minimum is a component
+/// the coverage walk reads as owing quantity — `inst-bc-coverage` takes the
+/// floor of the set it quantifies over from this column — and no typed path can
+/// spell one, so nothing above the schema would have noticed.
+///
+/// Asked from both sides: zero is the boundary and is legal, an optional
+/// component's minimum **being** zero, so a rule tightened to `> 0` would refuse
+/// every one of them.
+#[tokio::test]
+async fn a_negative_component_minimum_quantity_is_refused() {
+    let conn = migrated_db().await;
+    seed_bundle(&conn).await;
+
+    let with_quantities = |min: i32, max: i32| {
+        format!(
+            "INSERT INTO pricing_bundle_component (
+                bundle_id, plan_revision, component_plan_id, tenant_id,
+                included_sku_id, min_qty, max_qty)
+             VALUES ('{BUNDLE}', 0, '{COMPONENT_A}', '{TENANT}', '{SKU_A}', {min}, {max})"
+        )
+    };
+
+    must_be_rejected(
+        &conn,
+        &with_quantities(-1, 5),
+        "chk_pricing_bundle_component_min_qty",
+    )
+    .await;
+    must_succeed(&conn, &with_quantities(0, 5)).await;
+}
+
 /// D-105 again, on the rev-share plane: *"sum to 100% **per** included vendor
 /// SKU"* needs a group per vendor SKU and a party row per party.
 #[tokio::test]

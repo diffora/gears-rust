@@ -22,6 +22,10 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 const OP: &str = "11111111-1111-1111-1111-111111111111";
 const TENANT: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "33333333-3333-3333-3333-333333333333";
+/// A second run, for the cases that need two rows to collide.
+const OTHER_OP: &str = "44444444-4444-4444-4444-444444444444";
+/// A second tenant, so O4's key can be shown to be scoped to one.
+const OTHER_TENANT: &str = "55555555-5555-5555-5555-555555555555";
 
 async fn applied() -> DatabaseConnection {
     Pg::applied().await.raw().await
@@ -54,11 +58,19 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, by: &str) {
 }
 
 fn seed(kind: &str, state: &str) -> String {
+    seed_as(OP, TENANT, kind, state, "ck-1")
+}
+
+/// The same row with the three columns O4's uniqueness is built from — the
+/// operation's own id, its tenant and its client key — chosen by the caller, so
+/// a case can put two rows in the collision the index is about and vary one axis
+/// of it at a time.
+fn seed_as(op: &str, tenant: &str, kind: &str, state: &str, client_key: &str) -> String {
     format!(
         "INSERT INTO bss.pricing_bulk_operation \
          (operation_id, tenant_id, kind, state, client_key, report, submitted_by, submitted_at) \
-         VALUES ('{OP}', '{TENANT}', '{kind}', '{state}', 'ck-1', '{{}}'::jsonb, '{ACTOR}', \
-         now())"
+         VALUES ('{op}', '{tenant}', '{kind}', '{state}', '{client_key}', '{{}}'::jsonb, \
+         '{ACTOR}', now())"
     )
 }
 
@@ -238,6 +250,78 @@ async fn the_machine_admits_no_edge_section_four_does_not_draw() {
     must_succeed(&conn, &move_to("committing")).await;
     must_succeed(&conn, &move_to("completed")).await;
     must_be_rejected(&conn, &move_to("committing"), "not an edge").await;
+}
+
+/// **`kind` is §4's two flows and nothing else**, and Postgres names the
+/// constraint that says so.
+///
+/// This one fails **open**: `chk_pricing_bulk_operation_kind` refuses a value,
+/// so a rewrite that dropped it or widened its list would not break a single
+/// path — it would let a third token land, and `bulk_repo` maps a row whose
+/// `kind` it cannot parse to `CorruptRow`. The run then reads as a 500 rather
+/// than as a run, in the table whose report is the operator-facing record of
+/// money that moved, and no other case in either suite would notice.
+///
+/// Asked at `INSERT` with the state left at `validating`, because
+/// `trg_pricing_bulk_operation_transitions`'s born-validating arm answers ahead
+/// of every `CHECK` on this table (D-261's shadowing); the `UPDATE` path is
+/// closed too, `kind` being one of the frozen columns.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn a_kind_outside_the_two_flows_is_refused() {
+    let conn = applied().await;
+    must_be_rejected(
+        &conn,
+        &seed("migration", "validating"),
+        "chk_pricing_bulk_operation_kind",
+    )
+    .await;
+    // The near miss, so the constraint is shown to be about the vocabulary and
+    // not about the column being non-empty.
+    must_be_rejected(
+        &conn,
+        &seed("Import", "validating"),
+        "chk_pricing_bulk_operation_kind",
+    )
+    .await;
+    // The same statement with only `kind` changed lands, which is what makes the
+    // two refusals above facts about this constraint rather than about the
+    // fixture: with it dropped, both would have landed too.
+    must_succeed(&conn, &seed("import", "validating")).await;
+}
+
+/// **O4's idempotency, on the engine that runs in production**: one operation
+/// per client key per tenant, and Postgres names the index.
+///
+/// The mirror's case can only observe that *something* unique refused —
+/// `SQLite` names the column list for a plain unique index and this suite's twin
+/// asserts the bare word `UNIQUE` — so until this case the index that carries O4
+/// had no assertion naming it anywhere in the schema tier. Dropped, a retried
+/// submit opens a **second** run over the same rows: the first run's locks and
+/// journal are keyed by its own `operation_id`, so the second re-applies every
+/// repricing the first already applied, which is exactly the double application
+/// a client key exists to make impossible.
+///
+/// The third statement is what makes the case about `(tenant_id, client_key)`
+/// rather than about `client_key`: one tenant's key must not exhaust another's.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn one_client_key_opens_one_run_per_tenant() {
+    let conn = applied().await;
+    must_succeed(&conn, &seed("import", "validating")).await;
+
+    must_be_rejected(
+        &conn,
+        &seed_as(OTHER_OP, TENANT, "import", "validating", "ck-1"),
+        "uq_pricing_bulk_operation_client_key",
+    )
+    .await;
+
+    must_succeed(
+        &conn,
+        &seed_as(OTHER_OP, OTHER_TENANT, "import", "validating", "ck-1"),
+    )
+    .await;
 }
 
 /// Identity and provenance are frozen; `DELETE` is refused in every state.

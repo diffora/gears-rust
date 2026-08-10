@@ -832,3 +832,102 @@ async fn a_register_row_is_born_under_a_pending_unit() {
         "no phantom hold landed"
     );
 }
+
+/// **`chk_pricing_approval_key_state` is shadowed on both verbs, and this is the
+/// case that says which guard answers instead.**
+///
+/// The register's four-name vocabulary fails **open** — it refuses a value, so
+/// dropping it breaks nothing and admits a state
+/// `uq_pricing_approval_key_pending` does not recognise, which is a key held by a
+/// row no decision path can ever free. But the `CHECK` cannot be reached by any
+/// statement while the append-only function is live:
+///
+/// * at `INSERT`, the born-submitted arm is strictly narrower — every state but
+///   `submitted` is refused before a `CHECK` is evaluated at all, and a bogus one
+///   is just another of them;
+/// * at `UPDATE`, the direction whitelist makes the destination the **parent's
+///   current state**, and the parent's own `chk_pricing_approval_state` carries
+///   the identical four names — so a bogus destination is unreachable unless the
+///   parent already holds it, which that constraint forbids.
+///
+/// That is `a_state_outside_the_machine_is_refused`'s situation one table over,
+/// and it takes the same remedy: the guard is switched off for one statement, so
+/// the claim that the `CHECK` is defence in depth behind the trigger is
+/// *executed* rather than asserted. Both shadows are measured first, because a
+/// case that only disabled the trigger would not record which rule is actually
+/// load-bearing today.
+///
+/// The trigger is put back and its return proved, so nothing after this line
+/// runs against a register whose guard this test switched off.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_register_state_outside_the_four_is_refused() {
+    let conn = applied().await;
+    seed_pending(&conn).await;
+
+    // The shadow at INSERT: the born-submitted arm, not the vocabulary.
+    must_be_rejected(
+        &conn,
+        &hold(PENDING, REGISTER_KEY, "archived"),
+        "is born submitted with its unit",
+    )
+    .await;
+
+    // And the shadow at UPDATE: the direction whitelist, whose destination is a
+    // state the parent's own CHECK bounds to the same four.
+    must_succeed(&conn, &hold(PENDING, REGISTER_KEY, "submitted")).await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE bss.pricing_approval_key SET state = 'archived'
+              WHERE scope_key = '{REGISTER_KEY}'"
+        ),
+        "a register row follows its unit",
+    )
+    .await;
+
+    // With the function off, the row faces the vocabulary and nothing else.
+    must_succeed(
+        &conn,
+        "ALTER TABLE bss.pricing_approval_key DISABLE TRIGGER trg_pricing_approval_key_append_only",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &hold(&id_at(0x52), REGISTER_KEY, "archived"),
+        "chk_pricing_approval_key_state",
+    )
+    .await;
+    // The four that are declared do land, so the constraint is pinned from both
+    // sides: a vocabulary narrowed to `submitted` alone would leave every
+    // decided unit's register row unwritable.
+    for (n, state) in ["submitted", "approved", "rejected", "voided"]
+        .into_iter()
+        .enumerate()
+    {
+        must_succeed(
+            &conn,
+            &hold(&id_at(0x52), &format!("{REGISTER_KEY}|{n}"), state),
+        )
+        .await;
+    }
+
+    must_succeed(
+        &conn,
+        "ALTER TABLE bss.pricing_approval_key ENABLE TRIGGER trg_pricing_approval_key_append_only",
+    )
+    .await;
+    // Read out of the catalog rather than by executing a branch, for
+    // `a_state_outside_the_machine_is_refused`'s reason: any statement proving
+    // the trigger is back would tie this test to whichever arm answered it.
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT tgenabled::text AS v FROM pg_trigger
+              WHERE tgname = 'trg_pricing_approval_key_append_only'",
+        )
+        .await,
+        "O",
+        "the guard this test switched off must be back on"
+    );
+}

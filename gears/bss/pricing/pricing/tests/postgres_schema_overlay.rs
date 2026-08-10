@@ -277,6 +277,25 @@ async fn the_headers_check_constraints_refuse_their_own_violations() {
         "chk_pricing_price_overlay_interval",
     )
     .await;
+
+    // **A revision is a position in a chain, and the chain starts at zero.**
+    // `chk_pricing_price_overlay_revision` fails open: no writer in this gear
+    // mints a negative revision, so dropping it breaks nothing and admits a row
+    // that sorts **ahead of** the overlay's own origin. `uq_..._open_draft`
+    // admits one draft per overlay wherever it sorts, so the row would take the
+    // draft slot while every "latest revision" read answered from the real head
+    // — and the line table's composite foreign key would then let lines hang off
+    // a predecessor of revision 0. Reached here rather than through
+    // `overlay_repo`, which numbers revisions itself and can never spell one.
+    must_be_rejected(
+        &conn,
+        &insert_overlay(OVERLAY_A, -1, "draft", 10),
+        "chk_pricing_price_overlay_revision",
+    )
+    .await;
+    // Zero is the boundary and is the origin every chain starts at, so the
+    // constraint is pinned from below as well: `> 0` would refuse every overlay.
+    must_succeed(&conn, &insert_overlay(OVERLAY_A, 0, "draft", 10)).await;
 }
 
 /// The append-only function's three arms: frozen content, the unsanctioned flip,
@@ -467,6 +486,49 @@ async fn the_lines_check_constraints_refuse_their_own_violations() {
         (
             line("NULL", "NULL", "NULL", "sidegrade", "percent_bp", "1500"),
             "chk_pricing_price_overlay_line_adjustment_kind",
+        ),
+        // **D-08's other half**: the magnitude *kind* is a closed pair. The
+        // pairing constraint above only relates `percent_bp` to the presence of
+        // a bp value, so a third token with no value satisfies it — `ratio` here
+        // passes every other `CHECK` on the row and lands the moment this one
+        // stops refusing, at which point `overlay_rules` reads a magnitude it
+        // has no arm for on a line the store said was well formed.
+        (
+            line("NULL", "NULL", "NULL", "discount", "ratio", "NULL"),
+            "chk_pricing_price_overlay_line_magnitude_kind",
+        ),
+        // **The nil uuid is the line key's `plan_id` sentinel, and it is
+        // spellable from the wire.** `uq_..._line_key` coalesces a NULL plan to
+        // it, so a line naming it explicitly keys as the list-default line and
+        // collides with it — or, worse, takes the slot first and makes the real
+        // default line unauthorable. The module doc calls this the constraint
+        // that makes the index self-enforcing; `overlay_repo` refuses it too,
+        // which is exactly why only a raw statement can reach the `CHECK`.
+        (
+            line(
+                "'00000000-0000-0000-0000-000000000000'",
+                "NULL",
+                "NULL",
+                "discount",
+                "percent_bp",
+                "1500",
+            ),
+            "chk_pricing_price_overlay_line_plan_id_not_nil",
+        ),
+        // The same argument on the second forgeable sentinel: `COALESCE(target_sku,
+        // '')` means a blank SKU keys as "no SKU". The plan is named because
+        // `chk_..._sku_needs_plan` would otherwise answer first and this case
+        // would prove that rule twice instead of this one.
+        (
+            line(
+                &format!("'{PLAN_1}'"),
+                "''",
+                "NULL",
+                "discount",
+                "percent_bp",
+                "1500",
+            ),
+            "chk_pricing_price_overlay_line_target_sku_present",
         ),
     ] {
         must_be_rejected(&conn, &sql, constraint).await;

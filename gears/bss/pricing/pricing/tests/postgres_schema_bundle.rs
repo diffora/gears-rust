@@ -307,6 +307,43 @@ async fn an_inverted_component_quantity_range_is_refused() {
     .await;
 }
 
+/// **A component's minimum quantity has a floor, and it is zero.**
+///
+/// The rule fails **open** and its neighbour hides that: `chk_..._qty_range`
+/// only orders the pair, so `min_qty = -1` with a larger `max_qty` satisfies it
+/// and lands the moment `chk_..._min_qty` stops refusing. A negative minimum is
+/// a component the coverage walk reads as *owing* quantity — `inst-bc-coverage`
+/// quantifies over a set whose floor it takes from this column — and no typed
+/// path can produce one, so nothing above the schema would ever have said so.
+///
+/// The pair is asked from both sides: zero is the boundary and is legal, because
+/// an optional component's minimum **is** zero and a constraint tightened to
+/// `> 0` would refuse every one of them.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn a_negative_component_minimum_quantity_is_refused() {
+    let conn = applied().await;
+    seed_revision(&conn, PLAN_A, 0).await;
+    seed_bundle(&conn, BUNDLE_A, PLAN_A, "sum_of_parts").await;
+
+    let with_quantities = |min: i32, max: i32| {
+        format!(
+            "INSERT INTO bss.pricing_bundle_component (
+                bundle_id, plan_revision, component_plan_id, tenant_id,
+                included_sku_id, min_qty, max_qty)
+             VALUES ('{BUNDLE_A}', 0, '{COMPONENT_1}', '{TENANT}', '{SKU_1}', {min}, {max})"
+        )
+    };
+
+    must_be_rejected(
+        &conn,
+        &with_quantities(-1, 5),
+        "chk_pricing_bundle_component_min_qty",
+    )
+    .await;
+    must_succeed(&conn, &with_quantities(0, 5)).await;
+}
+
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn a_share_outside_the_basis_point_scale_is_refused() {
