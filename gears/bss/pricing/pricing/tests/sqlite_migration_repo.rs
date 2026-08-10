@@ -368,6 +368,16 @@ async fn the_store_refuses_an_unsanctioned_edge_the_repository_never_offers() {
     // §4 has no `scheduled -> completed`: a run cannot be reported processed by
     // an executor that never declared it started, because the D-36 re-validation
     // and D-65's exclusion set both hang off that declaration.
+    //
+    // **Two guards can answer this move, and this case isolates the trigger**
+    // (D-301). It used to assert `contains("not a sanctioned one") ||
+    // contains("started_required")` over a statement that violated both, so
+    // *either* guard could be deleted with it still green — and it was the only
+    // reference to `chk_pricing_migration_started_required` anywhere outside the
+    // migration census, which made the one Slice-11 constraint that looked
+    // covered the one covered by an assertion surviving its own removal. The
+    // statement below carries `started_at`, so the CHECK is satisfied and only the
+    // edge list can refuse it.
     let conn = migrated_db().await;
     let id = Uuid::now_v7();
     seeded_schedule(&conn, id, "scheduled").await;
@@ -376,16 +386,57 @@ async fn the_store_refuses_an_unsanctioned_edge_the_repository_never_offers() {
         &conn,
         &format!(
             "UPDATE pricing_migration SET state = 'completed', \
+             started_at = '2026-08-07T12:00:00+00:00', \
              completed_at = '2026-08-07T13:00:00+00:00' WHERE migration_id = '{id}'"
         ),
     )
     .await
     .expect_err("scheduled -> completed must be refused");
 
+    let message = err.to_string();
     assert!(
-        err.to_string().contains("not a sanctioned one")
-            || err.to_string().contains("started_required"),
-        "{err}"
+        message.contains("not a sanctioned one"),
+        "the edge list is what answers a move no edge sanctions: {err}"
+    );
+    // **The isolation is asserted, not assumed.** If the CHECK answered this
+    // statement the case would be back to covering two guards with one sentence,
+    // which is the defect it was split out of.
+    assert!(
+        !message.contains("started_required"),
+        "and the CHECK did not answer first: {err}"
+    );
+}
+
+#[tokio::test]
+async fn a_run_cannot_enter_in_progress_without_declaring_when_it_started() {
+    // The other half of the split above (D-301), isolating
+    // `chk_pricing_migration_started_required`. `scheduled -> in_progress` **is**
+    // a sanctioned edge, so the trigger passes it through and only the CHECK can
+    // refuse — which is what makes this the one statement that proves the CHECK
+    // still refuses anything.
+    //
+    // The constraint is two implications rather than a biconditional because
+    // `cancelled` is reachable from `scheduled` as well as from `in_progress`, so
+    // a cancelled run may legitimately carry no start.
+    let conn = migrated_db().await;
+    let id = Uuid::now_v7();
+    seeded_schedule(&conn, id, "scheduled").await;
+
+    let err = exec(
+        &conn,
+        &format!("UPDATE pricing_migration SET state = 'in_progress' WHERE migration_id = '{id}'"),
+    )
+    .await
+    .expect_err("in_progress without a start instant must be refused");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("started_required"),
+        "and the CHECK is what answers it, by name: {err}"
+    );
+    assert!(
+        !message.contains("not a sanctioned one"),
+        "on a sanctioned edge the trigger has nothing to say: {err}"
     );
 }
 
