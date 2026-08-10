@@ -393,16 +393,58 @@ fn line_of(request: &OverlayLineRequest) -> Result<OverlayLine, DomainError> {
         })?,
     };
 
+    Ok(OverlayLine {
+        line_id: request.line_id.unwrap_or_else(Uuid::now_v7),
+        key,
+        adjustment: adjustment_of(
+            &request.adjustment_kind,
+            &request.magnitude_kind,
+            request.adjustment_value,
+            &request.amounts,
+        )?,
+    })
+}
+
+/// The wire fields that say **what to do to an amount**, as the domain's
+/// [`Adjustment`].
+///
+/// `pub(crate)` for one second caller,
+/// [`crate::api::rest::repricing_runs`], and extracted the moment that caller
+/// appeared rather than copied. A mass-repricing run's adjustment is the same
+/// question over the same three tokens — `markup | discount | fixed`,
+/// `percent_bp | amount`, and the per-currency values — and
+/// `12-operator-efficiency.md` `inst-mr-api` names the field without defining it,
+/// so a second reading of "what to do to a price" would have been a second
+/// vocabulary for one fact. Four of the six pairings this rejects are rejected by
+/// **no** store constraint on the repricing path, because a run's adjustment is
+/// not persisted as an overlay line at all: a copy that drifted would drift
+/// silently.
+///
+/// Every refusal here is decidable from the request alone. What is deliberately
+/// **not** here is D-67's magnitude *range* — see
+/// [`check_magnitudes`](crate::domain::overlay_rules::check_magnitudes), which is
+/// a rule about an authored overlay document rather than about this shape.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] for an unknown token, a `percent_bp` with no
+/// value, an `amount` carrying one, or a `fixed` declared `percent_bp` (D-08,
+/// D-138); [`DomainError::CurrencyInvalid`] for a malformed currency.
+pub(crate) fn adjustment_of(
+    adjustment_kind: &str,
+    magnitude_kind: &str,
+    adjustment_value: Option<i64>,
+    amounts: &[AmountRequest],
+) -> Result<Adjustment, DomainError> {
     let amounts = {
-        let mut set = Vec::with_capacity(request.amounts.len());
-        for amount in &request.amounts {
+        let mut set = Vec::with_capacity(amounts.len());
+        for amount in amounts {
             set.push((CurrencyCode::new(&amount.currency)?, amount.value_minor));
         }
         AmountSet::new(set)
     };
 
-    let magnitude = match request.magnitude_kind.as_str() {
-        "percent_bp" => Magnitude::PercentBp(request.adjustment_value.ok_or_else(|| {
+    let magnitude = match magnitude_kind {
+        "percent_bp" => Magnitude::PercentBp(adjustment_value.ok_or_else(|| {
             DomainError::InvalidRequest(
                 "a percent_bp line must carry an adjustment_value: the magnitude's type is \
                  declared and never inferred (D-08)"
@@ -410,7 +452,7 @@ fn line_of(request: &OverlayLineRequest) -> Result<OverlayLine, DomainError> {
             )
         })?),
         "amount" => {
-            if request.adjustment_value.is_some() {
+            if adjustment_value.is_some() {
                 return Err(DomainError::InvalidRequest(
                     "an amount line must not carry an adjustment_value: its magnitude is money \
                      and lives per currency (D-08)"
@@ -426,11 +468,11 @@ fn line_of(request: &OverlayLineRequest) -> Result<OverlayLine, DomainError> {
         }
     };
 
-    let adjustment = match request.adjustment_kind.as_str() {
-        "markup" => Adjustment::Markup(magnitude),
-        "discount" => Adjustment::Discount(magnitude),
+    match adjustment_kind {
+        "markup" => Ok(Adjustment::Markup(magnitude)),
+        "discount" => Ok(Adjustment::Discount(magnitude)),
         "fixed" => {
-            if request.magnitude_kind != "amount" {
+            if magnitude_kind != "amount" {
                 return Err(DomainError::InvalidRequest(
                     "a fixed line is always amount-based: it replaces the running amount with \
                      an absolute price, and a percentage of the amount it replaces evaluates to \
@@ -438,20 +480,12 @@ fn line_of(request: &OverlayLineRequest) -> Result<OverlayLine, DomainError> {
                         .to_owned(),
                 ));
             }
-            Adjustment::Fixed(amounts)
+            Ok(Adjustment::Fixed(amounts))
         }
-        other => {
-            return Err(DomainError::InvalidRequest(format!(
-                "adjustment_kind `{other}` is none of markup, discount, fixed"
-            )));
-        }
-    };
-
-    Ok(OverlayLine {
-        line_id: request.line_id.unwrap_or_else(Uuid::now_v7),
-        key,
-        adjustment,
-    })
+        other => Err(DomainError::InvalidRequest(format!(
+            "adjustment_kind `{other}` is none of markup, discount, fixed"
+        ))),
+    }
 }
 
 /// Every authored line, with every **world-free** rule checked before the store

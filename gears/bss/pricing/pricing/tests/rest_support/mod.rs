@@ -545,6 +545,15 @@ impl Harness {
                 }),
                 &openapi,
             ))
+            // Slice 12's mass repricing, merged here for the bulk import's
+            // reason: this is the router the gate properties drive, and one
+            // absent from it is one no authz property is asked about.
+            .merge(bss_pricing::api::rest::repricing_runs::router(
+                Arc::new(bss_pricing::api::rest::repricing_runs::ApiState {
+                    authoring: Arc::clone(&self.state),
+                }),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::history::router(
                 Arc::clone(&self.history),
                 &openapi,
@@ -1329,14 +1338,43 @@ pub async fn pending_version_refs(harness: &Harness) -> Vec<catalog_version_ref:
 
 /// Seed one draft price row on a distinct region, so several can coexist.
 pub async fn seed_price(harness: &Harness, plan_id: Uuid, region: &str) -> PriceRecord {
+    seed_price_keyed(
+        harness,
+        plan_id,
+        region,
+        PriceEligibility::AllSubscriptions,
+        Cohort::None,
+    )
+    .await
+}
+
+/// The same fixture on a **named eligibility class and cohort**.
+///
+/// [`seed_price`] delegates here rather than the two carrying a copy of one
+/// fixture: what a suite about the grandfathered class needs is that row's *key*
+/// to differ and everything else — the model kind, the proration contract, the
+/// actor, the instant — to stay the row every other suite is seeded with. Two
+/// bodies would drift on the content, and a suite asserting about the class would
+/// then be asserting about a row that differs in ways it never named.
+///
+/// The pairing is `ScopeKey::new`'s to enforce: `cohort != none` if and only if
+/// the class is `existing_grandfathered`, so a caller that gets it wrong is
+/// refused here rather than seeding a key no resolution class selects.
+pub async fn seed_price_keyed(
+    harness: &Harness,
+    plan_id: Uuid,
+    region: &str,
+    price_eligibility: PriceEligibility,
+    cohort: Cohort,
+) -> PriceRecord {
     let key = ScopeKey::new(
         PlanId::new(plan_id),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
         seeded_phase(),
-        PriceEligibility::AllSubscriptions,
+        price_eligibility,
         ChargeKind::Recurring,
-        Cohort::None,
+        cohort,
     )
     .expect("scope key");
     harness

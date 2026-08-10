@@ -913,6 +913,17 @@ impl RestApiCapability for BssPricingGear {
                 }),
                 openapi,
             ))
+            // Slice 12's mass repricing, mounted beside its bulk sibling and on
+            // the same state for the same reason: the selector's expansion is a
+            // free function over a runner, and so are the run's own statements.
+            // The `POST` writes, so this router carries D-178's correlation edge
+            // of its own.
+            .merge(crate::api::rest::repricing_runs::router(
+                Arc::new(crate::api::rest::repricing_runs::ApiState {
+                    authoring: Arc::clone(&rt.authoring_api),
+                }),
+                openapi,
+            ))
             .merge(crate::api::rest::plans::router(
                 Arc::clone(&rt.authoring_api),
                 openapi,

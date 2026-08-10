@@ -84,6 +84,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::preview::PLAN_PREVIEW;
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+    use bss_pricing::api::rest::repricing_runs::{REPRICING_RUN, REPRICING_RUNS};
     use bss_pricing::api::rest::retirement::PLAN_RETIRE;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
@@ -103,6 +104,14 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("POST", BULK_IMPORTS),
         ("GET", BULK_IMPORT),
         ("POST", BULK_IMPORT_ABORT),
+        // Slice 12's mass repricing (§5). Neither route declares a precondition
+        // header: §5's Idempotency cell for the `POST` is `run_id`, which is a
+        // body member, and `the_repricing_run_declares_no_precondition_header`
+        // below is what keeps a later group from adding one to be helpful. The
+        // `GET` is addressed by that same `run_id` rather than by the minted
+        // operation id — see `api::rest::repricing_runs` for why.
+        ("POST", REPRICING_RUNS),
+        ("GET", REPRICING_RUN),
         ("POST", PLAN_PRICES),
         ("GET", PLAN_PRICES),
         ("PATCH", PLAN_PRICE),
@@ -308,6 +317,15 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             ))
             .merge(bss_pricing::api::rest::bulk_imports::router(
                 Arc::new(bss_pricing::api::rest::bulk_imports::ApiState {
+                    authoring: Arc::clone(&authoring),
+                }),
+                &openapi,
+            ))
+            // Slice 12's mass repricing, mounted here for every other router's
+            // reason: this drop-built tree is what proves the OpenAPI
+            // registrations do not collide.
+            .merge(bss_pricing::api::rest::repricing_runs::router(
+                Arc::new(bss_pricing::api::rest::repricing_runs::ApiState {
                     authoring: Arc::clone(&authoring),
                 }),
                 &openapi,
@@ -705,5 +723,34 @@ async fn the_supersession_declares_no_precondition_header() {
     assert!(
         headers.is_empty(),
         "the supersession takes neither an If-Match nor an Idempotency-Key: {headers:?}"
+    );
+}
+
+/// The **third** route that declares no precondition header, and it needs its own
+/// assertion for [`the_window_cancel_declares_no_precondition_header`]'s reason.
+///
+/// S12 §5's Idempotency cell for `POST /repricing-runs` is `run_id` — a **body
+/// member**, not a header — so the surface declares neither an `Idempotency-Key`
+/// nor an `If-Match`, and the handler takes no `HeaderMap` at all. Its bulk
+/// sibling one path over *does* take a key, which is exactly what makes this
+/// absence look like a forgotten declaration rather than a decision: a later group
+/// reading the two routes as one family could add `idempotency_key_param()` here
+/// with every other test green, and would then have told every generated client to
+/// send a header this server never reads while the real idempotency column sat in
+/// the body being ignored by the client's retry logic.
+#[tokio::test]
+async fn the_repricing_run_declares_no_precondition_header() {
+    let openapi = registered_operations().await;
+
+    let headers = declared_headers(
+        &openapi,
+        "POST",
+        bss_pricing::api::rest::repricing_runs::REPRICING_RUNS,
+    );
+
+    assert!(
+        headers.is_empty(),
+        "the repricing run's idempotency column is its `run_id` body member, so it declares \
+         neither an If-Match nor an Idempotency-Key: {headers:?}"
     );
 }

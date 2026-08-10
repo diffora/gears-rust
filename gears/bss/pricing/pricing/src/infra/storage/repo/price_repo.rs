@@ -119,6 +119,7 @@ use crate::domain::price_row::{
     MinQtyUsageFallback, ModelKind, PriceRow, QuantitySource, ReservationFlavor, RolloverPolicy,
     TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
+use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
     Region, ScopeKey,
@@ -1858,6 +1859,109 @@ pub async fn load_scope_keys_for_plan(
         .iter()
         .map(|row| Ok((row.price_id, to_scope_key(row)?)))
         .collect()
+}
+
+/// The **published** rows a mass-repricing run's selector reaches, in `price_id`
+/// order (`design/12-operator-efficiency.md` `inst-mr-api`, `inst-mp-grandfathered`;
+/// D-307).
+///
+/// One `AND` over the axes the selector names, and nothing for the axes it does
+/// not — so a selector naming `currency` alone is *every published row of that
+/// currency*, which is §2's own "a currency segment".
+///
+/// # Why the state filter is `published` alone
+///
+/// The run's domain is the published plane, stated three ways by the design set:
+/// `inst-mp-standard` applies every row through the Foundation's versioned path,
+/// D-88's supersession units are what that path is for, and D-118 gives the
+/// **draft** plane to the bulk import instead — with `IMPORT_TARGETS_PUBLISHED`
+/// naming a repricing run as the remedy for a draft-plane row that strays onto a
+/// published key. A `superseded` row is excluded for a sharper reason than
+/// symmetry: it is no longer the current row on its key, so repricing one would
+/// author a successor to a predecessor and put two live successors on one key.
+///
+/// # The grandfathered class is excluded unless the selector names it
+///
+/// `inst-mp-grandfathered` clause 1, and [`RunSelector::admits_grandfathered`]
+/// carries the argument. The exclusion is expressed as a `<>` on the eligibility
+/// column rather than by filtering the result, because a row that never enters the
+/// set cannot be silently dropped from it later.
+///
+/// **Only ids come back.** The apply groups by plan (D-134) and reads content per
+/// row inside its own transaction; hydrating whole [`PriceRecord`]s here would
+/// load every band of every selected row to build a journal that stores neither.
+/// [`load_plan_ids`] is the grouping query when the apply needs it.
+///
+/// # There is no page bound, and that is a real edge
+///
+/// An unconstrained selector expands over the tenant's whole published catalog in
+/// one `Vec`. §5 declares no cap for this surface and [`LimitsConfig`] holds none,
+/// so imposing one here would be this gear inventing a limit the design set has
+/// not ratified; what the run *is* bounded by is O3's throughput SLO, which is the
+/// apply's concern. Stated rather than papered over.
+///
+/// [`RunSelector::admits_grandfathered`]: crate::domain::repricing::RunSelector::admits_grandfathered
+/// [`LimitsConfig`]: crate::config::LimitsConfig
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn load_published_for_selector(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    selector: &RunSelector,
+) -> Result<Vec<Uuid>, RepoError> {
+    let mut filter = Condition::all()
+        .add(price::Column::TenantId.eq(tenant_id))
+        .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()));
+    if !selector.admits_grandfathered() {
+        filter = filter.add(
+            price::Column::PriceEligibility.ne(PriceEligibility::ExistingGrandfathered.as_str()),
+        );
+    }
+    if let Some(plan_id) = selector.plan_id {
+        filter = filter.add(price::Column::PlanId.eq(plan_id.get()));
+    }
+    if let Some(currency) = selector.currency.as_ref() {
+        filter = filter.add(price::Column::Currency.eq(currency.as_str()));
+    }
+    if let Some(region) = selector.region.as_ref() {
+        filter = filter.add(price::Column::Region.eq(region.as_str()));
+    }
+    if let Some(phase) = selector.phase {
+        filter = filter.add(price::Column::Phase.eq(phase.get()));
+    }
+    if let Some(eligibility) = selector.price_eligibility {
+        filter = filter.add(price::Column::PriceEligibility.eq(eligibility.as_str()));
+    }
+    if let Some(charge_kind) = selector.charge_kind {
+        filter = filter.add(price::Column::ChargeKind.eq(charge_kind.as_str()));
+    }
+    if let Some(cohort) = selector.cohort {
+        // The column holds the domain token — `none`, or the generation's epoch
+        // milliseconds — so the match is against `Cohort`'s own rendering rather
+        // than against an RFC 3339 instant. `read_cohort` parses this exact
+        // spelling back, which is what keeps the two ends of the axis comparable.
+        filter = filter.add(price::Column::Cohort.eq(cohort.to_string()));
+    }
+    if let Some(meter) = selector.meter.as_ref() {
+        filter = filter.add(price::Column::Meter.eq(meter.as_str()));
+    }
+    if let Some(dimension_key) = selector.dimension_key.as_ref() {
+        filter = filter.add(price::Column::DimensionKey.eq(dimension_key.as_str()));
+    }
+
+    Ok(price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .order_by(price::Column::PriceId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("expand a repricing run's selector: {e}")))?
+        .into_iter()
+        .map(|row| row.price_id)
+        .collect())
 }
 
 /// Which plan each of a set of price rows belongs to, **across tenants**.

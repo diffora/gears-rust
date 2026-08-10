@@ -46,6 +46,7 @@ use bss_pricing::api::rest::plans::{PLAN_ABANDON, PLAN_CLONE, PLANS};
 use bss_pricing::api::rest::preview::PLAN_PREVIEW;
 use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
+use bss_pricing::api::rest::repricing_runs::{REPRICING_RUN, REPRICING_RUNS};
 use bss_pricing::api::rest::retirement::PLAN_RETIRE;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
 use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
@@ -201,6 +202,25 @@ fn census() -> Vec<Route> {
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
+        },
+        // Slice 12's mass repricing. S12 §5's AuthZ column reads `plan x write`
+        // for the open and `plan x read` for the progress endpoint, which is the
+        // bulk import's split one path over and for its reason: a run's journal is
+        // price data, and an operator who may read prices may read what a run did
+        // to them.
+        Route {
+            method: "POST",
+            path: REPRICING_RUNS,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "GET",
+            path: REPRICING_RUN,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
         },
         Route {
             method: "POST",
@@ -703,6 +723,13 @@ fn drive(
         // gate properties need — they assert the refusal, and a run that existed
         // would let a denied call be mistaken for a missing one.
         .replace("{operationId}", "00000000-0000-4000-8000-000000000b17")
+        // The repricing run, on the line above's reasoning exactly. It is a
+        // **different** segment because it is a different value: the progress
+        // endpoint is addressed by the caller's `run_id`, which the run carries as
+        // its client key, and never by the minted `operationId` its sibling uses.
+        // The read asks the PDP before it looks the run up, so an id nothing
+        // points at still drives the gate.
+        .replace("{runId}", "00000000-0000-4000-8000-000000000f00")
         // Not a seeded id either, and for the same reason: the read surface asks
         // the PDP before it reads, and a 404 for a subscription that was never
         // synthesized is the contract (`inst-sy-firstrating`) rather than a gap
@@ -818,6 +845,27 @@ fn drive(
         ("POST", BULK_IMPORTS) => (
             Some(serde_json::json!({ "rows": [] })),
             vec![("idempotency-key", key)],
+        ),
+        // The repricing run, and it carries **no** idempotency header: S12 §5's
+        // column for this surface is the `run_id` body member. The body is
+        // otherwise well-formed and its changeover is dated 2099, so a refusal
+        // here is the gate's and never the submit floor's — the fixtures' standing
+        // rule, and load-bearing on this route because the instant is judged
+        // against the wall clock. An unconstrained selector is deliberate: the
+        // gate runs before the expansion, so a run that would be refused
+        // `RUN_SELECTOR_EMPTY` on the allowed path still proves the denial.
+        ("POST", REPRICING_RUNS) => (
+            Some(serde_json::json!({
+                "run_id": "00000000-0000-4000-8000-000000000f01",
+                "selector": { "currency": "USD" },
+                "adjustment": {
+                    "adjustment_kind": "discount",
+                    "magnitude_kind": "percent_bp",
+                    "adjustment_value": 500,
+                },
+                "changeover": "2099-08-20T00:00:00Z",
+            })),
+            Vec::new(),
         ),
         ("DELETE", PLAN_PRICE) => (None, vec![("if-match", "\"0\"")]),
         // The `Idempotency-Key` is required on the schedule (D-171) and is read
@@ -959,6 +1007,15 @@ async fn registered_paths() -> Vec<String> {
             ))
             .merge(bss_pricing::api::rest::bulk_imports::router(
                 Arc::new(bss_pricing::api::rest::bulk_imports::ApiState {
+                    authoring: Arc::clone(&harness.state),
+                }),
+                &openapi,
+            ))
+            // Slice 12's mass repricing, in this census for the bulk import's
+            // reason: the census is about paths, and a router absent from it is a
+            // router whose path nothing here checks.
+            .merge(bss_pricing::api::rest::repricing_runs::router(
+                Arc::new(bss_pricing::api::rest::repricing_runs::ApiState {
                     authoring: Arc::clone(&harness.state),
                 }),
                 &openapi,

@@ -523,6 +523,28 @@ pub enum DomainError {
         /// What was refused, in the operator's terms.
         detail: String,
     },
+    /// §5's `RUN_SELECTOR_EMPTY`: a mass-repricing run whose selector matched no
+    /// published row (architectural **422** rendered 400, this gear's established
+    /// reading of Foundation §3.3).
+    ///
+    /// A precondition failure and **not** a malformed argument, though every field
+    /// of the selector is well-formed by the time this can be raised: what is
+    /// wrong is a relationship between the request and the world, which is the
+    /// line [`DomainError::MigrationTargetInvalid`] and its two Slice-11 siblings
+    /// are drawn on.
+    ///
+    /// Deliberately not a 404 either. The caller did not address a resource that
+    /// is missing — they described a set, and the set is empty; a 404 would send
+    /// an operator looking for an id that was never in their request.
+    ///
+    /// **The refusal exists because the success is indistinguishable from it.** A
+    /// run is complete when no `pending` journal rows remain (§6), so a run that
+    /// selected nothing is complete at birth: without this, an operator who
+    /// mistyped a region would be told their mass adjustment succeeded, and the
+    /// journal that is supposed to be the evidence would be empty in exactly the
+    /// way a finished run's is.
+    #[error("repricing run selector matched nothing: {0}")]
+    RunSelectorEmpty(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///

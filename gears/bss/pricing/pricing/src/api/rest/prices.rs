@@ -1340,7 +1340,15 @@ fn amount(field: &str, raw: Option<i64>) -> Result<Option<MinorAmount>, DomainEr
 }
 
 /// Read an optional wire token.
-fn optional_token<T: Copy>(
+///
+/// `pub(crate)` for one second caller,
+/// [`crate::api::rest::repricing_runs`], whose selector is nine optional axes and
+/// two of them are enumerations. Shared rather than copied for
+/// [`scope_key_of`]'s reason: the refusal's sentence enumerates the admitted
+/// tokens from the same `candidates` slice the store's `CHECK` was written
+/// against, so a token added on one plane cannot be missing from the other's
+/// message.
+pub(crate) fn optional_token<T: Copy>(
     field: &str,
     token: Option<&str>,
     candidates: &[T],

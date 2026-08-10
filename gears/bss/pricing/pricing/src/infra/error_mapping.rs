@@ -46,6 +46,7 @@ use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 
 use crate::domain::error::DomainError;
 use crate::domain::migration;
+use crate::domain::repricing;
 
 #[resource_error(gts_id!("cf.bss.pricing.plan.v1~"))]
 struct PlanResource;
@@ -107,6 +108,13 @@ impl From<DomainError> for CanonicalError {
                 operation_id,
                 detail,
             } => bulk_refusal(&operation_id, &detail),
+            // §5's second bulk-level refusal, and the repricing run's only
+            // pre-commit one. Through `precondition` for the same reason the three
+            // Slice 11 arms below are: this ladder is bounded at 200 lines by
+            // `clippy::too_many_lines` and an inline builder is five. The subject
+            // is `selector` because that is the whole of what an operator edits to
+            // fix it — the adjustment and the instant were never consulted.
+            D::RunSelectorEmpty(d) => precondition("selector", &d, repricing::RUN_SELECTOR_EMPTY),
             // The temporal sibling of the line above, and classified with it
             // rather than as a malformed argument: the instant parses, it is
             // simply finer than the quantum the catalog compares instants at

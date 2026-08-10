@@ -22,6 +22,7 @@ pub mod preconditions;
 pub mod preview;
 pub mod prices;
 pub mod publish;
+pub mod repricing_runs;
 pub mod retirement;
 pub mod state;
 pub mod supersessions;
