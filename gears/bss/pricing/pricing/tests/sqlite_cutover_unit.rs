@@ -309,10 +309,31 @@ async fn a_generation_on_a_neighbouring_meter_does_not_occupy_this_line_s_instan
 
     // The other line asks for the **same** instant, which nothing on its own key
     // holds.
-    let outcome = cut_over(&h, usage_request(&egress, "egress-gb", 8_800), SUBMITTER)
+    //
+    // **The receipt's `copy_price_id` is what this case turns on, not
+    // `copy_key`** — and the first spelling of it read `copy_key` alone, which
+    // `grandfathered_copy_key` builds *from the predecessor key*, so both
+    // assertions were true by construction whenever the call returned `Ok`. It
+    // was armed against reverting `existing_generations` alone and **green on the
+    // tree where both sites were unfixed**, because the two defects cancel here:
+    // the pre-fix `staged_copy` adopts the neighbour's grandfathered draft, and
+    // `existing_generations` filters `staged_copy_id` out first — so the one
+    // generation the six-axis predicate would have miscounted is the one it has
+    // just excluded. A probe run against one revert at a time cannot see a pair
+    // that cancels; only the whole pre-fix state can.
+    let request = usage_request(&egress, "egress-gb", 8_800);
+    let asked_for = request.copy_price_id;
+    let outcome = cut_over(&h, request, SUBMITTER)
         .await
         .expect("a free instant on this line's own key is free");
 
+    assert_eq!(
+        pending(&outcome).copy_price_id,
+        asked_for,
+        "this act mints its own generation; adopting the neighbouring meter's is \
+         the fail-open half showing through: {:?}",
+        pending(&outcome).copy_key
+    );
     assert_eq!(
         pending(&outcome).copy_key.price_eligibility(),
         PriceEligibility::ExistingGrandfathered,
@@ -824,4 +845,61 @@ async fn window_scheduled_payloads(
             )
         })
         .collect()
+}
+
+#[tokio::test]
+async fn a_draft_on_another_generation_is_not_adopted_as_this_act_s_copy() {
+    // **D-300 narrows D-296.** `is_sibling_of` excludes `price_eligibility` and
+    // `cohort` by design, so with the class re-imposed beside it `staged_copy`
+    // matched **any** generation on the market key — and a grandfathered draft is
+    // authorable directly through `POST …/prices`, no cutover required. A draft at
+    // a *different* instant would then be adopted as this act's copy: `stage_both`
+    // takes the "already staged" arm and never copies the predecessor's content,
+    // the receipt names a foreign row, and the commit is refused for the rest of
+    // the overlay's life by `refuse_ungenerational` — naming a row the operator
+    // never mentioned. The predicate now matches the key this act **mints**, and
+    // nothing else.
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published_plan(&h).await;
+    let predecessor = key_of(plan_id, &seeded);
+
+    // A stranger's grandfathered draft, on a generation a day past this cutover.
+    let other_generation = bss_pricing::domain::cutover::generation_key(
+        &predecessor,
+        cutover_at() + chrono::Duration::days(1),
+    )
+    .expect("the generation key is legal");
+    h.state
+        .prices
+        .create_draft(
+            &h.scope(),
+            h.tenant,
+            NewPriceDraft {
+                price_id: Uuid::now_v7(),
+                scope_key: other_generation,
+                content: successor_content(4_242),
+                created_by: SUBMITTER,
+                created_at_utc: now(),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("a grandfathered draft is authorable on its own");
+
+    let request = request_of(&predecessor, 8_800);
+    let asked_for = request.copy_price_id;
+    let outcome = cut_over(&h, request, SUBMITTER)
+        .await
+        .expect("a neighbouring generation does not block this one");
+
+    assert_eq!(
+        pending(&outcome).copy_price_id,
+        asked_for,
+        "the act mints its own generation rather than adopting a draft on another one"
+    );
+    assert_eq!(
+        pending(&outcome).copy_key.cohort(),
+        Cohort::Generation(cutover_at()),
+        "and the key it mints is this cutover's instant"
+    );
 }

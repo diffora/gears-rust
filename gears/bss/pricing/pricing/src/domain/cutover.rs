@@ -207,6 +207,27 @@ pub fn grandfathered_copy_key(
             cutover.to_rfc3339()
         )));
     }
+    generation_key(predecessor, cutover)
+}
+
+/// The generation key itself, **without** the duplicate check.
+///
+/// Split out in D-300 because a caller needs to recognise *this act's* staged copy
+/// before it knows the generation set, and the check needs the set — so the two
+/// cannot be one function for that caller. It is also the only place that knows
+/// which two axes a cutover moves (`price_eligibility` and `cohort`, everything
+/// else carried across), which is exactly the knowledge a second hand-written
+/// spelling would lose the next time the key grows an axis — D-205's lesson, and
+/// D-296 was that lesson unlearned two sites over.
+///
+/// # Errors
+///
+/// Whatever [`ScopeKey::new`] refuses — the millisecond quantum on `cutover`
+/// (D-144); the cohort/eligibility biconditional is satisfied by construction.
+pub fn generation_key(
+    predecessor: &ScopeKey,
+    cutover: DateTime<Utc>,
+) -> Result<ScopeKey, DomainError> {
     ScopeKey::new(
         predecessor.plan_id(),
         predecessor.currency().clone(),

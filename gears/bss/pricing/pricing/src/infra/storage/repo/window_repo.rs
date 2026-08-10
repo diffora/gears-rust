@@ -19,7 +19,7 @@
 //! mutation**"*. That is not a stylistic choice and this module is not where a
 //! constraint was skipped. The canonical scope key is ten columns of
 //! `pricing_price`; `pricing_price_window` carries `price_id` and none of the
-//! eight. So no `UNIQUE` index can state the rule, no partial-index predicate can
+//! ten. So no `UNIQUE` index can state the rule, no partial-index predicate can
 //! (a predicate sees only its own row's columns — neither the parent's key nor a
 //! sibling window's interval), and a range exclusion constraint would need
 //! `btree_gist` on Postgres, would still be per-`price_id` rather than per-key,

@@ -166,10 +166,17 @@ pub async fn commit_batch(
     // editor, with no operator remedy until D-37's lease takeover exists, which it
     // does not. `inst-bs-done` says the lock is released "either way"; the `?` that
     // used to sit on `commit_rows` made that false.
-    let outcome =
+    let (receipt, failure) =
         match bulk_repo::take_locks(&conn, scope, tenant_id, operation_id, &targets, now).await {
             Ok(()) => {
-                let committed = commit_rows(
+                // **The receipt survives the failure, and D-300 is why.** Every row
+                // is its own transaction, so on a run-level fault at row `k` the
+                // rows before it are *in the store*. This arm used to discard the
+                // receipt and substitute `not_attempted_all`, so the run's stored
+                // report asserted that rows which had committed were never
+                // attempted — and an operator resubmitting on that report meets a
+                // stale `ETag` on every one of them.
+                let (partial, failed) = commit_rows(
                     prices,
                     scope,
                     tenant_id,
@@ -180,25 +187,26 @@ pub async fn commit_batch(
                     now,
                 )
                 .await;
-                bulk_repo::release_locks(&conn, scope, tenant_id, operation_id)
+                // **No `?` here either.** D-294 took the `?` off `commit_rows` and
+                // left this one, which skipped the terminal transition below on a
+                // failed release — the very state the block comment above says is
+                // impossible, reached by the other of the two statements.
+                let released = bulk_repo::release_locks(&conn, scope, tenant_id, operation_id)
                     .await
-                    .map_err(|e| repo_failure(&e))?;
-                committed
+                    .map_err(|e| repo_failure(&e));
+                (partial, failed.or_else(|| released.err()))
             }
             // Another run holds one of the rows, and `take_locks` released what this
             // one had taken. Nothing committed; every row is un-attempted.
-            Err(held @ RepoError::BulkRowLocked { .. }) => Ok(not_attempted(rows, &held)),
-            Err(other) => Err(repo_failure(&other)),
+            Err(held @ RepoError::BulkRowLocked { .. }) => (not_attempted(rows, &held), None),
+            // The locks could not be taken at all, so no row was reached and
+            // `not_attempted_all`'s claim is true of every one of them.
+            Err(other) => (not_attempted_all(rows), Some(repo_failure(&other))),
         };
 
-    // The receipt a run-level failure leaves is the abort's: nothing committed,
-    // every row un-attempted. The run reaches a terminal state either way and the
-    // caller still learns the failure — both survive, which is what a state machine
-    // with no failure edge forces.
-    let receipt = outcome
-        .as_ref()
-        .map_or_else(|_| not_attempted_all(rows), std::clone::Clone::clone);
-
+    // The run reaches a terminal state on every path and the caller still learns
+    // the failure — both survive, which is what a state machine with no failure
+    // edge forces.
     bulk_repo::advance(
         &conn,
         scope,
@@ -210,7 +218,7 @@ pub async fn commit_batch(
     )
     .await
     .map_err(|e| repo_failure(&e))?;
-    outcome
+    failure.map_or(Ok(receipt), Err)
 }
 
 /// Commit each row on its own, collecting what landed and what did not.
@@ -228,7 +236,7 @@ async fn commit_rows(
     drafts: &HashMap<ScopeKey, PriceRecord>,
     stamp: AuditStamp,
     now: DateTime<Utc>,
-) -> Result<CommitReceipt, DomainError> {
+) -> (CommitReceipt, Option<DomainError>) {
     let mut receipt = CommitReceipt::default();
     for (index, row) in rows.iter().enumerate() {
         let outcome = if let Some(found) = drafts.get(&row.scope_key) {
@@ -302,18 +310,41 @@ async fn commit_rows(
             // `NotFound` is the same shape — a concurrent author deleted the draft
             // this row named. D-291 caught neither and took the whole run down for
             // a fact about one row.
+            // **Four more joined the partition in D-300**, each a fact about one
+            // row that Phase 1 does not screen and a bulk body can set: a
+            // `grandfatherUntil` on a non-grandfathered key, a sub-millisecond
+            // horizon, an authored quantity past its column, and content whose
+            // usage line disagrees with its key. `inst-bk-phase1`'s "reported
+            // per-row like every other row outcome" covers these too, and taking
+            // the run down for one of them also erased what the run had committed.
             Err(
                 e @ (RepoError::StaleRowVersion { .. }
                 | RepoError::NotDraft { .. }
                 | RepoError::DuplicateScopeKey(_)
-                | RepoError::NotFound { .. }),
+                | RepoError::NotFound { .. }
+                | RepoError::GrandfatherHorizonOffClass { .. }
+                | RepoError::TimestampPrecisionExceeded { .. }
+                | RepoError::ValueOutOfRange { .. }
+                | RepoError::UsageLineDisagrees { .. }),
             ) => {
                 receipt.conflicted.push(conflicted(index, e.to_string()));
             }
-            Err(other) => return Err(repo_failure(&other)),
+            // A run-level fault. **The rows already committed stay in the receipt**
+            // — they are in the store — and the rows from here on are reported
+            // un-attempted, which is true of them and of nothing else.
+            Err(other) => {
+                let failure = repo_failure(&other);
+                for unreached in index..rows.len() {
+                    receipt.conflicted.push(conflicted(
+                        unreached,
+                        format!("not attempted: the run failed at row {index}. {failure}"),
+                    ));
+                }
+                return (receipt, Some(failure));
+            }
         }
     }
-    Ok(receipt)
+    (receipt, None)
 }
 
 /// The draft rows occupying any key the batch aims at, by key.

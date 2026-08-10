@@ -612,8 +612,15 @@ pub async fn cutover_in(
         .map_err(|e| repo_failure(&e))?;
 
     // 1. Every fact the judgement needs, read inside the transaction that writes.
-    let context =
-        read_cutover_context(txn, scope, tenant_id, &request.predecessor_key, now).await?;
+    let context = read_cutover_context(
+        txn,
+        scope,
+        tenant_id,
+        &request.predecessor_key,
+        request.cutover_at,
+        now,
+    )
+    .await?;
 
     // 2. `inst-gc-compose` at the floor **every** call must clear. The commit floor is
     //    stricter and is applied at step 7; this run is what refuses a request nobody
@@ -992,6 +999,7 @@ async fn read_cutover_context(
     scope: &AccessScope,
     tenant_id: Uuid,
     key: &ScopeKey,
+    cutover: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<CutoverContext, DomainError> {
     let plan_id = key.plan_id();
@@ -1024,23 +1032,30 @@ async fn read_cutover_context(
     // generation still holds its instant — the key is immutable history, not a slot
     // that frees.
     //
-    // **Through `is_sibling_of`, and that is the whole point** (D-296). This
-    // predicate spelled `currency` and `region` by hand and matched **two of ten
-    // axes**, so on any plan carrying a second key in one market — a hybrid
-    // recurring/usage plan, or D-103's multi-meter one — a cutover on key A found
-    // the grandfathered draft staged for key B, took the "already staged" arm and
-    // **never minted A's copy at all**, reporting B's row id as A's. The
-    // comparison that knows what it excludes lives on the key and destructures
-    // with no rest pattern; a hand-written one here is the same defect D-205
-    // repaired at four other sites, in the two places its sweep could not see
-    // because neither carries the word *axes*.
+    // **The whole key, and nothing weaker** (D-296, narrowed by D-300). This
+    // predicate first spelled `currency` and `region` by hand — two of ten axes —
+    // so on a plan carrying a second key in one market a cutover adopted the draft
+    // staged for a *different* key and never minted its own. D-296 moved it to
+    // `is_sibling_of`, which excludes `price_eligibility` and `cohort` by design;
+    // with the class re-imposed beside it that still left **any generation** on the
+    // market key matching, and a grandfathered draft is authorable directly through
+    // `POST …/prices`. So a stranger's draft at the same instant would have been
+    // adopted as this act's copy — retained subscribers billed from operator-typed
+    // content instead of the predecessor's — and one at a different instant made
+    // the act permanently un-committable behind `refuse_ungenerational`.
+    //
+    // What this site wants is the key this act *mints*, which is the predecessor's
+    // with two axes moved. [`generation_key`] is that construction and the only
+    // place that knows it.
+    let minted = crate::domain::cutover::generation_key(key, cutover).ok();
     let staged_copy = shape
         .rows
         .iter()
         .find(|row| {
             row.lifecycle_state == LifecycleState::Draft
-                && row.scope_key.price_eligibility() == PriceEligibility::ExistingGrandfathered
-                && key.is_sibling_of(&row.scope_key)
+                && minted
+                    .as_ref()
+                    .is_some_and(|target| row.scope_key == *target)
         })
         .cloned();
 

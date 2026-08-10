@@ -630,9 +630,14 @@ impl ValidationRule<PlanShape> for BundleMarketBasisUnmixed {
 /// horizon, with no further code change and no other gate that would notice.
 /// D-177 refuses these two fields on every *authoring* path, which is the right
 /// posture and an insufficient one — it holds only while every authoring path
-/// exists and refuses, and the bulk-import arm it binds is owed by Slice 12 and
-/// unbuilt, while a row authored before that refusal landed was never offered to
-/// it at all. This rule does not ask how the value got there.
+/// exists and refuses, while a row authored before that refusal landed was never
+/// offered to it at all. This rule does not ask how the value got there.
+///
+/// *(This paragraph said the bulk-import arm was "owed by Slice 12 and unbuilt".
+/// It is built — `domain::import` raises this same code on the bulk plane and the
+/// submit route is mounted — and the sentence sat in the doc of the rule that two
+/// other module docs now name as guard number one, which is the fourth site of
+/// one false premise this program has had to correct. D-300.)*
 ///
 /// Reported **once per row**, naming the row and the field, because that is the
 /// edit.

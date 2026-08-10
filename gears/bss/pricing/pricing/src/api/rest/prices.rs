@@ -47,8 +47,8 @@
 //! that reached publish would freeze into an immutable version. *(This sentence
 //! said "the day Slice 5 mounts the publish route". It is mounted, and the freeze
 //! did not follow, because `publish::rules::NoUnjudgedPrimitive` refuses either
-//! field inside the publish set — see D-298. The guard on this surface is still
-//! owed, because a row stored here that publish then refuses is a row nobody can
+//! field inside the publish set — see D-298. The guard on this surface still earns its
+//! place, because a row stored here that publish then refuses is a row nobody can
 //! publish.)*
 //!
 //! Building the ten refusals **without** the compile would be worse, not

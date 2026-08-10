@@ -24,12 +24,14 @@ use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use bss_pricing::infra::bulk::{BULK_ROW_CONFLICT, CommitReceipt, commit_batch};
+use bss_pricing::infra::storage::entity::price;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo};
 use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::AccessScope;
+use toolkit_db::secure::{AccessScope, SecureEntityExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -548,5 +550,82 @@ async fn the_stored_report_carries_both_halves() {
         stored["conflicted"][0]["violations"][0]["code"],
         serde_json::json!(BULK_ROW_CONFLICT),
         "and so does the conflicted half, code included: {stored}"
+    );
+}
+
+#[tokio::test]
+async fn a_run_level_failure_keeps_the_rows_that_did_commit_in_the_report() {
+    // **The report a failed run leaves has to be true of the store** (D-300).
+    // Every row is its own transaction, so on a fault at row 1 the draft row 0
+    // wrote is *in* `pricing_price`. The receipt used to be discarded here and
+    // replaced wholesale by "every row un-attempted", so the run's stored report
+    // denied a row that exists — and an operator who resubmits on that report
+    // meets a stale `ETag` on every row it hid.
+    //
+    // The fault is a real one: `billing_timing` is a free `String` on this plane,
+    // Slice 6 owns its vocabulary, and no Phase-1 rule screens it — so the column
+    // CHECK is the first thing that sees it.
+    let h = harness().await;
+    let operation_id = open_run(&h, "the-run-fails-midway").await;
+
+    let mut bad = row(key("us"), 2_500, None);
+    bad.content.billing_timing = Some("whenever".to_owned());
+
+    let failure = commit_batch(
+        &h.provider,
+        &h.prices,
+        &scope(),
+        TENANT,
+        operation_id,
+        &[row(key("eu"), 1_500, None), bad],
+        stamp(),
+        at(11),
+    )
+    .await
+    .expect_err("a fault that is the run's still reaches the caller");
+    assert!(
+        failure.to_string().contains("billing_timing"),
+        "and it names what went wrong: {failure}"
+    );
+
+    let conn = h.provider.conn().expect("conn");
+    let run = bulk_repo::read(&conn, &scope(), TENANT, operation_id)
+        .await
+        .expect("read")
+        .expect("exists");
+    assert!(
+        run.state.is_terminal(),
+        "the run lands terminal whatever happened: {:?}",
+        run.state
+    );
+
+    let committed = run.report["committed"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the stored report's committed arm: {}", run.report));
+    assert_eq!(
+        committed.len(),
+        1,
+        "row 0 committed and the report has to say so: {}",
+        run.report
+    );
+    assert_eq!(committed[0]["row"], serde_json::json!(0));
+
+    // And the row it names is really there — which is what makes the old report a
+    // false statement rather than a conservative one.
+    let landed = committed[0]["price_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .expect("a committed row names its draft");
+    let stored = price::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(Condition::all().add(price::Column::PriceId.eq(landed)))
+        .one(&conn)
+        .await
+        .expect("read the row");
+    assert!(
+        stored.is_some(),
+        "the report's committed row exists in the store: {}",
+        run.report
     );
 }

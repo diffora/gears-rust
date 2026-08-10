@@ -511,7 +511,7 @@ pub enum DomainError {
     /// which the `GET` serves, and a batch's answer lives there for the first
     /// caller and every replay alike (`inst-bi-return`).
     ///
-    /// **`operation_id` is a field and not a phrase inside `detail`** (D-294).
+    /// **`operation_id` is a field and not a phrase inside `detail`** (D-295).
     /// The report the refusal points at is only reachable through the ref, so a
     /// ref a client has to parse out of a sentence makes the whole of Phase 1's
     /// answer unreadable by anything but a human — and this is the one refusal

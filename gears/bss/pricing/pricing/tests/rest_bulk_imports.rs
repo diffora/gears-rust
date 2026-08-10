@@ -310,7 +310,7 @@ async fn aborting_a_run_that_finished_with_conflicts_is_refused_too() {
 
 #[tokio::test]
 async fn the_refusal_names_the_run_and_the_run_serves_the_per_row_report() {
-    // **The ref is a field, not a phrase** (D-294). Phase 1's entire value is the
+    // **The ref is a field, not a phrase** (D-295). Phase 1's entire value is the
     // per-row report, and the only thing pointing at it is the operation ref — so
     // a ref readable only by parsing an English sentence leaves that report
     // unreachable by every client that is not a person. The **shape** the GET
@@ -381,7 +381,7 @@ async fn the_refusal_names_the_run_and_the_run_serves_the_per_row_report() {
 
 #[tokio::test]
 async fn a_replay_of_a_refused_key_is_refused_again_and_imports_nothing() {
-    // **A replay answers what the first call answered** (D-294). The refused
+    // **A replay answers what the first call answered** (D-295). The refused
     // batch was a 400; a replay under the same key used to answer 202 with the
     // failed run, so a client that retried on a timeout — the exact client
     // idempotency is for — read the retry as having succeeded where the original
@@ -444,7 +444,7 @@ async fn a_replay_of_a_refused_key_is_refused_again_and_imports_nothing() {
 
 #[tokio::test]
 async fn the_commit_report_names_its_rows_by_field() {
-    // The other half of the wire contract `inst-bk-idem` pins (D-294): a run that
+    // The other half of the wire contract `inst-bk-idem` pins (D-295): a run that
     // committed one row and conflicted another. Both arms are asserted by field
     // name, because a report whose readers are all inside this crate today
     // becomes the operator's only record of what an import did.

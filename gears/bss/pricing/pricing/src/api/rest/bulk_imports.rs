@@ -276,7 +276,7 @@ async fn submit_bulk_import(
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?
     {
-        // **A replay answers what the first call answered** (D-294). A batch
+        // **A replay answers what the first call answered** (D-295). A batch
         // refused in Phase 1 was answered `400`, so a retry that answered `202`
         // would tell a client the resubmit succeeded where the original failed —
         // the one conclusion idempotency exists to prevent, and precisely the
@@ -469,6 +469,18 @@ async fn abort_bulk_import(
             serde_json::json!("uncommitted rows were not attempted"),
         );
     }
+    // **The release goes first, and D-300 is why.** With the terminal move ahead of
+    // it, a release that failed for any transient reason left the run terminal and
+    // every lock held — and D-294's own state guard above then refuses the retry
+    // that used to rescue it, because a terminal run is no longer `committing`. The
+    // rows would be frozen by a finished operation with no remedy at all: nothing
+    // else calls `release_locks`, the lock table has no sweeper, and D-37's lease
+    // takeover is designed and unbuilt. Releasing first makes a failed abort
+    // **retryable** — the run is still `committing`, so the operator simply asks
+    // again — which is the property the guard was written assuming.
+    bulk_repo::release_locks(&conn, &scope, tenant, operation_id)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
     let aborted = bulk_repo::advance(
         &conn,
         &scope,
@@ -480,9 +492,6 @@ async fn abort_bulk_import(
     )
     .await
     .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
-    bulk_repo::release_locks(&conn, &scope, tenant, operation_id)
-        .await
-        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
 
     Ok(Json(run_view(&aborted)))
 }

@@ -70,7 +70,7 @@ fn precondition(field: &'static str, detail: &str, code: &'static str) -> Canoni
 /// The ref is a violation rather than a phrase inside the detail because the
 /// report is the entire value of this refusal and nothing else points at it — a
 /// ref a client has to parse out of a sentence leaves Phase 1's answer readable
-/// by a human and by nothing else (D-294). One code, because these are two
+/// by a human and by nothing else (D-295). One code, because these are two
 /// halves of one refusal rather than two things that went wrong.
 fn bulk_refusal(operation_id: &str, detail: &str) -> CanonicalError {
     let code = crate::api::rest::bulk_imports::BULK_VALIDATION_FAILED;
