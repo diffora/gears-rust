@@ -673,6 +673,9 @@ async fn create_price(
     // Two guards in series, deliberately, and they are not redundant: the
     // publish-time rule is what holds against a region **retired between** the
     // save and the publish, which this check cannot see.
+    // The plan first: a row whose plan does not exist has no subject, so asking
+    // whether its region is declared is asking about nothing.
+    require_existing_plan(&state, &scope, tenant, plan_id).await?;
     require_declared_region(&state, &scope, tenant, &key).await?;
     let now = Utc::now();
 
@@ -1000,6 +1003,45 @@ fn price_location(plan_id: PlanId, price_id: Uuid) -> String {
 /// # Errors
 /// [`DomainError::InvalidRequest`] carrying `REGION_UNKNOWN` when the region is
 /// not declared active; [`DomainError::Internal`] on a storage failure.
+/// The plan the path names has to exist for this tenant.
+///
+/// The route files a row under `plan_id`, and every read of a price row goes
+/// *through* the plan — so a row whose plan does not exist is a row nothing can
+/// ever reach. Without this the surface answered 201 and the operator found out
+/// at publish, or never.
+///
+/// **Not a tenancy check, though it looks like one.** The scope filter has
+/// already removed rows this caller may not see, so a foreign plan id and an
+/// invented one are indistinguishable here by construction: both resolve to
+/// `None`, both answer 404, and neither confirms that some other tenant owns the
+/// id. That property is what keeps this guard from becoming an existence oracle,
+/// and it is pinned in the e2e suite rather than only asserted here, because it
+/// is a claim about two responses being *equal* and no single-request test can
+/// see it.
+///
+/// The generic `NotFound` rather than a minted code: D-146's posture is that a
+/// wire code the design set declares must not end up in two spellings, and this
+/// refusal is the plain "the thing you named is not here".
+async fn require_existing_plan(
+    state: &AuthoringState,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    plan_id: PlanId,
+) -> Result<(), CanonicalError> {
+    let exists = state
+        .plans
+        .max_revision(scope, tenant, plan_id)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    if exists.is_none() {
+        return Err(CanonicalError::from(DomainError::NotFound {
+            subject: "plan".to_owned(),
+            id: plan_id.get().to_string(),
+        }));
+    }
+    Ok(())
+}
+
 async fn require_declared_region(
     state: &AuthoringState,
     scope: &toolkit_db::secure::AccessScope,

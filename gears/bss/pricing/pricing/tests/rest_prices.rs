@@ -1407,3 +1407,70 @@ async fn a_create_naming_an_unknown_reservation_flavor_is_refused() {
         "a refused create stores nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The plan a row is filed under has to exist.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_row_on_a_plan_this_tenant_does_not_have_is_refused() {
+    // The route names a plan in its path and files the row under it. Nothing
+    // resolved that plan: a `planId` no revision exists for was accepted, and
+    // the row landed under a key no read can reach -- every price read goes
+    // through the plan, so the row existed and was unreachable in the same
+    // breath.
+    //
+    // It reads as a tenancy question and is not one. A caller naming another
+    // tenant's plan gets exactly what a caller naming an invented uuid gets,
+    // because the scope filter already removed the foreign row before this
+    // check sees anything -- so no id is confirmed and nothing leaks. What was
+    // missing is the *subject*: a write naming a plan the caller does not have
+    // is a write about nothing.
+    //
+    // The sibling guard two functions up says the same about regions, and for
+    // the same reason: "was answered 201, and learned of it at publish".
+    let harness = Harness::new().await;
+    let absent = Uuid::now_v7();
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(absent),
+            Some(create_body("EU")),
+            &keyed("absent-plan-1"),
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "a row whose plan does not exist has no subject to be filed under"
+    );
+    assert!(
+        price_rows(&harness, absent).await.is_empty(),
+        "and the refusal stores nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_row_on_a_plan_this_tenant_does_have_still_lands() {
+    // The positive control. Without it the guard above is satisfied by a route
+    // that refuses every create, and the whole price surface could be dead
+    // while this file stayed green.
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(create_body("EU")),
+            &keyed("present-plan-1"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
+}
