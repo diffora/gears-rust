@@ -26,6 +26,25 @@
 //! `CREATE SCHEMA IF NOT EXISTS {schema}` before the `CREATE TABLE`, making it
 //! safe wherever it lands in the run order (idempotent with the consumer's own
 //! `IF NOT EXISTS` schema migration that runs afterwards).
+//!
+//! **Idempotent table creation, because this migration has more than one
+//! owner.** Every gear that coordinates singleton background work splices this
+//! same migration into its own `Migrator`, and the toolkit keeps migration
+//! bookkeeping **per gear**. So on a database where one gear has already
+//! created `coord_leases`, the next gear to boot finds its own bookkeeping empty,
+//! applies `m0001_…` again, and — without `IF NOT EXISTS` — dies on
+//! `relation "coord_leases" already exists` before it can serve anything.
+//!
+//! That is not hypothetical: it is what happened the first time `bss-pricing`
+//! booted into a cluster where `bss-ledger` had been running for weeks. The
+//! failure is invisible to any gear's own test suite, because each of those runs
+//! against a database only that gear has migrated.
+//!
+//! `IF NOT EXISTS` is safe here rather than merely convenient: the table has one
+//! definition, in this crate, and every consumer splices the identical
+//! `Migration` value — so there is no shape for a second creator to disagree
+//! about. A future change to the table is a new `m0002_…`, not an edit to this
+//! one, and would carry its own bookkeeping per gear as usual.
 
 use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::ConnectionTrait;
@@ -92,7 +111,7 @@ impl MigrationTrait for Migration {
             // table lands there regardless of `search_path` order or which
             // migration created the schema.
             sea_orm::DatabaseBackend::Postgres => format!(
-                "CREATE TABLE {} ( \
+                "CREATE TABLE IF NOT EXISTS {} ( \
                     key TEXT PRIMARY KEY, \
                     locked_by UUID NULL, \
                     locked_until TIMESTAMPTZ NOT NULL DEFAULT 'epoch', \
@@ -104,7 +123,7 @@ impl MigrationTrait for Migration {
             // sea_orm serialises `Uuid` to canonical TEXT and `DateTime<Utc>` to
             // ISO-8601 TEXT, so both columns are `TEXT`; the epoch default uses
             // the literal form the `DateTime<Utc>` mapper accepts on read.
-            sea_orm::DatabaseBackend::Sqlite => "CREATE TABLE coord_leases ( \
+            sea_orm::DatabaseBackend::Sqlite => "CREATE TABLE IF NOT EXISTS coord_leases ( \
                     key TEXT PRIMARY KEY, \
                     locked_by TEXT NULL, \
                     locked_until TEXT NOT NULL DEFAULT '1970-01-01 00:00:00+00:00', \
@@ -136,3 +155,7 @@ impl MigrationTrait for Migration {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "m0001_create_coord_leases_tests.rs"]
+mod m0001_create_coord_leases_tests;
