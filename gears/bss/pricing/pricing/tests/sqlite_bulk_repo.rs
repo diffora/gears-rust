@@ -163,7 +163,7 @@ async fn one_client_key_opens_one_run() {
     let second = bulk_repo::open(&conn, &scope(), new_run(BulkKind::Import, "k-2")).await;
     assert!(second.is_err(), "the second is refused by the unique key");
 
-    let found = bulk_repo::find_by_client_key(&conn, &scope(), TENANT, "k-2")
+    let found = bulk_repo::find_by_client_key(&conn, &scope(), TENANT, BulkKind::Import, "k-2")
         .await
         .expect("read by key")
         .expect("the first run");

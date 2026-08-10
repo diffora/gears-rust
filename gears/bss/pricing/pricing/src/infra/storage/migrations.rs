@@ -95,6 +95,7 @@ pub mod m20260802_000060_add_price_overlay_published_event_name;
 pub mod m20260802_000061_add_pricing_plan_cloned_from;
 pub mod m20260802_000062_guard_pricing_plan_cloned_from;
 pub mod m20260802_000063_add_bulk_operation_rejected_state;
+pub mod m20260802_000064_widen_bulk_operation_client_key_by_kind;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -298,6 +299,7 @@ impl MigratorTrait for Migrator {
             // a rebuild, and a rebuild re-creates guards it can only re-create
             // once they exist.
             Box::new(m20260802_000063_add_bulk_operation_rejected_state::Migration),
+            Box::new(m20260802_000064_widen_bulk_operation_client_key_by_kind::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

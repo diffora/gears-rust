@@ -63,6 +63,63 @@ impl BulkKind {
     }
 }
 
+/// How far one **selected row** of a repricing run got (`inst-mr-journal`).
+///
+/// Three states and not four: `not-attempted` is how a *report* renders a row the
+/// journal still holds as `pending`, never a stored value (D-261). An aborted run
+/// therefore leaves `pending` rows standing, which is what lets a re-drive tell
+/// "never reached" from "decided".
+///
+/// The edges and the finality of the two decided states are the table's trigger,
+/// not this type's: a `match` here listing them would be the second spelling
+/// [`BulkState`]'s own doc refuses for the same reason.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JournalState {
+    /// Born here, at the run's row-set expansion.
+    Pending,
+    /// The apply committed a successor for this row, and the journal names it.
+    Applied,
+    /// This row did not apply — its own refusal, or the plan-level one it shares
+    /// with every other row of its plan (D-134).
+    Failed,
+}
+
+impl JournalState {
+    /// The persisted token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Applied => "applied",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// A decided row never moves again, which the table's trigger enforces and
+    /// this answers for a caller that has to choose whether to re-drive it.
+    #[must_use]
+    pub const fn is_decided(self) -> bool {
+        matches!(self, Self::Applied | Self::Failed)
+    }
+
+    /// Read a stored token back.
+    ///
+    /// # Errors
+    /// [`DomainError::InvalidRequest`] for a token no `CHECK` should have
+    /// admitted, at the boundary, for [`BulkKind::parse`]'s reason.
+    pub fn parse(token: &str) -> Result<Self, DomainError> {
+        match token {
+            "pending" => Ok(Self::Pending),
+            "applied" => Ok(Self::Applied),
+            "failed" => Ok(Self::Failed),
+            other => Err(DomainError::InvalidRequest(format!(
+                "repricing journal state: `{other}` is not `pending`, `applied` or `failed`"
+            ))),
+        }
+    }
+}
+
 /// Where a run stands in §4's state machine.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

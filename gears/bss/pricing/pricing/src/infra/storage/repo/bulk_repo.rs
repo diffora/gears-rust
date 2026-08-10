@@ -179,7 +179,15 @@ pub async fn read(
     row.as_ref().map(record_of).transpose()
 }
 
-/// The run a client key already opened, if any (O4).
+/// The run a client key already opened **for this kind**, if any (O4).
+///
+/// **`kind` is a filter and not a convenience** (D-307). §5 gives the two flows
+/// two different idempotency columns — the import's `Idempotency-Key` and a
+/// repricing run's own `run_id` — and without this predicate an import replay
+/// would answer `202` describing a *repricing run*, import nothing, and hand back
+/// a view carrying no `kind` member to reveal the substitution. The index behind
+/// it moved to `(tenant_id, kind, client_key)` in the same wave; either half
+/// alone leaves the other's hole open.
 ///
 /// # Errors
 /// Exactly [`read`]'s.
@@ -187,6 +195,7 @@ pub async fn find_by_client_key(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
+    kind: BulkKind,
     client_key: &str,
 ) -> Result<Option<BulkOperationRecord>, RepoError> {
     let row = bulk_operation::Entity::find()
@@ -195,6 +204,7 @@ pub async fn find_by_client_key(
         .filter(
             Condition::all()
                 .add(bulk_operation::Column::TenantId.eq(tenant_id))
+                .add(bulk_operation::Column::Kind.eq(kind.as_str()))
                 .add(bulk_operation::Column::ClientKey.eq(client_key)),
         )
         .one(runner)

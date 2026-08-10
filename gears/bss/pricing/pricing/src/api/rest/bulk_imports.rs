@@ -272,9 +272,10 @@ async fn submit_bulk_import(
     // **The replay is a read of the run, not of a dedup row.** `inst-bk-idem`
     // replays the report "including during/after the lock window", which outlives
     // any gate TTL — so the run's own unique `(tenant, client_key)` is the record.
-    if let Some(existing) = bulk_repo::find_by_client_key(&conn, &scope, tenant, &client_key)
-        .await
-        .map_err(|e| CanonicalError::from(repo_failure(&e)))?
+    if let Some(existing) =
+        bulk_repo::find_by_client_key(&conn, &scope, tenant, BulkKind::Import, &client_key)
+            .await
+            .map_err(|e| CanonicalError::from(repo_failure(&e)))?
     {
         // **A replay answers what the first call answered** (D-295). A batch
         // refused in Phase 1 was answered `400`, so a retry that answered `202`

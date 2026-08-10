@@ -248,7 +248,7 @@ async fn one_client_key_opens_one_run() {
         .expect_err("the second is refused by the unique key");
     assert_refused_by(&second, "uq_pricing_bulk_operation_client_key");
 
-    let found = bulk_repo::find_by_client_key(&conn, &scope(), TENANT, "k-2")
+    let found = bulk_repo::find_by_client_key(&conn, &scope(), TENANT, BulkKind::Import, "k-2")
         .await
         .expect("read by key")
         .expect("the first run");
