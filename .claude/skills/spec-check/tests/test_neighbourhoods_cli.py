@@ -220,11 +220,20 @@ PINNED_TRIAGE_PRICING = {
     "unbuildable:no-prose": 0,
     "no-region": 3,
     "anchored:no-account": 7,
-    "suspicious:multi-region": 58,
+    "suspicious:multi-region": 57,
     "suspicious:not-normative": 0,
-    "suspicious:weak-coverage": 9,
+    "suspicious:weak-coverage": 10,
     "covered:strong": 0,
 }
+#: Moved 2026-08-10 (was 58 / 9) by **D-305's register entry**, and the move is a
+#: sampling artefact rather than a coverage change — worth stating because the two
+#: are indistinguishable in the histogram. `fr-bundle-composition` went
+#: `multi-region` -> `weak-coverage` by losing its `DECISIONS.md` fragment, while
+#: the register still carries ten mentions of that requirement: the entry appended
+#: at the end of the file pushed the sampled fragment past `MAX_FRAGMENTS`. So a
+#: bucket move means either "the evidence changed" or "an unrelated append
+#: displaced a sample", and only diffing the per-requirement triage against the
+#: previous revision tells them apart. That diff is how this one was identified.
 #: Moved 2026-08-08 (was 5 / 59 / 10) by the **D-251/D-252/D-234 propagation wave** — the
 #: `EQUAL_PRECEDENCE_CROSS_CLASS_TIE` catalogue entry in `design/09` §5, the D-251 and D-252
 #: accounts in `design/11` §3 and §5, and four in-line corrections in `DECISIONS.md`. Two movers,
