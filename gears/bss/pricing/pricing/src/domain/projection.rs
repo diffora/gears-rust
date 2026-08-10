@@ -1179,6 +1179,115 @@ fn merge(into: &mut JsonValue, from: JsonValue) {
     }
 }
 
+/// Every member of [`PlanSubjectDelta`], sorted by whether the evaluation-policy
+/// roster reaches its content.
+///
+/// Returns `(reached, not_reached)`, each in declaration order. Both halves are
+/// returned for [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)'s
+/// reason: a member quietly filed on the harmless side would otherwise change
+/// nothing anyone has to record, and the guard exists to make every member of
+/// this payload a **stated** classification rather than a silent one.
+///
+/// # Why it is here and not one level down
+///
+/// `evaluation_policy`'s two guards destructure [`PriceRow`] and
+/// [`PlanChangeContract`], so they are **structurally blind to a member added to
+/// the delta itself** — and `composites` landed exactly there (D-298), a new key
+/// in a payload an INSERT-only store freezes on the ≥ 7-year horizon, with
+/// nothing obliging anyone to decide whether the generation had to move. Two
+/// versions of one plan now carry the same `ep-4` stamp, one without the member
+/// and one with it empty, and a consumer cannot tell *"this era did not carry
+/// composites"* from *"this plan defines none"* (D-303).
+///
+/// It lives beside the type rather than beside the other two because
+/// `evaluation_policy` is what this module reads for the generation string, and
+/// the reverse import would be a module cycle.
+///
+/// # The pattern is the point
+///
+/// The `let PlanSubjectDelta { .. }` below has **no rest pattern**. A member
+/// added to the payload is a compile error here until it is named on one side or
+/// the other, which is the one step an author adding a member cannot route
+/// around. The `delta` argument exists only to give that pattern something to
+/// match.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one line per payload member plus the two classified lists; splitting it would put \
+              the destructure and the classification in different functions, which is exactly the \
+              distance that let `composites` land unclassified"
+)]
+pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, Vec<&'static str>) {
+    let PlanSubjectDelta {
+        plan_id: _,
+        revision: _,
+        lifecycle_state: _,
+        sku_id: _,
+        plan_tier: _,
+        plan_tier_override: _,
+        billing_cycle: _,
+        frequency: _,
+        available_from: _,
+        available_to: _,
+        purchase_min_qty: _,
+        purchase_max_qty: _,
+        invoice_grouping_key: _,
+        phases: _,
+        addon_rules: _,
+        descriptor_set: _,
+        composites: _,
+        entitlement_grants: _,
+        change_contract: _,
+        prices: _,
+        tax_projection: _,
+        windows: _,
+    } = delta;
+
+    // The roster reaches these two through the guards that own them, so a field
+    // added inside either is already a compile error one level down.
+    let reached = vec!["prices", "change_contract"];
+
+    // Everything else, and each for a stated reason. `plan_tier` and its override
+    // are the registry taxonomy and its audited divergence; the purchase bounds
+    // gate a purchase rather than a rate; `invoice_grouping_key` is a Billing
+    // layout hint (D-96); the phase set, the add-on rules and the descriptor set
+    // are composition and presentation; `windows` and `tax_projection` answer
+    // sellability and display, not derivation.
+    //
+    // **`composites` is the one that is arguable**, and it is filed here on
+    // D-162 clause (5) rather than on the boundary test: a composite meter does
+    // tell an evaluator how to derive one billable quantity from several
+    // constituents — nearer the centre of that test than
+    // `usage_counter_on_plan_change`, which *was* rostered — but the roster is
+    // what replaying section 4.4's log produces, and no line exists. Adding one
+    // would be code deciding a normative document's content. Owed to whoever
+    // holds that section: a log line and the bump it implies, or a sentence
+    // putting plan-scoped derived-meter definitions outside the roster on purpose.
+    let not_reached = vec![
+        "plan_id",
+        "revision",
+        "lifecycle_state",
+        "sku_id",
+        "plan_tier",
+        "plan_tier_override",
+        "billing_cycle",
+        "frequency",
+        "available_from",
+        "available_to",
+        "purchase_min_qty",
+        "purchase_max_qty",
+        "invoice_grouping_key",
+        "phases",
+        "addon_rules",
+        "descriptor_set",
+        "composites",
+        "entitlement_grants",
+        "tax_projection",
+        "windows",
+    ];
+    (reached, not_reached)
+}
+
 #[cfg(test)]
 #[path = "projection_tests.rs"]
 mod projection_tests;

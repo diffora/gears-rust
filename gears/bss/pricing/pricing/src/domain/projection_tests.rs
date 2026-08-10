@@ -1045,3 +1045,37 @@ fn a_pinned_versions_contract_set_renders_identically_twice() {
         "the same subject renders the same bytes"
     );
 }
+
+#[test]
+fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
+    // **The half the destructure cannot cover** (D-303). `partition_delta_members`
+    // has no rest pattern, so a member added to `PlanSubjectDelta` is a compile
+    // error there — but naming it in the pattern and forgetting it in *both* lists
+    // compiles fine, and the classification is the point rather than the pattern.
+    // This case is what makes the omission fail.
+    let (reached, not_reached) = super::partition_delta_members(&shape_only());
+
+    let mut all: Vec<&str> = reached.iter().chain(not_reached.iter()).copied().collect();
+    let named = all.len();
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(
+        all.len(),
+        named,
+        "no member is classified on both sides: {all:?}"
+    );
+    assert_eq!(
+        named, 22,
+        "every member of the payload is named exactly once; a member added to the delta and \
+         left out of both lists lands here, and the number moves with the payload on purpose"
+    );
+
+    // The two the roster genuinely reaches, through the guards that own them.
+    assert_eq!(reached, vec!["prices", "change_contract"]);
+    // And the one that is arguable is filed, not silently absent — D-162 clause
+    // (5) is the reason, and it is written where the classification is made.
+    assert!(
+        not_reached.contains(&"composites"),
+        "the composite set is classified rather than unstated: {not_reached:?}"
+    );
+}
