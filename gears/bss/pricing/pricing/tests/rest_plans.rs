@@ -808,7 +808,7 @@ async fn a_composites_facet_lands_and_the_read_echoes_what_it_stored() {
 ///
 /// [`PlanView`]: bss_pricing::api::rest::plans::PlanView
 #[tokio::test]
-async fn a_supplied_composite_id_is_kept_and_an_omitted_one_is_minted() {
+async fn a_supplied_composite_id_survives_a_wholesale_replace() {
     let harness = Harness::new().await;
     let plan_id = Uuid::now_v7();
     seed_draft_plan(&harness, plan_id).await;
@@ -1968,4 +1968,119 @@ async fn two_patches_carry_two_correlation_ids() {
         .collect();
     assert_eq!(updates.len(), 2, "two facet writes, two records");
     assert_ne!(updates[0], updates[1], "two calls are two acts");
+}
+
+/// One composite id, two plans, and **the second caller gets a 500.** Pinned,
+/// not fixed — `phase_id`'s finding one table over, on a facet mounted after it.
+///
+/// `PRIMARY KEY (composite_id, plan_revision)` carries no `plan_id` and no
+/// `tenant_id` (`m20260802_000046_create_pricing_composite_meter.rs`), and
+/// `composite_id` is **client-supplied**: `CompositeMeterRequest` makes it
+/// `Option<Uuid>` and its own doc invites a read-modify-write round trip, since a
+/// `GET` echoes the ids. So the flow the doc recommends — read plan A's
+/// composites, paste them onto plan B at revision `0` — collides on the primary
+/// key and answers a generic internal fault.
+///
+/// **The optional id is the right call and this is its unpaid cost** (D-298): a
+/// *required* id would be a fresh instance of a known defect on a brand-new
+/// surface, and an optional one still makes it client-reachable. What a test can
+/// do is stop it being a surprise — if a later slice widens the key or maps the
+/// failure onto the conflict class, this reddens and the change gets written
+/// down (D-304).
+#[tokio::test]
+async fn two_plans_of_one_tenant_collide_on_a_shared_composite_id_and_the_second_answers_500() {
+    let harness = Harness::new().await;
+    let shared = Uuid::now_v7();
+    let first = Uuid::now_v7();
+    let second = Uuid::now_v7();
+    seed_draft_plan(&harness, first).await;
+    seed_draft_plan(&harness, second).await;
+
+    let body = |id: Uuid| {
+        serde_json::json!({
+            "composites": [{
+                "composite_id": id,
+                "output_unit": "vm",
+                "constituent_units": ["vcpu", "ram"],
+                "formula": { "op": "weighted_sum", "weights": { "vcpu": 2, "ram": 1 } }
+            }]
+        })
+    };
+
+    let accepted = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(first),
+            Some(body(shared)),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    assert_eq!(
+        accepted.status(),
+        StatusCode::OK,
+        "the first filing must succeed, or the second proves nothing"
+    );
+
+    let collided = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(second),
+            Some(body(shared)),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+    assert_eq!(
+        collided.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the PK collision surfaces as an internal fault, not as the conflict class"
+    );
+}
+
+/// Two composites of one body sharing an `output_unit` answer **500** as well,
+/// and the store is what refuses them.
+///
+/// `uq_pricing_composite_meter_output` is `(tenant_id, plan_id, plan_revision,
+/// output_unit)` and `inst-cm-output`'s "one output unit per revision" lives
+/// there rather than in a rule — so a plain typo in a facet body reaches the
+/// caller as an internal fault with no gear code. `composite_of`'s doc says
+/// "nothing here can fail, and that is a statement about where the rules live
+/// rather than an absence of them", and enumerates the CHECK and the two publish
+/// rules; it does not name this refusal or the primary key's. Pinned so that
+/// naming them later reddens here (D-304).
+#[tokio::test]
+async fn two_composites_of_one_body_sharing_an_output_unit_answer_500() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let collided = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "composites": [
+                    {
+                        "output_unit": "vm",
+                        "constituent_units": ["vcpu", "ram"],
+                        "formula": { "op": "weighted_sum", "weights": { "vcpu": 2, "ram": 1 } }
+                    },
+                    {
+                        "output_unit": "vm",
+                        "constituent_units": ["vcpu", "disk"],
+                        "formula": { "op": "weighted_sum", "weights": { "vcpu": 1, "disk": 1 } }
+                    }
+                ]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(
+        collided.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the unique index refuses it, and the refusal has no gear code to name"
+    );
 }

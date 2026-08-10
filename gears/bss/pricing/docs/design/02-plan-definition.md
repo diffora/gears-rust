@@ -276,7 +276,7 @@ so its `revision` number stays consumed (`inst-pl-abandon`, D-145); optional `Pl
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
 | `POST` | `/bss-pricing/v1/plans` | Create a draft plan | client idempotency key |
-| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape — **exactly one** of cycle, phases, add-ons, descriptors per call (**D-173**) | ETag |
+| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape — **exactly one** of cycle, phases, add-ons, descriptors, composites per call (**D-173**; the composites facet is Slice 10's, authorized by `inst-ad-author`) | ETag |
 | `POST` | `/bss-pricing/v1/plans/{planId}/publish` | Run fail-closed validation + submit for approval/publish | per plan revision |
 | `POST` | `/bss-pricing/v1/plans/{planId}/abandon` | **Discard the plan's open draft revision** — the author-driven arm of `inst-pl-abandon` (**D-145**): the row flips to the terminal `abandoned` state, its child copies drop, the flip is audited, and the `revision` number stays consumed. It is never deleted, so the verb is not `DELETE` | ETag |
 | `GET` | `/bss-pricing/v1/plans/{planId}` | Read the plan's **editable revision** — its open draft if it holds one, else its current revision (**D-170**; published content is *consumed* via the read model) | — |

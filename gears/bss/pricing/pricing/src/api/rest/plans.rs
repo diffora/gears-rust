@@ -2032,10 +2032,23 @@ fn addon_of(view: AddonRuleView) -> AddonRule {
 ///
 /// Nothing here can fail, and that is a statement about where the rules live
 /// rather than an absence of them: `output_unit`'s non-emptiness is a `CHECK`,
-/// arity and self-reference are publish rules over the **whole revision's** set
-/// (a self-reference cycle spans two definitions and no single one of them is
-/// wrong), and the formula is opaque to this crate by A4. A refusal here would
-/// have to be one no document declares.
+/// arity and self-reference are publish rules over the **whole revision's** set,
+/// and the formula is opaque to this crate by A4. A refusal here would have to
+/// be one no document declares.
+///
+/// The reason given here used to be that "a self-reference cycle spans two
+/// definitions and no single one of them is wrong". **That is false** —
+/// `CompositeSelfReference` refuses the direct case too, and says so in as many
+/// words, with a case pinning it. The true reason is the one above it: an author
+/// assembles a revision's set over several calls, so judging it at save time
+/// would refuse an intermediate state the design expects (D-304).
+///
+/// **What can fail here is the store, and this doc did not say so.** The primary
+/// key `(composite_id, plan_revision)` carries neither `plan_id` nor `tenant_id`
+/// and the id is client-supplied; `uq_pricing_composite_meter_output` is unique
+/// per revision. A pasted id or a repeated `output_unit` therefore reaches the
+/// caller as a bare `500`. Both are pinned in `rest_plans.rs` rather than fixed,
+/// which is `pricing_plan_phase`'s posture one table over.
 ///
 /// The id is minted when the author omits it - see
 /// [`CompositeMeterRequest::composite_id`] for why the surface mints rather than
