@@ -902,6 +902,17 @@ impl RestApiCapability for BssPricingGear {
                 Arc::clone(&rt.history_api),
                 openapi,
             ))
+            // Slice 12's bulk import. Mounted with the authoring routers because
+            // two of its three surfaces write, and it takes the authoring state
+            // whole rather than a state of its own: Phase 2's engine wants the
+            // provider and the price repository, and the run's own statements are
+            // free functions taking a runner.
+            .merge(crate::api::rest::bulk_imports::router(
+                Arc::new(crate::api::rest::bulk_imports::ApiState {
+                    authoring: Arc::clone(&rt.authoring_api),
+                }),
+                openapi,
+            ))
             .merge(crate::api::rest::plans::router(
                 Arc::clone(&rt.authoring_api),
                 openapi,

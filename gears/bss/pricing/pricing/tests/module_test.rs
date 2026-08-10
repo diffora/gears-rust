@@ -70,6 +70,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::approvals::{
         APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
     };
+    use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
     use bss_pricing::api::rest::frontier::FRONTIER;
@@ -99,6 +100,9 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("PATCH", PLAN),
         ("POST", PLAN_ABANDON),
         ("POST", PLAN_CLONE),
+        ("POST", BULK_IMPORTS),
+        ("GET", BULK_IMPORT),
+        ("POST", BULK_IMPORT_ABORT),
         ("POST", PLAN_PRICES),
         ("GET", PLAN_PRICES),
         ("PATCH", PLAN_PRICE),
@@ -299,6 +303,12 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             .merge(bss_pricing::api::rest::history::router(
                 Arc::new(bss_pricing::api::rest::history::ApiState {
                     history: bss_pricing::infra::history::HistoryExporter::new(history_db),
+                }),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::bulk_imports::router(
+                Arc::new(bss_pricing::api::rest::bulk_imports::ApiState {
+                    authoring: Arc::clone(&authoring),
                 }),
                 &openapi,
             ))

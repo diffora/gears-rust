@@ -34,6 +34,7 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::approvals::{
     APPROVAL, APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
 };
+use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
@@ -176,6 +177,27 @@ fn census() -> Vec<Route> {
         Route {
             method: "POST",
             path: PLAN_CLONE,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "POST",
+            path: BULK_IMPORTS,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "GET",
+            path: BULK_IMPORT,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "POST",
+            path: BULK_IMPORT_ABORT,
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
@@ -677,6 +699,10 @@ fn drive(
         // a gate, which is exactly what the four properties below reddened with
         // before this line existed.
         .replace("{migrationId}", "00000000-0000-4000-8000-000000000fa1")
+        // The bulk run: a well-formed id nothing points at, which is what the
+        // gate properties need — they assert the refusal, and a run that existed
+        // would let a denied call be mistaken for a missing one.
+        .replace("{operationId}", "00000000-0000-4000-8000-000000000b17")
         // Not a seeded id either, and for the same reason: the read surface asks
         // the PDP before it reads, and a 404 for a subscription that was never
         // synthesized is the contract (`inst-sy-firstrating`) rather than a gap
@@ -783,7 +809,16 @@ fn drive(
         // The clone holds no version of the source — it reads the source's
         // current revision and writes nothing to it — so the precondition it
         // carries is the idempotency key, not an `If-Match`.
-        ("POST", PLAN_CLONE) => (None, vec![("idempotency-key", key)]),
+        // Three keyed writes with no body: the clone reads its source from the
+        // path, and the abort names its run there. The bulk submit is below,
+        // because it carries one.
+        ("POST", PLAN_CLONE | BULK_IMPORT_ABORT) => (None, vec![("idempotency-key", key)]),
+        // An empty batch is enough: the gate runs before the rows are looked at,
+        // which is the property under test.
+        ("POST", BULK_IMPORTS) => (
+            Some(serde_json::json!({ "rows": [] })),
+            vec![("idempotency-key", key)],
+        ),
         ("DELETE", PLAN_PRICE) => (None, vec![("if-match", "\"0\"")]),
         // The `Idempotency-Key` is required on the schedule (D-171) and is read
         // before anything is resolved, so a request without one never reaches the
@@ -920,6 +955,12 @@ async fn registered_paths() -> Vec<String> {
             // whose path nothing here checks.
             .merge(bss_pricing::api::rest::history::router(
                 Arc::clone(&harness.history),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::bulk_imports::router(
+                Arc::new(bss_pricing::api::rest::bulk_imports::ApiState {
+                    authoring: Arc::clone(&harness.state),
+                }),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::plans::router(

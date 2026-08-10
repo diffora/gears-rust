@@ -536,6 +536,12 @@ impl Harness {
             // Slice 12's history read. Merged here rather than only in the two
             // censuses, because this is the router the gate properties drive:
             // one absent from it is one no authz property is asked about.
+            .merge(bss_pricing::api::rest::bulk_imports::router(
+                Arc::new(bss_pricing::api::rest::bulk_imports::ApiState {
+                    authoring: Arc::clone(&self.state),
+                }),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::history::router(
                 Arc::clone(&self.history),
                 &openapi,

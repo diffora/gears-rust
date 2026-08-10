@@ -501,6 +501,17 @@ pub enum DomainError {
     /// route and D-278 minted this).
     #[error("clone source not found: {0}")]
     CloneSourceNotFound(String),
+
+    /// §5's `BULK_VALIDATION_FAILED`: Phase 1 refused the batch, and nothing was
+    /// committed.
+    ///
+    /// An **architectural 422 rendered 400** with the code as the discriminator,
+    /// this gear's established reading of Foundation §3.3 — the platform has no
+    /// 422 category. The per-row report is not in the refusal: it is on the run,
+    /// which the `GET` serves, and a batch's answer lives there for the first
+    /// caller and every replay alike (`inst-bi-return`).
+    #[error("bulk validation failed: {0}")]
+    BulkValidationFailed(String),
     /// A decision was asked of an approval record that is no longer pending
     /// (`design/05-governance.md` §5, `inst-as-immutable`).
     ///

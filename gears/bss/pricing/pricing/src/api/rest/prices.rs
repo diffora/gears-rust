@@ -1016,7 +1016,10 @@ async fn require_declared_region(
 }
 
 /// Build the canonical scope key from the path's plan and the body's axes.
-fn scope_key_of(plan_id: PlanId, key: &ScopeKeyRequest) -> Result<ScopeKey, DomainError> {
+pub(crate) fn scope_key_of(
+    plan_id: PlanId,
+    key: &ScopeKeyRequest,
+) -> Result<ScopeKey, DomainError> {
     ScopeKey::new(
         plan_id,
         CurrencyCode::new(&key.currency)?,

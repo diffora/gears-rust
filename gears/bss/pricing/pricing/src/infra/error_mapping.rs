@@ -81,6 +81,17 @@ impl From<DomainError> for CanonicalError {
             D::PrecisionExceeded(detail) => PlanResource::failed_precondition()
                 .with_precondition_violation("amount_minor", detail, "PRECISION_EXCEEDED")
                 .create(),
+            // §5's batch-level refusal, the same shape: architectural 422,
+            // rendered 400, the code the discriminator. The subject is `rows`
+            // because that is what the operator edits — the refusal is about the
+            // file, not about any one row, which is what all-or-nothing means.
+            // Through the helper for its stated reason: this ladder is bounded at
+            // 200 lines and an inline builder is five.
+            D::BulkValidationFailed(detail) => precondition(
+                "rows",
+                &detail,
+                crate::api::rest::bulk_imports::BULK_VALIDATION_FAILED,
+            ),
             // The temporal sibling of the line above, and classified with it
             // rather than as a malformed argument: the instant parses, it is
             // simply finer than the quantum the catalog compares instants at

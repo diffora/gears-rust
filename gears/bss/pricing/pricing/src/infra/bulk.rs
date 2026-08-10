@@ -59,7 +59,7 @@ use crate::infra::storage::{RepoError, repo_failure};
 pub const BULK_ROW_CONFLICT: &str = "BULK_ROW_CONFLICT";
 
 /// One row that landed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CommittedRow {
     /// Its position in the submitted batch.
     pub row: usize,
@@ -73,7 +73,7 @@ pub struct CommittedRow {
 /// `{committed, conflicted}` is `inst-bi-commit`'s own shape. The conflicted half
 /// carries [`RowOutcome`]s rather than bare indices so the report a retry reads is
 /// the report Phase 1 produces — one type, whichever phase filled it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CommitReceipt {
     /// Rows that landed, in batch order.
     pub committed: Vec<CommittedRow>,
@@ -330,9 +330,12 @@ fn every_row_conflicted(rows: &[ImportRow], held: &RepoError) -> CommitReceipt {
 
 /// The receipt as the run's stored report.
 ///
-/// The conflicted half goes through [`BatchReport`] so the shape a retry reads is
-/// the shape Phase 1 produced — one report type, whichever phase filled it, which
-/// is what `inst-bk-idem`'s replay needs it to be.
+/// `serde_json::to_value` of the receipt itself, not a JSON object assembled
+/// beside it. **That was the second spelling D-285 named and left standing**: a
+/// hand-built object and the type it describes are two things that can disagree,
+/// and `inst-bk-idem` replays this column to a retry, so the shape is a contract.
+/// The conflicted half is normalised through [`BatchReport`] first, so a report
+/// written by two phases still holds one entry per row.
 fn report_of(receipt: &CommitReceipt) -> serde_json::Value {
     let mut conflicts = BatchReport::default();
     for outcome in &receipt.conflicted {
@@ -340,25 +343,14 @@ fn report_of(receipt: &CommitReceipt) -> serde_json::Value {
             conflicts.add(outcome.row, violation.clone());
         }
     }
-    serde_json::json!({
-        "committed": receipt
-            .committed
-            .iter()
-            .map(|row| serde_json::json!({ "row": row.row, "price_id": row.price_id }))
-            .collect::<Vec<_>>(),
-        "conflicted": conflicts
-            .rows()
-            .iter()
-            .map(|outcome| {
-                serde_json::json!({
-                    "row": outcome.row,
-                    "violations": outcome
-                        .violations
-                        .iter()
-                        .map(|v| serde_json::json!({ "code": v.code, "detail": v.detail }))
-                        .collect::<Vec<_>>(),
-                })
-            })
-            .collect::<Vec<_>>(),
+    let normalised = CommitReceipt {
+        committed: receipt.committed.clone(),
+        conflicted: conflicts.rows().to_vec(),
+    };
+    serde_json::to_value(&normalised).unwrap_or_else(|_| {
+        // Unreachable: every field is a `Uuid`, a `usize` or a `String`. A JSON
+        // failure here would be a serde bug, and losing the report to it would be
+        // worse than storing an empty one the operator can see is empty.
+        serde_json::json!({ "committed": [], "conflicted": [] })
     })
 }
