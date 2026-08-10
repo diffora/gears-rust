@@ -19,7 +19,8 @@ use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
-    BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+    BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind,
+    PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
@@ -145,6 +146,16 @@ fn populated() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        // Populated rather than left empty, on this fixture's own rule: a member
+        // at its default proves nothing about the renderer that writes it, and
+        // `composite_value` walks a formula it never reads (A4) - so an empty list
+        // would exercise no part of it.
+        composites: vec![CompositeMeter {
+            composite_id: Uuid::from_u128(0xc0_11),
+            output_unit: "vm".to_owned(),
+            constituent_units: vec!["vcpu".to_owned(), "ram".to_owned()],
+            formula: serde_json::json!({ "op": "weighted_sum", "w": [1, 2] }),
+        }],
         entitlement_grants: EntitlementGrants::default(),
         change_contract: PlanChangeContract::default(),
         prices: vec![
@@ -272,6 +283,13 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         "allowedChangeTargets",
         "billingCycle",
         "comparabilityRank",
+        // Slice 10's derived-meter definitions. **Ignored deliberately**: a
+        // composite says how a billable quantity is *derived* once a thing is
+        // sold, and the six predicates ask whether it may be sold at all. A plan
+        // defining no composite is sellable and one defining three is not thereby
+        // sellable - the same reading `entitlementGrants` and the change contract
+        // get, three members down.
+        "composites",
         "crossBoundaryChangePolicy",
         "descriptorSet",
         // Slice 6's entitlement grant set and its materialized map. **Ignored

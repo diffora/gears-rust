@@ -108,6 +108,9 @@ fn delta_covering(coverage_to: Option<DateTime<Utc>>) -> PlanSubjectDelta {
     PlanSubjectDelta {
         plan_id: plan(),
         revision: 1,
+        // Empty: no predicate this fixture drives reads a derived meter, and a
+        // populated set here would be a seed no assertion reads back.
+        composites: Vec::new(),
         lifecycle_state: LifecycleState::Published,
         sku_id: None,
         plan_tier: Some("gold".to_owned()),

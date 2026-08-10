@@ -784,6 +784,78 @@ async fn a_committed_publish_becomes_pinnable_after_one_sweep() {
     );
 }
 
+/// **`inst-cm-frozen`, end to end: what a version freezes, a consumer can read.**
+///
+/// The instruction has two clauses - the catalog persists and freezes the
+/// definition, and Rating computes from the snapshot - and only the first had a
+/// mechanism. `content_pin` hashed the composite set from v11 and `approvals.rs`
+/// showed it to a reviewer, so a formula was covered by a signature and reached no
+/// artifact any consumer reads; `domain::projection` contained the word
+/// "composite" zero times. Rating resolves a plan through `pricingSnapshotRef`
+/// into one of these delta rows, so a formula outside this payload is one Rating
+/// cannot evaluate however carefully it was approved.
+///
+/// Against the **store** rather than against the renderer: `projection_tests`
+/// pins the wire keys off a hand-built delta, which would stay green if the
+/// projector never read `pricing_composite_meter` at all. What this asserts is that
+/// the definition a publish froze came out of the table the publish rules judged.
+///
+/// The formula is compared whole, nested object included. It is opaque to this
+/// gear (A4), so there is nothing to compare but the document the author wrote.
+#[tokio::test]
+async fn a_resolved_plan_subjects_delta_freezes_the_composite_definitions() {
+    let h = harness().await;
+    let plan_id = PlanId::new(Uuid::new_v4());
+    let (revision, version) = seed_publishable(&h, plan_id, "gold").await;
+
+    let formula = serde_json::json!({ "op": "weighted_sum", "weights": { "vcpu": 2, "ram": 1 } });
+    let composite_id = Uuid::new_v4();
+    let attached = h
+        .shapes
+        .replace_composites(
+            &h.scope,
+            TENANT,
+            plan_id,
+            revision,
+            version,
+            vec![bss_pricing::domain::plan_shape::CompositeMeter {
+                composite_id,
+                output_unit: "vm".to_owned(),
+                constituent_units: vec!["vcpu".to_owned(), "ram".to_owned()],
+                formula: formula.clone(),
+            }],
+            stamp(),
+        )
+        .await
+        .expect("attach the composite set to the open draft");
+
+    let pending = publish_of(
+        &h,
+        TENANT,
+        plan_id,
+        revision,
+        attached.row_version,
+        at_min(12, 0),
+    )
+    .await;
+    h.registry.commit(&pending, 1);
+    sweep(&h, at(13)).await;
+
+    let rows = deltas(&h).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].payload.get("composites"),
+        Some(&serde_json::json!([{
+            "compositeId": composite_id,
+            "outputUnit": "vm",
+            "constituentUnits": ["vcpu", "ram"],
+            "formula": formula,
+        }])),
+        "{:?}",
+        rows[0].payload
+    );
+}
+
 #[tokio::test]
 async fn a_resolved_plan_subjects_delta_stamps_the_cross_boundary_marker() {
     // D-169 clause (1), against the store rather than against the renderer. The

@@ -88,6 +88,9 @@ fn delta_of(
 
     let mut delta = PlanSubjectDelta {
         entitlement_grants: EntitlementGrants::default(),
+        // Empty: no predicate this fixture drives reads a derived meter, and a
+        // populated set here would be a seed no assertion reads back.
+        composites: Vec::new(),
         change_contract: PlanChangeContract::default(),
         plan_id: PlanId::new(plan_id),
         revision: 0,

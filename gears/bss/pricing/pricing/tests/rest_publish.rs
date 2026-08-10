@@ -177,6 +177,226 @@ async fn a_plan_that_cannot_publish_opens_no_unit_at_all() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Slice 10's two composite rules, driven through this route.
+// ---------------------------------------------------------------------------
+
+/// Attach a composite set to the plan's open draft through the real `PATCH`
+/// route, and answer the tag the next verb needs.
+///
+/// **Through the route, and that is the whole design of these two cases** (D-257).
+/// A test that hand-built a `PlanShape` with `shape.composites = vec![...]` proves
+/// the *rule* and says nothing about whether anything can reach it - and until this
+/// facet existed nothing could: `replace_composites` had no caller in `src/`, so
+/// `CompositeArity` and `CompositeSelfReference` ran on every publish over a
+/// permanently empty vector. Reachability is what these cases are for, so the
+/// composite has to enter the store the way a client puts it there.
+async fn attach_composites(
+    h: &Harness,
+    plan_id: Uuid,
+    tag: &str,
+    composites: serde_json::Value,
+) -> String {
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "PATCH",
+            &format!("/bss-pricing/v1/plans/{plan_id}"),
+            Some(serde_json::json!({ "composites": composites })),
+            &[("if-match", tag)],
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "the composites facet must land for the publish under test to mean anything"
+    );
+    let body = body_json(response).await;
+    format!(
+        "\"{}-{}\"",
+        body["revision"].as_u64().expect("the patched revision"),
+        body["row_version"].as_u64().expect("its new version")
+    )
+}
+
+/// Every precondition-violation code a refusal carries.
+///
+/// `rest_overlays.rs`' reading, and deliberately the same one: RFC 9457 puts the
+/// code at `context.violations[].type`, and a case that read the prose instead
+/// would be matching on a message rather than on the discriminator §3.3 makes the
+/// contract. Compared by equality against the whole list rather than by
+/// `contains` over the rendered document - a code with a character appended
+/// satisfies a substring test.
+async fn violation_codes(response: axum::http::Response<axum::body::Body>) -> Vec<String> {
+    let body = body_json(response).await;
+    body["context"]["violations"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a 400 from the pre-check enumerates its violations: {body}"))
+        .iter()
+        .filter_map(|violation| violation["type"].as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// **`COMPOSITE_TOO_FEW_CONSTITUENTS` fires, in both of its readings.**
+///
+/// Two publishes over one seed, because the two readings are the same rule and
+/// the second is the one that was silently passing:
+///
+/// 1. `["vcpu"]` - one constituent. A derived meter over a single meter adds a
+///    level of indirection that changes no charge, which is what
+///    `inst-cm-constituents` refuses.
+/// 2. `["vcpu", "vcpu"]` - **two entries naming one meter.** This published
+///    unrefused until the rule started counting *distinct* units: the guard read
+///    `constituent_units.len() < 2`, and a duplicate satisfies a length test while
+///    being exactly the composite in (1) wearing a disguise. No column catches it
+///    either - the unique index is over `output_unit` and `constituent_units` is
+///    opaque `jsonb`.
+///
+/// A refused publish writes nothing, so the second attempt runs against the same
+/// draft with the tag the first patch left.
+#[tokio::test]
+async fn a_composite_that_prices_one_meter_cannot_publish_however_it_is_spelled() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+
+    let tag = attach_composites(
+        &h,
+        plan_id,
+        &seeded.etag(),
+        serde_json::json!([{
+            "output_unit": "vm",
+            "constituent_units": ["vcpu"],
+            "formula": { "op": "identity" }
+        }]),
+    )
+    .await;
+
+    let refused = publish_as(&h, SUBMITTER, plan_id, &tag).await;
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        violation_codes(refused).await,
+        vec!["COMPOSITE_TOO_FEW_CONSTITUENTS".to_owned()]
+    );
+    assert!(
+        approval_rows(&h).await.is_empty(),
+        "an unpublishable plan must not reach a reviewer"
+    );
+
+    // The duplicate reading, on the same draft. The tag has not moved: the refusal
+    // above ran the pre-check and wrote nothing.
+    let tag = attach_composites(
+        &h,
+        plan_id,
+        &tag,
+        serde_json::json!([{
+            "output_unit": "vm",
+            "constituent_units": ["vcpu", "vcpu"],
+            "formula": { "op": "sum" }
+        }]),
+    )
+    .await;
+
+    let refused = publish_as(&h, SUBMITTER, plan_id, &tag).await;
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        violation_codes(refused).await,
+        vec!["COMPOSITE_TOO_FEW_CONSTITUENTS".to_owned()],
+        "two entries naming one meter is a one-constituent composite"
+    );
+    assert!(approval_rows(&h).await.is_empty());
+}
+
+/// **`COMPOSITE_SELF_REFERENCE` fires on the transitive cycle, through the route.**
+///
+/// `vm` is built from `pod` and `pod` from `vm`: neither definition is
+/// self-referential on its own, and §9 asks for direct *and transitive* rejection
+/// precisely because a row-local check only ever finds the half that matters less.
+/// A formula defined in terms of its own output has no evaluation order, so what
+/// this stops is a version freezing a definition Rating could not compute from -
+/// and the freeze is what `inst-cm-frozen` makes irreversible.
+///
+/// **Two violations, not one.** Both definitions are in the cycle and an operator
+/// breaking either one fixes it, so a report naming only the first would send them
+/// to edit a definition that may not be the one they want to change.
+#[tokio::test]
+async fn a_composite_cycle_across_two_definitions_cannot_publish() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+
+    let tag = attach_composites(
+        &h,
+        plan_id,
+        &seeded.etag(),
+        serde_json::json!([
+            {
+                "output_unit": "vm",
+                "constituent_units": ["vcpu", "pod"],
+                "formula": { "op": "weighted_sum" }
+            },
+            {
+                "output_unit": "pod",
+                "constituent_units": ["ram", "vm"],
+                "formula": { "op": "weighted_sum" }
+            }
+        ]),
+    )
+    .await;
+
+    let refused = publish_as(&h, SUBMITTER, plan_id, &tag).await;
+
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        violation_codes(refused).await,
+        vec![
+            "COMPOSITE_SELF_REFERENCE".to_owned(),
+            "COMPOSITE_SELF_REFERENCE".to_owned()
+        ],
+        "both definitions are in the cycle, and either one is a place to break it"
+    );
+    assert!(
+        approval_rows(&h).await.is_empty(),
+        "an unpublishable plan must not reach a reviewer"
+    );
+}
+
+/// **The positive control for the pair.** A well-formed composite publishes.
+///
+/// Without it the two refusals above are consistent with a facet that makes *every*
+/// plan carrying a composite unpublishable - which would be a worse defect than the
+/// one this increment closed, and both cases would still be green.
+#[tokio::test]
+async fn a_well_formed_composite_publishes_like_any_other_shape() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+
+    let tag = attach_composites(
+        &h,
+        plan_id,
+        &seeded.etag(),
+        serde_json::json!([{
+            "output_unit": "vm",
+            "constituent_units": ["vcpu", "ram"],
+            "formula": { "op": "weighted_sum", "weights": { "vcpu": 2, "ram": 1 } }
+        }]),
+    )
+    .await;
+
+    let response = publish_as(&h, SUBMITTER, plan_id, &tag).await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "submitted_for_approval");
+    assert_eq!(
+        approval_rows(&h).await.len(),
+        1,
+        "a plan with a legal composite reaches a reviewer like any other"
+    );
+}
+
 /// `inst-co-single-pending`: one pending unit per subject.
 #[tokio::test]
 async fn a_second_submit_while_a_unit_is_pending_is_refused() {

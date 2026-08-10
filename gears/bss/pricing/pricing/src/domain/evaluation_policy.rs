@@ -59,19 +59,24 @@
 //! evaluator reads, and nothing in this gear judges either value or honours the
 //! allowance.
 //!
-//! What holds the line today is **one refusal at one surface**:
-//! `api::rest::prices::refuse_unlanded_primitives` rejects a non-null value on
-//! `POST …/plans/{planId}/prices` and `PATCH …/prices/{priceId}`, the only mounted
-//! routes that can carry either field. It is not a property of the type, the
-//! column or the roster — the domain model, the storage round trip and the D-129
-//! supersession guard all carry both fields quite happily.
+//! What holds the line is **three refusals, and the load-bearing one is a rule**:
+//! [`crate::domain::publish::rules::NoUnjudgedPrimitive`] is registered in the
+//! publish set and refuses either field at precheck and again inside the commit
+//! transaction; `api::rest::prices::refuse_unlanded_primitives` rejects a non-null
+//! value on `POST …/plans/{planId}/prices` and `PATCH …/prices/{priceId}`; and
+//! `domain::import` inherits the same code on the bulk plane. None of the three is
+//! a property of the type, the column or the roster — the domain model, the
+//! storage round trip and the D-129 supersession guard all carry both fields quite
+//! happily.
 //!
-//! **So the freeze is one route away.** `POST …/plans/{planId}/publish` is not
-//! mounted (`PublishService::commit` has no production caller), and the day Slice 5
-//! mounts it, a stored value reaches
-//! [`crate::domain::projection`] and freezes into an immutable ≥ 7-year version
-//! **with no further code change and no gate that would notice**. A group that
-//! mounts that route, or that adds a second writer of `PriceRow`, owes the ten
+//! **This paragraph said "the freeze is one route away", and that route is now
+//! mounted** (D-298). `POST …/plans/{planId}/publish` is merged in `module.rs` and
+//! declared in `module_test`'s path census; the sentence predicting the freeze
+//! would go live the day Slice 5 mounted it was falsified by the mount, and the
+//! freeze did not happen, because the publish rule landed with it. Corrected in
+//! place rather than deleted: the danger it described is real, and the reason it
+//! is closed should be readable by whoever next widens this roster. A group that
+//! adds a writer of `PriceRow` still owes the ten
 //! refusals or a second refusal at its own boundary. No DTO in this gear sets
 //! `deny_unknown_fields`, so the surface refusal is also contingent on both
 //! members remaining modelled fields rather than silently ignored ones (D-174

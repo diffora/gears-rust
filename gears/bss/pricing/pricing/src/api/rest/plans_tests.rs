@@ -56,7 +56,7 @@ fn an_unattached_descriptor_set_is_null_and_an_empty_one_is_an_object() {
     // same publish input.
     let plan_id = PlanId::new(Uuid::now_v7());
 
-    let unattached = PlanView::new(revision(plan_id), Vec::new(), Vec::new(), None);
+    let unattached = PlanView::new(revision(plan_id), Vec::new(), Vec::new(), None, Vec::new());
     assert!(
         body(&unattached)["descriptor_set"].is_null(),
         "{}",
@@ -68,6 +68,7 @@ fn an_unattached_descriptor_set_is_null_and_an_empty_one_is_an_object() {
         Vec::new(),
         Vec::new(),
         Some(DescriptorSet::default()),
+        Vec::new(),
     );
     let rendered = body(&attached);
     assert!(rendered["descriptor_set"].is_object(), "{rendered}");
@@ -90,6 +91,7 @@ fn the_view_names_which_revision_it_answered() {
         Vec::new(),
         Vec::new(),
         None,
+        Vec::new(),
     ));
 
     assert_eq!(rendered["revision"], serde_json::json!(3));
@@ -103,7 +105,13 @@ fn a_custom_frequency_carries_its_interval_and_a_fixed_one_carries_none() {
     // the pairing the CHECK constraint and `Frequency` both exist to refuse.
     let mut fixed = revision(PlanId::new(Uuid::now_v7()));
     fixed.frequency = Some(Frequency::Monthly);
-    let rendered = body(&PlanView::new(fixed, Vec::new(), Vec::new(), None));
+    let rendered = body(&PlanView::new(
+        fixed,
+        Vec::new(),
+        Vec::new(),
+        None,
+        Vec::new(),
+    ));
     assert_eq!(rendered["frequency"]["kind"], serde_json::json!("monthly"));
     assert!(rendered["frequency"]["custom_interval_n"].is_null());
 
@@ -112,6 +120,7 @@ fn a_custom_frequency_carries_its_interval_and_a_fixed_one_carries_none() {
         Vec::new(),
         Vec::new(),
         None,
+        Vec::new(),
     ));
     assert_eq!(
         custom["frequency"]["kind"],

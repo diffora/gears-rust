@@ -43,8 +43,13 @@
 //! its meaning. Storing a value this gear can neither judge nor honour is
 //! precisely the state `inst-tt-forbidden` names when it says *an
 //! accepted-but-ignored value would mask authoring errors* — and the projector
-//! and the `ep-2` roster already carry both fields, so the day Slice 5 mounts
-//! the publish route an unjudged allowance freezes into an immutable version.
+//! and the evaluation-policy roster already carry both fields, so a stored value
+//! that reached publish would freeze into an immutable version. *(This sentence
+//! said "the day Slice 5 mounts the publish route". It is mounted, and the freeze
+//! did not follow, because `publish::rules::NoUnjudgedPrimitive` refuses either
+//! field inside the publish set — see D-298. The guard on this surface is still
+//! owed, because a row stored here that publish then refuses is a row nobody can
+//! publish.)*
 //!
 //! Building the ten refusals **without** the compile would be worse, not
 //! better: a `graduated` row carrying `{100, none}` would pass all six

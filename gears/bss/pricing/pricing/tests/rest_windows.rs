@@ -2298,6 +2298,9 @@ fn delta_of(
     row.amount_minor = Some(MinorAmount::new(1_200).expect("a non-negative amount"));
     PlanSubjectDelta {
         entitlement_grants: EntitlementGrants::default(),
+        // Empty: no predicate this fixture drives reads a derived meter, and a
+        // populated set here would be a seed no assertion reads back.
+        composites: Vec::new(),
         change_contract: PlanChangeContract::default(),
         plan_id: PlanId::new(plan_id),
         revision: 0,

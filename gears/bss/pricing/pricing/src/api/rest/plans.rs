@@ -58,7 +58,8 @@ use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency,
+    PhaseKind, PlanPhase,
 };
 use crate::domain::scope_key::{PhaseId, PlanId};
 use crate::infra::clone::{CloneNotice, CloneReceipt, clone_plan_on};
@@ -290,10 +291,102 @@ impl From<DescriptorSet> for DescriptorSetView {
     }
 }
 
-/// One plan revision, whole: its own columns and its three child sets.
+/// One derived (composite) meter, as an **author** states it (Slice 10 §6, A4,
+/// D-32, D-106).
+///
+/// # Why this is a twin of `approvals::CompositeMeterView` and not that type
+///
+/// A composite meter already has a wire shape:
+/// [`CompositeMeterView`](crate::api::rest::approvals::CompositeMeterView), minted
+/// when the reviewer's pinned document was the **only** surface that had ever
+/// shown one. Sharing it was considered and rejected, and the reasons are three,
+/// in increasing order of what it costs to get wrong.
+///
+/// 1. **Direction.** `approvals.rs` imports [`PlanPhaseView`], [`AddonRuleView`],
+///    [`DescriptorSetView`] and [`FrequencyView`] *from here*: the authoring plane
+///    owns the shapes an author writes, and the reviewer's document borrows them.
+///    Making [`PatchPlanRequest`] depend on a type in `approvals.rs` inverts that
+///    for one facet, and a reader would then have to know which of the five is the
+///    exception.
+/// 2. **The two shapes are already answers to different questions.** This module's
+///    own Slice-6 pairs are the precedent: [`PlanChangeContractRequest`] beside
+///    `approvals::PlanChangeContractView`, [`EntitlementGrantsRequest`] beside
+///    `approvals::EntitlementGrantsView` - twins rather than one type, because a
+///    request's members carry an *omitted-means-something* reading while a view
+///    renders the resolved value (`EntitlementGrantsView::per_phase` says so in as
+///    many words: "the **authored** ones, not the materialized map").
+///    `PinnedContentView`'s stated invariant is "exactly the fields the pin hashes
+///    and no others", which is a rule about the digest and not about what an author
+///    may set.
+/// 3. **That invariant is live, and it has already moved once.**
+///    `PinnedContentView` gained `windows` when the pin started framing them, and a
+///    window is not authored on this route at all. Under a shared type that
+///    widening would have made a derived, publish-owned fact settable by a `PATCH`,
+///    with nothing to notice it: no DTO in this gear sets `deny_unknown_fields`, so
+///    the compiler would have had no complaint and the surface no refusal.
+///
+/// What the twin costs is one field that differs and three that do not, joined in
+/// exactly one place ([`composite_of`]).
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct CompositeMeterRequest {
+    /// The definition's identity, **stable across revisions** (D-106).
+    ///
+    /// Optional, which is the one member that diverges from the reviewer's view
+    /// (where it is a plain `Uuid`, because a reviewer is only ever shown a
+    /// persisted row). Two readings, and both are needed:
+    ///
+    /// - **Omitted: author a new definition.** The surface mints the id, as
+    ///   `POST /plans` mints a `planId` and for a sharper version of the same
+    ///   reason. `pricing_composite_meter`'s
+    ///   `PRIMARY KEY (composite_id, plan_revision)` carries neither `plan_id` nor
+    ///   `tenant_id`, so it is `pricing_plan_phase`'s collision one table over -
+    ///   two plans of one tenant standing at revision `0` cannot share a child id,
+    ///   and `rest_plans.rs` pins that as a client-reachable `500`. A **required**
+    ///   id would put a fresh instance of a known defect on a brand-new surface.
+    /// - **Supplied: keep this definition.** A `GET` echoes the ids, so a
+    ///   read-modify-write round trip preserves identity through a facet that
+    ///   replaces wholesale - which is what makes D-106's "a draft's formula edit
+    ///   leaves the published revision byte-identical" true of an *edit* and not
+    ///   only of the copy-forward. That echo is why [`PlanView`] gains this facet in
+    ///   the same change the `PATCH` does.
+    pub composite_id: Option<Uuid>,
+    /// The registry-declared unit this composite rates as (`inst-cm-output`).
+    pub output_unit: String,
+    /// The constituent unit ids. Two or more **distinct** ids is
+    /// [`CompositeArity`](crate::domain::plan_rules::composite::CompositeArity)'s
+    /// rule and is judged at publish; whether each is *published* is unasked,
+    /// because this gear holds no registry client.
+    pub constituent_units: Vec<String>,
+    /// The formula as data, verbatim as authored.
+    ///
+    /// Opaque on purpose (A4): the catalog persists and freezes it and Rating
+    /// computes from the snapshot, so nothing in this crate reads inside it and
+    /// nothing here can refuse its contents. Omitted stores JSON `null`, which is
+    /// an author who stated no formula rather than a missing field - the design set
+    /// declares no code that judges it either way, and inventing one here would be
+    /// minting a refusal no document names.
+    pub formula: Option<serde_json::Value>,
+}
+
+impl From<CompositeMeter> for CompositeMeterRequest {
+    fn from(meter: CompositeMeter) -> Self {
+        Self {
+            // `Some`, always: a read answers persisted rows, and a `null` id on the
+            // way out would invite a round trip to re-mint the very identity D-106
+            // keeps stable.
+            composite_id: Some(meter.composite_id),
+            output_unit: meter.output_unit,
+            constituent_units: meter.constituent_units,
+            formula: Some(meter.formula),
+        }
+    }
+}
+
+/// One plan revision, whole: its own columns and its four child sets.
 ///
 /// The child sets are here rather than on sub-resources of their own because
-/// S2 §5's `PATCH` cell names those four facets as the plan's shape - a read
+/// S2 §5's `PATCH` cell names those facets as the plan's shape - a read
 /// that omitted them could not round-trip a patch, and an author would have to
 /// guess what a `PATCH` was about to replace.
 #[derive(Debug, Clone)]
@@ -342,15 +435,30 @@ pub struct PlanView {
     pub addon_rules: Vec<AddonRuleView>,
     /// The revision's descriptor set, or `null` when none is attached.
     pub descriptor_set: Option<DescriptorSetView>,
+    /// The revision's derived (composite) meter set, in the store's order.
+    ///
+    /// **A write surface whose read surface does not show the value is half a
+    /// feature**, and here it is load-bearing rather than symmetric-for-tidiness:
+    /// the `composites` facet replaces the set wholesale, and
+    /// [`CompositeMeterRequest::composite_id`] is what preserves a definition's
+    /// identity across such a replace. An author with no way to read the ids back
+    /// could only ever re-mint them, and D-106's stable id would hold for the
+    /// copy-forward and break for every edit.
+    ///
+    /// An empty list is a revision that defines no composite, which is the ordinary
+    /// case: unlike [`PlanView::descriptor_set`] there is no attached-but-empty
+    /// state to keep apart from absence, because the set is rows and not a row.
+    pub composites: Vec<CompositeMeterRequest>,
 }
 
 impl PlanView {
-    /// Compose a revision with its three child sets.
+    /// Compose a revision with its four child sets.
     fn new(
         revision: PlanRevision,
         phases: Vec<PlanPhase>,
         addon_rules: Vec<AddonRule>,
         descriptor_set: Option<DescriptorSet>,
+        composites: Vec<CompositeMeter>,
     ) -> Self {
         Self {
             plan_id: revision.plan_id.get(),
@@ -374,6 +482,10 @@ impl PlanView {
             phases: phases.into_iter().map(PlanPhaseView::from).collect(),
             addon_rules: addon_rules.into_iter().map(AddonRuleView::from).collect(),
             descriptor_set: descriptor_set.map(DescriptorSetView::from),
+            composites: composites
+                .into_iter()
+                .map(CompositeMeterRequest::from)
+                .collect(),
         }
     }
 }
@@ -469,25 +581,43 @@ pub struct PlanChangeContractRequest {
     pub usage_counter_on_plan_change: Option<String>,
 }
 
-/// A `PATCH` body: **exactly one** of the four facets S2 §5 names.
+/// A `PATCH` body: **exactly one** facet.
 ///
-/// # Why one and not four
+/// # Why one and not several
 ///
 /// The reason is structural rather than stylistic.
 /// [`PlanShapeRepo::replace_phases`](crate::infra::storage::repo::PlanShapeRepo::replace_phases),
-/// `replace_addon_rules` and `set_descriptor_set` each compare-and-swap on the
-/// **revision's** row version and each bump it - the child sets carry no tag of
-/// their own, deliberately, so two authors editing different facets of one draft
-/// cannot both satisfy one precondition. A two-facet patch would therefore match
-/// the caller's tag on the first mutation and could not match it on the second,
-/// and the two are separate transactions with a visible half-applied state in
-/// between.
+/// `replace_addon_rules`, `set_descriptor_set` and `replace_composites` each
+/// compare-and-swap on the **revision's** row version and each bump it - the child
+/// sets carry no tag of their own, deliberately, so two authors editing different
+/// facets of one draft cannot both satisfy one precondition. A two-facet patch
+/// would therefore match the caller's tag on the first mutation and could not
+/// match it on the second, and the two are separate transactions with a visible
+/// half-applied state in between.
 ///
 /// So more than one facet is [`DomainError::InvalidRequest`] (400, no new code),
-/// and **this is a divergence from S2 §5**, whose `PATCH` purpose names four
+/// and **this is a divergence from S2 §5**, whose `PATCH` purpose names several
 /// facets in one verb while the storage layer versions them against one tag each
 /// of them advances. A coherent multi-facet patch needs a composite operation
 /// nobody has designed; it is reported rather than approximated.
+///
+/// # The fifth facet, and why it is a facet here rather than a route of its own
+///
+/// `composites` mounts Slice 10's derived-meter set on **this** verb. The set is
+/// revision-scoped child rows of a plan revision, versioned by that revision's
+/// row version, copied forward by `open_revision` and dropped by `abandon_draft` -
+/// which is the description of `phases`, `addon_rules` and `descriptor_set`
+/// exactly, and those are facets. A route of its own would owe a second
+/// precondition discipline over the same tag, a second idempotency story and a
+/// second census, to say what one more arm says here.
+///
+/// **What it changes is not the surface, it is reachability.** Before it,
+/// `replace_composites` had no caller in `src/` at all: the `_on` form was reached
+/// only by the clone and `copy_composites` only by `open_revision`, so every
+/// production path was a copy of a set nothing could originate. The two registered
+/// rules `CompositeArity` and `CompositeSelfReference` therefore ran on every
+/// publish over a permanently empty vector - a rule with no operand, which is the
+/// defect class D-254 named and D-257 found one field deeper in the same slice.
 #[derive(Debug, Clone, Default)]
 #[toolkit_macros::api_dto(request, response)]
 pub struct PatchPlanRequest {
@@ -499,6 +629,12 @@ pub struct PatchPlanRequest {
     pub addon_rules: Option<Vec<AddonRuleView>>,
     /// The billing descriptor set, attached or replaced.
     pub descriptor_set: Option<DescriptorSetView>,
+    /// The whole derived-meter set, replaced wholesale (Slice 10 §6).
+    ///
+    /// Wholesale like its siblings, and an empty list is the way to withdraw every
+    /// composite - the store's own operation is delete-then-insert, so there is no
+    /// per-definition verb to expose and no `null`-versus-`[]` distinction to keep.
+    pub composites: Option<Vec<CompositeMeterRequest>>,
 }
 
 /// Build the Axum router for the plan surface and register its operations.
@@ -553,7 +689,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Edit a plan's open draft revision")
         .description(
             "Applies **exactly one** facet - the plan's own columns, its phase chain, its \
-             add-on rule set, or its descriptor set - to the plan's open draft revision, under \
+             add-on rule set, its descriptor set, or its derived (composite) meter set - to \
+             the plan's open draft revision, under \
              the `If-Match` precondition. Two facets in one body is `400`: each child mutator \
              compare-and-swaps on the revision's row version and bumps it, so the second could \
              not match the tag the first advanced. When the plan holds **no** open draft, a \
@@ -778,7 +915,7 @@ async fn authoring_revision(
     plans.find_current(scope, tenant, plan_id).await
 }
 
-/// Attach a revision's three child sets.
+/// Attach a revision's four child sets.
 async fn read_shape(
     state: &AuthoringState,
     scope: &toolkit_db::secure::AccessScope,
@@ -799,7 +936,21 @@ async fn read_shape(
         .shapes
         .find_descriptor_set(scope, tenant, plan_id, revision)
         .await?;
-    Ok(PlanView::new(row, phases, addon_rules, descriptor_set))
+    // The fourth read, and the one the `composites` facet's `composite_id`
+    // round trip depends on: a `PATCH` replaces the set wholesale, so an author
+    // who cannot read the ids back cannot preserve a definition's identity
+    // across an edit (D-106).
+    let composites = state
+        .shapes
+        .list_composites(scope, tenant, plan_id, revision)
+        .await?;
+    Ok(PlanView::new(
+        row,
+        phases,
+        addon_rules,
+        descriptor_set,
+        composites,
+    ))
 }
 
 /// The "absent, or not yours, or holding nothing an author can act on" refusal.
@@ -906,7 +1057,7 @@ async fn create_plan(
             })
         },
         |revision: &PlanRevision| {
-            let view = PlanView::new(revision.clone(), Vec::new(), Vec::new(), None);
+            let view = PlanView::new(revision.clone(), Vec::new(), Vec::new(), None, Vec::new());
             serde_json::to_value(&view)
                 .map_err(|e| DomainError::Internal(format!("cannot render the created plan: {e}")))
         },
@@ -973,6 +1124,21 @@ async fn patch_plan(
             state
                 .shapes
                 .set_descriptor_set(&scope, tenant, plan_id, revision, expected, set, stamp)
+                .await
+        }
+        // Slice 10's derived meters, on the already-public, already-
+        // compare-and-swapped repository method that had no caller in `src/`
+        // before this arm. Nothing is judged here: `CompositeArity` and
+        // `CompositeSelfReference` are **publish** rules, and refusing a
+        // one-constituent draft at save would contradict this module's own
+        // opening premise - an author assembles a plan over several calls, and
+        // the second constituent legitimately arrives in the next one.
+        Facet::Composites(composites) => {
+            state
+                .shapes
+                .replace_composites(
+                    &scope, tenant, plan_id, revision, expected, composites, stamp,
+                )
                 .await
         }
     }
@@ -1075,7 +1241,7 @@ async fn write_scope(
     .map_err(authz_error_to_canonical)
 }
 
-/// Which of the four facets a `PATCH` carries.
+/// Which of the five facets a `PATCH` carries.
 enum Facet {
     /// The plan's own columns.
     Shape(PlanShapePatch),
@@ -1085,6 +1251,8 @@ enum Facet {
     AddonRules(Vec<AddonRule>),
     /// The descriptor set.
     DescriptorSet(DescriptorSet),
+    /// The whole derived-meter set (Slice 10 §6).
+    Composites(Vec<CompositeMeter>),
 }
 
 impl Facet {
@@ -1093,11 +1261,12 @@ impl Facet {
         let named = usize::from(body.shape.is_some())
             + usize::from(body.phases.is_some())
             + usize::from(body.addon_rules.is_some())
-            + usize::from(body.descriptor_set.is_some());
+            + usize::from(body.descriptor_set.is_some())
+            + usize::from(body.composites.is_some());
         if named != 1 {
             return Err(DomainError::InvalidRequest(format!(
-                "a PATCH carries exactly one of `shape`, `phases`, `addon_rules` or \
-                 `descriptor_set`; this one carries {named}. Each of the four \
+                "a PATCH carries exactly one of `shape`, `phases`, `addon_rules`, \
+                 `descriptor_set` or `composites`; this one carries {named}. Each of the five \
                  compare-and-swaps on the revision's own row version and advances it, so two \
                  in one request could not both satisfy one `If-Match`"
             )));
@@ -1112,6 +1281,11 @@ impl Facet {
         }
         if let Some(rules) = body.addon_rules {
             return Ok(Self::AddonRules(rules.into_iter().map(addon_of).collect()));
+        }
+        if let Some(composites) = body.composites {
+            return Ok(Self::Composites(
+                composites.into_iter().map(composite_of).collect(),
+            ));
         }
         let set = body
             .descriptor_set
@@ -1346,7 +1520,7 @@ async fn answer_revision(
 
 /// The 201 a performed create answers with.
 fn created(revision: &PlanRevision) -> Response {
-    let view = PlanView::new(revision.clone(), Vec::new(), Vec::new(), None);
+    let view = PlanView::new(revision.clone(), Vec::new(), Vec::new(), None, Vec::new());
     let tag = plan_tag(&view);
     (
         StatusCode::CREATED,
@@ -1851,6 +2025,30 @@ fn addon_of(view: AddonRuleView) -> AddonRule {
         price_override_ref: view.price_override_ref,
         depends_on: view.depends_on,
         conflicts_with: view.conflicts_with,
+    }
+}
+
+/// Parse one composite meter.
+///
+/// Nothing here can fail, and that is a statement about where the rules live
+/// rather than an absence of them: `output_unit`'s non-emptiness is a `CHECK`,
+/// arity and self-reference are publish rules over the **whole revision's** set
+/// (a self-reference cycle spans two definitions and no single one of them is
+/// wrong), and the formula is opaque to this crate by A4. A refusal here would
+/// have to be one no document declares.
+///
+/// The id is minted when the author omits it - see
+/// [`CompositeMeterRequest::composite_id`] for why the surface mints rather than
+/// requiring one. `now_v7` matches every other id this surface produces.
+fn composite_of(view: CompositeMeterRequest) -> CompositeMeter {
+    CompositeMeter {
+        composite_id: view.composite_id.unwrap_or_else(Uuid::now_v7),
+        output_unit: view.output_unit,
+        constituent_units: view.constituent_units,
+        // An omitted formula is JSON `null` rather than an error: the store's
+        // column is `NOT NULL` and holds `jsonb`, so `null` is a value it accepts,
+        // and A4 puts the formula's meaning outside this crate entirely.
+        formula: view.formula.unwrap_or(serde_json::Value::Null),
     }
 }
 

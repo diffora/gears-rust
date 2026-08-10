@@ -132,6 +132,16 @@ async fn the_read_carries_the_revisions_child_sets_and_its_etag() {
         "{body}"
     );
     assert!(body["descriptor_set"].is_object(), "{body}");
+    // The fourth child set, present as an empty list on a revision that defines
+    // none. Asserted rather than assumed because the `composites` facet's whole
+    // round trip depends on the member existing on every read: an author cannot
+    // preserve a definition's id (D-106) through a wholesale replace if the read
+    // sometimes omits the field it comes from.
+    assert_eq!(
+        body["composites"].as_array().map(Vec::len),
+        Some(0),
+        "{body}"
+    );
 }
 
 #[tokio::test]
@@ -699,6 +709,226 @@ async fn a_patch_naming_two_facets_is_refused_rather_than_half_applied() {
         plan_row_version(&harness, plan_id, 0).await,
         Some(0),
         "neither facet may have landed"
+    );
+}
+
+/// **The composite facet lands, and the read hands back what it stored.**
+///
+/// Before this facet existed `PlanShapeRepo::replace_composites` had no caller in
+/// `src/` at all: the `_on` form was reached only by the clone, `copy_composites`
+/// only by `open_revision`, and every production path was therefore a copy of a
+/// set nothing could originate. So the first thing to prove is not that the store
+/// works - four suites already prove that against the repository - but that a
+/// **client** can put a composite into it.
+///
+/// The `GET` half is the other load-bearing one. The facet replaces the set
+/// wholesale and `composite_id` is what survives a replace, so a read that did not
+/// echo the ids would leave an author able only to re-mint them, and D-106's
+/// stable identity would hold for the copy-forward and break for every edit.
+#[tokio::test]
+async fn a_composites_facet_lands_and_the_read_echoes_what_it_stored() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &plan_path(plan_id),
+            Some(serde_json::json!({
+                "composites": [{
+                    "output_unit": "vm",
+                    "constituent_units": ["vcpu", "ram"],
+                    "formula": { "op": "weighted_sum", "weights": { "vcpu": 2, "ram": 1 } }
+                }]
+            })),
+            &[("if-match", "\"0-0\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let patched = body_json(response).await;
+    let stored = patched["composites"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the patch answers the revision it wrote: {patched}"));
+    assert_eq!(stored.len(), 1, "{patched}");
+    assert_eq!(
+        stored[0]["output_unit"],
+        serde_json::json!("vm"),
+        "{patched}"
+    );
+    assert_eq!(
+        stored[0]["constituent_units"],
+        serde_json::json!(["vcpu", "ram"]),
+        "{patched}"
+    );
+    // The formula is opaque to this gear (A4), so what a round trip must preserve
+    // is the whole document and not a token from it.
+    assert_eq!(
+        stored[0]["formula"],
+        serde_json::json!({ "op": "weighted_sum", "weights": { "vcpu": 2, "ram": 1 } }),
+        "{patched}"
+    );
+    // Minted by the surface, because the body named none.
+    let minted = stored[0]["composite_id"]
+        .as_str()
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .unwrap_or_else(|| panic!("an omitted id is minted, never left null: {patched}"));
+
+    let read = body_json(
+        harness
+            .allowed()
+            .send(request("GET", &plan_path(plan_id), None))
+            .await,
+    )
+    .await;
+
+    assert_eq!(
+        read["composites"], patched["composites"],
+        "a GET answers the set the PATCH stored, id included - otherwise the id was \
+         a per-response value and not a persisted one: {read}"
+    );
+    assert_eq!(
+        read["composites"][0]["composite_id"],
+        serde_json::json!(minted.to_string()),
+        "{read}"
+    );
+}
+
+/// **An author who sends the id back keeps the definition; one who omits it mints
+/// a new one.**
+///
+/// This is the whole of why [`PlanView`] gained the facet in the same change the
+/// `PATCH` did, stated as an executable fact. The facet replaces wholesale, so
+/// "edit this composite's formula" is expressed as "send the set again with the
+/// same id and a different formula" - and a surface that could not preserve the id
+/// would make every formula edit a new definition, which is exactly what D-106
+/// keeps stable so that a draft's edit leaves the published revision alone.
+///
+/// [`PlanView`]: bss_pricing::api::rest::plans::PlanView
+#[tokio::test]
+async fn a_supplied_composite_id_is_kept_and_an_omitted_one_is_minted() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+    let chosen = Uuid::now_v7();
+
+    let first = body_json(
+        harness
+            .allowed()
+            .send(with_headers(
+                "PATCH",
+                &plan_path(plan_id),
+                Some(serde_json::json!({
+                    "composites": [{
+                        "composite_id": chosen,
+                        "output_unit": "vm",
+                        "constituent_units": ["vcpu", "ram"],
+                        "formula": { "op": "sum" }
+                    }]
+                })),
+                &[("if-match", "\"0-0\"")],
+            ))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        first["composites"][0]["composite_id"],
+        serde_json::json!(chosen.to_string()),
+        "a supplied id is the definition's identity and is not re-minted: {first}"
+    );
+
+    // The same definition, re-authored with a new formula under its own id. The
+    // tag has moved because the facet bumped the revision's version.
+    let tag = format!("\"0-{}\"", first["row_version"].as_u64().unwrap());
+    let second = body_json(
+        harness
+            .allowed()
+            .send(with_headers(
+                "PATCH",
+                &plan_path(plan_id),
+                Some(serde_json::json!({
+                    "composites": [{
+                        "composite_id": chosen,
+                        "output_unit": "vm",
+                        "constituent_units": ["vcpu", "ram", "disk"],
+                        "formula": { "op": "weighted_sum" }
+                    }]
+                })),
+                &[("if-match", &tag)],
+            ))
+            .await,
+    )
+    .await;
+
+    assert_eq!(
+        second["composites"][0]["composite_id"],
+        serde_json::json!(chosen.to_string()),
+        "an edit under the same id is an edit and not a second definition: {second}"
+    );
+    assert_eq!(
+        second["composites"][0]["formula"],
+        serde_json::json!({ "op": "weighted_sum" }),
+        "{second}"
+    );
+    assert_eq!(
+        second["composites"].as_array().map(Vec::len),
+        Some(1),
+        "the facet replaces wholesale, so re-sending one definition leaves one: {second}"
+    );
+}
+
+/// An empty list withdraws every composite, which is the only way to withdraw one.
+///
+/// Stated because the store's operation is delete-then-insert and there is no
+/// per-definition verb: if `[]` did not clear the set, a composite authored by
+/// mistake could not be removed from a draft at all except by abandoning the whole
+/// revision.
+#[tokio::test]
+async fn an_empty_composites_list_withdraws_the_whole_set() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+
+    let attached = body_json(
+        harness
+            .allowed()
+            .send(with_headers(
+                "PATCH",
+                &plan_path(plan_id),
+                Some(serde_json::json!({
+                    "composites": [{
+                        "output_unit": "vm",
+                        "constituent_units": ["vcpu", "ram"],
+                        "formula": {}
+                    }]
+                })),
+                &[("if-match", "\"0-0\"")],
+            ))
+            .await,
+    )
+    .await;
+    assert_eq!(attached["composites"].as_array().map(Vec::len), Some(1));
+
+    let tag = format!("\"0-{}\"", attached["row_version"].as_u64().unwrap());
+    let cleared = body_json(
+        harness
+            .allowed()
+            .send(with_headers(
+                "PATCH",
+                &plan_path(plan_id),
+                Some(serde_json::json!({ "composites": [] })),
+                &[("if-match", &tag)],
+            ))
+            .await,
+    )
+    .await;
+
+    assert_eq!(
+        cleared["composites"].as_array().map(Vec::len),
+        Some(0),
+        "{cleared}"
     );
 }
 

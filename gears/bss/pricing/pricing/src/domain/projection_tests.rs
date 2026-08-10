@@ -28,7 +28,8 @@ use crate::domain::overlay::{
     OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use crate::domain::plan_shape::{
-    BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+    BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency, PhaseKind,
+    PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -46,6 +47,20 @@ fn plan_id() -> PlanId {
 
 fn terminal_phase() -> PhaseId {
     PhaseId::new(uuid::Uuid::from_u128(0xfa_5e))
+}
+
+/// The one derived meter every shape-only delta carries.
+///
+/// A weighted sum over two constituents, because a single-constituent definition
+/// is one `CompositeArity` refuses and a fixture no publish would ever produce is
+/// a fixture that proves nothing about what a version freezes.
+fn composite() -> CompositeMeter {
+    CompositeMeter {
+        composite_id: uuid::Uuid::from_u128(0xc0_11),
+        output_unit: "vm".to_owned(),
+        constituent_units: vec!["vcpu".to_owned(), "ram".to_owned()],
+        formula: json!({ "op": "weighted_sum", "weights": { "vcpu": 2, "ram": 1 } }),
+    }
 }
 
 /// A shape-only delta: a plan revision with children and **no price rows**.
@@ -79,6 +94,7 @@ fn shape_only() -> PlanSubjectDelta {
             itemization_rule: Some("per_charge".to_owned()),
             additional: std::collections::BTreeMap::new(),
         }),
+        composites: vec![composite()],
         entitlement_grants: EntitlementGrants::default(),
         change_contract: PlanChangeContract::default(),
         prices: Vec::new(),
@@ -162,6 +178,57 @@ fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
             "additional": {},
         }))
     );
+}
+
+/// **`inst-cm-frozen`'s consumer-facing half.**
+///
+/// The instruction has two clauses: the catalog *freezes* the definition and
+/// Rating *computes from the snapshot*. The first was true of the approval content
+/// pin from v11 and of nothing a consumer reads — this module contained the word
+/// "composite" zero times — so a formula could be hashed, displayed to a reviewer,
+/// signed for, and never reach the artifact Rating resolves through
+/// `pricingSnapshotRef`. This asserts the second clause.
+///
+/// The whole object rather than the presence of a key, because a renderer that
+/// emitted `composites: []` on a populated set would satisfy any weaker assertion
+/// while freezing nothing — and an empty list is the value a consumer cannot tell
+/// from "this plan defines no composite".
+///
+/// The **formula is compared verbatim**, nested object and all. It is opaque to
+/// this crate by A4, which means this gear has no vocabulary to normalize it into
+/// and no right to: what a version freezes has to be what the author wrote and the
+/// reviewer signed.
+#[test]
+fn the_composite_definitions_reach_the_payload_whole() {
+    let value = shape_only().to_value();
+
+    assert_eq!(
+        value.get("composites"),
+        Some(&json!([{
+            "compositeId": uuid::Uuid::from_u128(0xc0_11),
+            "outputUnit": "vm",
+            "constituentUnits": ["vcpu", "ram"],
+            "formula": { "op": "weighted_sum", "weights": { "vcpu": 2, "ram": 1 } },
+        }])),
+        "{value}"
+    );
+}
+
+/// A revision defining no composite renders the member as an **empty list**, never
+/// as an absent key.
+///
+/// Stated because the two are different answers to a consumer: a missing member is
+/// a payload from a gear that does not carry composites at all, and the read model
+/// is INSERT-only over the seven-year horizon — so a consumer meeting both
+/// spellings across versions would have to guess which era it was reading.
+#[test]
+fn a_revision_with_no_composite_renders_an_empty_list_rather_than_no_member() {
+    let delta = PlanSubjectDelta {
+        composites: Vec::new(),
+        ..shape_only()
+    };
+
+    assert_eq!(delta.to_value().get("composites"), Some(&json!([])));
 }
 
 #[test]

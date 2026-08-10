@@ -963,6 +963,17 @@ async fn project_plan_subject(
         )
         .await
         .map_err(|e| repo_failure(&e))?,
+        // Slice 10's derived meters, from the same revision-scoped table the
+        // publish rules judged and the content pin framed. **Without this line
+        // the delta renders an empty list on every plan** and `inst-cm-frozen`
+        // would hold on the approval side and nowhere a consumer can read - the
+        // same shape D-257 found one layer down, where the publish assembly's
+        // missing `shape.composites` left two rules iterating an empty vector.
+        composites: plan_shape_repo::load_composite_set(
+            runner, scope, tenant_id, plan_id, revision,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?,
         entitlement_grants: current.entitlement_grants,
         change_contract: current.change_contract,
         prices,

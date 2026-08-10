@@ -40,6 +40,27 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 /// One constituent is not a composite — it is the constituent, and rating it
 /// through a derived unit adds a level of indirection that changes no charge.
 /// Zero is a formula with nothing to evaluate over.
+///
+/// # It counts **distinct** units, and the difference is the whole rule
+///
+/// The count is over the distinct constituent set, not over the authored list.
+/// `["vcpu", "vcpu"]` has length two and names one meter, so a length test
+/// admits precisely the composite this rule exists to refuse — the derived unit
+/// over a single constituent — with a duplicate as its disguise. The
+/// instruction's own words are "≥ 2 constituent `meteringUnit` **ids**", and two
+/// occurrences of one id are one id.
+///
+/// Nothing else in the gear catches it. The table's unique index is over
+/// `(tenant, plan, revision, output_unit)` and `constituent_units` is an opaque
+/// `jsonb` array with no `CHECK` over its contents (`m20260802_000046`), so the
+/// duplicate is storable; and `CompositeSelfReference` walks the same list
+/// looking for a cycle, which a repeat is not.
+///
+/// **The duplicate itself is not refused, only its arity effect.** A composite
+/// naming `["vcpu", "vcpu", "ram"]` passes here, because it does price two meters
+/// together and the repeat is at worst redundant notation in a formula this crate
+/// never evaluates (A4). Refusing redundancy would need a code the design set
+/// does not declare.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CompositeArity;
@@ -51,15 +72,21 @@ impl ValidationRule<PlanShape> for CompositeArity {
 
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
         for composite in &subject.composites {
-            if composite.constituent_units.len() < 2 {
+            let distinct: BTreeSet<&str> = composite
+                .constituent_units
+                .iter()
+                .map(String::as_str)
+                .collect();
+            if distinct.len() < 2 {
                 report.violate(
                     COMPOSITE_TOO_FEW_CONSTITUENTS,
                     composite.output_unit.clone(),
                     format!(
-                        "composite meter `{}` names {} constituent unit(s); a derived meter \
-                         prices two or more together, and one is the constituent itself \
-                         (inst-cm-constituents)",
+                        "composite meter `{}` names {} distinct constituent unit(s) across {} \
+                         entr(y/ies); a derived meter prices two or more meters together, and \
+                         one is the constituent itself (inst-cm-constituents)",
                         composite.output_unit,
+                        distinct.len(),
                         composite.constituent_units.len()
                     ),
                 );

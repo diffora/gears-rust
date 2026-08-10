@@ -47,6 +47,42 @@ fn two_constituents_is_the_floor_and_one_is_not_a_composite() {
     assert!(ok.violations.is_empty());
 }
 
+/// **A constituent named twice is one constituent, and the length test could not
+/// see it.**
+///
+/// `["vcpu", "vcpu"]` has length two and names *one* meter, so
+/// `constituent_units.len() < 2` passed it. What it admits is a composite that
+/// derives `vm` from `vcpu` alone — the one-level-of-indirection-that-changes-no-
+/// charge this rule was written to refuse — wearing a duplicate as a disguise.
+/// Counting entries answers "how many did the author type";
+/// `inst-cm-constituents` asks how many meters are priced **together**, and that
+/// is the distinct set.
+///
+/// No column can catch it either: the unique index on this table is
+/// `(tenant, plan, revision, output_unit)`, and `constituent_units` is an opaque
+/// `jsonb` array with no `CHECK` over its contents (`m20260802_000046`).
+#[test]
+fn a_constituent_named_twice_is_still_one_constituent() {
+    let report = report_of(
+        &CompositeArity,
+        &shape(vec![composite("vm", &["vcpu", "vcpu"])]),
+    );
+    assert_eq!(
+        report.violations.len(),
+        1,
+        "two entries naming one unit is a one-constituent composite"
+    );
+    assert_eq!(report.violations[0].code, COMPOSITE_TOO_FEW_CONSTITUENTS);
+
+    // And the distinct count is what the operator is told, so the message names
+    // the number that has to change rather than the number they typed.
+    assert!(
+        report.violations[0].detail.contains("1 distinct"),
+        "the refusal must name the distinct count: {}",
+        report.violations[0].detail
+    );
+}
+
 #[test]
 fn a_direct_self_reference_is_refused() {
     let report = report_of(

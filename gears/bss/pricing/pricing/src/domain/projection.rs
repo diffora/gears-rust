@@ -81,21 +81,36 @@
 //! fields no rule in this gear has judged and no compiler has honoured — and
 //! rating would bill an accepted allowance from the first unit.
 //!
-//! **It is not reachable today and it is one route away.** What holds the line is
-//! a single refusal at a single surface —
-//! `api::rest::prices::refuse_unlanded_primitives`, on the only two mounted routes
-//! that can carry either field — plus the fact that
-//! `POST …/plans/{planId}/publish` is **not mounted**, so nothing calls
-//! `PublishService::commit` and nothing calls this module on a production path.
-//! Mount that route and the freeze is live **with no further code change and no
-//! gate that would notice**.
+//! **It is not reachable, and what holds the line is a rule rather than an
+//! absence.** This paragraph used to say the line was held by "a single refusal at
+//! a single surface" plus `POST …/plans/{planId}/publish` being **not mounted**,
+//! and it predicted the freeze would go live the day somebody mounted that route.
+//! **The route is mounted** — `module.rs` merges `publish::router` and
+//! `module_test`'s path census declares `PLAN_PUBLISH` — so the prediction came
+//! true and the freeze did not. Three guards hold it, none of them an absence:
 //!
-//! Both fields also sit in the `ep-2` roster
+//! 1. [`crate::domain::publish::rules::NoUnjudgedPrimitive`], a **registered
+//!    publish rule**, refuses either field at precheck and again inside the commit
+//!    transaction — this is the one that survives a new writer.
+//! 2. `api::rest::prices::refuse_unlanded_primitives`, on the two interactive
+//!    price routes.
+//! 3. `domain::import`'s inherited `PRIMITIVE_RULES_UNBUILT` arm, on the bulk
+//!    plane.
+//!
+//! Recorded rather than quietly rewritten (D-298), because a reader consulting the
+//! old sentence would have got it wrong in *both* directions: believing an
+//! unmounted route was the safety, and believing one surface refusal was the whole
+//! of it. **A premise stated in prose outlives the code that made it true.**
+//!
+//! Both fields also sit in the evaluation-policy roster
 //! ([`crate::domain::evaluation_policy`]), which says the opposite of a warning:
 //! it tells a consumer both are part of the field set an evaluator reads.
 //!
-//! **Whoever mounts the publish route, or adds a second writer of a `PriceRow`,
-//! owes either the ten Slice-10 refusals or a refusal at their own boundary.**
+//! **Whoever adds a writer of a `PriceRow` owes either the ten Slice-10 refusals
+//! or a refusal at their own boundary** — the publish rule catches what reaches
+//! publish, and a writer that stores a value the rule then refuses has built a row
+//! nobody can publish.
+//!
 //! Deleting the two fields from this renderer is *not* the fix — D-129's
 //! supersession guard compares them between a predecessor and a successor, and a
 //! delta that dropped them would lose a field that guard reads.
@@ -143,8 +158,10 @@
 //! the registry taxonomy and its audited divergence; the purchase bounds gate a
 //! purchase, not a rate; `invoice_grouping_key` is a Billing layout hint (D-96);
 //! the phase set, the add-on rules and the descriptor set are composition and
-//! presentation. **None of them is rostered, so the roster does not move and
-//! `ep-2` stands.**
+//! presentation. **None of them is rostered, so this analysis moved the roster
+//! not at all.** It said "`ep-2` stands", which was the generation then; the
+//! roster has since moved twice for unrelated reasons and
+//! [`EVALUATION_POLICY_GENERATION`] now reads `ep-4` (D-298).
 //!
 //! D-162's named example **is landed now** (Slice 6, 2026-08-07), and the
 //! paragraph that said it "does not exist in this crate — there is no column, no
@@ -154,7 +171,8 @@
 //! (`m20260802_000052`), a field of [`PlanChangeContract`], written by
 //! `plan_repo` and rendered into this payload as `usageCounterOnPlanChange`.
 //!
-//! **The bump D-162 owed is made: the generation is `ep-2`** (main session,
+//! **The bump D-162 owed was made, and it took the generation to `ep-2`** (main
+//! session,
 //! 2026-08-07, on the register item this strand handed back). The document's log
 //! gained `ep-2  D-113  + usage_counter_on_plan_change`, and
 //! [`EVALUATION_POLICY_GENERATION`] followed it rather than the other way round —
@@ -187,6 +205,41 @@
 //! compile error until it is either rendered into the payload or deliberately
 //! withheld — and that is where the next author meets the D-162 question, with
 //! this paragraph beside it.
+//!
+//! ## The next author arrived, and the field is [`PlanSubjectDelta::composites`]
+//!
+//! Slice 10's derived-meter set joined the delta when the `composites` facet was
+//! mounted on `PATCH /plans/{planId}` (before it, nothing could originate a
+//! composite and this module contained the word zero times). The paragraph above
+//! is the obligation and this is it discharged, with an answer that is
+//! deliberately not "no".
+//!
+//! **On D-162's own boundary a composite meter reads as rostered.** The test is
+//! whether a field "tells an evaluator how to derive the billable quantity or
+//! select the rate", and a composite is a rule for deriving one billable quantity
+//! from several constituent meters — nearer the centre of that test than
+//! `usage_counter_on_plan_change`, which was rostered under `ep-2`.
+//!
+//! **It is nevertheless not rostered, and the reason is D-162 clause (5) rather
+//! than the boundary.** The roster is *what replaying `01-foundation.md` §4.4's
+//! log produces*, the log holds no line for this field, and a field cannot enter
+//! the roster except by a line — that is exactly the mechanism
+//! [`crate::domain::evaluation_policy`] argues is worth more than the constant.
+//! Adding one here would be this module deciding a normative document's content
+//! to make its own field fit, which is the "expectation invented to satisfy a
+//! guard" that same module names as the guard switched off.
+//!
+//! Two facts bound the risk while it stands, and neither closes it. The
+//! partition guard does **not** fail: it destructures [`PriceRow`] and
+//! [`PlanChangeContract`], and this field is on neither, so nothing here is
+//! compiling around a check. And a consumer is not misled about *content* — the
+//! definition is in the payload and is readable. What the generation does not say
+//! is that the evaluation field set moved when it did.
+//!
+//! **Reported, and owed to whoever holds §4.4:** either a log line for the
+//! composite set (with the generation bump that line *is*), or a sentence in §4.4
+//! putting plan-scoped derived-meter definitions outside the roster on purpose.
+//! What must not happen is the question being answered by silence a third time.
 
 use std::collections::BTreeMap;
 
@@ -202,7 +255,7 @@ use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
+    AddonRule, BillingCycle, CompositeMeter, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -497,6 +550,35 @@ pub struct PlanSubjectDelta {
     pub addon_rules: Vec<AddonRule>,
     /// The revision's billing descriptor set (D-83).
     pub descriptor_set: Option<DescriptorSet>,
+    /// The revision's derived (composite) meter definitions (Slice 10 §6, D-83,
+    /// D-106).
+    ///
+    /// **This is the half of `inst-cm-frozen` a consumer can act on.** The
+    /// instruction says the catalog *"persists and freezes the definition"* and
+    /// Rating *"computes from the snapshot"*, and until this field existed the
+    /// freezing half was true of the approval content pin alone: `content_pin`
+    /// hashed the set from v11 and `approvals.rs` showed it to a reviewer, so a
+    /// definition was covered by a signature and reached no artifact any consumer
+    /// reads. The word "composite" appeared in this module **zero** times. Rating
+    /// resolves a plan through `pricingSnapshotRef` into a delta row, so a formula
+    /// outside this payload is a formula Rating cannot evaluate however carefully
+    /// it was approved.
+    ///
+    /// Carried as [`CompositeMeter`] rather than restated field by field, on this
+    /// type's stated principle: a second spelling of a definition is a second thing
+    /// that can disagree with the truth rows it was projected from - and here with
+    /// the pin as well, which frames the same four members.
+    ///
+    /// **The formula is opaque and stays opaque** (A4). It is rendered verbatim,
+    /// which is what makes the payload a *snapshot* rather than a derivation: this
+    /// gear never evaluates a formula, so it has nothing to render but the data the
+    /// author wrote and the reviewer signed for.
+    ///
+    /// Empty is the ordinary case and means the revision defines no composite. What
+    /// it does **not** mean is "none was projected": the projector reads the same
+    /// revision-scoped table the publish rules judged, so an empty list here and an
+    /// empty set there are the same fact.
+    pub composites: Vec<CompositeMeter>,
     /// The entitlement grant set this revision publishes (Slice 6, §6, D-41),
     /// as authored. The **materialized** `phase → grant-set` map is derived from
     /// it and the phase chain at render time.
@@ -630,6 +712,7 @@ impl PlanSubjectDelta {
             phases,
             addon_rules,
             descriptor_set,
+            composites,
             entitlement_grants,
             change_contract,
             prices,
@@ -654,6 +737,13 @@ impl PlanSubjectDelta {
             "phases": phases.iter().map(phase_value).collect::<Vec<_>>(),
             "addonRules": addon_rules.iter().map(addon_rule_value).collect::<Vec<_>>(),
             "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
+            // Slice 10's derived meters (`inst-cm-frozen`). Rendered as a list and
+            // not as a map keyed by `outputUnit`, even though
+            // `uq_pricing_composite_meter_output` makes the unit unique per
+            // revision: the id is the definition's identity (D-106) and a map keyed
+            // by anything else would put a consumer's lookup key on a column an
+            // author may edit.
+            "composites": composites.iter().map(composite_value).collect::<Vec<_>>(),
             // The plan-change contract (`inst-pc-targets` / `inst-pc-rank` /
             // `inst-pc-counter-carry`). `allowedChangeTargets` renders `null`
             // when the plan states none, and that null **is** the answer: absence
@@ -779,6 +869,32 @@ fn addon_rule_value(rule: &AddonRule) -> JsonValue {
         "priceOverrideRef": price_override_ref,
         "dependsOn": depends_on,
         "conflictsWith": conflicts_with,
+    })
+}
+
+/// One derived (composite) meter of the revision.
+///
+/// Destructured without a rest pattern for [`PlanSubjectDelta::to_value`]'s
+/// reason, and here it carries the same second obligation the pin does: a field
+/// added to [`CompositeMeter`] meets this renderer **and**
+/// `content_pin::put_plan_shape`, which is the pair of questions a new member of a
+/// frozen definition owes - one about what a consumer reads, one about what a
+/// reviewer's signature covers.
+fn composite_value(composite: &CompositeMeter) -> JsonValue {
+    let CompositeMeter {
+        composite_id,
+        output_unit,
+        constituent_units,
+        formula,
+    } = composite;
+    json!({
+        "compositeId": composite_id,
+        "outputUnit": output_unit,
+        "constituentUnits": constituent_units,
+        // Verbatim, and never re-serialized through a type of this crate's: A4
+        // makes the formula data this gear persists and does not read, so any
+        // normalization here would be this gear deciding what a formula means.
+        "formula": formula,
     })
 }
 
