@@ -951,6 +951,14 @@ impl RestApiCapability for BssPricingGear {
                 Arc::clone(&rt.authoring_api),
                 openapi,
             ))
+            // Slice 9's own taxonomy (`inst-cg-taxonomy`), on its own route and
+            // its own `customer_group` gate — not a fifth arm of the `taxonomies`
+            // router above, and not filed under `config`. See
+            // `api::rest::customer_groups`'s module doc.
+            .merge(crate::api::rest::customer_groups::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
             .merge(crate::api::rest::tax_display_policy::router(
                 Arc::clone(&rt.authoring_api),
                 openapi,

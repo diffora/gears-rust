@@ -36,6 +36,7 @@ use bss_pricing::api::rest::approvals::{
 };
 use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
+use bss_pricing::api::rest::customer_groups::CUSTOMER_GROUP_TAXONOMY;
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
 use bss_pricing::api::rest::history::HISTORY;
@@ -434,6 +435,29 @@ fn config_routes() -> Vec<Route> {
             method: "PUT",
             path: TAXONOMY,
             resource_type: labels::CONFIG,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        // Slice 9's own taxonomy (`inst-cg-taxonomy`), on its own route and its
+        // own `customer_group` gate — **not** `config`. This pair is the whole
+        // point of the separate route: a `CatalogAdmin` holding `config x write`
+        // (declares regions, brands, partners, org tiers) must not, by that same
+        // grant, touch the customer-group vocabulary — per-payer commercial data
+        // is segregated (`05-governance.md`'s endpoint map, and
+        // `api::rest::customer_groups`'s module doc). No allow/deny fixture can
+        // see a route gated on the wrong label; only this census and
+        // `SelectiveResolver`-driven cases in `rest_customer_groups.rs` can.
+        Route {
+            method: "GET",
+            path: CUSTOMER_GROUP_TAXONOMY,
+            resource_type: labels::CUSTOMER_GROUP,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PUT",
+            path: CUSTOMER_GROUP_TAXONOMY,
+            resource_type: labels::CUSTOMER_GROUP,
             action: actions::WRITE,
             mutating: true,
         },
@@ -961,6 +985,19 @@ fn drive(
                 "\"0000000000000000000000000000000000000000000000000000000000000000\"",
             )],
         ),
+        // The customer-group taxonomy's `PUT`, on `TAXONOMY`'s own reasoning: a
+        // well-formed whole-set replacement under a wrong-but-well-formed tag, so
+        // a refusal here is the gate's and never a body or precondition
+        // complaint.
+        ("PUT", CUSTOMER_GROUP_TAXONOMY) => (
+            Some(serde_json::json!({
+                "values": [{ "value": "gold", "display_name": "Gold" }]
+            })),
+            vec![(
+                "if-match",
+                "\"0000000000000000000000000000000000000000000000000000000000000000\"",
+            )],
+        ),
         ("POST", APPROVAL_REJECT) => (
             Some(serde_json::json!({ "reason": "not signed off" })),
             Vec::new(),
@@ -1047,6 +1084,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::taxonomies::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::customer_groups::router(
                 Arc::clone(&harness.state),
                 &openapi,
             ))
@@ -1185,6 +1226,10 @@ async fn the_census_covers_every_route_the_routers_register() {
             labels::APPROVAL,
             labels::APPROVAL_POLICY,
             labels::CONFIG,
+            // Slice 9's own taxonomy: `customer_group` gains its first route
+            // consumer here — the permission pair already existed
+            // (`gts/permissions.rs`) and gated nothing until now.
+            labels::CUSTOMER_GROUP,
         ]),
         "a census row on a label this gear has not mounted before needs a decision, not a row"
     );
@@ -1812,12 +1857,13 @@ async fn a_write_whose_target_tenant_is_outside_the_scope_is_denied_on_every_wri
 
 /// Labels declared ahead of the surface that will enforce them.
 ///
-/// An exemption is a **debt**, stated so it stays visible: `customer_group` has
-/// no route module at all because the membership half is not built in this
-/// strand (`overlay_repo::taxonomy_declares` refuses that class outright and
-/// says why). A label whose surface exists and does not ask for it does not
-/// belong here -- it belongs in the handler.
-const LABELS_WITHOUT_A_SURFACE_YET: &[&str] = &[labels::CUSTOMER_GROUP];
+/// An exemption is a **debt**, stated so it stays visible. `customer_group` sat
+/// here while the membership half was not yet built in this strand
+/// (`overlay_repo::taxonomy_declares` refused that class outright); it left the
+/// day `api::rest::customer_groups` became that label's first route consumer.
+/// A label whose surface exists and does not ask for it does not belong here
+/// -- it belongs in the handler.
+const LABELS_WITHOUT_A_SURFACE_YET: &[&str] = &[];
 
 #[test]
 fn every_grantable_label_is_enforced_by_some_route() {

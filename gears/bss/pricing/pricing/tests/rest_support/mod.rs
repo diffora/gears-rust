@@ -249,6 +249,58 @@ impl AuthZResolverClient for RecordingResolver {
     }
 }
 
+/// Allows exactly the `(resource_type, action)` pairs named, denies every other
+/// one — the fixture the separate-route claim needs and no allow/deny fixture
+/// above it can provide.
+///
+/// Every other double in this file answers the same decision for whatever it
+/// was asked; a suite proving that `config x write` does not imply
+/// `customer_group x write` needs a resolver whose answer actually depends on
+/// which pair it was asked about, which is exactly what a route gated on the
+/// wrong label is invisible to (`rest_authz.rs`'s own module doc, one clause
+/// over).
+pub struct SelectiveResolver {
+    pub allowed_tenant: Uuid,
+    pub allowed_pairs: Vec<(&'static str, &'static str)>,
+}
+
+#[async_trait]
+impl AuthZResolverClient for SelectiveResolver {
+    async fn evaluate(
+        &self,
+        req: EvaluationRequest,
+    ) -> Result<EvaluationResponse, AuthZResolverError> {
+        let asked = (
+            req.resource.resource_type.as_str(),
+            req.action.name.as_str(),
+        );
+        if !self.allowed_pairs.iter().any(|pair| *pair == asked) {
+            return Ok(EvaluationResponse {
+                decision: false,
+                context: EvaluationResponseContext {
+                    constraints: vec![],
+                    deny_reason: Some(DenyReason {
+                        error_code: "no_catalog_role".to_owned(),
+                        details: Some(format!("no catalog role grants {}x{}", asked.0, asked.1)),
+                    }),
+                },
+            });
+        }
+        Ok(EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::In(InPredicate::new(
+                        pep_properties::OWNER_TENANT_ID,
+                        vec![self.allowed_tenant],
+                    ))],
+                }],
+                deny_reason: None,
+            },
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The harness.
 // ---------------------------------------------------------------------------
@@ -580,6 +632,10 @@ impl Harness {
                 Arc::clone(&self.state),
                 &openapi,
             ))
+            .merge(bss_pricing::api::rest::customer_groups::router(
+                Arc::clone(&self.state),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::tax_display_policy::router(
                 Arc::clone(&self.state),
                 &openapi,
@@ -721,6 +777,27 @@ impl Harness {
             Some(self.tenant),
         );
         (client, seen)
+    }
+
+    /// A caller authorized for exactly the `(resource_type, action)` pairs
+    /// named, in this tenant, acting as `principal` — and refused for every
+    /// other pair.
+    ///
+    /// The fixture a separate-route claim needs: `allowed_as` grants every
+    /// pair uniformly, which cannot distinguish "this route is on the right
+    /// gate" from "this route is on some gate everything happens to satisfy".
+    pub fn selectively_allowed_as(
+        &self,
+        principal: Uuid,
+        pairs: &[(&'static str, &'static str)],
+    ) -> Client {
+        self.client_as(
+            Arc::new(SelectiveResolver {
+                allowed_tenant: self.tenant,
+                allowed_pairs: pairs.to_vec(),
+            }),
+            Some((self.tenant, principal)),
+        )
     }
 
     /// Publish the plan's revision `0`, so the plan holds a **current**

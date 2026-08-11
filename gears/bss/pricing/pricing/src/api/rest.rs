@@ -10,6 +10,7 @@ pub mod bulk_imports;
 pub mod bundles;
 pub mod correlation;
 pub mod cursor;
+pub mod customer_groups;
 pub mod cutovers;
 pub mod error;
 pub mod frontier;

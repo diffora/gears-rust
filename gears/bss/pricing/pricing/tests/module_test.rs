@@ -72,6 +72,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     };
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
+    use bss_pricing::api::rest::customer_groups::CUSTOMER_GROUP_TAXONOMY;
     use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
     use bss_pricing::api::rest::frontier::FRONTIER;
     use bss_pricing::api::rest::history::HISTORY;
@@ -138,6 +139,11 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", PLAN_PREVIEW),
         ("GET", TAXONOMY),
         ("PUT", TAXONOMY),
+        // Slice 9's own taxonomy (`inst-cg-taxonomy`), on its own route and its
+        // own `customer_group` gate — see `api::rest::customer_groups`'s module
+        // doc for why this is not a fifth arm of `TAXONOMY` above.
+        ("GET", CUSTOMER_GROUP_TAXONOMY),
+        ("PUT", CUSTOMER_GROUP_TAXONOMY),
         ("GET", TAX_DISPLAY_POLICY),
         ("PUT", TAX_DISPLAY_POLICY),
         ("POST", BUNDLES),
@@ -352,6 +358,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::taxonomies::router(
+                Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::customer_groups::router(
                 Arc::clone(&authoring),
                 &openapi,
             ))

@@ -97,6 +97,7 @@ pub mod m20260802_000062_guard_pricing_plan_cloned_from;
 pub mod m20260802_000063_add_bulk_operation_rejected_state;
 pub mod m20260802_000064_widen_bulk_operation_client_key_by_kind;
 pub mod m20260802_000065_widen_pricing_migration_key_by_tenant;
+pub mod m20260802_000066_create_pricing_customer_group_taxonomy;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -302,6 +303,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000063_add_bulk_operation_rejected_state::Migration),
             Box::new(m20260802_000064_widen_bulk_operation_client_key_by_kind::Migration),
             Box::new(m20260802_000065_widen_pricing_migration_key_by_tenant::Migration),
+            // Slice 9's own taxonomy: the BSS customer-group value universe
+            // (`inst-cg-taxonomy`), the Slice 4 four's shape on its own table.
+            Box::new(m20260802_000066_create_pricing_customer_group_taxonomy::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

@@ -29,13 +29,13 @@ use bss_pricing::infra::storage::entity::{audit_log, plan, price, price_overlay}
 use bss_pricing::infra::storage::migrations::Migrator;
 
 use bss_pricing::domain::audit::AuditStamp;
-use bss_pricing::domain::overlay::ScopeValue;
+use bss_pricing::domain::overlay::{ScopeClass, ScopeValue};
 use bss_pricing::domain::scope_key::Region;
 use bss_pricing::domain::taxonomy::{
     RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState, tag_of,
 };
 use bss_pricing::infra::storage::repo::taxonomy_repo::{
-    Replaced, TaxonomyRepo, active_regions, references_to, region_readiness,
+    Replaced, TaxonomyRepo, active_regions, customer_group_tag_of, references_to, region_readiness,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
@@ -1070,4 +1070,310 @@ async fn a_refused_put_writes_no_audit_record() {
         count, 1,
         "the seeding PUT only - the refused one wrote nothing"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The customer-group taxonomy (`inst-cg-taxonomy`) — its own table, its own
+// route, and deliberately no `TaxonomyClass` arm. See
+// `taxonomy_repo::list_customer_groups`'s doc for why this is a parallel
+// method rather than a fifth match arm above.
+// ---------------------------------------------------------------------------
+
+/// `replace_customer_groups` under the tag the store currently renders —
+/// `replace_now`'s sibling.
+async fn replace_customer_groups_now(
+    repo: &TaxonomyRepo,
+    scope: &AccessScope,
+    entries: Vec<TaxonomyEntry>,
+) -> Result<Replaced, bss_pricing::infra::storage::RepoError> {
+    let held = repo
+        .list_customer_groups(scope, TENANT)
+        .await
+        .expect("read back");
+    repo.replace_customer_groups(
+        scope,
+        TENANT,
+        entries,
+        &customer_group_tag_of(&held),
+        stamp(),
+    )
+    .await
+}
+
+/// Seed one published overlay scoped to `(customerGroup, value)` —
+/// `publish_overlay_scoped`'s sibling, written directly through the entity for
+/// the same reason: what is under test is the guard, not the overlay
+/// lifecycle.
+async fn publish_customer_group_overlay_scoped(
+    provider: &DBProvider<DbError>,
+    id: u128,
+    value: &str,
+    lifecycle: &str,
+) {
+    let conn = provider.conn().expect("conn");
+    let row = price_overlay::ActiveModel {
+        price_overlay_id: Set(Uuid::from_u128(id)),
+        revision: Set(1),
+        tenant_id: Set(TENANT),
+        lifecycle_state: Set(lifecycle.to_owned()),
+        scope_class: Set(ScopeClass::CustomerGroup.as_str().to_owned()),
+        scope_value: Set(value.to_owned()),
+        precedence: Set(10),
+        effective_from: Set(None),
+        effective_to: Set(None),
+        tax_basis: Set("delegated_tariffs".to_owned()),
+        disclosure: Set("restricted".to_owned()),
+        target_ref: Set(serde_json::json!({"plans": []})),
+        row_version: Set(0),
+    };
+    price_overlay::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("seed a price overlay");
+}
+
+/// The round trip: a first `PUT` declares the whole customer-group set.
+#[tokio::test]
+async fn a_first_put_declares_the_whole_customer_group_set() {
+    let (repo, scope, _provider) = harness().await;
+
+    let result = replace_customer_groups_now(
+        &repo,
+        &scope,
+        vec![
+            entry("gold", TaxonomyState::Active),
+            entry("silver", TaxonomyState::Active),
+        ],
+    )
+    .await
+    .expect("the first put lands");
+
+    assert!(result.report.is_publishable(), "nothing to guard yet");
+    assert_eq!(
+        values(&result.entries),
+        [
+            ("gold", TaxonomyState::Active),
+            ("silver", TaxonomyState::Active)
+        ]
+    );
+}
+
+/// A value the body omits is retired, not deleted — the same whole-set
+/// semantics as the four-class taxonomy.
+#[tokio::test]
+async fn a_customer_group_value_the_body_omits_is_retired_and_still_readable() {
+    let (repo, scope, _provider) = harness().await;
+    replace_customer_groups_now(
+        &repo,
+        &scope,
+        vec![
+            entry("gold", TaxonomyState::Active),
+            entry("silver", TaxonomyState::Active),
+        ],
+    )
+    .await
+    .expect("seed");
+
+    let result =
+        replace_customer_groups_now(&repo, &scope, vec![entry("gold", TaxonomyState::Active)])
+            .await
+            .expect("the second put lands");
+
+    assert_eq!(
+        values(&result.entries),
+        [
+            ("gold", TaxonomyState::Active),
+            ("silver", TaxonomyState::Retired)
+        ]
+    );
+}
+
+/// **The retire guard's one plane.** A published `customerGroup`-scoped
+/// overlay blocks the value's retirement — the claim `inst-cg-taxonomy` makes
+/// and the point of building this table at all.
+#[tokio::test]
+async fn a_published_overlay_scope_blocks_a_customer_groups_retirement() {
+    let (repo, scope, provider) = harness().await;
+    replace_customer_groups_now(&repo, &scope, vec![entry("in-use", TaxonomyState::Active)])
+        .await
+        .expect("seed");
+    publish_customer_group_overlay_scoped(&provider, 0x0c_1a, "in-use", "published").await;
+
+    let result = replace_customer_groups_now(&repo, &scope, vec![])
+        .await
+        .expect("the call succeeds; the retirement is refused");
+
+    assert_eq!(
+        result
+            .report
+            .violations
+            .iter()
+            .map(|v| v.code.as_str())
+            .collect::<Vec<_>>(),
+        [TAXONOMY_VALUE_IN_USE],
+        "a published overlay scope is a reference"
+    );
+    assert_eq!(
+        values(&result.entries),
+        [("in-use", TaxonomyState::Active)],
+        "a refused PUT changes nothing at all"
+    );
+}
+
+/// A **draft** overlay does not block — the four-class guard's own reading,
+/// carried unchanged: a value hostage to somebody's unpublished experiment is a
+/// value no operator can retire on a schedule.
+#[tokio::test]
+async fn a_draft_overlay_scope_does_not_block_a_customer_groups_retirement() {
+    let (repo, scope, provider) = harness().await;
+    replace_customer_groups_now(&repo, &scope, vec![entry("gold", TaxonomyState::Active)])
+        .await
+        .expect("seed");
+    publish_customer_group_overlay_scoped(&provider, 0x0c_1b, "gold", "draft").await;
+
+    let result = replace_customer_groups_now(&repo, &scope, vec![])
+        .await
+        .expect("put");
+
+    assert!(
+        result.report.is_publishable(),
+        "a draft is not a commitment"
+    );
+    assert_eq!(values(&result.entries), [("gold", TaxonomyState::Retired)]);
+}
+
+/// The reference count is scoped to `customerGroup` alone: an overlay on
+/// `brand/gold` must not block `customerGroup/gold` — the same identically-named
+/// value, two different universes.
+#[tokio::test]
+async fn a_customer_groups_reference_count_is_not_shared_with_another_class() {
+    let (repo, scope, provider) = harness().await;
+    replace_customer_groups_now(&repo, &scope, vec![entry("gold", TaxonomyState::Active)])
+        .await
+        .expect("seed");
+    publish_overlay_scoped(
+        &provider,
+        0x0c_1c,
+        TaxonomyClass::Brand,
+        "gold",
+        "published",
+    )
+    .await;
+
+    let result = replace_customer_groups_now(&repo, &scope, vec![])
+        .await
+        .expect("put");
+
+    assert!(
+        result.report.is_publishable(),
+        "a brand-scoped overlay on the identically-named value must not block a customer-group \
+         retirement"
+    );
+    assert_eq!(values(&result.entries), [("gold", TaxonomyState::Retired)]);
+}
+
+/// A foreign tenant's customer-group taxonomy is invisible — the same SQL-level
+/// BOLA guard as the four-class store.
+#[tokio::test]
+async fn a_foreign_tenants_customer_group_taxonomy_is_invisible() {
+    let (repo, scope, _provider) = harness().await;
+    replace_customer_groups_now(&repo, &scope, vec![entry("gold", TaxonomyState::Active)])
+        .await
+        .expect("seed");
+
+    let foreign = repo
+        .list_customer_groups(&AccessScope::allow_all(), OTHER_TENANT)
+        .await
+        .expect("read");
+
+    assert!(
+        foreign.is_empty(),
+        "another tenant's values are not visible"
+    );
+}
+
+/// `replace_customer_groups` refuses a tag the store has moved past, inside its
+/// own transaction — `replace_refuses_a_tag_the_store_has_moved_past`'s claim,
+/// carried to the one-table store.
+#[tokio::test]
+async fn replace_customer_groups_refuses_a_tag_the_store_has_moved_past() {
+    let (repo, scope, _provider) = harness().await;
+    repo.replace_customer_groups(
+        &scope,
+        TENANT,
+        vec![entry("gold", TaxonomyState::Active)],
+        &customer_group_tag_of(&[]),
+        stamp(),
+    )
+    .await
+    .expect("seed");
+
+    let held = repo
+        .list_customer_groups(&scope, TENANT)
+        .await
+        .expect("read");
+    let stale = customer_group_tag_of(&held);
+
+    repo.replace_customer_groups(
+        &scope,
+        TENANT,
+        vec![
+            entry("gold", TaxonomyState::Active),
+            entry("silver", TaxonomyState::Active),
+        ],
+        &stale,
+        stamp(),
+    )
+    .await
+    .expect("the other author lands");
+
+    let result = repo
+        .replace_customer_groups(
+            &scope,
+            TENANT,
+            vec![
+                entry("gold", TaxonomyState::Active),
+                entry("bronze", TaxonomyState::Active),
+            ],
+            &stale,
+            stamp(),
+        )
+        .await
+        .expect("refused, not errored");
+
+    assert!(
+        result.stale,
+        "the asserted tag no longer describes the store"
+    );
+    assert_eq!(
+        values(&result.entries),
+        [
+            ("gold", TaxonomyState::Active),
+            ("silver", TaxonomyState::Active)
+        ],
+        "and nothing was written: the other author's value survives, ours is absent"
+    );
+}
+
+/// One audit record per `PUT`, naming the customer-group taxonomy.
+#[tokio::test]
+async fn a_customer_group_put_writes_exactly_one_audit_record() {
+    let (repo, scope, provider) = harness().await;
+    replace_customer_groups_now(
+        &repo,
+        &scope,
+        vec![
+            entry("gold", TaxonomyState::Active),
+            entry("silver", TaxonomyState::Active),
+        ],
+    )
+    .await
+    .expect("put");
+
+    let count = audit_records_for(&provider, "taxonomy/customer_group").await;
+
+    assert_eq!(count, 1, "one PUT is one act, however many values it moved");
 }

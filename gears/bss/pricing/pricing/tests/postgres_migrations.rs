@@ -304,6 +304,7 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_bundle_revshare_group: bundle_id, plan_revision, vendor_sku_id",
     "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
     "pricing_composite_meter: composite_id, plan_revision",
+    "pricing_customer_group_taxonomy: tenant_id, value",
     "pricing_idempotency_dedup: tenant_id, operation, client_key",
     // Client-supplied (`inst-ms-api`, M2), and therefore **tenant-scoped since
     // `m20260802_000065`**: it was `migration_id` alone until 2026-08-11, which put
@@ -377,6 +378,12 @@ const EXPECTED_CHECKS: &[&str] = &[
     // Slice 10's composite meter. One CHECK only: arity and self-reference are
     // publish rules, for `m20260802_000046`'s portability reason.
     "chk_pricing_composite_meter_output_unit",
+    // Slice 9's own taxonomy (`inst-cg-taxonomy`), the four's own two CHECKs
+    // restated over `pricing_customer_group_taxonomy` — see
+    // `m20260802_000066`'s module doc for why it is on its own route and not
+    // filed under `config`'s four.
+    "chk_pricing_customer_group_taxonomy_state",
+    "chk_pricing_customer_group_taxonomy_value_present",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
     // Slice 11, the same twelve the SQLite mirror carries, name for name.

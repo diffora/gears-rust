@@ -69,16 +69,17 @@ use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
-use crate::domain::concurrency::PolicyTag;
-use crate::domain::overlay::ScopeValue;
+use crate::domain::concurrency::{PolicyTag, TaxonomyTagEntry};
+use crate::domain::overlay::{OverlayLifecycle, ScopeClass, ScopeValue};
 use crate::domain::scope_key::Region;
 use crate::domain::taxonomy::{
-    RegionTaxMarkers, TaxonomyClass, TaxonomyEntry, TaxonomyState, ValueReferences,
-    check_retirable, check_tax_category_removable, tag_of,
+    RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState,
+    ValueReferences, check_retirable, check_tax_category_removable, tag_of,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::entity::{
-    brand_taxonomy, org_tier_taxonomy, partner_taxonomy, price, price_overlay, region_taxonomy,
+    brand_taxonomy, customer_group_taxonomy, org_tier_taxonomy, partner_taxonomy, price,
+    price_overlay, region_taxonomy,
 };
 use crate::infra::storage::{RepoError, contention_or_db};
 
@@ -181,6 +182,77 @@ impl TaxonomyRepo {
         // way for exactly that reason.
         outcome
             .map_err(|e| e.into_domain(|infra| RepoError::Db(format!("taxonomy replace: {infra}"))))
+    }
+
+    /// Every declared customer-group value, `active` and `retired` alike,
+    /// ordered by value — [`TaxonomyRepo::list`]'s sibling for
+    /// `pricing_customer_group_taxonomy` (`inst-cg-taxonomy`).
+    ///
+    /// **Not an arm of [`TaxonomyRepo::list`].** That method is parameterised
+    /// over [`TaxonomyClass`], which is deliberately the vocabulary of the
+    /// shared `{class}` route alone (`crate::domain::taxonomy`'s module doc) —
+    /// giving it a fifth arm would make this value set addressable through the
+    /// exact route `design/05-governance.md`'s endpoint map excludes it from.
+    /// This is a parallel, one-table method instead.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+    /// when a stored `state` or `value` is outside what its `CHECK` admits.
+    pub async fn list_customer_groups(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+    ) -> Result<Vec<TaxonomyEntry>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("customer-group taxonomy conn: {e}")))?;
+        list_customer_group_on(&conn, &scope.clone(), tenant_id).await
+    }
+
+    /// Replace the whole customer-group value set —
+    /// `design/09-price-overlays.md` §5's
+    /// `PUT /bss-pricing/v1/customer-groups/taxonomy`, [`TaxonomyRepo::replace`]'s
+    /// sibling.
+    ///
+    /// Same whole-set-replacement, retire-not-delete and single-transaction
+    /// semantics as the four-class `PUT` — the module doc's argument applies
+    /// unchanged, over one table instead of four. Unlike the four, a customer
+    /// group is never a price-row axis, so the retire guard here counts
+    /// **published overlay scopes only** (`ScopeClass::CustomerGroup`); there is
+    /// no row plane to check, on `references_to`'s own reasoning for `brand`,
+    /// `partner` and `orgTier`. There is likewise no D-245 tax-marker guard: this
+    /// table carries no `tax_*` columns.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+    /// on an unreadable stored row. A refused retirement is **not** an error
+    /// here, for [`TaxonomyRepo::replace`]'s reason.
+    pub async fn replace_customer_groups(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        entries: Vec<TaxonomyEntry>,
+        asserted: &PolicyTag,
+        stamp: AuditStamp,
+    ) -> Result<Replaced, RepoError> {
+        let scope = scope.clone();
+        let asserted = asserted.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<Replaced, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    apply_replace_customer_group(txn, &scope, tenant_id, entries, &asserted, stamp)
+                        .await
+                })
+            })
+            .await;
+        outcome.map_err(|e| {
+            e.into_domain(|infra| {
+                RepoError::Db(format!("customer-group taxonomy replace: {infra}"))
+            })
+        })
     }
 }
 
@@ -936,4 +1008,315 @@ async fn update_entry(
             .map(|_| ())
             .map_err(|e| RepoError::Db(format!("update pricing_org_tier_taxonomy: {e}"))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// `pricing_customer_group_taxonomy` — its own table, its own route
+// (`inst-cg-taxonomy`).
+//
+// A parallel set of statements rather than a fifth arm above: those functions
+// are keyed on `TaxonomyClass`, which is deliberately the shared `{class}`
+// route's own vocabulary (`crate::domain::taxonomy`'s module doc), and this
+// table is deliberately not addressable through it
+// (`design/05-governance.md`'s endpoint map). Keying this table's statements on
+// the same enum would make the two facts disagree the day somebody trusted the
+// type instead of the route table.
+// ---------------------------------------------------------------------------
+
+async fn list_customer_group_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<TaxonomyEntry>, RepoError> {
+    let rows = customer_group_taxonomy::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(customer_group_taxonomy::Column::TenantId.eq(tenant_id)))
+        .order_by(customer_group_taxonomy::Column::Value, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_customer_group_taxonomy: {e}")))?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(TaxonomyEntry {
+                value: ScopeValue::new(&row.value).ok_or_else(|| {
+                    RepoError::CorruptRow("pricing_customer_group_taxonomy.value is blank".into())
+                })?,
+                display_name: row.display_name,
+                state: TaxonomyState::parse(&row.state).ok_or_else(|| {
+                    RepoError::CorruptRow(format!(
+                        "pricing_customer_group_taxonomy.state `{}`",
+                        row.state
+                    ))
+                })?,
+                // No `tax_*` columns on this table (`m20260802_000066`'s module
+                // doc), so there is nothing to carry — [`TaxonomyEntry::tax`] is
+                // the region taxonomy's alone.
+                tax: None,
+            })
+        })
+        .collect()
+}
+
+/// What still names a customer-group value — the retire guard's one plane.
+///
+/// Only the overlay plane is counted, unlike [`references_to`]: a customer
+/// group is never a price-row axis (Foundation §4.1's row shape has no such
+/// field), so there is no row-plane query to run — a structural zero, on
+/// `check_retirable`'s own reasoning for `brand`, `partner` and `orgTier`.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+async fn references_to_customer_group(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    value: &ScopeValue,
+) -> Result<u64, RepoError> {
+    price_overlay::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price_overlay::Column::TenantId.eq(tenant_id))
+                .add(price_overlay::Column::ScopeClass.eq(ScopeClass::CustomerGroup.as_str()))
+                .add(price_overlay::Column::ScopeValue.eq(value.as_str()))
+                .add(
+                    price_overlay::Column::LifecycleState.eq(OverlayLifecycle::Published.as_str()),
+                ),
+        )
+        .count(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("count pricing_price_overlay: {e}")))
+}
+
+/// `inst-tx-mutation`'s guard, for the customer-group taxonomy —
+/// [`check_retirable`]'s analogue over one label rather than a
+/// [`TaxonomyClass`].
+///
+/// **Not built on [`check_retirable`]** even though the shape is identical
+/// minus the row plane: that function interpolates `{class}` — a
+/// [`TaxonomyClass`] — into its message via [`std::fmt::Display`], and this
+/// taxonomy deliberately has no member of that enum to pass it (the module
+/// doc's whole argument). Duplicating the four lines of message-building here
+/// is cheaper than widening a type whose narrowness is the point.
+#[must_use]
+fn check_customer_group_retirable(
+    value: &ScopeValue,
+    active_overlay_scopes: u64,
+) -> ValidationReport {
+    let mut report = ValidationReport::default();
+    if active_overlay_scopes == 0 {
+        return report;
+    }
+    report.violate(
+        TAXONOMY_VALUE_IN_USE,
+        value.as_str(),
+        format!(
+            "customer_group value `{value}` cannot retire: {active_overlay_scopes} published \
+             overlay scope(s) select on it; retirement is guarded rather than cascading, so end \
+             or retarget every reference first (inst-cg-taxonomy)"
+        ),
+    );
+    report
+}
+
+/// [`apply_replace`]'s single-table analogue.
+async fn apply_replace_customer_group(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entries: Vec<TaxonomyEntry>,
+    asserted: &PolicyTag,
+    stamp: AuditStamp,
+) -> Result<Replaced, RepoError> {
+    let held = list_customer_group_on(runner, scope, tenant_id).await?;
+
+    // The `If-Match` premise, tested here and only here — `apply_replace`'s own
+    // reasoning: the store refuses a premise that has *moved*, inside the
+    // transaction that writes, computed from the same `held` the write below
+    // works from.
+    if customer_group_tag_of(&held) != *asserted {
+        return Ok(Replaced {
+            entries: held,
+            report: ValidationReport::default(),
+            stale: true,
+        });
+    }
+
+    let submitted: BTreeMap<String, TaxonomyEntry> = entries
+        .into_iter()
+        .map(|entry| (entry.value.as_str().to_owned(), entry))
+        .collect();
+
+    let mut report = ValidationReport::default();
+    for existing in &held {
+        let key = existing.value.as_str();
+        let retiring = submitted
+            .get(key)
+            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
+        if !retiring || existing.state == TaxonomyState::Retired {
+            continue;
+        }
+        let active_overlay_scopes =
+            references_to_customer_group(runner, scope, tenant_id, &existing.value).await?;
+        report.absorb(check_customer_group_retirable(
+            &existing.value,
+            active_overlay_scopes,
+        ));
+    }
+
+    if !report.is_publishable() {
+        return Ok(Replaced {
+            entries: held,
+            report,
+            stale: false,
+        });
+    }
+
+    write_customer_group_set(runner, scope, tenant_id, &held, &submitted).await?;
+    let now = list_customer_group_on(runner, scope, tenant_id).await?;
+    record_customer_group_mutation(runner, scope, tenant_id, stamp).await?;
+    Ok(Replaced {
+        entries: now,
+        report,
+        stale: false,
+    })
+}
+
+/// [`write_set`]'s single-table analogue.
+async fn write_customer_group_set(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    held: &[TaxonomyEntry],
+    submitted: &BTreeMap<String, TaxonomyEntry>,
+) -> Result<(), RepoError> {
+    let held_keys: BTreeSet<&str> = held.iter().map(|e| e.value.as_str()).collect();
+
+    for entry in submitted.values() {
+        if held_keys.contains(entry.value.as_str()) {
+            update_customer_group_entry(runner, scope, tenant_id, entry).await?;
+        } else {
+            insert_customer_group_entry(runner, scope, tenant_id, entry).await?;
+        }
+    }
+    for existing in held {
+        if submitted.contains_key(existing.value.as_str()) {
+            continue;
+        }
+        let retired = TaxonomyEntry {
+            state: TaxonomyState::Retired,
+            ..existing.clone()
+        };
+        update_customer_group_entry(runner, scope, tenant_id, &retired).await?;
+    }
+    Ok(())
+}
+
+async fn insert_customer_group_entry(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entry: &TaxonomyEntry,
+) -> Result<(), RepoError> {
+    let row = customer_group_taxonomy::ActiveModel {
+        tenant_id: Set(tenant_id),
+        value: Set(entry.value.as_str().to_owned()),
+        display_name: Set(entry.display_name.clone()),
+        state: Set(entry.state.as_str().to_owned()),
+    };
+    customer_group_taxonomy::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .map_err(|e| RepoError::Db(format!("scope pricing_customer_group_taxonomy: {e}")))?
+        .exec(runner)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            contention_or_db(
+                &e,
+                "pricing_customer_group_taxonomy",
+                "insert pricing_customer_group_taxonomy",
+            )
+        })
+}
+
+async fn update_customer_group_entry(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entry: &TaxonomyEntry,
+) -> Result<(), RepoError> {
+    customer_group_taxonomy::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            customer_group_taxonomy::Column::DisplayName,
+            sea_orm::sea_query::Expr::value(entry.display_name.clone()),
+        )
+        .col_expr(
+            customer_group_taxonomy::Column::State,
+            sea_orm::sea_query::Expr::value(entry.state.as_str().to_owned()),
+        )
+        .filter(
+            Condition::all()
+                .add(customer_group_taxonomy::Column::TenantId.eq(tenant_id))
+                .add(customer_group_taxonomy::Column::Value.eq(entry.value.as_str().to_owned())),
+        )
+        .exec(runner)
+        .await
+        .map(|_| ())
+        .map_err(|e| RepoError::Db(format!("update pricing_customer_group_taxonomy: {e}")))
+}
+
+/// The entity tag of the customer-group taxonomy's representation —
+/// [`tag_of`]'s sibling, over one label rather than a [`TaxonomyClass`].
+///
+/// Public so `api::rest::customer_groups` can render and compare it exactly as
+/// `api::rest::taxonomies` does through [`tag_of`]: the `GET` renders it and the
+/// `PUT`'s precondition is compared against it inside the write transaction, so
+/// two constructions would be two answers to "what does this taxonomy hash to".
+#[must_use]
+pub fn customer_group_tag_of(entries: &[TaxonomyEntry]) -> PolicyTag {
+    PolicyTag::of_taxonomy(
+        ScopeClass::CustomerGroup.as_str(),
+        entries.iter().map(|entry| TaxonomyTagEntry {
+            value: entry.value.as_str(),
+            state: entry.state.as_str(),
+            display_name: entry.display_name.as_str(),
+            tax_category: None,
+            tax_rate_present: false,
+        }),
+    )
+}
+
+/// `inst-tx-mutation`'s audit half, for the customer-group taxonomy —
+/// [`record_mutation`]'s sibling.
+async fn record_customer_group_mutation(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    stamp: AuditStamp,
+) -> Result<(), RepoError> {
+    audit_repo::append(
+        runner,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            chain_id: audit_repo::policy_chain(),
+            recorded_at: stamp.recorded_at,
+            actor_principal_id: stamp.actor_principal_id,
+            action: AuditAction::Update,
+            subject_kind: AuditSubjectKind::Policy,
+            subject_ref: format!("taxonomy/{}", ScopeClass::CustomerGroup.as_str()),
+            before_state: None,
+            after_state: None,
+            approval_ref: None,
+            correlation_id: stamp.correlation_id,
+        },
+    )
+    .await
+    .map(|_| ())
 }

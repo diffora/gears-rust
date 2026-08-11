@@ -40,10 +40,10 @@
 
 use bss_pricing::infra::storage::entity::{
     approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
-    brand_taxonomy, catalog_version_ref, idempotency_dedup, operator_flag, org_tier_taxonomy,
-    outbox, partner_taxonomy, pin_frontier, plan, plan_addon_rule, plan_descriptor_set, plan_phase,
-    policy_object, price, price_overlay, price_overlay_line, price_overlay_line_amount,
-    price_tier_band, price_window, read_model, region_taxonomy,
+    brand_taxonomy, catalog_version_ref, customer_group_taxonomy, idempotency_dedup, operator_flag,
+    org_tier_taxonomy, outbox, partner_taxonomy, pin_frontier, plan, plan_addon_rule,
+    plan_descriptor_set, plan_phase, policy_object, price, price_overlay, price_overlay_line,
+    price_overlay_line_amount, price_tier_band, price_window, read_model, region_taxonomy,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
@@ -90,6 +90,10 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_brand_taxonomy",
     "pricing_partner_taxonomy",
     "pricing_org_tier_taxonomy",
+    // Slice 9's own taxonomy (`inst-cg-taxonomy`), on its own route rather than
+    // the `config` route the four above share — see
+    // `m20260802_000066`'s module doc.
+    "pricing_customer_group_taxonomy",
     // Slice 9's three, in dependency order.
     "pricing_price_overlay",
     "pricing_price_overlay_line",
@@ -340,6 +344,10 @@ const EXPECTED_CHECKS: &[&str] = &[
     // `m20260802_000046`'s module doc for why, and `m20260802_000045`'s for the
     // portability argument it inherits.
     "chk_pricing_composite_meter_output_unit",
+    // Slice 9's own taxonomy (`inst-cg-taxonomy`), `m20260802_000031`'s two
+    // CHECKs restated over `pricing_customer_group_taxonomy`.
+    "chk_pricing_customer_group_taxonomy_state",
+    "chk_pricing_customer_group_taxonomy_value_present",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
     // Slice 11. The two implications that carry section 4's reachable set
@@ -522,6 +530,9 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     // itself: `composite_id` is stable across revisions and the revision is the
     // second column, so a copy-forward is a new row rather than an edit.
     ("pricing_composite_meter", "composite_id, plan_revision"),
+    // Slice 9's own taxonomy (`inst-cg-taxonomy`), the four's own key shape on
+    // its own table.
+    ("pricing_customer_group_taxonomy", "tenant_id, value"),
     (
         "pricing_idempotency_dedup",
         "tenant_id, operation, client_key",
@@ -1279,6 +1290,9 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         brand_taxonomy::Entity,
         partner_taxonomy::Entity,
         org_tier_taxonomy::Entity,
+        // Slice 9's own taxonomy (`inst-cg-taxonomy`), on its own route rather
+        // than `config`'s four above.
+        customer_group_taxonomy::Entity,
         price_overlay::Entity,
         price_overlay_line::Entity,
         price_overlay_line_amount::Entity,
