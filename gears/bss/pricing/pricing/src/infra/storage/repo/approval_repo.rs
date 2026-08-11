@@ -1265,6 +1265,18 @@ pub fn subject_aggregate(record: &ApprovalRecord) -> Result<SubjectAggregate, Re
         AuditSubjectKind::BulkOperation => {
             subject_bulk_operation(record).map(SubjectAggregate::BulkOperation)
         }
+        // **Not built.** No approval unit opens on this subject kind yet —
+        // `group_membership_repo` (Task 4 of the customer-group plane) writes
+        // `pricing_audit_log` records of this kind and nothing else, the same
+        // pre-D-225 situation `AuditSubjectKind::Overlay`'s comment above
+        // describes. No ref format is decided for it either, so it is refused
+        // here rather than resolved — this function's own doc's "a subject kind
+        // with no resolution".
+        AuditSubjectKind::Membership => Err(RepoError::CorruptRow(format!(
+            "approval record names subject_kind membership, for which no approval unit \
+             opener exists yet: {}",
+            record.subject_ref
+        ))),
     }
 }
 

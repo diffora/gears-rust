@@ -581,6 +581,68 @@ pub enum RepoError {
         /// The interval as the caller asked for it, `[from, to)`.
         requested: String,
     },
+    /// A membership interval intersects one **of the same group** already on
+    /// the payer (`design/09-price-overlays.md` §5, `MEMBERSHIP_OVERLAP`).
+    ///
+    /// D-09's non-overlap rule is per `(tenant, payer)` **across every group**
+    /// — [`RepoError::MembershipConflict`] is that rule's own refusal — and this
+    /// narrower variant exists only because §5 declares the same-group
+    /// collision its own code, distinct from the cross-group one. Both are
+    /// raised by [`group_membership_repo::refuse_overlap`](crate::infra::storage::repo::group_membership_repo::refuse_overlap)
+    /// off the **same** read, which is what makes the choice between them a
+    /// comparison of `group_value` rather than a second query.
+    ///
+    /// It names the payer, the interval that was asked for and the membership
+    /// it collided with, [`RepoError::WindowOverlap`]'s shape and reason.
+    #[error(
+        "pricing repo: the interval {requested} for payer {payer_tenant_id} overlaps {conflicting}, \
+         in the same group"
+    )]
+    MembershipOverlap {
+        /// The payer both intervals are filed under.
+        payer_tenant_id: String,
+        /// The interval the caller asked for, `[from, to)`.
+        requested: String,
+        /// The membership already there and the interval it holds.
+        conflicting: String,
+    },
+    /// A membership interval intersects one **of a different group** already on
+    /// the payer (`design/09-price-overlays.md` §5, `MEMBERSHIP_CONFLICT`,
+    /// D-09).
+    ///
+    /// **This is the case D-09 is actually about**: membership intervals are
+    /// non-overlapping per payer *across all groups*, not merely within one —
+    /// this migration's own doc calls out the narrower same-group reading
+    /// (`MEMBERSHIP_OVERLAP`) as the false negative D-09 refuses and this
+    /// variant does not admit. The remedy named in §5 is the atomic **move**
+    /// operation, not a plain enrollment.
+    #[error(
+        "pricing repo: the interval {requested} for payer {payer_tenant_id} overlaps {conflicting}, \
+         in another group; use the move operation"
+    )]
+    MembershipConflict {
+        /// The payer both intervals are filed under.
+        payer_tenant_id: String,
+        /// The interval the caller asked for, `[from, to)`.
+        requested: String,
+        /// The membership already there and the interval it holds.
+        conflicting: String,
+    },
+    /// A membership interval whose end is not strictly after its start.
+    ///
+    /// [`RepoError::WindowIntervalEmpty`]'s reason, one plane over: a value
+    /// arriving on a request that no column will hold is a caller mistake the
+    /// request can be reshaped around, not an internal fault. §5 declares no
+    /// membership code for an empty interval either, so this folds into the
+    /// same `INVALID_REQUEST` rendering rather than minting one.
+    #[error(
+        "pricing repo: the membership interval {requested} is empty; effective_to must be \
+         strictly after effective_from"
+    )]
+    MembershipIntervalEmpty {
+        /// The interval as the caller asked for it, `[from, to)`.
+        requested: String,
+    },
 }
 
 /// A per-aggregate serialization point's refusal, told apart from a storage
@@ -860,9 +922,9 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         // window plane's — section 5 declares no window code for an empty
         // interval — and the arms are merged because inventing a difference
         // between them would be inventing a distinction no consumer can act on.
-        RepoError::ValueOutOfRange { .. } | RepoError::WindowIntervalEmpty { .. } => {
-            DomainError::InvalidRequest(err.to_string())
-        }
+        RepoError::ValueOutOfRange { .. }
+        | RepoError::WindowIntervalEmpty { .. }
+        | RepoError::MembershipIntervalEmpty { .. } => DomainError::InvalidRequest(err.to_string()),
         RepoError::GrandfatherHorizonOffClass { .. } => {
             DomainError::GrandfatherUntilForbidden(err.to_string())
         }
@@ -910,6 +972,11 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         RepoError::WindowHistorical { .. } => {
             DomainError::WindowHistoricalImmutable(err.to_string())
         }
+        // D-09's own two codes, `WindowOverlap`'s shape one plane over: the
+        // request was well-formed and what refused it is a sibling membership on
+        // the payer their own request never named.
+        RepoError::MembershipOverlap { .. } => DomainError::MembershipOverlap(err.to_string()),
+        RepoError::MembershipConflict { .. } => DomainError::MembershipConflict(err.to_string()),
     }
 }
 

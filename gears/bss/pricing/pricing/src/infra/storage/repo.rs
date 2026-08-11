@@ -43,6 +43,7 @@ pub mod audit_repo;
 pub mod bulk_repo;
 pub mod bundle_repo;
 pub mod catalog_version_ref_repo;
+pub mod group_membership_repo;
 pub mod idempotency_repo;
 pub mod migration_repo;
 pub mod outbox_repo;
@@ -71,6 +72,7 @@ pub use bundle_repo::{
     BundleComponentDraft, BundleRecord, BundleRepo, CompositionDraft, NewBundle,
 };
 pub use catalog_version_ref_repo::PendingVersionRow;
+pub use group_membership_repo::{MembershipRow, NewMembership};
 pub use idempotency_repo::{ClaimOutcome, IdempotencyGate};
 pub use migration_repo::{MigrationRecord, NewMigration};
 pub use outbox_repo::{

@@ -2002,6 +2002,18 @@ async fn re_derive(
              the decide surface, not built yet",
             record.approval_id
         ))),
+        // **Not built.** `group_membership_repo` (Task 4 of the customer-group
+        // plane) writes `pricing_audit_log` records of this kind and opens no
+        // approval unit — `inst-mm-pending`'s bulk-move payload, the one case
+        // that would need one, is not wired. A record of this kind reaching
+        // `decide` cannot occur yet, and this arm's shape is
+        // [`AuditSubjectKind::BulkOperation`]'s: `Err` rather than `Ok(None)`,
+        // because `None` means *the subject is gone* and that is not what "no
+        // opener exists yet" means.
+        AuditSubjectKind::Membership => Err(DomainError::Internal(format!(
+            "approval {} is a membership unit; no opener exists for this subject kind yet",
+            record.approval_id
+        ))),
     }
 }
 

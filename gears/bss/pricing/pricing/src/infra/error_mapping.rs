@@ -405,6 +405,15 @@ impl From<DomainError> for CanonicalError {
             D::WindowNotCancellable(detail) => PlanResource::aborted(detail)
                 .with_reason("WINDOW_NOT_CANCELLABLE")
                 .create(),
+            // D-09's own two codes, `WindowOverlap`'s reason one plane over: the
+            // request was well-formed and what refused it is a sibling
+            // membership on the payer their own request never named.
+            D::MembershipOverlap(detail) => PlanResource::aborted(detail)
+                .with_reason("MEMBERSHIP_OVERLAP")
+                .create(),
+            D::MembershipConflict(detail) => PlanResource::aborted(detail)
+                .with_reason("MEMBERSHIP_CONFLICT")
+                .create(),
             // `inst-re-references`, 409 in §5's own words. The conflict class for
             // `TaxonomyValueInUse`'s reason and it is the same fact one plane
             // over: what refused the retirement is a bundle or an add-on

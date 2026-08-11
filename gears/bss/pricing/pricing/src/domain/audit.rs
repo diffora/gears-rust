@@ -480,6 +480,30 @@ pub enum AuditSubjectKind {
     /// `validating` (`api::rest::repricing_runs::advance_on_verdict`);
     /// `approval_repo::SUBJECT_KINDS_WITH_A_WRITER` carries it now.
     BulkOperation,
+    /// One `pricing_group_membership` row, named by its `membership_id`
+    /// (`design/09-price-overlays.md` `inst-mm-audit`).
+    ///
+    /// **Declared in S5 §6 already**, in the same enumeration D-158 takes
+    /// verbatim from `pricing_approval` — `plan_revision | price_unit | window |
+    /// overlay | membership | bundle | retirement | policy | historical_import |
+    /// bulk_batch` — so this member implements a token the design set names
+    /// rather than minting one, held out until its writer existed the way
+    /// [`Self::Window`] and [`Self::Policy`] were.
+    ///
+    /// Its writer is
+    /// [`group_membership_repo`](crate::infra::storage::repo::group_membership_repo)'s
+    /// `enroll` and `end_membership`, inside each mutation's own transaction.
+    ///
+    /// Its **chain** is *not* the plan's and not [`Self::Overlay`]'s either: a
+    /// membership has no plan and is not authored inside an overlay revision. S5
+    /// §6's **aggregate** list — plan, overlay, **payer**, policy, bulk operation
+    /// — names `payer` as the aggregate a membership mutation belongs to, so it
+    /// segments on
+    /// [`audit_repo::payer_chain`](crate::infra::storage::repo::audit_repo::payer_chain),
+    /// one segment per payer: a payer's whole membership history — every
+    /// enrollment, every ending, across every group it has ever moved through —
+    /// is one segment to walk, which is what D-135 asks a chain key to be.
+    Membership,
 }
 
 impl AuditSubjectKind {
@@ -491,6 +515,7 @@ impl AuditSubjectKind {
         Self::Policy,
         Self::Overlay,
         Self::BulkOperation,
+        Self::Membership,
     ];
 
     /// The persisted `subject_kind` token.
@@ -503,6 +528,7 @@ impl AuditSubjectKind {
             Self::Policy => "policy",
             Self::Overlay => "overlay",
             Self::BulkOperation => "bulk_operation",
+            Self::Membership => "membership",
         }
     }
 }

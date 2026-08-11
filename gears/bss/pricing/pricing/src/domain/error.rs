@@ -684,6 +684,28 @@ pub enum DomainError {
     /// operation §4 leaves them and the one a cutover's own shorten uses.
     #[error("window not cancellable: {0}")]
     WindowNotCancellable(String),
+    /// An enrollment's interval intersects the payer's existing membership **in
+    /// the same group** (`design/09-price-overlays.md` §5, `MEMBERSHIP_OVERLAP`,
+    /// **409**).
+    ///
+    /// [`DomainError::WindowOverlap`]'s reason: the request was well-formed and
+    /// what refused it is a sibling membership on the payer their own request
+    /// never named, and re-reading the payer's memberships is the remedy.
+    #[error("membership overlap: {0}")]
+    MembershipOverlap(String),
+    /// An enrollment's interval intersects the payer's existing membership **in
+    /// another group** (`design/09-price-overlays.md` §5, `MEMBERSHIP_CONFLICT`,
+    /// D-09, **409**).
+    ///
+    /// D-09's non-overlap rule is per payer *across all groups*, not merely
+    /// within one, and this is the code §5 names for the case that rule is
+    /// actually about. Deliberately not merged with
+    /// [`DomainError::MembershipOverlap`]: §5 types the two codes separately
+    /// because the remedies differ — a same-group collision is a plain
+    /// scheduling mistake, while a cross-group one names the atomic **move**
+    /// operation as the correct next call.
+    #[error("membership conflict: {0}")]
+    MembershipConflict(String),
 
     // -- The aggregate validation envelope --
     /// The fail-closed validation pipeline rejected the publish. Carries the

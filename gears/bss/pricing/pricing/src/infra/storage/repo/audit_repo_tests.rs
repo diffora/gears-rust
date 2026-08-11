@@ -11,7 +11,7 @@
 
 use uuid::Uuid;
 
-use super::{bulk_operation_chain, overlay_chain, plan_chain, policy_chain};
+use super::{bulk_operation_chain, overlay_chain, payer_chain, plan_chain, policy_chain};
 use crate::domain::scope_key::PlanId;
 
 /// The version nibble — the 13th hex digit, `xxxxxxxx-xxxx-Vxxx-…`.
@@ -105,6 +105,51 @@ fn distinct_bulk_operations_get_distinct_chains() {
 
     assert_eq!(
         bulk_operation_chain(a).as_u128() & !VERSION_MASK,
+        a.as_u128() & !VERSION_MASK
+    );
+}
+
+#[test]
+fn payer_chains_are_disjoint_from_every_other_chain_by_construction() {
+    // `payer_tenant_id` is AMS-supplied and carries no version-nibble promise at
+    // all, unlike the other three inputs above, which this gear mints as `v7`
+    // itself. So the adversarial case here is not "a v7 id read as two kinds" but
+    // "an id of *any* version read as a payer" — and the structural claim still
+    // has to hold: nibble `A` and nothing else decides membership in this chain
+    // space.
+    for _ in 0..64 {
+        let payer_id = Uuid::now_v7();
+        let operation_id = Uuid::now_v7();
+        let overlay_id = Uuid::now_v7();
+        let plan_id = PlanId::new(Uuid::now_v7());
+
+        assert_eq!(version_nibble(payer_chain(payer_id)), 0xA);
+        assert_eq!(version_nibble(plan_chain(plan_id)), 7);
+        assert_eq!(version_nibble(overlay_chain(overlay_id)), 8);
+        assert_eq!(version_nibble(bulk_operation_chain(operation_id)), 9);
+
+        // The adversarial case: one id minted once, read as every kind. Under a
+        // raw-id spelling these would all be one segment.
+        let shared = Uuid::now_v7();
+        assert_ne!(payer_chain(shared), plan_chain(PlanId::new(shared)));
+        assert_ne!(payer_chain(shared), overlay_chain(shared));
+        assert_ne!(payer_chain(shared), bulk_operation_chain(shared));
+
+        // The policy segment's fixed, zero-timestamp value is not any payer's
+        // either.
+        assert_ne!(payer_chain(payer_id), policy_chain());
+    }
+}
+
+#[test]
+fn distinct_payers_get_distinct_chains() {
+    let a = Uuid::now_v7();
+    let b = Uuid::now_v7();
+    assert_ne!(a, b, "two v7 ids, minted apart");
+    assert_ne!(payer_chain(a), payer_chain(b));
+
+    assert_eq!(
+        payer_chain(a).as_u128() & !VERSION_MASK,
         a.as_u128() & !VERSION_MASK
     );
 }

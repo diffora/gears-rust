@@ -326,6 +326,50 @@ pub fn bulk_operation_ref(operation_id: Uuid) -> String {
     operation_id.to_string()
 }
 
+/// The segment every audited mutation **of one payer's membership history**
+/// extends.
+///
+/// D-135 keys a chain on the audited subject's aggregate, and S5 §6's aggregate
+/// list — plan, overlay, **payer**, policy, bulk operation — makes a payer one
+/// in its own right. A membership row is not a plan and has no plan (D-09's
+/// non-overlap is per `(tenant, payer)`, not per plan), so putting its
+/// mutations on [`plan_chain`] would interleave one payer's group history
+/// across however many plans that payer happens to be priced under.
+///
+/// # A fourth nibble
+///
+/// [`overlay_chain`] and [`policy_chain`] already claim version nibble `8`,
+/// [`bulk_operation_chain`] claims `9`, and `payer_tenant_id` is **not** an id
+/// this gear mints — [`super::group_membership_repo`]'s module doc says why:
+/// AMS supplies the payer's identity, so its version nibble carries no promise
+/// at all, let alone the promise that it is never `7`. So this rewrites to
+/// nibble `A`, the next one unclaimed: disjoint from every plan chain (nibble
+/// `7`, this gear's own `now_v7()`), disjoint from every [`overlay_chain`]
+/// (nibble `8`, real timestamps), disjoint from [`policy_chain`] (also nibble
+/// `8`, the one fixed value no `now_v7()` mints), and disjoint from every
+/// [`bulk_operation_chain`] (nibble `9`).
+///
+/// `audit_repo_tests::payer_chains_are_disjoint_from_every_other_chain_by_construction`
+/// asserts this rather than describing it.
+#[must_use]
+pub const fn payer_chain(payer_tenant_id: Uuid) -> Uuid {
+    const VERSION_MASK: u128 = 0xF << 76;
+    Uuid::from_u128((payer_tenant_id.as_u128() & !VERSION_MASK) | (0xA << 76))
+}
+
+/// A membership row's audit name — its `membership_id`.
+///
+/// [`price_unit_ref`]'s shape: the payer is not repeated in it, because
+/// [`payer_chain`] already carries the aggregate and a reference that restated
+/// it would be a second place the two could disagree. A membership row has no
+/// revision concept either (`m20260802_000067`'s module doc: "no `state`
+/// column ... nothing here duplicates it"), so unlike [`window_ref`] there is
+/// no second coordinate to encode.
+#[must_use]
+pub fn membership_ref(membership_id: Uuid) -> String {
+    membership_id.to_string()
+}
+
 /// A price row's audit name — its `price_id`.
 ///
 /// The plan is not repeated in it: [`plan_chain`] already carries the aggregate,
