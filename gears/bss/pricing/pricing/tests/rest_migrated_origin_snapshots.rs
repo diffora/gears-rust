@@ -283,6 +283,61 @@ async fn a_cancelled_window_is_not_evidence_and_the_key_fails_closed() {
 // The freeze, and Section 9's idempotency.
 // ---------------------------------------------------------------------------
 
+/// **A draft row's window is not evidence** — D-76 clause 1 is "the `pricing_price`
+/// row, **current or superseded**", and a `draft` row is neither.
+///
+/// `window_repo::list_for_plan` is taken whole: every window state, over every
+/// price row of the plan *whatever its lifecycle state*. The filter tested
+/// cancelled-ness, currency, region and the interval, and said nothing about the
+/// row behind the window — so synthesis could freeze, as "what the subscriber was
+/// paying", a row that never published, never passed the publish rules and was
+/// never approved.
+///
+/// The module doc's "**Cancelled windows are excluded and nothing else is**" was
+/// the claim that made it read as complete. It was about *windows*; the omission
+/// is on the *row*.
+///
+/// `read_model::project_windows` — the other reader of this same
+/// `list_for_plan`, and the one that asserts fact to a consumer — restricts on
+/// exactly this axis (`PROJECTED_ROW_STATES`).
+#[tokio::test]
+async fn a_draft_rows_window_is_not_evidence_and_the_key_fails_closed() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    // The plan revision publishes; **the row does not**. `seed_publishable_plan`
+    // already schedules the coverage window `[2099-08-04, 2099-09-01)` on the row,
+    // and `publish_price` is what would move the row itself to `published` — so
+    // skipping it leaves exactly the state under test: a covering window over a
+    // `draft` row, which the store admits and the reader has to refuse on its own.
+    h.publish(plan_id, seeded.revision).await;
+
+    let outcome = h
+        .governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(Uuid::now_v7(), plan_id, covered_at()),
+        )
+        .await;
+
+    match outcome {
+        Err(err) => {
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains("EUR") || rendered.contains("eu"),
+                "the refusal must name the key it could not resolve: {rendered}"
+            );
+        }
+        Ok(frozen) => panic!(
+            "a draft row is not 'current or superseded', so this key has no evidence and the \
+             snapshot must fail closed; it froze: {:?}",
+            frozen.record.resolved
+        ),
+    }
+}
+
 #[tokio::test]
 async fn a_second_synthesis_returns_the_same_frozen_ref_at_the_same_instant() {
     // §9: "a second synthesis attempt is idempotent (same frozen ref)". The

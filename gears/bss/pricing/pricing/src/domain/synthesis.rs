@@ -238,20 +238,42 @@ pub struct SelectedRow {
 /// stated as "the greatest `effective_from <= t`" and is implemented as stated
 /// rather than as an assertion about the store. A rule that trusted the
 /// uniqueness would be a second place for that invariant to live.
+///
+/// # Why tier 1 answers with a **set**
+///
+/// A [`FrozenKey`] is D-76's frozen `(currency, region)` pair — a **market**, not
+/// a canonical scope key — and a market legitimately carries more than one live
+/// line: `inst-cs-hybrid` exists to sanction a recurring row beside a usage row,
+/// and an `existing_grandfathered` generation sits beside an `all_subscriptions`
+/// row on the same pair. This returned `Option` until 2026-08-11 and the caller
+/// kept the lowest `price_id`, so every other line on the market was dropped in
+/// silence.
+///
+/// That is not a smaller snapshot. D-87 makes the frozen payload self-contained —
+/// Rating evaluates from it and Billing posts from it, resolving nothing through
+/// the read model — so **a dropped line is a charge that never happens**, on a
+/// record with a seven-year horizon and no way to notice.
+///
+/// Tier 2 still answers with at most one: its rule is "the greatest
+/// `effective_from <= t`", which names a single row by construction.
 #[must_use]
-pub fn select_row(live: &[LiveCandidate], reference: &[ReferenceCandidate]) -> Option<SelectedRow> {
-    // (1) Live history first, and it short-circuits.
-    if let Some(candidate) = live.first() {
-        return Some(SelectedRow {
-            row_id: candidate.price_id,
-            tier: SelectionTier::LiveHistory,
-            plan_revision: candidate.plan_revision,
-        });
+pub fn select_rows(live: &[LiveCandidate], reference: &[ReferenceCandidate]) -> Vec<SelectedRow> {
+    // (1) Live history first, and it short-circuits — as a set.
+    if !live.is_empty() {
+        return live
+            .iter()
+            .map(|candidate| SelectedRow {
+                row_id: candidate.price_id,
+                tier: SelectionTier::LiveHistory,
+                plan_revision: candidate.plan_revision,
+            })
+            .collect();
     }
     // (2) The reference set, greatest `effective_from` first.
     reference
         .iter()
         .max_by_key(|candidate| candidate.effective_from)
+        .into_iter()
         .map(|candidate| SelectedRow {
             row_id: candidate.historical_price_id,
             tier: SelectionTier::HistoricalImport,
@@ -259,7 +281,9 @@ pub fn select_row(live: &[LiveCandidate], reference: &[ReferenceCandidate]) -> O
             // is the fact D-87 makes the payload self-contained *because* of.
             plan_revision: None,
         })
-    // (3) `None` is fail-closed. The caller turns it into the exception list.
+        .collect()
+    // (3) An empty set is fail-closed. The caller turns it into the exception
+    //     list, exactly as it did when this answered `None`.
 }
 
 /// A scope key synthesis could not resolve a row for (`inst-sy-select` clause 3).

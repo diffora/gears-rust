@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{
     LiveCandidate, ReferenceCandidate, SelectedRow, SelectionTier, SynthesisOutcome,
-    SynthesisTrigger, UnresolvedKey, select_row,
+    SynthesisTrigger, UnresolvedKey, select_rows,
 };
 use crate::domain::error::DomainError;
 
@@ -37,7 +37,10 @@ fn tier_one_resolves_and_the_reference_set_is_not_consulted() {
     // "Reference set **only if** (1) is empty". The two tiers are not equally
     // good evidence: tier 1 *is* what rating resolved at `t`.
     let candidate = live(Some(3));
-    let selected = select_row(&[candidate], &[reference(1)]).expect("tier 1 answers");
+    let selected = select_rows(&[candidate], &[reference(1)])
+        .into_iter()
+        .next()
+        .expect("tier 1 answers");
 
     assert_eq!(selected.row_id, candidate.price_id);
     assert_eq!(selected.tier, SelectionTier::LiveHistory);
@@ -47,7 +50,10 @@ fn tier_one_resolves_and_the_reference_set_is_not_consulted() {
 #[test]
 fn tier_two_resolves_only_when_live_history_is_empty() {
     let row = reference(5);
-    let selected = select_row(&[], &[row]).expect("tier 2 answers");
+    let selected = select_rows(&[], &[row])
+        .into_iter()
+        .next()
+        .expect("tier 2 answers");
 
     assert_eq!(selected.row_id, row.historical_price_id);
     assert_eq!(selected.tier, SelectionTier::HistoricalImport);
@@ -64,11 +70,17 @@ fn the_reference_set_takes_the_greatest_effective_from_at_or_below_t() {
     let newer = reference(9);
     let middle = reference(4);
 
-    let selected = select_row(&[], &[older, newer, middle]).expect("tier 2 answers");
+    let selected = select_rows(&[], &[older, newer, middle])
+        .into_iter()
+        .next()
+        .expect("tier 2 answers");
     assert_eq!(selected.row_id, newer.historical_price_id);
 
     // Order of presentation must not decide it.
-    let reordered = select_row(&[], &[newer, older, middle]).expect("tier 2 answers");
+    let reordered = select_rows(&[], &[newer, older, middle])
+        .into_iter()
+        .next()
+        .expect("tier 2 answers");
     assert_eq!(reordered.row_id, newer.historical_price_id);
 }
 
@@ -76,7 +88,7 @@ fn the_reference_set_takes_the_greatest_effective_from_at_or_below_t() {
 fn neither_tier_answering_is_none_and_never_the_current_row() {
     // Clause (3). The whole rule exists for this: the current row is precisely
     // the price the subscriber was **not** paying.
-    assert_eq!(select_row(&[], &[]), None);
+    assert!(select_rows(&[], &[]).is_empty());
 }
 
 #[test]
@@ -85,17 +97,65 @@ fn the_reference_set_is_empty_in_the_built_system_and_the_seam_still_holds() {
     // tier 2 is always handed an empty slice today. This is the shape every call
     // in this system actually makes, and it must fall to clause (3) rather than
     // to anything else.
-    assert_eq!(select_row(&[], &[]), None);
+    assert!(select_rows(&[], &[]).is_empty());
     // ...while tier 1 keeps working, which is what makes the seam a seam.
     let candidate = live(Some(0));
     assert_eq!(
-        select_row(&[candidate], &[]),
-        Some(SelectedRow {
+        select_rows(&[candidate], &[]),
+        vec![SelectedRow {
             row_id: candidate.price_id,
             tier: SelectionTier::LiveHistory,
             plan_revision: Some(0),
-        })
+        }]
     );
+}
+
+/// **A market with more than one live line freezes all of them.**
+///
+/// A [`FrozenKey`](crate::infra::synthesis::FrozenKey) is D-76's frozen
+/// `(currency, region)` pair — a market, not a canonical scope key — and a market
+/// legitimately carries several lines: `inst-cs-hybrid` exists to sanction a
+/// recurring row beside a usage row, and an `existing_grandfathered` generation
+/// sits beside an `all_subscriptions` row on the same pair.
+///
+/// This rule answered `Option` until 2026-08-11 and the caller took the first
+/// candidate, so every other line on the market was dropped in silence. D-87 makes
+/// the frozen payload self-contained — Rating evaluates from it and Billing posts
+/// from it, resolving nothing through the read model — so **a dropped line is a
+/// charge that never happens**, on a record with a seven-year horizon.
+#[test]
+fn every_live_line_on_one_market_is_frozen_not_the_first() {
+    let recurring = live(Some(0));
+    let usage = live(Some(0));
+
+    let selected = select_rows(&[recurring, usage], &[]);
+
+    assert_eq!(
+        selected.len(),
+        2,
+        "both lines of the market are the subscriber's economics, not one of them"
+    );
+    let frozen: Vec<Uuid> = selected.iter().map(|row| row.row_id).collect();
+    assert!(frozen.contains(&recurring.price_id));
+    assert!(frozen.contains(&usage.price_id));
+    assert!(
+        selected
+            .iter()
+            .all(|row| row.tier == SelectionTier::LiveHistory),
+        "tier 1 still short-circuits tier 2 (D-76): the set is one tier's, never a merge"
+    );
+}
+
+/// Tier 2 still answers with **at most one**, and that asymmetry is the rule
+/// rather than an oversight: its selection is "the greatest `effective_from <= t`",
+/// which names a single row by construction, where tier 1's set is "every row live
+/// on the market".
+#[test]
+fn the_reference_tier_still_answers_with_one_row() {
+    let selected = select_rows(&[], &[reference(1), reference(9), reference(5)]);
+
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].tier, SelectionTier::HistoricalImport);
 }
 
 // ---------------------------------------------------------------------------

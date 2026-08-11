@@ -20,12 +20,19 @@
 //! window's end belongs to the *next* window, which is the same rule coverage
 //! uses, and `effective_to = None` is open-ended rather than missing.
 //!
-//! **Cancelled windows are excluded and nothing else is.** A cancelled window
-//! never took effect, so a row it scheduled was never what rating resolved —
-//! including it would let synthesis freeze a price the subscriber demonstrably
-//! never paid. `scheduled`, `active` and `expired` are all admitted: what makes a
-//! window evidence here is that its interval covered `t`, not what state the
-//! clock has since moved it to.
+//! **Cancelled windows are excluded.** A cancelled window never took effect, so a
+//! row it scheduled was never what rating resolved — including it would let
+//! synthesis freeze a price the subscriber demonstrably never paid. `scheduled`,
+//! `active` and `expired` are all admitted: what makes a window evidence here is
+//! that its interval covered `t`, not what state the clock has since moved it to.
+//!
+//! **And the row behind the window must be `published` or `superseded`**, which is
+//! clause 1 read literally. This sentence said "and nothing else is" until
+//! 2026-08-11, and it was a claim about *windows* standing in for a filter that had
+//! to be about *rows*: `list_for_plan` is taken whole, over every price row of the
+//! plan whatever its lifecycle, so a `draft` row's window was admissible evidence
+//! and a row that never published could be frozen — labelled `live_history` —
+//! as what the subscriber was paying.
 //!
 //! # Tier 2 has no store, so it is a parameter rather than a query
 //!
@@ -65,11 +72,11 @@ use uuid::Uuid;
 use crate::domain::error::DomainError;
 use crate::domain::scope_key::PlanId;
 use crate::domain::synthesis::{
-    LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_row,
+    LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_rows,
 };
 use crate::domain::window::WindowState;
 use crate::infra::storage::entity::{plan_descriptor_set, price};
-use crate::infra::storage::repo::{plan_repo, window_repo};
+use crate::infra::storage::repo::{plan_repo, price_repo, window_repo};
 use crate::infra::storage::{RepoError, repo_failure};
 
 /// A scope key synthesis must resolve a row for — the subscription's frozen
@@ -93,16 +100,42 @@ pub async fn select_for_key(
     plan_id: PlanId,
     key: &FrozenKey,
     at: DateTime<Utc>,
-) -> Result<Option<SelectedRow>, DomainError> {
+) -> Result<Vec<SelectedRow>, DomainError> {
     let windows = window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
         .await
         .map_err(|e| repo_failure(&e))?;
+
+    // **D-76 clause 1 is "the `pricing_price` row, *current or superseded*", and
+    // that half was missing.** `list_for_plan` is taken whole — every window state,
+    // over every price row of the plan whatever its lifecycle — so a `draft` row's
+    // window was admissible evidence and synthesis could freeze, as "what the
+    // subscriber was paying", a row that never published, never passed the publish
+    // rules and was never approved. It labelled it `live_history` while doing so.
+    //
+    // `read_model::project_windows` is the other reader of this same list and the
+    // other one that asserts fact to a consumer; it restricts on exactly this axis.
+    // The intersection is done the same way, against rows read in
+    // `PROJECTED_ROW_STATES` rather than by adding a lifecycle column to
+    // `WindowRecord` — that type is shared by every window caller, and none of the
+    // others is asking this question.
+    let admissible = price_repo::load_for_plan(
+        runner,
+        scope,
+        tenant_id,
+        plan_id,
+        crate::domain::projection::PROJECTED_ROW_STATES,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
 
     let mut live: Vec<LiveCandidate> = windows
         .iter()
         .filter(|window| {
             // A cancelled window never took effect; see the module doc.
             window.state != WindowState::Cancelled
+                && admissible
+                    .iter()
+                    .any(|row| row.price_id == window.price_id)
                 && window.scope_key.currency().as_str() == key.currency
                 && window.scope_key.region().as_str() == key.region
                 // Half-open: `[from, to)`.
@@ -122,7 +155,7 @@ pub async fn select_for_key(
     // a branch around it.
     let reference = Vec::new();
 
-    Ok(select_row(&live, &reference))
+    Ok(select_rows(&live, &reference))
 }
 
 /// Resolve every frozen key of one subscription (`inst-sy-select`).
@@ -140,12 +173,18 @@ pub async fn resolve(
     let mut selected = Vec::new();
     let mut unresolved = Vec::new();
     for key in keys {
-        match select_for_key(runner, scope, tenant_id, plan_id, key, at).await? {
-            Some(row) => selected.push(row),
-            None => unresolved.push(UnresolvedKey {
+        // **Every live line on the market, not the first.** A `FrozenKey` is
+        // D-76's `(currency, region)` pair, and a market legitimately carries
+        // more than one — `inst-cs-hybrid` sanctions a recurring row beside a
+        // usage row. An empty set is what fails the key closed.
+        let rows = select_for_key(runner, scope, tenant_id, plan_id, key, at).await?;
+        if rows.is_empty() {
+            unresolved.push(UnresolvedKey {
                 currency: key.currency.clone(),
                 region: key.region.clone(),
-            }),
+            });
+        } else {
+            selected.extend(rows);
         }
     }
     Ok(SynthesisOutcome {
