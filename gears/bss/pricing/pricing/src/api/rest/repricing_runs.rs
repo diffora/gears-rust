@@ -7,34 +7,44 @@
 //!
 //! `POST /repricing-runs` validates the changeover instant, expands the selector
 //! over the tenant's **published** rows, refuses `RUN_SELECTOR_EMPTY` if that
-//! expansion is empty, opens a [`BulkKind::Repricing`] run, and freezes the row
-//! set into `pricing_repricing_journal`. Then it stops. **The run rests in
-//! `validating` and goes no further**: nothing here applies a price, opens a batch
-//! approval, evaluates materiality, coalesces a `CatalogVersion`, or aborts. A run
-//! this module opened will sit in `validating` until the apply exists, and reading
-//! it back through the `GET` will show exactly that, with every journal row
-//! `pending`.
+//! expansion is empty, opens a [`BulkKind::Repricing`] run, freezes the row set
+//! into `pricing_repricing_journal`, evaluates the run's materiality **once**
+//! over every plan it touches (`inst-mr-coalesce`), and writes the edge the
+//! verdict names: `validating -> awaiting_approval` under an opened approval
+//! unit when material, `validating -> committing` otherwise. **What it still
+//! does not do** is apply a price, coalesce a `CatalogVersion`, or abort — a run
+//! this module opens now leaves `validating` on every path, but a `committing`
+//! run advances no further than that state, and reading it back through the
+//! `GET` shows exactly that, with every journal row still `pending`.
 //!
-//! That is a deliberate slice and not an oversight, so the three debts are named
-//! rather than left to be discovered:
+//! That is a deliberate slice and not an oversight, so the debts that remain
+//! are named rather than left to be discovered:
 //!
 //! * **The apply** (`inst-mr-apply`, `inst-mr-validate-scope`) owes the per-plan
 //!   transaction D-134 requires — successor rows, their outbox records and the
-//!   journal's `pending -> applied` flips in one commit per plan.
-//! * **The batch approval** (`inst-bs-approval`) still cannot be opened:
-//!   `chk_pricing_approval_subject_kind` admits `bulk_operation` as of
-//!   `m20260802_000065`, but that widening is the narrower half of D-158's pair —
-//!   storable, not yet stored. The unit that would open one, `inst-bs-approval`
-//!   itself, is unwired, so the `validating -> awaiting_approval` edge still has
-//!   no writer.
-//!
-//!   **Paid 2026-08-11:** this arm's other gap — that opening a run wrote **no
-//!   audit record at all** — is closed. `AuditSubjectKind::BulkOperation` exists,
-//!   and `open_run_in` appends a `create` record on the run's own chain
+//!   journal's `pending -> applied` flips in one commit per plan. Nothing here
+//!   computes what a selected row's price would become, so the `ChangeSet`
+//!   [`run_materiality`] evaluates carries the run's rows **as currently
+//!   published** — the same "zero-delta act" shape a window mutation's
+//!   materiality carries — and not their post-adjustment content. Until the
+//!   apply computes a real successor, what decides a repricing run's
+//!   materiality is therefore the configured threshold policy's fail-safe (a
+//!   currency the run touches with no entry), not the size of the run's own
+//!   adjustment.
+//! * **Paid 2026-08-11 (D-158's audit alignment):** opening a run appends a
+//!   `create` record on the run's own chain
 //!   (`audit_repo::bulk_operation_chain`), `subject_ref` its `operation_id`
 //!   (`audit_repo::bulk_operation_ref`). The bulk import's open owes the
 //!   identical record still; this change gave the token a writer on the
 //!   repricing side only.
+//! * **Paid 2026-08-11 (the two edges):** `chk_pricing_approval_subject_kind`
+//!   admitted `bulk_operation` as of `m20260802_000065`; `open_run_in` is now
+//!   the writer that spends it, opening the approval unit with the identical
+//!   `subject_kind`/`subject_ref` pair the `create` record above already
+//!   carries (D-158). What it does not yet do is `inst-mp-pending`'s per-row
+//!   refusal when a held key collides with another pending unit — a collision
+//!   fails the whole open rather than the one row, because the per-row split is
+//!   the apply's (`inst-mr-apply`) and does not exist yet.
 //! * **`inst-mp-grandfathered` clause 2** owes the per-row refusal of an
 //!   explicitly-selected grandfathered row. The *selector* half is built (see
 //!   [`RunSelector::admits_grandfathered`]): a selector that does not name the
@@ -90,8 +100,10 @@
 //! outside the scope with a malformed body would learn their body was malformed
 //! instead of learning they were denied.
 
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
+use aws_lc_rs::digest::{SHA256, digest};
 use axum::body::Bytes;
 use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Response};
@@ -103,6 +115,7 @@ use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::approvals::MaterialityView;
 use crate::api::rest::auth_context::require_authenticated;
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
@@ -110,9 +123,11 @@ use crate::api::rest::overlays::{AmountRequest, adjustment_of};
 use crate::api::rest::preconditions;
 use crate::api::rest::prices::optional_token;
 use crate::api::rest::state::AuthoringState;
-use crate::domain::audit::{AuditAction, AuditSubjectKind};
-use crate::domain::bulk::BulkKind;
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::bulk::{BulkKind, BulkState};
 use crate::domain::error::DomainError;
+use crate::domain::lifecycle::LifecycleState;
+use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict, PublishedPriceBaseline};
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::Adjustment;
 use crate::domain::repricing::RunSelector;
@@ -123,10 +138,11 @@ use crate::domain::supersession::{ChangeoverMoment, check_changeover_instant};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::repricing_journal_repo::NewJournalRow;
 use crate::infra::storage::repo::{
-    BulkOperationRecord, NewAuditEntry, NewBulkOperation, audit_repo, bulk_repo, price_repo,
-    repricing_journal_repo,
+    BulkOperationRecord, NewAuditEntry, NewBulkOperation, approval_repo, audit_repo, bulk_repo,
+    price_repo, repricing_journal_repo,
 };
 use crate::infra::storage::repo_failure;
+use crate::infra::threshold::effective_policy_at;
 
 const TAG: &str = "BSS Pricing Mass Repricing";
 
@@ -258,8 +274,9 @@ pub struct RepricingRunView {
     /// The run's durable row name, and what the journal's own `run_id` column
     /// holds. Both are on the view because they are two different values.
     pub operation_id: Uuid,
-    /// One of §4's seven states. A run this arm opened reads `validating` and
-    /// stays there: see the module doc.
+    /// One of §4's seven states. A run this arm opened has already left
+    /// `validating`, for `awaiting_approval` or `committing` on its materiality
+    /// verdict, and advances no further than that: see the module doc.
     pub state: String,
     /// The frozen run parameters — selector, adjustment, changeover, and how many
     /// rows the expansion found.
@@ -297,9 +314,11 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
              `RUN_SELECTOR_EMPTY` and opens nothing, so the `run_id` stays available for a \
              corrected selector. The changeover instant must be strictly in the future. \
              Idempotency is the `run_id`: a second call under one answers the run it opened. \
-             Progress is at `GET /bss-pricing/v1/repricing-runs/{runId}`. The run rests in \
-             `validating`: applying the adjustment, the batch approval and the abort are not \
-             built.",
+             Progress is at `GET /bss-pricing/v1/repricing-runs/{runId}`. Materiality is \
+             evaluated once for the whole run against the tenant's configured threshold policy; \
+             a material run moves to `awaiting_approval` under an opened approval unit, and an \
+             auto-publishable one moves to `committing`. Neither state advances further yet: \
+             applying the adjustment and the abort are not built.",
         )
         .tag(TAG)
         .authenticated()
@@ -588,7 +607,192 @@ async fn open_run_in(
     )
     .await?;
 
-    Ok(run)
+    // **The two edges out of `validating`, in the same transaction as the freeze
+    // above.** `api::rest::repricing_runs`' own module doc named this the second
+    // half of the debt `AuditSubjectKind::BulkOperation` unblocked: a run opened
+    // and frozen but left with no materiality verdict and no edge written would
+    // rest in `validating` forever on a crash between the two, exactly the
+    // failure D-14 exists to close for the audit record one step up. Materiality
+    // is evaluated **once for the whole run** (`inst-mr-coalesce`) — never once
+    // per plan and folded — so there is exactly one `evaluate` call here however
+    // many plans the selector spans.
+    let (verdict, held_keys) =
+        run_materiality(runner, scope, tenant_id, selected, recorded_at).await?;
+    let stamp = AuditStamp {
+        actor_principal_id,
+        recorded_at,
+        correlation_id,
+    };
+    advance_on_verdict(runner, scope, tenant_id, &run, &verdict, held_keys, stamp).await
+}
+
+/// The run's materiality, evaluated once over every plan its rows sit on
+/// (`inst-mr-coalesce`; the shape settled 2026-08-11 after two implementers left
+/// it open).
+///
+/// The change set is [`ChangeSet::of_repricing_run`] over `selected` — the rows
+/// the run's selector matched, as currently published. The baseline is
+/// [`PublishedPriceBaseline::of_records`] over **every published row of every
+/// plan `selected` touches**, not only `selected` itself: `inst-mat-newrow`'s
+/// coverage check (`change.keys().any(|key| !baseline.covers(key))`) is a
+/// property of the plan's whole key set, and scope keys carry `plan_id`, so
+/// records from several plans coexist in the one baseline without collision —
+/// the reason a per-plan fold was rejected in favour of building this once.
+///
+/// `selected` is never empty here: `open_repricing_run` refuses
+/// `RUN_SELECTOR_EMPTY` before a run is ever opened, so every touched plan
+/// contributes at least the rows `selected` names and the baseline is never
+/// `None` — `inst-mat-first`'s `FirstPublish` structurally cannot fire for a
+/// repricing run.
+///
+/// Returns the verdict alongside the canonical scope keys `selected` sits on,
+/// so a material caller can hand them to the approval unit it opens
+/// (`inst-bk-approval-subset`'s "pins its keys exactly like bulk import")
+/// without a second walk of the same rows.
+async fn run_materiality(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    selected: &[Uuid],
+    now: DateTime<Utc>,
+) -> Result<(MaterialityVerdict, BTreeSet<String>), RepoError> {
+    let touched_plans: BTreeSet<PlanId> =
+        price_repo::load_plan_ids(runner, scope, selected.iter().copied())
+            .await?
+            .into_iter()
+            .map(|(_, plan_id)| plan_id)
+            .collect();
+
+    let mut baseline_rows = Vec::new();
+    for plan_id in touched_plans {
+        baseline_rows.extend(
+            price_repo::load_for_plan(
+                runner,
+                scope,
+                tenant_id,
+                plan_id,
+                &[LifecycleState::Published],
+            )
+            .await?,
+        );
+    }
+
+    // The run's own rows, out of the baseline just read — never a second query
+    // for the same content. Selected is exactly the subset of every touched
+    // plan's published rows the selector matched, so every id in it is present
+    // in `baseline_rows` by construction.
+    let selected_ids: HashSet<Uuid> = selected.iter().copied().collect();
+    let change_rows: Vec<_> = baseline_rows
+        .iter()
+        .filter(|row| selected_ids.contains(&row.price_id))
+        .cloned()
+        .collect();
+    let held_keys: BTreeSet<String> = change_rows
+        .iter()
+        .map(|row| row.scope_key.to_string())
+        .collect();
+
+    let change = ChangeSet::of_repricing_run(change_rows);
+    let baseline = PublishedPriceBaseline::of_records(baseline_rows);
+    let policy = effective_policy_at(runner, scope, tenant_id, now)
+        .await
+        .map_err(|e| RepoError::Db(format!("bss-pricing: repricing run threshold policy: {e}")))?;
+
+    Ok((
+        materiality::evaluate(&change, policy.as_ref(), Some(&baseline)),
+        held_keys,
+    ))
+}
+
+/// Write the verdict's edge: `validating -> awaiting_approval` under an opened
+/// approval unit when material, `validating -> committing` otherwise
+/// (`inst-bs-approval`, `inst-bs-commit`'s entry).
+///
+/// The unit's `subject_kind` is [`AuditSubjectKind::BulkOperation`] and its
+/// `subject_ref` is `audit_repo::bulk_operation_ref(run.operation_id)` — the
+/// same pair `open_run_in`'s own `create` record above already carries, so an
+/// auditor reading either finds the other (D-158).
+///
+/// `report` travels unchanged: nothing about the run's frozen parameters moved
+/// by evaluating its materiality, only its `state` did, and `bulk_repo::advance`
+/// requires a report because a bulk import's does grow at this edge — a
+/// repricing run's does not, yet.
+async fn advance_on_verdict(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    run: &BulkOperationRecord,
+    verdict: &MaterialityVerdict,
+    held_keys: BTreeSet<String>,
+    stamp: AuditStamp,
+) -> Result<BulkOperationRecord, RepoError> {
+    if verdict.is_material() {
+        let materiality = serde_json::to_value(MaterialityView::from(verdict)).map_err(|e| {
+            RepoError::Db(format!("bss-pricing: render repricing materiality: {e}"))
+        })?;
+        approval_repo::open(
+            runner,
+            scope,
+            approval_repo::NewApproval {
+                approval_id: Uuid::now_v7(),
+                tenant_id,
+                subject_ref: audit_repo::bulk_operation_ref(run.operation_id),
+                subject_kind: AuditSubjectKind::BulkOperation,
+                content_hash: repricing_pin(&run.report, run.operation_id),
+                materiality,
+                held_keys,
+            },
+            stamp,
+        )
+        .await?;
+        bulk_repo::advance(
+            runner,
+            scope,
+            tenant_id,
+            run.operation_id,
+            BulkState::AwaitingApproval,
+            run.report.clone(),
+            stamp.recorded_at,
+        )
+        .await
+    } else {
+        bulk_repo::advance(
+            runner,
+            scope,
+            tenant_id,
+            run.operation_id,
+            BulkState::Committing,
+            run.report.clone(),
+            stamp.recorded_at,
+        )
+        .await
+    }
+}
+
+/// `SHA-256(domain separator || the run's frozen report || its own operation
+/// id)` — an interim content pin for a repricing run's approval unit
+/// (`inst-ap-pin`).
+///
+/// **Not `domain::approval::content_pin`'s canonical per-field framing.** That
+/// module hashes a caller-authored shape a submitter could otherwise steer, so
+/// it frames every field by hand to stay collision-honest; a run's `report` is
+/// this crate's own controlled rendering (`frozen_report`), already built once
+/// from the parsed request rather than echoed from it, so hashing its
+/// serialization is total and needs no second encoder. `operation_id` is folded
+/// in rather than `run_id` (`client_key`): it is the value this same unit's
+/// `subject_ref` already carries, so the pin and the subject name the run by
+/// one id and not two.
+///
+/// **What this does not yet do** is `inst-bk-approval-subset`'s **per-row**
+/// content hash — the pin that lets a committed subset shrink by row rather
+/// than only by whole plan. Named rather than built: nothing commits a
+/// repricing run's rows yet (`inst-mr-apply`), so a per-row pin has no reader.
+fn repricing_pin(report: &serde_json::Value, operation_id: Uuid) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(b"bss-pricing/repricing-run/v1/");
+    buf.extend_from_slice(report.to_string().as_bytes());
+    buf.extend_from_slice(operation_id.as_bytes());
+    digest(&SHA256, &buf).as_ref().to_vec()
 }
 
 /// Why the expansion came back empty, in the operator's terms.

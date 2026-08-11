@@ -1112,6 +1112,26 @@ pub fn subject_overlay(record: &ApprovalRecord) -> Result<Uuid, RepoError> {
         })
 }
 
+/// The `operation_id` half of a [`AuditSubjectKind::BulkOperation`] unit's
+/// subject.
+///
+/// [`subject_overlay`]'s counterpart for a bulk operation, and simpler by one
+/// step: `audit_repo::bulk_operation_ref` renders the whole ref as the bare
+/// `operation_id`, with no second component to split off, because a run carries
+/// no revision to disambiguate — `pricing_bulk_operation` never reopens under
+/// one id the way a plan reopens a revision.
+///
+/// # Errors
+/// [`RepoError::CorruptRow`] on a ref this crate cannot have written.
+pub fn subject_bulk_operation(record: &ApprovalRecord) -> Result<Uuid, RepoError> {
+    Uuid::parse_str(&record.subject_ref).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "approval {} names the subject {:?}, which is not an operation_id",
+            record.approval_id, record.subject_ref
+        ))
+    })
+}
+
 /// The aggregate whose audit segment a unit of one subject kind belongs to.
 ///
 /// D-135 keys a chain on the audited subject's *aggregate*, and S5 §6's aggregate
@@ -1135,6 +1155,15 @@ pub enum SubjectAggregate {
     /// hash chain — which then verifies perfectly while telling an auditor something
     /// false.
     Overlay(Uuid),
+    /// One bulk operation — a mass-repricing run or an import — named by its
+    /// `operation_id`.
+    ///
+    /// The fourth member and the third that is not a plan, for [`Self::Overlay`]'s
+    /// exact reason: a run's rows may span several plans (`inst-mr-api`), so it
+    /// has no one plan to borrow [`Self::Plan`] from, and folding it onto the
+    /// first touched plan's chain would put a run's approval trail on a chain an
+    /// auditor reading that plan alone would never reach the rest of.
+    BulkOperation(Uuid),
 }
 
 impl SubjectAggregate {
@@ -1145,6 +1174,7 @@ impl SubjectAggregate {
             Self::Plan(plan_id) => audit_repo::plan_chain(plan_id),
             Self::Policy => audit_repo::policy_chain(),
             Self::Overlay(price_overlay_id) => audit_repo::overlay_chain(price_overlay_id),
+            Self::BulkOperation(operation_id) => audit_repo::bulk_operation_chain(operation_id),
         }
     }
 
@@ -1159,11 +1189,12 @@ impl SubjectAggregate {
     pub const fn plan(self) -> Option<PlanId> {
         match self {
             Self::Plan(plan_id) => Some(plan_id),
-            // Two aggregates that are not a plan, and the overlay is the one where
-            // saying so matters: it is a **subject with a plan-shaped id**, so an
-            // accessor that answered `Some` here would hand a caller a `PlanId` built
-            // from an overlay's uuid and every read under it would miss quietly.
-            Self::Policy | Self::Overlay(_) => None,
+            // Three aggregates that are not a plan, and the overlay and the bulk
+            // operation are the two where saying so matters: both are **subjects
+            // with a plan-shaped id**, so an accessor that answered `Some` here
+            // would hand a caller a `PlanId` built from an overlay's or a run's
+            // uuid and every read under it would miss quietly.
+            Self::Policy | Self::Overlay(_) | Self::BulkOperation(_) => None,
         }
     }
 }
@@ -1218,18 +1249,16 @@ pub fn subject_aggregate(record: &ApprovalRecord) -> Result<SubjectAggregate, Re
         // `submit_overlay_on` is the writer, and the ref it writes is
         // `audit_repo::overlay_revision_ref`.
         AuditSubjectKind::Overlay => subject_overlay(record).map(SubjectAggregate::Overlay),
-        // **No writer on this plane, so no resolution** — `AuditSubjectKind::Overlay`'s
-        // own situation before D-225, reproduced exactly: `bulk_operation` is
-        // storable (`chk_pricing_approval_subject_kind`, `m20260802_000065`, D-158's
+        // **Paid 2026-08-11.** This arm refused outright while the unit was
+        // unwired — `AuditSubjectKind::Overlay`'s own situation before D-225,
+        // reproduced exactly: `bulk_operation` was storable
+        // (`chk_pricing_approval_subject_kind`, `m20260802_000065`, D-158's
         // extend-together rule) and not resolvable, because `inst-bs-approval`'s
-        // batch approval is the unit that would open one and it is unwired. Until it
-        // exists, `pricing_approval` cannot hold a `bulk_operation` row this crate
-        // wrote, and one that appears did not come from here.
-        AuditSubjectKind::BulkOperation => Err(RepoError::CorruptRow(format!(
-            "pricing_approval {} is a bulk_operation unit, and this crate opens none — \
-             inst-bs-approval's batch approval is unwired",
-            record.approval_id
-        ))),
+        // batch approval was the unit that would open one and it was unwired.
+        // `api::rest::repricing_runs::advance_on_verdict` is that writer now.
+        AuditSubjectKind::BulkOperation => {
+            subject_bulk_operation(record).map(SubjectAggregate::BulkOperation)
+        }
     }
 }
 

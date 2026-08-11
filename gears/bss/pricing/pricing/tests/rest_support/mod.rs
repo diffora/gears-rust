@@ -1491,6 +1491,65 @@ pub async fn seed_price_keyed(
         .expect("seed a draft price row")
 }
 
+/// [`seed_price`], with a real `amount_minor` set.
+///
+/// [`seed_price`]'s row leaves `amount_minor` unset — fine for every suite that
+/// never diffs the row's content, and wrong for the one that does: `None` on a
+/// `flat` row is a real `NotComputable("amount_minor")` per D-115's delta domain
+/// (`domain::materiality::delta::amount_delta`), which is `alwaysMaterialTrigger`
+/// whatever a threshold policy says. A suite asserting the **per-currency**
+/// comparison — `inst-mat-percurrency`, `inst-mr-coalesce` — needs a row with an
+/// operand for that comparison to have anything to compare.
+pub async fn seed_priced_row(
+    harness: &Harness,
+    plan_id: Uuid,
+    region: &str,
+    amount_minor: i64,
+) -> PriceRecord {
+    let key = ScopeKey::new(
+        PlanId::new(plan_id),
+        CurrencyCode::new("USD").expect("currency"),
+        Region::new(region).expect("region"),
+        seeded_phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("scope key");
+    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    row.amount_minor = Some(MinorAmount::new(amount_minor).expect("a non-negative amount"));
+    harness
+        .state
+        .prices
+        .create_draft(
+            &harness.scope(),
+            harness.tenant,
+            NewPriceDraft {
+                price_id: Uuid::now_v7(),
+                scope_key: key,
+                content: PriceContent {
+                    row,
+                    tax_inclusive: false,
+                    tax_category_ref: None,
+                    billing_timing: None,
+                    proration_contract: Some(ProrationContract {
+                        billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+                        proration_basis: ProrationBasis::CalendarDaysActual,
+                        credit_on_downgrade: false,
+                    }),
+                    rounding_policy_ref: None,
+                    grandfather_until: None,
+                    supersedes_price_id: None,
+                },
+                created_by: SEED_ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("seed a draft price row")
+}
+
 /// Seed one `scheduled` window on a price row, straight through the repository.
 ///
 /// **The repository and not the route**, deliberately: a suite that needs a window
@@ -1853,6 +1912,29 @@ pub async fn approval_row(harness: &Harness, approval_id: Uuid) -> ApprovalRecor
     )
     .await
     .expect("read the approval record")
+    .expect("the record is there")
+}
+
+/// One bulk operation (a repricing run or an import), by id, read outside the
+/// caller's scope and through the repository rather than a `GET` — the run's own
+/// stored `state`, not a rendering of it. A suite asserting the two edges out of
+/// `validating` (`inst-mr-coalesce`) needs this rather than the `GET` response:
+/// the `GET` is a second, independent handler and reads the store correctly, but
+/// this is the more direct readback and it is what makes an assertion about
+/// "the stored run" literal rather than "what one more handler rendered".
+pub async fn bulk_operation_row(
+    harness: &Harness,
+    operation_id: Uuid,
+) -> bss_pricing::infra::storage::repo::BulkOperationRecord {
+    let conn = harness.db.conn().expect("conn");
+    bss_pricing::infra::storage::repo::bulk_repo::read(
+        &conn,
+        &AccessScope::allow_all(),
+        harness.tenant,
+        operation_id,
+    )
+    .await
+    .expect("read the bulk operation store")
     .expect("the record is there")
 }
 

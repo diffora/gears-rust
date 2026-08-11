@@ -818,6 +818,50 @@ impl ChangeSet {
         }
     }
 
+    /// A **mass-repricing run**'s change set (`inst-mr-coalesce`): the rows the
+    /// run selected, as currently published — no forced act, and no publish
+    /// unit.
+    ///
+    /// `act` is `None` **and not [`Self::of_act`]'s `Some`**: nothing declares a
+    /// repricing run a registered trigger by construction, so forcing one would
+    /// make every run material whatever its rows and whatever the policy says,
+    /// which is the opposite of `inst-mr-coalesce`'s *"any row over its
+    /// own-currency threshold trips the run"* — a real per-currency comparison,
+    /// not a foregone one.
+    ///
+    /// `unit` is `None` for [`Self::of_act`]'s reason applied to a run instead of
+    /// a policy diff: [`PublishUnitKind`] names a **plan's** publish unit, and a
+    /// run's rows may span several plans (`inst-mr-api`) with no `CatalogVersion`
+    /// coalescing built yet to be the unit (O5, still unbuilt). Naming
+    /// [`PublishUnitKind::PlanContent`] here — [`Self::of_records`]'s shape —
+    /// would be the wrong fix reaching for the nearest constructor: this change
+    /// set's rows are (until `inst-mr-apply` computes a real successor) the same
+    /// content the baseline already carries, and
+    /// [`triggers::triggered_by_content`]'s `moves_no_row` answers `true` for
+    /// exactly that shape. Under `revises_plan_content() == true` step 4 would read
+    /// that as D-115's pure-shape revision and answer `alwaysMaterialTrigger` for
+    /// *every* run, silently — the same failure mode this constructor exists to
+    /// keep out, one unit kind over.
+    ///
+    /// **Until `inst-mr-apply` computes the run's real successor content, this
+    /// change set's rows are the published rows themselves and every row's delta
+    /// is zero** — the same "zero-delta act" shape [`Self::of_window_mutation`]
+    /// carries for a schedule or a lengthening. What decides materiality today is
+    /// therefore `inst-mat-failsafe` ([`MaterialityReason::NoConfiguredThreshold`]):
+    /// a currency the run touches with no configured entry is material; any
+    /// currency the tenant has configured a threshold for is not, whatever the
+    /// run's own adjustment is sized at. That is a real, honestly-scoped answer
+    /// and not a placeholder — the row-level move a completed apply would compute
+    /// is `inst-mr-apply`'s debt, not this constructor's.
+    #[must_use]
+    pub fn of_repricing_run(rows: impl IntoIterator<Item = PriceRecord>) -> Self {
+        Self {
+            unit: None,
+            act: None,
+            rows: rows.into_iter().collect(),
+        }
+    }
+
     /// The registered trigger this act is, if it is one.
     #[must_use]
     pub const fn act(&self) -> Option<triggers::Trigger> {

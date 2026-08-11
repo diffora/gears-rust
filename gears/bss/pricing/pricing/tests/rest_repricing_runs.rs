@@ -7,14 +7,25 @@
 //! be a receipt for a freeze that may not have happened — the defect D-225 records
 //! for the overlay submit — so the frozen row set is read back through the `GET`,
 //! which is also `inst-mr-return`'s progress endpoint and therefore the thing
-//! under test rather than a convenience.
+//! under test rather than a convenience. The two edges out of `validating`
+//! (`inst-mr-coalesce`) are asserted the same way: on the **stored** run and the
+//! **stored** approval unit, never on the response body alone — a route that
+//! answered a materiality literal it had never computed would still pass a test
+//! that only read the response, which is exactly the defect a 2026-08-10 review
+//! records for the bundle publish's own materiality assertion.
 //!
 //! **What this suite deliberately cannot assert**: that a run ever leaves
-//! `validating`. Nothing applies a repricing yet (see
-//! `api::rest::repricing_runs`), so `state == "validating"` and every journal row
-//! `pending` is the *whole* contract of an accepted run today, and the cases say
-//! so out loud rather than asserting a weaker thing that would silently keep
-//! passing once the apply lands.
+//! `committing`, or `awaiting_approval` for an approved decision. Nothing applies
+//! a repricing yet (see `api::rest::repricing_runs`), so reaching one of those two
+//! states with every journal row still `pending` is the *whole* contract of an
+//! accepted run today, and the cases say so out loud rather than asserting a
+//! weaker thing that would silently keep passing once the apply lands.
+//!
+//! **No case in this file configures a threshold policy unless its own name says
+//! so.** A fresh harness has none, so `inst-mat-failsafe` makes every ordinary run
+//! here material and therefore `awaiting_approval` — which is what lets the cases
+//! that predate the two edges keep asserting the row set and the audit record
+//! without also standing up a policy fixture for a fact they are not about.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -23,10 +34,12 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::repricing_runs::REPRICING_RUNS;
+use bss_pricing::domain::bulk::BulkState;
 use bss_pricing::domain::scope_key::{Cohort, PriceEligibility};
 use chrono::{TimeZone, Utc};
 use rest_support::{
-    Harness, body_json, problem_code, seed_current_plan, seed_price, seed_price_keyed, with_headers,
+    Harness, approval_rows, approve_threshold_policy, body_json, bulk_operation_row, problem_code,
+    seed_current_plan, seed_price, seed_price_keyed, seed_priced_row, with_headers,
 };
 use uuid::Uuid;
 
@@ -90,8 +103,9 @@ async fn a_run_opens_over_the_published_rows_and_freezes_them_pending() {
     assert_eq!(body["run_id"], serde_json::json!(run_id.to_string()));
     assert_eq!(
         body["state"],
-        serde_json::json!("validating"),
-        "an opened run rests here and goes no further until the apply exists: {body}"
+        serde_json::json!("awaiting_approval"),
+        "a fresh harness configures no threshold policy, so `inst-mat-failsafe` makes this run \
+         material and it leaves `validating` for `awaiting_approval` on the same request: {body}"
     );
 
     // The answer lives at the progress endpoint, and this is where the freeze is
@@ -599,15 +613,20 @@ async fn opening_a_run_writes_an_audit_record_naming_the_operation_id() {
         .expect("the view carries the minted id")
         .to_owned();
 
+    // A fresh harness configures no threshold policy, so `inst-mat-failsafe`
+    // makes this run material and it opens an approval unit too — which appends
+    // its **own** `bulk_operation`-subject `submit` record on the same chain
+    // (D-158). Filtered to `create` because that is the one this case is about;
+    // the `submit` record is `a_material_run_...`'s own assertion.
     let bulk_records: Vec<_> = rest_support::audit_rows(&harness)
         .await
         .into_iter()
-        .filter(|row| row.subject_kind == "bulk_operation")
+        .filter(|row| row.subject_kind == "bulk_operation" && row.action == "create")
         .collect();
     assert_eq!(
         bulk_records.len(),
         1,
-        "one record for the one run this test opened: {bulk_records:?}"
+        "one create record for the one run this test opened: {bulk_records:?}"
     );
     let record = &bulk_records[0];
     assert_eq!(record.action, "create");
@@ -625,5 +644,120 @@ async fn opening_a_run_writes_an_audit_record_naming_the_operation_id() {
             .as_ref()
             .and_then(|state| state.get("kind")),
         Some(&serde_json::json!("repricing"))
+    );
+}
+
+/// `inst-mr-coalesce`'s material edge: `validating -> awaiting_approval` under an
+/// opened approval unit. A fresh harness configures no threshold policy, so
+/// `inst-mat-failsafe` is what makes this run material — asserted on the
+/// **stored** run (`bulk_operation_row`, a repository read, never the `POST`'s
+/// own response) and the **stored** approval unit (`approval_rows`), per the
+/// review finding this suite's own module doc names: a response-only assertion
+/// cannot tell a handler that actually evaluated materiality from one that
+/// answers a literal.
+#[tokio::test]
+async fn a_material_run_leaves_validating_for_awaiting_approval_with_an_approval_unit_open() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    a_published_row(&harness, plan, "eu").await;
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(run_id, &serde_json::json!({ "currency": "USD" }))),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    // The response supplies only the id the store is then read back by — never
+    // the fact under test.
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::AwaitingApproval,
+        "no policy is configured, so the fail-safe trips: {stored:?}"
+    );
+
+    let units: Vec<_> = approval_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation" && row.subject_ref == operation_id)
+        .collect();
+    assert_eq!(
+        units.len(),
+        1,
+        "one approval unit for the one material run this test opened: {units:?}"
+    );
+    let unit = &units[0];
+    assert_eq!(unit.state, "submitted");
+    assert_eq!(
+        unit.materiality.get("reason"),
+        Some(&serde_json::json!("noConfiguredThreshold")),
+        "the reason a reviewer would read: {unit:?}"
+    );
+}
+
+/// `inst-mr-coalesce`'s non-material edge: `validating -> committing` with **no**
+/// approval unit opened — the positive control this suite's own module doc
+/// requires. A test that only proved the material run above stops would pass
+/// against a handler that stops every run; this one fails such a handler,
+/// because it asserts both that the run reaches `committing` and that the
+/// approval store holds nothing for it.
+#[tokio::test]
+async fn a_non_material_run_leaves_validating_for_committing_with_no_approval_unit_open() {
+    let harness = Harness::new().await;
+    // Any bar at all is below nothing for a zero-delta act (`rest_support`'s own
+    // doc on `approve_threshold_policy`): what matters is only that USD has an
+    // entry, not its size.
+    approve_threshold_policy(&harness, &[("USD", 1_000_000)]).await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    // `seed_price`/`a_published_row` leave `amount_minor` unset, which is a real
+    // `NotComputable("amount_minor")` delta and would make this run material via
+    // `alwaysMaterialTrigger` whatever the threshold says — the positive control
+    // needs a row the per-currency comparison can actually compare.
+    let priced = seed_priced_row(&harness, plan, "eu", 9_900).await;
+    harness.publish_price(plan, priced.price_id).await;
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(run_id, &serde_json::json!({ "currency": "USD" }))),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::Committing,
+        "USD has a configured entry and the zero-delta act never reaches it: {stored:?}"
+    );
+
+    let units: Vec<_> = approval_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation" && row.subject_ref == operation_id)
+        .collect();
+    assert!(
+        units.is_empty(),
+        "an auto-publishable run opens no approval unit: {units:?}"
     );
 }
