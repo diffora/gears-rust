@@ -103,32 +103,38 @@ fn a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row() {
     // of what the gear does — exactly the drift this test is named for catching in
     // *stored data* and had, ironically, twice now failed to catch in *itself*.
     //
-    // **The replacement is `historical_import`, chosen for a property the first
-    // three picks did not select for: it cannot plausibly become a real kind
-    // soon.** `window`, `overlay` and `membership` were each picked as "the next
-    // undeclared member" while their own writers were already close — `overlay`'s
-    // landed the same wave, `membership`'s inside days. `historical_import` names
-    // S5 §6's backdate-import subject, and this crate's own audit module doc
-    // records it has **no store to be a subject of**: the `backdate_import` audit
-    // *action* — a different S5 §6 token, on `AuditAction`, and one this gear
-    // declares no variant for either — is owed *because* "there is no
-    // `pricing_historical_price` store (`inst-bd-store`)". A subject kind cannot
-    // get a writer before the table it would name exists, so this token is not
-    // merely undeclared today, it is undeclared until a different feature entirely
-    // is built.
+    // **The replacement is `not_a_subject_kind`, and it is synthetic rather than
+    // borrowed from S5 §6 — that is the fix, not a stronger version of the same
+    // pick.** Every prior probe was a real domain word and every one of them
+    // eventually got declared: `window` and `overlay` because their writers
+    // landed; `membership` the same way, days after it was chosen *for* being
+    // undeclared. A fourth real-word pick, `historical_import`, was tried next
+    // and rejected before it could repeat the pattern a third time — S5 §6
+    // already promises the plane it names a `BackdateGrant` with a mandatory
+    // reason and a full audit contract (`05-governance.md`), and it is a
+    // declared authz resource in this crate today (`src/authz.rs`'s label,
+    // roster and `ResourceType`). A plane the design set already commits to
+    // auditing is exactly the kind of "next undeclared member" this test keeps
+    // discovering the hard way. No domain word is safe for this probe, because
+    // this test's whole claim is that an *undeclared* token is refused, and
+    // every domain word here is a candidate to become declared. A token with no
+    // referent in the design set or the codebase cannot be declared out from
+    // under the test, because there is nothing for anyone to declare — this one
+    // is spelled `not_a_subject_kind` specifically so it reads as "this is not a
+    // kind" rather than as a plausible next feature to build.
     //
     // The count is deliberately not in this sentence, for the same reason the
     // previous version of this comment gave: `AuditSubjectKind::ALL` is the
-    // roster, not a number restated here to go stale a third time.
-    let err = to_domain(row("submitted", "historical_import"))
-        .expect_err("`historical_import` is not a kind this gear declares");
+    // roster, not a number restated here to go stale again.
+    let err = to_domain(row("submitted", "not_a_subject_kind"))
+        .expect_err("`not_a_subject_kind` is not a kind this gear declares");
     match err {
         RepoError::CorruptRow(detail) => {
             assert!(
                 detail.contains("pricing_approval.subject_kind"),
                 "got: {detail}"
             );
-            assert!(detail.contains("historical_import"), "got: {detail}");
+            assert!(detail.contains("not_a_subject_kind"), "got: {detail}");
         }
         other => panic!("expected a corrupt row, got: {other:?}"),
     }

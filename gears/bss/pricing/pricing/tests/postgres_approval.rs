@@ -417,7 +417,7 @@ async fn a_state_outside_the_machine_is_refused() {
 /// the code deliberately does not — the storable direction is what ranges over
 /// `AuditSubjectKind::ALL`, in `every_state_the_machine_reaches_is_storable`.
 ///
-/// **The token has now moved three times, and the guard below forced every move
+/// **The token has now moved four times, and the guard below forced every move
 /// to be deliberate: it fails if the literal this test uses ever becomes
 /// declared, so the test can never quietly assert a refusal the store has
 /// stopped performing.**
@@ -432,16 +432,26 @@ async fn a_state_outside_the_machine_is_refused() {
 /// `AuditSubjectKind::Membership` a variant — this CHECK was **not** widened
 /// alongside it, deliberately (no approval-plane writer exists for this kind; see
 /// `group_membership_repo`'s module doc), but the guard below tests
-/// `AuditSubjectKind::ALL` and not this CHECK, so it still caught the move.
-/// Asserting any of the three is refused would now assert the opposite of what
-/// the gear does, or would for `window`/`overlay` and is one library rebuild away
-/// from doing so for `membership` the day this plane's approval writer lands.
+/// `AuditSubjectKind::ALL` and not this CHECK, so it still caught the move. Then,
+/// briefly, `historical_import` — picked, and rejected in the same review round,
+/// before it could land in history at all: S5 §6 already promises the plane it
+/// names a `BackdateGrant` with a mandatory reason and a full audit contract
+/// (`05-governance.md`), and it is a declared authz resource in this crate today
+/// (`src/authz.rs`'s label, roster and `ResourceType`) — a plane the design set
+/// already commits to auditing, which made it exactly the kind of "next
+/// undeclared member" this probe keeps discovering the hard way.
 ///
-/// **`historical_import` is the replacement, chosen because it cannot plausibly
-/// become a real kind soon**: it names S5 §6's backdate-import subject, and this
-/// crate has no `pricing_historical_price` store for it to name a row of at all
-/// (`domain::audit`'s module doc, `inst-bd-store`) — a subject kind cannot get a
-/// writer before the table it would name exists.
+/// **`not_a_subject_kind` is the replacement, and it is synthetic rather than
+/// borrowed from S5 §6 — that is the fix, not a stronger version of the same
+/// pick.** Every prior probe was a real domain word and every one of them
+/// eventually got declared or, for `historical_import`, was already promised to
+/// be. No domain word is safe for this probe, because the test's whole claim is
+/// that an *undeclared* token is refused, and every domain word here is a
+/// candidate to become declared. A token with no referent in the design set or
+/// the codebase cannot be declared out from under the test, because there is
+/// nothing for anyone to declare — this one is spelled `not_a_subject_kind`
+/// specifically so it reads as "this is not a kind" rather than as a plausible
+/// next feature to build.
 ///
 /// **This is the copy the fast tier could not reach.** Two siblings carry the same
 /// premise — `approval_repo_tests::a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row`
@@ -458,7 +468,7 @@ async fn a_subject_kind_with_no_writer_is_refused() {
     assert!(
         !AuditSubjectKind::ALL
             .iter()
-            .any(|kind| kind.as_str() == "historical_import"),
+            .any(|kind| kind.as_str() == "not_a_subject_kind"),
         "this test is about a token the gear does not declare"
     );
     must_be_rejected(
@@ -469,7 +479,7 @@ async fn a_subject_kind_with_no_writer_is_refused() {
             "NULL",
             "NULL",
             "NULL",
-            "historical_import",
+            "not_a_subject_kind",
         ),
         "chk_pricing_approval_subject_kind",
     )
