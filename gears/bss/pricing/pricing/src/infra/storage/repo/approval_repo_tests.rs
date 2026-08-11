@@ -152,22 +152,28 @@ fn the_price_unit_kind_is_the_one_with_no_writer() {
             AuditSubjectKind::PriceUnit,
             AuditSubjectKind::Window,
             AuditSubjectKind::Policy,
+            // **`overlay` joined on 2026-08-06 too**, when D-225's
+            // `ApprovalService::submit_overlay_on` became its writer. This assertion kept
+            // asserting the opposite — overlay absent — after that landed, which is the
+            // exact failure mode this comment already named for `price_unit` one entry up:
+            // review finding Z8-5 (2026-08-10) is what caught it.
+            AuditSubjectKind::Overlay,
         ]
     );
     assert!(AuditSubjectKind::ALL.contains(&AuditSubjectKind::PriceUnit));
 
-    // **A fifth was minted on 2026-08-06, and this is the question being answered.**
+    // **A sixth was minted on 2026-08-11, and this is the question being answered.**
     // The assertion above used to be an equality with `AuditSubjectKind::ALL.len()`,
     // written so that *"the day a fifth is minted, this equality is what asks whether
-    // it has a writer"*. `price_overlay` is that fifth, and the answer is: on the
-    // **audit** plane yes — `OverlayRepo`'s four mutations — and on **this** plane,
-    // the approval one, no. D-50 makes every overlay mutation an approval subject and
-    // Slice 9's O-7 is the unwired unit that would open one.
+    // it has a writer"*. `bulk_operation` is the sixth, and the answer is: on the
+    // **audit** plane yes — the mass-repricing run's open — and on **this** plane, the
+    // approval one, no. `inst-bs-approval`'s batch approval is the unwired unit that
+    // would open one, Overlay's own situation before D-225.
     //
     // So the roster is one short of the enum again, deliberately, and the arithmetic
     // names which one is missing rather than only how many. A test asserting a bare
-    // count would go green the day `price_overlay` gained an approval writer and
-    // `price_unit` lost its own.
+    // count would go green the day `bulk_operation` gained an approval writer and some
+    // other member lost its own.
     let without_a_writer: Vec<AuditSubjectKind> = AuditSubjectKind::ALL
         .iter()
         .copied()
@@ -175,8 +181,8 @@ fn the_price_unit_kind_is_the_one_with_no_writer() {
         .collect();
     assert_eq!(
         without_a_writer,
-        [AuditSubjectKind::Overlay],
-        "exactly one declared kind has no approval-plane writer, and it is the overlay"
+        [AuditSubjectKind::BulkOperation],
+        "exactly one declared kind has no approval-plane writer, and it is the bulk operation"
     );
 }
 

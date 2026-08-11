@@ -21,13 +21,20 @@
 //! * **The apply** (`inst-mr-apply`, `inst-mr-validate-scope`) owes the per-plan
 //!   transaction D-134 requires — successor rows, their outbox records and the
 //!   journal's `pending -> applied` flips in one commit per plan.
-//! * **The batch approval** (`inst-bs-approval`) cannot be opened yet at all:
-//!   `chk_pricing_approval_subject_kind` admits five tokens and none of them is a
-//!   bulk run, and D-158 makes `pricing_approval` and `pricing_audit_log` one
-//!   enumeration that must be extended together. So the `validating ->
-//!   awaiting_approval` edge has no writer, and the same gap is why opening a run
-//!   writes **no audit record** — there is no `AuditSubjectKind` for a bulk
-//!   operation either, exactly as there is none for the bulk import's open.
+//! * **The batch approval** (`inst-bs-approval`) still cannot be opened:
+//!   `chk_pricing_approval_subject_kind` admits `bulk_operation` as of
+//!   `m20260802_000065`, but that widening is the narrower half of D-158's pair —
+//!   storable, not yet stored. The unit that would open one, `inst-bs-approval`
+//!   itself, is unwired, so the `validating -> awaiting_approval` edge still has
+//!   no writer.
+//!
+//!   **Paid 2026-08-11:** this arm's other gap — that opening a run wrote **no
+//!   audit record at all** — is closed. `AuditSubjectKind::BulkOperation` exists,
+//!   and `open_run_in` appends a `create` record on the run's own chain
+//!   (`audit_repo::bulk_operation_chain`), `subject_ref` its `operation_id`
+//!   (`audit_repo::bulk_operation_ref`). The bulk import's open owes the
+//!   identical record still; this change gave the token a writer on the
+//!   repricing side only.
 //! * **`inst-mp-grandfathered` clause 2** owes the per-row refusal of an
 //!   explicitly-selected grandfathered row. The *selector* half is built (see
 //!   [`RunSelector::admits_grandfathered`]): a selector that does not name the
@@ -103,6 +110,7 @@ use crate::api::rest::overlays::{AmountRequest, adjustment_of};
 use crate::api::rest::preconditions;
 use crate::api::rest::prices::optional_token;
 use crate::api::rest::state::AuthoringState;
+use crate::domain::audit::{AuditAction, AuditSubjectKind};
 use crate::domain::bulk::BulkKind;
 use crate::domain::error::DomainError;
 use crate::domain::money::CurrencyCode;
@@ -115,7 +123,8 @@ use crate::domain::supersession::{ChangeoverMoment, check_changeover_instant};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::repricing_journal_repo::NewJournalRow;
 use crate::infra::storage::repo::{
-    BulkOperationRecord, NewBulkOperation, bulk_repo, price_repo, repricing_journal_repo,
+    BulkOperationRecord, NewAuditEntry, NewBulkOperation, audit_repo, bulk_repo, price_repo,
+    repricing_journal_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -352,13 +361,14 @@ async fn open_repricing_run(
     body: Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    // **Read for its refusal, not for a value.** This arm writes no audit record —
-    // there is no `AuditSubjectKind` for a bulk operation (see the module doc) —
-    // but the apply that will write one runs under this run, and a router mounted
-    // without D-178's edge answers 500 where it owes 403. Asking here is what makes
-    // that a failure at the route rather than at the first record a later arm
-    // writes, in a suite that would not name this module.
-    require_correlation(extension_correlation)?;
+    // **For a value now, not only for its refusal.** Until 2026-08-11 this arm wrote
+    // no audit record — there was no `AuditSubjectKind` for a bulk operation — so the
+    // ask here was only D-178's edge: a router mounted without it must answer 403
+    // rather than 500 at the first record a later arm writes. `open_run_in` now
+    // writes that record itself, on this same request, and D-178 clause (2) requires
+    // every record and outbox row one operator call produces to carry **one**
+    // correlation id — so the value taken here is the one that record carries.
+    let correlation_id = require_correlation(extension_correlation)?;
     let tenant = ctx.subject_tenant_id();
     let scope = write_scope(&enforcer, &ctx).await?;
     // Parsed after the gate; see the module doc for why `Json<T>` is not used.
@@ -432,6 +442,7 @@ async fn open_repricing_run(
             submitted_at: now,
         },
         selected,
+        correlation_id,
     )
     .await?;
 
@@ -482,7 +493,7 @@ async fn read_repricing_run(
     Ok(Json(run_view(&conn, &scope, tenant, &run).await?))
 }
 
-/// Open the run and freeze its row set, **in one transaction**.
+/// Open the run, freeze its row set and record it, **in one transaction**.
 ///
 /// The atomicity is required rather than tidy, and
 /// [`repricing_journal_repo::open_rows`] says so from its own side: it opens no
@@ -490,19 +501,25 @@ async fn read_repricing_run(
 /// obliges the expansion to hold one across the whole set. Without it a partial
 /// freeze leaves a run whose completion predicate — *no `pending` rows remain* —
 /// is satisfiable by rows that were never selected, and a run open with no journal
-/// at all is a run that reports success having touched nothing.
+/// at all is a run that reports success having touched nothing. The audit record
+/// belongs in the same transaction for D-14's reason every writer in this crate
+/// gives: a crash between the insert and the record must not produce one without
+/// the other.
 async fn open_run(
     db: &toolkit_db::DBProvider<toolkit_db::DbError>,
     scope: &AccessScope,
     tenant_id: Uuid,
     new: NewBulkOperation,
     selected: Vec<Uuid>,
+    correlation_id: Uuid,
 ) -> Result<BulkOperationRecord, CanonicalError> {
     let scope = scope.clone();
     let (_, outcome) = db
         .db()
         .in_transaction::<BulkOperationRecord, RepoError, _>(move |txn| {
-            Box::pin(async move { open_run_in(txn, &scope, tenant_id, new, &selected).await })
+            Box::pin(async move {
+                open_run_in(txn, &scope, tenant_id, new, &selected, correlation_id).await
+            })
         })
         .await;
     outcome
@@ -521,7 +538,12 @@ async fn open_run_in(
     tenant_id: Uuid,
     new: NewBulkOperation,
     selected: &[Uuid],
+    correlation_id: Uuid,
 ) -> Result<BulkOperationRecord, RepoError> {
+    let actor_principal_id = new.submitted_by;
+    let recorded_at = new.submitted_at;
+    let kind = new.kind;
+    let row_count = selected.len();
     let run = bulk_repo::open(runner, scope, new).await?;
     // **`tenant_id` is written here and never taken from the request.** The
     // journal's only foreign key covers `run_id`, so nothing in the schema stops a
@@ -536,6 +558,36 @@ async fn open_run_in(
         })
         .collect();
     repricing_journal_repo::open_rows(runner, scope, &rows).await?;
+
+    // The debt `repricing_runs`' own module doc named: until `AuditSubjectKind`
+    // carried a `BulkOperation` member, opening a run wrote no audit record at
+    // all. `subject_ref` is `audit_repo::bulk_operation_ref(run.operation_id)`,
+    // so the audit record and the batch approval `inst-bs-approval` will one day
+    // open name this run identically — D-158's alignment, paid in advance of the
+    // approval writer that does not exist yet.
+    audit_repo::append(
+        runner,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            chain_id: audit_repo::bulk_operation_chain(run.operation_id),
+            recorded_at,
+            actor_principal_id,
+            action: AuditAction::Create,
+            subject_kind: AuditSubjectKind::BulkOperation,
+            subject_ref: audit_repo::bulk_operation_ref(run.operation_id),
+            before_state: None,
+            after_state: Some(serde_json::json!({
+                "kind": kind.as_str(),
+                "state": run.state.as_str(),
+                "rowCount": row_count,
+            })),
+            approval_ref: None,
+            correlation_id,
+        },
+    )
+    .await?;
+
     Ok(run)
 }
 

@@ -176,17 +176,26 @@ use crate::infra::storage::{RepoError, contention_or_db, policy_guard_or_content
 /// **This roster is the *approval* plane's, and as of `AuditSubjectKind`'s fifth
 /// member that distinction is load-bearing rather than pedantic.**
 /// `AuditSubjectKind` spells two columns — `pricing_audit_log.subject_kind` and
-/// `pricing_approval.subject_kind` — and `price_overlay` has a writer on the first
-/// (`OverlayRepo`'s four mutations) and none on the second. So it is **absent
-/// here**, and its absence is the same kind of statement `price_unit`'s was: D-50
-/// makes every overlay mutation an approval subject, and the unit that would open
-/// one is Slice 9's O-7, unwired. `approval_repo_tests::the_price_unit_kind_is_the_one_with_no_writer`
-/// carries the arithmetic.
+/// `pricing_approval.subject_kind`. **`price_overlay` now has a writer on both**:
+/// `OverlayRepo`'s four mutations on the audit plane, and
+/// `crate::infra::approval::ApprovalService::submit_overlay_on` on this one, as of
+/// D-225. This roster used to say the opposite — that the overlay was absent here
+/// because Slice 9's O-7 was unwired — and stayed true for exactly as long as O-7
+/// was; a roster is a maintained list, and review finding Z8-5 (2026-08-10) is what
+/// caught this one having drifted. `approval_repo_tests::the_price_unit_kind_is_the_one_with_no_writer`
+/// carries the arithmetic, corrected the same way.
+///
+/// **`bulk_operation`, `AuditSubjectKind`'s sixth member, is the one genuinely
+/// absent now**: its audit-plane writer is the mass-repricing run's open
+/// (`crate::api::rest::repricing_runs`), and the unit that would open a batch
+/// approval over it — `inst-bs-approval` — is unwired, exactly Overlay's situation
+/// before D-225.
 pub const SUBJECT_KINDS_WITH_A_WRITER: &[AuditSubjectKind] = &[
     AuditSubjectKind::PlanRevision,
     AuditSubjectKind::PriceUnit,
     AuditSubjectKind::Window,
     AuditSubjectKind::Policy,
+    AuditSubjectKind::Overlay,
 ];
 
 /// A record to open — the pending half of `pricing_approval`.
@@ -1209,6 +1218,18 @@ pub fn subject_aggregate(record: &ApprovalRecord) -> Result<SubjectAggregate, Re
         // `submit_overlay_on` is the writer, and the ref it writes is
         // `audit_repo::overlay_revision_ref`.
         AuditSubjectKind::Overlay => subject_overlay(record).map(SubjectAggregate::Overlay),
+        // **No writer on this plane, so no resolution** — `AuditSubjectKind::Overlay`'s
+        // own situation before D-225, reproduced exactly: `bulk_operation` is
+        // storable (`chk_pricing_approval_subject_kind`, `m20260802_000065`, D-158's
+        // extend-together rule) and not resolvable, because `inst-bs-approval`'s
+        // batch approval is the unit that would open one and it is unwired. Until it
+        // exists, `pricing_approval` cannot hold a `bulk_operation` row this crate
+        // wrote, and one that appears did not come from here.
+        AuditSubjectKind::BulkOperation => Err(RepoError::CorruptRow(format!(
+            "pricing_approval {} is a bulk_operation unit, and this crate opens none — \
+             inst-bs-approval's batch approval is unwired",
+            record.approval_id
+        ))),
     }
 }
 

@@ -568,3 +568,62 @@ async fn one_run_id_opens_one_repricing_run_and_one_bulk_import_alike() {
         "and the progress endpoint answers the repricing run, never the import"
     );
 }
+
+/// The debt `api::rest::repricing_runs`' own module doc named: until
+/// `AuditSubjectKind` carried a `BulkOperation` member, opening a run wrote **no**
+/// audit record at all. `subject_ref` is asserted equal to
+/// `audit_repo::bulk_operation_ref(operation_id)` rather than merely "a row
+/// exists" — a record naming the wrong subject would verify perfectly and tell an
+/// auditor nothing true.
+#[tokio::test]
+async fn opening_a_run_writes_an_audit_record_naming_the_operation_id() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    a_published_row(&harness, plan, "eu").await;
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(run_id, &serde_json::json!({ "currency": "USD" }))),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    let operation_id = body["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let bulk_records: Vec<_> = rest_support::audit_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation")
+        .collect();
+    assert_eq!(
+        bulk_records.len(),
+        1,
+        "one record for the one run this test opened: {bulk_records:?}"
+    );
+    let record = &bulk_records[0];
+    assert_eq!(record.action, "create");
+    assert_eq!(
+        record.subject_ref, operation_id,
+        "the record must name the run it is about, not merely exist"
+    );
+    assert!(
+        record.before_state.is_none(),
+        "a run's open has no before-state"
+    );
+    assert_eq!(
+        record
+            .after_state
+            .as_ref()
+            .and_then(|state| state.get("kind")),
+        Some(&serde_json::json!("repricing"))
+    );
+}

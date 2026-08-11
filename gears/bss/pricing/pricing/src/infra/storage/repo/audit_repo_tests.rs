@@ -11,7 +11,7 @@
 
 use uuid::Uuid;
 
-use super::{overlay_chain, plan_chain, policy_chain};
+use super::{bulk_operation_chain, overlay_chain, plan_chain, policy_chain};
 use crate::domain::scope_key::PlanId;
 
 /// The version nibble — the 13th hex digit, `xxxxxxxx-xxxx-Vxxx-…`.
@@ -62,6 +62,49 @@ fn distinct_overlays_get_distinct_chains() {
     // survives, so the chain still carries the overlay's timestamp and entropy.
     assert_eq!(
         overlay_chain(a).as_u128() & !VERSION_MASK,
+        a.as_u128() & !VERSION_MASK
+    );
+}
+
+#[test]
+fn bulk_operation_chains_are_disjoint_from_plan_and_overlay_chains_by_construction() {
+    // The same structural argument `overlay_chains_are_disjoint_from_plan_chains_by_construction`
+    // makes, one nibble over: nibble `9` is disjoint from `7` (every plan chain) and
+    // from `8` (every overlay chain and the policy chain) by construction, not by
+    // the ids involved happening not to collide.
+    for _ in 0..64 {
+        let operation_id = Uuid::now_v7();
+        let overlay_id = Uuid::now_v7();
+        let plan_id = PlanId::new(Uuid::now_v7());
+
+        assert_eq!(version_nibble(bulk_operation_chain(operation_id)), 9);
+        assert_eq!(version_nibble(plan_chain(plan_id)), 7);
+        assert_eq!(version_nibble(overlay_chain(overlay_id)), 8);
+
+        // The adversarial case: one id minted once, read as all three kinds. Under a
+        // raw-id spelling these would be one segment.
+        let shared = Uuid::now_v7();
+        assert_ne!(
+            bulk_operation_chain(shared),
+            plan_chain(PlanId::new(shared))
+        );
+        assert_ne!(bulk_operation_chain(shared), overlay_chain(shared));
+
+        // The policy segment's fixed, zero-timestamp value is not any bulk
+        // operation's either.
+        assert_ne!(bulk_operation_chain(operation_id), policy_chain());
+    }
+}
+
+#[test]
+fn distinct_bulk_operations_get_distinct_chains() {
+    let a = Uuid::now_v7();
+    let b = Uuid::now_v7();
+    assert_ne!(a, b, "two v7 ids, minted apart");
+    assert_ne!(bulk_operation_chain(a), bulk_operation_chain(b));
+
+    assert_eq!(
+        bulk_operation_chain(a).as_u128() & !VERSION_MASK,
         a.as_u128() & !VERSION_MASK
     );
 }

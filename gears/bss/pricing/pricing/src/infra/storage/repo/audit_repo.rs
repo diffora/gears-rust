@@ -245,6 +245,37 @@ pub const fn overlay_chain(price_overlay_id: Uuid) -> Uuid {
     Uuid::from_u128((price_overlay_id.as_u128() & !VERSION_MASK) | (0x8 << 76))
 }
 
+/// The segment every audited mutation **of one bulk operation** extends.
+///
+/// D-135 keys a chain on the audited subject's aggregate, and S5 §6's aggregate list
+/// — plan, overlay, payer, policy, **bulk operation** — makes a run one in its own
+/// right. It has to be: a bulk operation is not a plan and has no single plan (D-134's
+/// apply is per-plan precisely because one run's row set spans many), so putting its
+/// mutations on [`plan_chain`] would interleave one operational batch across every
+/// plan it happened to touch and make no plan's history and no run's history a single
+/// segment.
+///
+/// # A third nibble, not the second
+///
+/// [`overlay_chain`] already claims version nibble `8`, and reusing it here would be
+/// exactly the improbability [`policy_chain`]'s doc names as the failure mode a raw
+/// share would have — two independently remapped `now_v7()` spaces sharing one nibble
+/// are disjoint only if their remaining 124 bits never coincide, and this gear mints
+/// both an overlay id and an operation id from the same generator into two different
+/// tables, which is the exact setup [`overlay_chain`]'s own remap exists to defeat for
+/// [`plan_chain`]. So this rewrites to nibble `9` instead: disjoint from every plan
+/// chain (nibble `7`), disjoint from every [`overlay_chain`] (nibble `8`, real
+/// timestamps), and disjoint from [`policy_chain`] (also nibble `8`, but the one fixed
+/// value no `now_v7()` mints).
+///
+/// `audit_repo_tests::bulk_operation_chains_are_disjoint_from_plan_and_overlay_chains_by_construction`
+/// asserts this rather than describing it.
+#[must_use]
+pub const fn bulk_operation_chain(operation_id: Uuid) -> Uuid {
+    const VERSION_MASK: u128 = 0xF << 76;
+    Uuid::from_u128((operation_id.as_u128() & !VERSION_MASK) | (0x9 << 76))
+}
+
 /// A threshold-policy version's durable audit name — its version number.
 ///
 /// The tenant is not repeated in it, for [`price_unit_ref`]'s reason: the record's
@@ -276,6 +307,23 @@ pub fn plan_revision_ref(plan_id: PlanId, revision: u64) -> String {
 #[must_use]
 pub fn overlay_revision_ref(price_overlay_id: Uuid, revision: u64) -> String {
     format!("{price_overlay_id}/{revision}")
+}
+
+/// A bulk operation's durable audit and approval name — its `operation_id`.
+///
+/// No revision to encode, unlike [`plan_revision_ref`] and [`overlay_revision_ref`]:
+/// a bulk operation is not authored in successive drafts, it is opened once and moves
+/// through `pricing_bulk_operation`'s own state machine, so the id alone is already
+/// the durable name — the same shape [`price_unit_ref`] and [`policy_version_ref`]
+/// use for the subjects that need no second coordinate. `NewBulkOperation`'s own doc
+/// makes the same point from the writer's side: *"Minted by the caller, so the audit
+/// record of the same act can name it."* Spelled here rather than at each call site
+/// for [`window_ref`]'s reason — one place to answer "how is a bulk operation named",
+/// so the audit record and the approval record D-158 requires to agree cannot spell it
+/// two ways.
+#[must_use]
+pub fn bulk_operation_ref(operation_id: Uuid) -> String {
+    operation_id.to_string()
 }
 
 /// A price row's audit name — its `price_id`.

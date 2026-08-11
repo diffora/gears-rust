@@ -217,6 +217,14 @@ const PRESENT: u8 = 0x01;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AuditAction {
     /// A draft plan revision or a draft price row was authored.
+    ///
+    /// **And, since 2026-08-11, a `pricing_bulk_operation` row's open** — a
+    /// mass-repricing run's `POST /repricing-runs`
+    /// (`crate::api::rest::repricing_runs`), inside the transaction that opens
+    /// the row and freezes its journal. Not a new token: opening a bulk
+    /// operation is the same kind of act `Create` already names for a draft, and
+    /// giving it a verb of its own would be minting where the roster already has
+    /// one.
     Create,
     /// A draft's content was replaced — a plan facet, or a price row's whole
     /// content.
@@ -440,6 +448,37 @@ pub enum AuditSubjectKind {
     /// stored, which is what D-158 asks for and is strictly narrower than the "no
     /// token without a writer" rule the audit plane's writer satisfies.
     Overlay,
+    /// One `pricing_bulk_operation` row — a mass-repricing run or a bulk import,
+    /// named by its `operation_id`.
+    ///
+    /// **Not declared in S5 §6**, and named for the table it addresses rather than
+    /// for the section's own spelling: §6's `subject_kind` enumeration lists
+    /// `bulk_batch`, and this member is a different token, minted the way
+    /// [`Self::Overlay`] was — the section's own rule is that a token with no
+    /// writer is not declared, this gear has no writer for `bulk_batch`, and it
+    /// does have one for `bulk_operation`. S5 §6's **aggregate** list (D-135's,
+    /// not the subject-kind enumeration's) already names this member correctly:
+    /// "plan, overlay, payer, policy, bulk operation" — the four words this
+    /// variant is spelled from, and what
+    /// [`audit_repo::bulk_operation_chain`](crate::infra::storage::repo::audit_repo::bulk_operation_chain)
+    /// segments on.
+    ///
+    /// Its writer is the mass-repricing run's open
+    /// (`crate::api::rest::repricing_runs`), inside the transaction that opens
+    /// the `pricing_bulk_operation` row and freezes its journal — the debt that
+    /// module's own doc named: opening a run wrote no audit record because there
+    /// was no token for one. The bulk import's open owes the identical record
+    /// still; this member gives it a token but only the repricing run has a
+    /// writer so far.
+    ///
+    /// **Its approval-plane writer does not exist yet**, [`Self::Overlay`]'s own
+    /// situation exactly: D-158 makes `pricing_approval` and `pricing_audit_log`
+    /// one enumeration extended together, so `chk_pricing_approval_subject_kind`
+    /// admits `bulk_operation` from `m20260802_000065` — storable, and not yet
+    /// stored. The unit that would open one is `inst-bs-approval`'s batch
+    /// approval, and it is unwired; `approval_repo::SUBJECT_KINDS_WITH_A_WRITER`
+    /// says so.
+    BulkOperation,
 }
 
 impl AuditSubjectKind {
@@ -450,6 +489,7 @@ impl AuditSubjectKind {
         Self::Window,
         Self::Policy,
         Self::Overlay,
+        Self::BulkOperation,
     ];
 
     /// The persisted `subject_kind` token.
@@ -461,6 +501,7 @@ impl AuditSubjectKind {
             Self::Window => "window",
             Self::Policy => "policy",
             Self::Overlay => "overlay",
+            Self::BulkOperation => "bulk_operation",
         }
     }
 }

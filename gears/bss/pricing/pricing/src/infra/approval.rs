@@ -1984,6 +1984,20 @@ async fn re_derive(
             .map_err(|e| repo_failure(&e))?;
             Ok(found.map(|record| PinnedSubject::Overlay(Box::new(record.content()))))
         }
+        // **This crate opens no `bulk_operation` unit**, `AuditSubjectKind::Overlay`'s
+        // own arm before D-225, reproduced exactly: `inst-bs-approval`'s batch
+        // approval is unwired, so a record of this kind reaching `decide` did not
+        // come from here, and `approval_repo::subject_aggregate` refuses the same
+        // record for the same reason.
+        //
+        // `Err` rather than `Ok(None)`, and the earlier arms' own note explains why:
+        // `None` means *the subject is gone*, which is not what a row of a kind this
+        // crate cannot open at all means.
+        AuditSubjectKind::BulkOperation => Err(DomainError::Internal(format!(
+            "approval {} is a bulk_operation unit and this crate opens none \
+             (inst-bs-approval's batch approval is unwired)",
+            record.approval_id
+        ))),
     }
 }
 

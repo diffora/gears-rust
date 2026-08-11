@@ -68,6 +68,7 @@ fn the_persisted_tokens_are_asserted_against_literals() {
     assert_eq!(AuditSubjectKind::Window.as_str(), "window");
     assert_eq!(AuditSubjectKind::Policy.as_str(), "policy");
     assert_eq!(AuditSubjectKind::Overlay.as_str(), "overlay");
+    assert_eq!(AuditSubjectKind::BulkOperation.as_str(), "bulk_operation");
     assert_eq!(
         AuditAction::ALL,
         &[
@@ -93,6 +94,7 @@ fn the_persisted_tokens_are_asserted_against_literals() {
             AuditSubjectKind::Window,
             AuditSubjectKind::Policy,
             AuditSubjectKind::Overlay,
+            AuditSubjectKind::BulkOperation,
         ]
     );
 }

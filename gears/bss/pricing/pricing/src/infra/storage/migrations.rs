@@ -98,6 +98,7 @@ pub mod m20260802_000063_add_bulk_operation_rejected_state;
 pub mod m20260802_000064_widen_bulk_operation_client_key_by_kind;
 pub mod m20260802_000065_widen_pricing_migration_key_by_tenant;
 pub mod m20260802_000066_create_pricing_customer_group_taxonomy;
+pub mod m20260802_000068_widen_approval_subject_kind_bulk_operation;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -306,6 +307,19 @@ impl MigratorTrait for Migrator {
             // Slice 9's own taxonomy: the BSS customer-group value universe
             // (`inst-cg-taxonomy`), the Slice 4 four's shape on its own table.
             Box::new(m20260802_000066_create_pricing_customer_group_taxonomy::Migration),
+            // D-158's enumeration gains `bulk_operation`, `000035`'s reason repeated:
+            // the mass-repricing run's open now writes an audit record and
+            // `AuditSubjectKind` spells both stores. Rebuilds `pricing_approval` on
+            // `SQLite` again, from the same object set `000035` rebuilt -- nothing
+            // has touched that table's triggers or indexes since.
+            //
+            // **Numbered `000068`, not `000065`.** It was authored as `000065` on a
+            // branch that did not yet carry the concurrent strand's own `000065`
+            // (`widen_pricing_migration_key_by_tenant`). Both were taken from the same
+            // base, which is the collision this chain's prose already records happening
+            // once at `000036`. The older number on the shared line keeps it; this one
+            // moved. `000067` is the group-membership table, landing in the same range.
+            Box::new(m20260802_000068_widen_approval_subject_kind_bulk_operation::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

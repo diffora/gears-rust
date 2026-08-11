@@ -42,6 +42,7 @@ use bss_pricing::domain::approval::{ApprovalState, DecisionBy, WithdrawAuthority
 use bss_pricing::domain::audit::{
     AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash, genesis_prev_hash,
 };
+use bss_pricing::domain::bulk::BulkKind;
 use bss_pricing::domain::bundle::{InvoiceItemization, PriceBasis};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{
@@ -74,8 +75,8 @@ use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle,
 };
 use bss_pricing::infra::storage::repo::{
-    NewOutboxEvent, NewPlanDraft, NewPriceDraft, PlanPublishedPayload, PlanRepo, PlanShapeRepo,
-    PriceRepo, outbox_repo,
+    NewAuditEntry, NewBulkOperation, NewOutboxEvent, NewPlanDraft, NewPriceDraft,
+    PlanPublishedPayload, PlanRepo, PlanShapeRepo, PriceRepo, audit_repo, bulk_repo, outbox_repo,
 };
 use bss_pricing_sdk::catalog_version::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{
@@ -1718,6 +1719,66 @@ async fn drive_the_overlay_plane(h: &Harness) {
         .expect("an overlay is created, and audited");
 }
 
+/// The mass-repricing run's open, the writer of the `bulk_operation` subject kind
+/// (D-158, the apply-lane's task 3).
+///
+/// There is no infra service to call through here, unlike every other plane
+/// above: the run's open lives directly in `api::rest::repricing_runs`, composed
+/// from three `pub` repository calls inside one transaction —
+/// `bulk_repo::open`, `repricing_journal_repo::open_rows`, then
+/// `audit_repo::append`. This driver makes the same two calls this census cares
+/// about (the journal freeze is `rest_repricing_runs.rs`'s to prove, not this
+/// suite's), in the same transaction, so what the census reads is the real
+/// writer's own record and not a stand-in for it.
+async fn drive_the_bulk_operation_plane(h: &Harness) {
+    let operation_id = Uuid::from_u128(0xb_000b);
+    let (_, outcome) = h
+        .provider
+        .db()
+        .in_transaction::<(), bss_pricing::infra::storage::RepoError, _>({
+            let scope = h.scope.clone();
+            move |txn| {
+                Box::pin(async move {
+                    let run = bulk_repo::open(
+                        txn,
+                        &scope,
+                        NewBulkOperation {
+                            operation_id,
+                            tenant_id: TENANT,
+                            kind: BulkKind::Repricing,
+                            client_key: operation_id.to_string(),
+                            report: serde_json::json!({}),
+                            submitted_by: ACTOR,
+                            submitted_at: at(20),
+                        },
+                    )
+                    .await?;
+                    audit_repo::append(
+                        txn,
+                        &scope,
+                        NewAuditEntry {
+                            tenant_id: TENANT,
+                            chain_id: audit_repo::bulk_operation_chain(run.operation_id),
+                            recorded_at: at(20),
+                            actor_principal_id: ACTOR,
+                            action: AuditAction::Create,
+                            subject_kind: AuditSubjectKind::BulkOperation,
+                            subject_ref: audit_repo::bulk_operation_ref(run.operation_id),
+                            before_state: None,
+                            after_state: Some(serde_json::json!({ "kind": "repricing" })),
+                            approval_ref: None,
+                            correlation_id: TEST_CORRELATION,
+                        },
+                    )
+                    .await?;
+                    Ok(())
+                })
+            }
+        })
+        .await;
+    outcome.expect("the run opens and records itself");
+}
+
 async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     // create (plan), update x2 (facets), create (price)
     let (revision, version, _) = seed_publishable(h).await;
@@ -1799,6 +1860,12 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     drive_the_threshold_policy_plane(h).await;
     drive_the_window_plane(h).await;
     drive_the_overlay_plane(h).await;
+    // Slice 12's mass-repricing run, which writes the `bulk_operation` subject
+    // kind (D-158, the apply-lane's task 3). Its own aggregate, so its position
+    // among the drivers is free — unlike the window plane it does not depend on
+    // an approved policy, and unlike retirement it touches no plan the drivers
+    // below still need alive.
+    drive_the_bulk_operation_plane(h).await;
     // **Last, and the position is load-bearing.** Retirement is terminal: it
     // flips the plan's current revision to `retired`, after which no plane above
     // can publish anything on it. Driven here so the census sees the `retire`
@@ -2017,6 +2084,9 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
     let policy_chain = bss_pricing::infra::storage::repo::audit_repo::policy_chain();
     let overlay_chain =
         bss_pricing::infra::storage::repo::audit_repo::overlay_chain(Uuid::from_u128(0xb_0009));
+    let bulk_operation_chain = bss_pricing::infra::storage::repo::audit_repo::bulk_operation_chain(
+        Uuid::from_u128(0xb_000b),
+    );
     let plan_rows: Vec<_> = rows
         .iter()
         .filter(|row| row.chain_id == plan_id().get())
@@ -2032,6 +2102,11 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
         .filter(|row| row.chain_id == overlay_chain)
         .cloned()
         .collect();
+    let bulk_operation_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.chain_id == bulk_operation_chain)
+        .cloned()
+        .collect();
     // **Four since Slice 11's migration plane**, and the move is the partition
     // working rather than a misfiling. `drive_the_migration_plane` seeds a second
     // plan to migrate *onto* — a migration's target must be a published plan that
@@ -2043,11 +2118,20 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
         .iter()
         .filter(|row| row.chain_id == Uuid::from_u128(0x_7a_46_e7))
         .count();
+    // **Five since the apply lane's task 3.** `drive_the_bulk_operation_plane`'s
+    // record is on the run's own segment — S5 §6's aggregate list names a bulk
+    // operation in its own right, for `overlay_chain`'s reason: it is not a plan
+    // and has no plan, so filing it on `plan_id().get()` would put two aggregates
+    // on one chain.
     assert_eq!(
-        plan_rows.len() + policy_rows.len() + overlay_rows.len() + migration_target_rows,
+        plan_rows.len()
+            + policy_rows.len()
+            + overlay_rows.len()
+            + migration_target_rows
+            + bulk_operation_rows.len(),
         rows.len(),
-        "every driven record belongs to one of the four aggregates, and none to a \
-         fifth chain nobody named"
+        "every driven record belongs to one of the five aggregates, and none to a \
+         sixth chain nobody named"
     );
     assert_eq!(
         policy_rows.len(),
@@ -2060,9 +2144,15 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
         1,
         "the overlay's create, on the overlay's own segment and not the plan's"
     );
+    assert_eq!(
+        bulk_operation_rows.len(),
+        1,
+        "the run's create, on the run's own segment and not the plan's"
+    );
     verify_segment(&plan_rows, plan_id().get());
     verify_segment(&policy_rows, policy_chain);
     verify_segment(&overlay_rows, overlay_chain);
+    verify_segment(&bulk_operation_rows, bulk_operation_chain);
 }
 
 /// Walk one segment link by link and recompute every row's digest.
