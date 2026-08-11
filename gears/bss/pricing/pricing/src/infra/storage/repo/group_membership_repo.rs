@@ -383,6 +383,21 @@ pub async fn intervals_for_payer(
 ///
 /// The chain is [`audit_repo::payer_chain`] and not [`audit_repo::plan_chain`]:
 /// see the module doc's chain note.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds, `approval_repo::decide`'s own \
+              justification for the same lint one construct over. `tenant_id` and \
+              `payer_tenant_id` are two different axes and not one: the first is the RLS scope \
+              this call is made under, the second is `audit_repo::payer_chain`'s key, and \
+              folding them into one value would make the chain computation silently wrong for \
+              whichever axis got dropped. `membership_id` is the `subject_ref`; `action`, \
+              `before_state` and `after_state` are three of `NewAuditEntry`'s own fields, not a \
+              second grouping invented here — this function's whole job is assembling that \
+              struct, and `chain_id` is the one field it cannot take from the caller because \
+              only this function knows to derive it from `payer_tenant_id` rather than from \
+              `tenant_id` alone. `stamp` is the actor/instant/correlation triple every mutation \
+              in this crate threads through, unaudited-free by design."
+)]
 async fn record_membership_mutation(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -456,6 +471,21 @@ fn after_state(
 /// (D-09's own cross-group case) — one read answering both, because the
 /// distinction is a property of the row this function already has in hand and
 /// not a second query.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "window_repo::refuse_overlap holds seven of these under the same lint's threshold \
+              because it resolves one already-assembled `&ScopeKey`; this function's collision \
+              domain is `(tenant_id, payer_tenant_id)` with no existing domain type over that \
+              pair to resolve into first, and `group_value` cannot fold into either — it is the \
+              one field the whole function reads to decide which of the two D-09 codes applies, \
+              not a third axis of the key. Minting a struct over `(payer_tenant_id, \
+              group_value)` purely to satisfy this count would be exactly what \
+              overlay_repo::replace_lines' own doc warns against: a type nothing else in this \
+              crate ever carries together, existing only to satisfy a count. `from`/`to` are \
+              the half-open interval every overlap check here keeps as two arguments \
+              (`window_repo::refuse_overlap`'s own shape), and `except` is `end_membership`'s \
+              self-exclusion, verbatim from that same sibling."
+)]
 async fn refuse_overlap(
     runner: &impl DBRunner,
     scope: &AccessScope,

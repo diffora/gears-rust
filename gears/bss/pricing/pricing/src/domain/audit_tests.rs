@@ -50,6 +50,10 @@ fn record<'a>(
 /// change of subject: `clippy::cognitive_complexity` caps a function at 20 and
 /// `bulk_operation`'s arrival (D-158) made this one 21. Every assertion is the one
 /// it was; nothing is derived that was a literal.
+///
+/// `Membership` then took the same pair to 22 on a concurrent branch, which split
+/// it a second time under different names. Two independent vocabularies were
+/// always two claims; the lint's margin is only what made that visible.
 #[test]
 fn the_persisted_action_tokens_are_asserted_against_literals() {
     // Not derived from the variant identifiers, exactly as `CatalogEvent`'s
@@ -86,7 +90,9 @@ fn the_persisted_action_tokens_are_asserted_against_literals() {
     );
 }
 
-/// [`the_persisted_action_tokens_are_asserted_against_literals`]'s other half.
+/// [`the_persisted_action_tokens_are_asserted_against_literals`]'s other half:
+/// the persisted tokens are literals, asserted against literals, so a variant
+/// rename cannot silently rename a stored one.
 #[test]
 fn the_persisted_subject_kind_tokens_are_asserted_against_literals() {
     assert_eq!(AuditSubjectKind::PlanRevision.as_str(), "plan_revision");

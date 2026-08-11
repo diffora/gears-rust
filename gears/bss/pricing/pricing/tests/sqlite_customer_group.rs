@@ -409,8 +409,8 @@ async fn another_tenants_membership_is_invisible_and_unwritable() {
 /// An `enroll` writes exactly one audit record, and it names the membership it
 /// wrote — the test asserts the `subject_ref` **value**, not merely that a row
 /// exists (Z9-1's own lesson: a cutover missed writing this trail at all, and a
-/// row-count-only assertion would not have caught a subject_ref pointing at the
-/// wrong thing).
+/// row-count-only assertion would not have caught a `subject_ref` pointing at
+/// the wrong thing).
 #[tokio::test]
 async fn an_enrollment_writes_exactly_one_audit_record_naming_the_membership() {
     let provider = provider().await;

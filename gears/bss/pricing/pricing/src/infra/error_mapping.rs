@@ -84,6 +84,30 @@ fn denied(code: &'static str) -> CanonicalError {
     PlanResource::permission_denied().with_reason(code).create()
 }
 
+/// The conflict class's plain shape: a retriable 409 carrying its detail and a
+/// bare reason code, no violation list.
+///
+/// [`denied`]'s reason and the same lint, one class over: the "Aborted (409)"
+/// family below is two dozen arms deep and every one of them but three (a 404,
+/// a 404, and a precondition) was this same three-line builder repeated with a
+/// different code — which is what "the family already reads as a group" means
+/// here: the comments beside each arm already narrate one shared shape
+/// (`WindowOverlap`'s doc: "It joins the conflict class for `APPROVAL_NOT_
+/// PENDING`'s reason", `MembershipOverlap`'s: "`WindowOverlap`'s reason one
+/// plane over") without the code ever *being* shared. Unlike [`precondition`]
+/// and [`bulk_refusal`], which exist because clippy bounds `From<DomainError>`
+/// at 200 lines and an inline builder is five, this one exists because the ladder
+/// crossed that line at 203 the moment `MembershipOverlap` and
+/// `MembershipConflict` joined it — not a new shape, the shape this family
+/// already had, finally given the one name its two dozen call sites deserved.
+///
+/// Unlike `denied`, the detail is **kept**: a conflict is retriable and the
+/// caller needs to see what collided, where a permission refusal names only
+/// the authority that was missing.
+fn aborted(detail: String, code: &'static str) -> CanonicalError {
+    PlanResource::aborted(detail).with_reason(code).create()
+}
+
 /// Phase 1's refusal, carrying **two** violations under one code: what was
 /// refused, and the run that holds the per-row report.
 ///
@@ -282,36 +306,32 @@ impl From<DomainError> for CanonicalError {
                 .create(),
 
             // -- Aborted (409) -- conflicts the caller can resolve and retry.
-            D::DuplicateScopeKey(detail) => PlanResource::aborted(detail)
-                .with_reason(crate::domain::import::DUPLICATE_SCOPE_KEY)
-                .create(),
-            D::StaleVersion(detail) => PlanResource::aborted(detail)
-                .with_reason("STALE_VERSION")
-                .create(),
-            D::IdempotencyPayloadMismatch(detail) => PlanResource::aborted(detail)
-                .with_reason("IDEMPOTENCY_PAYLOAD_MISMATCH")
-                .create(),
+            //
+            // Almost every arm below shares one shape — [`aborted`] — and its own
+            // doc says why the shape finally got a name: the comments already
+            // narrated one family, the code never had.
+            D::DuplicateScopeKey(detail) => {
+                aborted(detail, crate::domain::import::DUPLICATE_SCOPE_KEY)
+            }
+            D::StaleVersion(detail) => aborted(detail, "STALE_VERSION"),
+            D::IdempotencyPayloadMismatch(detail) => {
+                aborted(detail, "IDEMPOTENCY_PAYLOAD_MISMATCH")
+            }
             // A conflict on mutable state that a retry resolves, so it keeps the
             // 409 the three above hold rather than collapsing into the 400
             // bucket (D-143): retry, and the answer is the stored response or
             // the mismatch refusal.
-            D::IdempotencyKeyInFlight(detail) => PlanResource::aborted(detail)
-                .with_reason("IDEMPOTENCY_KEY_IN_FLIGHT")
-                .create(),
+            D::IdempotencyKeyInFlight(detail) => aborted(detail, "IDEMPOTENCY_KEY_IN_FLIGHT"),
             // The same class one construct over (D-159): somebody else's write
             // reached the aggregate's serialization point first. It belongs with
             // the four above and not with `Internal`, because "retry" is the
             // whole remedy - and a 500 tells a client to page an operator about
             // a race.
-            D::ConcurrentMutation(detail) => PlanResource::aborted(detail)
-                .with_reason("CONCURRENT_MUTATION")
-                .create(),
+            D::ConcurrentMutation(detail) => aborted(detail, "CONCURRENT_MUTATION"),
             // A uniqueness conflict on the plan's one draft slot (D-146), the
             // `DUPLICATE_SCOPE_KEY` class rather than a state-machine edge —
             // which is why it is here and not beside `LIFECYCLE_FORBIDDEN`.
-            D::OpenDraftRevisionExists(detail) => PlanResource::aborted(detail)
-                .with_reason("OPEN_DRAFT_REVISION_EXISTS")
-                .create(),
+            D::OpenDraftRevisionExists(detail) => aborted(detail, "OPEN_DRAFT_REVISION_EXISTS"),
             // One bundle per plan. The conflict class for the line above's
             // reason — a uniqueness conflict on a slot the plan has one of — and
             // the reason string is `BUNDLE_EXISTS_ON_PLAN` because §5 declares no
@@ -319,9 +339,7 @@ impl From<DomainError> for CanonicalError {
             // the message. Owed-register entry B-9 asks the design set to
             // declare one; until it does this is the gear naming a refusal it
             // owns rather than borrowing a code that names something else.
-            D::BundleExistsOnPlan(detail) => PlanResource::aborted(detail)
-                .with_reason("BUNDLE_EXISTS_ON_PLAN")
-                .create(),
+            D::BundleExistsOnPlan(detail) => aborted(detail, "BUNDLE_EXISTS_ON_PLAN"),
             // A decision that lost a race with another decision
             // (`design/05-governance.md` §5, which types it 409 outright rather
             // than as one of the section's architectural 422s). It joins the
@@ -332,18 +350,19 @@ impl From<DomainError> for CanonicalError {
             // belongs in the conflict class for `WINDOW_OVERLAP`'s reason: what
             // refused the request is the state of a sibling row on a slot the
             // caller's own request never named.
-            D::PrecedenceDuplicate(detail) => PlanResource::aborted(detail)
-                .with_reason(crate::domain::overlay_rules::PRECEDENCE_DUPLICATE)
-                .create(),
+            D::PrecedenceDuplicate(detail) => {
+                aborted(detail, crate::domain::overlay_rules::PRECEDENCE_DUPLICATE)
+            }
             // §5's second 409: the overlay analogue of `WINDOW_OVERLAP`, and
             // classified with it. Two intervals on one line key claim one
             // instant, and re-reading the key's overlays is the remedy.
-            D::OverlayIntervalOverlap(detail) => PlanResource::aborted(detail)
-                .with_reason(crate::domain::overlay_rules::OVERLAY_INTERVAL_OVERLAP)
-                .create(),
-            D::TaxonomyValueInUse(detail) => PlanResource::aborted(detail)
-                .with_reason(crate::domain::taxonomy::TAXONOMY_VALUE_IN_USE)
-                .create(),
+            D::OverlayIntervalOverlap(detail) => aborted(
+                detail,
+                crate::domain::overlay_rules::OVERLAY_INTERVAL_OVERLAP,
+            ),
+            D::TaxonomyValueInUse(detail) => {
+                aborted(detail, crate::domain::taxonomy::TAXONOMY_VALUE_IN_USE)
+            }
             D::PriceRowAbsent(detail) => PlanResource::not_found(detail)
                 .with_resource(crate::api::rest::preview::PRICE_ROW_ABSENT)
                 .create(),
@@ -360,25 +379,19 @@ impl From<DomainError> for CanonicalError {
                     crate::domain::taxonomy::REGION_UNKNOWN,
                 )
                 .create(),
-            D::ApprovalNotPending(detail) => PlanResource::aborted(detail)
-                .with_reason("APPROVAL_NOT_PENDING")
-                .create(),
+            D::ApprovalNotPending(detail) => aborted(detail, "APPROVAL_NOT_PENDING"),
             // The one-pending-unit-per-subject conflict
             // (`07-pricewindow-linkage.md` `inst-co-single-pending`). It sits in
             // the conflict class with `OPEN_DRAFT_REVISION_EXISTS`, which is the
             // same shape one construct over: a slot the subject has exactly one
             // of is taken, the caller's request was never malformed, and the
             // remedy is to act on the unit the detail names.
-            D::PendingChangeUnitExists(detail) => PlanResource::aborted(detail)
-                .with_reason("PENDING_CHANGE_UNIT_EXISTS")
-                .create(),
+            D::PendingChangeUnitExists(detail) => aborted(detail, "PENDING_CHANGE_UNIT_EXISTS"),
             // The TOCTOU pin's own refusal (`inst-ap-pin`). It joins the
             // conflict class rather than the precondition one for the reason
             // `APPROVAL_NOT_PENDING` does: the reviewer's request was right
             // about the world they were shown, and somebody else moved it.
-            D::ApprovalContentMismatch(detail) => PlanResource::aborted(detail)
-                .with_reason("APPROVAL_CONTENT_MISMATCH")
-                .create(),
+            D::ApprovalContentMismatch(detail) => aborted(detail, "APPROVAL_CONTENT_MISMATCH"),
             // Two intervals on one canonical scope key claim one instant
             // (`07-pricewindow-linkage.md` §5, which types this 409 outright
             // rather than as one of the section's architectural 422s). It joins
@@ -386,59 +399,49 @@ impl From<DomainError> for CanonicalError {
             // request was right about what the caller could see, and what
             // refused it is a sibling window on a key their own request never
             // named.
-            D::WindowOverlap(detail) => PlanResource::aborted(detail)
-                .with_reason("WINDOW_OVERLAP")
-                .create(),
+            D::WindowOverlap(detail) => aborted(detail, "WINDOW_OVERLAP"),
             // A mutation of what §4 froze (`inst-ws-immutable`), 409 in §5's own
             // words. It joins the conflict class rather than the precondition one
             // because what refused it is where the clock stands: a `PATCH`
             // composed against a window whose end was five minutes away was right
             // when it was written, and re-reading the window is the remedy.
-            D::WindowHistoricalImmutable(detail) => PlanResource::aborted(detail)
-                .with_reason("WINDOW_HISTORICAL_IMMUTABLE")
-                .create(),
+            D::WindowHistoricalImmutable(detail) => aborted(detail, "WINDOW_HISTORICAL_IMMUTABLE"),
             // The cancel path's own refusal (`inst-ws-cancel`), 409 in §5's own
             // words and kept apart from the line above deliberately: an operator
             // told the window is immutable stops, and one told it is not
             // *cancellable* shortens it through `effectiveTo` instead, which is
             // the operation §4 leaves them.
-            D::WindowNotCancellable(detail) => PlanResource::aborted(detail)
-                .with_reason("WINDOW_NOT_CANCELLABLE")
-                .create(),
+            D::WindowNotCancellable(detail) => aborted(detail, "WINDOW_NOT_CANCELLABLE"),
             // D-09's own two codes, `WindowOverlap`'s reason one plane over: the
             // request was well-formed and what refused it is a sibling
             // membership on the payer their own request never named.
-            D::MembershipOverlap(detail) => PlanResource::aborted(detail)
-                .with_reason("MEMBERSHIP_OVERLAP")
-                .create(),
-            D::MembershipConflict(detail) => PlanResource::aborted(detail)
-                .with_reason("MEMBERSHIP_CONFLICT")
-                .create(),
+            D::MembershipOverlap(detail) => aborted(detail, "MEMBERSHIP_OVERLAP"),
+            D::MembershipConflict(detail) => aborted(detail, "MEMBERSHIP_CONFLICT"),
             // `inst-re-references`, 409 in §5's own words. The conflict class for
             // `TaxonomyValueInUse`'s reason and it is the same fact one plane
             // over: what refused the retirement is a bundle or an add-on
             // override the caller's own request never named, and going to look
             // at the enumerated referrers is the whole remedy.
-            D::RetirePlanReferenced(detail) => PlanResource::aborted(detail)
-                .with_reason(crate::domain::retirement::RETIRE_PLAN_REFERENCED)
-                .create(),
+            D::RetirePlanReferenced(detail) => {
+                aborted(detail, crate::domain::retirement::RETIRE_PLAN_REFERENCED)
+            }
             // The line above's sibling, and a conflict for the same reason: what
             // refuses the retirement is a live schedule aimed at this plan, which
             // the caller's own request never named. Kept apart from it because the
             // remedies are different acts on different objects - one goes and
             // re-composes a bundle, the other cancels a migration or waits for it.
-            D::RetireTargetOfMigration(detail) => PlanResource::aborted(detail)
-                .with_reason(crate::domain::migration::RETIRE_TARGET_OF_MIGRATION)
-                .create(),
+            D::RetireTargetOfMigration(detail) => {
+                aborted(detail, crate::domain::migration::RETIRE_TARGET_OF_MIGRATION)
+            }
             // D-34's one named refusal, 409 in §5's own words. A conflict on
             // mutable state and not a 400: the request was well-formed and the
             // authority sufficient, the run simply finished first. The code names
             // **completion** rather than the pre-D-34 `MIGRATION_ALREADY_EFFECTIVE`
             // because an `in_progress` run past its effective date is still
             // cancellable, so "already effective" named the wrong fact.
-            D::MigrationCompleted(detail) => PlanResource::aborted(detail)
-                .with_reason(crate::domain::migration::MIGRATION_COMPLETED)
-                .create(),
+            D::MigrationCompleted(detail) => {
+                aborted(detail, crate::domain::migration::MIGRATION_COMPLETED)
+            }
 
             // -- PermissionDenied (403) -- the two audited authority refusals.
             //
