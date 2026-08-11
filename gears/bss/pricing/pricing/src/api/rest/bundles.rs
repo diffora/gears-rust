@@ -537,12 +537,31 @@ async fn publish_bundle(
 
     // The content this call would freeze, assembled once and used for both arms —
     // it is what the lookup below matches an approval against and what the unit
-    // pins. The composition normalizes onto its absorber inside the plan, so the
-    // plan shape *is* the composition's content.
+    // pins.
+    //
+    // **The plan shape alone is not enough, and the first version of this route
+    // assumed it was.** It read "the composition normalizes onto its absorber
+    // inside the plan, so the plan shape *is* the composition's content" — true at
+    // publish, false at submit, and D-104 exists precisely because a
+    // `sum_of_parts` recomposition carries no price-row delta at all. So an
+    // approve taken over one component set authorized a different one. The
+    // revision's `row_version` is folded in because a composition edit advances it
+    // (`PATCH …/bundles/{id}` is taken under the revision's tag), which makes the
+    // digest move for every composition edit including the ones that move no row.
+    // See `bundle_content_hash`.
+    let draft = state
+        .plans
+        .find_revision(&scope, tenant, plan_id, body.plan_revision)
+        .await
+        .map_err(|e| CanonicalError::from(crate::infra::storage::repo_failure(&e)))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "plan revision".to_owned(),
+            id: plan_id.to_string(),
+        })?;
     let shape = crate::infra::publish::assemble(&conn, &scope, tenant, plan_id, now)
         .await
         .map_err(CanonicalError::from)?;
-    let pin = crate::domain::approval::content_hash(&shape);
+    let pin = crate::domain::approval::content_pin::bundle_content_hash(&shape, draft.row_version);
     let subject_ref =
         crate::infra::approval::bundle_composition_unit_ref(plan_id, body.plan_revision);
 

@@ -129,12 +129,15 @@ use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
-use crate::domain::approval::content_pin::{overlay_content_hash, threshold_content_hash};
+use crate::domain::approval::content_pin::{
+    bundle_content_hash, overlay_content_hash, threshold_content_hash,
+};
 use crate::domain::approval::{
     DecisionBy, DecisionRefusal, DecisionRequest, WithdrawAuthority, authorize_decision,
     content_hash,
 };
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::concurrency::RowVersion;
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{ThresholdEntry, ThresholdVersion};
 use crate::domain::money::CurrencyCode;
@@ -142,6 +145,7 @@ use crate::domain::overlay::{OverlayRevision, ScopeClass};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::storage::repo::approval_repo::{ApprovalRecord, NewApproval};
+use crate::infra::storage::repo::bundle_repo::{self, CompositionDraft};
 use crate::infra::storage::repo::{
     NewAuditEntry, approval_repo, audit_repo, plan_repo, price_repo, threshold_repo,
 };
@@ -325,6 +329,23 @@ pub enum PinnedSubject {
     /// Boxed for [`Self::Plan`]'s reason at a smaller scale: the line set is
     /// unbounded, and this enum is returned and moved on every approval read.
     Overlay(Box<OverlayRevision>),
+    /// A **bundle composition** at a plan revision (D-104).
+    ///
+    /// `Plan` with the revision's `row_version` and the composition beside it.
+    ///
+    /// The `row_version` is what the **pin** folds: a composition edit moves no
+    /// field of the shape — D-104 exists because a `sum_of_parts` recomposition
+    /// carries no price-row delta at all — but it does advance the revision.
+    /// Re-deriving this subject as a plain `Plan` let an approve carry to a
+    /// different component set.
+    ///
+    /// The composition is what the **reviewer reads**. D-61 requires the `GET` to
+    /// return the pinned content rather than the hash, and a plan shape carries no
+    /// component set and no revenue split — so an approver of the one act whose
+    /// whole subject is third-party money was shown a document that says nothing
+    /// about it. It rides here rather than being fetched by the surface because
+    /// this is the read the pin was taken over.
+    BundleComposition(Box<PlanShape>, RowVersion, Box<CompositionDraft>),
 }
 
 impl PinnedSubject {
@@ -342,6 +363,7 @@ impl PinnedSubject {
             Self::Plan(shape) => content_hash(shape),
             Self::ThresholdPolicy(version) => threshold_content_hash(version),
             Self::Overlay(revision) => overlay_content_hash(revision),
+            Self::BundleComposition(shape, version, _) => bundle_content_hash(shape, *version),
         }
     }
 
@@ -358,7 +380,7 @@ impl PinnedSubject {
     #[must_use]
     pub fn regions(&self) -> BTreeSet<Region> {
         match self {
-            Self::Plan(shape) => regions_of(shape),
+            Self::Plan(shape) | Self::BundleComposition(shape, ..) => regions_of(shape),
             Self::ThresholdPolicy(_) => BTreeSet::new(),
             // **An overlay reaches a region exactly when it is scoped to one.** A
             // brand- or partner-scoped overlay has no region axis at all and answers
@@ -385,7 +407,7 @@ impl PinnedSubject {
     #[must_use]
     pub const fn plan(&self) -> Option<&PlanShape> {
         match self {
-            Self::Plan(shape) => Some(shape),
+            Self::Plan(shape) | Self::BundleComposition(shape, ..) => Some(shape),
             Self::ThresholdPolicy(_) | Self::Overlay(_) => None,
         }
     }
@@ -395,7 +417,19 @@ impl PinnedSubject {
     pub const fn threshold_policy(&self) -> Option<&ThresholdVersion> {
         match self {
             Self::ThresholdPolicy(version) => Some(version),
-            Self::Plan(_) | Self::Overlay(_) => None,
+            Self::Plan(_) | Self::Overlay(_) | Self::BundleComposition(..) => None,
+        }
+    }
+
+    /// The composition, when this subject is a bundle composition unit.
+    ///
+    /// What D-61 owes a reviewer of a `bundleComposition` act, and what a plan
+    /// shape cannot answer.
+    #[must_use]
+    pub const fn composition(&self) -> Option<&CompositionDraft> {
+        match self {
+            Self::BundleComposition(_, _, composition) => Some(composition),
+            Self::Plan(_) | Self::ThresholdPolicy(_) | Self::Overlay(_) => None,
         }
     }
 
@@ -404,7 +438,7 @@ impl PinnedSubject {
     pub const fn overlay(&self) -> Option<&OverlayRevision> {
         match self {
             Self::Overlay(revision) => Some(revision),
-            Self::Plan(_) | Self::ThresholdPolicy(_) => None,
+            Self::Plan(_) | Self::ThresholdPolicy(_) | Self::BundleComposition(..) => None,
         }
     }
 }
@@ -1765,6 +1799,16 @@ pub(crate) async fn open_policy_unit(
 /// Matched on the act segment `retirement_unit_ref` writes. A retirement's
 /// subject is the plan's current published revision, so its pin re-derives the
 /// way a window's does rather than the way a draft's does.
+/// The plan revision a `<plan>/composition/<revision>` subject stands at, if the
+/// ref is one.
+///
+/// [`is_retirement_unit`]'s shape, returning the revision rather than a `bool`
+/// because this arm needs it: the pin folds that revision's `row_version`.
+fn composition_unit_revision(subject_ref: &str) -> Option<u64> {
+    let (_, rest) = subject_ref.split_once('/')?;
+    rest.strip_prefix("composition/")?.parse().ok()
+}
+
 fn is_retirement_unit(subject_ref: &str) -> bool {
     subject_ref
         .split_once('/')
@@ -1846,6 +1890,40 @@ async fn re_derive(
             // revision, and `pricing_audit_log` should say so.
             if is_retirement_unit(&record.subject_ref) {
                 return current_revision_shape(runner, scope, tenant_id, plan_id, now).await;
+            }
+            // **A composition unit carries this kind and re-derives with one more
+            // fact.** Discriminated on the subject ref for the retirement arm's
+            // reason — the thing being decided *is* a plan revision and
+            // `pricing_audit_log` should say so — but its pin folds the revision's
+            // `row_version`, because a composition edit moves nothing else the
+            // shape carries. Re-deriving it as a plain `Plan` is what let an
+            // approve authorize a component set nobody reviewed.
+            if let Some(revision) = composition_unit_revision(&record.subject_ref) {
+                let Some(row) =
+                    plan_repo::load_revision(runner, scope, tenant_id, plan_id, revision)
+                        .await
+                        .map_err(|e| repo_failure(&e))?
+                else {
+                    return Ok(None);
+                };
+                return match crate::infra::publish::assemble(runner, scope, tenant_id, plan_id, now)
+                    .await
+                {
+                    Ok(shape) => {
+                        let composition = bundle_repo::load_composition_on(
+                            runner, scope, tenant_id, plan_id, revision,
+                        )
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
+                        Ok(Some(PinnedSubject::BundleComposition(
+                            Box::new(shape),
+                            row.row_version,
+                            Box::new(composition),
+                        )))
+                    }
+                    Err(DomainError::NotFound { .. }) => Ok(None),
+                    Err(other) => Err(other),
+                };
             }
             match crate::infra::publish::assemble(runner, scope, tenant_id, plan_id, now).await {
                 Ok(shape) => Ok(Some(PinnedSubject::Plan(Box::new(shape)))),

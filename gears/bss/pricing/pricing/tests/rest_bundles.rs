@@ -818,3 +818,190 @@ async fn a_composition_edit_voids_the_pending_unit_over_its_plan() {
          must be voided rather than left approvable"
     );
 }
+
+/// **Does the approved unit's pin actually cover the composition?**
+///
+/// F-1's fix pins the *plan shape* (`infra::publish::assemble`), on the reasoning
+/// that a composition normalizes onto its absorber inside the plan. If that is
+/// false at submit time, then two different component sets hash identically and an
+/// approve taken over one authorizes the other — the exact approval-bypass shape
+/// D-196's content-pin miss produced on the scope key.
+///
+/// D-104 exists precisely because a `sum_of_parts` recomposition carries **no
+/// price-row delta at all**, which is what makes this worth an armed test rather
+/// than an argument.
+#[tokio::test]
+async fn an_approved_composition_does_not_authorize_a_different_one() {
+    const REVIEWER: Uuid = Uuid::from_u128(0x_b0d1_e505);
+
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle_with(&harness, "own_price").await;
+
+    let tag = harness.plan_etag(plan_id).await;
+    harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "components": [] })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    let staged = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
+            &[],
+        ))
+        .await;
+    let staged_body = body_json(staged).await;
+    let approval_id = staged_body["approval"]["approval_id"]
+        .as_str()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .unwrap_or_else(|| panic!("the 202 names its unit: {staged_body}"));
+
+    harness
+        .allowed_as(REVIEWER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/approvals/{approval_id}/approve"),
+            None,
+            &[],
+        ))
+        .await;
+
+    // The composition moves **after** the approval. Whatever the pin covers, this
+    // is a different set of components than the reviewer agreed to.
+    let tag = harness.plan_etag(plan_id).await;
+    let edited = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [],
+                "rev_share": []
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    let edited_status = edited.status();
+
+    let after = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
+            &[],
+        ))
+        .await;
+    let after_body = body_json(after).await;
+
+    assert_eq!(
+        after_body["outcome"].as_str(),
+        Some("submitted_for_approval"),
+        "the edit (PATCH answered {edited_status}) must invalidate the approval, so this call \
+         stages a fresh unit rather than publishing on the old one: {after_body}"
+    );
+}
+
+/// **The approver can read the composition they are approving** (D-61, F-4).
+///
+/// `GET /approvals/{id}` returns `pinned_content` — the plan the composition rides
+/// — and until 2026-08-11 that was all a reviewer of a `bundleComposition` unit
+/// got. A plan shape carries no component set and no revenue split, and D-104
+/// exists because a `sum_of_parts` recomposition moves no price row at all: the
+/// document said nothing about the act being decided, on the one surface in this
+/// gear where the money being divided belongs to third parties.
+///
+/// D-61 is explicit that the `GET` must return the pinned **content**, "not the
+/// hash alone, so approval is never hash-blind".
+#[tokio::test]
+async fn the_unit_shows_its_approver_the_component_set_and_the_revenue_split() {
+    let harness = Harness::new().await;
+    // `sum_of_parts`: rev-share is authorable on that basis only (D-55), and it is
+    // the basis whose recomposition moves no price row — which is the case D-104
+    // exists for and the one a plan shape cannot show.
+    let (plan_id, bundle_id) = seed_bundle(&harness).await;
+
+    let component_plan = Uuid::now_v7();
+    seed_draft_plan(&harness, component_plan).await;
+    let row = seed_price(&harness, component_plan, "EU").await;
+    harness.publish(component_plan, 0).await;
+    harness.publish_price(component_plan, row.price_id).await;
+    let vendor_sku = Uuid::now_v7();
+
+    let tag = harness.plan_etag(plan_id).await;
+    let patched = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [{
+                    "component_plan_id": component_plan,
+                    "included_sku_id": vendor_sku,
+                }],
+                "rev_share": [{
+                    "vendor_sku_id": vendor_sku,
+                    "platform_cut_bp": 2000,
+                    "parties": [{ "party": "acme-vendor", "share_bp": 8000 }],
+                }],
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+
+    let staged = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
+            &[],
+        ))
+        .await;
+    let staged_body = body_json(staged).await;
+    let approval_id = staged_body["approval"]["approval_id"]
+        .as_str()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .unwrap_or_else(|| panic!("the 202 names its unit: {staged_body}"));
+
+    let read = harness
+        .allowed()
+        .send(with_headers(
+            "GET",
+            &format!("/bss-pricing/v1/approvals/{approval_id}"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let view = body_json(read).await;
+
+    let composition = &view["pinned_composition"];
+    assert!(
+        composition.is_object(),
+        "a bundleComposition unit must render its composition: {view}"
+    );
+    assert_eq!(
+        composition["components"][0]["component_plan_id"],
+        component_plan.to_string(),
+        "the reviewer sees which plan is in the bundle: {composition}"
+    );
+    // The half that is third-party money, and the reason D-104 makes this act
+    // always material.
+    assert_eq!(composition["rev_share"][0]["platform_cut_bp"], 2000);
+    assert_eq!(
+        composition["rev_share"][0]["parties"][0]["party"],
+        "acme-vendor"
+    );
+    assert_eq!(composition["rev_share"][0]["parties"][0]["share_bp"], 8000);
+}

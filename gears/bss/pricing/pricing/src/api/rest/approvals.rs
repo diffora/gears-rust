@@ -665,6 +665,14 @@ pub struct ApprovalDetailView {
     /// digest and does not need to be — it rides `subject_ref` on an append-only
     /// store, so nothing can move it after the signature.
     pub proposed_act: Option<ProposedActView>,
+    /// The pinned **composition**, on a `bundleComposition` unit (D-104). `null`
+    /// on every other kind.
+    ///
+    /// `pinned_content` carries the plan the composition rides and says nothing
+    /// about the component set or the revenue split, so without this a reviewer of
+    /// the one act that divides third-party money approved a document in which the
+    /// act was invisible. D-61 in its own terms: the pinned content, not the hash.
+    pub pinned_composition: Option<PinnedCompositionView>,
     /// Whether the pinned content above still digests to `approval.content_hash`.
     ///
     /// **Read this before deciding.** `false` means the document above is *not*
@@ -1236,6 +1244,102 @@ fn state_filter(token: Option<&str>) -> Result<Vec<ApprovalState>, DomainError> 
         })
 }
 
+/// The composition a `bundleComposition` unit is being decided on (D-104, D-61).
+///
+/// **What a plan shape cannot say.** `PinnedContentView` renders the plan the
+/// composition rides — its phases, rows and descriptor set — and carries no
+/// component set and no revenue split. D-104 exists because a `sum_of_parts`
+/// recomposition moves no price row at all, so a reviewer shown only the plan was
+/// shown a document in which the act they are approving is invisible. This is the
+/// one act in the gear whose subject is money belonging to third parties.
+///
+/// The values are the ones the pin was taken over, re-derived in the same read.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedCompositionView {
+    /// The referenced components, in stored order.
+    pub components: Vec<PinnedComponentView>,
+    /// The rev-share groups, one per included vendor SKU.
+    pub rev_share: Vec<PinnedRevShareGroupView>,
+}
+
+/// One component of the pinned composition.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedComponentView {
+    /// The component's plan (B1).
+    pub component_plan_id: Uuid,
+    /// The registry SKU it publishes under.
+    pub included_sku_id: Uuid,
+    /// Selection-time lower bound.
+    pub min_qty: Option<i32>,
+    /// Selection-time upper bound.
+    pub max_qty: Option<i32>,
+}
+
+/// One rev-share group of the pinned composition — the vendor payout split.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedRevShareGroupView {
+    /// The included vendor SKU whose revenue this group allocates.
+    pub vendor_sku_id: Uuid,
+    /// The group's explicit platform cut, in basis points.
+    pub platform_cut_bp: i32,
+    /// Who absorbs the publish-time residual (D-07).
+    pub residual_absorber: String,
+    /// The parties and their typed shares, in basis points.
+    pub parties: Vec<PinnedPartyShareView>,
+}
+
+/// One party's typed share.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedPartyShareView {
+    /// The recipient.
+    pub party: String,
+    /// What the operator authored, in basis points.
+    pub share_bp: i32,
+}
+
+impl From<&crate::infra::storage::repo::CompositionDraft> for PinnedCompositionView {
+    fn from(draft: &crate::infra::storage::repo::CompositionDraft) -> Self {
+        // Destructured with no rest pattern: a field added to the composition is a
+        // compile error here rather than content the reviewer silently stops being
+        // shown — which is the defect this view exists to close.
+        let crate::infra::storage::repo::CompositionDraft {
+            components,
+            rev_share_groups,
+        } = draft;
+        Self {
+            components: components
+                .iter()
+                .map(|c| PinnedComponentView {
+                    component_plan_id: c.component_plan_id,
+                    included_sku_id: c.included_sku_id,
+                    min_qty: c.min_qty,
+                    max_qty: c.max_qty,
+                })
+                .collect(),
+            rev_share: rev_share_groups
+                .iter()
+                .map(|g| PinnedRevShareGroupView {
+                    vendor_sku_id: g.vendor_sku_id,
+                    platform_cut_bp: g.platform_cut_bp,
+                    residual_absorber: g.residual_absorber.as_str().to_owned(),
+                    parties: g
+                        .parties
+                        .iter()
+                        .map(|p| PinnedPartyShareView {
+                            party: p.party.get().to_owned(),
+                            share_bp: p.share_bp,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// The act a window unit is being decided on, for the reviewer's read.
 ///
 /// A projection of [`crate::infra::window::ProposedAct`], which is parsed from the
@@ -1294,6 +1398,11 @@ fn detail_view(detail: &ApprovalDetail) -> ApprovalDetailView {
             .then(|| crate::infra::window::parse_unit_subject(&detail.record.subject_ref))
             .flatten()
             .map(ProposedActView::from),
+        pinned_composition: detail
+            .subject
+            .as_ref()
+            .and_then(PinnedSubject::composition)
+            .map(PinnedCompositionView::from),
         content_matches_pin: detail.content_matches_pin,
     }
 }

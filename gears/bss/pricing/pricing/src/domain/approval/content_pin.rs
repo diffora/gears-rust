@@ -207,6 +207,7 @@ use aws_lc_rs::digest::{SHA256, digest as sha256};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::domain::concurrency::RowVersion;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::overlay::{
@@ -454,6 +455,14 @@ pub const THRESHOLD_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-THRESHOLD-PIN-v1\x
 /// tenant, which is a decision and not a repair.
 pub const OVERLAY_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-OVERLAY-PIN-v1\x1f";
 
+/// The domain separator for a **bundle composition** unit's pin (D-104).
+///
+/// Its own, for [`OVERLAY_PIN_DOMAIN_SEP`]'s reason: a composition unit's subject
+/// is the plan shape **and** the composition, and a digest that could collide with
+/// a plain plan-revision pin would let an approve taken for a publish authorize a
+/// component swap.
+pub const BUNDLE_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-BUNDLE-PIN-v1\x1f";
+
 /// The token the preimage frames an absolute threshold basis as.
 ///
 /// Written out here rather than taken from any wire or column spelling, for
@@ -545,6 +554,46 @@ pub fn overlay_content_hash(revision: &OverlayRevision) -> [u8; 32] {
     let mut buf = Vec::with_capacity(512);
     buf.extend_from_slice(OVERLAY_PIN_DOMAIN_SEP);
     put_overlay_revision(&mut buf, revision);
+    digest32(&buf)
+}
+
+/// The pin a bundle composition unit is opened under (D-104).
+///
+/// **The plan shape alone is not the composition's content, and assuming it was
+/// shipped an approval bypass.** The first version of D-104's unit pinned
+/// `content_hash(&shape)` on the reasoning that a composition normalizes onto its
+/// absorber inside the plan. That is true at *publish*, not at submit — and D-104
+/// exists precisely because a `sum_of_parts` recomposition carries **no price-row
+/// delta at all**, so a component swap moved nothing the plan-shape digest covers.
+/// An approve taken over one component set then authorized a different one:
+/// `an_approved_composition_does_not_authorize_a_different_one` drove it end to
+/// end and watched the edited composition publish on the old approval.
+///
+/// # Why the revision's `row_version` and not the composition itself
+///
+/// The composition lives in `infra`'s `CompositionDraft`, and dylint DE0301 keeps
+/// this layer from naming it. What is available here is the fact that settles the
+/// question anyway: **a composition edit advances the plan revision's
+/// `row_version`** — `PATCH …/bundles/{id}` takes the revision's entity tag and
+/// `a_composition_is_written_under_the_revisions_tag` asserts the tag moves — so a
+/// digest folding it answers "the subject moved since the approval" for every edit
+/// to the composition, including the ones that move no price row at all.
+///
+/// This is the one unit that hashes `row_version`, and the exception is argued
+/// rather than assumed. [`content_hash`]'s own doc excludes it for plan units on
+/// the ground that "every authoring mutation that moves it voids the unit first
+/// (`inst-ap-pin`)" — and `a_composition_edit_voids_the_pending_unit_over_its_plan`
+/// shows that holding for **pending** units. It does not hold here, because the
+/// hazard is an **approved** unit and voiding reaches only `submitted` ones.
+#[must_use]
+pub fn bundle_content_hash(shape: &PlanShape, revision_version: RowVersion) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(64);
+    buf.extend_from_slice(BUNDLE_PIN_DOMAIN_SEP);
+    // The shape by its digest rather than inlined: that encoding is
+    // `put_plan_shape`'s to own, and a second copy of it here would be two
+    // framings of one document, free to disagree.
+    put(&mut buf, &content_hash(shape));
+    put_u64(&mut buf, revision_version.get());
     digest32(&buf)
 }
 
