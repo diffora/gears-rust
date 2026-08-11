@@ -14,12 +14,13 @@
 //! that only read the response, which is exactly the defect a 2026-08-10 review
 //! records for the bundle publish's own materiality assertion.
 //!
-//! **What this suite deliberately cannot assert**: that a run ever leaves
-//! `committing`, or `awaiting_approval` for an approved decision. Nothing applies
-//! a repricing yet (see `api::rest::repricing_runs`), so reaching one of those two
-//! states with every journal row still `pending` is the *whole* contract of an
-//! accepted run today, and the cases say so out loud rather than asserting a
-//! weaker thing that would silently keep passing once the apply lands.
+//! **What this suite still cannot assert**: that an *approved* run's apply
+//! runs. `open_repricing_run`'s own hook (task 5) spends the non-material
+//! edge's apply synchronously, in the same request — so a case here that
+//! leaves `validating` for `committing` now also asserts the terminal state
+//! the apply reaches, and the cases that do say so. An *approved* run's apply
+//! is `api::rest::approvals`' arm instead, spent when a second principal
+//! decides the batch unit, which is that surface's own suite's to cover.
 //!
 //! **No case in this file configures a threshold policy unless its own name says
 //! so.** A fresh harness has none, so `inst-mat-failsafe` makes every ordinary run
@@ -39,7 +40,8 @@ use bss_pricing::domain::scope_key::{Cohort, PriceEligibility};
 use chrono::{TimeZone, Utc};
 use rest_support::{
     Harness, approval_rows, approve_threshold_policy, body_json, bulk_operation_row, problem_code,
-    seed_current_plan, seed_price, seed_price_keyed, seed_priced_row, with_headers,
+    seed_current_plan, seed_current_plan_with_phase, seed_price, seed_price_keyed, seed_priced_row,
+    with_headers,
 };
 use uuid::Uuid;
 
@@ -706,12 +708,14 @@ async fn a_material_run_leaves_validating_for_awaiting_approval_with_an_approval
     );
 }
 
-/// `inst-mr-coalesce`'s non-material edge: `validating -> committing` with **no**
-/// approval unit opened — the positive control this suite's own module doc
-/// requires. A test that only proved the material run above stops would pass
-/// against a handler that stops every run; this one fails such a handler,
-/// because it asserts both that the run reaches `committing` and that the
-/// approval store holds nothing for it.
+/// `inst-mr-coalesce`'s non-material edge: `validating -> committing`, with
+/// **no** approval unit opened, and — since the apply's own `open_repricing_run`
+/// hook (`api::rest::repricing_runs`, task 5) spends that edge synchronously —
+/// `committing -> completed` in the same request. A test that only proved the
+/// material run above stops would pass against a handler that stops every run;
+/// this one fails such a handler, because it asserts both that the run reaches
+/// `committing` on its way through and that the approval store holds nothing
+/// for it.
 #[tokio::test]
 async fn a_non_material_run_leaves_validating_for_committing_with_no_approval_unit_open() {
     let harness = Harness::new().await;
@@ -720,13 +724,26 @@ async fn a_non_material_run_leaves_validating_for_committing_with_no_approval_un
     // entry, not its size.
     approve_threshold_policy(&harness, &[("USD", 1_000_000)]).await;
     let plan = Uuid::now_v7();
-    seed_current_plan(&harness, plan).await;
+    seed_current_plan_with_phase(&harness, plan).await;
     // `seed_price`/`a_published_row` leave `amount_minor` unset, which is a real
     // `NotComputable("amount_minor")` delta and would make this run material via
     // `alwaysMaterialTrigger` whatever the threshold says — the positive control
     // needs a row the per-currency comparison can actually compare.
     let priced = seed_priced_row(&harness, plan, "eu", 9_900).await;
     harness.publish_price(plan, priced.price_id).await;
+    // `inst-wc-required`, via the apply's own aggregate pass: a supersession
+    // presupposes current coverage, and `harness.publish_price` — the raw
+    // `publish_rows` door, not the full pipeline — schedules none. Every
+    // fixture in this crate that is meant to publish **cleanly** through the
+    // real pipeline calls this (`tests/common/mod.rs`'s own module doc).
+    common::schedule_coverage_window(
+        &harness.db.conn().expect("conn"),
+        &harness.scope(),
+        harness.tenant,
+        priced.price_id,
+        rest_support::seed_stamp(),
+    )
+    .await;
 
     let run_id = Uuid::now_v7();
     let response = harness
@@ -747,8 +764,10 @@ async fn a_non_material_run_leaves_validating_for_committing_with_no_approval_un
     let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
     assert_eq!(
         stored.state,
-        BulkState::Committing,
-        "USD has a configured entry and the zero-delta act never reaches it: {stored:?}"
+        BulkState::Completed,
+        "USD has a configured entry and the zero-delta act never reaches it, so the run is \
+         auto-publishable, and the apply that answers the same request has nothing to refuse \
+         it on: {stored:?}"
     );
 
     let units: Vec<_> = approval_rows(&harness)
@@ -778,9 +797,20 @@ async fn the_runs_own_adjustment_magnitude_against_the_configured_threshold_deci
     // above nothing a discount could reach — the bar the pair straddles.
     approve_threshold_policy(&harness, &[("USD", 1_000)]).await;
     let plan = Uuid::now_v7();
-    seed_current_plan(&harness, plan).await;
+    seed_current_plan_with_phase(&harness, plan).await;
     let priced = seed_priced_row(&harness, plan, "eu", 10_000).await;
     harness.publish_price(plan, priced.price_id).await;
+    // `inst-wc-required`: the under-the-bar run below is non-material and its
+    // apply runs synchronously in the same request, so the row needs real
+    // coverage for that apply to have anything to supersede.
+    common::schedule_coverage_window(
+        &harness.db.conn().expect("conn"),
+        &harness.scope(),
+        harness.tenant,
+        priced.price_id,
+        rest_support::seed_stamp(),
+    )
+    .await;
 
     // Under the bar: 5% of 10_000 is 500 minor, and 500 < 1_000. Run first,
     // while nothing holds the row's key.
@@ -802,8 +832,9 @@ async fn the_runs_own_adjustment_magnitude_against_the_configured_threshold_deci
         bulk_operation_row(&harness, under_operation_id.parse().expect("a uuid")).await;
     assert_eq!(
         under_stored.state,
-        BulkState::Committing,
-        "500 minor is under the 1_000 bar: {under_stored:?}"
+        BulkState::Completed,
+        "500 minor is under the 1_000 bar, so the run is auto-publishable and the same \
+         request's apply has nothing to refuse it on: {under_stored:?}"
     );
     let under_units: Vec<_> = approval_rows(&harness)
         .await

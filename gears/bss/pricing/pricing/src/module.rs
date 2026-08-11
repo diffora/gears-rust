@@ -1017,6 +1017,20 @@ impl RestApiCapability for BssPricingGear {
             .merge(crate::api::rest::repricing_runs::router(
                 Arc::new(crate::api::rest::repricing_runs::ApiState {
                     authoring: Arc::clone(&rt.authoring_api),
+                    // The same `Arc` `governance_api`'s own services request
+                    // through — one requester, `api::rest::state`'s argument,
+                    // not a second incrementer.
+                    registry: Arc::clone(&rt.catalog_version_registry),
+                    // A fresh reader over the same provider and the same
+                    // ratified defaults `PublishService::new` builds its own
+                    // from — this state carries no `PublishService` to borrow
+                    // one off, and the reader itself is a cheap clone of a
+                    // `DBProvider` plus a deployment constant, not a second
+                    // source of truth for the tenant's policy row.
+                    policies: crate::infra::storage::repo::PolicyObjectRepo::new(
+                        rt.db.clone(),
+                        &rt.config.limits,
+                    ),
                 }),
                 openapi,
             ))

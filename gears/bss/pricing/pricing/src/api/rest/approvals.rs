@@ -92,6 +92,7 @@ use crate::api::rest::windows::WindowIntervalView;
 use std::collections::BTreeMap;
 
 use crate::domain::approval::{ApprovalState, DecisionBy, WithdrawAuthority};
+use crate::domain::audit::AuditSubjectKind;
 use crate::domain::contracts::{EntitlementGrants, GrantSet, PlanChangeContract};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{
@@ -977,7 +978,7 @@ async fn approve_approval(
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(extension_correlation)?;
     let scope = decide_scope(&enforcer, &ctx, approval_id).await?;
-    decide(
+    let record = decide_record(
         &state,
         &scope,
         &ctx,
@@ -989,7 +990,20 @@ async fn approve_approval(
         // withdraw is judged against it.
         WithdrawAuthority::OwnUnitsOnly,
     )
-    .await
+    .await?;
+
+    // The approved bulk-operation subject: a mass-repricing run's batch unit
+    // just reached `approved`, so its apply is spent here — see
+    // `apply_approved_repricing_run`'s own doc for why this never fails the
+    // response the decision already earned.
+    if record.subject_kind == AuditSubjectKind::BulkOperation
+        && record.state == ApprovalState::Approved
+        && let Ok(operation_id) = Uuid::parse_str(&record.subject_ref)
+    {
+        apply_approved_repricing_run(&state, &enforcer, &ctx, correlation, operation_id).await;
+    }
+
+    Ok(Json(ApprovalView::from(&record)))
 }
 
 /// `POST /approvals/{approvalId}/reject`.
@@ -1095,7 +1109,11 @@ async fn withdraw_approval(
 // Shared pieces.
 // ---------------------------------------------------------------------------
 
-/// The three decisions, spelled once.
+/// The three decisions, spelled once — the record, undressed.
+///
+/// [`decide`] is the thin wrapper every route but `approve` uses; the approve
+/// route calls this directly because it has one more thing to do with the
+/// record than render it (see [`approve_approval`]).
 #[allow(
     clippy::too_many_arguments,
     reason = "the three routes' whole request, gathered: the service and the compiled scope, the \
@@ -1103,7 +1121,7 @@ async fn withdraw_approval(
               addressed, and the decision with its reason. Folding them would name a DTO none of \
               the three routes has"
 )]
-async fn decide(
+async fn decide_record(
     state: &GovernanceState,
     scope: &AccessScope,
     ctx: &SecurityContext,
@@ -1112,10 +1130,10 @@ async fn decide(
     decision: DecisionBy,
     reason: Option<String>,
     withdraw_authority: WithdrawAuthority,
-) -> Result<Json<ApprovalView>, CanonicalError> {
+) -> Result<ApprovalRecord, CanonicalError> {
     let now = Utc::now();
     let tenant = ctx.subject_tenant_id();
-    let record = state
+    state
         .approvals
         .decide(
             scope,
@@ -1130,8 +1148,110 @@ async fn decide(
             },
         )
         .await
-        .map_err(CanonicalError::from)?;
+        .map_err(CanonicalError::from)
+}
+
+/// The three decisions, rendered.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "decide_record's own reason, passed straight through"
+)]
+async fn decide(
+    state: &GovernanceState,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    approval_id: Uuid,
+    decision: DecisionBy,
+    reason: Option<String>,
+    withdraw_authority: WithdrawAuthority,
+) -> Result<Json<ApprovalView>, CanonicalError> {
+    let record = decide_record(
+        state,
+        scope,
+        ctx,
+        correlation,
+        approval_id,
+        decision,
+        reason,
+        withdraw_authority,
+    )
+    .await?;
     Ok(Json(ApprovalView::from(&record)))
+}
+
+/// Best-effort: an approved repricing run's apply, spent the moment a second
+/// principal approves its batch unit (`inst-bs-commit`'s approved arm).
+///
+/// **Never fails the `approve` request.** The decision itself already
+/// committed — [`approve_approval`]'s own record is durable before this runs
+/// — so a failure here is not that request's to report: it is logged, and the
+/// run stays exactly where the decision left it (`awaiting_approval`, or
+/// `committing` if [`crate::infra::repricing::apply_run_in`] took that edge
+/// and failed after it) for a later redrive. `api::rest::repricing_runs`'s
+/// own non-material path takes the identical best-effort posture, for the
+/// identical reason: the run and its journal are already durable, and a 500
+/// for a request that already succeeded would be the wrong answer.
+///
+/// The scope asked is **fresh**, `plan × write`, never the approval-decide
+/// scope `approve_approval` already holds: deciding an approval and writing
+/// the plan rows it approved are two different questions the PDP answers
+/// separately, and an approver who cannot write the plan is not silently
+/// handed the authority to apply it by having approved it.
+async fn apply_approved_repricing_run(
+    state: &GovernanceState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    operation_id: Uuid,
+) {
+    let tenant = ctx.subject_tenant_id();
+    let scope = match crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &crate::authz::resource_types::PLAN,
+        crate::authz::actions::WRITE,
+        Some(tenant),
+        None,
+        true,
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(err) => {
+            tracing::error!(
+                error = ?err,
+                run_id = %operation_id,
+                "bss-pricing: repricing run apply not attempted: the approver holds no plan x \
+                 write scope; the run stays awaiting_approval for a later redrive"
+            );
+            return;
+        }
+    };
+    let stamp = crate::domain::audit::AuditStamp {
+        actor_principal_id: ctx.subject_id(),
+        recorded_at: Utc::now(),
+        correlation_id: correlation,
+    };
+    if let Err(err) = crate::infra::repricing::apply_run_in(
+        &state.db,
+        state.publish.policies(),
+        state.publish.registry(),
+        ctx,
+        &scope,
+        tenant,
+        operation_id,
+        stamp,
+    )
+    .await
+    {
+        tracing::error!(
+            error = %err,
+            run_id = %operation_id,
+            "bss-pricing: repricing run apply failed after approval; the run stays committing \
+             for a later redrive"
+        );
+    }
 }
 
 /// The `approval × read` gate, for the two reads.

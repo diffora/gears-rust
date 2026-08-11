@@ -603,6 +603,15 @@ impl Harness {
             .merge(bss_pricing::api::rest::repricing_runs::router(
                 Arc::new(bss_pricing::api::rest::repricing_runs::ApiState {
                     authoring: Arc::clone(&self.state),
+                    // The same double `governance`'s own services share —
+                    // `api::rest::state`'s "one requester, two readers"
+                    // argument, applied to a harness rather than to
+                    // production wiring.
+                    registry: Arc::clone(&self.registry) as Arc<_>,
+                    policies: bss_pricing::infra::storage::repo::PolicyObjectRepo::new(
+                        self.db.clone(),
+                        &LimitsConfig::default(),
+                    ),
                 }),
                 &openapi,
             ))
@@ -1235,6 +1244,92 @@ pub async fn seed_current_plan(harness: &Harness, plan_id: Uuid) {
     harness.publish(plan_id, 0).await;
 }
 
+/// [`seed_current_plan`], with a shape the aggregate publish rule set actually
+/// passes: [`seed_publishable_shape`]'s own phase, frequency and descriptor
+/// set, but at [`seeded_phase`] — the id every fixed-key seed
+/// (`seed_price_keyed`, `seed_priced_row`) already files its rows under —
+/// rather than a freshly minted one, and published rather than left open.
+///
+/// `seed_current_plan` alone leaves a plan with **zero** phases and no
+/// frequency or descriptor set, which `PHASE_GRAPH_INVALID`,
+/// `CYCLE_METADATA_MISSING` and `DESCRIPTOR_INCOMPLETE` refuse outright. That
+/// was never reachable through this crate's raw seed doors —
+/// `Harness::publish`/`publish_price` bypass the rule set entirely — until a
+/// caller ran the **real** aggregate pass over a plan seeded this way, which
+/// is exactly what `crate::infra::repricing::apply_run_in`'s aggregate pass
+/// does.
+pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
+    let plan = PlanId::new(plan_id);
+    let scope = harness.scope();
+    let created = harness
+        .state
+        .plans
+        .create_draft(
+            &scope,
+            NewPlanDraft {
+                plan_id: plan,
+                tenant_id: harness.tenant,
+                created_by: SEED_ACTOR,
+                created_at_utc: at(10),
+                sku_id: Some(Uuid::from_u128(0x5_c1)),
+                plan_tier: Some("gold".to_owned()),
+                billing_cycle: Some(BillingCycle::Recurring),
+                frequency: Some(Frequency::Monthly),
+                plan_tier_override: false,
+                purchase_min_qty: None,
+                purchase_max_qty: None,
+                invoice_grouping_key: None,
+                available_from: None,
+                available_to: None,
+                cloned_from: None,
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("seed the draft plan");
+    let after_phases = harness
+        .state
+        .shapes
+        .replace_phases(
+            &scope,
+            harness.tenant,
+            plan,
+            created.revision,
+            created.row_version,
+            vec![PlanPhase {
+                phase_id: seeded_phase(),
+                kind: PhaseKind::Evergreen,
+                ordinal: 0,
+                converts_to_phase_id: None,
+                phase_duration_days: None,
+                display_trial_days: None,
+            }],
+            stamp(),
+        )
+        .await
+        .expect("attach the phase chain");
+    harness
+        .state
+        .shapes
+        .set_descriptor_set(
+            &scope,
+            harness.tenant,
+            plan,
+            created.revision,
+            after_phases.row_version,
+            DescriptorSet {
+                invoice_line_template: Some("{plan}".to_owned()),
+                gl_code: Some("4000".to_owned()),
+                itemization_rule: Some("per_charge".to_owned()),
+                additional: std::collections::BTreeMap::new(),
+            },
+            stamp(),
+        )
+        .await
+        .expect("attach the descriptor set");
+    harness.publish(plan_id, created.revision).await;
+}
+
 /// The same, in the **other** tenant, for the cross-tenant probes.
 pub async fn seed_foreign_plan(harness: &Harness, plan_id: Uuid) {
     harness
@@ -1531,13 +1626,21 @@ pub async fn seed_priced_row(
                     row,
                     tax_inclusive: false,
                     tax_category_ref: None,
-                    billing_timing: None,
+                    // `Some("advance")`, `publishable_row`'s own reason: a
+                    // fixture asserting the run's real apply — not only the
+                    // materiality it decides against — needs a row the whole
+                    // aggregate rule set actually passes.
+                    billing_timing: Some("advance".to_owned()),
                     proration_contract: Some(ProrationContract {
                         billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
                         proration_basis: ProrationBasis::CalendarDaysActual,
                         credit_on_downgrade: false,
                     }),
-                    rounding_policy_ref: None,
+                    // `ROUNDING_POLICY_UNRESOLVED` otherwise: the tenant this
+                    // harness builds configures no default, so a row that
+                    // wants a clean pass through the real aggregate rule set
+                    // has to name its own — `publishable_row`'s reason.
+                    rounding_policy_ref: Some("half_up".to_owned()),
                     grandfather_until: None,
                     supersedes_price_id: None,
                 },

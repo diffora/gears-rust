@@ -166,6 +166,35 @@ impl PublishService {
         }
     }
 
+    /// The tenant policy reader, for [`rule_params`]'s second caller.
+    ///
+    /// `pub(crate)` for [`crate::infra::repricing::apply_run_in`]: the
+    /// mass-repricing apply's aggregate pass is `rule_params` plus
+    /// `run_publish_rules`, run over a shape it assembles itself rather than
+    /// one this service built — but the policy reader those parameters resolve
+    /// against is the tenant's one authoring policy, and reusing the instance
+    /// this engine already holds is what keeps that one policy read from a
+    /// second, independently-constructed reader answering it a different way
+    /// after an operator raises a cap between the two calls.
+    #[must_use]
+    pub(crate) const fn policies(&self) -> &PolicyObjectRepo {
+        &self.policies
+    }
+
+    /// The registry handle, for a second requester that does not go through
+    /// [`Self::commit`].
+    ///
+    /// `pub(crate)` for [`crate::infra::repricing::apply_run_in`]: D-134's
+    /// per-plan `CatalogVersion` request is the apply's own, made directly
+    /// against the registry rather than through this service's `commit` (which
+    /// assembles an open **draft** revision a repricing run does not have) —
+    /// see `api::rest::state`'s module doc for why sharing the one `Arc` rather
+    /// than minting a second is what keeps two requesters one incrementer.
+    #[must_use]
+    pub(crate) fn registry(&self) -> &Arc<dyn CatalogVersionRegistryV1> {
+        &self.registry
+    }
+
     /// Attach the metrics port (`T-17`).
     ///
     /// A **second call** rather than a fifth parameter on [`Self::new`], for
@@ -839,7 +868,14 @@ pub(crate) async fn refuse_unpublishable_predecessor(
 /// # Errors
 /// [`DomainError::Internal`] on a storage failure or a policy row this gear
 /// cannot read.
-async fn rule_params(
+///
+/// `pub(crate)` for [`crate::infra::repricing`], the mass-repricing apply's own
+/// module: its aggregate pass is this exact function's `run_publish_rules`
+/// call, over a shape it assembles itself (`assemble_from` against the plan's
+/// **current** revision rather than an open draft — a repricing run has none),
+/// so the parameters that pass has to resolve are these same five and not a
+/// second reading of the tenant's policy grown for one caller.
+pub(crate) async fn rule_params(
     policies: &PolicyObjectRepo,
     runner: &impl DBRunner,
     scope: &AccessScope,

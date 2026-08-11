@@ -19,6 +19,7 @@ pub mod migration;
 pub mod overlay_publish;
 pub mod publish;
 pub mod read_model;
+pub mod repricing;
 pub mod retirement;
 pub mod storage;
 pub mod supersession;

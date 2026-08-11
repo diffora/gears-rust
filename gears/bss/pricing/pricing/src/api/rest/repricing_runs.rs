@@ -144,10 +144,8 @@ use crate::domain::bulk::{BulkKind, BulkState};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict, PublishedPriceBaseline};
-use crate::domain::money::{CurrencyCode, MinorAmount};
-use crate::domain::overlay::{Adjustment, Magnitude};
-use crate::domain::price_record::PriceRecord;
-use crate::domain::price_row::ModelKind;
+use crate::domain::money::CurrencyCode;
+use crate::domain::overlay::Adjustment;
 use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region,
@@ -314,6 +312,24 @@ pub struct ApiState {
     /// free function over a runner and the run's own statements are too, so what
     /// is wanted here is the provider and the scope every read goes through.
     pub authoring: Arc<AuthoringState>,
+    /// The `CatalogVersion` registry, for the apply's one request per plan
+    /// (`inst-mr-coalesce`).
+    ///
+    /// **The one field that puts this state outside `AuthoringState`'s own
+    /// rule** — "the authoring routes must not be able to reach [a registry
+    /// handle]" (`api::rest::state`'s module doc). A repricing run's apply is
+    /// not an authoring act; it commits, exactly as a publish does, so this
+    /// state carries what a publish-adjacent surface needs rather than
+    /// stretching `AuthoringState`'s own meaning to cover it. The same `Arc`
+    /// [`crate::api::rest::state::GovernanceState`] holds — one requester, not
+    /// a second incrementer.
+    pub registry: Arc<dyn crate::domain::ports::CatalogVersionRegistryV1>,
+    /// The tenant policy reader the apply's aggregate pass resolves its
+    /// [`crate::domain::publish::rules::PublishRuleParams`] through — the same
+    /// read [`crate::infra::publish::PublishService`] makes, over a fresh
+    /// instance rather than that service's own: this state carries no
+    /// `PublishService` of its own to borrow one from.
+    pub policies: crate::infra::storage::repo::PolicyObjectRepo,
 }
 
 /// Build the router for the run's two surfaces.
@@ -483,6 +499,57 @@ async fn open_repricing_run(
         correlation_id,
     )
     .await?;
+
+    // **The non-material path.** `open_run` has already taken the run to
+    // `committing` in the same transaction that froze its journal, on a
+    // verdict of "no second principal required" — `advance_on_verdict`'s
+    // `else` arm. Nothing else drives a `committing` run forward, so this is
+    // the one place that edge is spent for it. A material run is left exactly
+    // where `open_run` put it (`awaiting_approval`); its apply is
+    // `api::rest::approvals`' arm, spent when a second principal approves the
+    // batch unit rather than synchronously here.
+    let run = if run.state == BulkState::Committing {
+        match crate::infra::repricing::apply_run_in(
+            &state.authoring.db,
+            &state.policies,
+            &state.registry,
+            &ctx,
+            &scope,
+            tenant,
+            run.operation_id,
+            AuditStamp {
+                actor_principal_id: ctx.subject_id(),
+                recorded_at: Utc::now(),
+                correlation_id,
+            },
+        )
+        .await
+        {
+            Ok(_) => bulk_repo::read(&conn, &scope, tenant, run.operation_id)
+                .await
+                .map_err(|e| CanonicalError::from(repo_failure(&e)))?
+                .unwrap_or(run),
+            // **Best-effort, and the run answers `202` either way.** The apply
+            // failing is not this request's failure: the run and its journal
+            // are already durable, `committing` is a legitimate state to
+            // report, and a caller reading the `GET` afterwards sees exactly
+            // what happened rather than a 500 for a run that did open. What
+            // is missing is a redrive trigger for the run stranded here —
+            // named rather than built, `api::rest::repricing_runs`'s module
+            // doc's own remaining debt.
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    run_id = %run.operation_id,
+                    "bss-pricing: repricing run apply failed synchronously; the run stays \
+                     committing for a later redrive"
+                );
+                run
+            }
+        }
+    } else {
+        run
+    };
 
     let view = run_view(&conn, &scope, tenant, &run).await?;
     Ok((StatusCode::ACCEPTED, Json(view)).into_response())
@@ -739,7 +806,7 @@ async fn run_materiality(
 
     let change_rows: Vec<_> = selected_rows
         .into_iter()
-        .map(|row| project_row(row, adjustment))
+        .map(|row| crate::domain::repricing::project_row(row, adjustment))
         .collect();
     let change = ChangeSet::of_repricing_run(change_rows);
     let baseline = PublishedPriceBaseline::of_records(baseline_rows);
@@ -751,142 +818,6 @@ async fn run_materiality(
         materiality::evaluate(&change, policy.as_ref(), Some(&baseline)),
         held_keys,
     ))
-}
-
-/// One selected row, with `adjustment` applied to whichever field holds its
-/// money — the projected content a reviewer is being asked to approve, built
-/// for [`run_materiality`]'s comparison and never persisted.
-///
-/// `markup`/`discount` with a `percent_bp` magnitude is currency-neutral and
-/// always resolves: `base ± round_half_even(base*bp, 10_000)`. **Not
-/// truncating**, and not a decision invented for this function: the crate
-/// denies `clippy::integer_division` (workspace `Cargo.toml`), and while
-/// `materiality::delta::AmountMove::reaches_percent` sidesteps that by
-/// cross-multiplying — it only ever answers a comparison, never a value — this
-/// function has to produce an actual minor-unit amount, and no comparison
-/// avoids that. `bss_ledger::domain::money_math::round_half_even` is this
-/// crate family's own precedent for exactly that shape (half-to-even,
-/// `div_euclid`/`rem_euclid` rather than `/`, so the lint that flagged
-/// truncation here never fires on it either); it is `pub(crate)` to that gear
-/// and not importable, so [`round_half_even`] below reproduces the identical
-/// algorithm rather than a different one invented in place. **The direction is
-/// symmetric and the tie-break is not always visible**: half-to-even rounds a
-/// `.5` remainder to whichever neighbour is even, so two adjustments of equal
-/// distance from a whole minor unit can round in opposite directions — a
-/// markup and a discount of the same `bp` are therefore not exact mirrors of
-/// one another at the boundary, which is arithmetic rather than an
-/// inconsistency. A `markup`/`discount` with an `amount` magnitude, or a
-/// `fixed` line, needs `currency`'s entry in the adjustment's `AmountSet`.
-///
-/// A result that would go negative is **floored at zero**: a price cannot go
-/// negative, and a floor is itself a real, large move a threshold should see —
-/// not the absence of one.
-///
-/// # The one field this cannot signal "not computable" on
-///
-/// `flat`/`per_unit`'s `amount_minor` and `package`'s `package_price_minor` are
-/// both `Option<MinorAmount>`, so a currency the adjustment cannot resolve is
-/// left `None` — [`materiality::delta::row_delta`] already reads an absent
-/// amount as `NotComputable("amount_minor" | "package_price_minor")`, D-115
-/// clause (3)'s existing "no delta, so material regardless of threshold"
-/// fallback, not a new rule minted here. `graduated`/`volume`'s
-/// `TierBand::unit_price_minor` is a bare `MinorAmount`, with no `None` to fall
-/// back to; an unresolvable currency there leaves that band at its **published**
-/// price rather than forcing the row incomputable — the module doc names this
-/// as the one open corner rather than papering over it with a field this
-/// function does not own.
-fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> PriceRecord {
-    let currency = row.scope_key.currency().clone();
-    match row.row.model_kind {
-        Some(ModelKind::Flat | ModelKind::PerUnit) => {
-            row.row.amount_minor = row
-                .row
-                .amount_minor
-                .and_then(|amount| project_amount(amount.get(), adjustment, &currency));
-        }
-        Some(ModelKind::Package) => {
-            row.row.package_price_minor = row
-                .row
-                .package_price_minor
-                .and_then(|amount| project_amount(amount.get(), adjustment, &currency));
-        }
-        Some(ModelKind::Graduated | ModelKind::Volume) => {
-            for band in &mut row.row.bands {
-                if let Some(projected) =
-                    project_amount(band.unit_price_minor.get(), adjustment, &currency)
-                {
-                    band.unit_price_minor = projected;
-                }
-            }
-        }
-        None => {}
-    }
-    row
-}
-
-/// `base`'s minor-unit amount under `adjustment`, in `currency` — [`project_row`]'s
-/// arithmetic, factored out because every model kind applies the identical
-/// formula to a different field.
-///
-/// `None` when an `amount`/`fixed` magnitude has no entry for `currency`; see
-/// [`project_row`]'s doc for what a caller does with that.
-///
-/// Widens to `i128` for the `percent_bp` arms' multiply-then-round, the same
-/// guard [`round_half_even`] itself documents: `base` and `bp` are each
-/// bounded by `i64`, and their product is not.
-fn project_amount(
-    base: i64,
-    adjustment: &Adjustment,
-    currency: &CurrencyCode,
-) -> Option<MinorAmount> {
-    let projected: i128 = match adjustment {
-        Adjustment::Markup(Magnitude::PercentBp(bp)) => {
-            i128::from(base) + round_half_even(i128::from(base) * i128::from(*bp), 10_000)
-        }
-        Adjustment::Discount(Magnitude::PercentBp(bp)) => {
-            i128::from(base) - round_half_even(i128::from(base) * i128::from(*bp), 10_000)
-        }
-        Adjustment::Markup(Magnitude::Amount(set)) => {
-            i128::from(base) + i128::from(set.get(currency)?)
-        }
-        Adjustment::Discount(Magnitude::Amount(set)) => {
-            i128::from(base) - i128::from(set.get(currency)?)
-        }
-        Adjustment::Fixed(set) => i128::from(set.get(currency)?),
-    };
-    i64::try_from(projected.max(0))
-        .ok()
-        .and_then(|minor| MinorAmount::new(minor).ok())
-}
-
-/// Round `numer/denom` (`denom` must be positive) to the nearest integer, ties
-/// to even — half-to-even, "banker's rounding".
-///
-/// Reproduces `bss_ledger::domain::money_math::round_half_even` rather than
-/// importing it (that function is `pub(crate)` to a different gear): this
-/// crate denies `clippy::integer_division`, and `div_euclid`/`rem_euclid` are
-/// method calls rather than the `/` operator the lint matches, which is what
-/// lets this stay exact about ties without an `#[allow]` on money arithmetic.
-/// `i128` throughout because [`project_amount`]'s `numer` is already a product
-/// of two `i64`s.
-fn round_half_even(numer: i128, denom: i128) -> i128 {
-    debug_assert!(denom > 0, "denominator must be positive");
-    let q = numer.div_euclid(denom);
-    let r = numer.rem_euclid(denom); // 0 <= r < denom
-    // Compare `r` to `denom - r` rather than `2 * r` to `denom`, so a large
-    // remainder cannot overflow — `bss_ledger`'s own reason for the same
-    // comparison, reproduced along with the algorithm it guards.
-    let complement = denom - r;
-    if r < complement {
-        q
-    } else if r > complement {
-        q + 1
-    } else if q % 2 == 0 {
-        // exact half: round to even
-        q
-    } else {
-        q + 1
-    }
 }
 
 /// Write the verdict's edge: `validating -> awaiting_approval` under an opened
@@ -1062,6 +993,87 @@ fn frozen_report(
         "changeover": changeover.to_rfc3339(),
         "selected": selected,
     })
+}
+
+/// [`frozen_report`]'s adjustment, read back — the apply's only source for it,
+/// since [`crate::infra::repricing::apply_run_in`] takes no adjustment argument
+/// of its own and the run's own report is where `frozen_report` put it.
+///
+/// Goes through [`adjustment_of`], the same parser the `POST` uses, so the
+/// report is read by the one function that knows what its three tokens mean
+/// rather than by a second reading grown here. `amounts` was rendered as a
+/// `{currency: value}` object rather than `adjustment_of`'s own vocabulary
+/// list, so it is rebuilt into [`AmountRequest`]s here — the shape that
+/// function takes — rather than widening it to read two encodings.
+///
+/// `pub(crate)` for [`crate::infra::repricing`], the apply's own module: this
+/// crate's report is infra's data as much as this surface's, and the inverse
+/// of a rendering belongs beside the rendering rather than duplicated where a
+/// second reader needs it (`infra::history`'s precedent for infra reaching
+/// into `api::rest` the other way).
+///
+/// # Errors
+/// [`DomainError::Internal`] naming the missing or malformed field — this
+/// crate's own stored rendering, so a failure here is corruption rather than a
+/// caller's mistake.
+pub(crate) fn adjustment_of_report(report: &serde_json::Value) -> Result<Adjustment, DomainError> {
+    let corrupt = |what: &str| {
+        DomainError::Internal(format!(
+            "bss-pricing: repricing run report: adjustment.{what} missing or malformed"
+        ))
+    };
+    let adjustment = report
+        .get("adjustment")
+        .ok_or_else(|| corrupt("<object>"))?;
+    let adjustment_kind = adjustment
+        .get("adjustment_kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| corrupt("adjustment_kind"))?;
+    let magnitude_kind = adjustment
+        .get("magnitude_kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| corrupt("magnitude_kind"))?;
+    let adjustment_value = adjustment
+        .get("adjustment_value")
+        .and_then(serde_json::Value::as_i64);
+    let amounts: Vec<AmountRequest> = adjustment
+        .get("amounts")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| corrupt("amounts"))?
+        .iter()
+        .map(|(currency, value)| AmountRequest {
+            currency: currency.clone(),
+            value_minor: value.as_i64().unwrap_or_default(),
+        })
+        .collect();
+    adjustment_of(adjustment_kind, magnitude_kind, adjustment_value, &amounts)
+}
+
+/// [`frozen_report`]'s changeover, read back. `pub(crate)` for
+/// [`crate::infra::repricing`], [`adjustment_of_report`]'s reason.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the field is missing or is not a well-formed
+/// RFC 3339 instant — this crate's own stored rendering, so either is
+/// corruption rather than a caller's mistake.
+pub(crate) fn changeover_of_report(
+    report: &serde_json::Value,
+) -> Result<DateTime<Utc>, DomainError> {
+    let raw = report
+        .get("changeover")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            DomainError::Internal(
+                "bss-pricing: repricing run report: changeover missing or malformed".to_owned(),
+            )
+        })?;
+    DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| {
+            DomainError::Internal(format!(
+                "bss-pricing: repricing run report: changeover `{raw}` is not RFC 3339: {e}"
+            ))
+        })
 }
 
 /// The run and its journal, as one view.

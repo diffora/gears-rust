@@ -68,7 +68,10 @@
 
 use toolkit_macros::domain_model;
 
-use crate::domain::money::CurrencyCode;
+use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::overlay::{Adjustment, Magnitude};
+use crate::domain::price_record::PriceRecord;
+use crate::domain::price_row::ModelKind;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region,
 };
@@ -156,6 +159,149 @@ impl RunSelector {
             self.price_eligibility,
             Some(PriceEligibility::ExistingGrandfathered)
         )
+    }
+}
+
+/// One row, with `adjustment` applied to whichever field holds its money.
+///
+/// **Two callers, one arithmetic.** [`crate::api::rest::repricing_runs::run_materiality`]
+/// projects a row's amount in memory, for the comparison a reviewer is being
+/// asked to approve — never persisted. [`crate::infra::repricing::apply_run_in`]
+/// projects the identical row the identical way to build the successor content
+/// it actually writes. A run's materiality verdict and its apply must agree on
+/// what the adjustment *does* to a row, so the arithmetic has exactly one
+/// owner rather than two copies an edit could drift apart — moved here,
+/// `pub(crate)`, the moment the second caller appeared.
+///
+/// `markup`/`discount` with a `percent_bp` magnitude is currency-neutral and
+/// always resolves: `base ± round_half_even(base*bp, 10_000)`. **Not
+/// truncating**, and not a decision invented for this function: the crate
+/// denies `clippy::integer_division` (workspace `Cargo.toml`), and while
+/// `materiality::delta::AmountMove::reaches_percent` sidesteps that by
+/// cross-multiplying — it only ever answers a comparison, never a value — this
+/// function has to produce an actual minor-unit amount, and no comparison
+/// avoids that. `bss_ledger::domain::money_math::round_half_even` is this
+/// crate family's own precedent for exactly that shape (half-to-even,
+/// `div_euclid`/`rem_euclid` rather than `/`, so the lint that flagged
+/// truncation here never fires on it either); it is `pub(crate)` to that gear
+/// and not importable, so [`round_half_even`] below reproduces the identical
+/// algorithm rather than a different one invented in place. **The direction is
+/// symmetric and the tie-break is not always visible**: half-to-even rounds a
+/// `.5` remainder to whichever neighbour is even, so two adjustments of equal
+/// distance from a whole minor unit can round in opposite directions — a
+/// markup and a discount of the same `bp` are therefore not exact mirrors of
+/// one another at the boundary, which is arithmetic rather than an
+/// inconsistency. A `markup`/`discount` with an `amount` magnitude, or a
+/// `fixed` line, needs `currency`'s entry in the adjustment's `AmountSet`.
+///
+/// A result that would go negative is **floored at zero**: a price cannot go
+/// negative, and a floor is itself a real, large move a threshold should see —
+/// not the absence of one.
+///
+/// # The one field this cannot signal "not computable" on
+///
+/// `flat`/`per_unit`'s `amount_minor` and `package`'s `package_price_minor` are
+/// both `Option<MinorAmount>`, so a currency the adjustment cannot resolve is
+/// left `None` — [`crate::domain::materiality::delta::row_delta`] already reads
+/// an absent amount as `NotComputable("amount_minor" | "package_price_minor")`,
+/// D-115 clause (3)'s existing "no delta, so material regardless of threshold"
+/// fallback, not a new rule minted here. `graduated`/`volume`'s
+/// `TierBand::unit_price_minor` is a bare `MinorAmount`, with no `None` to fall
+/// back to; an unresolvable currency there leaves that band at its **published**
+/// price rather than forcing the row incomputable — named in
+/// [`crate::api::rest::repricing_runs`]'s module doc as the one open corner
+/// rather than papered over with a field this function does not own.
+pub(crate) fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> PriceRecord {
+    let currency = row.scope_key.currency().clone();
+    match row.row.model_kind {
+        Some(ModelKind::Flat | ModelKind::PerUnit) => {
+            row.row.amount_minor = row
+                .row
+                .amount_minor
+                .and_then(|amount| project_amount(amount.get(), adjustment, &currency));
+        }
+        Some(ModelKind::Package) => {
+            row.row.package_price_minor = row
+                .row
+                .package_price_minor
+                .and_then(|amount| project_amount(amount.get(), adjustment, &currency));
+        }
+        Some(ModelKind::Graduated | ModelKind::Volume) => {
+            for band in &mut row.row.bands {
+                if let Some(projected) =
+                    project_amount(band.unit_price_minor.get(), adjustment, &currency)
+                {
+                    band.unit_price_minor = projected;
+                }
+            }
+        }
+        None => {}
+    }
+    row
+}
+
+/// `base`'s minor-unit amount under `adjustment`, in `currency` — [`project_row`]'s
+/// arithmetic, factored out because every model kind applies the identical
+/// formula to a different field.
+///
+/// `None` when an `amount`/`fixed` magnitude has no entry for `currency`; see
+/// [`project_row`]'s doc for what a caller does with that.
+///
+/// Widens to `i128` for the `percent_bp` arms' multiply-then-round, the same
+/// guard [`round_half_even`] itself documents: `base` and `bp` are each
+/// bounded by `i64`, and their product is not.
+fn project_amount(
+    base: i64,
+    adjustment: &Adjustment,
+    currency: &CurrencyCode,
+) -> Option<MinorAmount> {
+    let projected: i128 = match adjustment {
+        Adjustment::Markup(Magnitude::PercentBp(bp)) => {
+            i128::from(base) + round_half_even(i128::from(base) * i128::from(*bp), 10_000)
+        }
+        Adjustment::Discount(Magnitude::PercentBp(bp)) => {
+            i128::from(base) - round_half_even(i128::from(base) * i128::from(*bp), 10_000)
+        }
+        Adjustment::Markup(Magnitude::Amount(set)) => {
+            i128::from(base) + i128::from(set.get(currency)?)
+        }
+        Adjustment::Discount(Magnitude::Amount(set)) => {
+            i128::from(base) - i128::from(set.get(currency)?)
+        }
+        Adjustment::Fixed(set) => i128::from(set.get(currency)?),
+    };
+    i64::try_from(projected.max(0))
+        .ok()
+        .and_then(|minor| MinorAmount::new(minor).ok())
+}
+
+/// Round `numer/denom` (`denom` must be positive) to the nearest integer, ties
+/// to even — half-to-even, "banker's rounding".
+///
+/// Reproduces `bss_ledger::domain::money_math::round_half_even` rather than
+/// importing it (that function is `pub(crate)` to a different gear): this
+/// crate denies `clippy::integer_division`, and `div_euclid`/`rem_euclid` are
+/// method calls rather than the `/` operator the lint matches, which is what
+/// lets this stay exact about ties without an `#[allow]` on money arithmetic.
+/// `i128` throughout because [`project_amount`]'s `numer` is already a product
+/// of two `i64`s.
+fn round_half_even(numer: i128, denom: i128) -> i128 {
+    debug_assert!(denom > 0, "denominator must be positive");
+    let q = numer.div_euclid(denom);
+    let r = numer.rem_euclid(denom); // 0 <= r < denom
+    // Compare `r` to `denom - r` rather than `2 * r` to `denom`, so a large
+    // remainder cannot overflow — `bss_ledger`'s own reason for the same
+    // comparison, reproduced along with the algorithm it guards.
+    let complement = denom - r;
+    if r < complement {
+        q
+    } else if r > complement {
+        q + 1
+    } else if q % 2 == 0 {
+        // exact half: round to even
+        q
+    } else {
+        q + 1
     }
 }
 
