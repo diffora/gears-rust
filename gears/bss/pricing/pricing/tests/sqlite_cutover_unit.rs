@@ -603,7 +603,7 @@ async fn the_compose_announces_both_drafts_and_nothing_about_the_act() {
 const REVIEWER: Uuid = Uuid::from_u128(0x_5c_22);
 
 async fn approve(h: &Harness, approval_id: Uuid) {
-    use bss_pricing::domain::approval::DecisionBy;
+    use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
     use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
     h.governance
         .approvals
@@ -616,6 +616,7 @@ async fn approve(h: &Harness, approval_id: Uuid) {
                 reason: None,
                 approver_regions: RegionGrant::Untransported,
                 stamp: stamp_of(REVIEWER),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await

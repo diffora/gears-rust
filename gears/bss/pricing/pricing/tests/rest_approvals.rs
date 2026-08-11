@@ -848,6 +848,14 @@ async fn every_approval_route_is_gated_and_a_refusal_decides_nothing() {
 /// *something*.
 ///
 /// An allow/deny test cannot catch a route gated on the wrong pair; this can.
+///
+/// **The gate is the `first` question, not the last.** It read `last()` until
+/// 2026-08-11, when it was true because every route here asked exactly one — and
+/// it broke the moment `withdraw` grew a second, which is the right outcome from
+/// the wrong assertion: `last()` would equally have passed a route that gated on
+/// the correct pair and then acted, or gated on the wrong pair first and the right
+/// one afterwards. The gate is what is asked *before the handler acts*, so this
+/// asks for the first.
 #[tokio::test]
 async fn each_route_asks_the_pdp_for_the_pair_the_catalog_names() {
     let h = Harness::new().await;
@@ -868,11 +876,62 @@ async fn each_route_asks_the_pdp_for_the_pair_the_catalog_names() {
         let (client, seen) = h.recording();
         let _ = client.send(with_headers(method, &path, None, &[])).await;
         let asked = seen.lock().expect("recorder");
-        let request = asked.last().expect("the route asked the PDP");
+        let request = asked.first().expect("the route asked the PDP");
         assert_eq!(
             request.resource.resource_type, approval_label,
             "{method} {path}"
         );
         assert_eq!(request.action.name, action, "{method} {path}");
     }
+}
+
+/// **`withdraw` asks a second question, and it is pinned here rather than left to
+/// be discovered.**
+///
+/// It is the only route on this surface that asks twice, so the census above —
+/// which is about the *gate* — cannot say what the second one is, and an unpinned
+/// extra PDP call is exactly the kind of thing that drifts into a gate.
+///
+/// The second question is not a gate: a denial narrows the caller's authority to
+/// their own units instead of refusing the request. It exists because
+/// `inst-as-void` names the withdrawer as "the submitter (or a `CatalogAdmin`)"
+/// and nothing at this layer can answer a question about roles — `SecurityContext`
+/// carries a subject, a tenant and token scopes. So `CatalogAdmin` is asked as
+/// `plan × publish`, the authority that role actually carries and no
+/// `FinanceReviewer` holds.
+///
+/// It is deliberately **tenant-wide** (`resource_id` absent): the question is
+/// whether this principal is a catalog authority at all, and the unit's plan is
+/// not known at this route — only its approval id.
+#[tokio::test]
+async fn the_withdraw_route_asks_a_second_non_gating_question_about_catalog_authority() {
+    let h = Harness::new().await;
+    let approval_id = a_pending_unit(&h).await;
+
+    let (client, seen) = h.recording();
+    let _ = client
+        .send(with_headers(
+            "POST",
+            &decision_path(approval_id, "withdraw"),
+            None,
+            &[],
+        ))
+        .await;
+    let asked = seen.lock().expect("recorder");
+
+    assert_eq!(
+        asked.len(),
+        2,
+        "the withdraw asks its gate and then the authority question: {:?}",
+        asked
+            .iter()
+            .map(|r| (&r.resource.resource_type, &r.action.name))
+            .collect::<Vec<_>>()
+    );
+    let authority = &asked[1];
+    assert_eq!(
+        authority.resource.resource_type,
+        toolkit_gts::gts_id!("cf.bss.pricing.plan.v1~"),
+    );
+    assert_eq!(authority.action.name, "publish");
 }

@@ -258,6 +258,9 @@ fn each_refusal_becomes_the_variant_its_status_needs() {
             ) | (
                 DecisionRefusal::ReasonRequired,
                 DomainError::ReasonRequired(_)
+            ) | (
+                DecisionRefusal::ForeignWithdraw,
+                DomainError::WithdrawForbidden(_)
             )
         );
         assert!(matched, "{refusal:?} became {err:?}");

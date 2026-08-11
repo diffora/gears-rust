@@ -87,7 +87,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bss_pricing::domain::approval::{ApprovalState, DecisionBy};
+use bss_pricing::domain::approval::{ApprovalState, DecisionBy, WithdrawAuthority};
 use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::materiality::{ThresholdBasis, ThresholdEntry};
@@ -302,6 +302,7 @@ fn approve(approval_id: Uuid) -> DecideRequest {
             Region::new("eu").expect("a non-blank region")
         ])),
         stamp: stamp_of(APPROVER, at(13)),
+        withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
     }
 }
 

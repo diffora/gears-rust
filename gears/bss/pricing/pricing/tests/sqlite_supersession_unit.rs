@@ -42,7 +42,7 @@ mod rest_support;
 
 use std::sync::Arc;
 
-use bss_pricing::domain::approval::DecisionBy;
+use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::domain::audit::{AuditStamp, AuditSubjectKind};
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::events::CatalogEvent;
@@ -160,6 +160,7 @@ async fn approve(h: &Harness, approval_id: Uuid) {
                 reason: None,
                 approver_regions: RegionGrant::Untransported,
                 stamp: stamp_of(REVIEWER),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -1367,6 +1368,7 @@ async fn a_rejected_unit_leaves_the_act_re_submittable_and_nothing_committed() {
                 reason: Some("not this quarter".to_owned()),
                 approver_regions: RegionGrant::Untransported,
                 stamp: stamp_of(REVIEWER),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await

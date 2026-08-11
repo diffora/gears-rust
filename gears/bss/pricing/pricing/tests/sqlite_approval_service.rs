@@ -60,7 +60,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use bss_pricing::config::LimitsConfig;
-use bss_pricing::domain::approval::{ApprovalState, DecisionBy};
+use bss_pricing::domain::approval::{ApprovalState, DecisionBy, WithdrawAuthority};
 use bss_pricing::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::error::DomainError;
@@ -334,6 +334,7 @@ fn approve_as(approval_id: Uuid, approver: Uuid, regions: &[&str]) -> DecideRequ
                 .collect::<BTreeSet<_>>(),
         ),
         stamp: stamp_of(approver, at(13)),
+        withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
     }
 }
 
@@ -469,6 +470,7 @@ async fn a_reasoned_reject_and_a_withdraw_are_both_taken() {
                     Region::new("eu").unwrap()
                 ])),
                 stamp: stamp_of(APPROVER, at(13)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -489,6 +491,7 @@ async fn a_reasoned_reject_and_a_withdraw_are_both_taken() {
                 reason: Some("withdrawn by the submitter".to_owned()),
                 approver_regions: RegionGrant::Explicit(BTreeSet::new()),
                 stamp: stamp_of(SUBMITTER, at(14)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -578,6 +581,7 @@ async fn a_self_rejection_is_refused_and_recorded() {
                     Region::new("eu").unwrap()
                 ])),
                 stamp: stamp_of(SUBMITTER, at(13)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -669,6 +673,7 @@ async fn a_reject_with_no_reason_is_refused_with_the_code_and_not_as_a_storage_f
                     Region::new("eu").unwrap()
                 ])),
                 stamp: stamp_of(APPROVER, at(13)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -778,6 +783,7 @@ async fn the_regions_compared_are_the_price_rows_own() {
                 reason: None,
                 approver_regions: RegionGrant::Explicit(BTreeSet::new()),
                 stamp: stamp_of(SUBMITTER, at(13)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -938,6 +944,7 @@ async fn a_reject_is_not_refused_by_a_stale_pin() {
                     Region::new("eu").unwrap()
                 ])),
                 stamp: stamp_of(APPROVER, at(13)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -1550,6 +1557,7 @@ async fn a_reject_records_the_reason_the_rule_makes_mandatory() {
                     Region::new("eu").unwrap()
                 ])),
                 stamp: stamp_of(APPROVER, at(13)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -1610,6 +1618,7 @@ async fn a_withdraw_records_the_principal_the_approval_row_cannot_name() {
                 reason: Some("superseded by a later change set".to_owned()),
                 approver_regions: RegionGrant::Explicit(BTreeSet::new()),
                 stamp: stamp_of(CATALOG_ADMIN, at(14)),
+                withdraw_authority: WithdrawAuthority::CatalogAuthority,
             },
         )
         .await

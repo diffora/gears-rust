@@ -597,6 +597,14 @@ pub enum DomainError {
     /// it is an authority refusal, and it is audited.
     #[error("region scope denied: {0}")]
     RegionScopeDenied(String),
+    /// A withdraw by a principal who is neither the unit's submitter nor a
+    /// catalog authority (`inst-as-void`, **403**).
+    ///
+    /// Beside [`DomainError::SelfApprovalForbidden`] and for its reason: closing
+    /// another principal's review releases the canonical scope keys the unit
+    /// held, so it is an authority act, and the attempt is audited.
+    #[error("withdraw forbidden: {0}")]
+    WithdrawForbidden(String),
     /// The pinned content no longer matches the subject at decision time
     /// (`inst-ap-pin`, §5, **409**).
     ///

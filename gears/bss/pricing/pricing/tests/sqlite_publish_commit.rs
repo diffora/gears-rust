@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bss_pricing::config::LimitsConfig;
-use bss_pricing::domain::approval::{ApprovalState, DecisionBy};
+use bss_pricing::domain::approval::{ApprovalState, DecisionBy, WithdrawAuthority};
 use bss_pricing::domain::audit::{
     AuditAction, AuditRecord, AuditSubjectKind, audit_row_hash, genesis_prev_hash,
 };
@@ -733,6 +733,7 @@ async fn approve_unit(
                     Region::new("eu").expect("a non-blank region"),
                 ])),
                 stamp: stamp_of(APPROVER, at(11)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -1453,6 +1454,7 @@ async fn drive_the_approval_plane(h: &Harness) {
                     Region::new("eu").expect("a non-blank region"),
                 ])),
                 stamp: stamp_of(ACTOR, at(16)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -1586,6 +1588,7 @@ async fn drive_the_threshold_policy_plane(h: &Harness) {
                     Region::new("eu").expect("a non-blank region"),
                 ])),
                 stamp: stamp_of(APPROVER, at(17)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -1658,6 +1661,7 @@ async fn decide_one(
                     Region::new("eu").expect("a non-blank region"),
                 ])),
                 stamp: stamp_of(actor, at(17)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await

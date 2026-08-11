@@ -91,7 +91,7 @@ use crate::api::rest::state::GovernanceState;
 use crate::api::rest::windows::WindowIntervalView;
 use std::collections::BTreeMap;
 
-use crate::domain::approval::{ApprovalState, DecisionBy};
+use crate::domain::approval::{ApprovalState, DecisionBy, WithdrawAuthority};
 use crate::domain::contracts::{EntitlementGrants, GrantSet, PlanChangeContract};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{
@@ -977,6 +977,9 @@ async fn approve_approval(
         approval_id,
         DecisionBy::Approve(ctx.subject_id()),
         None,
+        // Unread on this arm: the authority is `inst-as-void`'s and only a
+        // withdraw is judged against it.
+        WithdrawAuthority::OwnUnitsOnly,
     )
     .await
 }
@@ -1006,6 +1009,9 @@ async fn reject_approval(
         approval_id,
         DecisionBy::Reject(ctx.subject_id()),
         Some(body.reason),
+        // Unread on this arm: the authority is `inst-as-void`'s and only a
+        // withdraw is judged against it.
+        WithdrawAuthority::OwnUnitsOnly,
     )
     .await
 }
@@ -1030,6 +1036,35 @@ async fn withdraw_approval(
     } else {
         preconditions::parse_body(&body)?
     };
+    // **`inst-as-void`'s identity half, asked the only way this layer can ask it.**
+    // The instruction names a role — "the submitter (or a `CatalogAdmin`)" — and
+    // nothing here can answer a question about roles: `SecurityContext` carries a
+    // subject, a tenant and token scopes, and the PDP answers `resource × action`.
+    // So the second clause is asked as `plan × publish`, which is the authority
+    // `CatalogAdmin` and `FinanceManager` carry and no `FinanceReviewer` does.
+    //
+    // Tenant-wide (`resource_id: None`, `require_constraints: false`): the question
+    // is whether this principal is a catalog authority at all, not whether they may
+    // publish one particular plan — and the unit's plan is not known here, only its
+    // approval id. A denial is an answer and not a failure, so it narrows the
+    // authority rather than refusing the request; the refusal, if one is owed, is
+    // `judge`'s to make against the record's own submitter.
+    let withdraw_authority = if crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::PLAN,
+        crate::authz::actions::PUBLISH,
+        Some(ctx.subject_tenant_id()),
+        None,
+        false,
+    )
+    .await
+    .is_ok()
+    {
+        WithdrawAuthority::CatalogAuthority
+    } else {
+        WithdrawAuthority::OwnUnitsOnly
+    };
     decide(
         &state,
         &scope,
@@ -1043,6 +1078,7 @@ async fn withdraw_approval(
         // `chk_pricing_approval_distinct_principals`.
         DecisionBy::Void(Some(ctx.subject_id())),
         body.reason,
+        withdraw_authority,
     )
     .await
 }
@@ -1067,6 +1103,7 @@ async fn decide(
     approval_id: Uuid,
     decision: DecisionBy,
     reason: Option<String>,
+    withdraw_authority: WithdrawAuthority,
 ) -> Result<Json<ApprovalView>, CanonicalError> {
     let now = Utc::now();
     let tenant = ctx.subject_tenant_id();
@@ -1081,6 +1118,7 @@ async fn decide(
                 reason,
                 approver_regions: region_grant_of_this_surface(),
                 stamp: audit_stamp(ctx, now, correlation),
+                withdraw_authority,
             },
         )
         .await

@@ -131,7 +131,8 @@ use uuid::Uuid;
 
 use crate::domain::approval::content_pin::{overlay_content_hash, threshold_content_hash};
 use crate::domain::approval::{
-    DecisionBy, DecisionRefusal, DecisionRequest, authorize_decision, content_hash,
+    DecisionBy, DecisionRefusal, DecisionRequest, WithdrawAuthority, authorize_decision,
+    content_hash,
 };
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::error::DomainError;
@@ -260,6 +261,13 @@ pub struct DecideRequest {
     /// stamp says which principal the platform authenticated. Every surface that
     /// reaches here has one.
     pub stamp: AuditStamp,
+    /// Whether this caller may close a unit they did not submit
+    /// (`inst-as-void`).
+    ///
+    /// [`Self::approver_regions`]'s shape and its reason: an authority the domain
+    /// must judge and cannot establish, transported by the surface that can. The
+    /// two non-void arms never read it.
+    pub withdraw_authority: WithdrawAuthority,
 }
 
 /// One record, with the content its pin covers.
@@ -1501,6 +1509,7 @@ async fn judge(
         current_content_hash,
         approver_regions: &approver_regions,
         change_set_regions: &change_set_regions,
+        withdraw_authority: request.withdraw_authority,
     });
 
     if let Err(refusal) = judgement {
@@ -2282,6 +2291,7 @@ fn refusal_to_domain(refusal: DecisionRefusal, approval_id: Uuid) -> DomainError
         DecisionRefusal::ContentMismatch => DomainError::ApprovalContentMismatch(detail),
         DecisionRefusal::NotPending => DomainError::ApprovalNotPending(detail),
         DecisionRefusal::ReasonRequired => DomainError::ReasonRequired(detail),
+        DecisionRefusal::ForeignWithdraw => DomainError::WithdrawForbidden(detail),
     }
 }
 

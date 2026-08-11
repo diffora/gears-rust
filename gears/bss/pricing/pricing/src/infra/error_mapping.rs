@@ -20,7 +20,15 @@
 //! and this gear's submit path is the first writer of); a consumer matches the
 //! category coarsely and the code **exactly**.
 //!
-//! *Exactly* is why the two 403 arms carry a **bare code** in `reason` and drop
+//! **One code below is *not* a name the design set uses**, and it is called out
+//! here rather than left to be assumed: `WITHDRAW_FORBIDDEN` is minted by this
+//! crate. §5 declares no code for a withdraw refused on the withdrawer's identity,
+//! because the design set does not contemplate the refusal existing —
+//! `inst-as-void` states the identity rule while the endpoint map gates the route
+//! on `approval × approve`, and nothing reconciles the two. See
+//! `domain::approval::decision::WithdrawAuthority`.
+//!
+//! *Exactly* is why the three 403 arms carry a **bare code** in `reason` and drop
 //! their detail. `permission_denied()` has no detail slot — its detail is the
 //! fixed platform sentence and `reason` is the only free field — so a detail
 //! carried there would have to ride the code as `"CODE: detail"`, and a consumer
@@ -63,6 +71,17 @@ fn precondition(field: &'static str, detail: &str, code: &'static str) -> Canoni
     PlanResource::failed_precondition()
         .with_precondition_violation(field, detail, code)
         .create()
+}
+
+/// The 403 the three **authority** refusals share, as one line each.
+///
+/// [`precondition`]'s reason and the same lint: `inst-as-void`'s
+/// `WITHDRAW_FORBIDDEN` joined `SELF_APPROVAL_FORBIDDEN` and `REGION_SCOPE_DENIED`
+/// in 2026-08 and the inline spelling put this `From` at 203 against a cap of 200.
+/// The detail is dropped rather than folded into `reason` — see the module note on
+/// why the code has to stand alone there.
+fn denied(code: &'static str) -> CanonicalError {
+    PlanResource::permission_denied().with_reason(code).create()
 }
 
 /// Phase 1's refusal, carrying **two** violations under one code: what was
@@ -423,12 +442,12 @@ impl From<DomainError> for CanonicalError {
             //
             // The detail is **dropped** rather than folded into `reason`; see
             // the module note on why the code has to stand alone there.
-            D::SelfApprovalForbidden(_detail) => PlanResource::permission_denied()
-                .with_reason("SELF_APPROVAL_FORBIDDEN")
-                .create(),
-            D::RegionScopeDenied(_detail) => PlanResource::permission_denied()
-                .with_reason("REGION_SCOPE_DENIED")
-                .create(),
+            D::SelfApprovalForbidden(_detail) => denied("SELF_APPROVAL_FORBIDDEN"),
+            D::RegionScopeDenied(_detail) => denied("REGION_SCOPE_DENIED"),
+            // Beside the two above and for their reason: an authority refusal,
+            // 403, detail dropped. `inst-as-void`'s identity half — closing a
+            // review that is not yours releases the scope keys it held.
+            D::WithdrawForbidden(_detail) => denied("WITHDRAW_FORBIDDEN"),
 
             // An architectural 422 (§5) rendered 400, with the code as the
             // discriminator; see the module note. It is a precondition failure

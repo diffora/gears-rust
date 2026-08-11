@@ -91,7 +91,8 @@ pub mod decision;
 pub use content_pin::content_hash;
 pub use decision::{
     APPROVAL_CONTENT_MISMATCH, DecisionBy, DecisionRefusal, DecisionRequest, REASON_REQUIRED,
-    REGION_SCOPE_DENIED, SELF_APPROVAL_FORBIDDEN, authorize_decision,
+    REGION_SCOPE_DENIED, SELF_APPROVAL_FORBIDDEN, WITHDRAW_FORBIDDEN, WithdrawAuthority,
+    authorize_decision,
 };
 
 /// A decision was asked of a record that is no longer pending (§5, 409).

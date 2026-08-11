@@ -15,7 +15,7 @@ use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::domain::audit::{AuditStamp, hex_bytes};
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, hex_bytes};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::cutover::{
     ComposedCutover, check_cutover_instant, compose_cutover_windows, grandfathered_copy_key,
@@ -36,6 +36,7 @@ use crate::domain::window::WindowInterval;
 use crate::infra::publish::assemble_from;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::approval_repo::{self, ApprovalRecord};
+use crate::infra::storage::repo::audit_repo::{self, NewAuditEntry};
 use crate::infra::storage::repo::window_repo::{NewWindow, WindowRecord};
 use crate::infra::storage::repo::{
     NewOutboxEvent, NewPriceDraft, PendingVersionRow, PriceUpdatedPayload,
@@ -442,6 +443,16 @@ pub struct CutoverReceipt {
     pub shortened_window_id: Uuid,
     /// The registry's **pending** handle: a 202 in a value.
     pub pending_version_ref: String,
+    /// The approval unit that authorized this commit, as `SupersessionReceipt`
+    /// carries its own.
+    ///
+    /// `None` only on the fail-open arm the gate itself decides; a committed
+    /// cutover under governance names its unit. It is here because `approval_ref`
+    /// is the sole join between the approved unit and the act it authorized, and
+    /// until 2026-08-11 this path wrote it in neither place — no audit record and
+    /// no receipt field — so a caller holding a cutover could not name the second
+    /// principal who signed it.
+    pub authorization: Option<Uuid>,
 }
 
 /// What an opened cutover unit leaves behind: two drafts and a record.
@@ -864,6 +875,41 @@ pub async fn cutover_in(
         .map_err(|e| repo_failure(&e))?;
     }
 
+    // 13. The record of who did it, at the **act's** level rather than one per row
+    //     moved — `supersession.rs:995`'s step verbatim, and this is the step the
+    //     cutover's copy of that eleven-step skeleton stopped one short of.
+    //
+    //     **It was absent entirely until 2026-08-11.** Seven infra services call
+    //     `audit_repo::append`; `cutover.rs` contained no occurrence of
+    //     `audit_repo`, `AuditAction` or `NewAuditEntry`, and neither `publish_rows`
+    //     nor `supersede_row` compensates beneath it. The submit half *was* audited
+    //     (`submit_cutover_on` → `approval_repo::open`) and so was the staging of
+    //     the two drafts, so what had no record was precisely the act that moves
+    //     money: the predecessor's supersession and the two publishes.
+    //
+    //     `approval_ref` is the point. It is the only join between the approved unit
+    //     and the act it authorized, and on this path it was written nowhere — not
+    //     on a record (there was none) and not on the receipt (no field) — so an
+    //     auditor holding a cutover could not establish that a second principal had
+    //     approved it, and `inst-tp-record` was unsatisfied for this act.
+    //     §8's `dod-audit` is "every mutation MUST record".
+    record_cutover(
+        txn,
+        scope,
+        CutoverAudit {
+            tenant_id,
+            plan_id: context.plan_id,
+            subject_ref: &subject_ref,
+            predecessor: context.predecessor.price_id,
+            successor: &successor,
+            copy: &copy,
+            approval_ref: authorization.as_ref().map(|record| record.approval_id),
+            stamp,
+            now,
+        },
+    )
+    .await?;
+
     Ok(CutoverOutcome::Committed(Box::new(CutoverReceipt {
         plan_id: context.plan_id,
         revision: context.revision,
@@ -874,7 +920,108 @@ pub async fn cutover_in(
         cutover_at: request.cutover_at,
         shortened_window_id,
         pending_version_ref: pending.pending_ref,
+        authorization: authorization.as_ref().map(|record| record.approval_id),
     })))
+}
+
+/// The cutover's before/after, `supersession::unit_state`'s shape with the third
+/// row this act moves.
+///
+/// A cutover publishes **two** rows — the successor and the grandfathered copy —
+/// where a supersession publishes one, so a state naming only the successor would
+/// leave the copy's transition unrecorded on the act that created it.
+/// Everything the cutover's audit record names, gathered so the append is one
+/// call — `clippy::too_many_lines` bounds `cutover_in` at 200 and the inline
+/// spelling put it at 213, which is `error_mapping`'s `precondition` situation and
+/// takes its remedy.
+struct CutoverAudit<'a> {
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    subject_ref: &'a str,
+    predecessor: Uuid,
+    successor: &'a PriceRecord,
+    copy: &'a PriceRecord,
+    approval_ref: Option<Uuid>,
+    stamp: AuditStamp,
+    now: DateTime<Utc>,
+}
+
+/// The record of who performed the cutover — `supersession.rs:995`'s step, and the
+/// one the cutover's copy of that eleven-step skeleton stopped short of.
+///
+/// **It was absent entirely until 2026-08-11.** Seven infra services call
+/// `audit_repo::append`; `cutover.rs` contained no occurrence of `audit_repo`,
+/// `AuditAction` or `NewAuditEntry`, and neither `publish_rows` nor `supersede_row`
+/// compensates beneath it. The submit half *was* audited (`submit_cutover_on` →
+/// `approval_repo::open`) and so was the staging of the two drafts, so what had no
+/// record was precisely the act that moves money: the predecessor's supersession
+/// and the two publishes.
+///
+/// `approval_ref` is the point. It is the only join between the approved unit and
+/// the act it authorized, and on this path it was written nowhere — not on a record
+/// (there was none) and not on the receipt (no field) — so an auditor holding a
+/// cutover could not establish that a second principal had approved it, and
+/// `inst-tp-record` was unsatisfied for this act. §8's `dod-audit` is "every
+/// mutation MUST record".
+async fn record_cutover(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    audit: CutoverAudit<'_>,
+) -> Result<(), DomainError> {
+    audit_repo::append(
+        txn,
+        scope,
+        NewAuditEntry {
+            tenant_id: audit.tenant_id,
+            chain_id: audit_repo::plan_chain(audit.plan_id),
+            recorded_at: audit.now,
+            actor_principal_id: audit.stamp.actor_principal_id,
+            action: AuditAction::Publish,
+            subject_kind: AuditSubjectKind::PriceUnit,
+            // The act, not either row: `price_unit_ref` names a *row*, which cannot
+            // tell a cutover from a `PATCH` on the same id, and the unit's approval
+            // record already stands under this exact string.
+            subject_ref: audit.subject_ref.to_owned(),
+            before_state: Some(cutover_state(
+                audit.predecessor,
+                LifecycleState::Published,
+                audit.successor,
+                audit.copy,
+                LifecycleState::Draft,
+            )),
+            after_state: Some(cutover_state(
+                audit.predecessor,
+                LifecycleState::Superseded,
+                audit.successor,
+                audit.copy,
+                LifecycleState::Published,
+            )),
+            approval_ref: audit.approval_ref,
+            correlation_id: audit.stamp.correlation_id,
+        },
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| repo_failure(&e))
+}
+
+fn cutover_state(
+    predecessor: Uuid,
+    predecessor_state: LifecycleState,
+    successor: &PriceRecord,
+    copy: &PriceRecord,
+    published_state: LifecycleState,
+) -> serde_json::Value {
+    serde_json::json!({
+        "predecessorPriceId": predecessor,
+        "predecessorState": predecessor_state.as_str(),
+        "successorPriceId": successor.price_id,
+        "successorState": published_state.as_str(),
+        "successorScopeKey": successor.scope_key.to_string(),
+        "copyPriceId": copy.price_id,
+        "copyState": published_state.as_str(),
+        "copyScopeKey": copy.scope_key.to_string(),
+    })
 }
 
 /// The controlled arm: stage both rows, open the unit over both keys, write nothing

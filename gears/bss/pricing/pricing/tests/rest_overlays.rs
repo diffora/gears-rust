@@ -851,6 +851,7 @@ async fn an_overlay_unit_can_be_approved_because_its_pin_re_derives() {
                     recorded_at: chrono::Utc::now(),
                     correlation_id: Uuid::from_u128(0x_9d_c0),
                 },
+                withdraw_authority: bss_pricing::domain::approval::WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -917,6 +918,7 @@ async fn a_rejected_unit_leaves_the_overlay_untouched_and_it_submits_again() {
                     recorded_at: chrono::Utc::now(),
                     correlation_id: Uuid::from_u128(0x_9d_c1),
                 },
+                withdraw_authority: bss_pricing::domain::approval::WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -972,6 +974,7 @@ async fn approve(harness: &Harness, approval_id: &str) {
                     recorded_at: chrono::Utc::now(),
                     correlation_id: Uuid::now_v7(),
                 },
+                withdraw_authority: bss_pricing::domain::approval::WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await

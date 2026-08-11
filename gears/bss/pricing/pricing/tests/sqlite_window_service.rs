@@ -69,7 +69,7 @@ mod rest_support;
 use std::sync::Arc;
 
 use bss_pricing::config::JobsConfig;
-use bss_pricing::domain::approval::DecisionBy;
+use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::domain::audit::AuditSubjectKind;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
@@ -287,6 +287,16 @@ async fn a_decided_unit_frees_every_key_it_held() {
     assert_eq!(still_held(&h, first).await, vec![keys.eu_key.clone()]);
 
     // The submitter withdraws it — `inst-as-void`, the one escape from the pin.
+    //
+    // **The withdrawer is taken from the submitting stamp, not named separately.**
+    // This call passed `SEED_ACTOR` (`0xac70`) until 2026-08-11 while `submit_window`
+    // opens the unit under `seed_stamp()` (`0xac10`), so the case was a *third
+    // party's* withdraw wearing a comment that said "the submitter". It passed
+    // because nothing enforced `inst-as-void`'s identity half, and it is exactly the
+    // hole `a_stranger_cannot_withdraw_a_unit_they_did_not_submit` now covers. Taking
+    // both from one value makes the two agree by construction rather than by a
+    // constant somebody has to keep aligned.
+    let submitting_stamp = rest_support::seed_stamp();
     h.governance
         .approvals
         .decide(
@@ -295,13 +305,16 @@ async fn a_decided_unit_frees_every_key_it_held() {
             bss_pricing::infra::approval::DecideRequest {
                 approval_id: first,
                 decision: bss_pricing::domain::approval::DecisionBy::Void(Some(
-                    rest_support::SEED_ACTOR,
+                    submitting_stamp.actor_principal_id,
                 )),
                 reason: None,
                 approver_regions: bss_pricing::infra::approval::RegionGrant::Explicit(
                     std::collections::BTreeSet::new(),
                 ),
-                stamp: rest_support::seed_stamp(),
+                stamp: submitting_stamp,
+                // The withdrawer **is** the submitter, so no catalog authority is
+                // needed — which is the case `inst-as-void` is centrally about.
+                withdraw_authority: bss_pricing::domain::approval::WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -323,6 +336,67 @@ async fn a_decided_unit_frees_every_key_it_held() {
     submit_window(&h, keys.eu_window, second)
         .await
         .expect("the withdrawn unit freed the key");
+}
+
+/// **A principal who did not submit the unit cannot close it, and the key it holds
+/// stays held** (`inst-as-void`).
+///
+/// The identity half of that instruction was enforced at **neither** layer until
+/// 2026-08-11. `authorize_decision`'s two identity rules live inside
+/// `if let Some(approver)`, and `approver()` is `None` on every void, so a withdraw
+/// skipped both and nothing else looked at who was asking: what the code
+/// implemented was *any principal the gate admitted may close any `submitted` unit
+/// of the tenant*.
+///
+/// The second assertion is the one that says why it matters. A withdraw is not
+/// cosmetic — the case above proves it releases the canonical scope keys the unit
+/// held — so an unauthorized withdraw is an unauthorized **unlock**: a reviewer who
+/// could not approve a change could close somebody else's review of it and re-open
+/// the key to whoever wanted it. Asserting only the refusal would leave that
+/// consequence untested.
+#[tokio::test]
+async fn a_stranger_cannot_withdraw_a_unit_they_did_not_submit() {
+    const STRANGER: Uuid = Uuid::from_u128(0x_e5_51);
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let keys = two_keys(&h, plan_id).await;
+
+    let unit = Uuid::from_u128(0x_e5);
+    submit_window(&h, keys.eu_window, unit)
+        .await
+        .expect("the unit opens");
+    assert_eq!(still_held(&h, unit).await, vec![keys.eu_key.clone()]);
+
+    let refused = h
+        .governance
+        .approvals
+        .decide(
+            &h.scope(),
+            h.tenant,
+            DecideRequest {
+                approval_id: unit,
+                decision: DecisionBy::Void(Some(STRANGER)),
+                reason: None,
+                approver_regions: RegionGrant::Explicit(std::collections::BTreeSet::new()),
+                stamp: rest_support::stamp_of(STRANGER, Utc::now()),
+                // No catalog authority: this is the `FinanceReviewer`-shaped caller
+                // the gate admits and `inst-as-void` does not name.
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
+            },
+        )
+        .await;
+
+    match refused {
+        Err(DomainError::WithdrawForbidden(_)) => {}
+        other => panic!("a stranger's withdraw must be refused, got: {other:?}"),
+    }
+
+    assert_eq!(
+        still_held(&h, unit).await,
+        vec![keys.eu_key.clone()],
+        "the refused withdraw released nothing, which is the consequence rather than the status code"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1065,6 +1139,7 @@ async fn cancel_under_approval(
                 reason: None,
                 approver_regions: RegionGrant::Untransported,
                 stamp: rest_support::stamp_of(APPROVER, rest_support::at(12)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await

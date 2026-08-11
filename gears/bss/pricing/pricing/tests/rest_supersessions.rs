@@ -26,7 +26,7 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
-use bss_pricing::domain::approval::DecisionBy;
+use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 use chrono::{DateTime, TimeZone, Utc};
 use rest_support::{Harness, Publishable, body_json, request, seed_publishable_plan};
@@ -93,6 +93,7 @@ async fn approve(h: &Harness, approval_id: Uuid) {
                     recorded_at: Utc::now(),
                     correlation_id: Uuid::from_u128(0x_5c_c0),
                 },
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await

@@ -23,10 +23,10 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
-use bss_pricing::domain::approval::DecisionBy;
+use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 use chrono::{DateTime, TimeZone, Utc};
-use rest_support::{Harness, Publishable, body_json, request, seed_publishable_plan};
+use rest_support::{Harness, Publishable, audit_rows, body_json, request, seed_publishable_plan};
 use uuid::Uuid;
 
 const SUBMITTER: Uuid = Uuid::from_u128(0x_5d_11);
@@ -78,6 +78,7 @@ async fn approve(h: &Harness, approval_id: Uuid) {
                     recorded_at: Utc::now(),
                     correlation_id: Uuid::from_u128(0x_5d_c0),
                 },
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
             },
         )
         .await
@@ -210,6 +211,49 @@ async fn the_call_after_an_independent_approve_commits_and_answers_the_pending_h
     assert!(
         view["approval"].is_null(),
         "the committed arm carries no unit to decide: {view}"
+    );
+
+    // **The trail of the act that moves money**, and armed against the claim rather
+    // than against "a row exists": what makes an audit record worth anything here is
+    // `approval_ref`, the only join between the approved unit and the act it
+    // authorized. Until 2026-08-11 this path wrote it nowhere — `cutover.rs` held no
+    // occurrence of `audit_repo` at all, while seven sibling services append — so an
+    // auditor holding a cutover could not establish that a second principal had
+    // approved it. Asserting merely that the chain grew would have passed against
+    // any of the three staging records this flow already writes.
+    //
+    // Matched on the **action as well as** the ref, and that conjunction is
+    // load-bearing rather than tidy: `approval_repo::open` writes a `submit` record
+    // carrying this same `approval_ref` when the unit is opened, so a finder keyed
+    // on the ref alone matches that one and passes against a commit that records
+    // nothing. It did exactly that on the first run of this probe.
+    let audited = audit_rows(&h).await;
+    let cutover_record = audited
+        .iter()
+        .find(|row| row.approval_ref == Some(approval_id) && row.action == "publish")
+        .unwrap_or_else(|| {
+            panic!(
+                "the commit must record the act under the unit that authorized it \
+                 ({approval_id}); the chain holds {} row(s): {:?}",
+                audited.len(),
+                audited
+                    .iter()
+                    .map(|r| (&r.action, r.approval_ref))
+                    .collect::<Vec<_>>()
+            )
+        });
+    // Both published rows are named. A state naming only the successor would leave
+    // the grandfathered copy's transition unrecorded on the act that created it —
+    // and the copy is the row the grandfathered subscriber is actually billed from.
+    let after = cutover_record
+        .after_state
+        .as_ref()
+        .expect("the record names what the act produced");
+    assert_eq!(after["predecessorState"], "superseded");
+    assert_eq!(after["successorState"], "published");
+    assert_eq!(
+        after["copyPriceId"], view["copy_price_id"],
+        "the copy this act minted is the copy the record names: {after}"
     );
 }
 

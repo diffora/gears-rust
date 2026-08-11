@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use super::{DecisionBy, DecisionRefusal, DecisionRequest, authorize_decision};
+use super::{DecisionBy, DecisionRefusal, DecisionRequest, WithdrawAuthority, authorize_decision};
 use crate::domain::approval::{ApprovalDecision, ApprovalState};
 use crate::domain::scope_key::Region;
 
@@ -84,6 +84,7 @@ impl World {
             current_content_hash: Some(pinned32()),
             approver_regions: &self.approver_regions,
             change_set_regions: &self.change_set_regions,
+            withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
         }
     }
 }
@@ -424,13 +425,26 @@ fn identity_is_answered_before_the_pin_is() {
 // The vocabulary
 // ---------------------------------------------------------------------------
 
-/// Every refusal carries a distinct code, and every code is one §5 declares.
+/// Every refusal carries a distinct code, and every code is one §5 declares —
+/// **except one, named here so the exception cannot be silent.**
 ///
 /// The literals are repeated here on purpose: this is the test that would fail
 /// if somebody renamed a constant, and a test that read the constant would
 /// happily rename with it.
+///
+/// `ForeignWithdraw` is the exception and it is listed in its own table below
+/// rather than folded into the first: §5's problem-response list declares no code
+/// for a withdraw refused on the withdrawer's identity, because the design set
+/// does not contemplate the refusal existing — `inst-as-void` states the identity
+/// rule and the endpoint map gates the route on `approval × approve`, and nothing
+/// reconciles the two. Splitting the tables is what keeps "every code is one §5
+/// declares" a true sentence about the first one.
 #[test]
 fn every_refusal_carries_the_code_the_design_set_names() {
+    /// Minted by this crate, not read off §5. See the doc above.
+    const MINTED: [(DecisionRefusal, &str); 1] =
+        [(DecisionRefusal::ForeignWithdraw, "WITHDRAW_FORBIDDEN")];
+
     let expected = [
         (DecisionRefusal::NotPending, "APPROVAL_NOT_PENDING"),
         (DecisionRefusal::SelfApproval, "SELF_APPROVAL_FORBIDDEN"),
@@ -442,11 +456,11 @@ fn every_refusal_carries_the_code_the_design_set_names() {
         ),
     ];
     assert_eq!(
-        expected.len(),
+        expected.len() + MINTED.len(),
         DecisionRefusal::ALL.len(),
         "a refusal was added without a code"
     );
-    for (refusal, code) in expected {
+    for (refusal, code) in expected.into_iter().chain(MINTED) {
         assert_eq!(refusal.code(), code);
         assert!(
             DecisionRefusal::ALL.contains(&refusal),
@@ -461,11 +475,17 @@ fn every_refusal_carries_the_code_the_design_set_names() {
     assert_eq!(distinct, codes.len(), "two refusals share one code");
 }
 
-/// Exactly the two **authority** refusals are audited violations.
+/// Exactly the three **authority** refusals are audited violations.
 ///
 /// The other three are races an entitled reviewer loses, or a malformed request;
-/// recording them as attempted violations would bury the two that matter under
+/// recording them as attempted violations would bury the ones that matter under
 /// an impatient client's retries.
+///
+/// `ForeignWithdraw` joined the audited set with the rule itself: closing a review
+/// that is not yours releases the canonical scope keys the unit held, so a refused
+/// attempt is somebody reaching for an authority they do not have — which is the
+/// criterion this predicate's own doc states, and the same one `SelfApproval`
+/// meets.
 #[test]
 fn only_the_authority_refusals_are_audited_violations() {
     let audited: Vec<DecisionRefusal> = DecisionRefusal::ALL
@@ -475,6 +495,10 @@ fn only_the_authority_refusals_are_audited_violations() {
         .collect();
     assert_eq!(
         audited,
-        vec![DecisionRefusal::SelfApproval, DecisionRefusal::OutOfScope]
+        vec![
+            DecisionRefusal::SelfApproval,
+            DecisionRefusal::OutOfScope,
+            DecisionRefusal::ForeignWithdraw
+        ]
     );
 }

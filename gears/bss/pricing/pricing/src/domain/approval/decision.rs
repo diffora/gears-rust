@@ -14,6 +14,7 @@
 //!
 //! ```text
 //! 1. NotPending      2. SelfApproval      3. OutOfScope
+//! 3b. ForeignWithdraw
 //! 4. ReasonRequired  5. ContentMismatch
 //! ```
 //!
@@ -43,20 +44,28 @@
 //! | `NotPending` | yes | yes | yes |
 //! | `SelfApproval` | yes | yes | **no** |
 //! | `OutOfScope` | yes | yes | **no** |
+//! | `ForeignWithdraw` | no | no | **yes, when a principal withdraws** |
 //! | `ReasonRequired` | no | yes | no |
 //! | `ContentMismatch` | yes | **no** | **no** |
 //!
 //! Three of those cells are choices rather than readings, and each is argued:
 //!
-//! - **`Void` is exempt from the identity rules.** A withdraw's decider *is* the
-//!   submitter (`inst-as-void`: "the submitter (or a `CatalogAdmin`) explicitly
-//!   withdraws it"), and the TOCTOU void has no human decider at all. A
-//!   distinctness rule applied here would make the withdraw path — the one §4
-//!   added precisely so a pending unit is not an indefinite lock on a scope key
-//!   — unreachable by the person it is for. The exemption is read off
-//!   [`DecisionBy::approver`] rather than off a decision match: the two arms
-//!   that exercise review authority are the two that carry an approver, and the
-//!   rules ask for one instead of asking which decision this is.
+//! - **`Void` is exempt from the *distinctness* rules and bound by its own.** A
+//!   withdraw's decider *is* the submitter (`inst-as-void`: "the submitter (or a
+//!   `CatalogAdmin`) explicitly withdraws it"), and the TOCTOU void has no human
+//!   decider at all. A distinctness rule applied here would make the withdraw
+//!   path — the one §4 added precisely so a pending unit is not an indefinite
+//!   lock on a scope key — unreachable by the person it is for. The exemption is
+//!   read off [`DecisionBy::approver`] rather than off a decision match: the two
+//!   arms that exercise review authority are the two that carry an approver, and
+//!   the rules ask for one instead of asking which decision this is.
+//!
+//!   **That exemption swallowed the other half of `inst-as-void` for as long as
+//!   it stood alone.** The instruction names *who* may withdraw, and because
+//!   `approver()` is `None` on every void, no rule here read the withdrawer at
+//!   all: any principal the gate admitted could close any `submitted` unit and
+//!   release the scope keys it held. `ForeignWithdraw` (3b) is that half, and
+//!   [`WithdrawAuthority`] records why its second clause is a proxy.
 //! - **`Void` is exempt from the pin.** Voiding is what a moved subject *causes*;
 //!   refusing to void because the subject moved would leave the record pinned
 //!   open by the very event that should close it.
@@ -128,10 +137,66 @@ pub const REASON_REQUIRED: &str = "REASON_REQUIRED";
 /// (`inst-ap-scope`, §5, 403).
 pub const REGION_SCOPE_DENIED: &str = "REGION_SCOPE_DENIED";
 
+/// Rule code for a withdraw by a principal who is neither the unit's submitter
+/// nor a catalog authority (`inst-as-void`).
+///
+/// **§5 declares no code for this refusal**, because the design set does not
+/// contemplate the refusal existing: `inst-as-void` states the identity rule and
+/// the endpoint map gates the route on `approval × approve`, and nothing
+/// reconciles the two. The code is this crate's, in the shape of its five
+/// neighbours, and the divergence is reported rather than smoothed over — see
+/// [`WithdrawAuthority`].
+pub const WITHDRAW_FORBIDDEN: &str = "WITHDRAW_FORBIDDEN";
+
+/// Whether a withdrawing principal carries authority over units that are not
+/// theirs (`inst-as-void`'s "or a `CatalogAdmin`").
+///
+/// [`RegionGrant`](crate::infra::approval::RegionGrant)'s shape and its reason:
+/// an authority the domain must judge but cannot itself establish, transported
+/// by the surface that can.
+///
+/// # This is a proxy, and the proxy is recorded rather than hidden
+///
+/// `inst-as-void` names a **role** — `CatalogAdmin`. Nothing reaching this layer
+/// can answer a question about roles: `SecurityContext` exposes a subject, a
+/// tenant and token scopes, and the PDP answers `resource × action` decisions.
+/// So [`Self::CatalogAuthority`] is set from `plan × publish`, which is the
+/// authority `CatalogAdmin` and `FinanceManager` actually carry and which no
+/// `FinanceReviewer` holds.
+///
+/// **What that buys, stated exactly.** Before 2026-08-11 the identity half of
+/// `inst-as-void` was enforced at neither layer: `authorize_decision`'s rules 2
+/// and 3 live inside `if let Some(approver)`, and `approver()` is `None` on every
+/// void, so what the code implemented was *any principal holding `approval ×
+/// approve` may void any `submitted` unit of the tenant*. A withdraw is not
+/// cosmetic — it moves the unit out of `submitted`, which releases the canonical
+/// scope keys it held and re-opens them to whoever wants them. So a
+/// `FinanceReviewer` who could not approve a change could nonetheless close
+/// another principal's review of it and free its keys.
+///
+/// **What it does not buy.** A `FinanceManager` can still withdraw a
+/// `CatalogAdmin`'s unit and vice versa; the proxy is coarser than the role. That
+/// is a strictly smaller hole than the one it replaces, and closing it needs the
+/// design set to reconcile `inst-as-void`'s identity rule with the `approval ×
+/// approve` gate the endpoint map assigns the route — under the default matrix
+/// the only principal who can reach `withdraw` at all is a `FinanceReviewer`, who
+/// is neither of the two the transition names. `api::rest::approvals`' module doc
+/// reports that contradiction; this type is where it bites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WithdrawAuthority {
+    /// The caller holds `plan × publish` in the tenant — the expressible proxy
+    /// for `CatalogAdmin`, so units that are not theirs are theirs to close.
+    CatalogAuthority,
+    /// The caller holds no catalog authority: only the units they submitted.
+    OwnUnitsOnly,
+}
+
 /// Why a decision was refused.
 ///
-/// Five variants, and **every one of them carries a code the design set already
-/// names** in §5's problem-response list. Nothing here is minted.
+/// Six variants. **Five carry a code the design set already names** in §5's
+/// problem-response list; [`DecisionRefusal::ForeignWithdraw`] is the exception
+/// and is minted here, because §5 does not contemplate the refusal existing —
+/// see [`WITHDRAW_FORBIDDEN`] and [`WithdrawAuthority`].
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DecisionRefusal {
@@ -154,6 +219,13 @@ pub enum DecisionRefusal {
     /// pinned change set touches (`inst-ap-scope`).
     #[error("the approver's scope does not cover every region of the pinned change set")]
     OutOfScope,
+    /// A withdraw by a principal who is neither the unit's submitter nor a
+    /// catalog authority (`inst-as-void`).
+    ///
+    /// An **authority** refusal: the caller tried to close a review that was not
+    /// theirs and free the scope keys it held.
+    #[error("only the submitter or a catalog authority may withdraw an approval unit")]
+    ForeignWithdraw,
 }
 
 impl DecisionRefusal {
@@ -165,6 +237,7 @@ impl DecisionRefusal {
         Self::OutOfScope,
         Self::ReasonRequired,
         Self::ContentMismatch,
+        Self::ForeignWithdraw,
     ];
 
     /// The wire code §5 declares for this refusal.
@@ -181,6 +254,7 @@ impl DecisionRefusal {
             Self::NotPending => crate::domain::approval::APPROVAL_NOT_PENDING,
             Self::ReasonRequired => REASON_REQUIRED,
             Self::OutOfScope => REGION_SCOPE_DENIED,
+            Self::ForeignWithdraw => WITHDRAW_FORBIDDEN,
         }
     }
 
@@ -198,7 +272,10 @@ impl DecisionRefusal {
     /// same as not recording them.
     #[must_use]
     pub const fn is_an_audited_violation(self) -> bool {
-        matches!(self, Self::SelfApproval | Self::OutOfScope)
+        matches!(
+            self,
+            Self::SelfApproval | Self::OutOfScope | Self::ForeignWithdraw
+        )
     }
 }
 
@@ -299,6 +376,11 @@ pub struct DecisionRequest<'a> {
     pub approver_regions: &'a BTreeSet<Region>,
     /// The pricing regions the pinned change set touches.
     pub change_set_regions: &'a BTreeSet<Region>,
+    /// Whether the caller may close a unit that is not theirs (`inst-as-void`).
+    ///
+    /// Read only on the `Void` arm. See [`WithdrawAuthority`] for why this is a
+    /// transported proxy rather than the role the instruction names.
+    pub withdraw_authority: WithdrawAuthority,
 }
 
 /// Judge one decision. `Ok(())` means the store may be told.
@@ -341,6 +423,28 @@ pub fn authorize_decision(request: &DecisionRequest<'_>) -> Result<(), DecisionR
         {
             return Err(DecisionRefusal::OutOfScope);
         }
+    }
+
+    // 3b. The withdrawer's identity — `inst-as-void`'s other half, and the half
+    //     that was enforced at **neither** layer until 2026-08-11.
+    //
+    //     It cannot live in the block above, and that is exactly how it came to be
+    //     missing: rules 2 and 3 run `if let Some(approver)`, and `approver()` is
+    //     `None` on every void, so a withdraw skipped both and no other check
+    //     looked at who was asking. What the code implemented was "any principal
+    //     the gate let through may close any submitted unit of the tenant" — and a
+    //     withdraw releases the canonical scope keys the unit held, so that is an
+    //     authority act and not a cosmetic one.
+    //
+    //     Asked of the **withdrawer** rather than of `decider()`, because the void
+    //     the TOCTOU guard performs carries no principal at all and must stay
+    //     exempt: it is the machine closing a unit whose subject moved, which is
+    //     the rule this one is about, not a violation of it.
+    if let DecisionBy::Void(Some(withdrawer)) = request.decision
+        && withdrawer != request.submitter_principal
+        && request.withdraw_authority != WithdrawAuthority::CatalogAuthority
+    {
+        return Err(DecisionRefusal::ForeignWithdraw);
     }
 
     // 4. The reject's mandatory reason. Blank is absent: a reason column holding
