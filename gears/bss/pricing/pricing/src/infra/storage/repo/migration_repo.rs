@@ -165,9 +165,10 @@ pub async fn insert_or_load(
         cancelled_at: Set(None),
     };
 
-    let on_conflict = OnConflict::column(migration::Column::MigrationId)
-        .do_nothing()
-        .to_owned();
+    let on_conflict =
+        OnConflict::columns([migration::Column::TenantId, migration::Column::MigrationId])
+            .do_nothing()
+            .to_owned();
 
     // The at-most-once guarantee **is** this statement; see the module doc.
     // `RecordNotInserted` is the conflict swallowing the insert, which is

@@ -100,6 +100,63 @@ async fn a_schedule_is_created_once_and_read_back_whole() {
     assert!(scheduled.record.completion_record.is_none());
 }
 
+/// **Two tenants may schedule the same `migration_id`, and neither learns of the
+/// other** (`inst-ms-api`'s key is a client's, and a client's key is theirs).
+///
+/// `migration_id` arrives straight off the request body and was the table's whole
+/// `PRIMARY KEY` until 2026-08-11, so its namespace was the deployment rather than
+/// the tenant. That is two defects in one column, and the second is the worse:
+///
+/// - **An existence oracle on a live route.** Tenant B posting an id tenant A holds
+///   took the `DO NOTHING` branch, so `load` — which filters by `tenant_id` — found
+///   nothing and B was answered `ConcurrentMutation` (409). An unused id answered
+///   202. The difference is observable and is a fact about another tenant's rows.
+/// - **A permanent denial with no remedy.** That refusal says *retry*, and a retry
+///   collides identically, forever. Any tenant could reserve arbitrary migration
+///   ids against every other tenant, and the victim has none: `DELETE` on this
+///   table is refused by its own trigger.
+///
+/// Every sibling client-key store in this crate already scopes its conflict target
+/// — `synthesis_repo` on `(tenant_id, subscription_ref)`, `idempotency_repo` on
+/// `(tenant_id, operation, client_key)`, and `bulk_repo` on
+/// `(tenant_id, kind, client_key)` since D-307. `pricing_migration` was the last
+/// one global.
+#[tokio::test]
+async fn two_tenants_may_hold_one_migration_id_and_neither_can_deny_the_other() {
+    const OTHER_TENANT: Uuid = Uuid::from_u128(0x_7e_11_52);
+
+    let provider = harness().await;
+    let conn = provider.conn().expect("conn");
+    let shared = Uuid::now_v7();
+
+    let mine = migration_repo::insert_or_load(&conn, &scope(), new_migration(shared))
+        .await
+        .expect("the first tenant schedules");
+    assert!(mine.created);
+
+    let mut theirs = new_migration(shared);
+    theirs.tenant_id = OTHER_TENANT;
+    let neighbour =
+        migration_repo::insert_or_load(&conn, &AccessScope::for_tenant(OTHER_TENANT), theirs)
+            .await
+            .expect("a neighbour's identical id is not this tenant's business");
+
+    assert!(
+        neighbour.created,
+        "the neighbour scheduled their own run; a `created = false` here is the \
+         DO NOTHING branch reporting another tenant's row as this one's replay"
+    );
+    assert_eq!(neighbour.record.migration_id, shared);
+
+    // And the first tenant's row is untouched by any of it.
+    let reread = migration_repo::load(&conn, &scope(), TENANT, shared)
+        .await
+        .expect("read")
+        .expect("the first tenant still holds its own schedule");
+    assert_eq!(reread.migration_id, shared);
+    assert_eq!(reread.state, MigrationState::Scheduled);
+}
+
 #[tokio::test]
 async fn a_retry_of_one_migration_id_returns_the_original_schedule_and_never_a_second() {
     // `inst-ms-api`, verbatim: "a timed-out client retry returns the original

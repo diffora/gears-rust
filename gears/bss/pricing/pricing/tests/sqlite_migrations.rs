@@ -246,7 +246,6 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_migration_due",
     "idx_pricing_migration_source",
     "idx_pricing_migration_target",
-    "idx_pricing_migration_tenant",
     "idx_pricing_operator_flag_by_flag",
     "idx_pricing_outbox_undrained",
     "idx_pricing_plan_addon_rule_revision",
@@ -527,10 +526,13 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "pricing_idempotency_dedup",
         "tenant_id, operation, client_key",
     ),
-    // Client-supplied (`inst-ms-api`, M2): the idempotency key and the primary
-    // key are one column, read back from `m20260802_000043`'s own DDL rather
-    // than from the schema the census queries.
-    ("pricing_migration", "migration_id"),
+    // Client-supplied (`inst-ms-api`, M2), and therefore **tenant-scoped since
+    // `m20260802_000065`**. It was `migration_id` alone until 2026-08-11, which
+    // put a client-chosen identifier in a deployment-wide namespace: one tenant
+    // could take an id and deny it to every other permanently, with no remedy
+    // (`trg_pricing_migration_no_delete` refuses the DELETE that would free it).
+    // Every sibling client-key store already scoped its key; this was the last.
+    ("pricing_migration", "tenant_id, migration_id"),
     ("pricing_operator_flag", "tenant_id, subject_ref, flag"),
     ("pricing_org_tier_taxonomy", "tenant_id, value"),
     ("pricing_outbox", "outbox_id"),

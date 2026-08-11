@@ -305,10 +305,14 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
     "pricing_composite_meter: composite_id, plan_revision",
     "pricing_idempotency_dedup: tenant_id, operation, client_key",
-    // Read back from `m20260802_000043`'s own DDL rather than from the live
-    // server: client-supplied (`inst-ms-api`, M2), so the idempotency key and the
-    // primary key are one column.
-    "pricing_migration: migration_id",
+    // Client-supplied (`inst-ms-api`, M2), and therefore **tenant-scoped since
+    // `m20260802_000065`**: it was `migration_id` alone until 2026-08-11, which put
+    // a client-chosen identifier in a deployment-wide namespace and let one tenant
+    // deny an id to every other permanently. The order matters as much as the
+    // membership here — `(tenant_id, migration_id)` is also the index every
+    // tenant-scoped read of this table uses, which is why
+    // `idx_pricing_migration_tenant` was dropped rather than kept beside it.
+    "pricing_migration: tenant_id, migration_id",
     "pricing_operator_flag: tenant_id, subject_ref, flag",
     "pricing_org_tier_taxonomy: tenant_id, value",
     "pricing_outbox: outbox_id",

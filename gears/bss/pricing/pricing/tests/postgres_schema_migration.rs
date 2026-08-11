@@ -526,24 +526,30 @@ async fn the_flip_instants_cannot_precede_what_they_follow() {
     .await;
 }
 
-/// **M2 is the primary key, and that is the whole of `inst-mg-idem`.**
+/// **M2 is the primary key `(tenant_id, migration_id)`, and that is the whole of
+/// `inst-mg-idem`.**
 ///
 /// `migration_id` is client-supplied, so a timed-out retry carries the id the
 /// first call did; `insert_or_load` is an `ON CONFLICT DO NOTHING` plus a load,
 /// and this is the conflict it relies on. Without the key a retry would schedule
 /// a second migration of the same plan and Subscriptions would be asked to
 /// re-bind every subscriber twice.
+///
+/// **The retry is the *same tenant* sending the id again.** This case demonstrated
+/// the rejection with `tenant: OTHER_TENANT` until 2026-08-11 while calling it
+/// "a client that timed out and rebuilt its request" — a different tenant is not a
+/// retry, and what the assertion actually pinned was the deployment-wide namespace
+/// `m20260802_000065` removed. The neighbour's insert is now its own case below,
+/// asserting the opposite outcome.
 #[tokio::test]
 #[ignore = "requires Docker"]
-async fn one_migration_id_holds_one_row() {
+async fn one_migration_id_holds_one_row_per_tenant() {
     let conn = applied().await;
     must_succeed(&conn, &insert(&scheduled())).await;
-    // A retry whose body differs -- which is what a client that timed out and
-    // rebuilt its request sends.
+    // The retry: one tenant, one id, a body rebuilt after a timeout.
     must_be_rejected(
         &conn,
         &insert(&Schedule {
-            tenant: OTHER_TENANT,
             effective: "'2027-01-01T00:00:00+00:00'",
             ..scheduled()
         }),
@@ -551,6 +557,31 @@ async fn one_migration_id_holds_one_row() {
     )
     .await;
     assert_eq!(rows(&conn).await, 1);
+}
+
+/// **A neighbour holding the same client-chosen id is not this tenant's conflict.**
+///
+/// The other half of the key, and the reason it was widened. While
+/// `migration_id` alone was the primary key, this insert was refused — which made
+/// the route an existence oracle (409 for a taken id, 202 for a free one) and,
+/// worse, a permanent denial: the refusal says *retry*, a retry collides
+/// identically forever, and `trg_pricing_migration_no_delete` refuses the DELETE
+/// that would free it. Any tenant could reserve arbitrary ids against every other.
+#[tokio::test]
+#[ignore = "requires Docker"]
+async fn a_neighbours_identical_migration_id_is_not_a_conflict() {
+    let conn = applied().await;
+    must_succeed(&conn, &insert(&scheduled())).await;
+    must_succeed(
+        &conn,
+        &insert(&Schedule {
+            tenant: OTHER_TENANT,
+            effective: "'2027-01-01T00:00:00+00:00'",
+            ..scheduled()
+        }),
+    )
+    .await;
+    assert_eq!(rows(&conn).await, 2, "both tenants hold their own schedule");
 }
 
 // ---------------------------------------------------------------------------

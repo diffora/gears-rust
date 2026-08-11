@@ -29,10 +29,16 @@ use uuid::Uuid;
     no_type
 )]
 pub struct Model {
-    /// Client-supplied (`inst-ms-api`); the idempotency key of M2 and the
-    /// primary key at once.
+    /// Client-supplied (`inst-ms-api`); the idempotency key of M2 and **half** the
+    /// primary key.
+    ///
+    /// The other half is [`Model::tenant_id`], since `m20260802_000065`. A
+    /// client-chosen identifier whose namespace is the deployment lets one tenant
+    /// deny an id to every other, permanently — see that migration.
     #[sea_orm(primary_key, auto_increment = false)]
     pub migration_id: Uuid,
+    /// The owning tenant, and the other half of the primary key.
+    #[sea_orm(primary_key, auto_increment = false)]
     pub tenant_id: Uuid,
     /// The retiring side.
     pub source_plan_id: Uuid,
