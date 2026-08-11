@@ -22,15 +22,31 @@
 //!
 //! * **The apply** (`inst-mr-apply`, `inst-mr-validate-scope`) owes the per-plan
 //!   transaction D-134 requires — successor rows, their outbox records and the
-//!   journal's `pending -> applied` flips in one commit per plan. Nothing here
-//!   computes what a selected row's price would become, so the `ChangeSet`
-//!   [`run_materiality`] evaluates carries the run's rows **as currently
-//!   published** — the same "zero-delta act" shape a window mutation's
-//!   materiality carries — and not their post-adjustment content. Until the
-//!   apply computes a real successor, what decides a repricing run's
-//!   materiality is therefore the configured threshold policy's fail-safe (a
-//!   currency the run touches with no entry), not the size of the run's own
-//!   adjustment.
+//!   journal's `pending -> applied` flips in one commit per plan; taking the
+//!   bulk lock and re-running the row-local and plan-aggregate rule sets are
+//!   all still unbuilt. **Materiality does not wait on any of that.** The
+//!   `ChangeSet` [`run_materiality`] evaluates carries each selected row with
+//!   the run's own adjustment already applied to it ([`project_row`]) — real
+//!   arithmetic over the row's published amount, not the apply's durable
+//!   successor and not a zero-delta stand-in — compared against the same rows
+//!   as currently published. The per-currency comparison
+//!   (`inst-mat-percurrency`, `inst-mr-coalesce`'s "any row over its
+//!   own-currency threshold trips the run") is therefore real: a run's own
+//!   adjustment size decides materiality together with the configured policy,
+//!   not the fail-safe alone.
+//! * **`project_row`'s one open corner**, named rather than papered over: an
+//!   amount-based or `fixed` adjustment whose `AmountSet` does not cover a
+//!   `graduated`/`volume` row's currency has nowhere honest to record "not
+//!   computable" — `TierBand::unit_price_minor` is a bare `MinorAmount`, not the
+//!   `Option` that lets [`project_row`] signal the same gap on a `flat`/`per_unit`
+//!   or `package` row by leaving the field `None`. Today such a band's price is
+//!   left at its published value, which is a narrower, single-row echo of the
+//!   zero-delta gap this task otherwise closes — not the systemic one, since
+//!   every currency-resolvable row and every percent-based adjustment (always
+//!   currency-neutral) still gets a real delta. Fixing it needs either a new
+//!   [`crate::domain::materiality::delta::RowDelta`] arm or a submit-time
+//!   `ADJUSTMENT_CURRENCY_NOT_COVERED`-style refusal (the overlay plane's own
+//!   check, unwired here) — both decisions beyond this task's brief.
 //! * **Paid 2026-08-11 (D-158's audit alignment):** opening a run appends a
 //!   `create` record on the run's own chain
 //!   (`audit_repo::bulk_operation_chain`), `subject_ref` its `operation_id`
@@ -128,8 +144,10 @@ use crate::domain::bulk::{BulkKind, BulkState};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict, PublishedPriceBaseline};
-use crate::domain::money::CurrencyCode;
-use crate::domain::overlay::Adjustment;
+use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::overlay::{Adjustment, Magnitude};
+use crate::domain::price_record::PriceRecord;
+use crate::domain::price_row::ModelKind;
 use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region,
@@ -461,6 +479,7 @@ async fn open_repricing_run(
             submitted_at: now,
         },
         selected,
+        &adjustment,
         correlation_id,
     )
     .await?;
@@ -530,14 +549,25 @@ async fn open_run(
     tenant_id: Uuid,
     new: NewBulkOperation,
     selected: Vec<Uuid>,
+    adjustment: &Adjustment,
     correlation_id: Uuid,
 ) -> Result<BulkOperationRecord, CanonicalError> {
     let scope = scope.clone();
+    let adjustment = adjustment.clone();
     let (_, outcome) = db
         .db()
         .in_transaction::<BulkOperationRecord, RepoError, _>(move |txn| {
             Box::pin(async move {
-                open_run_in(txn, &scope, tenant_id, new, &selected, correlation_id).await
+                open_run_in(
+                    txn,
+                    &scope,
+                    tenant_id,
+                    new,
+                    &selected,
+                    &adjustment,
+                    correlation_id,
+                )
+                .await
             })
         })
         .await;
@@ -557,6 +587,7 @@ async fn open_run_in(
     tenant_id: Uuid,
     new: NewBulkOperation,
     selected: &[Uuid],
+    adjustment: &Adjustment,
     correlation_id: Uuid,
 ) -> Result<BulkOperationRecord, RepoError> {
     let actor_principal_id = new.submitted_by;
@@ -617,7 +648,7 @@ async fn open_run_in(
     // per plan and folded — so there is exactly one `evaluate` call here however
     // many plans the selector spans.
     let (verdict, held_keys) =
-        run_materiality(runner, scope, tenant_id, selected, recorded_at).await?;
+        run_materiality(runner, scope, tenant_id, selected, adjustment, recorded_at).await?;
     let stamp = AuditStamp {
         actor_principal_id,
         recorded_at,
@@ -630,14 +661,25 @@ async fn open_run_in(
 /// (`inst-mr-coalesce`; the shape settled 2026-08-11 after two implementers left
 /// it open).
 ///
-/// The change set is [`ChangeSet::of_repricing_run`] over `selected` — the rows
-/// the run's selector matched, as currently published. The baseline is
-/// [`PublishedPriceBaseline::of_records`] over **every published row of every
-/// plan `selected` touches**, not only `selected` itself: `inst-mat-newrow`'s
-/// coverage check (`change.keys().any(|key| !baseline.covers(key))`) is a
-/// property of the plan's whole key set, and scope keys carry `plan_id`, so
-/// records from several plans coexist in the one baseline without collision —
-/// the reason a per-plan fold was rejected in favour of building this once.
+/// The change set is [`ChangeSet::of_repricing_run`] over `selected`, each row
+/// **projected under `adjustment`** ([`project_row`]) — the amount the operator
+/// is being asked to approve, computed in-memory for this comparison alone and
+/// never written. The baseline is [`PublishedPriceBaseline::of_records`] over
+/// **every published row of every plan `selected` touches**, not only
+/// `selected` itself: `inst-mat-newrow`'s coverage check
+/// (`change.keys().any(|key| !baseline.covers(key))`) is a property of the
+/// plan's whole key set, and scope keys carry `plan_id`, so records from
+/// several plans coexist in the one baseline without collision — the reason a
+/// per-plan fold was rejected in favour of building this once.
+///
+/// **Projecting rather than reading a real successor is not the same gap as
+/// evaluating a zero delta.** `inst-mr-apply`'s successor row additionally
+/// takes the bulk lock, writes an outbox record and lands inside a per-plan
+/// transaction the aggregate pass re-runs against — none of which materiality
+/// needs in order to know what a row's amount is *about* to become. The
+/// arithmetic [`project_row`] performs is total over `flat`/`per_unit`/`package`
+/// rows and over every currency-resolvable case of `graduated`/`volume`; see
+/// the module doc for the one corner it does not cover.
 ///
 /// `selected` is never empty here: `open_repricing_run` refuses
 /// `RUN_SELECTOR_EMPTY` before a run is ever opened, so every touched plan
@@ -654,6 +696,7 @@ async fn run_materiality(
     scope: &AccessScope,
     tenant_id: Uuid,
     selected: &[Uuid],
+    adjustment: &Adjustment,
     now: DateTime<Utc>,
 ) -> Result<(MaterialityVerdict, BTreeSet<String>), RepoError> {
     let touched_plans: BTreeSet<PlanId> =
@@ -680,18 +723,24 @@ async fn run_materiality(
     // The run's own rows, out of the baseline just read — never a second query
     // for the same content. Selected is exactly the subset of every touched
     // plan's published rows the selector matched, so every id in it is present
-    // in `baseline_rows` by construction.
+    // in `baseline_rows` by construction. `held_keys` is taken off the
+    // **published** rows, before projection: the key a unit holds is the row's
+    // own identity, unaffected by what its amount is about to become.
     let selected_ids: HashSet<Uuid> = selected.iter().copied().collect();
-    let change_rows: Vec<_> = baseline_rows
+    let selected_rows: Vec<_> = baseline_rows
         .iter()
         .filter(|row| selected_ids.contains(&row.price_id))
         .cloned()
         .collect();
-    let held_keys: BTreeSet<String> = change_rows
+    let held_keys: BTreeSet<String> = selected_rows
         .iter()
         .map(|row| row.scope_key.to_string())
         .collect();
 
+    let change_rows: Vec<_> = selected_rows
+        .into_iter()
+        .map(|row| project_row(row, adjustment))
+        .collect();
     let change = ChangeSet::of_repricing_run(change_rows);
     let baseline = PublishedPriceBaseline::of_records(baseline_rows);
     let policy = effective_policy_at(runner, scope, tenant_id, now)
@@ -702,6 +751,90 @@ async fn run_materiality(
         materiality::evaluate(&change, policy.as_ref(), Some(&baseline)),
         held_keys,
     ))
+}
+
+/// One selected row, with `adjustment` applied to whichever field holds its
+/// money — the projected content a reviewer is being asked to approve, built
+/// for [`run_materiality`]'s comparison and never persisted.
+///
+/// `markup`/`discount` with a `percent_bp` magnitude is currency-neutral and
+/// always resolves: `base + base*bp/10_000` (markup) or `base - base*bp/10_000`
+/// (discount), truncating — the crate has no other precedent for applying a
+/// basis-points value to money (`materiality::delta::AmountMove::reaches_percent`
+/// is a *comparison* and stays exact by never dividing at all), so this is a
+/// decision, named as one, rather than a rule read off existing code. A
+/// `markup`/`discount` with an `amount` magnitude, or a `fixed` line, needs
+/// `currency`'s entry in the adjustment's `AmountSet`.
+///
+/// A result that would go negative is **floored at zero**: a price cannot go
+/// negative, and a floor is itself a real, large move a threshold should see —
+/// not the absence of one.
+///
+/// # The one field this cannot signal "not computable" on
+///
+/// `flat`/`per_unit`'s `amount_minor` and `package`'s `package_price_minor` are
+/// both `Option<MinorAmount>`, so a currency the adjustment cannot resolve is
+/// left `None` — [`materiality::delta::row_delta`] already reads an absent
+/// amount as `NotComputable("amount_minor" | "package_price_minor")`, D-115
+/// clause (3)'s existing "no delta, so material regardless of threshold"
+/// fallback, not a new rule minted here. `graduated`/`volume`'s
+/// `TierBand::unit_price_minor` is a bare `MinorAmount`, with no `None` to fall
+/// back to; an unresolvable currency there leaves that band at its **published**
+/// price rather than forcing the row incomputable — the module doc names this
+/// as the one open corner rather than papering over it with a field this
+/// function does not own.
+fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> PriceRecord {
+    let currency = row.scope_key.currency().clone();
+    match row.row.model_kind {
+        Some(ModelKind::Flat | ModelKind::PerUnit) => {
+            row.row.amount_minor = row
+                .row
+                .amount_minor
+                .and_then(|amount| project_amount(amount.get(), adjustment, &currency));
+        }
+        Some(ModelKind::Package) => {
+            row.row.package_price_minor = row
+                .row
+                .package_price_minor
+                .and_then(|amount| project_amount(amount.get(), adjustment, &currency));
+        }
+        Some(ModelKind::Graduated | ModelKind::Volume) => {
+            for band in &mut row.row.bands {
+                if let Some(projected) =
+                    project_amount(band.unit_price_minor.get(), adjustment, &currency)
+                {
+                    band.unit_price_minor = projected;
+                }
+            }
+        }
+        None => {}
+    }
+    row
+}
+
+/// `base`'s minor-unit amount under `adjustment`, in `currency` — [`project_row`]'s
+/// arithmetic, factored out because every model kind applies the identical
+/// formula to a different field.
+///
+/// `None` when an `amount`/`fixed` magnitude has no entry for `currency`; see
+/// [`project_row`]'s doc for what a caller does with that.
+fn project_amount(
+    base: i64,
+    adjustment: &Adjustment,
+    currency: &CurrencyCode,
+) -> Option<MinorAmount> {
+    let projected = match adjustment {
+        Adjustment::Markup(Magnitude::PercentBp(bp)) => {
+            base.saturating_add(base.saturating_mul(*bp) / 10_000)
+        }
+        Adjustment::Discount(Magnitude::PercentBp(bp)) => {
+            base.saturating_sub(base.saturating_mul(*bp) / 10_000)
+        }
+        Adjustment::Markup(Magnitude::Amount(set)) => base.saturating_add(set.get(currency)?),
+        Adjustment::Discount(Magnitude::Amount(set)) => base.saturating_sub(set.get(currency)?),
+        Adjustment::Fixed(set) => set.get(currency)?,
+    };
+    MinorAmount::new(projected.max(0)).ok()
 }
 
 /// Write the verdict's edge: `validating -> awaiting_approval` under an opened

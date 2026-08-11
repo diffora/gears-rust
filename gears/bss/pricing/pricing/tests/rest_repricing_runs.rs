@@ -761,3 +761,97 @@ async fn a_non_material_run_leaves_validating_for_committing_with_no_approval_un
         "an auto-publishable run opens no approval unit: {units:?}"
     );
 }
+
+/// `inst-mr-coalesce`'s own claim, armed directly: *"any row over its
+/// own-currency threshold trips the run"* — the run's own **adjustment
+/// magnitude**, not merely whether a policy exists. One fixture (one seeded
+/// row, one configured threshold) carries two runs that differ only in the
+/// `percent_bp` they submit: the smaller stays under the bar and the larger
+/// crosses it. A change set built from zero-delta rows would answer
+/// `noConfiguredThreshold` or `autoPublishable` identically for both, whatever
+/// the adjustment said — which is exactly the gap a 2026-08-11 review found in
+/// this suite's first draft, before either case here existed.
+#[tokio::test]
+async fn the_runs_own_adjustment_magnitude_against_the_configured_threshold_decides_materiality() {
+    let harness = Harness::new().await;
+    // $10.00 in USD's own currency: below the row's 5% move (500 minor) and
+    // above nothing a discount could reach — the bar the pair straddles.
+    approve_threshold_policy(&harness, &[("USD", 1_000)]).await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    let priced = seed_priced_row(&harness, plan, "eu", 10_000).await;
+    harness.publish_price(plan, priced.price_id).await;
+
+    // Under the bar: 5% of 10_000 is 500 minor, and 500 < 1_000. Run first,
+    // while nothing holds the row's key.
+    let under_id = Uuid::now_v7();
+    let mut under_body = a_run(under_id, &serde_json::json!({ "currency": "USD" }));
+    under_body["adjustment"]["adjustment_kind"] = serde_json::json!("markup");
+    under_body["adjustment"]["adjustment_value"] = serde_json::json!(500);
+    let under_response = harness
+        .allowed()
+        .send(with_headers("POST", REPRICING_RUNS, Some(under_body), &[]))
+        .await;
+    assert_eq!(under_response.status(), StatusCode::ACCEPTED);
+    let under_operation_id = body_json(under_response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let under_stored =
+        bulk_operation_row(&harness, under_operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        under_stored.state,
+        BulkState::Committing,
+        "500 minor is under the 1_000 bar: {under_stored:?}"
+    );
+    let under_units: Vec<_> = approval_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation" && row.subject_ref == under_operation_id)
+        .collect();
+    assert!(
+        under_units.is_empty(),
+        "under the bar opens no unit: {under_units:?}"
+    );
+
+    // Over the bar: 20% of 10_000 is 2_000 minor, and 2_000 >= 1_000. Same row,
+    // same policy — only the adjustment's own size differs from the case above.
+    let over_id = Uuid::now_v7();
+    let mut over_body = a_run(over_id, &serde_json::json!({ "currency": "USD" }));
+    over_body["adjustment"]["adjustment_kind"] = serde_json::json!("markup");
+    over_body["adjustment"]["adjustment_value"] = serde_json::json!(2_000);
+    let over_response = harness
+        .allowed()
+        .send(with_headers("POST", REPRICING_RUNS, Some(over_body), &[]))
+        .await;
+    assert_eq!(over_response.status(), StatusCode::ACCEPTED);
+    let over_operation_id = body_json(over_response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let over_stored =
+        bulk_operation_row(&harness, over_operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        over_stored.state,
+        BulkState::AwaitingApproval,
+        "2_000 minor reaches the 1_000 bar: {over_stored:?}"
+    );
+    let over_units: Vec<_> = approval_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation" && row.subject_ref == over_operation_id)
+        .collect();
+    assert_eq!(
+        over_units.len(),
+        1,
+        "over the bar opens exactly one unit: {over_units:?}"
+    );
+    assert_eq!(
+        over_units[0].materiality.get("reason"),
+        Some(&serde_json::json!("thresholdReached")),
+        "the real per-row comparison tripped it, not the fail-safe: {:?}",
+        over_units[0]
+    );
+}
