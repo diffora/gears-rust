@@ -129,6 +129,18 @@ fn census() -> Vec<Route> {
             action: actions::READ,
             mutating: false,
         },
+        // The collection read. `plan x read` exactly as the by-id read is, and
+        // the row is here rather than being taken as obvious because the pair a
+        // *collection* asks for is the one place a listing can go wrong
+        // invisibly: it passes `resource_id: None`, so what the PDP compiles is
+        // the tenant filter the whole walk runs under.
+        Route {
+            method: "GET",
+            path: PLANS,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
         Route {
             method: "POST",
             path: PLANS,
