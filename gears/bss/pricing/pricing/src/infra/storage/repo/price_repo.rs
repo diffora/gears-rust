@@ -3083,6 +3083,24 @@ fn content_assignments(model: &price::ActiveModel) -> Vec<(price::Column, Value)
             price::Column::TaxInclusive,
             model.tax_inclusive.clone().into_value(),
         ),
+        // **Absent from this list until 2026-08-11**, and the one content column
+        // that was neither written, nor refused, nor documented as frozen — which
+        // is what made it an omission rather than a decision. `charge_kind` and
+        // the usage line each get a paragraph in `update_draft`'s doc explaining
+        // why they do not move; this one got none, and `PATCH` answered 200 with a
+        // body rendered from the stored record, so the field silently reverted.
+        //
+        // D-110 makes this column the source of truth and the only place a
+        // category lives, and D-154 freezes `coalesce(tax_category_ref,
+        // readiness.taxCategory)` inside the publish transaction into a version
+        // that is INSERT-only over the seven-year horizon. So a correction made on
+        // a draft never landed and the row published the category its author
+        // already knew was wrong — and `04-currency-tax.md:198` names authoring
+        // this very field as D-245's remedy, which was therefore unexpressible.
+        (
+            price::Column::TaxCategoryRef,
+            model.tax_category_ref.clone().into_value(),
+        ),
         (
             price::Column::BillingTiming,
             model.billing_timing.clone().into_value(),

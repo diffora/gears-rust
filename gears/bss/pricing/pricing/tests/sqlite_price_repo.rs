@@ -1454,6 +1454,13 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
     content.row.tier_qualification_window = None;
     content.row.included_allowance = None;
     content.tax_inclusive = false;
+    // **The column this case was named for and did not carry.** It was absent from
+    // `content_assignments` until 2026-08-11, so a `PATCH` that set or cleared it
+    // answered 200 and reverted the field — while this test, whose own comment says
+    // "every content column this kind can carry moves at once", stayed green
+    // because `graduated_content()` leaves it `None` and nothing here ever moved it.
+    // Set here (the row was created without one) and cleared below.
+    content.tax_category_ref = Some("digital_services".to_owned());
     content.billing_timing = Some("advance".to_owned());
     content.rounding_policy_ref = None;
     content.grandfather_until = Some(at(20));
@@ -1506,6 +1513,12 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
     );
     assert_eq!(read.row.max_hold_granules, Some(12));
     assert!(!read.tax_inclusive);
+    assert_eq!(
+        read.tax_category_ref.as_deref(),
+        Some("digital_services"),
+        "D-110: the row's category is the source of truth, and a draft edit is the \
+         only place it can be corrected before D-154 freezes it for seven years"
+    );
     assert_eq!(read.billing_timing.as_deref(), Some("advance"));
     assert_eq!(read.grandfather_until, Some(at(20)));
 
@@ -1531,6 +1544,38 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
     assert_eq!(read.created_by, Uuid::from_u128(0xac_10));
     assert_eq!(read.created_at_utc, at(10));
     assert_eq!(read.row_version, RowVersion::new(1));
+
+    // **The other direction.** A column that can be set and not cleared is still
+    // half-broken, and clearing is the whole justification for `update_draft`
+    // taking whole content rather than a patch. D-110 makes `None` mean *the row
+    // states none* — which D-154 then resolves against the region taxonomy's
+    // default — rather than "no category", so this is a meaningful edit and not
+    // just the absence of one.
+    let mut cleared = graduated_content();
+    cleared.row.meter = Some("api_calls".to_owned());
+    cleared.row.dimension_key = "region:eu".to_owned();
+    cleared.tax_category_ref = None;
+    repo.update_draft(
+        &scope,
+        tenant(),
+        price_id,
+        RowVersion::new(1),
+        cleared,
+        stamp(),
+        /* on_behalf_of */ None,
+    )
+    .await
+    .expect("clear the category");
+
+    let recleared = repo
+        .find(&scope, tenant(), price_id)
+        .await
+        .expect("read")
+        .expect("present");
+    assert_eq!(
+        recleared.tax_category_ref, None,
+        "a category that can be set and not cleared is still an unexpressible correction"
+    );
 }
 
 #[tokio::test]
