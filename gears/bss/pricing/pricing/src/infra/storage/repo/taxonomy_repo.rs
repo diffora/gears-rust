@@ -70,6 +70,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::concurrency::{PolicyTag, TaxonomyTagEntry};
+use crate::domain::lifecycle::LifecycleState;
 use crate::domain::overlay::{OverlayLifecycle, ScopeClass, ScopeValue};
 use crate::domain::scope_key::Region;
 use crate::domain::taxonomy::{
@@ -84,16 +85,6 @@ use crate::infra::storage::entity::{
 use crate::infra::storage::{RepoError, contention_or_db};
 
 use super::audit_repo::{self, NewAuditEntry};
-
-/// The `lifecycle_state` a reference has to be in to block a retirement.
-///
-/// One constant rather than a literal at each of the two count sites: the two
-/// counts are the same rule over two planes, and a spelling that drifted on one
-/// of them would silently stop guarding that plane.
-const PUBLISHED: &str = "published";
-
-/// The `state` token an entry has to carry to declare anything.
-const ACTIVE: &str = "active";
 
 // ---------------------------------------------------------------------------
 // The repository.
@@ -310,7 +301,7 @@ pub async fn active_regions(
         .filter(
             Condition::all()
                 .add(region_taxonomy::Column::TenantId.eq(tenant_id))
-                .add(region_taxonomy::Column::State.eq(ACTIVE)),
+                .add(region_taxonomy::Column::State.eq(TaxonomyState::Active.as_str())),
         )
         .all(runner)
         .await
@@ -355,7 +346,7 @@ pub async fn region_readiness(
             Condition::all()
                 .add(region_taxonomy::Column::TenantId.eq(tenant_id))
                 .add(region_taxonomy::Column::Value.eq(region.as_str()))
-                .add(region_taxonomy::Column::State.eq(ACTIVE)),
+                .add(region_taxonomy::Column::State.eq(TaxonomyState::Active.as_str())),
         )
         .one(runner)
         .await
@@ -385,7 +376,7 @@ pub async fn region_readiness_map(
         .filter(
             Condition::all()
                 .add(region_taxonomy::Column::TenantId.eq(tenant_id))
-                .add(region_taxonomy::Column::State.eq(ACTIVE)),
+                .add(region_taxonomy::Column::State.eq(TaxonomyState::Active.as_str())),
         )
         .all(runner)
         .await
@@ -431,7 +422,7 @@ pub async fn references_to(
                 Condition::all()
                     .add(price::Column::TenantId.eq(tenant_id))
                     .add(price::Column::Region.eq(value.as_str()))
-                    .add(price::Column::LifecycleState.eq(PUBLISHED)),
+                    .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
             )
             .count(runner)
             .await
@@ -448,7 +439,9 @@ pub async fn references_to(
                 .add(price_overlay::Column::TenantId.eq(tenant_id))
                 .add(price_overlay::Column::ScopeClass.eq(class.scope_class().as_str()))
                 .add(price_overlay::Column::ScopeValue.eq(value.as_str()))
-                .add(price_overlay::Column::LifecycleState.eq(PUBLISHED)),
+                .add(
+                    price_overlay::Column::LifecycleState.eq(OverlayLifecycle::Published.as_str()),
+                ),
         )
         .count(runner)
         .await
@@ -484,7 +477,7 @@ pub async fn rows_resolving_category_through(
             Condition::all()
                 .add(price::Column::TenantId.eq(tenant_id))
                 .add(price::Column::Region.eq(value.as_str()))
-                .add(price::Column::LifecycleState.eq(PUBLISHED))
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
                 .add(price::Column::TaxCategoryRef.is_null()),
         )
         .count(runner)
