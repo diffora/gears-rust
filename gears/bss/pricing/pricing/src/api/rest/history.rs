@@ -236,7 +236,12 @@ async fn read_history(
     let scope = crate::authz::access_scope(
         &enforcer,
         &ctx,
-        &crate::authz::resource_types::PLAN,
+        // The audit trail is its own disclosure, so it is its own permission:
+        // `audit_read` ("Read the catalog audit trail") is declared for exactly
+        // this surface. Gating on `plan x read` handed the trail -- who changed
+        // what, when, and to what -- to every holder of catalog read, and left
+        // the declared permission granting nothing.
+        &crate::authz::resource_types::AUDIT,
         crate::authz::actions::READ,
         /* owner_tenant_id */ None,
         /* resource_id */ None,

@@ -388,7 +388,9 @@ async fn read_bulk_import(
     let scope = crate::authz::access_scope(
         &enforcer,
         &ctx,
-        &crate::authz::resource_types::PLAN,
+        // `historical_import_read` -- "Read a pending backdated import's row
+        // set" -- is declared for this surface and for nothing else.
+        &crate::authz::resource_types::HISTORICAL_IMPORT,
         crate::authz::actions::READ,
         /* owner_tenant_id */ None,
         /* resource_id */ None,
@@ -509,7 +511,10 @@ async fn write_scope(
     crate::authz::access_scope(
         enforcer,
         ctx,
-        &crate::authz::resource_types::PLAN,
+        // `historical_import_write` -- "Import governed backdated reference
+        // prices". A backdated import rewrites what the catalog says was true in
+        // the past, which is a different authority from authoring a draft.
+        &crate::authz::resource_types::HISTORICAL_IMPORT,
         crate::authz::actions::WRITE,
         /* owner_tenant_id */ Some(ctx.subject_tenant_id()),
         /* resource_id */ None,

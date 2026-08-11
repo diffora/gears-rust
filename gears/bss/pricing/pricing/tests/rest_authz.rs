@@ -117,7 +117,7 @@ fn census() -> Vec<Route> {
         Route {
             method: "GET",
             path: HISTORY,
-            resource_type: labels::PLAN,
+            resource_type: labels::AUDIT,
             action: actions::READ,
             mutating: false,
         },
@@ -185,21 +185,21 @@ fn census() -> Vec<Route> {
         Route {
             method: "POST",
             path: BULK_IMPORTS,
-            resource_type: labels::PLAN,
+            resource_type: labels::HISTORICAL_IMPORT,
             action: actions::WRITE,
             mutating: true,
         },
         Route {
             method: "GET",
             path: BULK_IMPORT,
-            resource_type: labels::PLAN,
+            resource_type: labels::HISTORICAL_IMPORT,
             action: actions::READ,
             mutating: false,
         },
         Route {
             method: "POST",
             path: BULK_IMPORT_ABORT,
-            resource_type: labels::PLAN,
+            resource_type: labels::HISTORICAL_IMPORT,
             action: actions::WRITE,
             mutating: true,
         },
@@ -1141,6 +1141,22 @@ async fn the_census_covers_every_route_the_routers_register() {
     // that govern their own changes. That is invisible to every allow/deny fixture,
     // which is why it is asserted here.
     //
+    // `audit` is the sixth and `historical_import` the seventh, and both arrived
+    // as corrections rather than as new surfaces. `/history` -- the catalog audit
+    // trail -- was filed under `plan × read`, so every holder of catalog read
+    // could read who changed what and when, while `audit_read` ("Read the catalog
+    // audit trail") was grantable and conferred nothing. `/bulk-imports` was
+    // likewise `plan`, while `historical_import` was declared for exactly its two
+    // verbs -- and a backdated import rewrites what the catalog says was true in
+    // the past, which is not the authority that authors a draft.
+    //
+    // Both were invisible to every allow/deny fixture AND to
+    // `every_route_asks_the_catalogued_pair`, because that check compares a route
+    // against this census and the census recorded the pair the route asked for.
+    // Two descriptions of one implementation cannot disagree; what caught it was
+    // `every_grantable_label_is_enforced_by_some_route`, which reads the
+    // *grantable* catalog instead.
+    //
     // `config` is the fifth, mounted by Slice 4's taxonomy pair, and it is the
     // other side of that same separation. It is the label the segregation
     // argument above has always been *about* — until now the catalog declared
@@ -1154,6 +1170,8 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(
         used,
         std::collections::BTreeSet::from([
+            labels::AUDIT,
+            labels::HISTORICAL_IMPORT,
             labels::PLAN,
             labels::BUNDLE,
             labels::PRICE_OVERLAY,
@@ -1748,4 +1766,74 @@ async fn a_write_whose_target_tenant_is_outside_the_scope_is_denied_on_every_wri
             route.path
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Every declared authz label has a route that enforces it.
+//
+// `every_route_asks_the_catalogued_pair` compares each route against this
+// file's `census()`, and the census records the pair each route **does** ask
+// for. Both sides are therefore descriptions of the same implementation, and a
+// route gated on the wrong label satisfies them both: the code asks for `plan`,
+// the census says `plan`, the check is green.
+//
+// `labels::ALL` is the other kind of artifact. It is the catalog of what an
+// operator can be **granted**, authored alongside the permission instances in
+// `gts::permissions` -- "Read the catalog audit trail", "Import governed
+// backdated reference prices" -- and it owes nothing to any handler. So a label
+// in it that no route ever asks about is a permission that grants nothing:
+// granting it withholds nothing, and withholding it protects nothing.
+//
+// That is not a hypothetical. `audit_read` and `audit_export` were declared
+// while `/history` -- the catalog audit trail itself -- gated on `plan x read`,
+// so anyone holding catalog read could read who changed what and when. The same
+// held for `historical_import` against `/bulk-imports`.
+// ---------------------------------------------------------------------------
+
+/// Labels declared ahead of the surface that will enforce them.
+///
+/// An exemption is a **debt**, stated so it stays visible: `customer_group` has
+/// no route module at all because the membership half is not built in this
+/// strand (`overlay_repo::taxonomy_declares` refuses that class outright and
+/// says why). A label whose surface exists and does not ask for it does not
+/// belong here -- it belongs in the handler.
+const LABELS_WITHOUT_A_SURFACE_YET: &[&str] = &[labels::CUSTOMER_GROUP];
+
+#[test]
+fn every_grantable_label_is_enforced_by_some_route() {
+    let asked: std::collections::BTreeSet<&str> =
+        census().iter().map(|r| r.resource_type).collect();
+
+    let unenforced: Vec<&str> = labels::ALL
+        .iter()
+        .copied()
+        .filter(|label| !asked.contains(label))
+        .filter(|label| !LABELS_WITHOUT_A_SURFACE_YET.contains(label))
+        .collect();
+
+    assert!(
+        unenforced.is_empty(),
+        "these labels can be granted and are asked for by no route, so granting \
+         them confers nothing and withholding them protects nothing: {unenforced:?}"
+    );
+}
+
+#[test]
+fn no_exemption_outlives_the_surface_it_was_waiting_for() {
+    // The other direction, and the one an exemption list rots without: a label
+    // excused for having no surface, whose surface has since arrived and asks
+    // for it, must leave the list rather than sit there describing nothing.
+    let asked: std::collections::BTreeSet<&str> =
+        census().iter().map(|r| r.resource_type).collect();
+
+    let stale: Vec<&str> = LABELS_WITHOUT_A_SURFACE_YET
+        .iter()
+        .copied()
+        .filter(|label| asked.contains(label))
+        .collect();
+
+    assert!(
+        stale.is_empty(),
+        "these labels are enforced now and no longer need an exemption: {stale:?}"
+    );
 }
