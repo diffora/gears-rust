@@ -92,12 +92,13 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::taxonomies::TAXONOMY;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{
-        PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
+        PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
     };
     vec![
         ("GET", FRONTIER),
         ("GET", HISTORY),
         ("GET", PLAN),
+        ("GET", PLANS),
         ("POST", PLANS),
         ("PATCH", PLAN),
         ("POST", PLAN_ABANDON),
@@ -147,6 +148,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", TAX_DISPLAY_POLICY),
         ("PUT", TAX_DISPLAY_POLICY),
         ("POST", BUNDLES),
+        ("GET", BUNDLES),
         // D-310: the composition's reader. It was unreadable through any surface,
         // including to the approver of the unit D-104 opens over it.
         ("GET", BUNDLE_BY_ID),
@@ -163,6 +165,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // The `DELETE` carries no idempotency header, which is §5's own column and is
         // reported as a divergence in `api::rest::windows`.
         ("POST", PRICE_WINDOWS),
+        ("GET", PRICE_WINDOWS_LIST),
         ("PATCH", PRICE_WINDOW),
         ("DELETE", PRICE_WINDOW),
         // Slice 7's interactive repricing: the supersession unit (D-88), one route in a
@@ -178,6 +181,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // flips to `cancelled` and is never removed, because an executor
         // re-reading the schedule must tell a cancelled run from an absent one.
         ("POST", MIGRATIONS),
+        ("GET", MIGRATIONS),
         ("GET", MIGRATION_BY_ID),
         ("DELETE", MIGRATION_BY_ID),
         // D-102's read surface. The only route in the gear whose authz object

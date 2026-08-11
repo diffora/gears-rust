@@ -49,7 +49,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, OnConflict, SimpleExpr};
-use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait, Order};
 use serde_json::Value as JsonValue;
 use toolkit_db::secure::{
     AccessScope, DBRunner, ScopeError, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
@@ -225,6 +225,58 @@ pub async fn load(
         .map_err(|e| RepoError::Db(format!("read migration {migration_id}: {e}")))?;
 
     row.map(into_record).transpose()
+}
+
+/// One page of the tenant's migration schedules, in `migration_id` order.
+///
+/// D-125's keyset walk over the migration plane — `crate::api::rest::cursor`'s
+/// module doc argues once, for every list surface, why the resume is a key and
+/// never an offset.
+///
+/// `states` narrows the walk. An **empty** slice is every state rather than none,
+/// which is `approval_repo::list_page`'s reading and for its reason: a caller that
+/// named no filter asked for everything, and answering an empty page to that would
+/// be a filter nobody applied. It is also the right default *here* specifically —
+/// a completed run is the record of what moved, and an operator's queue over
+/// scheduled **and** finished runs is the ordinary case.
+///
+/// **`migration_id` alone is the walk's key even though the primary key is
+/// `(migration_id, tenant_id)`.** The second half is a constant across the walk —
+/// every row is filtered to `tenant_id` before ordering — so a single-column
+/// resume names exactly one row and the cursor stays the 16 bytes
+/// `crate::api::rest::cursor` encodes.
+///
+/// # Errors
+/// [`RepoError::Db`] on a storage failure; [`RepoError::CorruptRow`] when a stored
+/// state token is outside the column's `CHECK`.
+pub async fn list_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    states: &[MigrationState],
+    after: Option<Uuid>,
+    limit: u64,
+) -> Result<Vec<MigrationRecord>, RepoError> {
+    let mut filter = Condition::all().add(migration::Column::TenantId.eq(tenant_id));
+    if !states.is_empty() {
+        let tokens: Vec<&str> = states.iter().copied().map(MigrationState::as_str).collect();
+        filter = filter.add(migration::Column::State.is_in(tokens));
+    }
+    if let Some(after) = after {
+        filter = filter.add(migration::Column::MigrationId.gt(after));
+    }
+    migration::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .order_by(migration::Column::MigrationId, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list pricing_migration: {e}")))?
+        .into_iter()
+        .map(into_record)
+        .collect()
 }
 
 /// The **live** migrations aimed at a plan (`RETIRE_TARGET_OF_MIGRATION`).

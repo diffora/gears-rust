@@ -9,7 +9,7 @@
 use chrono::{TimeZone, Utc};
 use uuid::Uuid;
 
-use super::PlanView;
+use super::{PlanSummaryView, PlanView};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
@@ -133,5 +133,35 @@ fn a_custom_frequency_carries_its_interval_and_a_fixed_one_carries_none() {
     assert_eq!(
         custom["frequency"]["custom_interval_unit"],
         serde_json::json!("days")
+    );
+}
+
+/// **A page says which revision it answered about, and hands back the
+/// precondition for editing it.**
+///
+/// The summary is a different rendering of the same row, so the two members a
+/// caller cannot recompute are the ones to hold it to: `revision`, because a
+/// page over authoring revisions is answering about the draft rather than the
+/// published revision and a caller that assumed otherwise would `PATCH` the
+/// wrong number, and `row_version`, because a client that listed and then edited
+/// would otherwise have to re-read every row to learn its `If-Match`.
+#[test]
+fn the_summary_view_carries_the_revision_it_answered_and_its_row_version() {
+    let plan_id = PlanId::new(Uuid::from_u128(7));
+    let mut row = revision(plan_id);
+    // Not the fixture's own number: a view that hardcoded the field would pass
+    // against a value the fixture already carries.
+    row.revision = 5;
+    row.lifecycle_state = LifecycleState::Draft;
+
+    let view = PlanSummaryView::from(&row);
+
+    assert_eq!(view.plan_id, plan_id.get());
+    assert_eq!(view.revision, 5);
+    assert_eq!(view.lifecycle_state, "draft");
+    assert_eq!(
+        view.row_version,
+        row.row_version.get(),
+        "a caller that lists then patches needs the precondition from the page"
     );
 }

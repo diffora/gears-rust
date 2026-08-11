@@ -481,6 +481,82 @@ pub async fn list_for_plan(
         .collect()
 }
 
+/// One page of the tenant's price windows, in `window_id` order.
+///
+/// D-125's keyset walk over the window plane — `crate::api::rest::cursor`'s
+/// module doc argues once, for every list surface, why the resume is a key and
+/// never an offset.
+///
+/// # Why the narrowing parameter is `price_id` and not `plan_id`
+///
+/// Because `pricing_price_window` has no plan reference and is not meant to:
+/// [`super::super::entity::price_window`]'s module doc records that the plan and
+/// the canonical scope key both live on `pricing_price`, and that a window is
+/// bound to a **row** rather than to a key precisely so the two cannot disagree.
+/// A `plan_id` filter here would therefore be a join this repository invents, and
+/// the plan-shaped question already has its own answer in [`list_for_plan`].
+///
+/// **Every state is included**, [`list_for_plan`]'s reason exactly: a cancelled
+/// window is what explains why a key lost its successor, and a repository that
+/// pre-filtered it would put that answer out of reach of the surface that needs
+/// it.
+///
+/// The keys are resolved in **one** further query for the whole page
+/// ([`price_repo::load_scope_keys_for_ids`]) rather than one per window, so a
+/// hundred-row page costs two round trips and not a hundred and one.
+///
+/// # Errors
+/// [`RepoError::CorruptRow`] when a window names a price row that does not exist
+/// — the foreign key makes that an invariant breach rather than a caller's
+/// mistake — or when a stored token is outside its enumeration. [`RepoError::Db`]
+/// on a scope or storage failure.
+pub async fn list_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Option<Uuid>,
+    after: Option<Uuid>,
+    limit: u64,
+) -> Result<Vec<WindowRecord>, RepoError> {
+    let mut filter = Condition::all().add(price_window::Column::TenantId.eq(tenant_id));
+    if let Some(price_id) = price_id {
+        filter = filter.add(price_window::Column::PriceId.eq(price_id));
+    }
+    if let Some(after) = after {
+        filter = filter.add(price_window::Column::WindowId.gt(after));
+    }
+    let rows = price_window::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .order_by(price_window::Column::WindowId, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list pricing_price_window: {e}")))?;
+
+    let mut price_ids: Vec<Uuid> = rows.iter().map(|row| row.price_id).collect();
+    price_ids.sort_unstable();
+    price_ids.dedup();
+    let keys = price_repo::load_scope_keys_for_ids(runner, scope, tenant_id, &price_ids).await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let key = keys
+                .iter()
+                .find(|(price_id, _)| *price_id == row.price_id)
+                .map(|(_, key)| key.clone())
+                .ok_or_else(|| {
+                    RepoError::CorruptRow(format!(
+                        "window {} names price row {}, which does not exist",
+                        row.window_id, row.price_id
+                    ))
+                })?;
+            to_domain(row, key)
+        })
+        .collect()
+}
+
 /// Which of §4's two **time-driven** boundaries a sweep is asking about.
 ///
 /// Two members and not three: `scheduled → cancelled` is an operator's act

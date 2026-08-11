@@ -54,7 +54,7 @@ use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
 use bss_pricing::api::rest::taxonomies::TAXONOMY;
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::api::rest::windows::{
-    PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
+    PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
 };
 use bss_pricing::authz::{actions, labels};
 use bss_pricing::domain::approval::ApprovalState;
@@ -129,6 +129,18 @@ fn census() -> Vec<Route> {
             action: actions::READ,
             mutating: false,
         },
+        // The collection read. `plan x read` exactly as the by-id read is, and
+        // the row is here rather than being taken as obvious because the pair a
+        // *collection* asks for is the one place a listing can go wrong
+        // invisibly: it passes `resource_id: None`, so what the PDP compiles is
+        // the tenant filter the whole walk runs under.
+        Route {
+            method: "GET",
+            path: PLANS,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
         Route {
             method: "POST",
             path: PLANS,
@@ -147,6 +159,19 @@ fn census() -> Vec<Route> {
             resource_type: labels::BUNDLE,
             action: actions::WRITE,
             mutating: true,
+        },
+        // The bundle collection read. `bundle x read`, the pair the by-id read
+        // below already asks for — and not the `plan x read` the *publish* route
+        // gates on, which is a different act on a different resource. Catalogued
+        // rather than taken as obvious for the plan collection's reason: a
+        // listing passes `resource_id: None`, so the pair it asks for is what
+        // compiles the tenant filter the whole walk runs under.
+        Route {
+            method: "GET",
+            path: BUNDLES,
+            resource_type: labels::BUNDLE,
+            action: actions::READ,
+            mutating: false,
         },
         Route {
             method: "GET",
@@ -302,6 +327,21 @@ fn census() -> Vec<Route> {
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
+        },
+        // The window collection read. `plan x read`, which is what `GET
+        // …/coverage` and `GET …/sellability` already ask for on this surface —
+        // there is no `price` label in the catalogue at all, so a listing over
+        // the window plane is a read of the plan plane by the only vocabulary
+        // this gear has. Catalogued rather than taken as obvious for the reason
+        // the plan collection's row gives: a listing passes `resource_id: None`,
+        // so the pair it asks for is what compiles the tenant filter the whole
+        // walk runs under.
+        Route {
+            method: "GET",
+            path: PRICE_WINDOWS_LIST,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
         },
         // The supersession unit (D-88). **`plan x write`, not `plan x publish`** — S5's
         // endpoint map puts it there beside the cutover, and the reason is the same one
@@ -508,7 +548,7 @@ fn retirement_routes() -> Vec<Route> {
 
 /// Slice 11's migration plane (§5).
 ///
-/// Three rows and deliberately not five. `POST .../start` and `.../complete` are
+/// Four rows and deliberately not six. `POST .../start` and `.../complete` are
 /// specified (D-65) and their storage half is built, but they are **not mounted**:
 /// `/start` must run D-36's execution-time re-resolution and that has no input in
 /// this system, so a mounted `/start` would hand Subscriptions an exclusion set
@@ -525,6 +565,16 @@ fn migration_routes() -> Vec<Route> {
             resource_type: labels::PLAN,
             action: actions::MIGRATE,
             mutating: true,
+        },
+        // The collection read. `plan x read`, the by-id read's pair, and
+        // **not** `plan x migrate`: listing what is scheduled is not the
+        // authority to schedule, and the role matrix grants the two apart.
+        Route {
+            method: "GET",
+            path: MIGRATIONS,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
         },
         Route {
             method: "GET",

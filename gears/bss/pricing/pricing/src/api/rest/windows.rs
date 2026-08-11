@@ -126,12 +126,14 @@ use chrono::{DateTime, Utc};
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::{AccessScope, DBRunner};
+use toolkit_odata::Page;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::approvals::{ApprovalView, MaterialityView};
 use crate::api::rest::auth_context::require_authenticated;
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
+use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::plans::{idempotency_key_param, if_match_param};
 use crate::api::rest::preconditions;
@@ -148,6 +150,7 @@ use crate::domain::sellability::{
 use crate::domain::window::{CoverageEnd, WindowInterval};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest};
 use crate::infra::publish::CANDIDATE_ROW_STATES;
+use crate::infra::storage::repo::window_repo::WindowRecord;
 use crate::infra::storage::repo::{pin_frontier_repo, price_repo, read_model_repo, window_repo};
 use crate::infra::storage::repo_failure;
 use crate::infra::window::{PendingApproval, WindowMutationOutcome, WindowMutationReceipt};
@@ -177,6 +180,18 @@ pub const PRICE_WINDOWS: &str = "/bss-pricing/v1/prices/{priceId}/windows";
 /// path that the server would have to check agrees with the first — the arm
 /// `require_same_revision` exists for on the price routes, bought for nothing here.
 pub const PRICE_WINDOW: &str = "/bss-pricing/v1/price-windows/{windowId}";
+
+/// The window collection, cursor-paginated (D-125).
+///
+/// The **collection** of [`PRICE_WINDOW`] and deliberately not nested under a
+/// price row: `POST …/prices/{priceId}/windows` is the scheduling collection of
+/// one row, so a `GET` there would answer about one row only, and the timeline a
+/// caller wants is over the tenant's plane with `price_id` as a *filter* rather
+/// than as a path segment it must always know.
+///
+/// The literal is repeated in the `OperationBuilder` call for [`PLAN_COVERAGE`]'s
+/// reason: DE0801 validates a literal and silently passes a `const`.
+pub const PRICE_WINDOWS_LIST: &str = "/bss-pricing/v1/price-windows";
 
 /// The sellability surface the joint gate reads (§5, `dod-sellability`).
 ///
@@ -279,6 +294,89 @@ impl From<&WindowInterval> for WindowIntervalView {
             effective_from: interval.effective_from,
             effective_to: interval.effective_to,
             state: interval.state.as_str().to_owned(),
+        }
+    }
+}
+
+/// The two pagination query parameters plus the price-row filter (D-125).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct WindowPageQuery {
+    /// Windows per page; server default 100, hard cap 1,000.
+    pub limit: Option<u64>,
+    /// The opaque token a previous page returned.
+    pub cursor: Option<String>,
+    /// Narrow the page to one price row's windows.
+    ///
+    /// **`plan_id` is not offered, and the reason is the store rather than
+    /// taste**: `pricing_price_window` carries `price_id` and no plan reference at
+    /// all — the plan and the canonical scope key both live on `pricing_price`, so
+    /// that a window's row and its key cannot disagree. A plan's whole window
+    /// plane is `GET …/plans/{planId}/coverage`, which answers it per key and is
+    /// the surface that question already had.
+    pub price_id: Option<Uuid>,
+}
+
+/// One window on a page: the interval, where it stands, and the precondition the
+/// next act on it needs.
+///
+/// It is **not** [`WindowMutationView`], which is a mutation's receipt: that one
+/// carries a `pendingVersionRef` and the revision a re-projection froze, neither
+/// of which a stored window has. Nor is it [`WindowIntervalView`], which is a
+/// key's interval inside a coverage report and carries no id at all — a page of
+/// those would be a list nothing could be addressed from.
+///
+/// `scopeKey` is the **same string** [`KeyCoverageView`] renders, for that field's
+/// own reason: an operator told `WINDOW_COVERAGE_MISSING` on a key has to be able
+/// to find the key here without transcribing ten axes.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct WindowSummaryView {
+    /// The window's own id — what `PATCH` and `DELETE …/price-windows/{windowId}`
+    /// address.
+    pub window_id: Uuid,
+    /// The price row the interval is bound to.
+    pub price_id: Uuid,
+    /// The row's canonical scope key, the ten axes pipe-separated.
+    pub scope_key: String,
+    /// Inclusive start, UTC.
+    pub effective_from: DateTime<Utc>,
+    /// Exclusive end, UTC; `null` is **open-ended** and not "unset".
+    pub effective_to: Option<DateTime<Utc>>,
+    /// `scheduled` | `active` | `expired` | `cancelled`.
+    pub state: String,
+    /// The operator-supplied change reason carried for the audit trail.
+    pub reason_code: String,
+    /// When the window was scheduled, UTC.
+    pub created_at: DateTime<Utc>,
+    /// When it became active, UTC; `null` while it has not.
+    pub activated_at: Option<DateTime<Utc>>,
+    /// When it expired, UTC; `null` while it has not.
+    pub expired_at: Option<DateTime<Utc>>,
+    /// When it was cancelled, UTC; `null` if it never was.
+    pub cancelled_at: Option<DateTime<Utc>>,
+    /// The act sequence a `PATCH` or `DELETE` must assert as its `If-Match`.
+    ///
+    /// On the page for the reason `PlanSummaryView::row_version` is: a caller that
+    /// lists and then adjusts needs the precondition from the page, and a client
+    /// that cannot read response headers can still submit an `If-Match`.
+    pub mutation_seq: u64,
+}
+
+impl From<&WindowRecord> for WindowSummaryView {
+    fn from(record: &WindowRecord) -> Self {
+        Self {
+            window_id: record.window_id,
+            price_id: record.price_id,
+            scope_key: record.scope_key.to_string(),
+            effective_from: record.effective_from,
+            effective_to: record.effective_to,
+            state: record.state.as_str().to_owned(),
+            reason_code: record.reason_code.clone(),
+            created_at: record.created_at,
+            activated_at: record.activated_at,
+            expired_at: record.expired_at,
+            cancelled_at: record.cancelled_at,
+            mutation_seq: record.mutation_seq,
         }
     }
 }
@@ -593,6 +691,49 @@ impl From<&KeyCoverage> for KeyCoverageView {
 /// architectural and reach the wire as 400s carrying their code
 /// (`infra::error_mapping`).
 pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::get("/bss-pricing/v1/price-windows")
+        .operation_id("bss_pricing.list_price_windows")
+        .summary("List the tenant's price windows (cursor-paginated)")
+        .description(
+            "One page of the tenant's price windows in `windowId` order, with an opaque `cursor` \
+             and a `limit` whose server default is 100 and whose hard cap is 1,000 (D-125). \
+             `price_id` narrows the page to one price row's windows. There is no `plan_id` \
+             filter: a window is bound to a **row** and carries no plan reference, so that the \
+             row and its canonical scope key cannot disagree - a plan's whole time axis is \
+             `GET /bss-pricing/v1/plans/{planId}/coverage`, which answers it per key. Every \
+             state is on the page, cancelled and expired included, because \"why did this key \
+             lose its successor\" is a question about a plane rather than about a live row. Each \
+             entry carries `mutationSeq`, which is the `If-Match` the next `PATCH` or `DELETE` \
+             on that window must assert. Gates on `plan` x `read`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Windows per page (default 100, hard cap 1,000)",
+            "integer",
+        )
+        .query_param("cursor", false, "Opaque base64url pagination cursor")
+        .query_param(
+            "price_id",
+            false,
+            "Narrow the page to one price row's windows",
+        )
+        .handler(list_price_windows)
+        .json_response_with_schema::<Page<WindowSummaryView>>(
+            openapi,
+            StatusCode::OK,
+            "One page of the tenant's price windows.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(Router::new(), openapi);
+
     let router = OperationBuilder::get("/bss-pricing/v1/plans/{planId}/coverage")
         .operation_id("bss_pricing.get_plan_coverage")
         .summary("Read a plan's per-scope-key window coverage and gap report")
@@ -622,7 +763,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_403(openapi)
         .error_500(openapi)
         .error_503(openapi)
-        .register(Router::new(), openapi);
+        .register(router, openapi);
 
     let router = OperationBuilder::post("/bss-pricing/v1/prices/{priceId}/windows")
         .operation_id("bss_pricing.schedule_price_window")
@@ -1248,6 +1389,68 @@ pub fn verdict_json(
 /// exposing every tenant's catalog. The pair is `plan` x `read`, the same one
 /// `list_plan_prices` asks for, and **no new authz vocabulary**: the catalog
 /// already carries every label and action this needs.
+/// `GET /price-windows`.
+///
+/// The collection read, gated on the same `plan` x `read` pair every other read
+/// on this surface asks for — `resource_id` is `None` because there is no single
+/// resource to name, so what the PDP compiles is the tenant filter the whole walk
+/// runs under, and `require_constraints` is `true` so an unconstrained allow
+/// fail-closes rather than paging through every tenant's window plane.
+///
+/// **No `plan_id` parameter**, for the reason [`WindowPageQuery::price_id`]
+/// states: the store has no plan reference on a window and this handler invents
+/// no join to fabricate one.
+async fn list_price_windows(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Query(query): Query<WindowPageQuery>,
+) -> Result<Json<Page<WindowSummaryView>>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::PLAN,
+        crate::authz::actions::READ,
+        /* owner_tenant_id */ None,
+        /* resource_id */ None,
+        /* require_constraints */ true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)?;
+
+    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::internal(format!("bss-pricing: price window listing: {e}")).create()
+    })?;
+
+    // One row more than the page, so "is there another page" needs no second
+    // query and no page whose `next_cursor` points at nothing.
+    let probe = page.limit.saturating_add(1);
+    let mut rows = window_repo::list_page(
+        &conn,
+        &scope,
+        ctx.subject_tenant_id(),
+        query.price_id,
+        page.after,
+        probe,
+    )
+    .await
+    .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    let has_more = u64::try_from(rows.len()).unwrap_or(u64::MAX) > page.limit;
+    if has_more {
+        rows.pop();
+    }
+    let next = has_more
+        .then(|| rows.last().map(|row| row.window_id))
+        .flatten();
+    Ok(Json(Page {
+        items: rows.iter().map(WindowSummaryView::from).collect(),
+        page_info: cursor::page_info(next, page.limit),
+    }))
+}
+
 async fn get_plan_coverage(
     Extension(state): Extension<Arc<GovernanceState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,

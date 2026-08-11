@@ -289,6 +289,26 @@ impl PlanRepo {
         load_open_draft(&self.conn()?, scope, tenant_id, plan_id).await
     }
 
+    /// One page of the tenant's plans as their **authoring** revisions.
+    ///
+    /// [`list_authoring_page`] holds the rule and the reason for it; this is the
+    /// entry point for a caller that has a repository rather than a runner.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] when a stored row cannot be read as the domain
+    /// value its columns are `CHECK`-constrained to hold.
+    pub async fn list_authoring(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        states: &[LifecycleState],
+        after: Option<Uuid>,
+        limit: u64,
+    ) -> Result<Vec<PlanRevision>, RepoError> {
+        list_authoring_page(&self.conn()?, scope, tenant_id, states, after, limit).await
+    }
+
     /// Apply `patch` to an open draft revision, under the caller's row version.
     ///
     /// One statement does all of it: the patched columns, the
@@ -1302,6 +1322,105 @@ pub async fn load_open_draft(
         .await
         .map_err(|e| RepoError::Db(format!("read open plan draft: {e}")))?;
     row.map(to_domain).transpose()
+}
+
+/// One page of the tenant's plans, each rendered as its **authoring** revision.
+///
+/// `plans.rs::authoring_revision` decides, per plan, that the open draft
+/// outranks the current revision; this is that rule over a page rather than over
+/// one id, and it exists because [`LifecycleState::is_current_revision`] is
+/// `Published | Retired`: a listing over [`current_tokens`] would omit every
+/// plan whose only revision is the draft somebody is authoring right now, which
+/// is precisely the plan an authoring surface most needs to enumerate.
+///
+/// The rule is expressed as an ordering rather than as a second query.
+/// `plan_id ASC, revision DESC` puts each plan's highest surviving revision
+/// first, and a draft is always higher than the revision it reopened —
+/// [`PlanRepo::open_revision`] mints `max(revision) + 1` over the whole chain —
+/// so the **first** row of each plan is already the authoring one. Keeping only
+/// that row is the whole collapse.
+///
+/// `states` narrows to the caller's lifecycle filter; an **empty** slice is the
+/// authoring set — the current tokens plus `draft` — rather than nothing, for
+/// the reason `approval_repo::list_page` states: a caller that named no filter
+/// asked for everything it could act on.
+///
+/// # Why the walk re-fetches rather than over-fetching once
+///
+/// Under the empty filter a plan contributes at most two candidate rows —
+/// `uq_pricing_plan_current` permits one current revision and
+/// `OPEN_DRAFT_REVISION_EXISTS` permits one open draft — so a single window of
+/// `2 × limit` rows would always hold `limit` distinct plans. That bound is a
+/// property of *those two* states and of nothing else: a caller filtering on
+/// `superseded` is asking about a state a plan holds once **per revision**, and
+/// a single over-fetch would then return a short page, which a paginating caller
+/// reads as the end of the result. So the window is drawn repeatedly, resuming
+/// past the last plan it yielded, until the page is full or the store is
+/// exhausted. Progress is guaranteed because each redraw starts strictly after a
+/// `plan_id` the previous one returned.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+/// when a stored row cannot be read as the domain value its columns are
+/// `CHECK`-constrained to hold.
+pub async fn list_authoring_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    states: &[LifecycleState],
+    after: Option<Uuid>,
+    limit: u64,
+) -> Result<Vec<PlanRevision>, RepoError> {
+    let tokens: Vec<&str> = if states.is_empty() {
+        let mut set = current_tokens();
+        set.push(LifecycleState::Draft.as_str());
+        set
+    } else {
+        states.iter().map(|state| state.as_str()).collect()
+    };
+
+    // Two rows per plan is the ordinary case; the window is never narrower than
+    // that, so a `limit` of one still asks a question a plan's pair can answer.
+    let window = limit.saturating_mul(2).max(2);
+    let mut out: Vec<PlanRevision> = Vec::new();
+    let mut cursor = after;
+    loop {
+        let mut filter = Condition::all()
+            .add(plan::Column::TenantId.eq(tenant_id))
+            .add(plan::Column::LifecycleState.is_in(tokens.clone()));
+        if let Some(cursor) = cursor {
+            filter = filter.add(plan::Column::PlanId.gt(cursor));
+        }
+
+        let rows = plan::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(filter)
+            .order_by(plan::Column::PlanId, Order::Asc)
+            .order_by(plan::Column::Revision, Order::Desc)
+            .limit(window)
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("list pricing_plan: {e}")))?;
+        let exhausted = u64::try_from(rows.len()).unwrap_or(u64::MAX) < window;
+
+        let mut full = false;
+        for row in rows {
+            if cursor == Some(row.plan_id) {
+                // A later revision of the plan this window already answered for.
+                continue;
+            }
+            cursor = Some(row.plan_id);
+            out.push(to_domain(row)?);
+            if u64::try_from(out.len()).unwrap_or(u64::MAX) >= limit {
+                full = true;
+                break;
+            }
+        }
+        if full || exhausted {
+            return Ok(out);
+        }
+    }
 }
 
 /// Read one revision by its composite identity, scoped.

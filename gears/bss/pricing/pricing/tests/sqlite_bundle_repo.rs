@@ -424,3 +424,117 @@ async fn flip_published(provider: &DBProvider<DbError>, scope: &AccessScope, pla
         .await
         .expect("flip");
 }
+
+// ---------------------------------------------------------------------------
+// The collection read: `GET /bss-pricing/v1/bundles`
+// ---------------------------------------------------------------------------
+
+/// The page is a keyset walk on `bundle_id` and visits every bundle once.
+///
+/// Three bundles on three plans — `uq_pricing_bundle_plan` allows no other
+/// arrangement — walked two at a time, so a `list_page` that ignored `after`
+/// would loop on the first page rather than finish.
+#[tokio::test]
+async fn the_bundle_page_walks_by_bundle_id_and_never_repeats_one() {
+    let (plans, bundles, _) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+
+    let mut expected = Vec::new();
+    for n in 0..3_u128 {
+        let plan_id = PlanId::new(Uuid::from_u128(0x9_2a0 + n));
+        plans
+            .create_draft(&scope, new_draft(plan_id, tenant))
+            .await
+            .expect("create the plan draft");
+        expected.push(
+            bundles
+                .create(
+                    &scope,
+                    NewBundle {
+                        bundle_id: Uuid::from_u128(0xb1_00 + n),
+                        tenant_id: tenant,
+                        plan_id,
+                        price_basis: PriceBasis::SumOfParts,
+                        invoice_itemization: InvoiceItemization::Aggregate,
+                    },
+                    stamp(),
+                )
+                .await
+                .expect("create the bundle"),
+        );
+    }
+
+    let mut walked: Vec<Uuid> = Vec::new();
+    let mut after = None;
+    loop {
+        let page = bundles
+            .list(&scope, tenant, None, after, 2)
+            .await
+            .expect("list");
+        assert!(page.len() <= 2, "the page is bounded by the limit it asked");
+        let Some(last) = page.last() else { break };
+        after = Some(last.bundle_id);
+        walked.extend(page.iter().map(|record| record.bundle_id));
+    }
+
+    assert_eq!(walked, expected, "every bundle once, in bundle_id order");
+}
+
+/// `plan_id` narrows the page to the bundle riding one plan.
+///
+/// **`lifecycle_state` is not the filter and cannot be**: `pricing_bundle` holds
+/// `bundle_id`, `tenant_id`, `plan_id`, `price_basis` and `invoice_itemization`
+/// and no lifecycle column at all — the composition is revision-scoped and the
+/// bundle row is the identity that rides it.
+///
+/// The middle plan is named rather than the first, so a query that dropped the
+/// condition and returned the whole page would fail rather than coincide.
+#[tokio::test]
+async fn the_bundle_page_narrows_to_one_plan() {
+    let (plans, bundles, _) = harness().await;
+    let tenant = Uuid::from_u128(0x7e_11);
+    let scope = AccessScope::for_tenant(tenant);
+
+    for n in 0..3_u128 {
+        let plan_id = PlanId::new(Uuid::from_u128(0x9_3a0 + n));
+        plans
+            .create_draft(&scope, new_draft(plan_id, tenant))
+            .await
+            .expect("create the plan draft");
+        bundles
+            .create(
+                &scope,
+                NewBundle {
+                    bundle_id: Uuid::from_u128(0xb2_00 + n),
+                    tenant_id: tenant,
+                    plan_id,
+                    price_basis: PriceBasis::OwnPrice,
+                    invoice_itemization: InvoiceItemization::Itemize,
+                },
+                stamp(),
+            )
+            .await
+            .expect("create the bundle");
+    }
+    let wanted = PlanId::new(Uuid::from_u128(0x9_3a1));
+
+    let page = bundles
+        .list(&scope, tenant, Some(wanted), None, 100)
+        .await
+        .expect("list");
+
+    assert_eq!(
+        page.iter()
+            .map(|record| record.bundle_id)
+            .collect::<Vec<_>>(),
+        vec![Uuid::from_u128(0xb2_01)],
+        "only the named plan's bundle"
+    );
+    assert_eq!(
+        page[0].price_basis,
+        PriceBasis::OwnPrice,
+        "and the stored basis is parsed, not defaulted"
+    );
+    assert_eq!(page[0].invoice_itemization, InvoiceItemization::Itemize);
+}
