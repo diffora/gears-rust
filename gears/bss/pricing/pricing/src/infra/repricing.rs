@@ -193,6 +193,17 @@ pub struct RunOutcome {
 /// violation, a window conflict, the aggregate pass, a lost registry request —
 /// never surfaces here: it is absorbed into that plan's journal rows and
 /// counted in the returned [`RunOutcome`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the crate's own practice for a function whose every argument is a fact only the \
+              caller holds, `approval_repo::decide`'s and `overlay_repo::replace_lines`'s reason: \
+              the runner and its two collaborators (the registry, the tenant policy reader), the \
+              security context the registry request needs, the compiled scope and tenant, the \
+              run's own identity, and the stamp. `policies` is the eighth and is not optional — \
+              `PublishRuleParams` cannot be built without it, confirmed by review rather than \
+              assumed. Bundling the other seven around it would name a struct with exactly one \
+              reader"
+)]
 pub async fn apply_run_in(
     db: &DBProvider<DbError>,
     policies: &PolicyObjectRepo,
@@ -294,7 +305,12 @@ pub async fn apply_run_in(
             .db()
             .in_transaction::<(), DomainError, _>(move |txn| {
                 Box::pin(async move {
-                    apply_plan_in(
+                    // Boxed a second time on purpose — `infra::cutover::cut_over`'s
+                    // own precedent and reason: `apply_plan_in`'s future is large
+                    // (a whole plan's row loop plus the aggregate pass live across
+                    // its awaits) and `clippy::large_futures` is what says so. One
+                    // allocation per plan, not that size on every task's stack.
+                    Box::pin(apply_plan_in(
                         txn,
                         &policies_for_tx,
                         &registry_for_tx,
@@ -307,7 +323,7 @@ pub async fn apply_run_in(
                         &adjustment_for_tx,
                         changeover,
                         stamp,
-                    )
+                    ))
                     .await
                 })
             })
@@ -430,9 +446,9 @@ fn failure_reason(err: &DomainError) -> String {
 }
 
 /// One row this plan's transaction committed, carrying what the outbox events
-/// enqueued after the aggregate pass need — collected in
-/// [`apply_plan_in`]'s first pass because neither event can be built until the
-/// plan's one `CatalogVersion` request has answered.
+/// enqueued after the aggregate pass need — collected in [`apply_rows_in`]
+/// because neither event can be built until the plan's one `CatalogVersion`
+/// request has answered.
 struct AppliedRow {
     predecessor_price_id: Uuid,
     successor_price_id: Uuid,
@@ -443,16 +459,25 @@ struct AppliedRow {
 /// One plan's whole commit, inside the caller's transaction — [`apply_run_in`]'s
 /// per-plan unit, and the body D-134 makes normative.
 ///
-/// See the module doc for the order and the reasons behind it. Every write
-/// below lands in `txn`, so a `?` anywhere here rolls every one of them back
-/// together with the caller's own transaction wrapper.
+/// See the module doc for the order and the reasons behind it. Split into the
+/// two halves the module doc already distinguishes — the row loop
+/// ([`apply_rows_in`]) and the once-per-plan aggregate pass
+/// ([`commit_plan_aggregate_in`]) — **for `clippy::too_many_lines` alone**.
+/// Both take the same `txn: &DbTx<'_>` this function does and neither opens
+/// or commits anything of its own, so the one property this whole task turns
+/// on — every write for a plan lands in one transaction, and the aggregate
+/// pass runs after the row loop on that same transaction — does not move by
+/// being split across two function bodies that still share this one call
+/// stack. A `?` anywhere in either rolls every write above it back together
+/// with the caller's own transaction wrapper.
 #[allow(
     clippy::too_many_arguments,
     reason = "every argument is a precondition apply_run_in already resolved once for the whole \
               run — the runner and its collaborators, the tenant and the run's own identity, the \
               plan and its rows, the adjustment and changeover the report carried, and the stamp \
-              — and this function is the one place they are all needed together. Bundling them \
-              would name a struct with exactly one reader"
+              — and this function is the one place they are all needed together, before the split \
+              below narrows each half's own share of them. Bundling them would name a struct with \
+              exactly one reader"
 )]
 async fn apply_plan_in(
     txn: &DbTx<'_>,
@@ -468,6 +493,65 @@ async fn apply_plan_in(
     changeover: DateTime<Utc>,
     stamp: AuditStamp,
 ) -> Result<(), DomainError> {
+    // Boxed for `clippy::large_futures`, `infra::cutover::cut_over`'s own
+    // precedent: the row loop's future is large (a whole plan's writes live
+    // across its awaits).
+    let applied_rows = Box::pin(apply_rows_in(
+        txn,
+        scope,
+        tenant_id,
+        operation_id,
+        plan_id,
+        rows,
+        adjustment,
+        changeover,
+        stamp,
+    ))
+    .await?;
+
+    // Boxed for the identical reason — the aggregate pass's own future
+    // carries a whole `PlanShape` across its awaits.
+    Box::pin(commit_plan_aggregate_in(
+        txn,
+        policies,
+        registry,
+        ctx,
+        scope,
+        tenant_id,
+        operation_id,
+        plan_id,
+        changeover,
+        stamp,
+        &applied_rows,
+    ))
+    .await
+}
+
+/// The row loop half of [`apply_plan_in`] — [`plan_supersession`] plus
+/// [`commit_supersession`] for every pending row of the plan, in `txn`.
+///
+/// Returns what [`commit_plan_aggregate_in`] needs to finish: the successors
+/// it cannot enqueue outbox events for until the plan's one `CatalogVersion`
+/// request has answered.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "apply_plan_in's own reason, split rather than solved: every argument here is a \
+              precondition apply_run_in already resolved once for the whole run, cut to only \
+              what the row loop itself reads — the runner and scope, the tenant and the run's \
+              own identity, the plan and its rows, the adjustment and changeover the report \
+              carried, and the stamp. Bundling them would name a struct with exactly one reader"
+)]
+async fn apply_rows_in(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    plan_id: PlanId,
+    rows: &[JournalRow],
+    adjustment: &Adjustment,
+    changeover: DateTime<Utc>,
+    stamp: AuditStamp,
+) -> Result<Vec<AppliedRow>, DomainError> {
     let now = stamp.recorded_at;
 
     // Every published row of the plan, read **fresh in this transaction** —
@@ -519,13 +603,13 @@ async fn apply_plan_in(
         let successor_content = price_repo::authored_content(
             &key,
             PriceContent {
-                supersedes_price_id: Some(predecessor.price_id),
                 // `inst-mp-grandfathered`: the selector structurally excludes
                 // the retained class, so a row this apply ever reaches never
                 // carries a horizon to begin with — cleared explicitly rather
                 // than trusted to already be absent, `supersede_in`'s own
                 // reason for refusing one outright on this same field.
                 grandfather_until: None,
+                supersedes_price_id: Some(predecessor.price_id),
                 ..projected.content()
             },
         );
@@ -649,6 +733,38 @@ async fn apply_plan_in(
         });
     }
 
+    Ok(applied_rows)
+}
+
+/// The plan-level half of [`apply_plan_in`] — the aggregate pass **once**,
+/// over the plan's row set as [`apply_rows_in`]'s writes just left it, and —
+/// only on success — the plan's one `CatalogVersion` request and the outbox
+/// events every applied row owes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "apply_plan_in's own reason, split rather than solved: every argument here is a \
+              precondition apply_run_in already resolved once for the whole run, cut to only \
+              what the aggregate half itself reads — the runner and its two collaborators (the \
+              registry, the tenant policy reader), the security context the registry request \
+              needs, the compiled scope and tenant, the run's own identity, the changeover, the \
+              stamp, and what the row loop just wrote. Bundling them would name a struct with \
+              exactly one reader"
+)]
+async fn commit_plan_aggregate_in(
+    txn: &DbTx<'_>,
+    policies: &PolicyObjectRepo,
+    registry: &Arc<dyn CatalogVersionRegistryV1>,
+    ctx: &SecurityContext,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    plan_id: PlanId,
+    changeover: DateTime<Utc>,
+    stamp: AuditStamp,
+    applied_rows: &[AppliedRow],
+) -> Result<(), DomainError> {
+    let now = stamp.recorded_at;
+
     // **Once**, over the plan's row set as this transaction just left it —
     // Step 0's premise is what makes this a real post-commit read rather than
     // a re-statement of what was just asked to be true.
@@ -695,7 +811,7 @@ async fn apply_plan_in(
     // brief: keyed on the journal's own identity rather than on the freshly
     // minted successor/window ids, so a dedup key survives a hypothetical
     // retry that mints different ones for the same journal row.
-    for applied in &applied_rows {
+    for applied in applied_rows {
         outbox_repo::enqueue(
             txn,
             scope,
@@ -923,8 +1039,8 @@ mod step0_probe {
         assert!(
             saw_own_write,
             "a transaction must see its own uncommitted price-row insert through \
-             assemble_from, or D-134's design — the aggregate pass over post-commit state, \
-             inside the plan's own transaction — is unbuildable as written"
+             assemble_from, or D-134's design - the aggregate pass over post-commit state, \
+             inside the plan's own transaction - is unbuildable as written"
         );
     }
 }

@@ -162,6 +162,10 @@ async fn harness() -> Harness {
     let provider = DBProvider::<DbError>::new(db);
     common::declare_fixture_regions(&provider, TENANT).await;
     Harness {
+        // Field order matches the struct definition's, so every field here is
+        // a `.clone()` of the cheap handle rather than the one bare move that
+        // would otherwise have to come last.
+        provider: provider.clone(),
         plans: PlanRepo::new(provider.clone()),
         shapes: PlanShapeRepo::new(provider.clone()),
         prices: PriceRepo::new(provider.clone()),
@@ -171,7 +175,6 @@ async fn harness() -> Harness {
         ),
         registry: Arc::new(RegistryDouble::default()),
         scope: AccessScope::for_tenant(TENANT),
-        provider,
     }
 }
 
@@ -525,12 +528,12 @@ async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {
         apply_stamp(),
     )
     .await
-    .expect("apply_run_in itself does not fail — only a plan's own rows do");
+    .expect("apply_run_in itself does not fail - only a plan's own rows do");
 
     assert_eq!(outcome.applied, 1, "plan A's one row: {outcome:?}");
     assert_eq!(
         outcome.failed, 2,
-        "a partial plan is the one outcome D-134 forbids — plan B's whole selection fails: \
+        "a partial plan is the one outcome D-134 forbids - plan B's whole selection fails: \
          {outcome:?}"
     );
 
@@ -574,7 +577,7 @@ async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {
     // Plan A's row genuinely left the published plane and a real successor
     // stands on its key — the read that would catch a rollback silently
     // reaching plan A's writes too.
-    let plan_a_rows = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
+    let clean_plan_rows = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
         &h.provider.conn().expect("conn"),
         &h.scope,
         TENANT,
@@ -587,30 +590,30 @@ async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {
     .await
     .expect("read plan A's rows");
     assert_eq!(
-        plan_a_rows
+        clean_plan_rows
             .iter()
             .filter(
                 |r| r.lifecycle_state == bss_pricing::domain::lifecycle::LifecycleState::Published
             )
             .count(),
         1,
-        "plan A holds exactly one published row — the successor: {plan_a_rows:?}"
+        "plan A holds exactly one published row - the successor: {clean_plan_rows:?}"
     );
     assert_eq!(
-        plan_a_rows
+        clean_plan_rows
             .iter()
             .filter(
                 |r| r.lifecycle_state == bss_pricing::domain::lifecycle::LifecycleState::Superseded
             )
             .count(),
         1,
-        "and the predecessor, superseded rather than gone: {plan_a_rows:?}"
+        "and the predecessor, superseded rather than gone: {clean_plan_rows:?}"
     );
 
     // Plan B's two selected rows are untouched: still published, under their
     // original ids, nothing superseded — the rollback the plan's own
     // transaction performed.
-    let plan_b_rows = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
+    let broken_plan_rows = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
         &h.provider.conn().expect("conn"),
         &h.scope,
         TENANT,
@@ -619,11 +622,12 @@ async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {
     )
     .await
     .expect("read plan B's published rows");
-    let plan_b_published: BTreeSet<Uuid> = plan_b_rows.iter().map(|r| r.price_id).collect();
+    let broken_plan_published: BTreeSet<Uuid> =
+        broken_plan_rows.iter().map(|r| r.price_id).collect();
     assert!(
-        plan_b_published.contains(&row_b1) && plan_b_published.contains(&row_b2),
-        "plan B's rows still stand under their own ids — the transaction rolled back whole: \
-         {plan_b_rows:?}"
+        broken_plan_published.contains(&row_b1) && broken_plan_published.contains(&row_b2),
+        "plan B's rows still stand under their own ids - the transaction rolled back whole: \
+         {broken_plan_rows:?}"
     );
 
     // ------------------------------------------------------------------
@@ -653,7 +657,7 @@ async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {
         applied_price_id_a_again, applied_price_id_a,
         "the same successor, not a second one minted by a double-apply"
     );
-    let plan_a_rows_again = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
+    let clean_plan_rows_again = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
         &h.provider.conn().expect("conn"),
         &h.scope,
         TENANT,
@@ -663,10 +667,10 @@ async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {
     .await
     .expect("read plan A's rows again");
     assert_eq!(
-        plan_a_rows_again.len(),
+        clean_plan_rows_again.len(),
         1,
-        "still exactly one published row on plan A's key — a double-apply would mint a second: \
-         {plan_a_rows_again:?}"
+        "still exactly one published row on plan A's key - a double-apply would mint a second: \
+         {clean_plan_rows_again:?}"
     );
 
     let stored = bulk_repo::read(&h.provider.conn().expect("conn"), &h.scope, TENANT, run_id)
@@ -676,7 +680,7 @@ async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {
     assert_eq!(
         stored.state,
         BulkState::CompletedWithConflicts,
-        "one plan applied, one failed — a success with conflicts (`inst-bk-phase2`'s reading, \
+        "one plan applied, one failed - a success with conflicts (`inst-bk-phase2`'s reading, \
          carried over from bulk import to repricing): {stored:?}"
     );
 }

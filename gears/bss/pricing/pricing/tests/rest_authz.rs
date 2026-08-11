@@ -1111,6 +1111,14 @@ async fn registered_paths() -> Vec<String> {
             .merge(bss_pricing::api::rest::repricing_runs::router(
                 Arc::new(bss_pricing::api::rest::repricing_runs::ApiState {
                     authoring: Arc::clone(&harness.state),
+                    // The same double `harness.governance`'s own services
+                    // share — `api::rest::state`'s "one requester, two
+                    // readers" argument, applied to a harness.
+                    registry: Arc::clone(&harness.registry) as Arc<_>,
+                    policies: bss_pricing::infra::storage::repo::PolicyObjectRepo::new(
+                        harness.db.clone(),
+                        &bss_pricing::config::LimitsConfig::default(),
+                    ),
                 }),
                 &openapi,
             ))

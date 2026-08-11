@@ -307,7 +307,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         // payload nothing can look up (D-87).
         synthesis: bss_pricing::infra::synthesis::SynthesisService::new(db.clone()),
         publish: PublishService::new(
-            db,
+            db.clone(),
             &LimitsConfig::default(),
             FixtureGate::load(std::path::Path::new("/nonexistent/registry.toml")),
             Arc::new(
@@ -340,6 +340,16 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             .merge(bss_pricing::api::rest::repricing_runs::router(
                 Arc::new(bss_pricing::api::rest::repricing_runs::ApiState {
                     authoring: Arc::clone(&authoring),
+                    // The fail-closed production default, `governance`'s own
+                    // reason: registration happens while the router is built
+                    // and nothing here sends a request.
+                    registry: Arc::new(
+                        bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
+                    ),
+                    policies: bss_pricing::infra::storage::repo::PolicyObjectRepo::new(
+                        db,
+                        &LimitsConfig::default(),
+                    ),
                 }),
                 &openapi,
             ))
