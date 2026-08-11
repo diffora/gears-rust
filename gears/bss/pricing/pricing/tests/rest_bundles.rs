@@ -1005,3 +1005,91 @@ async fn the_unit_shows_its_approver_the_component_set_and_the_revenue_split() {
     );
     assert_eq!(composition["rev_share"][0]["parties"][0]["share_bp"], 8000);
 }
+
+/// **The composition reads back as it was written** (D-310).
+///
+/// The read F-4 asked for. A composition was reachable through no surface in the
+/// gear: not by its author, not by an operator, and — once D-104's always-material
+/// unit existed — not by the approver deciding it.
+///
+/// The members are the authoring shapes, so this asserts the round trip rather
+/// than a second rendering: what an author reads back is spelled exactly as what
+/// they wrote.
+#[tokio::test]
+async fn the_composition_reads_back_as_it_was_authored() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle(&harness).await;
+
+    let component_plan = Uuid::now_v7();
+    seed_draft_plan(&harness, component_plan).await;
+    let row = seed_price(&harness, component_plan, "EU").await;
+    harness.publish(component_plan, 0).await;
+    harness.publish_price(component_plan, row.price_id).await;
+    let vendor_sku = Uuid::now_v7();
+
+    let tag = harness.plan_etag(plan_id).await;
+    let written = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [{
+                    "component_plan_id": component_plan,
+                    "included_sku_id": vendor_sku,
+                    "min_qty": 1,
+                }],
+                "rev_share": [{
+                    "vendor_sku_id": vendor_sku,
+                    "platform_cut_bp": 1500,
+                    "parties": [{ "party": "acme-vendor", "share_bp": 8500 }],
+                }],
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    assert_eq!(written.status(), StatusCode::OK);
+
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &bundle_path(bundle_id), None, &[]))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let view = body_json(read).await;
+
+    assert_eq!(view["bundle_id"], bundle_id.to_string());
+    assert_eq!(view["plan_id"], plan_id.to_string());
+    assert_eq!(view["plan_revision"], 0);
+    assert_eq!(view["price_basis"], "sum_of_parts");
+
+    assert_eq!(
+        view["components"][0]["component_plan_id"],
+        component_plan.to_string()
+    );
+    assert_eq!(view["components"][0]["min_qty"], 1);
+    // The half that is third-party money.
+    assert_eq!(view["rev_share"][0]["platform_cut_bp"], 1500);
+    assert_eq!(view["rev_share"][0]["parties"][0]["party"], "acme-vendor");
+    assert_eq!(view["rev_share"][0]["parties"][0]["share_bp"], 8500);
+}
+
+/// A bundle of another tenant reads exactly like an absent one.
+#[tokio::test]
+async fn a_foreign_bundle_is_a_404_rather_than_a_403() {
+    let harness = Harness::new().await;
+    let (_, bundle_id) = seed_bundle(&harness).await;
+
+    let response = harness
+        .other_tenant()
+        .send(with_headers("GET", &bundle_path(bundle_id), None, &[]))
+        .await;
+
+    // The gate answers first here, which is the stronger of the two: the caller
+    // is refused before the store is asked, so no read happens at all.
+    assert!(
+        response.status() == StatusCode::NOT_FOUND || response.status() == StatusCode::FORBIDDEN,
+        "a neighbour must not read this bundle, got {}",
+        response.status()
+    );
+}

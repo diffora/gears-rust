@@ -178,9 +178,23 @@ of Slices 2/11 on their `bundle`-type SKU.
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
+| `GET` | `/bss-pricing/v1/bundles/{bundleId}` | Read the bundle and its composition at a revision (**D-310**) | — |
 | `POST` | `/bss-pricing/v1/bundles` | Create the bundle on its plan | idempotency key |
 | `PATCH` | `/bss-pricing/v1/bundles/{bundleId}` | Replace the open draft revision's composition, wholesale (**D-215**) | ETag (`If-Match`) |
 | `POST` | `/bss-pricing/v1/bundles/{bundleId}/publish` | Validate + publish; the request carries the **sold-market set** (**D-216**) | per revision |
+
+**The composition an author writes must be readable (D-310, 2026-08-11).** This map had three
+rows and none of them a `GET`, so a bundle's composition was reachable through **no surface in
+the gear**: not by the author who wrote it, not by an operator diagnosing it, and — once D-104's
+always-material unit was built — not by the **approver deciding it**. `GET
+/bss-pricing/v1/approvals/{id}` renders the plan the composition rides, and a plan shape carries
+no component set and no revenue split; D-104 exists precisely because a `sum_of_parts`
+recomposition moves no price row, so the reviewer of the one act in this gear whose subject is
+third-party money was shown a document the act is invisible in. D-61's reviewability invariant is
+explicit that the approval `GET` returns the pinned **content** and not the hash. The approval
+surface was corrected first because that is where the money decision is made; this row closes the
+authoring side, so the composition has a reader that does not require an open approval unit.
+Gated `bundle × read`, which `FinanceReviewer` already holds (D-104 relies on that grant).
 
 **The composition route addresses the bundle, not the collection (D-215, 2026-08-06).** It was
 spelled `PATCH /bss-pricing/v1/bundles` here, which puts the subject in the body while the route

@@ -141,6 +141,9 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", TAX_DISPLAY_POLICY),
         ("PUT", TAX_DISPLAY_POLICY),
         ("POST", BUNDLES),
+        // D-310: the composition's reader. It was unreadable through any surface,
+        // including to the approver of the unit D-104 opens over it.
+        ("GET", BUNDLE_BY_ID),
         ("PATCH", BUNDLE_BY_ID),
         ("POST", BUNDLE_PUBLISH),
         // Slice 7's two reads: the coverage report an operator remediates from,

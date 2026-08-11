@@ -42,7 +42,7 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Extension, Path};
+use axum::extract::{Extension, Path, Query};
 use axum::http::header::{ETAG, LOCATION};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::HeaderMap, http::StatusCode};
@@ -210,6 +210,38 @@ pub struct CompositionAcceptedView {
     pub bundle_id: Uuid,
     /// The revision it now stands at.
     pub plan_revision: u64,
+}
+
+/// `GET /bss-pricing/v1/bundles/{bundleId}` — the query half.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ReadBundleQuery {
+    /// The revision to read. Absent means the plan's current or draft revision.
+    pub plan_revision: Option<u64>,
+}
+
+/// What the read answers with — the bundle's declaration and its composition.
+///
+/// The component and rev-share members are the **authoring** shapes
+/// ([`ComponentRequest`], [`RevShareGroupRequest`]) rather than views of their
+/// own, so what an author reads back is spelled exactly as what they wrote. A
+/// second rendering of one composition is a second answer to what it is.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct BundleCompositionView {
+    /// The bundle read.
+    pub bundle_id: Uuid,
+    /// The plan it rides.
+    pub plan_id: Uuid,
+    /// The revision this composition belongs to.
+    pub plan_revision: u64,
+    /// `sum_of_parts` or `own_price`.
+    pub price_basis: String,
+    /// `aggregate` or `itemize`.
+    pub invoice_itemization: String,
+    /// The referenced components.
+    pub components: Vec<ComponentRequest>,
+    /// The rev-share groups, one per included vendor SKU.
+    pub rev_share: Vec<RevShareGroupRequest>,
 }
 
 /// What a publish answers with — which of the two acts it performed, and why.
@@ -669,6 +701,138 @@ fn bundle_publish_materiality() -> MaterialityVerdict {
     )
 }
 
+/// `GET /bss-pricing/v1/bundles/{bundleId}` — the bundle and its composition.
+///
+/// **The read D-310 adds, and the gap it closes.** §5's endpoint map had three
+/// rows and none of them a `GET`, so a composition was reachable through no
+/// surface in the gear: not by its author, not by an operator, and — once D-104's
+/// always-material unit existed — not by the approver deciding it. The approval
+/// surface was corrected first, because that is where the money decision is made;
+/// this is the authoring side, so the composition has a reader that does not
+/// require an open unit.
+///
+/// Gated `bundle × read`, which `FinanceReviewer` already holds — D-104 relies on
+/// that grant rather than asking for a new one.
+///
+/// The revision defaults to the plan's open draft, which is what an author editing
+/// a composition means by "the composition"; `?plan_revision=` names an older one.
+/// No `If-Match` and no idempotency key: this is a read, and the composition's
+/// concurrency story is the plan revision's entity tag, which belongs to the write.
+async fn read_bundle(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(bundle_id): Path<Uuid>,
+    Query(query): Query<ReadBundleQuery>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant = ctx.subject_tenant_id();
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::BUNDLE,
+        crate::authz::actions::READ,
+        Some(tenant),
+        Some(bundle_id),
+        true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)?;
+
+    let plan_id = state
+        .bundles
+        .plan_of(&scope, tenant, bundle_id)
+        .await
+        .map_err(|e| crate::infra::storage::repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "bundle".to_owned(),
+            id: bundle_id.to_string(),
+        })?;
+    let bundle = state
+        .bundles
+        .find_by_plan(&scope, tenant, plan_id)
+        .await
+        .map_err(|e| crate::infra::storage::repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "bundle".to_owned(),
+            id: bundle_id.to_string(),
+        })?;
+
+    // The plan's open draft is what an author means by "the composition"; a
+    // caller after an older one names it.
+    // The open draft first, then the current revision: an author editing a
+    // composition means the draft, and a plan with none has only its published
+    // revision to show. Absent both, the plan has no revision at all.
+    let revision = if let Some(revision) = query.plan_revision {
+        revision
+    } else {
+        let draft = state
+            .plans
+            .find_open_draft(&scope, tenant, plan_id)
+            .await
+            .map_err(|e| crate::infra::storage::repo_failure(&e))?;
+        let resolved = if let Some(row) = draft {
+            Some(row)
+        } else {
+            state
+                .plans
+                .find_current(&scope, tenant, plan_id)
+                .await
+                .map_err(|e| crate::infra::storage::repo_failure(&e))?
+        };
+        resolved
+            .ok_or_else(|| DomainError::NotFound {
+                subject: "plan revision".to_owned(),
+                id: plan_id.to_string(),
+            })?
+            .revision
+    };
+    let composition = state
+        .bundles
+        .load_composition(&scope, tenant, plan_id, revision)
+        .await
+        .map_err(|e| crate::infra::storage::repo_failure(&e))?;
+
+    Ok((
+        StatusCode::OK,
+        Json(BundleCompositionView {
+            bundle_id,
+            plan_id: plan_id.get(),
+            plan_revision: revision,
+            price_basis: bundle.price_basis.as_str().to_owned(),
+            invoice_itemization: bundle.invoice_itemization.as_str().to_owned(),
+            components: composition
+                .components
+                .iter()
+                .map(|c| ComponentRequest {
+                    component_plan_id: c.component_plan_id,
+                    included_sku_id: c.included_sku_id,
+                    min_qty: c.min_qty,
+                    max_qty: c.max_qty,
+                })
+                .collect(),
+            rev_share: composition
+                .rev_share_groups
+                .iter()
+                .map(|g| RevShareGroupRequest {
+                    vendor_sku_id: g.vendor_sku_id,
+                    platform_cut_bp: g.platform_cut_bp,
+                    residual_absorber_party: Some(g.residual_absorber.as_str().to_owned()),
+                    parties: g
+                        .parties
+                        .iter()
+                        .map(|p| PartyShareRequest {
+                            party: p.party.get().to_owned(),
+                            share_bp: p.share_bp,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }),
+    )
+        .into_response())
+}
+
 // ---------------------------------------------------------------------------
 // The router.
 // ---------------------------------------------------------------------------
@@ -701,6 +865,39 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_500(openapi)
         .error_503(openapi)
         .register(Router::new(), openapi);
+
+    let router = OperationBuilder::get(BUNDLE_BY_ID)
+        .operation_id("bss_pricing.read_bundle")
+        .summary("Read a bundle and its composition")
+        .description(
+            "Answers the bundle's declaration - its `price_basis` and \
+             `invoice_itemization` - together with the component set and the rev-share \
+             groups at a revision. `plan_revision` names one; absent, it is the plan's \
+             open draft, or its current revision when there is no draft. \
+             \
+             The composition was readable through no surface until D-310, which made it \
+             unreadable to the approver of the always-material unit D-104 opens over it. \
+             Declares no precondition and no idempotency key: this is a read, and the \
+             composition's concurrency story is the plan revision's entity tag, which \
+             belongs to the write. Gates on `bundle` x `read`.",
+        )
+        .tag(TAG)
+        .path_param("bundleId", "The bundle to read.")
+        .authenticated()
+        .no_license_required()
+        .handler(read_bundle)
+        .json_response_with_schema::<BundleCompositionView>(
+            openapi,
+            StatusCode::OK,
+            "The bundle and its composition at the resolved revision.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
 
     let router = OperationBuilder::patch(BUNDLE_BY_ID)
         .operation_id("bss_pricing.replace_bundle_composition")

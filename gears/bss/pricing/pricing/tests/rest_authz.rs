@@ -148,6 +148,13 @@ fn census() -> Vec<Route> {
             mutating: true,
         },
         Route {
+            method: "GET",
+            path: BUNDLE_BY_ID,
+            resource_type: labels::BUNDLE,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
             method: "PATCH",
             path: BUNDLE_BY_ID,
             resource_type: labels::BUNDLE,
