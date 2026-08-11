@@ -1908,3 +1908,82 @@ pub async fn approve_threshold_policy_from(
         "an independent principal is what puts the policy in force (D-10)"
     );
 }
+
+/// Every mutable plane the census can address, as `plane -> ordered row renderings`.
+///
+/// **What a denied call must leave untouched.** The readback this joins named three
+/// planes — `plan_count`, `plan_row_version`, `price_rows` and the approval unit —
+/// while **fifteen of the twenty-six** mutating census routes write a fourth. The
+/// argument the loop's own doc makes for the approval readback ("a handler that
+/// decided the unit and then checked the gate moves no plan row and no price row,
+/// so every assertion below would hold") applies verbatim to every plane it omitted,
+/// and `PATCH /price-overlays/{id}` is the sharpest: the only per-tenant discount
+/// surface, whose own suite never read the overlay store after a denial either.
+///
+/// Rows are rendered with `Debug` rather than compared field by field, so a change
+/// to **any** column of any row moves the string. That is deliberate: a
+/// hand-enumerated column list is the defect this helper exists to close, one level
+/// down.
+///
+/// # The plane list is hand-maintained, and that is a limitation rather than a choice
+///
+/// A roster derived from the schema would be better and is not reachable from a
+/// test: `toolkit-db` seals raw `SeaORM` access from downstream crates by design
+/// ("downstream crates must never see or name `ConnectionTrait`,
+/// `DatabaseConnection`"), so `sqlite_master` cannot be read through the harness's
+/// provider, and the harness database is `sqlite::memory:`, so a second connection
+/// opened alongside it is a different, empty database. Recorded so the next reader
+/// does not re-derive the dead end.
+pub async fn mutable_planes(
+    harness: &Harness,
+    plan_id: Uuid,
+) -> std::collections::BTreeMap<&'static str, Vec<String>> {
+    use bss_pricing::infra::storage::entity::{
+        brand_taxonomy, bulk_operation, bundle, bundle_component, migration, org_tier_taxonomy,
+        partner_taxonomy, policy_object, price_overlay, price_overlay_line, price_window,
+        region_taxonomy,
+    };
+
+    let conn = harness.db.conn().expect("conn");
+    let mut out = std::collections::BTreeMap::new();
+
+    macro_rules! plane {
+        ($name:literal, $entity:path) => {{
+            use $entity as e;
+            let rows = e::Entity::find()
+                .secure()
+                .scope_with(&AccessScope::allow_all())
+                .filter(Condition::all().add(e::Column::TenantId.eq(harness.tenant)))
+                .all(&conn)
+                .await
+                .unwrap_or_else(|err| panic!("read the {} plane: {err}", $name));
+            let mut rendered: Vec<String> = rows.iter().map(|row| format!("{row:?}")).collect();
+            rendered.sort();
+            out.insert($name, rendered);
+        }};
+    }
+
+    plane!("overlay", price_overlay);
+    plane!("overlay_line", price_overlay_line);
+    plane!("bundle", bundle);
+    plane!("bundle_component", bundle_component);
+    plane!("window", price_window);
+    plane!("taxonomy_region", region_taxonomy);
+    plane!("taxonomy_brand", brand_taxonomy);
+    plane!("taxonomy_partner", partner_taxonomy);
+    plane!("taxonomy_org_tier", org_tier_taxonomy);
+    plane!("policy", policy_object);
+    plane!("migration", migration);
+    plane!("bulk_run", bulk_operation);
+
+    // The price plane whole, not its head: `prices_after.first()` compared one row's
+    // version, so a denied write that moved the *second* of several rows was caught
+    // only by the length check.
+    let prices = price_rows(harness, plan_id).await;
+    out.insert(
+        "price",
+        prices.iter().map(|row| format!("{row:?}")).collect(),
+    );
+
+    out
+}

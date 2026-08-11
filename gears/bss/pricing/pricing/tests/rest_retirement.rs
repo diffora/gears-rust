@@ -15,7 +15,7 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::retirement::PLAN_RETIRE;
-use rest_support::{Harness, body_json, request, seed_publishable_plan};
+use rest_support::{Harness, body_json, plan_state, request, seed_publishable_plan};
 use uuid::Uuid;
 
 const SUBMITTER: Uuid = Uuid::from_u128(0x_5e_11);
@@ -131,6 +131,40 @@ async fn the_confirm_answers_202_and_opens_a_unit_rather_than_committing() {
             .expect("array")
             .len(),
         0
+    );
+
+    // **Both halves of this test's name, read off the store rather than off the
+    // response.** Every assertion above reads the document the handler just wrote,
+    // and until 2026-08-11 they were the whole test — so a handler that rendered an
+    // `approval` object and opened nothing passed "opens a unit", and a handler that
+    // retired the plan *and* rendered the same body passed "rather than committing".
+    //
+    // Retirement is an irreversible act over a published plan (D-128), which makes
+    // this the highest-stakes place for that pattern. The tools were in the file's
+    // reach the whole time: `rest_support/mod.rs:490` documents `read_approval` as
+    // existing for exactly this — "the response can be made to say anything, and a
+    // test that only asserted the response would pass against a handler that minted
+    // an id and opened nothing. That is the exact defect D-225 records for the
+    // overlay submit's 202."
+    let approval_id = view["approval"]["approval_id"]
+        .as_str()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .unwrap_or_else(|| panic!("the 202 names the unit it opened: {view}"));
+    let unit = h
+        .read_approval(approval_id)
+        .await
+        .unwrap_or_else(|| panic!("the id the body names must be a stored unit: {view}"));
+    assert_eq!(
+        unit.state,
+        bss_pricing::domain::approval::ApprovalState::Submitted,
+        "the unit is open for a second principal to decide"
+    );
+
+    assert_eq!(
+        plan_state(&h, plan_id, 0).await.as_deref(),
+        Some("published"),
+        "the plan is still published: a single principal's confirm stages the \
+         retirement, it does not perform it"
     );
 }
 

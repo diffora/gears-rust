@@ -58,8 +58,8 @@ use bss_pricing::api::rest::windows::{
 use bss_pricing::authz::{actions, labels};
 use bss_pricing::domain::approval::ApprovalState;
 use rest_support::{
-    Harness, approval_row, body_json, plan_count, plan_row_version, price_rows, request,
-    seed_draft_plan, seed_price, with_headers,
+    Harness, approval_row, body_json, mutable_planes, plan_count, plan_row_version, price_rows,
+    request, seed_draft_plan, seed_price, with_headers,
 };
 use uuid::Uuid;
 
@@ -1602,6 +1602,11 @@ async fn every_mutating_route_is_denied_with_the_state_unchanged() {
         // decided the unit and then checked the gate moves no plan row and no
         // price row, so every assertion below would hold.
         let unit_before = approval_row(&harness, seeded.approval).await.state;
+        // Every other plane a census route can write. Until 2026-08-11 this loop
+        // read three, and fifteen of the twenty-six mutating routes write a fourth,
+        // so a handler on any of them that wrote first and gated second moved no
+        // plan row, no price row and no approval unit, and this loop stayed green.
+        let stores_before = mutable_planes(&harness, seeded.plan).await;
 
         let response = harness
             .denied()
@@ -1627,11 +1632,19 @@ async fn every_mutating_route_is_denied_with_the_state_unchanged() {
         );
         let prices_after = price_rows(&harness, seeded.plan).await;
         assert_eq!(prices_after.len(), prices_before.len(), "a price row moved");
-        assert_eq!(
-            prices_after.first().map(|row| row.row_version.get()),
-            prices_before.first().map(|row| row.row_version.get()),
-            "a price row's version moved"
-        );
+        // Every plane, whole. The per-plane comparison below subsumes the head-only
+        // price check this used to make, and it is asserted plane by plane rather
+        // than as one map so a failure names which store the denied call reached.
+        let stores_after = mutable_planes(&harness, seeded.plan).await;
+        for (plane, before) in &stores_before {
+            assert_eq!(
+                stores_after.get(plane),
+                Some(before),
+                "{} {} was refused and still wrote the {plane} plane",
+                route.method,
+                route.path
+            );
+        }
         assert_eq!(
             approval_row(&harness, seeded.approval).await.state,
             unit_before,
