@@ -46,8 +46,12 @@ fn record<'a>(
 // The persisted tokens.
 // ---------------------------------------------------------------------------
 
+/// Split from the subject kinds below, and the split is mechanical rather than a
+/// change of subject: `clippy::cognitive_complexity` caps a function at 20 and
+/// `bulk_operation`'s arrival (D-158) made this one 21. Every assertion is the one
+/// it was; nothing is derived that was a literal.
 #[test]
-fn the_persisted_tokens_are_asserted_against_literals() {
+fn the_persisted_action_tokens_are_asserted_against_literals() {
     // Not derived from the variant identifiers, exactly as `CatalogEvent`'s
     // are not: an Auditor surface with a seven-year horizon reads these
     // strings, so a variant rename must not silently rename a stored token.
@@ -63,12 +67,6 @@ fn the_persisted_tokens_are_asserted_against_literals() {
     assert_eq!(AuditAction::Deny.as_str(), "deny");
     assert_eq!(AuditAction::Retire.as_str(), "retire");
     assert_eq!(AuditAction::Migrate.as_str(), "migrate");
-    assert_eq!(AuditSubjectKind::PlanRevision.as_str(), "plan_revision");
-    assert_eq!(AuditSubjectKind::PriceUnit.as_str(), "price_unit");
-    assert_eq!(AuditSubjectKind::Window.as_str(), "window");
-    assert_eq!(AuditSubjectKind::Policy.as_str(), "policy");
-    assert_eq!(AuditSubjectKind::Overlay.as_str(), "overlay");
-    assert_eq!(AuditSubjectKind::BulkOperation.as_str(), "bulk_operation");
     assert_eq!(
         AuditAction::ALL,
         &[
@@ -86,6 +84,17 @@ fn the_persisted_tokens_are_asserted_against_literals() {
             AuditAction::Migrate,
         ]
     );
+}
+
+/// [`the_persisted_action_tokens_are_asserted_against_literals`]'s other half.
+#[test]
+fn the_persisted_subject_kind_tokens_are_asserted_against_literals() {
+    assert_eq!(AuditSubjectKind::PlanRevision.as_str(), "plan_revision");
+    assert_eq!(AuditSubjectKind::PriceUnit.as_str(), "price_unit");
+    assert_eq!(AuditSubjectKind::Window.as_str(), "window");
+    assert_eq!(AuditSubjectKind::Policy.as_str(), "policy");
+    assert_eq!(AuditSubjectKind::Overlay.as_str(), "overlay");
+    assert_eq!(AuditSubjectKind::BulkOperation.as_str(), "bulk_operation");
     assert_eq!(
         AuditSubjectKind::ALL,
         &[
