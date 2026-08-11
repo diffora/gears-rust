@@ -164,8 +164,16 @@ impl BssPricingGear {
     /// absent from `gears:` has no runtime and therefore no work.
     ///
     /// # Errors
-    /// Never returns `Err` today; the signature is the lifecycle contract's,
-    /// and a spawned ticker's join error will surface through it.
+    /// When a ticker resolves before cancellation — which its loop shape does
+    /// only by panicking, since every tick failure is caught and logged inside
+    /// it.
+    ///
+    /// This said *"never returns `Err` today … a spawned ticker's join error
+    /// will surface through it"* until 2026-08-11, and the second half was the
+    /// claim that made the first read as a statement about the present. It was
+    /// not: the handles were awaited only after shutdown, so a join error
+    /// surfaced as a `warn` whenever the process finally stopped. A premise
+    /// stated in prose outlives the code that made it true.
     pub(crate) async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<()> {
         let Some(rt) = self.runtime.load_full() else {
             cancel.cancelled().await;
@@ -178,21 +186,110 @@ impl BssPricingGear {
             "bss-pricing: lifecycle started"
         );
         let tasks = cancel.child_token();
-        let warm = Self::spawn_warm_ticker(Arc::clone(&rt), tasks.clone());
-        let activation = Self::spawn_activation_ticker(Arc::clone(&rt), tasks.clone());
-        let gated = Self::spawn_gated_markets_ticker(Arc::clone(&rt), tasks.clone());
+        let mut warm = Self::spawn_warm_ticker(Arc::clone(&rt), tasks.clone());
+        let mut activation = Self::spawn_activation_ticker(Arc::clone(&rt), tasks.clone());
+        let mut gated = Self::spawn_gated_markets_ticker(Arc::clone(&rt), tasks.clone());
 
-        cancel.cancelled().await;
-        tasks.cancel();
-        Self::stop(warm, activation, gated).await;
-        Ok(())
+        // **`select!` on the handles, not just on the token.** A ticker that
+        // panicked was previously awaited only at shutdown: `serve` sat on
+        // `cancel.cancelled()`, the handle resolved to `Err` in the background,
+        // and `join_ticker` demoted it to a `warn` emitted whenever the process
+        // finally stopped — possibly days later. So a panic on tick 1 left the
+        // gear serving traffic, answering 200s, with `serve` still `Ok(())`.
+        //
+        // That is not a cosmetic gap here: the warm re-drive is what resolves a
+        // pending `CatalogVersion` handle, so a dead warm ticker means
+        // `pricing_read_model` stays empty and no version ever becomes
+        // pin-eligible — and the two Criticals `readmodel_warm` raises cannot
+        // fire, because the task that raises them is the dead one.
+        //
+        // `bss-ledger`'s shape, which this module's own doc already claimed to
+        // copy: each arm cancels the shared token, drains the survivors, and maps
+        // a join error onto the return. The three properties of the *tickers*
+        // were inherited when this was written; the supervision around them was
+        // not.
+        let outcome = tokio::select! {
+            () = cancel.cancelled() => {
+                tasks.cancel();
+                Self::stop(warm, activation, gated).await;
+                Ok(())
+            }
+            res = &mut warm => {
+                tasks.cancel();
+                Self::exited_first("readmodel-warm", res, activation, gated).await
+            }
+            res = &mut activation => {
+                tasks.cancel();
+                Self::exited_first("window-activation", res, warm, gated).await
+            }
+            res = &mut gated => {
+                tasks.cancel();
+                Self::exited_first("gated-markets", res, warm, activation).await
+            }
+        };
+        outcome
     }
 
-    /// Wind both tickers down and say so.
+    /// One ticker resolved before cancellation: drain the other two and report.
     ///
-    /// A join error is a **panic** in a sweep, and it is reported rather than
-    /// swallowed: each loop catches every tick failure itself, so reaching one of
-    /// these arms means something the job's own error handling did not model.
+    /// A ticker's loop runs until the token is cancelled and catches every tick
+    /// failure itself, so resolving early means a **panic** — something the job's
+    /// own error handling did not model. It is mapped onto `serve`'s return
+    /// rather than logged, because the caller is the lifecycle and a gear whose
+    /// background plane is dead should not keep reporting healthy.
+    ///
+    /// The survivors are still drained first, for [`Self::stop`]'s reason: each
+    /// holds a coordination lease, and abandoning a handle would leave a task
+    /// writing to a database the process is closing.
+    async fn exited_first(
+        ticker: &'static str,
+        res: std::result::Result<(), tokio::task::JoinError>,
+        first: tokio::task::JoinHandle<()>,
+        second: tokio::task::JoinHandle<()>,
+    ) -> Result<()> {
+        let survivors = tokio::join!(first, second);
+        let failure = res.err().map(|e| (ticker, e));
+        let failure = failure
+            .or_else(|| survivors.0.err().map(|e| ("a sibling ticker", e)))
+            .or_else(|| survivors.1.err().map(|e| ("a sibling ticker", e)));
+        if let Some((name, e)) = failure {
+            tracing::error!(error = %e, ticker = name, "bss-pricing: a ticker died");
+            Err(anyhow::anyhow!("bss-pricing: {name} ticker: {e}"))
+        } else {
+            // No panic: the ticker's loop returned on its own, which its shape
+            // does not do while the token stands. Reported as an error rather
+            // than treated as a clean stop, because a background plane that
+            // quietly stopped is the state this whole arm exists to make visible.
+            tracing::error!(ticker, "bss-pricing: a ticker stopped before cancellation");
+            Err(anyhow::anyhow!(
+                "bss-pricing: {ticker} ticker stopped before cancellation"
+            ))
+        }
+    }
+
+    /// Release one sweep's lease, warning rather than failing.
+    ///
+    /// One function for all three passes. `LeaseGuard` has **no `Drop` impl** —
+    /// releasing is async DB I/O — so a guard that is merely dropped leaves the
+    /// row standing until its TTL, and every TTL here *is* the tick. That is what
+    /// halved the gated-market gauge's cadence: the next tick found the slot held
+    /// by its own previous pass and logged "a peer holds its lease", naming a peer
+    /// where the holder was this same task.
+    ///
+    /// A failed release costs one skipped tick rather than a stuck sweep, because
+    /// the TTL frees the slot either way.
+    async fn release_lease(guard: coord::LeaseGuard, sweep: &'static str) {
+        if let Err(e) = guard.release().await {
+            tracing::warn!(error = %e, sweep, "bss-pricing: could not release a sweep lease");
+        }
+    }
+
+    /// Wind the three tickers down and say so — the **cancellation** path.
+    ///
+    /// A join error here is a panic that raced the shutdown, and it stays a
+    /// `warn`: the process is stopping either way and there is no caller left to
+    /// tell. A panic *before* cancellation is a different event and takes
+    /// [`Self::exited_first`], which fails `serve`.
     ///
     /// **Both are joined, and neither is skipped when the other faults.** They
     /// are cancelled by one token and each holds a coordination lease whose slot
@@ -299,11 +396,7 @@ impl BssPricingGear {
         if let Err(e) = job.run(Utc::now()).await {
             tracing::error!(error = %e, "bss-pricing: read-model warm sweep tick failed");
         }
-        if let Err(e) = guard.release().await {
-            // The slot frees itself at the TTL, so a failed release costs one
-            // skipped tick rather than a stuck sweep.
-            tracing::warn!(error = %e, "bss-pricing: could not release the warm sweep lease");
-        }
+        Self::release_lease(guard, "readmodel-warm").await;
     }
 
     /// Spawn the window activation/expiry ticker: a cancellable loop driving one
@@ -375,7 +468,8 @@ impl BssPricingGear {
             let mut iv = tokio::time::interval(rt.config.jobs.window_activation_interval());
             iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let lease = coord::LeaseManager::new(rt.db.db());
-            let job = WindowActivationJob::new(rt.db.clone(), rt.config.jobs.clone());
+            let job = WindowActivationJob::new(rt.db.clone(), rt.config.jobs.clone())
+                .with_metrics(Arc::clone(&rt.metrics));
             loop {
                 tokio::select! {
                     biased;
@@ -457,7 +551,16 @@ impl BssPricingGear {
                 );
             }
         }
-        drop(guard);
+        // **Released, not dropped**, and this was the one outlier among three
+        // look-alike passes: it called `drop(guard)`. With no `Drop` impl to run
+        // the async release, the row stood until its TTL — and the TTL here *is*
+        // the tick (60s). The slot was claimed at `T+δ`, so the next tick at
+        // `T+60` found `locked_until` still ahead of it, took the `LeaseHeld` arm,
+        // and logged "a peer holds its lease" at debug, naming a peer where the
+        // holder was this same task's previous pass. The gauge refreshed every
+        // **other** tick, at ~120s, against the 60s D-250 ratifies and this
+        // module's own "the value is up to one tick old".
+        Self::release_lease(guard, "gated-markets").await;
     }
 
     /// One leased activation pass. Extracted so the ticker stays a ticker.
@@ -475,14 +578,7 @@ impl BssPricingGear {
                 tracing::error!(error = %e, "bss-pricing: window activation sweep tick failed");
             }
         }
-        if let Err(e) = guard.release().await {
-            // The slot frees itself at the TTL, so a failed release costs one
-            // skipped tick rather than a stuck sweep.
-            tracing::warn!(
-                error = %e,
-                "bss-pricing: could not release the window activation sweep lease"
-            );
-        }
+        Self::release_lease(guard, "window-activation").await;
     }
 
     /// Report a pass that moved something, and stay silent about one that did not.
@@ -1009,3 +1105,7 @@ impl RestApiCapability for BssPricingGear {
             )))
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "module_tests.rs"]
+mod module_tests;

@@ -200,6 +200,19 @@ pub enum PricingAlarm {
     /// `01-foundation.md` §4.4) — a tenant's pin frontier has not advanced
     /// inside the SLO while something is holding it.
     ReadModelPinEligibilityOverdue,
+    /// `pricing.window.activation_overdue` (Warn, §7) — the activation sweep's
+    /// lease singleton is stalled, i.e. the whole window plane has stopped
+    /// advancing.
+    ///
+    /// **The third instance of the defect D-238 was opened to close**, and it
+    /// outlived that decision's own fix wave. `window_activation` raised this as
+    /// a bare `tracing::error!` under the argument quoted below — "this gear has
+    /// no metrics or alarm facility at all" — which was true when written,
+    /// falsified by Slice 4 opening this plane, and left standing in two places
+    /// afterwards. It was the one ticker of three holding no port:
+    /// `readmodel_warm` was corrected in `b0516ea83`, and `gated_markets` was
+    /// born holding one.
+    WindowActivationOverdue,
 }
 
 impl PricingAlarm {
@@ -218,6 +231,7 @@ impl PricingAlarm {
         Self::TaxReadinessDivergent,
         Self::CatalogVersionCommitOverdue,
         Self::ReadModelPinEligibilityOverdue,
+        Self::WindowActivationOverdue,
     ];
 
     /// The alarm's declared name, exactly as the design set spells it.
@@ -233,6 +247,7 @@ impl PricingAlarm {
             Self::TaxReadinessDivergent => "pricing.tax.readiness_divergent",
             Self::CatalogVersionCommitOverdue => "pricing.catalogversion.commit_overdue",
             Self::ReadModelPinEligibilityOverdue => "pricing.readmodel.pin_eligibility_overdue",
+            Self::WindowActivationOverdue => "pricing.window.activation_overdue",
         }
     }
 
@@ -244,7 +259,7 @@ impl PricingAlarm {
     pub const fn severity(self) -> AlarmSeverity {
         match self {
             Self::TaxNotSellableGaActive => AlarmSeverity::Info,
-            Self::TaxReadinessDivergent => AlarmSeverity::Warn,
+            Self::TaxReadinessDivergent | Self::WindowActivationOverdue => AlarmSeverity::Warn,
             Self::CatalogVersionCommitOverdue | Self::ReadModelPinEligibilityOverdue => {
                 AlarmSeverity::Critical
             }

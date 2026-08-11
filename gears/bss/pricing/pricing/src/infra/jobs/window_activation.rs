@@ -46,16 +46,27 @@
 //!    and does not exercise the transaction; that property holds by the shape of
 //!    [`WindowActivationJob::flip`] rather than by a test.
 //!
-//! # The alarm, and the sink that does not exist
+//! # The alarm, and the sink this module spent a slice denying
 //!
 //! `pricing.window.activation_overdue` (Warn, §7) is the design set's string,
-//! taken from it rather than invented. What is invented is nothing: **this gear
-//! has no metrics or alarm facility at all** — the sibling ledger has
-//! `infra/metrics.rs` and an event publisher with an alarm catalogue, and this
-//! crate has neither — so a `tracing::error!` under the named string is the whole
-//! of it. **Reported as a gap**, not stubbed behind a trait with no
-//! implementation. (`readmodel_warm`'s module doc states the same for its two
-//! Critical alarms; this is that statement applied, not re-argued.)
+//! taken from it rather than invented. It now goes to **both** planes: the
+//! `tracing::error!` carries the window an operator needs in order to act, and
+//! `metrics.alarm(…)` is what an alerting rule can match.
+//!
+//! **This section argued the opposite until 2026-08-11**, and the argument is
+//! kept because the shape of the mistake matters more than the line: it said
+//! *"this gear has no metrics or alarm facility at all — the sibling ledger has
+//! `infra/metrics.rs` … and this crate has neither"*, which was true when
+//! written, falsified by Slice 4 opening `domain::ports::metrics`, and left
+//! standing afterwards in this doc **and** in this module's unit test.
+//!
+//! D-238 was opened to close exactly this, corrected `readmodel_warm`'s two
+//! Criticals, and was filed BUILT — so this was a live third instance under a
+//! closed decision, which is the state nobody goes looking in. The consequence
+//! was not cosmetic: this is §7's only window-plane alarm, its text is "the
+//! lease singleton is stalled", and it reached `pricing_alarm_total` on no label
+//! at all. The estate could see every Info this gear raises and not the one that
+//! says the gear stopped working.
 //!
 //! ## Its condition is read off the due set, before the flip
 //!
@@ -138,6 +149,8 @@
 //! window subject — before any group can write this row, G4 included. Reported as a
 //! divergence. The phase plan puts `AuditSubjectKind::Window` with G4's writer and
 //! does not consider the sweep's own case, which is why this paragraph exists.
+
+use std::sync::Arc;
 
 use std::collections::BTreeSet;
 
@@ -265,13 +278,47 @@ pub struct ActivationReport {
 pub struct WindowActivationJob {
     db: DBProvider<DbError>,
     jobs: JobsConfig,
+    /// The alarm plane (D-238), and the **third** ticker to get one.
+    ///
+    /// `pricing.window.activation_overdue` is §7's only window-plane alarm, and
+    /// its text is "the lease singleton is stalled" — the signal that this whole
+    /// plane has stopped advancing. It was a bare `tracing::error!` until
+    /// 2026-08-11, so it reached `pricing_alarm_total` on no label and therefore
+    /// reached no alerting rule: the estate could see every Info this gear
+    /// raises and not the one that says the gear stopped working.
+    ///
+    /// The argument for the bare log was that "this gear has no metrics or alarm
+    /// facility at all" — true when written, falsified by Slice 4 opening the
+    /// plane, and left standing here and in this module's unit test after D-238
+    /// closed the same defect twice in `readmodel_warm`. D-238 is filed BUILT,
+    /// which is what made this a live third instance nobody was looking for.
+    metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
 }
 
 impl WindowActivationJob {
     /// Build the job over one database provider and the validated cadences.
     #[must_use]
     pub fn new(db: DBProvider<DbError>, jobs: JobsConfig) -> Self {
-        Self { db, jobs }
+        Self {
+            db,
+            jobs,
+            metrics: Arc::new(crate::domain::ports::metrics::NoopPricingMetrics),
+        }
+    }
+
+    /// Attach the alarm plane — `readmodel_warm::with_metrics`' seam verbatim.
+    ///
+    /// A separate builder rather than a `new` parameter for its reason: every
+    /// unit test constructing this job would otherwise have to name a sink it
+    /// does not assert on, and the default is a `Noop` that keeps the log line
+    /// working on its own.
+    #[must_use]
+    pub fn with_metrics(
+        mut self,
+        metrics: Arc<dyn crate::domain::ports::metrics::PricingMetricsPort>,
+    ) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Run one pass at `now`.
@@ -498,6 +545,12 @@ impl WindowActivationJob {
             "bss-pricing: a price window's boundary has stood uncrossed past the activation SLO; \
              the lease singleton is stalled or its flips are being refused"
         );
+        // Both, for `readmodel_warm`'s reason: the log line carries the window
+        // an operator needs to act, and the alarm is what an alerting rule can
+        // match. D-238's own words — "a Critical that an operator can only find
+        // by grepping logs is the state the plane was opened to end".
+        self.metrics
+            .alarm(crate::domain::ports::metrics::PricingAlarm::WindowActivationOverdue);
         report.overdue += 1;
     }
 }

@@ -46,11 +46,20 @@ fn due(boundary: DueBoundary, window: u128, at_day: u32) -> DueWindow {
 #[test]
 fn the_alarm_name_is_the_one_the_design_set_spells() {
     // Asserted against a literal rather than derived, for `CatalogEvent::as_str`'s
-    // reason: this is the string an operator's runbook matches on, and this gear
-    // has no alarm facility for a second spelling to fail against.
+    // reason: this is the string an operator's runbook matches on.
+    //
+    // The second half of that sentence used to read "and this gear has no alarm
+    // facility for a second spelling to fail against". It was the same falsified
+    // premise the module doc carried, and it is now checkable rather than
+    // asserted: there **are** two spellings, and they must agree.
     assert_eq!(
         ALARM_WINDOW_ACTIVATION_OVERDUE,
         "pricing.window.activation_overdue"
+    );
+    assert_eq!(
+        crate::domain::ports::metrics::PricingAlarm::WindowActivationOverdue.as_str(),
+        ALARM_WINDOW_ACTIVATION_OVERDUE,
+        "the log line's string and the alarm plane's label are one name"
     );
 }
 

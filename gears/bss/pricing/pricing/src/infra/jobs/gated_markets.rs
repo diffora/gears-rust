@@ -98,11 +98,13 @@ impl GatedMarketsJob {
         let conn = self.db.conn().map_err(|e| {
             DomainError::Internal(format!("bss-pricing: gated-market refresh: {e}"))
         })?;
-        let gated_markets = price_repo::gated_markets(&conn, &AccessScope::allow_all())
-            .await
-            .map_err(|e| {
-                DomainError::Internal(format!("bss-pricing: gated-market refresh: {e}"))
-            })?;
+        let gated_markets = price_repo::gated_markets(
+            &conn,
+            &AccessScope::allow_all(),
+            crate::domain::tax_display::TAX_ENGINE_GA,
+        )
+        .await
+        .map_err(|e| DomainError::Internal(format!("bss-pricing: gated-market refresh: {e}")))?;
 
         self.metrics.tax_not_sellable_ga(gated_markets);
 

@@ -4171,7 +4171,7 @@ async fn the_gated_market_count_dedups_markets_and_excludes_what_cannot_be_clear
     // A real zero before anything is published — the control without which every
     // assertion below would also pass against a count that always answered 0.
     assert_eq!(
-        price_repo::gated_markets(&conn, &all)
+        price_repo::gated_markets(&conn, &all, false)
             .await
             .expect("count an empty catalog"),
         0
@@ -4190,7 +4190,9 @@ async fn the_gated_market_count_dedups_markets_and_excludes_what_cannot_be_clear
         flip_state(&provider, &scope, price_id, LifecycleState::Published).await;
     }
     assert_eq!(
-        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        price_repo::gated_markets(&conn, &all, false)
+            .await
+            .expect("count"),
         1,
         "two rows on one market are one market"
     );
@@ -4206,7 +4208,9 @@ async fn the_gated_market_count_dedups_markets_and_excludes_what_cannot_be_clear
     .expect("create");
     flip_state(&provider, &scope, second, LifecycleState::Published).await;
     assert_eq!(
-        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        price_repo::gated_markets(&conn, &all, false)
+            .await
+            .expect("count"),
         2
     );
 
@@ -4229,7 +4233,9 @@ async fn the_gated_market_count_dedups_markets_and_excludes_what_cannot_be_clear
     .expect("create");
     flip_state(&provider, &scope, frozen, LifecycleState::Published).await;
     assert_eq!(
-        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        price_repo::gated_markets(&conn, &all, false)
+            .await
+            .expect("count"),
         2,
         "a grandfathered generation is in no backlog any action can clear"
     );
@@ -4245,7 +4251,9 @@ async fn the_gated_market_count_dedups_markets_and_excludes_what_cannot_be_clear
     .expect("create");
     flip_state(&provider, &scope, exclusive, LifecycleState::Published).await;
     assert_eq!(
-        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        price_repo::gated_markets(&conn, &all, false)
+            .await
+            .expect("count"),
         2,
         "the gate is on the tax basis, and this row does not carry it"
     );
@@ -4260,8 +4268,59 @@ async fn the_gated_market_count_dedups_markets_and_excludes_what_cannot_be_clear
     .await
     .expect("create");
     assert_eq!(
-        price_repo::gated_markets(&conn, &all).await.expect("count"),
+        price_repo::gated_markets(&conn, &all, false)
+            .await
+            .expect("count"),
         2,
         "a draft has published nothing and gates nothing"
+    );
+}
+/// **The gauge answers zero once the tax engine is GA** — the site a
+/// `TAX_ENGINE_GA` grep did not reach.
+///
+/// `is_not_sellable_ga(row, ga)` is `row.tax_inclusive && !ga`, so on the day the
+/// constant flips a gated market stops existing. `metrics.rs`'s alarm reads the
+/// constant and would correctly go quiet; this read *reasoned about* it in prose
+/// and hard-coded the predicate, so it would have kept publishing the full count
+/// of published tax-inclusive markets forever — §7's backlog series pinned at a
+/// number no action can clear.
+///
+/// Driven by flipping the parameter rather than the constant, because a constant
+/// cannot be flipped from a test: that is exactly why it had to become one.
+#[tokio::test]
+async fn the_gated_market_gauge_is_empty_once_the_tax_engine_is_ga() {
+    use bss_pricing::infra::storage::repo::price_repo;
+
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let all = AccessScope::allow_all();
+    let conn = provider.conn().expect("conn");
+
+    let price_id = Uuid::from_u128(0xd2_9a);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(price_id, market_key("EU"), tax_inclusive_flat()),
+    )
+    .await
+    .expect("create");
+    flip_state(&provider, &scope, price_id, LifecycleState::Published).await;
+
+    // The control: before GA this market is gated, so the case is not asserting
+    // an emptiness the fixture would have produced anyway.
+    assert_eq!(
+        price_repo::gated_markets(&conn, &all, false)
+            .await
+            .expect("count"),
+        1
+    );
+
+    assert_eq!(
+        price_repo::gated_markets(&conn, &all, true)
+            .await
+            .expect("count"),
+        0,
+        "a gated market is a market whose rows are not sellable *because the engine \
+         is absent*; once it ships there is nothing to report"
     );
 }

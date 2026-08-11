@@ -419,6 +419,11 @@ fn alarm_labels_are_the_dotted_names_the_design_set_declares() {
     assert_eq!(
         declared,
         [
+            // `pricing.window.activation_overdue` is the newest and the reason
+            // this roster earns its keep: it was raised as a bare
+            // `tracing::error!` for a whole slice under the argument that this
+            // gear had no alarm plane — the third instance of the defect D-238
+            // closed twice, living under a decision filed BUILT.
             ("pricing.tax.not_sellable_ga_active", "info"),
             ("pricing.tax.readiness_divergent", "warn"),
             // Foundation's two, added by D-238. **This census is what caught
@@ -427,6 +432,7 @@ fn alarm_labels_are_the_dotted_names_the_design_set_declares() {
             // That is the whole argument for transcribing instead of deriving.
             ("pricing.catalogversion.commit_overdue", "critical"),
             ("pricing.readmodel.pin_eligibility_overdue", "critical"),
+            ("pricing.window.activation_overdue", "warn"),
         ]
     );
 }

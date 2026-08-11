@@ -1731,7 +1731,25 @@ async fn hydrate_bands(
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
-pub async fn gated_markets(runner: &impl DBRunner, scope: &AccessScope) -> Result<i64, RepoError> {
+pub async fn gated_markets(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tax_engine_ga: bool,
+) -> Result<i64, RepoError> {
+    // **The flag is a parameter so this site is reachable from the constant.**
+    // It was reasoned about in prose here and named nowhere in the code, while
+    // `metrics.rs` read `TAX_ENGINE_GA` directly — two consumers of one
+    // predicate, diverging the moment it moves. On the day GA lands the alarm
+    // correctly stops firing and this gauge would have kept publishing the full
+    // count of published tax-inclusive markets forever: §7's backlog series
+    // pinned at a number no action can clear, which is the opposite of what the
+    // D-246 rebuild was for.
+    //
+    // Whoever flips the constant greps for `TAX_ENGINE_GA`. Before this they
+    // found `tax_display.rs` and `metrics.rs`, and did not find this file.
+    if tax_engine_ga {
+        return Ok(0);
+    }
     let rows = price::Entity::find()
         .secure()
         .scope_with(scope)
