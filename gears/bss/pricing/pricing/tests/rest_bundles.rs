@@ -20,7 +20,8 @@ mod rest_support;
 use axum::http::StatusCode;
 use bss_pricing::api::rest::bundles::BUNDLES;
 use rest_support::{
-    Harness, body_json, etag_of, problem_code, seed_draft_plan, seed_price, with_headers,
+    Harness, approval_row, approval_rows, body_json, etag_of, problem_code, seed_draft_plan,
+    seed_price, with_headers,
 };
 use uuid::Uuid;
 
@@ -416,12 +417,24 @@ async fn one_publish_reports_every_failing_rule_at_once() {
 // `inst-ba-return` — 202 and the always-material verdict.
 // ---------------------------------------------------------------------------
 
-/// A composition with nothing to refuse publishes, answers **202**, and says the
-/// verdict was `alwaysMaterialTrigger` (D-104) — stated in the body because an
-/// operator who expected auto-publish under a configured threshold needs the
-/// reason and not the outcome alone.
+/// A composition with nothing to refuse answers **202** and opens D-104's
+/// always-material unit — asserted on the **stored** record, not on the body.
+///
+/// The body assertion below is kept, but it is deliberately no longer the only
+/// one, and the reason is that on its own it could not fail. `bundles.rs` wrote
+/// `materiality: "alwaysMaterialTrigger".to_owned()` as an unconditional literal,
+/// so this test compared the handler's constant against a copy of itself: no
+/// input could redden it, and while green it reported D-104 as covered on this
+/// route. `alwaysMaterialTrigger` is in fact the token `evaluate` answers for an
+/// act trigger, which is what made the tautology so hard to see — the value was
+/// right and nothing had computed it.
+///
+/// `approval_rows` is what tells the two apart. It was in scope in this file's
+/// sibling case (`a_composition_edit_voids_the_pending_unit_over_its_plan`) the
+/// whole time; applying it here is what surfaced that the publish opened no unit
+/// at all.
 #[tokio::test]
-async fn a_clean_publish_is_accepted_and_is_always_material() {
+async fn a_clean_publish_is_accepted_and_opens_the_always_material_unit() {
     let harness = Harness::new().await;
     // An `own_price` bundle with no components and no markets has no coverage
     // walk to fail and no rev-share to reconcile: the smallest publishable
@@ -448,12 +461,126 @@ async fn a_clean_publish_is_accepted_and_is_always_material() {
         ))
         .await;
 
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let status = response.status();
     let body = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "publish refused: {body}");
     assert_eq!(
         body["materiality"].as_str(),
         Some("alwaysMaterialTrigger"),
         "D-104: a composition publish is material whatever a threshold says"
+    );
+
+    // The load-bearing half. A handler that renders the token and evaluates
+    // nothing passes every assertion above it.
+    let opened = approval_rows(&harness).await;
+    let expected_ref = format!("{plan_id}/composition/0");
+    let Some(opened_row) = opened.iter().find(|row| row.subject_ref == expected_ref) else {
+        panic!(
+            "D-104: the composition publish must open an always-material unit over \
+             {expected_ref}; the store holds {} unit(s): {:?}",
+            opened.len(),
+            opened.iter().map(|r| &r.subject_ref).collect::<Vec<_>>()
+        )
+    };
+    let opened_id = opened_row.approval_id;
+    let unit = approval_row(&harness, opened_id).await;
+    assert_eq!(
+        unit.materiality["reason"], "alwaysMaterialTrigger",
+        "the stored verdict names the rule that fired, which is what an auditor reads"
+    );
+    assert_eq!(
+        unit.state,
+        bss_pricing::domain::approval::ApprovalState::Submitted,
+        "D-104: a single principal's publish stages the composition; it does not commit it"
+    );
+}
+
+/// The **positive control** for the case above, and the other half of D-104's
+/// two-call shape: a second, independent principal approves the staged unit and
+/// the same call then publishes.
+///
+/// Without this the suite would prove only that the composition stops — a handler
+/// that staged every publish and could never commit one would pass every
+/// assertion in `a_clean_publish_is_accepted_and_opens_the_always_material_unit`.
+/// That is the failure mode the fix itself introduced: before D-104 was enforced
+/// here the publish arm was the only arm, and afterwards it was reachable by no
+/// test at all.
+#[tokio::test]
+async fn an_independent_approval_is_what_publishes_the_composition() {
+    const COMPOSITION_REVIEWER: Uuid = Uuid::from_u128(0x_b0d1_e504);
+
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle_with(&harness, "own_price").await;
+    let tag = harness.plan_etag(plan_id).await;
+    harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "components": [] })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    // Call one: stages.
+    let staged = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
+            &[],
+        ))
+        .await;
+    let staged_body = body_json(staged).await;
+    assert_eq!(
+        staged_body["outcome"].as_str(),
+        Some("submitted_for_approval"),
+        "the first call over this content stages it: {staged_body}"
+    );
+    let approval_id = staged_body["approval"]["approval_id"]
+        .as_str()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .unwrap_or_else(|| panic!("the 202 names the unit it opened: {staged_body}"));
+
+    let approved = harness
+        .allowed_as(COMPOSITION_REVIEWER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/approvals/{approval_id}/approve"),
+            None,
+            &[],
+        ))
+        .await;
+    let approved_status = approved.status();
+    let approved_body = body_json(approved).await;
+    assert_eq!(
+        approved_status,
+        StatusCode::OK,
+        "an independent principal is what authorizes a composition change (D-104): \
+         {approved_body}"
+    );
+
+    // Call two: publishes, on the strength of that decision and no other.
+    let published = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
+            &[],
+        ))
+        .await;
+    let published_body = body_json(published).await;
+    assert_eq!(
+        published_body["outcome"].as_str(),
+        Some("published"),
+        "the approved content publishes on the next call: {published_body}"
+    );
+    assert_eq!(
+        published_body["materiality"].as_str(),
+        Some("alwaysMaterialTrigger"),
+        "and the reason is the evaluator's on both arms, not a per-arm literal"
     );
 }
 

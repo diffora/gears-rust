@@ -1116,6 +1116,135 @@ impl ApprovalService {
             .map_err(|e| repo_failure(&e))
     }
 
+    /// Open the **bundle composition** unit D-104 registers (`inst-ba-material`).
+    ///
+    /// [`Self::submit_retirement_on`]'s shape — an act over a plan, pinned on the
+    /// plan shape, holding no key — with the differences below.
+    ///
+    /// **The subject is the act at its revision, not the revision.** A composition
+    /// publish pinned under `plan_revision_ref` would let an approve taken for a
+    /// *publish* of that revision authorize a component swap and a vendor re-split,
+    /// which is the confusion `submit_retirement_on` refuses for the same reason.
+    /// [`bundle_composition_unit_ref`] names the bundle and the revision it stands
+    /// at, so a retry of the publish finds its own unit and nothing else does.
+    ///
+    /// **It holds no keys.** `inst-co-single-pending`'s register is keyed on
+    /// canonical scope keys; a composition stages no price row of its own — a
+    /// `sum_of_parts` recomposition carries no price-row delta at all, which is the
+    /// very fact that made D-104 necessary — so there is no key to hold.
+    /// `submit_overlay_on` states this at length and it applies here unchanged.
+    ///
+    /// **The pin is the plan shape, and it arrives rather than being re-derived.**
+    /// The composition normalizes onto its absorber inside the plan, so what a
+    /// reviewer of a vendor re-split is shown is the plan that split changes — and
+    /// the caller has already assembled that shape to look for an approval over it.
+    /// Assembling a second one here would be two answers to "what is being
+    /// published", which is the very thing `infra::publish::assemble`'s own doc is
+    /// generic over its runner to prevent. It is also why this takes no `PlanId`
+    /// revision of its own: the subject is the **draft** the caller resolved, not
+    /// the plan's current revision. Resolving the current one here was this
+    /// method's first shape, copied from [`Self::submit_retirement_on`], and it
+    /// refused every composition publish on a never-published plan — which is all
+    /// of them, since a composition is authored on a draft.
+    ///
+    /// # Errors
+    /// [`DomainError::PendingChangeUnitExists`] when a unit is already open over this
+    /// composition; [`DomainError::Internal`] on a storage failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "[`Self::submit`]'s reason, and one more that is specific to this unit: the \
+                  content hash arrives rather than being re-derived, precisely so this method and \
+                  its caller cannot answer 'what is being published' differently. Folding the \
+                  arguments into a struct would either drop that parameter or name a request type \
+                  the bundle surface does not have"
+    )]
+    pub async fn submit_bundle_publish_on(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        plan_revision: u64,
+        approval_id: Uuid,
+        content_hash: Vec<u8>,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let subject_ref = bundle_composition_unit_ref(plan_id, plan_revision);
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, &subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "plan {plan_id}: approval {} is still submitted over its composition; decide it, \
+                 or withdraw it to free the subject",
+                held.approval_id
+            )));
+        }
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref,
+            subject_kind: AuditSubjectKind::PlanRevision,
+            content_hash,
+            materiality,
+            held_keys: BTreeSet::new(),
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
+    /// [`Self::submit_bundle_publish_on`] in a transaction of its own.
+    ///
+    /// The unit's audit record is appended in the same transaction that opens it —
+    /// `approval_repo::open`'s requirement rather than this caller's preference, so a
+    /// unit that committed while its trail rolled back cannot leave
+    /// `pricing_audit_log` answering "who submitted this vendor re-split" with nothing.
+    ///
+    /// # Errors
+    /// Whatever [`Self::submit_bundle_publish_on`] refuses.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "it forwards [`Self::submit_bundle_publish_on`]'s parameters unchanged; a \
+                  narrower signature here would mean the transaction wrapper and the body \
+                  disagreeing about what an open needs"
+    )]
+    pub async fn submit_bundle_publish(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        plan_revision: u64,
+        approval_id: Uuid,
+        content_hash: Vec<u8>,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<ApprovalRecord, DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    Self::submit_bundle_publish_on(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        plan_id,
+                        plan_revision,
+                        approval_id,
+                        content_hash,
+                        materiality,
+                        stamp,
+                    )
+                    .await
+                })
+            })
+            .await;
+        outcome.map_err(into_domain)
+    }
+
     pub async fn list(
         &self,
         scope: &AccessScope,
@@ -2054,6 +2183,34 @@ fn plan_of(record: &ApprovalRecord) -> Result<PlanId, DomainError> {
 #[must_use]
 pub fn retirement_unit_ref(plan_id: PlanId, revision: u64) -> String {
     format!("{}/retirement/{revision}", plan_id.get())
+}
+
+/// The subject a bundle composition publish opens its unit over (D-104).
+///
+/// [`retirement_unit_ref`]'s shape and its reason: the act is named in the ref, so
+/// an approve taken for a *publish* of this revision cannot authorize a component
+/// swap and a vendor re-split of it.
+///
+/// # It leads with the **plan**, not the bundle
+///
+/// Every `plan_revision`-kind ref does, because [`plan_of`] resolves the subject by
+/// parsing the leading segment — so a ref led by the bundle id makes `re_derive`
+/// assemble the wrong plan, `content_matches_pin` answer `false`, and every
+/// composition unit be openable and never approvable. That is the failure this ref
+/// was written with and it is the **fourth** instance of the defect `re_derive`'s
+/// own comments record three times; it was caught here only because a positive
+/// control tried to approve one.
+///
+/// Nothing is lost by dropping the bundle id: a plan carries at most one bundle
+/// (`a_second_bundle_on_one_plan_is_a_conflict`), so the plan and the revision name
+/// the composition uniquely.
+///
+/// A composition reviews the **open draft**, so it deliberately does *not* get an
+/// [`is_retirement_unit`]-style arm — `re_derive`'s default `assemble` is the
+/// assembly its pin was taken under.
+#[must_use]
+pub fn bundle_composition_unit_ref(plan_id: PlanId, plan_revision: u64) -> String {
+    format!("{}/composition/{plan_revision}", plan_id.get())
 }
 
 pub async fn void_pending_units_of(

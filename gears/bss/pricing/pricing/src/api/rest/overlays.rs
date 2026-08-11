@@ -1023,7 +1023,7 @@ fn overlay_submit_materiality() -> MaterialityVerdict {
 /// half answers above every threshold, so both arms are unreachable — and *reported*
 /// rather than unwrapped, because the alternative is a panic on a route or a literal
 /// fallback, and a literal fallback is the duplication this removes.
-fn rendered_materiality(
+pub(crate) fn rendered_materiality(
     verdict: &MaterialityVerdict,
 ) -> Result<(String, serde_json::Value), CanonicalError> {
     let reason = verdict

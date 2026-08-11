@@ -52,6 +52,7 @@ use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::approvals::ApprovalView;
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
@@ -62,11 +63,18 @@ use crate::domain::bundle::{
 };
 use crate::domain::bundle_rules::check_basis_declared;
 use crate::domain::error::DomainError;
+use crate::domain::materiality::{self, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::storage::repo::{BundleComponentDraft, CompositionDraft, NewBundle};
 
 const TAG: &str = "BSS Pricing Bundles";
+
+/// The wire tokens for the two arms — `api::rest::publish`'s, so a client's
+/// `match` does not depend on which plane it called, and so `"published"` has one
+/// home rather than a third spelling beside `publish.rs`'s and `overlays.rs`'s.
+const OUTCOME_SUBMITTED: &str = crate::api::rest::publish::OUTCOME_SUBMITTED;
+const OUTCOME_PUBLISHED: &str = crate::api::rest::publish::OUTCOME_PUBLISHED;
 
 /// `POST` — create a bundle on its plan.
 pub const BUNDLES: &str = "/bss-pricing/v1/bundles";
@@ -204,19 +212,38 @@ pub struct CompositionAcceptedView {
     pub plan_revision: u64,
 }
 
-/// What a publish answers with — the report, whether or not it blocked.
+/// What a publish answers with — which of the two acts it performed, and why.
+///
+/// `response` only, as `overlays::SubmitAcceptedView` is: it carries an
+/// [`ApprovalView`], which is a projection of a stored record and has no
+/// `Deserialize`. It was declared `request, response` while its fields were three
+/// scalars, and nothing ever sent one.
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request, response)]
+#[toolkit_macros::api_dto(response)]
 pub struct PublishAcceptedView {
-    /// The bundle that was published.
+    /// The bundle this call acted on.
     pub bundle_id: Uuid,
-    /// The revision that was published.
+    /// The revision it acted at.
     pub plan_revision: u64,
-    /// Why this publish is material. Always `alwaysMaterialTrigger` for a
-    /// composition change (D-104) — stated in the response because an operator
-    /// who expected auto-publish under a configured threshold needs the reason,
-    /// not the outcome alone.
+    /// Which act this was: `submitted_for_approval` on the first call,
+    /// `published` on the call a second principal's approval authorized.
+    ///
+    /// D-104 makes a composition change always material, so the first call over
+    /// any content **stages** it. `POST …/price-overlays/{id}/submit` answers the
+    /// same two-token shape for the same reason.
+    pub outcome: String,
+    /// Why this change is material — **evaluated, not asserted**.
+    ///
+    /// It reads `alwaysMaterialTrigger` for every composition change (D-104), and
+    /// that constancy is a property of the rule rather than of this field: the
+    /// token is produced by [`bundle_publish_materiality`] through the same
+    /// evaluator every other unit's is. It was a hard-coded literal here until
+    /// 2026-08-11, which told a client a property of the request that nothing had
+    /// established — and a false token cannot be told from a real one downstream.
     pub materiality: String,
+    /// The unit this call opened, on the submit arm; the unit that authorized it,
+    /// on the publish arm.
+    pub approval: Option<ApprovalView>,
 }
 
 // ---------------------------------------------------------------------------
@@ -487,30 +514,140 @@ async fn publish_bundle(
         return Err(DomainError::ValidationFailed(report).into());
     }
 
-    state
-        .bundle_service
-        .publish_composition(
+    // **D-104, `inst-ba-material`.** A composition change is always material, so a
+    // single principal's call stages it and a second principal's approval is what
+    // publishes it. Until 2026-08-11 this route committed straight through: it
+    // evaluated no verdict, opened no unit, pinned no content, and answered a
+    // hard-coded `alwaysMaterialTrigger` — on the one surface in this gear where
+    // the money being divided belongs to third parties. `composition_change_set`
+    // and `rev_share_change_set` had existed since Slice 8 with **no caller
+    // anywhere in the crate**, which is what made `Trigger::BundleComposition`
+    // answer `subject_exists_in_this_crate` while nothing could ever evaluate it.
+    //
+    // `overlays::submit_overlay` is the precedent, one plane over and the same
+    // shape: `priceOverlayMutation` was a mounted surface writing its materiality
+    // token as a literal while nothing built its change set, and it was closed the
+    // same way.
+    let now = Utc::now();
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::from(DomainError::Internal(format!(
+            "bss-pricing: bundle publish subject: {e}"
+        )))
+    })?;
+
+    // The content this call would freeze, assembled once and used for both arms —
+    // it is what the lookup below matches an approval against and what the unit
+    // pins. The composition normalizes onto its absorber inside the plan, so the
+    // plan shape *is* the composition's content.
+    let shape = crate::infra::publish::assemble(&conn, &scope, tenant, plan_id, now)
+        .await
+        .map_err(CanonicalError::from)?;
+    let pin = crate::domain::approval::content_hash(&shape);
+    let subject_ref =
+        crate::infra::approval::bundle_composition_unit_ref(plan_id, body.plan_revision);
+
+    // One verdict, rendered twice — never built twice. The wire's string and the
+    // record's jsonb cannot come from two evaluations.
+    let (reason, stored_materiality) =
+        crate::api::rest::overlays::rendered_materiality(&bundle_publish_materiality())?;
+
+    // Matched on the **content** and not merely on the subject: an approval whose
+    // composition moved after the decision covers content that no longer exists,
+    // so answering with it would authorize a component set nobody reviewed.
+    let approved = state
+        .approvals
+        .approved_unit(&scope, tenant, &subject_ref, &pin)
+        .await
+        .map_err(CanonicalError::from)?;
+
+    if let Some(record) = approved {
+        // The publish arm: a second, independent person has seen exactly this
+        // composition.
+        state
+            .bundle_service
+            .publish_composition(
+                &scope,
+                tenant,
+                plan_id,
+                body.plan_revision,
+                correlation,
+                now,
+            )
+            .await
+            .map_err(|e| crate::infra::storage::repo_failure(&e))?;
+
+        // 202, per `inst-ba-return`: the composition is frozen into the read model
+        // by the projector, which this response does not wait for.
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(PublishAcceptedView {
+                bundle_id,
+                plan_revision: body.plan_revision,
+                outcome: OUTCOME_PUBLISHED.to_owned(),
+                materiality: reason,
+                approval: Some(ApprovalView::from(&record)),
+            }),
+        )
+            .into_response());
+    }
+
+    // The submit arm: open D-104's always-material unit over this composition.
+    let opened = state
+        .approvals
+        .submit_bundle_publish(
             &scope,
             tenant,
             plan_id,
             body.plan_revision,
-            correlation,
-            Utc::now(),
+            Uuid::now_v7(),
+            pin.to_vec(),
+            stored_materiality,
+            audit_stamp(&ctx, now, correlation),
         )
         .await
-        .map_err(|e| crate::infra::storage::repo_failure(&e))?;
+        .map_err(CanonicalError::from)?;
 
-    // 202, per `inst-ba-return`: the composition is frozen into the read model by
-    // the projector, which this response does not wait for.
     Ok((
         StatusCode::ACCEPTED,
         Json(PublishAcceptedView {
             bundle_id,
             plan_revision: body.plan_revision,
-            materiality: "alwaysMaterialTrigger".to_owned(),
+            outcome: OUTCOME_SUBMITTED.to_owned(),
+            materiality: reason,
+            approval: Some(ApprovalView::from(&opened)),
         }),
     )
         .into_response())
+}
+
+/// The materiality verdict a composition publish carries — **evaluated, not
+/// asserted**.
+///
+/// `overlays::overlay_submit_materiality`'s shape and its reason: the token an
+/// operator reads is produced by the same evaluator every other unit's is, so two
+/// units compared by a reader are two answers from one function rather than one
+/// answer and one literal.
+///
+/// It passes no policy and no baseline, and that is not a shortcut —
+/// [`materiality::evaluate`] examines the **act** half before it consults either,
+/// so a configured threshold cannot reach this act. That is the whole of what
+/// D-104 decided: with a threshold configured, the evaluator saw no price-row
+/// delta to trip on and a component swap reached consumers with no approver,
+/// while a $1 price-row change above threshold took two people.
+///
+/// # This call is what makes `Trigger::BundleComposition` real
+///
+/// The act half is `ChangeSet::act()`, reachable through nothing but
+/// [`ChangeSet::of_act`], so a trigger no surface constructs can never be answered
+/// by the evaluator however many tables its subject has.
+/// `infra::bundle::composition_change_set` was exactly such a constructor — a
+/// `pub fn` building a declaration, with no caller — and this is its first one.
+fn bundle_publish_materiality() -> MaterialityVerdict {
+    materiality::evaluate(
+        &crate::infra::bundle::composition_change_set(),
+        /* policy */ None,
+        /* baseline */ None,
+    )
 }
 
 // ---------------------------------------------------------------------------

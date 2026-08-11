@@ -149,7 +149,7 @@ pub const PLAN_PUBLISH: &str = "/bss-pricing/v1/plans/{planId}/publish";
 pub(crate) const OUTCOME_SUBMITTED: &str = "submitted_for_approval";
 
 /// The wire token for the commit arm.
-const OUTCOME_PUBLISHED: &str = "published";
+pub(crate) const OUTCOME_PUBLISHED: &str = "published";
 
 // ---------------------------------------------------------------------------
 // Views.
