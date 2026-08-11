@@ -274,7 +274,7 @@ impl AuthZResolverClient for SelectiveResolver {
             req.resource.resource_type.as_str(),
             req.action.name.as_str(),
         );
-        if !self.allowed_pairs.iter().any(|pair| *pair == asked) {
+        if !self.allowed_pairs.contains(&asked) {
             return Ok(EvaluationResponse {
                 decision: false,
                 context: EvaluationResponseContext {
