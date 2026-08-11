@@ -160,6 +160,19 @@ fn census() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
+        // The bundle collection read. `bundle x read`, the pair the by-id read
+        // below already asks for — and not the `plan x read` the *publish* route
+        // gates on, which is a different act on a different resource. Catalogued
+        // rather than taken as obvious for the plan collection's reason: a
+        // listing passes `resource_id: None`, so the pair it asks for is what
+        // compiles the tenant filter the whole walk runs under.
+        Route {
+            method: "GET",
+            path: BUNDLES,
+            resource_type: labels::BUNDLE,
+            action: actions::READ,
+            mutating: false,
+        },
         Route {
             method: "GET",
             path: BUNDLE_BY_ID,

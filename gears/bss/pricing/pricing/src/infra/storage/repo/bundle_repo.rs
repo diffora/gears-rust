@@ -515,6 +515,25 @@ impl BundleRepo {
         find_by_plan_on(&conn, scope, tenant_id, plan_id).await
     }
 
+    /// One page of the tenant's bundles, in `bundle_id` order.
+    ///
+    /// # Errors
+    /// Exactly [`list_page`]'s.
+    pub async fn list(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: Option<PlanId>,
+        after: Option<Uuid>,
+        limit: u64,
+    ) -> Result<Vec<BundleRecord>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("pricing_bundle conn: {e}")))?;
+        list_page(&conn, scope, tenant_id, plan_id, after, limit).await
+    }
+
     /// The plan a bundle rides, by the bundle's own id.
     ///
     /// The composition routes address a **bundle** and every guard downstream
@@ -631,6 +650,59 @@ pub async fn find_by_plan_on(
         return Ok(None);
     };
     record_of(&row).map(Some)
+}
+
+/// One page of the tenant's bundles, in `bundle_id` order.
+///
+/// D-125's keyset walk over the bundle plane — `crate::api::rest::cursor`'s
+/// module doc argues once, for every list surface, why the resume is a key and
+/// never an offset.
+///
+/// # Why the narrowing parameter is `plan_id`
+///
+/// Because it is the only thing on the row that narrows anything. `pricing_bundle`
+/// carries the bundle's **identity** — its id, its tenant, the plan it rides, its
+/// price basis and its invoice layout — and no lifecycle column: the composition
+/// is revision-scoped and lives in the three child tables, so a bundle's state is
+/// its plan revision's state and is not readable here. `plan_id` is unique across
+/// the table (`uq_pricing_bundle_plan`), which makes the filtered page the answer
+/// to *"does this plan carry a bundle, and what is its id"* — the hop
+/// [`BundleRepo::plan_of`] makes in the other direction.
+///
+/// What a page does **not** carry is the composition: a bundle's components and
+/// revenue shares are three further queries per bundle, so a caller opens
+/// `GET /bss-pricing/v1/bundles/{bundleId}` for one bundle's composition.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`] for
+/// a stored basis or layout token no `CHECK` should have admitted.
+pub async fn list_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: Option<PlanId>,
+    after: Option<Uuid>,
+    limit: u64,
+) -> Result<Vec<BundleRecord>, RepoError> {
+    let mut filter = Condition::all().add(bundle::Column::TenantId.eq(tenant_id));
+    if let Some(plan_id) = plan_id {
+        filter = filter.add(bundle::Column::PlanId.eq(plan_id.get()));
+    }
+    if let Some(after) = after {
+        filter = filter.add(bundle::Column::BundleId.gt(after));
+    }
+    bundle::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .order_by(bundle::Column::BundleId, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list pricing_bundle: {e}")))?
+        .iter()
+        .map(record_of)
+        .collect()
 }
 
 /// [`BundleRepo::load_composition`]'s read on a runner the caller owns.

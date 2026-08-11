@@ -49,12 +49,14 @@ use axum::{Json, Router, http::HeaderMap, http::StatusCode};
 use chrono::Utc;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit_odata::Page;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::approvals::ApprovalView;
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
+use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
 use crate::api::rest::state::AuthoringState;
@@ -210,6 +212,28 @@ pub struct CompositionAcceptedView {
     pub bundle_id: Uuid,
     /// The revision it now stands at.
     pub plan_revision: u64,
+}
+
+/// The two pagination query parameters plus the plan filter (D-125).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BundlePageQuery {
+    /// Bundles per page; server default 100, hard cap 1,000.
+    pub limit: Option<u64>,
+    /// The opaque token a previous page returned.
+    pub cursor: Option<String>,
+    /// Narrow the page to the bundle riding one plan.
+    ///
+    /// **`lifecycle_state` is not offered, and the reason is the store rather
+    /// than taste**: `pricing_bundle` carries the bundle's identity — its plan,
+    /// its price basis and its invoice layout — and no lifecycle column at all,
+    /// because the composition is revision-scoped and a bundle's state is its
+    /// plan revision's. Answering a `lifecycle_state` filter here would mean
+    /// joining the revision chain and calling the plan's state the bundle's.
+    ///
+    /// A plan carries at most one bundle (`uq_pricing_bundle_plan`), so a
+    /// filtered page is the answer to *"does this plan carry a bundle, and what
+    /// is its id"* — which nothing on this surface could ask before.
+    pub plan_id: Option<Uuid>,
 }
 
 /// `GET /bss-pricing/v1/bundles/{bundleId}` — the query half.
@@ -718,6 +742,75 @@ fn bundle_publish_materiality() -> MaterialityVerdict {
 /// a composition means by "the composition"; `?plan_revision=` names an older one.
 /// No `If-Match` and no idempotency key: this is a read, and the composition's
 /// concurrency story is the plan revision's entity tag, which belongs to the write.
+/// `GET /bundles`.
+///
+/// Gated `bundle × read`, the pair [`read_bundle`] already asks for, with
+/// `resource_id: None` because there is no single resource to name — what the PDP
+/// compiles is then the tenant filter the whole walk runs under, and
+/// `require_constraints` is `true` so an unconstrained allow fail-closes rather
+/// than paging through every tenant's catalogue.
+///
+/// It answers [`BundleView`] and not [`BundleCompositionView`], which is the same
+/// split `list_approvals` and `get_approval` make: a composition is three further
+/// queries per bundle, so a page of a hundred would be three hundred round trips
+/// to show a basis and an invoice layout.
+async fn list_bundles(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Query(query): Query<BundlePageQuery>,
+) -> Result<Json<Page<BundleView>>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant = ctx.subject_tenant_id();
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::BUNDLE,
+        crate::authz::actions::READ,
+        /* owner_tenant_id */ None,
+        /* resource_id */ None,
+        /* require_constraints */ true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)?;
+
+    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    // One row more than the page, so "is there another page" needs no second
+    // query and no page whose `next_cursor` points at nothing.
+    let probe = page.limit.saturating_add(1);
+    let mut records = state
+        .bundles
+        .list(
+            &scope,
+            tenant,
+            query.plan_id.map(PlanId::new),
+            page.after,
+            probe,
+        )
+        .await
+        .map_err(|e| CanonicalError::from(crate::infra::storage::repo_failure(&e)))?;
+
+    let has_more = u64::try_from(records.len()).unwrap_or(u64::MAX) > page.limit;
+    if has_more {
+        records.pop();
+    }
+    let next = has_more
+        .then(|| records.last().map(|record| record.bundle_id))
+        .flatten();
+    Ok(Json(Page {
+        items: records
+            .iter()
+            .map(|record| BundleView {
+                bundle_id: record.bundle_id,
+                plan_id: record.plan_id.get(),
+                price_basis: record.price_basis.as_str().to_owned(),
+                invoice_itemization: record.invoice_itemization.as_str().to_owned(),
+            })
+            .collect(),
+        page_info: cursor::page_info(next, page.limit),
+    }))
+}
+
 async fn read_bundle(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -837,8 +930,51 @@ async fn read_bundle(
 // The router.
 // ---------------------------------------------------------------------------
 
-/// Mount the three bundle routes.
+/// Mount the bundle routes.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
+    // The path is spelled as a **literal** here and as [`BUNDLES`] above, unlike
+    // its three neighbours which pass the `const`: DE0801 validates a literal
+    // argument and silently passes a `const` one, so the route-shape rule only
+    // binds where the literal is. `module_test`'s census is what pins the two
+    // spellings together.
+    let router = OperationBuilder::get("/bss-pricing/v1/bundles")
+        .operation_id("bss_pricing.list_bundles")
+        .summary("List the tenant's bundles (cursor-paginated)")
+        .description(
+            "One page of the tenant's bundles in `bundleId` order, with an opaque `cursor` and a \
+             `limit` whose server default is 100 and whose hard cap is 1,000 (D-125). `plan_id` \
+             narrows the page to the bundle riding one plan, which a plan carries at most one \
+             of. There is no `lifecycle_state` filter: a bundle row is an identity and its \
+             composition is revision-scoped, so a bundle's state is its plan revision's state \
+             and belongs to the plan surface. The composition is **not** on this page - a \
+             bundle's components and revenue shares are three further queries each - so a caller \
+             opens `GET /bss-pricing/v1/bundles/{bundleId}` for one bundle's composition. Gates \
+             on `bundle` x `read`, which is the pair the by-id read already asks for.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Bundles per page (default 100, hard cap 1,000)",
+            "integer",
+        )
+        .query_param("cursor", false, "Opaque base64url pagination cursor")
+        .query_param("plan_id", false, "Narrow the page to one plan's bundle")
+        .handler(list_bundles)
+        .json_response_with_schema::<Page<BundleView>>(
+            openapi,
+            StatusCode::OK,
+            "One page of the tenant's bundles.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(Router::new(), openapi);
+
     let router = OperationBuilder::post(BUNDLES)
         .operation_id("bss_pricing.create_bundle")
         .summary("Create a bundle on its plan")
@@ -864,7 +1000,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
-        .register(Router::new(), openapi);
+        .register(router, openapi);
 
     let router = OperationBuilder::get(BUNDLE_BY_ID)
         .operation_id("bss_pricing.read_bundle")
