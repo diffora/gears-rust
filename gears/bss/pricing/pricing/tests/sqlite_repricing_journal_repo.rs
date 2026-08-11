@@ -362,3 +362,69 @@ async fn marking_a_row_that_is_not_in_the_journal_is_refused() {
         "same refusal for the failure path; got {outcome:?}"
     );
 }
+
+#[tokio::test]
+async fn list_for_run_and_pending_for_run_return_the_whole_run_not_a_page() {
+    // Characterisation test, not a regression test: it began life as a falsification
+    // probe against a brief that (wrongly) described `list_for_run` as page-bounded —
+    // reading the function shows a bare `.all(runner)` with no `.limit(...)` anywhere,
+    // and this test is that reading turned into an assertion. It is green the moment
+    // it is written; that is what a characterisation test is. Its job is not to catch
+    // today's bug — there is not one — but to catch tomorrow's: if a `.limit()` is ever
+    // added to either query as an "optimisation" for a large run, this reddens instead
+    // of the apply lane silently applying a prefix and marking the run complete.
+    //
+    // Chosen to exceed the crate's own REST hard cap of 1,000 (D-125: server default
+    // 100, hard cap 1,000 — `cursor.rs:1`, `prices.rs:471`, `approvals.rs:700`,
+    // `overlays.rs:192`), not its default of 100. The hard cap is the number the most
+    // likely future "optimisation" would reach for — `.limit(1000)`, mirroring the
+    // established convention — so a count that only cleared the default would stay
+    // green while that exact regression truncated a large run.
+    const ROW_COUNT: usize = 1_200;
+
+    let p = provider().await;
+    let conn = p.conn().expect("conn");
+    let run = a_run(&p, BulkKind::Repricing, "run-characterisation").await;
+    let mut price_ids = Vec::with_capacity(ROW_COUNT);
+    for i in 0..ROW_COUNT {
+        price_ids.push(a_price_row(&p, &format!("region-{i}")).await);
+    }
+    let new_rows: Vec<NewJournalRow> = price_ids
+        .iter()
+        .map(|&price_id| NewJournalRow {
+            run_id: run,
+            price_id,
+            tenant_id: TENANT,
+        })
+        .collect();
+    repricing_journal_repo::open_rows(&conn, &scope(), &new_rows)
+        .await
+        .expect("freeze the whole row set");
+
+    let whole = repricing_journal_repo::list_for_run(&conn, &scope(), TENANT, run)
+        .await
+        .expect("read the journal");
+    assert_eq!(
+        whole.len(),
+        ROW_COUNT,
+        "list_for_run must return every row of the run, not a page of it"
+    );
+    let mut expected_ids = price_ids.clone();
+    expected_ids.sort_unstable();
+    let mut read_ids: Vec<_> = whole.iter().map(|row| row.price_id).collect();
+    read_ids.sort_unstable();
+    assert_eq!(read_ids, expected_ids);
+    assert!(whole.iter().all(|row| row.state == JournalState::Pending));
+
+    let pending = repricing_journal_repo::pending_for_run(&conn, &scope(), TENANT, run)
+        .await
+        .expect("read what is left");
+    assert_eq!(
+        pending.len(),
+        ROW_COUNT,
+        "pending_for_run must see every pending row of the run, not a page of it"
+    );
+    let mut pending_ids: Vec<_> = pending.iter().map(|row| row.price_id).collect();
+    pending_ids.sort_unstable();
+    assert_eq!(pending_ids, expected_ids);
+}

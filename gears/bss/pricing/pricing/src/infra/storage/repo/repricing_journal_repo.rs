@@ -27,6 +27,25 @@
 //! names a target state and writes it, for [`super::bulk_repo`]'s stated reason:
 //! a `match` here listing the legal edges would be a second spelling of a rule
 //! that already exists on two engines.
+//!
+//! # Nothing in this chain bounds a run's size, and a caller may not assume otherwise
+//!
+//! `price_repo::load_published_for_selector` freezes the selector's row set with **no
+//! page bound** — its own doc says so, in as many words, under "There is no page
+//! bound, and that is a real edge" — [`open_rows`] inserts every row it is handed, and
+//! [`list_for_run`]/[`pending_for_run`] read every row of a run back in one `Vec`.
+//! Their doc comments used to claim the opposite (that a run's set was "bounded by the
+//! page cap"), which was prose with no `.limit(...)` behind it anywhere in this file —
+//! disproven by reading the code, confirmed empirically with rows past the crate's
+//! own REST hard cap of 1,000 on one run, and it had already misled one reader: the
+//! 2026-08-10 review's out-of-scope table repeated the claim
+//! (`docs/reviews/2026-08-10-eye-review-findings.md:475`) while pricing a different
+//! unbounded read, `load_published_for_selector`. **This is the fact the apply lane
+//! has to build
+//! against**: a run may be as large as the selector froze, the selector is itself
+//! unbounded, and consuming the journal has to be done in bounded batches rather than
+//! by assuming this layer already capped it. Whether a cap ever gets imposed is a
+//! design decision that belongs with the selector edge, not with this repository.
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
@@ -228,9 +247,14 @@ pub async fn mark_failed(
 
 /// A run's whole journal, in `price_id` order.
 ///
+/// **Unbounded**: a bare `.all(runner)`, with no `.limit(...)` anywhere in this
+/// function. A run's size is whatever `price_repo::load_published_for_selector` froze
+/// it at, and that selector is itself unbounded (`price_repo.rs`, "There is no page
+/// bound, and that is a real edge") — so this read has to be, or it would silently
+/// report a prefix of a run as the whole of it.
+///
 /// Ordered so a report rendered from it is stable across reads — the table has no
-/// secondary index (D-261), and a run's set is bounded by the page cap rather than
-/// by the plan count, so the ordering is the caller's stability rather than the
+/// secondary index (D-261), so the ordering is the caller's stability rather than the
 /// store's optimisation.
 ///
 /// # Errors
@@ -253,9 +277,9 @@ pub async fn list_for_run(
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read pricing_repricing_journal: {e}")))?;
-    // Ordered here rather than in the query: `SecureSelect` offers no
-    // `order_by`, and a run's set is bounded by the page cap, so the sort is the
-    // caller's stability rather than the store's optimisation.
+    // Ordered here rather than in the query: `SecureSelect` offers no `order_by`,
+    // so the sort is the caller's stability rather than the store's optimisation —
+    // and it runs over the whole, unbounded set read above.
     let mut journal: Vec<JournalRow> = rows.iter().map(record_of).collect::<Result<_, _>>()?;
     journal.sort_unstable_by_key(|row| row.price_id);
     Ok(journal)
