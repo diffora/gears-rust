@@ -456,7 +456,7 @@ dev: dev-fmt dev-clippy dev-test
 
 # -------- Tests --------
 
-.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-fips
+.PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg test-usage-collector-pg test-cluster-pg test-pricing-pg test-fips
 
 # Run all tests
 test: install-tools
@@ -506,6 +506,28 @@ test-usage-collector-pg: install-tools
 ## Docker churn without masking one.
 test-cluster-pg: install-tools
 	cargo nextest run -p cf-postgres-cluster-plugin --features integration --retries 1
+
+## Run bss-pricing's Postgres tier (Docker required; each suite spins up its own
+## postgres container via testcontainers).
+##
+## Gated behind `#[ignore]` rather than a feature, which is why this needs
+## `--run-ignored ignored-only` where its siblings above pass `--features`. All
+## 346 tests in `tests/postgres_*.rs` carry the attribute, and until 2026-08-11
+## nothing in this Makefile or in `.github/` passed `--run-ignored` at all — so
+## the tier compiled on every run and executed on none.
+##
+## What that cost is specific, not theoretical. Every proof this crate owns about
+## two racing writers, a lock held by a crashed pass, `FOR UPDATE` semantics,
+## READ COMMITTED re-evaluation and the PL/pgSQL half of every dual-spelled
+## trigger lives here: the five test files using `tokio::spawn`/`join!` are all
+## `postgres_*`. Each suite's module doc states that its property is unprovable
+## on SQLite, and two note that the SQLite twin passes either way —
+## `sqlite_bulk_commit.rs` is a test that cannot fail on the property it is named
+## for. `sqlite_append_only.rs:110` names the cost from experience: "D-236 is the
+## record of what that costs — a premise living on one tier only means a run
+## without Docker reports a clean change through a guard that stopped guarding."
+test-pricing-pg: install-tools
+	cargo nextest run -p bss-pricing --run-ignored ignored-only -E 'binary(/^postgres_/)'
 
 ## Run FIPS-mode integration tests (requires Go for aws-lc-fips-sys).
 ## Covers:
