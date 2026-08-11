@@ -264,7 +264,7 @@ use crate::domain::price_row::{
     TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::read_model::OverlayIndexShard;
-use crate::domain::scope_key::{Meter, PlanId, ScopeKey};
+use crate::domain::scope_key::{Meter, PlanId, ScopeKey, ScopeKeyParts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 /// The lifecycle states a plan-subject delta draws its price rows from.
@@ -1142,15 +1142,30 @@ fn band_value(band: &TierBand) -> JsonValue {
 /// display form is one string for a log line, and a consumer resolving a row
 /// matches on axes.
 fn scope_key_value(key: &ScopeKey) -> JsonValue {
+    // Destructured through `parts()`, so an eleventh axis is a compile error here
+    // rather than a member missing from the read model — which is how the last
+    // widening of this key (D-196) reached production with three sites unchanged.
+    let ScopeKeyParts {
+        plan_id,
+        currency,
+        region,
+        price_overlay,
+        phase,
+        price_eligibility,
+        charge_kind,
+        cohort,
+        meter,
+        dimension_key,
+    } = key.parts();
     json!({
-        "planId": key.plan_id().get(),
-        "currency": key.currency().as_str(),
-        "region": key.region().as_str(),
-        "priceOverlay": key.price_overlay().as_str(),
-        "phase": key.phase().get(),
-        "priceEligibility": key.price_eligibility().as_str(),
-        "chargeKind": key.charge_kind().as_str(),
-        "cohort": key.cohort().generation(),
+        "planId": plan_id.get(),
+        "currency": currency.as_str(),
+        "region": region.as_str(),
+        "priceOverlay": price_overlay.as_str(),
+        "phase": phase.get(),
+        "priceEligibility": price_eligibility.as_str(),
+        "chargeKind": charge_kind.as_str(),
+        "cohort": cohort.generation(),
         // Axes 9 and 10 (D-196). `null` rather than the rendering's `none`
         // sentinel on a row that has no line: the rendering needs fixed arity
         // because it is embedded in strings, a JSON member does not, and the
@@ -1158,8 +1173,8 @@ fn scope_key_value(key: &ScopeKey) -> JsonValue {
         // resolving a metered plan needs the line here or it cannot tell one
         // published usage row of a market from another — which, before this
         // decision, could not happen because there could only be one.
-        "meter": key.meter().map(Meter::as_str),
-        "dimensionKey": (!key.dimension_key().is_none()).then(|| key.dimension_key().as_str()),
+        "meter": meter.map(Meter::as_str),
+        "dimensionKey": (!dimension_key.is_none()).then(|| dimension_key.as_str()),
     })
 }
 

@@ -569,7 +569,88 @@ pub struct ScopeKey {
     dimension_key: DimensionKey,
 }
 
+/// Every axis of a [`ScopeKey`], borrowed — the shape that makes "all ten axes"
+/// a compile-time obligation at a call site instead of a count somebody has to
+/// re-check.
+///
+/// # Why this exists
+///
+/// The fields of [`ScopeKey`] are private, so the exhaustive `let Self { .. }`
+/// that [`ScopeKey::is_sibling_of`] and [`ScopeKey::to_generation`] use is
+/// available only inside this module. Every site outside it reached in through
+/// accessors one axis at a time, which compiles unchanged when the key grows —
+/// and D-196, which widened this key from eight axes to ten, is the record of
+/// what that costs. The sweep that widened it missed three sites, and two of the
+/// three shipped a defect:
+///
+/// - `price_repo.rs`'s row comparator "compared eight columns while the key had
+///   ten, from D-196 until 2026-08-06", so a successor on a **different meter of
+///   the same market** read as being on the predecessor's key.
+/// - `content_pin.rs`'s digest "framed eight until 2026-08-06" — two window plans
+///   on two meters of one market pinned identically, so an approve could be
+///   satisfied by a re-derivation over the other line's coverage. That is an
+///   approval bypass, and it shipped.
+///
+/// A stale-count grep cannot find these sites, which is why the last sweep missed
+/// three. A destructure can: add an axis to [`ScopeKey`] and every consumer that
+/// takes its parts stops compiling until it says what to do with the new one.
+///
+/// # What this does *not* gate
+///
+/// The three sites that build a key **from** a stored row or a JSON payload
+/// (`price_repo::to_scope_key`, `price_repo::scope_key_columns`,
+/// `read_model_repo::read_scope_key`) do not consume a `ScopeKey` and so cannot
+/// take its parts. Their partial cover is [`ScopeKey::new`]'s positional
+/// signature, and that cover fails for exactly the widening D-196 performed — an
+/// axis pair added through a `with_*` builder rather than a constructor
+/// parameter, which is how `meter` and `dimension_key` arrived.
+pub(crate) struct ScopeKeyParts<'a> {
+    pub plan_id: PlanId,
+    pub currency: &'a CurrencyCode,
+    pub region: &'a Region,
+    pub price_overlay: PriceOverlay,
+    pub phase: PhaseId,
+    pub price_eligibility: PriceEligibility,
+    pub charge_kind: ChargeKind,
+    pub cohort: Cohort,
+    pub meter: Option<&'a Meter>,
+    pub dimension_key: &'a DimensionKey,
+}
+
 impl ScopeKey {
+    /// Borrow every axis at once.
+    ///
+    /// The `let Self { .. }` below carries **no** rest pattern, so an eleventh
+    /// axis is a compile error here — and, because [`ScopeKeyParts`] gains the
+    /// field too, at every site that destructures the result.
+    #[must_use]
+    pub(crate) fn parts(&self) -> ScopeKeyParts<'_> {
+        let Self {
+            plan_id,
+            currency,
+            region,
+            price_overlay,
+            phase,
+            price_eligibility,
+            charge_kind,
+            cohort,
+            meter,
+            dimension_key,
+        } = self;
+        ScopeKeyParts {
+            plan_id: *plan_id,
+            currency,
+            region,
+            price_overlay: *price_overlay,
+            phase: *phase,
+            price_eligibility: *price_eligibility,
+            charge_kind: *charge_kind,
+            cohort: *cohort,
+            meter: meter.as_ref(),
+            dimension_key,
+        }
+    }
+
     /// Build a validated key for a row this gear authors.
     ///
     /// `price_overlay` is not a parameter: rows authored here always carry
@@ -817,19 +898,26 @@ impl fmt::Display for ScopeKey {
     /// approval register's held-key rows, and `unit_request_id`, the
     /// cross-tenant registry idempotency key.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Destructured, so an eleventh axis is a compile error here rather than a
+        // segment silently missing from the string a `DUPLICATE_SCOPE_KEY`
+        // rejection names.
+        let ScopeKeyParts {
+            plan_id,
+            currency,
+            region,
+            price_overlay,
+            phase,
+            price_eligibility,
+            charge_kind,
+            cohort,
+            meter,
+            dimension_key,
+        } = self.parts();
         write!(
             f,
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-            self.plan_id,
-            self.currency,
-            self.region,
-            self.price_overlay,
-            self.phase,
-            self.price_eligibility,
-            self.charge_kind,
-            self.cohort,
-            self.meter.as_ref().map_or("none", Meter::as_str),
-            self.dimension_key
+            "{plan_id}|{currency}|{region}|{price_overlay}|{phase}|{price_eligibility}|\
+             {charge_kind}|{cohort}|{}|{dimension_key}",
+            meter.map_or("none", Meter::as_str),
         )
     }
 }

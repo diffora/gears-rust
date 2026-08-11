@@ -221,7 +221,7 @@ use crate::domain::price_row::{
     MinQtyUsageFallback, PriceRow, QuantitySource, ReservationFlavor, TierAggregationWindow,
     TierBand, TierQualificationWindow, model_kind_wire,
 };
-use crate::domain::scope_key::{Meter, PhaseId, PlanId, ScopeKey};
+use crate::domain::scope_key::{Meter, PhaseId, PlanId, ScopeKey, ScopeKeyParts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 
 /// Versioned domain-separation tag for the approval content pin.
@@ -1052,23 +1052,41 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
 /// values become re-splittable, which is the hazard [`count_of`] exists for one
 /// level up.
 fn put_scope_key(buf: &mut Vec<u8>, key: &ScopeKey) {
-    put_uuid(buf, key.plan_id().get());
-    put_str(buf, key.currency().as_str());
-    put_str(buf, key.region().as_str());
-    put_str(buf, key.price_overlay().as_str());
-    put_uuid(buf, key.phase().get());
-    put_str(buf, key.price_eligibility().as_str());
-    put_str(buf, key.charge_kind().as_str());
+    // Destructured through `parts()`, and this is the site where that matters
+    // most: **it framed eight axes until 2026-08-06**, so two window plans on two
+    // meters of one market pinned identically and an approve could be satisfied by
+    // a re-derivation over the other line's coverage. An eleventh axis is now a
+    // compile error here rather than a digest that quietly stops discriminating.
+    // `put_price_row` below has always had this shape.
+    let ScopeKeyParts {
+        plan_id,
+        currency,
+        region,
+        price_overlay,
+        phase,
+        price_eligibility,
+        charge_kind,
+        cohort,
+        meter,
+        dimension_key,
+    } = key.parts();
+    put_uuid(buf, plan_id.get());
+    put_str(buf, currency.as_str());
+    put_str(buf, region.as_str());
+    put_str(buf, price_overlay.as_str());
+    put_uuid(buf, phase.get());
+    put_str(buf, price_eligibility.as_str());
+    put_str(buf, charge_kind.as_str());
     // The generation instant rather than `Display`'s rendering of it: the axis
     // is the instant, and hashing a rendering would make the pin depend on a
     // formatting choice.
-    put_opt_instant(buf, key.cohort().generation());
+    put_opt_instant(buf, cohort.generation());
     // The usage line (D-196). `meter` is genuinely optional — a usage row with no
     // meter is admissible — while `dimension_key` is total, `''` being the
     // undimensioned line, so the two take the two different framings rather than
     // one spelling for both.
-    put_opt_str(buf, key.meter().map(Meter::as_str));
-    put_str(buf, key.dimension_key().as_str());
+    put_opt_str(buf, meter.map(Meter::as_str));
+    put_str(buf, dimension_key.as_str());
 }
 
 fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {

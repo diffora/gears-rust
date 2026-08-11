@@ -122,7 +122,7 @@ use crate::domain::price_row::{
 use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
-    Region, ScopeKey,
+    Region, ScopeKey, ScopeKeyParts,
 };
 use crate::domain::tax_display::RegionTaxReadiness;
 use crate::infra::storage::RepoError;
@@ -2597,16 +2597,34 @@ fn swap_guard(tenant_id: Uuid, price_id: Uuid, expected: RowVersion) -> Option<C
 /// than the key actually has — the mistake that would report a collision
 /// between two rows that do not share a key at all.
 fn scope_key_filter(tenant_id: Uuid, key: &ScopeKey) -> Condition {
+    // Destructured through `parts()`, which is what this function's own doc says
+    // it needs: *"One spelling, so no statement here can decide 'the same key' by
+    // fewer axes than the key actually has."* It could, and it did — D-196 widened
+    // this key from eight axes to ten and three sites went unchanged. An eleventh
+    // axis is now a compile error here rather than a `Condition` that silently
+    // matches too much.
+    let ScopeKeyParts {
+        plan_id,
+        currency,
+        region,
+        price_overlay,
+        phase,
+        price_eligibility,
+        charge_kind,
+        cohort,
+        meter,
+        dimension_key,
+    } = key.parts();
     Condition::all()
         .add(price::Column::TenantId.eq(tenant_id))
-        .add(price::Column::PlanId.eq(key.plan_id().get()))
-        .add(price::Column::Currency.eq(key.currency().as_str()))
-        .add(price::Column::Region.eq(key.region().as_str()))
-        .add(price::Column::PriceOverlay.eq(key.price_overlay().as_str()))
-        .add(price::Column::Phase.eq(key.phase().get()))
-        .add(price::Column::PriceEligibility.eq(key.price_eligibility().as_str()))
-        .add(price::Column::ChargeKind.eq(key.charge_kind().as_str()))
-        .add(price::Column::Cohort.eq(key.cohort().to_string()))
+        .add(price::Column::PlanId.eq(plan_id.get()))
+        .add(price::Column::Currency.eq(currency.as_str()))
+        .add(price::Column::Region.eq(region.as_str()))
+        .add(price::Column::PriceOverlay.eq(price_overlay.as_str()))
+        .add(price::Column::Phase.eq(phase.get()))
+        .add(price::Column::PriceEligibility.eq(price_eligibility.as_str()))
+        .add(price::Column::ChargeKind.eq(charge_kind.as_str()))
+        .add(price::Column::Cohort.eq(cohort.to_string()))
         // **The NULL trap the indexes have, one layer up (D-196).** A key with
         // no meter renders `meter IS NULL`, and `Column::Meter.eq(None)` is
         // `meter = NULL`, which matches nothing — so this read would answer
@@ -2614,11 +2632,11 @@ fn scope_key_filter(tenant_id: Uuid, key: &ScopeKey) -> Condition {
         // as the index's driver error rather than as this door's refusal. The
         // store closes the same hole with `COALESCE(meter, '')`; here the
         // `Option` is in hand, so the arm is explicit.
-        .add(match key.meter() {
+        .add(match meter {
             Some(meter) => price::Column::Meter.eq(meter.as_str()),
             None => price::Column::Meter.is_null(),
         })
-        .add(price::Column::DimensionKey.eq(key.dimension_key().as_str()))
+        .add(price::Column::DimensionKey.eq(dimension_key.as_str()))
 }
 
 /// The "absent, or not yours" refusal — deliberately one answer for both, so
