@@ -758,22 +758,25 @@ async fn run_materiality(
 /// for [`run_materiality`]'s comparison and never persisted.
 ///
 /// `markup`/`discount` with a `percent_bp` magnitude is currency-neutral and
-/// always resolves: `base + base*bp/10_000` (markup) or `base - base*bp/10_000`
-/// (discount), truncating — the crate has no other precedent for applying a
-/// basis-points value to money (`materiality::delta::AmountMove::reaches_percent`
-/// is a *comparison* and stays exact by never dividing at all), so this is a
-/// decision, named as one, rather than a rule read off existing code. **The
-/// direction is symmetric and the effect is not**: truncation always rounds the
-/// *moved* amount down, so a markup's added minor unit is rounded away — the
-/// projected price ends slightly cheaper than the exact `bp` would give — while
-/// a discount's subtracted minor unit is rounded away too — the projected price
-/// ends slightly less generous than the exact `bp` would give. One rule, and it
-/// favours the payer on a markup and the seller on a discount; a reviewer
-/// comparing this projection against a hand-computed percentage should expect
-/// the projected move to be at most one minor unit short of it, in whichever
-/// direction that row's `bp` moved. A `markup`/`discount` with an `amount`
-/// magnitude, or a `fixed` line, needs `currency`'s entry in the adjustment's
-/// `AmountSet`.
+/// always resolves: `base ± round_half_even(base*bp, 10_000)`. **Not
+/// truncating**, and not a decision invented for this function: the crate
+/// denies `clippy::integer_division` (workspace `Cargo.toml`), and while
+/// `materiality::delta::AmountMove::reaches_percent` sidesteps that by
+/// cross-multiplying — it only ever answers a comparison, never a value — this
+/// function has to produce an actual minor-unit amount, and no comparison
+/// avoids that. `bss_ledger::domain::money_math::round_half_even` is this
+/// crate family's own precedent for exactly that shape (half-to-even,
+/// `div_euclid`/`rem_euclid` rather than `/`, so the lint that flagged
+/// truncation here never fires on it either); it is `pub(crate)` to that gear
+/// and not importable, so [`round_half_even`] below reproduces the identical
+/// algorithm rather than a different one invented in place. **The direction is
+/// symmetric and the tie-break is not always visible**: half-to-even rounds a
+/// `.5` remainder to whichever neighbour is even, so two adjustments of equal
+/// distance from a whole minor unit can round in opposite directions — a
+/// markup and a discount of the same `bp` are therefore not exact mirrors of
+/// one another at the boundary, which is arithmetic rather than an
+/// inconsistency. A `markup`/`discount` with an `amount` magnitude, or a
+/// `fixed` line, needs `currency`'s entry in the adjustment's `AmountSet`.
 ///
 /// A result that would go negative is **floored at zero**: a price cannot go
 /// negative, and a floor is itself a real, large move a threshold should see —
@@ -827,23 +830,63 @@ fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> PriceRecord {
 ///
 /// `None` when an `amount`/`fixed` magnitude has no entry for `currency`; see
 /// [`project_row`]'s doc for what a caller does with that.
+///
+/// Widens to `i128` for the `percent_bp` arms' multiply-then-round, the same
+/// guard [`round_half_even`] itself documents: `base` and `bp` are each
+/// bounded by `i64`, and their product is not.
 fn project_amount(
     base: i64,
     adjustment: &Adjustment,
     currency: &CurrencyCode,
 ) -> Option<MinorAmount> {
-    let projected = match adjustment {
+    let projected: i128 = match adjustment {
         Adjustment::Markup(Magnitude::PercentBp(bp)) => {
-            base.saturating_add(base.saturating_mul(*bp) / 10_000)
+            i128::from(base) + round_half_even(i128::from(base) * i128::from(*bp), 10_000)
         }
         Adjustment::Discount(Magnitude::PercentBp(bp)) => {
-            base.saturating_sub(base.saturating_mul(*bp) / 10_000)
+            i128::from(base) - round_half_even(i128::from(base) * i128::from(*bp), 10_000)
         }
-        Adjustment::Markup(Magnitude::Amount(set)) => base.saturating_add(set.get(currency)?),
-        Adjustment::Discount(Magnitude::Amount(set)) => base.saturating_sub(set.get(currency)?),
-        Adjustment::Fixed(set) => set.get(currency)?,
+        Adjustment::Markup(Magnitude::Amount(set)) => {
+            i128::from(base) + i128::from(set.get(currency)?)
+        }
+        Adjustment::Discount(Magnitude::Amount(set)) => {
+            i128::from(base) - i128::from(set.get(currency)?)
+        }
+        Adjustment::Fixed(set) => i128::from(set.get(currency)?),
     };
-    MinorAmount::new(projected.max(0)).ok()
+    i64::try_from(projected.max(0))
+        .ok()
+        .and_then(|minor| MinorAmount::new(minor).ok())
+}
+
+/// Round `numer/denom` (`denom` must be positive) to the nearest integer, ties
+/// to even — half-to-even, "banker's rounding".
+///
+/// Reproduces `bss_ledger::domain::money_math::round_half_even` rather than
+/// importing it (that function is `pub(crate)` to a different gear): this
+/// crate denies `clippy::integer_division`, and `div_euclid`/`rem_euclid` are
+/// method calls rather than the `/` operator the lint matches, which is what
+/// lets this stay exact about ties without an `#[allow]` on money arithmetic.
+/// `i128` throughout because [`project_amount`]'s `numer` is already a product
+/// of two `i64`s.
+fn round_half_even(numer: i128, denom: i128) -> i128 {
+    debug_assert!(denom > 0, "denominator must be positive");
+    let q = numer.div_euclid(denom);
+    let r = numer.rem_euclid(denom); // 0 <= r < denom
+    // Compare `r` to `denom - r` rather than `2 * r` to `denom`, so a large
+    // remainder cannot overflow — `bss_ledger`'s own reason for the same
+    // comparison, reproduced along with the algorithm it guards.
+    let complement = denom - r;
+    if r < complement {
+        q
+    } else if r > complement {
+        q + 1
+    } else if q % 2 == 0 {
+        // exact half: round to even
+        q
+    } else {
+        q + 1
+    }
 }
 
 /// Write the verdict's edge: `validating -> awaiting_approval` under an opened
