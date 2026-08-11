@@ -1041,11 +1041,20 @@ pub(crate) fn adjustment_of_report(report: &serde_json::Value) -> Result<Adjustm
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| corrupt("amounts"))?
         .iter()
-        .map(|(currency, value)| AmountRequest {
-            currency: currency.clone(),
-            value_minor: value.as_i64().unwrap_or_default(),
+        .map(|(currency, value)| {
+            // Fails closed like every sibling field above: a stored amount
+            // that is not a whole number is corruption, not a caller's
+            // mistake, and turning it into a silent `0` would carry a wrong
+            // amount into the adjustment rather than refusing it.
+            value
+                .as_i64()
+                .map(|value_minor| AmountRequest {
+                    currency: currency.clone(),
+                    value_minor,
+                })
+                .ok_or_else(|| corrupt(&format!("amounts.{currency}")))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     adjustment_of(adjustment_kind, magnitude_kind, adjustment_value, &amounts)
 }
 

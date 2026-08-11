@@ -47,7 +47,25 @@
 //!    the two outbox events per row step 1 could not enqueue yet, each keyed
 //!    `(run_id, price_id)` so a redrive cannot double-fire either.
 //!
-//! # The bulk lock is not taken here
+//! # What the aggregate pass actually guards here
+//!
+//! Step 2's re-run of `run_publish_rules` cannot fail *because of this run's
+//! own effect*. A markup/discount/fixed adjustment moves only a row's amount,
+//! and every rule `run_publish_rules` registers that reads `amount_minor`,
+//! `package_price_minor` or `unit_price_minor` is row-local — already run,
+//! pre-commit, inside [`plan_supersession`]'s own `price_row_rules()` call.
+//! None of the genuinely aggregate-only rules (phase coverage, descriptor
+//! completeness, region declaration, window coverage) is sensitive to an
+//! amount's value at all. So for this lane the post-commit pass is not a
+//! soundness guard over what this transaction just wrote — it cannot catch a
+//! bad *repricing*, because a repricing has no way to produce one. What it
+//! guards against is **concurrency**: that nothing *else* changed the plan's
+//! structure between this run's row selection and this transaction's commit —
+//! a phase dropped, a region retired, a stray draft authored on an untouched
+//! key. That is a real property worth its cost even though this run's own
+//! adjustment can never be the thing that trips it.
+//!
+//! # The bulk lock is not taken here, and taking it would not close the hole
 //!
 //! `inst-bs-commit` gives the run's bulk lock over its rows starting at entry
 //! to `committing`, and the module doc `api::rest::repricing_runs` carries
@@ -64,6 +82,15 @@
 //! a corrupted write, because [`price_repo::insert_successor_draft_on`] and
 //! [`price_repo::commit_supersession_rows`] each re-read their own
 //! preconditions and refuse rather than misapply when the world has moved.
+//!
+//! **And the lock would not close it even built as D-134 describes it.**
+//! `take_locks` is scoped to the rows *this run selected*; the aggregate
+//! pass's candidate set is the *whole plan's* published-and-draft rows. A
+//! stray draft on a key the run never targeted sits outside any lock scoped
+//! to "the run's rows" — `tests/sqlite_repricing_apply.rs`'s own atomicity
+//! test exploits exactly that key. D-134's soundness sentence does not hold
+//! as written for that case; that is a design question for a later task, not
+//! one this module can paper over by taking a lock that would not answer it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -198,9 +225,12 @@ pub async fn apply_run_in(
         )));
     }
     if run.state == BulkState::AwaitingApproval {
-        // `inst-bs-commit`'s own edge: the bulk lock's entry point, and the one
-        // this apply is the sole owner of taking. See the module doc for why it
-        // is spent here rather than by either of this function's two callers.
+        // `inst-bs-commit`'s own state edge — `awaiting_approval -> committing`
+        // — and the one this apply is the sole owner of taking. **Not** the
+        // bulk lock itself: this module does not take `bulk_repo::take_locks`
+        // at all (see the module doc's own named gap). See the module doc for
+        // why this edge is spent here rather than by either of this
+        // function's two callers.
         bulk_repo::advance(
             &conn,
             scope,
