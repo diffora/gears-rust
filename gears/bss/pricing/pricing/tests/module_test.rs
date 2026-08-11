@@ -98,6 +98,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", FRONTIER),
         ("GET", HISTORY),
         ("GET", PLAN),
+        ("GET", PLANS),
         ("POST", PLANS),
         ("PATCH", PLAN),
         ("POST", PLAN_ABANDON),

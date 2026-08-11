@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Extension, Path};
+use axum::extract::{Extension, Path, Query};
 use axum::http::header::{ETAG, LOCATION};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::HeaderMap, http::StatusCode};
@@ -41,11 +41,13 @@ use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::{AccessScope, DbTx};
+use toolkit_odata::Page;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
+use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions::{self, RevisionTag};
 use crate::api::rest::state::AuthoringState;
@@ -75,8 +77,9 @@ const TAG: &str = "BSS Pricing Plans";
 /// The literal is repeated in the `OperationBuilder` call below because DE0801
 /// validates a **literal** argument and silently passes a `const` one - so the
 /// route shape rule only binds where the literal is. The two spellings are
-/// pinned together by `plans_tests::the_router_registers_exactly_the_declared_paths`,
-/// which is what keeps the second spelling from drifting.
+/// pinned together by
+/// `module_test::the_registered_route_set_is_exactly_the_declared_paths`, which
+/// is what keeps the second spelling from drifting.
 pub const PLANS: &str = "/bss-pricing/v1/plans";
 /// One plan, by id.
 pub const PLAN: &str = "/bss-pricing/v1/plans/{planId}";
@@ -490,6 +493,73 @@ impl PlanView {
     }
 }
 
+/// One plan on a page: the revision an author is holding, and nothing that costs
+/// a query of its own.
+///
+/// The four child sets [`PlanView`] carries are each a query of their own, so
+/// rendering them a hundred times for a catalogue screen would be five hundred
+/// round trips to show a tier and a state. A caller opens
+/// `GET …/plans/{planId}` for the rest — the split
+/// `list_approvals` / `get_approval` already make one module over.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PlanSummaryView {
+    /// The plan this revision belongs to.
+    pub plan_id: Uuid,
+    /// The revision number the page is answering about — the open draft's when
+    /// the plan has one, else the current revision's.
+    pub revision: u64,
+    /// `draft` | `abandoned` | `published` | `superseded` | `retired`.
+    pub lifecycle_state: String,
+    /// The catalog SKU this plan realizes, when one is bound.
+    pub sku_id: Option<Uuid>,
+    /// The plan's tier (a registry-owned taxonomy, so a string).
+    pub plan_tier: Option<String>,
+    /// `one_time` | `recurring` | `usage` | `hybrid`.
+    pub billing_cycle: Option<String>,
+    /// Start of the availability window, UTC.
+    pub available_from: Option<DateTime<Utc>>,
+    /// End of the availability window, UTC.
+    pub available_to: Option<DateTime<Utc>>,
+    /// When the revision was created, UTC.
+    pub created_at_utc: DateTime<Utc>,
+    /// The precondition a caller needs to `PATCH` this row without reading it
+    /// again. Carried on the page for the same reason [`PlanView`] carries it: a
+    /// client that cannot see response headers can still submit an `If-Match`.
+    pub row_version: u64,
+}
+
+impl From<&PlanRevision> for PlanSummaryView {
+    fn from(revision: &PlanRevision) -> Self {
+        Self {
+            plan_id: revision.plan_id.get(),
+            revision: revision.revision,
+            lifecycle_state: revision.lifecycle_state.as_str().to_owned(),
+            sku_id: revision.sku_id,
+            plan_tier: revision.plan_tier.clone(),
+            billing_cycle: revision
+                .billing_cycle
+                .map(|cycle| cycle.as_str().to_owned()),
+            available_from: revision.available_from,
+            available_to: revision.available_to,
+            created_at_utc: revision.created_at_utc,
+            row_version: revision.row_version.get(),
+        }
+    }
+}
+
+/// The two pagination query parameters plus the lifecycle filter (D-125).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PlanPageQuery {
+    /// Plans per page; server default 100, hard cap 1,000.
+    pub limit: Option<u64>,
+    /// The opaque token a previous page returned.
+    pub cursor: Option<String>,
+    /// Comma-separated lifecycle states. Absent is the authoring set: each
+    /// plan's open draft when it has one, else its current revision.
+    pub lifecycle_state: Option<String>,
+}
+
 /// The plan shape a create authors, and the one facet a `PATCH` may move.
 ///
 /// Every member is optional because a plan is assembled over several calls: the
@@ -649,6 +719,49 @@ pub struct PatchPlanRequest {
 )]
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
     let mut router = Router::new();
+
+    router = OperationBuilder::get("/bss-pricing/v1/plans")
+        .operation_id("bss_pricing.list_plans")
+        .summary("List the tenant's plans (cursor-paginated)")
+        .description(
+            "One page of the tenant's plans in `planId` order, with an opaque `cursor` and a \
+             `limit` whose server default is 100 and whose hard cap is 1,000 (D-125). Each plan \
+             is rendered as the revision an **author** is holding: its open draft when it has \
+             one, else its current revision - `draft` is not a current revision \
+             (`is_current_revision()` is `published | retired`), so a listing that asked for \
+             current revisions would hide every plan being authored right now. \
+             `lifecycle_state` narrows the page to a comma-separated set of states. The four \
+             child sets are **not** on this page - a hundred plans would be five hundred \
+             queries - so a caller opens `GET /bss-pricing/v1/plans/{planId}` for a plan's \
+             shape.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Plans per page (default 100, hard cap 1,000)",
+            "integer",
+        )
+        .query_param("cursor", false, "Opaque base64url pagination cursor")
+        .query_param(
+            "lifecycle_state",
+            false,
+            "Comma-separated lifecycle states; absent is each plan's authoring revision",
+        )
+        .handler(list_plans)
+        .json_response_with_schema::<Page<PlanSummaryView>>(
+            openapi,
+            StatusCode::OK,
+            "One page of the tenant's plans.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
 
     router = OperationBuilder::post("/bss-pricing/v1/plans")
         .operation_id("bss_pricing.create_plan")
@@ -899,6 +1012,96 @@ async fn get_plan(
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
     Ok(([(ETAG, plan_tag(&view))], Json(view)))
+}
+
+/// `GET /plans`.
+///
+/// The collection read, gated exactly as [`get_plan`] is except that
+/// `resource_id` is `None`: there is no single resource to name, so what the PDP
+/// compiles is the tenant filter the walk runs under. `require_constraints` is
+/// `true` for the same reason as everywhere else on this plane — an
+/// unconstrained allow must fail closed rather than page through every tenant's
+/// catalogue.
+///
+/// Each plan is rendered as its **authoring** revision, which is
+/// [`authoring_revision`]'s rule applied to a page rather than to one id;
+/// `plan_repo::list_authoring_page` holds the argument for why a listing over
+/// current revisions would be the wrong one.
+async fn list_plans(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Query(query): Query<PlanPageQuery>,
+) -> Result<Json<Page<PlanSummaryView>>, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::PLAN,
+        crate::authz::actions::READ,
+        /* owner_tenant_id */ None,
+        /* resource_id */ None,
+        /* require_constraints */ true,
+    )
+    .await
+    .map_err(authz_error_to_canonical)?;
+
+    let page = PageRequest::parse(query.limit, query.cursor.as_deref())?;
+    let states = lifecycle_filter(query.lifecycle_state.as_deref())?;
+    // One row more than the page, so "is there another page" needs no second
+    // query and no page whose `next_cursor` points at nothing.
+    let probe = page.limit.saturating_add(1);
+    let mut rows = state
+        .plans
+        .list_authoring(&scope, ctx.subject_tenant_id(), &states, page.after, probe)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    let has_more = u64::try_from(rows.len()).unwrap_or(u64::MAX) > page.limit;
+    if has_more {
+        rows.pop();
+    }
+    let next = has_more
+        .then(|| rows.last().map(|row| row.plan_id.get()))
+        .flatten();
+    Ok(Json(Page {
+        items: rows.iter().map(PlanSummaryView::from).collect(),
+        page_info: cursor::page_info(next, page.limit),
+    }))
+}
+
+/// Read the `lifecycle_state` filter, refusing a token the machine has no state
+/// for rather than silently returning everything.
+///
+/// The tokens are matched against [`LifecycleState::ALL`] rather than written
+/// out here, `approvals::state_filter`'s discipline exactly: a state added to
+/// the machine becomes filterable the day it is added, and one removed stops
+/// being accepted the day it is removed.
+fn lifecycle_filter(raw: Option<&str>) -> Result<Vec<LifecycleState>, CanonicalError> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| {
+            LifecycleState::ALL
+                .iter()
+                .copied()
+                .find(|state| state.as_str() == token)
+                .ok_or_else(|| {
+                    let known: Vec<&str> = LifecycleState::ALL
+                        .iter()
+                        .copied()
+                        .map(LifecycleState::as_str)
+                        .collect();
+                    CanonicalError::from(DomainError::InvalidRequest(format!(
+                        "lifecycle_state `{token}` is not one of {}",
+                        known.join(", ")
+                    )))
+                })
+        })
+        .collect()
 }
 
 /// The revision an authoring caller is working with: the open draft, else the
