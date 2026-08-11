@@ -53,6 +53,18 @@
 //! every suite in this crate pins, carries it as a contrib module) and is
 //! created `IF NOT EXISTS` by this migration's own `up`.
 //!
+//! **This migration's `down` also drops the extension**, which is safe *today*
+//! — nothing else in the chain reaches for `btree_gist` yet — but is a landmine
+//! for whichever later migration is the next to want it: that migration should
+//! issue its **own** `CREATE EXTENSION IF NOT EXISTS btree_gist`, or a rollback
+//! of this migration alone (rather than the whole chain in reverse) would pull
+//! the extension out from under it. Postgres's own dependency tracking refuses
+//! to drop an extension a live GIST index still depends on, so the sharpest
+//! form of the hazard cannot occur silently — but a second migration also
+//! issuing `DROP EXTENSION IF EXISTS btree_gist` in its own `down`, on the
+//! assumption that it owns the extension, is a duplicate-ownership bug this
+//! note exists to head off.
+//!
 //! # `SQLite`: no exclusion constraint exists, so the equivalent is a pair of
 //! `RAISE(ABORT, …)` triggers
 //!

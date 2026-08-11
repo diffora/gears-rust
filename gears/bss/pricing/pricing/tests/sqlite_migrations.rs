@@ -1613,6 +1613,35 @@ async fn group_membership_non_overlap_refuses_across_groups_and_admits_adjacency
     ))
     .await
     .expect("two sequential future-dated memberships must both be accepted");
+
+    // Open-ended (`effective_to = NULL`) still reads as unbounded, not as "no
+    // constraint applies" -- a later interval starting inside it must still be
+    // refused. A distinct time window (2150) so this pair cannot interact with
+    // rows 1-5 above. Row 6 is what makes the SQLite trigger's `IS NULL OR`
+    // branches reachable at all on the tier that runs on every commit; without
+    // it a simplification that dropped them (e.g. to a bare `existing.effective_to
+    // > NEW.effective_from`) would only redden the Docker-gated Postgres suite.
+    exec(row(6, "trial", "2150-01-01 00:00:00", "NULL"))
+        .await
+        .expect("an open-ended membership takes its interval");
+    let open_ended_collision = exec(row(
+        7,
+        "vip",
+        "2150-06-01 00:00:00",
+        "'2150-12-01 00:00:00'",
+    ))
+    .await
+    .expect_err(
+        "row 7 starts inside row 6's open-ended interval, in a different group; the open \
+         end must be read as unbounded and refuse it",
+    );
+    assert!(
+        open_ended_collision
+            .to_string()
+            .contains("pricing_group_membership"),
+        "the refusal must come from row 6's open-ended interval, not some other guard: \
+         {open_ended_collision}"
+    );
 }
 
 #[tokio::test]
