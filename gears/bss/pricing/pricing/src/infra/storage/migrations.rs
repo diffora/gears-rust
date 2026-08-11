@@ -98,6 +98,7 @@ pub mod m20260802_000063_add_bulk_operation_rejected_state;
 pub mod m20260802_000064_widen_bulk_operation_client_key_by_kind;
 pub mod m20260802_000065_widen_pricing_migration_key_by_tenant;
 pub mod m20260802_000066_create_pricing_customer_group_taxonomy;
+pub mod m20260802_000067_create_pricing_group_membership;
 pub mod m20260802_000068_widen_approval_subject_kind_bulk_operation;
 
 use sea_orm::{ConnectionTrait, Statement};
@@ -307,6 +308,15 @@ impl MigratorTrait for Migrator {
             // Slice 9's own taxonomy: the BSS customer-group value universe
             // (`inst-cg-taxonomy`), the Slice 4 four's shape on its own table.
             Box::new(m20260802_000066_create_pricing_customer_group_taxonomy::Migration),
+            // Slice 9's membership plane (`inst-cg-record` / `inst-cg-resolve`,
+            // D-09): the effective-dated, audited record on `payerTenantId`, with
+            // its cross-group non-overlap invariant carried at the schema layer
+            // on both engines -- a Postgres `EXCLUDE USING gist` and a `SQLite`
+            // trigger pair, per this migration's own module doc. Sorts after
+            // `000066` because `inst-plv-scope`/`inst-tx-mutation` read
+            // `group_value` against that taxonomy, though this table names no FK
+            // to it (stored by value, like an overlay's `scope_value`).
+            Box::new(m20260802_000067_create_pricing_group_membership::Migration),
             // D-158's enumeration gains `bulk_operation`, `000035`'s reason repeated:
             // the mass-repricing run's open now writes an audit record and
             // `AuditSubjectKind` spells both stores. Rebuilds `pricing_approval` on
@@ -318,7 +328,7 @@ impl MigratorTrait for Migrator {
             // (`widen_pricing_migration_key_by_tenant`). Both were taken from the same
             // base, which is the collision this chain's prose already records happening
             // once at `000036`. The older number on the shared line keeps it; this one
-            // moved. `000067` is the group-membership table, landing in the same range.
+            // moved.
             Box::new(m20260802_000068_widen_approval_subject_kind_bulk_operation::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work

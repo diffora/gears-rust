@@ -40,10 +40,11 @@
 
 use bss_pricing::infra::storage::entity::{
     approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
-    brand_taxonomy, catalog_version_ref, customer_group_taxonomy, idempotency_dedup, operator_flag,
-    org_tier_taxonomy, outbox, partner_taxonomy, pin_frontier, plan, plan_addon_rule,
-    plan_descriptor_set, plan_phase, policy_object, price, price_overlay, price_overlay_line,
-    price_overlay_line_amount, price_tier_band, price_window, read_model, region_taxonomy,
+    brand_taxonomy, catalog_version_ref, customer_group_taxonomy, group_membership,
+    idempotency_dedup, operator_flag, org_tier_taxonomy, outbox, partner_taxonomy, pin_frontier,
+    plan, plan_addon_rule, plan_descriptor_set, plan_phase, policy_object, price, price_overlay,
+    price_overlay_line, price_overlay_line_amount, price_tier_band, price_window, read_model,
+    region_taxonomy,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityTrait, Statement};
@@ -94,6 +95,9 @@ const EXPECTED_TABLES: &[&str] = &[
     // the `config` route the four above share — see
     // `m20260802_000066`'s module doc.
     "pricing_customer_group_taxonomy",
+    // Slice 9's own membership plane (`inst-cg-record`), D-09's two-layer
+    // non-overlap invariant carried at the schema layer on both engines.
+    "pricing_group_membership",
     // Slice 9's three, in dependency order.
     "pricing_price_overlay",
     "pricing_price_overlay_line",
@@ -159,6 +163,11 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_composite_meter_no_delete",
     "trg_pricing_composite_meter_no_insert",
     "trg_pricing_composite_meter_no_update",
+    // Slice 9's membership plane, D-09's cross-group non-overlap invariant on
+    // the `SQLite` arm -- `m20260802_000067`'s two `RAISE(ABORT, ...)` triggers,
+    // one per DML verb the interval can change through.
+    "trg_pricing_group_membership_no_overlap_insert",
+    "trg_pricing_group_membership_no_overlap_update",
     // Slice 11. Five arms, mirroring the one Postgres function: the DELETE ban,
     // the terminal-row ban, the frozen-column whitelist, section 4's edges, and
     // D-65's replay guard on the persisted exclusion set.
@@ -246,6 +255,9 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_bundle_tenant",
     "idx_pricing_catalog_version_ref_version",
     "idx_pricing_composite_meter_revision",
+    // The resolution walk (`inst-cg-resolve`) and the exclusion constraint's own
+    // probe are both per-payer range scans.
+    "idx_pricing_group_membership_payer",
     "idx_pricing_idempotency_dedup_created",
     "idx_pricing_migration_due",
     "idx_pricing_migration_source",
@@ -348,6 +360,14 @@ const EXPECTED_CHECKS: &[&str] = &[
     // CHECKs restated over `pricing_customer_group_taxonomy`.
     "chk_pricing_customer_group_taxonomy_state",
     "chk_pricing_customer_group_taxonomy_value_present",
+    // Slice 9's membership plane (`inst-cg-record`). Two: the value-present
+    // guard the four taxonomies also carry, and the half-open interval sanity
+    // check `pricing_price_window`/`pricing_price_overlay` carry too. D-09's
+    // non-overlap invariant is a separate object (`excl_pricing_group_membership_no_overlap`,
+    // `contype = 'x'`) and does not belong to this census -- see
+    // `postgres_migrations.rs`'s `CHECKS_SQL`, which filters on `contype = 'c'`.
+    "chk_pricing_group_membership_group_value_present",
+    "chk_pricing_group_membership_interval",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
     // Slice 11. The two implications that carry section 4's reachable set
@@ -533,6 +553,11 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     // Slice 9's own taxonomy (`inst-cg-taxonomy`), the four's own key shape on
     // its own table.
     ("pricing_customer_group_taxonomy", "tenant_id, value"),
+    // Slice 9's membership plane (`inst-cg-record`). Keyed on its own surrogate
+    // id, not `(tenant_id, payer_tenant_id, effective_from)`: a payer may hold
+    // several historical rows and D-09's non-overlap is the exclusion
+    // constraint's job, not the primary key's.
+    ("pricing_group_membership", "membership_id"),
     (
         "pricing_idempotency_dedup",
         "tenant_id, operation, client_key",
@@ -753,6 +778,20 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_composite_meter_no_update",
         2_815_598_062_845_254_393_u64,
+    ),
+    // Slice 9's membership plane, D-09's cross-group non-overlap invariant on
+    // the `SQLite` arm. Read back off the built schema, as this census requires
+    // -- what is pinned is the whole `WHERE EXISTS (...)` predicate, and a hand
+    // rebuild losing `payer_tenant_id` from the join or the `membership_id <>`
+    // self-exclusion on the `UPDATE` arm would still create, still be named
+    // right, and refuse less.
+    (
+        "trg_pricing_group_membership_no_overlap_insert",
+        12_352_474_139_182_792_925_u64,
+    ),
+    (
+        "trg_pricing_group_membership_no_overlap_update",
+        11_976_359_589_899_621_387_u64,
     ),
     // Slice 11's five arms. Each digest is the stored body's, which is the only
     // place a digest can come from; what was checked against `m20260802_000043`
@@ -1293,6 +1332,9 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         // Slice 9's own taxonomy (`inst-cg-taxonomy`), on its own route rather
         // than `config`'s four above.
         customer_group_taxonomy::Entity,
+        // Slice 9's membership plane (`inst-cg-record`) -- proves the entity's
+        // column set matches `m20260802_000067`'s table.
+        group_membership::Entity,
         price_overlay::Entity,
         price_overlay_line::Entity,
         price_overlay_line_amount::Entity,
@@ -1473,6 +1515,104 @@ async fn both_scope_key_indexes_carry_the_usage_line_through_the_sentinel() {
             .contains("uq_pricing_price_scope_key_current"),
         "the refusal must come from the scope-key index: {collision}"
     );
+}
+
+/// D-09's cross-group non-overlap invariant, the `SQLite` arm
+/// (`m20260802_000067`'s trigger pair), proved behaviourally rather than by name:
+/// the trigger census only proves the guard exists, not that it refuses what it
+/// claims to.
+///
+/// The case §3 `inst-cg-resolve` is actually about — two **different**
+/// `group_value`s colliding for one payer — plus the two shapes a wrong rule
+/// would get wrong in the opposite direction: sequential future-dated
+/// memberships (2026-07-28 review fix; a rule refusing these is wrong) and
+/// half-open boundary adjacency (`effective_to = next.effective_from` is legal,
+/// not a false positive).
+#[tokio::test]
+async fn group_membership_non_overlap_refuses_across_groups_and_admits_adjacency() {
+    const TENANT: &str = "11111111-1111-1111-1111-111111111111";
+    const PAYER: &str = "22222222-2222-2222-2222-222222222222";
+    const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
+
+    let conn = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let manager = SchemaManager::new(&conn);
+    for migration in &name_ordered_chain() {
+        migration
+            .up(&manager)
+            .await
+            .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
+    }
+
+    let row = |id: u32, group_value: &str, from: &str, to: &str| {
+        format!(
+            "INSERT INTO pricing_group_membership (
+                 membership_id, tenant_id, payer_tenant_id, group_value,
+                 effective_from, effective_to, created_by, created_at_utc)
+             VALUES ('{id:0>8}-0000-0000-0000-000000000000', '{TENANT}', '{PAYER}', \
+             '{group_value}', '{from}', {to}, '{ACTOR}', '2026-08-11 09:00:00')"
+        )
+    };
+    let exec = async |sql: String| {
+        conn.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql,
+        ))
+        .await
+    };
+
+    // The case D-09 is actually about: `trial` from Jan-Jun, then `vip`
+    // starting inside it in March -- a different group, same payer.
+    exec(row(
+        1,
+        "trial",
+        "2026-01-01 00:00:00",
+        "'2026-06-01 00:00:00'",
+    ))
+    .await
+    .expect("the first membership takes its interval");
+    let collision = exec(row(
+        2,
+        "vip",
+        "2026-03-01 00:00:00",
+        "'2026-09-01 00:00:00'",
+    ))
+    .await
+    .expect_err("a different group overlapping the same payer's live membership must be refused");
+    assert!(
+        collision.to_string().contains("pricing_group_membership"),
+        "the refusal must name the table's own guard: {collision}"
+    );
+
+    // Boundary: starting exactly where the first ends is adjacency, not a
+    // collision -- the interval is half-open.
+    exec(row(
+        3,
+        "vip",
+        "2026-06-01 00:00:00",
+        "'2026-09-01 00:00:00'",
+    ))
+    .await
+    .expect("an interval starting where another ends is legal ([)-half-open)");
+
+    // Sequential future-dated memberships are legal, whatever group they land in.
+    exec(row(
+        4,
+        "trial",
+        "2099-01-01 00:00:00",
+        "'2099-06-01 00:00:00'",
+    ))
+    .await
+    .expect("a future-dated membership on a payer with no live interval there must land");
+    exec(row(
+        5,
+        "vip",
+        "2099-08-01 00:00:00",
+        "'2099-12-01 00:00:00'",
+    ))
+    .await
+    .expect("two sequential future-dated memberships must both be accepted");
 }
 
 #[tokio::test]

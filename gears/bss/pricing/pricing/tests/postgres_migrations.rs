@@ -305,6 +305,10 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
     "pricing_composite_meter: composite_id, plan_revision",
     "pricing_customer_group_taxonomy: tenant_id, value",
+    // Slice 9's membership plane (`inst-cg-record`). Keyed on its own surrogate
+    // id; D-09's non-overlap is `excl_pricing_group_membership_no_overlap`'s
+    // job, not the primary key's.
+    "pricing_group_membership: membership_id",
     "pricing_idempotency_dedup: tenant_id, operation, client_key",
     // Client-supplied (`inst-ms-api`, M2), and therefore **tenant-scoped since
     // `m20260802_000065`**: it was `migration_id` alone until 2026-08-11, which put
@@ -384,6 +388,14 @@ const EXPECTED_CHECKS: &[&str] = &[
     // filed under `config`'s four.
     "chk_pricing_customer_group_taxonomy_state",
     "chk_pricing_customer_group_taxonomy_value_present",
+    // Slice 9's membership plane (`inst-cg-record`). Two: the value-present
+    // guard the four taxonomies also carry, and the half-open interval sanity
+    // check `pricing_price_window`/`pricing_price_overlay` carry too. D-09's
+    // non-overlap invariant is `excl_pricing_group_membership_no_overlap`, a
+    // separate `contype = 'x'` object `CHECKS_SQL` does not select (`contype =
+    // 'c'` only) and does not belong in this roster.
+    "chk_pricing_group_membership_group_value_present",
+    "chk_pricing_group_membership_interval",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
     // Slice 11, the same twelve the SQLite mirror carries, name for name.
