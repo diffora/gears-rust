@@ -622,3 +622,109 @@ async fn count_rows(conn: &impl toolkit_db::secure::DBRunner, id: Uuid) -> usize
         .filter(|record| record.migration_id == id)
         .count()
 }
+
+// ---------------------------------------------------------------------------
+// The collection read: `GET /bss-pricing/v1/migrations`
+// ---------------------------------------------------------------------------
+
+/// The page is a keyset walk on `migration_id` and visits every schedule once.
+///
+/// The ids are minted with [`Uuid::from_u128`] rather than `now_v7` so the order
+/// the walk must produce is a fact this test knows rather than one it reads back
+/// off the store it is testing.
+#[tokio::test]
+async fn the_migration_page_walks_by_migration_id_and_never_repeats_one() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("conn");
+    for n in 0..3_u128 {
+        migration_repo::insert_or_load(
+            &conn,
+            &scope(),
+            new_migration(Uuid::from_u128(0x_31_00 + n)),
+        )
+        .await
+        .expect("schedule");
+    }
+
+    let mut walked: Vec<Uuid> = Vec::new();
+    let mut after = None;
+    loop {
+        let page = migration_repo::list_page(&conn, &scope(), TENANT, &[], after, 2)
+            .await
+            .expect("list");
+        assert!(page.len() <= 2, "the page is bounded by the limit it asked");
+        let Some(last) = page.last() else { break };
+        after = Some(last.migration_id);
+        walked.extend(page.iter().map(|record| record.migration_id));
+    }
+
+    assert_eq!(
+        walked,
+        vec![
+            Uuid::from_u128(0x_31_00),
+            Uuid::from_u128(0x_31_01),
+            Uuid::from_u128(0x_31_02),
+        ],
+        "every schedule once, in migration_id order"
+    );
+}
+
+/// `state` narrows the page, and an empty filter is every state rather than none.
+///
+/// The asserted state is `cancelled`, which is **not** the state a schedule is
+/// born in: a query that dropped the condition would return all three and a query
+/// that hardcoded the default would return the wrong one, so neither passes by
+/// coincidence.
+#[tokio::test]
+async fn the_migration_page_narrows_to_the_named_state() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("conn");
+    for n in 0..3_u128 {
+        migration_repo::insert_or_load(
+            &conn,
+            &scope(),
+            new_migration(Uuid::from_u128(0x_32_00 + n)),
+        )
+        .await
+        .expect("schedule");
+    }
+    migration_repo::cancel(
+        &conn,
+        &scope(),
+        TENANT,
+        Uuid::from_u128(0x_32_01),
+        MigrationState::Scheduled,
+        None,
+        at(11),
+    )
+    .await
+    .expect("cancel the middle one");
+
+    let cancelled = migration_repo::list_page(
+        &conn,
+        &scope(),
+        TENANT,
+        &[MigrationState::Cancelled],
+        None,
+        100,
+    )
+    .await
+    .expect("list");
+    assert_eq!(
+        cancelled
+            .iter()
+            .map(|record| record.migration_id)
+            .collect::<Vec<_>>(),
+        vec![Uuid::from_u128(0x_32_01)],
+        "only the cancelled schedule"
+    );
+
+    let everything = migration_repo::list_page(&conn, &scope(), TENANT, &[], None, 100)
+        .await
+        .expect("list");
+    assert_eq!(
+        everything.len(),
+        3,
+        "an empty filter is every state, not an empty page"
+    );
+}

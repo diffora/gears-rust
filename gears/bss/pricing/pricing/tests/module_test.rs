@@ -181,6 +181,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // flips to `cancelled` and is never removed, because an executor
         // re-reading the schedule must tell a cancelled run from an absent one.
         ("POST", MIGRATIONS),
+        ("GET", MIGRATIONS),
         ("GET", MIGRATION_BY_ID),
         ("DELETE", MIGRATION_BY_ID),
         // D-102's read surface. The only route in the gear whose authz object

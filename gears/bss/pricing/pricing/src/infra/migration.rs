@@ -169,6 +169,26 @@ impl MigrationService {
             .map_err(|e| repo_failure(&e))
     }
 
+    /// One page of the tenant's schedules, in `migration_id` order (D-125).
+    ///
+    /// # Errors
+    /// [`DomainError::Internal`] on a storage failure.
+    pub async fn list(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        states: &[MigrationState],
+        after: Option<Uuid>,
+        limit: u64,
+    ) -> Result<Vec<MigrationRecord>, DomainError> {
+        let conn = self.db.conn().map_err(|e| {
+            DomainError::Internal(format!("bss-pricing: migration listing connection: {e}"))
+        })?;
+        migration_repo::list_page(&conn, scope, tenant_id, states, after, limit)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
     /// Cancel a `scheduled` or `in_progress` run (`inst-mst-cancel`,
     /// `inst-mst-cancel-inflight`, `inst-mg-cancel`, D-34, M3).
     ///

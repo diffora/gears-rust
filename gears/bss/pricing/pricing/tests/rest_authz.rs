@@ -548,7 +548,7 @@ fn retirement_routes() -> Vec<Route> {
 
 /// Slice 11's migration plane (§5).
 ///
-/// Three rows and deliberately not five. `POST .../start` and `.../complete` are
+/// Four rows and deliberately not six. `POST .../start` and `.../complete` are
 /// specified (D-65) and their storage half is built, but they are **not mounted**:
 /// `/start` must run D-36's execution-time re-resolution and that has no input in
 /// this system, so a mounted `/start` would hand Subscriptions an exclusion set
@@ -565,6 +565,16 @@ fn migration_routes() -> Vec<Route> {
             resource_type: labels::PLAN,
             action: actions::MIGRATE,
             mutating: true,
+        },
+        // The collection read. `plan x read`, the by-id read's pair, and
+        // **not** `plan x migrate`: listing what is scheduled is not the
+        // authority to schedule, and the role matrix grants the two apart.
+        Route {
+            method: "GET",
+            path: MIGRATIONS,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
         },
         Route {
             method: "GET",
