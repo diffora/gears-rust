@@ -75,8 +75,9 @@ use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle,
 };
 use bss_pricing::infra::storage::repo::{
-    NewAuditEntry, NewBulkOperation, NewOutboxEvent, NewPlanDraft, NewPriceDraft,
-    PlanPublishedPayload, PlanRepo, PlanShapeRepo, PriceRepo, audit_repo, bulk_repo, outbox_repo,
+    NewAuditEntry, NewBulkOperation, NewMembership, NewOutboxEvent, NewPlanDraft, NewPriceDraft,
+    PlanPublishedPayload, PlanRepo, PlanShapeRepo, PriceRepo, audit_repo, bulk_repo,
+    group_membership_repo, outbox_repo,
 };
 use bss_pricing_sdk::catalog_version::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{
@@ -1779,6 +1780,81 @@ async fn drive_the_bulk_operation_plane(h: &Harness) {
     outcome.expect("the run opens and records itself");
 }
 
+/// The customer-group membership plane — the writer of the `membership`
+/// subject kind (D-09, `inst-mm-audit`, Task 4 of the customer-group plane).
+///
+/// There is no infra service to call through here either, `drive_the_bulk_
+/// operation_plane`'s exact situation: no route exists yet for this plane
+/// (`group_membership_repo`'s own module doc names the gap), so this driver
+/// calls `group_membership_repo::enroll` and `end_membership` directly, each
+/// inside its own transaction — the shape a real caller gets once a route
+/// exists, since both functions take a runner rather than a provider and open
+/// no transaction of their own.
+///
+/// Two calls and not one so the segment holds `inst-ms-time`'s two acts —
+/// "ending early = setting `to` (audited)" is a distinct write from the
+/// enrollment it ends. **Neither adds a new action token**: `enroll` writes
+/// `create` and `end_membership` writes `update`, both already produced above
+/// (the plan's own draft and its facet edits), so only the `membership`
+/// **subject kind** is new to this census — the half that was actually
+/// failing.
+async fn drive_the_membership_plane(h: &Harness) {
+    let payer_tenant_id = Uuid::from_u128(0xb_000c);
+    let membership_id = Uuid::from_u128(0xb_000d);
+
+    let (_, enrolled) = h
+        .provider
+        .db()
+        .in_transaction::<(), bss_pricing::infra::storage::RepoError, _>({
+            let scope = h.scope.clone();
+            move |txn| {
+                Box::pin(async move {
+                    group_membership_repo::enroll(
+                        txn,
+                        &scope,
+                        TENANT,
+                        NewMembership {
+                            membership_id,
+                            tenant_id: TENANT,
+                            payer_tenant_id,
+                            group_value: "acme-tier".to_owned(),
+                            effective_from: at(21),
+                            effective_to: None,
+                        },
+                        stamp_of(ACTOR, at(21)),
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            }
+        })
+        .await;
+    enrolled.expect("the payer enrolls, and audited");
+
+    let (_, ended) = h
+        .provider
+        .db()
+        .in_transaction::<(), bss_pricing::infra::storage::RepoError, _>({
+            let scope = h.scope.clone();
+            move |txn| {
+                Box::pin(async move {
+                    group_membership_repo::end_membership(
+                        txn,
+                        &scope,
+                        TENANT,
+                        membership_id,
+                        at(22),
+                        stamp_of(ACTOR, at(22)),
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            }
+        })
+        .await;
+    ended.expect("the membership ends, and audited");
+}
+
 async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     // create (plan), update x2 (facets), create (price)
     let (revision, version, _) = seed_publishable(h).await;
@@ -1866,6 +1942,12 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
     // an approved policy, and unlike retirement it touches no plan the drivers
     // below still need alive.
     drive_the_bulk_operation_plane(h).await;
+    // Task 4 of the customer-group plane's membership repository, which writes
+    // the `membership` subject kind (D-09, `inst-mm-audit`). Its own aggregate —
+    // `audit_repo::payer_chain`, keyed on the payer and not on any plan — so its
+    // position among the drivers is as free as `drive_the_bulk_operation_plane`'s
+    // own note says its neighbour's is.
+    drive_the_membership_plane(h).await;
     // **Last, and the position is load-bearing.** Retirement is terminal: it
     // flips the plan's current revision to `retired`, after which no plane above
     // can publish anything on it. Driven here so the census sees the `retire`
@@ -2087,6 +2169,8 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
     let bulk_operation_chain = bss_pricing::infra::storage::repo::audit_repo::bulk_operation_chain(
         Uuid::from_u128(0xb_000b),
     );
+    let membership_chain =
+        bss_pricing::infra::storage::repo::audit_repo::payer_chain(Uuid::from_u128(0xb_000c));
     let plan_rows: Vec<_> = rows
         .iter()
         .filter(|row| row.chain_id == plan_id().get())
@@ -2107,6 +2191,11 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
         .filter(|row| row.chain_id == bulk_operation_chain)
         .cloned()
         .collect();
+    let membership_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.chain_id == membership_chain)
+        .cloned()
+        .collect();
     // **Four since Slice 11's migration plane**, and the move is the partition
     // working rather than a misfiling. `drive_the_migration_plane` seeds a second
     // plan to migrate *onto* — a migration's target must be a published plan that
@@ -2123,15 +2212,23 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
     // operation in its own right, for `overlay_chain`'s reason: it is not a plan
     // and has no plan, so filing it on `plan_id().get()` would put two aggregates
     // on one chain.
+    //
+    // **Six since the customer-group plane's task 4.** `drive_the_membership_
+    // plane`'s two records are on the payer's own segment
+    // (`audit_repo::payer_chain`) — S5 §6's aggregate list names `payer`, not
+    // `membership`, in its own right, for the same reason the run above is not
+    // filed on a plan: a membership has no plan and D-135 keys a segment on the
+    // audited subject's aggregate.
     assert_eq!(
         plan_rows.len()
             + policy_rows.len()
             + overlay_rows.len()
             + migration_target_rows
-            + bulk_operation_rows.len(),
+            + bulk_operation_rows.len()
+            + membership_rows.len(),
         rows.len(),
-        "every driven record belongs to one of the five aggregates, and none to a \
-         sixth chain nobody named"
+        "every driven record belongs to one of the six aggregates, and none to a \
+         seventh chain nobody named"
     );
     assert_eq!(
         policy_rows.len(),
@@ -2149,10 +2246,16 @@ async fn the_chain_verifies_across_a_mixed_sequence_of_authoring_and_publish_rec
         1,
         "the run's create, on the run's own segment and not the plan's"
     );
+    assert_eq!(
+        membership_rows.len(),
+        2,
+        "the enrollment's create and the ending's update, both on the payer's own segment"
+    );
     verify_segment(&plan_rows, plan_id().get());
     verify_segment(&policy_rows, policy_chain);
     verify_segment(&overlay_rows, overlay_chain);
     verify_segment(&bulk_operation_rows, bulk_operation_chain);
+    verify_segment(&membership_rows, membership_chain);
 }
 
 /// Walk one segment link by link and recompute every row's digest.
