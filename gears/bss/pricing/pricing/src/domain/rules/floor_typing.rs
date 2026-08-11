@@ -146,7 +146,7 @@ impl ValidationRule<PriceRow> for FloorOutsideBands {
                              priced at {} minor; quantity between the band's start and the floor \
                              is unreachable. Legal, and usually an authoring error",
                             band.from_qty,
-                            band.unit_price_minor.get()
+                            band.unit_price_rate.nano_minor()
                         ),
                     );
                 }

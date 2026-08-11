@@ -4,7 +4,7 @@ use super::{
     FLOOR_FALLBACK_MISSING, FLOOR_FALLBACK_WITHOUT_FLOOR, FLOOR_INSIDE_PRICED_BAND,
     FloorFallbackDeclared, FloorOutsideBands,
 };
-use crate::domain::money::MinorAmount;
+use crate::domain::money::RateMinor;
 use crate::domain::price_row::{
     BandTop, BillingGranularity, MinQtyUsageFallback, ModelKind, PriceRow, TierAggregationWindow,
     TierBand,
@@ -12,8 +12,10 @@ use crate::domain::price_row::{
 use crate::domain::scope_key::ChargeKind;
 use crate::domain::validation::{ValidationPipeline, ValidationReport};
 
-fn minor(units: i64) -> MinorAmount {
-    MinorAmount::new(units).expect("a non-negative amount")
+/// A band rate in whole minor units, scaled to the stored rate scale
+/// (D-311) so these cases price what they always priced.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("a non-negative rate")
 }
 
 fn run(row: &PriceRow) -> ValidationReport {
@@ -41,12 +43,12 @@ fn banded_row() -> PriceRow {
         TierBand {
             from_qty: 0,
             to_qty: BandTop::Closed(1_000),
-            unit_price_minor: minor(10),
+            unit_price_rate: rate(10),
         },
         TierBand {
             from_qty: 1_000,
             to_qty: BandTop::Open,
-            unit_price_minor: minor(6),
+            unit_price_rate: rate(6),
         },
     ];
     row

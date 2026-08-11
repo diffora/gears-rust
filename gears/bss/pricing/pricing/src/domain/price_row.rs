@@ -39,7 +39,7 @@ use toolkit_macros::domain_model;
 
 pub use bss_fixtures::ModelKind;
 
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::scope_key::ChargeKind;
 
 /// How a non-usage `per_unit` row obtains its quantity.
@@ -457,29 +457,34 @@ pub struct TierBand {
     /// Exclusive upper bound, in billable units; [`BandTop::Open`] on the top
     /// band.
     pub to_qty: BandTop,
-    /// The unit price inside the band. `0` is valid — a free first band is a
-    /// normal way to author "N included".
-    pub unit_price_minor: MinorAmount,
+    /// The band's rate — a **multiplier, not an amount** (D-311). `0` is valid:
+    /// a free first band is a normal way to author "N included".
+    ///
+    /// This was a [`MinorAmount`] until 2026-08-11, so a band could not price a
+    /// unit below one minor unit. Refusal was the good half; truncation collapsed
+    /// a `0.0150 / 0.0110` ladder and a `0.0230 / 0.0120` ladder both to `0.01`
+    /// at every band, so two tariffs became one on rows that looked well-formed.
+    pub unit_price_rate: RateMinor,
 }
 
 impl TierBand {
     /// A closed band.
     #[must_use]
-    pub const fn closed(from_qty: u64, to_qty: u64, unit_price_minor: MinorAmount) -> Self {
+    pub const fn closed(from_qty: u64, to_qty: u64, unit_price_rate: RateMinor) -> Self {
         Self {
             from_qty,
             to_qty: BandTop::Closed(to_qty),
-            unit_price_minor,
+            unit_price_rate,
         }
     }
 
     /// An open-topped band.
     #[must_use]
-    pub const fn open(from_qty: u64, unit_price_minor: MinorAmount) -> Self {
+    pub const fn open(from_qty: u64, unit_price_rate: RateMinor) -> Self {
         Self {
             from_qty,
             to_qty: BandTop::Open,
-            unit_price_minor,
+            unit_price_rate,
         }
     }
 
@@ -520,10 +525,21 @@ pub struct PriceRow {
     /// The explicit model kind. `None` is the authoring state
     /// `MODEL_KIND_MISSING` rejects; there is no implicit default at rating time.
     pub model_kind: Option<ModelKind>,
-    /// The single amount on `flat`, the unit price on `per_unit`, and **NULL**
-    /// on `graduated` / `volume` / `package`, whose money lives in the band or
-    /// package column — so no row ever carries two competing prices.
+    /// The single amount on `flat`, and **NULL** on every other kind — the
+    /// `per_unit` rate lives in [`Self::unit_rate`], and `graduated` / `volume` /
+    /// `package` carry theirs in the band or package column, so no row ever
+    /// carries two competing prices.
+    ///
+    /// It said "the unit price on `per_unit`" until 2026-08-11 (D-311): one
+    /// column standing for an invoice sum **and** for a multiplier, which is the
+    /// same conflation the rate type exists to end.
     pub amount_minor: Option<MinorAmount>,
+    /// The `per_unit` **rate** — what one unit costs, as a multiplier (D-311).
+    ///
+    /// NULL on every other kind. An invoice carries `amount × quantity` rounded
+    /// once; this is the multiplier, so it is not bounded by the currency's
+    /// ISO-4217 scale the way an amount is.
+    pub unit_rate: Option<RateMinor>,
     /// The authored tier bands, in authored order. Empty on a non-tiered row.
     ///
     /// Authored bands only: the D-45 allowance compile is a projection and never
@@ -625,6 +641,7 @@ impl PriceRow {
             charge_kind,
             model_kind,
             amount_minor: None,
+            unit_rate: None,
             bands: Vec::new(),
             package_size: None,
             package_price_minor: None,

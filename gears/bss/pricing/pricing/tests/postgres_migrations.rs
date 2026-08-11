@@ -494,6 +494,11 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_price_tier_band_unit_price",
     "chk_pricing_price_tier_band_width",
     "chk_pricing_price_tier_qualification_window",
+    // D-311's `per_unit` rate, non-negative for the reason `amount_minor` is:
+    // typed credit rows are Future scope, so a negative price is a mistake
+    // caught where it lands. Postgres only -- `m20260802_000066`'s doc records
+    // why `SQLite` carries no twin and what holds the rule there instead.
+    "chk_pricing_price_unit_rate_nano",
     "chk_pricing_price_window_activated_at",
     "chk_pricing_price_window_activation_order",
     "chk_pricing_price_window_cancelled_at",

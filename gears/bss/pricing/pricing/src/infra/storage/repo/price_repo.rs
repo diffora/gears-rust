@@ -112,7 +112,7 @@ use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
@@ -2744,6 +2744,7 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
     let row = &content.row;
     Ok(price::ActiveModel {
         amount_minor: Set(row.amount_minor.map(MinorAmount::get)),
+        unit_rate_nano: Set(row.unit_rate.map(RateMinor::nano_minor)),
         model_kind: Set(row.model_kind.map(model_kind_wire).map(str::to_owned)),
         tax_inclusive: Set(content.tax_inclusive),
         tax_category_ref: Set(content.tax_category_ref.clone()),
@@ -3306,7 +3307,7 @@ fn band_models(
                 price_id: Set(price_id),
                 from_qty: Set(from_qty),
                 to_qty: Set(to_qty),
-                unit_price_minor: Set(band.unit_price_minor.get()),
+                unit_price_nano: Set(band.unit_price_rate.nano_minor()),
             })
         })
         .collect()
@@ -3492,6 +3493,11 @@ fn to_price_row(
             model_kind_wire,
         )?,
         amount_minor: read_amount("pricing_price.amount_minor", row.amount_minor)?,
+        unit_rate: row
+            .unit_rate_nano
+            .map(RateMinor::from_nano_minor)
+            .transpose()
+            .map_err(|e| RepoError::CorruptRow(format!("pricing_price.unit_rate_nano: {e}")))?,
         bands: bands.iter().map(to_band).collect::<Result<_, _>>()?,
         package_size: read_count("pricing_price.package_size", row.package_size)?,
         package_price_minor: read_amount(
@@ -3573,13 +3579,13 @@ fn to_band(band: &price_tier_band::Model) -> Result<TierBand, RepoError> {
         None => BandTop::Open,
         Some(top) => BandTop::Closed(top),
     };
-    let unit_price_minor = MinorAmount::new(band.unit_price_minor).map_err(|e| {
-        RepoError::CorruptRow(format!("pricing_price_tier_band.unit_price_minor: {e}"))
+    let unit_price_rate = RateMinor::from_nano_minor(band.unit_price_nano).map_err(|e| {
+        RepoError::CorruptRow(format!("pricing_price_tier_band.unit_price_nano: {e}"))
     })?;
     Ok(TierBand {
         from_qty,
         to_qty,
-        unit_price_minor,
+        unit_price_rate,
     })
 }
 

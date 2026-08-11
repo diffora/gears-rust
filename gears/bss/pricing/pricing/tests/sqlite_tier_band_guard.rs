@@ -101,7 +101,7 @@ async fn seed_parents(conn: &DatabaseConnection) {
 fn insert_band(band_id: &str, price_id: &str, from_qty: u32, to_qty: &str, unit: u32) -> String {
     format!(
         "INSERT INTO pricing_price_tier_band (
-            band_id, tenant_id, price_id, from_qty, to_qty, unit_price_minor)
+            band_id, tenant_id, price_id, from_qty, to_qty, unit_price_nano)
          VALUES ('{band_id}', '{TENANT}', '{price_id}', {from_qty}, {to_qty}, {unit})"
     )
 }
@@ -244,7 +244,7 @@ async fn a_band_freezes_when_its_parent_does() {
     must_succeed(
         &conn,
         &format!(
-            "UPDATE pricing_price_tier_band SET unit_price_minor = 45 WHERE band_id = '{mutable}'"
+            "UPDATE pricing_price_tier_band SET unit_price_nano = 45 WHERE band_id = '{mutable}'"
         ),
     )
     .await;
@@ -270,7 +270,7 @@ async fn a_band_freezes_when_its_parent_does() {
     must_be_rejected(
         &conn,
         &format!(
-            "UPDATE pricing_price_tier_band SET unit_price_minor = 1 WHERE band_id = '{mutable}'"
+            "UPDATE pricing_price_tier_band SET unit_price_nano = 1 WHERE band_id = '{mutable}'"
         ),
         "UPDATE of a band under a non-draft price row is not permitted",
     )
@@ -304,7 +304,7 @@ async fn a_band_freezes_when_its_parent_does() {
     let price = scalar(
         &conn,
         &format!(
-            "SELECT CAST(unit_price_minor AS TEXT) AS v FROM pricing_price_tier_band \
+            "SELECT CAST(unit_price_nano AS TEXT) AS v FROM pricing_price_tier_band \
              WHERE band_id = '{mutable}'"
         ),
     )

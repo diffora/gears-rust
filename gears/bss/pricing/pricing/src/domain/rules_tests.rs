@@ -7,12 +7,14 @@ use super::{
     EVAL_POLICY_MISSING, MODEL_KIND_MISSING, SUPERSESSION_UNIT_MISMATCH, SupersessionPair,
     TIER_TOP_CLOSED, price_row_rules, supersession_rules,
 };
-use crate::domain::money::MinorAmount;
+use crate::domain::money::RateMinor;
 use crate::domain::price_row::{BillingGranularity, PriceRow, TierAggregationWindow, TierBand};
 use crate::domain::scope_key::ChargeKind;
 
-fn minor(units: i64) -> MinorAmount {
-    MinorAmount::new(units).expect("test amount is non-negative")
+/// A band rate, stated in whole minor units so these cases read as they
+/// always did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
 fn graduated_usage() -> PriceRow {
@@ -21,8 +23,8 @@ fn graduated_usage() -> PriceRow {
     row.billing_granularity = Some(BillingGranularity::WholeUnit);
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
     row.bands = vec![
-        TierBand::closed(0, 1_000, minor(10)),
-        TierBand::open(1_000, minor(6)),
+        TierBand::closed(0, 1_000, rate(10)),
+        TierBand::open(1_000, rate(6)),
     ];
     row
 }
@@ -89,7 +91,7 @@ fn one_row_reports_every_fault_it_carries() {
     let mut row = graduated_usage();
     row.model_kind = None;
     row.billing_granularity = None;
-    row.bands = vec![TierBand::closed(0, 1_000, minor(10))];
+    row.bands = vec![TierBand::closed(0, 1_000, rate(10))];
 
     let report = price_row_rules().run(&row);
     let codes: Vec<&str> = report

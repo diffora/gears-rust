@@ -44,7 +44,7 @@ mod common;
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+use bss_pricing::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
 use bss_pricing::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance,
@@ -118,6 +118,12 @@ fn money(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("a non-negative amount")
 }
 
+/// A band rate, stated in whole minor units so these cases read as they always
+/// did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_nano_minor(minor_units * 1_000_000_000).expect("a non-negative rate")
+}
+
 /// The default key: `all_subscriptions`, `cohort = none`.
 fn base_key(charge_kind: ChargeKind) -> ScopeKey {
     ScopeKey::new(
@@ -189,9 +195,9 @@ fn flat_content() -> PriceContent {
 fn graduated_content() -> PriceContent {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
     row.bands = vec![
-        TierBand::closed(0, 100, money(0)),
-        TierBand::closed(100, 1_000, money(25)),
-        TierBand::open(1_000, money(10)),
+        TierBand::closed(0, 100, rate(0)),
+        TierBand::closed(100, 1_000, rate(25)),
+        TierBand::open(1_000, rate(10)),
     ];
     row.meter = Some("api_calls".to_owned());
     "region:eu".clone_into(&mut row.dimension_key);
@@ -393,14 +399,14 @@ async fn the_band_set_comes_back_in_quantity_order_however_the_rows_were_written
     let price_id = Uuid::from_u128(0xb_11);
 
     let ascending = vec![
-        TierBand::closed(0, 100, money(0)),
-        TierBand::closed(100, 1_000, money(25)),
-        TierBand::open(1_000, money(10)),
+        TierBand::closed(0, 100, rate(0)),
+        TierBand::closed(100, 1_000, rate(25)),
+        TierBand::open(1_000, rate(10)),
     ];
     let descending = vec![
-        TierBand::open(1_000, money(10)),
-        TierBand::closed(100, 1_000, money(25)),
-        TierBand::closed(0, 100, money(0)),
+        TierBand::open(1_000, rate(10)),
+        TierBand::closed(100, 1_000, rate(25)),
+        TierBand::closed(0, 100, rate(0)),
     ];
 
     let created = repo
@@ -1382,8 +1388,8 @@ async fn an_update_replaces_the_whole_band_set() {
     // nobody authored.
     let mut content = graduated_content();
     content.row.bands = vec![
-        TierBand::closed(0, 500, money(30)),
-        TierBand::open(500, money(20)),
+        TierBand::closed(0, 500, rate(30)),
+        TierBand::open(500, rate(20)),
     ];
     let edited = repo
         .update_draft(
@@ -1401,8 +1407,8 @@ async fn an_update_replaces_the_whole_band_set() {
     assert_eq!(
         edited.row.bands,
         vec![
-            TierBand::closed(0, 500, money(30)),
-            TierBand::open(500, money(20)),
+            TierBand::closed(0, 500, rate(30)),
+            TierBand::open(500, rate(20)),
         ]
     );
     assert_eq!(edited.row_version, RowVersion::new(1));
@@ -1439,7 +1445,7 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
     // to NULL" at all.
     let mut content = graduated_content();
     content.row.model_kind = Some(ModelKind::Volume);
-    content.row.bands = vec![TierBand::open(0, money(7))];
+    content.row.bands = vec![TierBand::open(0, rate(7))];
     // **The line stays put, and that is D-196 clause (3) narrowing this case by
     // exactly two columns.** `meter` and `dimensionKey` are axes of the canonical
     // scope key now, not content, so an update may not move them — the case
@@ -1485,7 +1491,7 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
         .expect("present");
 
     assert_eq!(read.row.model_kind, Some(ModelKind::Volume));
-    assert_eq!(read.row.bands, vec![TierBand::open(0, money(7))]);
+    assert_eq!(read.row.bands, vec![TierBand::open(0, rate(7))]);
     // The line is unchanged because an update may not move it (D-196 clause 3);
     // what this case is about is every column that still moves.
     assert_eq!(read.row.meter.as_deref(), Some("api_calls"));
@@ -1920,7 +1926,7 @@ async fn a_create_the_band_table_refuses_leaves_no_row_behind() {
     // statement is refused, by the band table's structural-exclusivity trigger
     // reading the parent this call has just written.
     let mut content = flat_content();
-    content.row.bands = vec![TierBand::closed(0, 100, money(50))];
+    content.row.bands = vec![TierBand::closed(0, 100, rate(50))];
     let err = repo
         .create_draft(
             &scope,

@@ -42,13 +42,13 @@ use bss_fixtures::{
     AggregationFunction as CorpusAggregationFunction,
     AggregationGranularity as CorpusAggregationGranularity, Band, BandTop as CorpusBandTop,
     BillingGranularity as CorpusBillingGranularity, ChargeKind as CorpusChargeKind, Corpus,
-    IncludedAllowance as CorpusIncludedAllowance, ProrationBasis, PublishVerdict,
-    ReservationFlavor, RolloverPolicy as CorpusRolloverPolicy, Snapshot,
+    IncludedAllowance as CorpusIncludedAllowance, ModelKind as CorpusModelKind, ProrationBasis,
+    PublishVerdict, ReservationFlavor, RolloverPolicy as CorpusRolloverPolicy, Snapshot,
     TierAggregationWindow as CorpusTierAggregationWindow,
 };
 use bss_fixtures_conformance::{EvalError, PublishReport, PublishValidator, run_publish_suite};
 
-use bss_pricing::domain::money::MinorAmount;
+use bss_pricing::domain::money::{MinorAmount, RateMinor};
 use bss_pricing::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
     PriceRow, QuantitySource, ReservationFlavor as GearReservationFlavor, RolloverPolicy,
@@ -154,7 +154,27 @@ pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     Ok(PriceRow {
         charge_kind: charge_kind(snapshot.charge_kind),
         model_kind: Some(snapshot.model_kind),
-        amount_minor: optional_amount(snapshot.amount_minor, "amount_minor")?,
+        // **The corpus predates D-311 and states both prices in `amount_minor`**,
+        // so this mapping is where a `per_unit` snapshot's whole-minor-unit price
+        // becomes a rate. The corpus keeps its schema deliberately: what a fixture
+        // asserts is charge arithmetic — `q x unit price` — which is unchanged by
+        // where the catalog stores the multiplicand, and the file is shared with
+        // Rating, which has no stake in this gear's column layout. Translating
+        // here rather than editing 30-odd TOML files also keeps every fixture
+        // meaning exactly what it meant.
+        //
+        // The conversion is exact and total: whole minor units are representable
+        // in the rate scale by construction. It is the reverse direction — a
+        // sub-minor rate the corpus cannot state — that has no counterpart, and
+        // that is a gap in the corpus rather than in this mapping.
+        amount_minor: match snapshot.model_kind {
+            CorpusModelKind::PerUnit => None,
+            _ => optional_amount(snapshot.amount_minor, "amount_minor")?,
+        },
+        unit_rate: match snapshot.model_kind {
+            CorpusModelKind::PerUnit => Some(rate(snapshot.amount_minor, "amount_minor")?),
+            _ => None,
+        },
         bands: tier_bands(&snapshot.bands)?,
         package_size: snapshot.package_size,
         package_price_minor: optional_amount(snapshot.package_price_minor, "package_price_minor")?,
@@ -266,7 +286,17 @@ fn tier_bands(bands: &[Band]) -> Result<Vec<TierBand>, EvalError> {
                     CorpusBandTop::Open => BandTop::Open,
                     CorpusBandTop::Closed(top) => BandTop::Closed(top),
                 },
-                unit_price_minor: amount(band.unit_amount_minor, "bands.unit_amount_minor")?,
+                // The corpus states band rates in whole minor units (D-311):
+                // scaled here rather than re-authored, so the fixtures keep
+                // meaning the prices they always meant.
+                unit_price_rate: bss_pricing::domain::money::RateMinor::from_nano_minor(
+                    amount(band.unit_amount_minor, "bands.unit_amount_minor")?.get()
+                        * 1_000_000_000,
+                )
+                .map_err(|_| EvalError::UnrepresentableField {
+                    field: "bands.unit_amount_minor",
+                    value: band.unit_amount_minor.to_string(),
+                })?,
             })
         })
         .collect()
@@ -278,6 +308,22 @@ fn tier_bands(bands: &[Band]) -> Result<Vec<TierBand>, EvalError> {
 /// shape cannot hold rather than a rule the row breaks.
 fn amount(units: i64, field: &'static str) -> Result<MinorAmount, EvalError> {
     MinorAmount::new(units).map_err(|_| EvalError::UnrepresentableField {
+        field,
+        value: units.to_string(),
+    })
+}
+
+/// A **rate** from a snapshot column stated in whole minor units (D-311).
+///
+/// Absent is unrepresentable rather than merely missing: a `per_unit` fixture
+/// with no price is a fixture that asserts a charge it never states, and the
+/// publish rules would refuse the row for the same reason one step later.
+fn rate(units: Option<i64>, field: &'static str) -> Result<RateMinor, EvalError> {
+    let units = units.ok_or(EvalError::UnrepresentableField {
+        field,
+        value: "absent".to_owned(),
+    })?;
+    RateMinor::from_minor_units(units).map_err(|_| EvalError::UnrepresentableField {
         field,
         value: units.to_string(),
     })

@@ -49,10 +49,12 @@ impl ValidationRule<PriceRow> for ExplicitModelKind {
 /// `inst-mk-required` — the fields a kind cannot be evaluated without.
 ///
 /// Owns the **amount-placement matrix**: `amount_minor` is where `flat` keeps
-/// its single amount and where `per_unit` keeps its unit price, and it MUST be
-/// NULL on `graduated` / `volume` (money lives in the band column) and on
-/// `package` (money lives in `package_price_minor`) — so no row ever carries two
-/// competing prices.
+/// its single amount; `unit_rate` is where `per_unit` keeps its rate (**D-311**,
+/// 2026-08-11 — it was `amount_minor` too, one column meaning an amount on one
+/// kind and a multiplier on another); the band kinds keep money in
+/// `pricing_price_tier_band.unit_price_nano`; and `package` keeps it in
+/// `package_price_minor`. Each kind carries exactly one of them and NULL in the
+/// rest, so no row ever carries two competing prices.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KindRequiredFields;
@@ -88,24 +90,67 @@ impl ValidationRule<PriceRow> for KindRequiredFields {
     }
 }
 
-/// The per-kind home of the row's money.
+/// Which column each kind keeps its money in.
+///
+/// Four columns, and after D-311 two of them are **amounts** and two are
+/// **rates**: `flat` charges a sum from `amount_minor`, `per_unit` multiplies a
+/// rate from `unit_rate`, the band kinds multiply band rates, and `package`
+/// charges a block price. The matrix is written as one `match` on the kind rather
+/// than as a pair of booleans, because the boolean spelling is what let `per_unit`
+/// and `flat` share an arm — and sharing that arm is the defect D-311 names.
+///
+/// **Both directions are checked for both columns.** A row missing the column its
+/// kind prices from has no price; a row carrying the *other* one has two, which is
+/// the "two competing prices" the rule has always been about. Before this pair was
+/// separated, a `per_unit` row authored with a rate was refused for an absent
+/// `amount_minor` while a row authored the old way passed with its rate column
+/// empty — the new column unauthorable and the old spelling still accepted.
 fn check_amount_placement(row: &PriceRow, kind: ModelKind, report: &mut ValidationReport) {
     let wire = model_kind_wire(kind);
-    let carries_amount = matches!(kind, ModelKind::Flat | ModelKind::PerUnit);
-    match (carries_amount, row.amount_minor.is_some()) {
-        (true, false) => report.violate(
-            AMOUNT_PLACEMENT_INVALID,
-            row.subject(),
-            format!("a {wire} row keeps its money in amount_minor, and it is absent"),
+    let (wants_amount, wants_rate) = match kind {
+        ModelKind::Flat => (true, false),
+        ModelKind::PerUnit => (false, true),
+        ModelKind::Graduated | ModelKind::Volume | ModelKind::Package => (false, false),
+    };
+
+    check_money_column(
+        row,
+        report,
+        wants_amount,
+        row.amount_minor.is_some(),
+        &format!("a {wire} row keeps its money in amount_minor, and it is absent"),
+        &format!(
+            "amount_minor must be NULL on a {wire} row: its money lives in the rate, band or \
+             package column, and two priced columns are two competing prices"
         ),
-        (false, true) => report.violate(
-            AMOUNT_PLACEMENT_INVALID,
-            row.subject(),
-            format!(
-                "amount_minor must be NULL on a {wire} row: its money lives in the band or \
-                 package column, and two priced columns are two competing prices"
-            ),
+    );
+    check_money_column(
+        row,
+        report,
+        wants_rate,
+        row.unit_rate.is_some(),
+        &format!(
+            "a {wire} row prices by a rate and keeps it in unitRateNanoMinor, and it is absent"
         ),
+        &format!(
+            "unitRateNanoMinor must be NULL on a {wire} row: a rate is a multiplier and this \
+             kind charges no per-unit multiple"
+        ),
+    );
+}
+
+/// One column of the matrix: required and absent, or forbidden and present.
+fn check_money_column(
+    row: &PriceRow,
+    report: &mut ValidationReport,
+    required: bool,
+    present: bool,
+    when_absent: &str,
+    when_forbidden: &str,
+) {
+    match (required, present) {
+        (true, false) => report.violate(AMOUNT_PLACEMENT_INVALID, row.subject(), when_absent),
+        (false, true) => report.violate(AMOUNT_PLACEMENT_INVALID, row.subject(), when_forbidden),
         (true, true) | (false, false) => {}
     }
 }

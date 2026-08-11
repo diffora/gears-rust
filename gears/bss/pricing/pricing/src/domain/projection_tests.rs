@@ -22,7 +22,7 @@ use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{
     Adjustment, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle, OverlayLine,
     OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
@@ -107,8 +107,15 @@ fn graduated_row() -> PriceRecord {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
     row.meter = Some("api_calls".to_owned());
     row.bands = vec![
-        TierBand::closed(0, 100, MinorAmount::new(0).expect("a non-negative amount")),
-        TierBand::open(100, MinorAmount::new(5).expect("a non-negative amount")),
+        TierBand::closed(
+            0,
+            100,
+            RateMinor::from_nano_minor(0).expect("a non-negative rate"),
+        ),
+        TierBand::open(
+            100,
+            RateMinor::from_nano_minor(5_000_000_000).expect("a non-negative rate"),
+        ),
     ];
     PriceRecord {
         price_id: uuid::Uuid::from_u128(0xb_0001),
@@ -413,6 +420,55 @@ fn a_revision_with_no_price_rows_still_renders_a_well_formed_payload() {
     assert_eq!(value.get("addonRules"), Some(&json!([])));
 }
 
+/// **A `per_unit` row's rate reaches the frozen payload, on a member of its own**
+/// (D-311).
+///
+/// The read model is what a consumer prices against, and for the length of one
+/// commit the `per_unit` price was written to a column no projection member
+/// named: `amountMinor` went `null` on the kind that used to carry it and the
+/// rate went nowhere. A consumer would have read a published metered row with no
+/// price at all — which the shape-only assertions on this file could not see,
+/// because a member that is absent from both the payload and the assertion looks
+/// exactly like a member nobody wanted.
+///
+/// It is a **separate member** rather than a second meaning for `amountMinor`,
+/// so a reader cannot take a nano-minor rate for a whole-minor amount by reading
+/// a name that did not change.
+#[test]
+fn a_per_unit_rows_rate_reaches_the_payload_on_its_own_member() {
+    let mut record = graduated_row();
+    record.row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    record.row.meter = Some("api_calls".to_owned());
+    // 0.023 USD per GB-month -- S3's rate, and the case D-311 opens with. It has
+    // no representation in whole minor units at all.
+    record.row.unit_rate =
+        Some(RateMinor::from_nano_minor(2_300_000_000).expect("a non-negative rate"));
+
+    let delta = PlanSubjectDelta {
+        prices: vec![record],
+        ..shape_only()
+    };
+    let value = delta.to_value();
+    let rows = value
+        .get("prices")
+        .expect("prices")
+        .as_array()
+        .expect("array");
+    let row = &rows[0];
+
+    assert_eq!(
+        row.get("unitRateNanoMinor"),
+        Some(&json!(2_300_000_000_i64)),
+        "the rate a metered row is sold at, in the scale it is stored in"
+    );
+    assert_eq!(
+        row.get("amountMinor"),
+        Some(&json!(null)),
+        "and not in the amount column it left: two priced members are two \
+         competing prices, which is what the split exists to prevent"
+    );
+}
+
 #[test]
 fn a_price_row_freezes_its_key_its_shape_and_its_bands() {
     let delta = PlanSubjectDelta {
@@ -460,10 +516,12 @@ fn a_price_row_freezes_its_key_its_shape_and_its_bands() {
     assert_eq!(
         row.get("bands"),
         Some(&json!([
-            { "fromQty": 0, "toQty": 100, "unitPriceMinor": 0 },
-            { "fromQty": 100, "toQty": null, "unitPriceMinor": 5 },
+            { "fromQty": 0, "toQty": 100, "unitPriceNanoMinor": 0 },
+            { "fromQty": 100, "toQty": null, "unitPriceNanoMinor": 5_000_000_000_i64 },
         ])),
-        "an open top is null, never a sentinel a reader could compare against"
+        "an open top is null, never a sentinel a reader could compare against; \
+         the band price is a rate in its own scale (D-311), and the member is \
+         renamed rather than reused so a reader cannot take nano for minor"
     );
 }
 

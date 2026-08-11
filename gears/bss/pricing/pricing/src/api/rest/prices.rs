@@ -93,7 +93,7 @@ use crate::api::rest::state::AuthoringState;
 use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
@@ -235,8 +235,16 @@ pub struct TierBandView {
     /// Exclusive upper bound, or `null` for the open top band (D-17: the top
     /// band is always open, and capping belongs to quotas).
     pub to_qty: Option<u64>,
-    /// The unit price in ISO 4217 minor units.
-    pub unit_price_minor: i64,
+    /// The band's **rate**, in 10^-9 ISO-4217 minor units (D-311).
+    ///
+    /// **Renamed rather than reinterpreted.** It was `unit_price_minor` carrying
+    /// whole minor units; a rate is a multiplier and needs finer resolution than
+    /// an invoice amount, so the same commercial price is now a different
+    /// integer. Keeping the old name would have multiplied every band rate by a
+    /// billion in every consumer that did not know — silently, and this is the
+    /// field a mis-read prices an entire ladder at nothing. An unknown name
+    /// reads as absent, which is a visible blank rather than a wrong number.
+    pub unit_price_nano_minor: i64,
 }
 
 impl From<&TierBand> for TierBandView {
@@ -244,7 +252,7 @@ impl From<&TierBand> for TierBandView {
         Self {
             from_qty: band.from_qty,
             to_qty: band.to_qty.closed_at(),
-            unit_price_minor: band.unit_price_minor.get(),
+            unit_price_nano_minor: band.unit_price_rate.nano_minor(),
         }
     }
 }
@@ -274,6 +282,13 @@ pub struct PriceContentView {
     pub model_kind: Option<String>,
     /// The row's own amount, on the kinds that carry one.
     pub amount_minor: Option<i64>,
+    /// The `per_unit` **rate**, in 10^-9 ISO-4217 minor units (D-311).
+    ///
+    /// Its own member rather than a second meaning for `amount_minor`, which
+    /// carried the `flat` sum *and* the `per_unit` price — an invoice amount and
+    /// a multiplier under one name. A `per_unit` row sets this and leaves
+    /// `amount_minor` absent.
+    pub unit_rate_nano_minor: Option<i64>,
     /// The band set, ordered by lower bound on read.
     pub bands: Option<Vec<TierBandView>>,
     /// The package's block size.
@@ -356,6 +371,7 @@ impl From<&PriceRecord> for PriceContentView {
         Self {
             model_kind: row.model_kind.map(model_kind_wire).map(str::to_owned),
             amount_minor: row.amount_minor.map(MinorAmount::get),
+            unit_rate_nano_minor: row.unit_rate.map(RateMinor::nano_minor),
             bands: Some(row.bands.iter().map(TierBandView::from).collect()),
             package_size: row.package_size,
             package_price_minor: row.package_price_minor.map(MinorAmount::get),
@@ -1127,6 +1143,10 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
             })
             .transpose()?,
         amount_minor: amount("content.amount_minor", view.amount_minor)?,
+        unit_rate: view
+            .unit_rate_nano_minor
+            .map(RateMinor::from_nano_minor)
+            .transpose()?,
         bands,
         package_size: view.package_size,
         package_price_minor: amount("content.package_price_minor", view.package_price_minor)?,
@@ -1363,7 +1383,7 @@ fn band_of(view: &TierBandView) -> Result<TierBand, DomainError> {
     Ok(TierBand {
         from_qty: view.from_qty,
         to_qty: view.to_qty.map_or(BandTop::Open, BandTop::Closed),
-        unit_price_minor: MinorAmount::new(view.unit_price_minor)?,
+        unit_price_rate: RateMinor::from_nano_minor(view.unit_price_nano_minor)?,
     })
 }
 

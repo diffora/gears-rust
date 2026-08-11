@@ -3038,3 +3038,194 @@ Each item below was applied as an "obvious fix" but embeds a judgment call. **Al
 - **The pin was wrong too, and that was mine.** F-1's unit pinned `content_hash(&shape)` on the reasoning that a composition normalizes onto its absorber inside the plan — true at publish, false at submit. Submit, approve, edit the composition, publish: the edited composition published on the old approval. `bundle_content_hash` folds the plan revision's `row_version`, which a composition edit does advance. **A fix built from one finding can be refuted by the finding beside it.**
 - **Why `row_version` and not the composition itself.** `CompositionDraft` is an infra type and dylint DE0301 keeps `domain::approval::content_pin` from naming it. The revision's version is the fact available at that layer that answers the same question, and it is conservative in the safe direction: an unrelated plan edit also invalidates a composition approval, which over-refuses rather than under-refuses.
 - **The `GET` declares no idempotency and no precondition**, unlike its `PATCH` sibling. It is a read; the composition's concurrency story is the plan revision's entity tag and belongs to the write.
+
+#### D-311 [H] A rate is not an amount, and one type has been standing for both
+
+**Status:** decided and landed 2026-08-11. **Raised:** 2026-08-11, from the
+Pricing Studio wiring — the studio's own seed carries rates of `0.0150`, `0.0230`
+and `0.0120`, and none of them is expressible.
+
+##### The finding
+
+`domain::money::MinorAmount` is `i64` counting whole ISO-4217 minor units, and
+**all three money columns are that one type**:
+
+| column | what it is | models |
+|---|---|---|
+| `amount_minor` | the sum charged for a period | `flat` |
+| `amount_minor` | the price of one unit | `per_unit` |
+| `unit_price_minor` | the rate of one tier band | `graduated`, `volume` |
+| `package_price_minor` | the price of one block | `package` |
+
+Rows 1 and 4 are **amounts**: they reach an invoice, and an invoice cannot carry
+`$0.015`. Rows 2 and 3 are **rates**: they are multipliers, and what rounds to a
+minor unit is the *product* of a rate and a quantity, never the rate itself.
+
+The module says as much in its own first paragraph — *"This gear computes no
+charge. It authors, validates and freezes price rows"* — and then validates a
+stored rate as though it were a charge.
+
+##### Why this is not a preference
+
+**Sub-minor-unit rates are the ordinary case in metered pricing.** S3 is
+`$0.023` per GB-month; Lambda is `$0.0000166667` per GB-second. Neither has a
+representation here.
+
+**Refusal is the good half.** Truncation is worse: a ladder of `0.0150 / 0.0110`
+and a ladder of `0.0230 / 0.0120` both collapse to `0.01` at every band. The
+gradation disappears and with it the entire meaning of the ladder, silently, with
+a published row that looks well-formed.
+
+**The design set already contradicts itself.** The rating gear's
+`01-foundation.md` §333: *"amounts leave at full intermediate precision … the
+pipeline never rounds and never applies period floor/cap — Billing executes
+both"*, and `07-currency-fx.md` §4.4: *"Conversion never rounds; Billing rounds
+in billing currency"*. The whole downstream is built on full precision arriving
+and being rounded exactly once, in exactly one component. The catalog cannot
+emit it. **The mechanism exists with nothing to feed it.**
+
+**The scope is wider than metered billing.** `unit_price_minor` is the band rate
+for `graduated` and `volume`, and those models express volume discounts on seats
+as readily as usage ladders.
+
+##### What is actually blocking, and it is not the rule
+
+The obvious reading — *"`PRECISION_EXCEEDED` refuses sub-cent rates, so relax the
+rule for rates"* — is **wrong twice over.**
+
+`check_scale` **has no caller.** Its only occurrence outside `money.rs` is a
+sentence in `domain::publish::rules`, which explains why:
+
+> The money rules need no pipeline rule, because they are **unrepresentable
+> failures** … A `PriceRow` **cannot hold a violation** of any of them, so a rule
+> here would be a rule with nothing to reject.
+
+That reasoning is correct and it is the whole point: **the barrier is
+representational, not validational.** `0.0150 USD` is not rejected — it does not
+exist as a value of `i64` minor units. There is no check to relax, and relaxing
+one would change nothing. This also means `PRECISION_EXCEEDED` is currently a
+declared refusal nothing can raise, while three design documents describe it as a
+live publish refusal (independently filed as Z11-1 by the 2026-08-10
+read-through).
+
+Any decision here therefore owes an answer on that dead code: **revive it against
+a real operand, or delete it.** Leaving it is what produced this confusion.
+
+##### The `package` workaround, and its fourth cost
+
+`package` (block size + block price — 1000 operations for `$0.40`) is a genuine
+partial escape and is how the live `s3_ops` row was authored. Its costs:
+
+1. it changes the unit the **customer sees**, which should be the unit they
+   consume;
+2. it requires rewriting every band bound in blocks;
+3. it does not apply to `per_unit`, nor to ladders where the per-unit price *is*
+   the commercial term;
+4. **and it moves the rate into `package_size`, a quantity-determining field.**
+   D-115 makes any change to such a field **material regardless of thresholds**,
+   so an edit that would have been an ordinary rate change now requires a second
+   principal. The workaround pays a governance tax the thing it replaces does not.
+
+##### Decision
+
+**Rates get their own type and their own stored scale. Amounts keep
+`MinorAmount`.**
+
+- `amount_minor` on `flat` and `package_price_minor` stay `MinorAmount` — they
+  are what an invoice carries, and the ISO-4217 scale is right for them.
+- The **rate**-bearing fields — a `per_unit` row's price and a tier band's
+  `unit_price_minor` — become a rate type carrying `i64` in **10⁻⁹ minor units**
+  ("nano-minor").
+
+**Why nine sub-decimals.** Six is not enough: Lambda's `0.0000166667 USD` is
+`1666.67` micro-minor — still fractional. Nine expresses it exactly
+(`1 666 670` nano-minor). `i64` then still reaches ≈ `$92,000,000` per unit,
+which is far past any rate. It matches the "nanos" convention the estate's
+neighbours use, and it is a *fixed* scale, so no row carries a scale field that a
+second row could disagree with.
+
+**This is the catalog's authoring precision, and it is a floor, not a
+negotiation.** Rating fixes its own DECIMAL precision *"open with Billing"*;
+whatever those two settle on must be at least this, because this is what the
+catalog can express. If Billing needs more, this number moves — and the migration
+below is the mechanism.
+
+##### What it costs, measured rather than estimated
+
+30 references to `unit_price_minor` across 10 files, spanning every layer:
+`m20260802_000011` (the band table), `entity::price_tier_band`, `price_repo`,
+`api::rest::prices`, `domain::price_row`, `domain::rules::tier_bands`,
+`domain::rules::floor_typing`, `domain::materiality::delta`,
+`domain::projection`, and `domain::approval::content_pin`.
+
+**Two of those are the expensive ones.**
+
+- **`content_pin`.** The band rate is framed into the approval digest
+  (`put_i64(buf, unit_price_minor.get())`). Any change to the stored
+  representation changes **every pin**, so `CONTENT_PIN_DOMAIN_SEP` moves from
+  `v11` to `v12` — and that module's own doc is explicit that bumping it
+  *"invalidates every pending approval unit in every tenant, which is a decision
+  and not a repair"*. **It is a decision here, and it is taken deliberately:**
+  a pending unit approved against a truncated ladder was approved against a
+  document that misstated the price.
+- **`materiality::delta`.** D-115 compares band-wise `unit_price_minor` vectors
+  "iff the band geometry is unchanged". The comparison must move to the rate
+  type, or a rate change below a cent evaluates as a zero delta — auto-publishable
+  under any configured threshold, which is the exact hole D-104 and D-115 exist
+  to close.
+
+##### Staging
+
+1. The rate type in `domain::money`, with `check_scale` given a real operand at
+   the same time (the dead-code debt above).
+2. The band and `per_unit` storage, wire shape, and read model.
+3. `content_pin` at `v12`, and the `materiality::delta` comparison.
+
+Nothing lands half-wired: a rate type with no writer would be exactly the
+"declared with no operand" defect this decision is partly about.
+
+##### Resolved on landing (2026-08-11)
+
+- **`per_unit` gained a column of its own**, `unit_rate_nano`. Leaving it in
+  `amount_minor` would have kept one column meaning two things by `model_kind` —
+  the defect this decision objects to one level down — and storing everything in
+  the rate scale would have put the invoice sum in the rate type and dissolved
+  the distinction the decision exists to draw. `m20260802_000066`.
+- **The wire spelling is the integer**, `unitRateNanoMinor` and
+  `unitPriceNanoMinor`, both **renamed** rather than reinterpreted so no reader
+  can take nano for minor on a member whose name did not change.
+- **`check_scale` was revived, not deleted.** `RateMinor::from_decimal` raises
+  `PRECISION_EXCEEDED` on a literal finer than the stored scale — eleven decimals
+  on USD is storable, a twelfth is not — so the declared refusal now has an
+  operand and the three design documents describing it as live are correct.
+  Asserted from both sides, because a case that only checked the refusal would
+  pass equally against a type that refused everything.
+
+##### Two defects the implementation turned up, both in this decision's own work
+
+Recorded because each was invisible to the gate that was supposed to see it, and
+both are the same shape: **a split column does not carry its rules with it.**
+
+1. **The frozen-column guard.** `000066` moved the `per_unit` price out of
+   `amount_minor` — frozen on a published row since `m20260802_000002` — into a
+   column in neither engine's guard. For the length of one commit a published
+   metered row's **price** was editable by any writer outside this crate, away
+   from the very pin that approved it. `m20260802_000069` restates both guards;
+   `postgres_schema_price`'s whitelist went 44 → 45 and `sqlite_migrations`
+   re-pinned exactly one trigger digest. Found by reading the migration's own
+   prose against the schema, not by any gate: the full fast suite was green at
+   1972/0 with the hole open.
+
+2. **The absolute threshold, nearly disabled.** The first cut of the materiality
+   change answered `NotComparable` for every nano-minor move, on the argument
+   that a bar authored in minor units cannot judge a rate. That reads as a G1
+   fail-safe and is in fact the deletion of a governance control: **every** band
+   move on **every** graduated and volume row would have gone to a second
+   principal regardless of size. The correct rule is that a band's bar always
+   compared against the **per-unit** band price, before this scale existed and
+   after it — D-311 changed how that number is stored, not what the tenant
+   configured it to mean. So `reaches_absolute` raises the bar into the move's
+   scale (`i128`, because a wrapped bar goes negative and every move reaches it)
+   and the pre-existing verdicts are preserved exactly. That two threshold cases
+   went green again **unchanged** is the evidence the scaling is right and the
+   fail-safe was not.

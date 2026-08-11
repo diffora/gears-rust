@@ -31,7 +31,7 @@ use super::{
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
 use crate::domain::scope_key::{
@@ -73,7 +73,9 @@ fn graduated(currency: &str, bands: &[(u64, Option<u64>, i64)]) -> PriceRecord {
     shape.bands = bands
         .iter()
         .map(|&(from, to, price)| {
-            let unit = MinorAmount::new(price).expect("a non-negative amount");
+            // Stated in whole minor units and scaled to the stored rate scale
+            // (D-311), so these thresholds mean what they always meant.
+            let unit = RateMinor::from_minor_units(price).expect("a non-negative rate");
             match to {
                 Some(top) => TierBand::closed(from, top, unit),
                 None => TierBand::open(from, unit),
@@ -390,8 +392,10 @@ fn one_band_over_the_bar_trips_a_row_whose_other_bands_did_not_move() {
     let tripped = verdict.tripped().expect("a tripped row is named");
     assert_eq!(
         (tripped.from_minor, tripped.to_minor),
-        (100, 1000),
-        "the band that reached the bar, not the row's first band"
+        (100_000_000_000, 1_000_000_000_000),
+        "the band that reached the bar, not the row's first band; a band price is \
+         a rate and reads back in the rate scale (D-311), while the bar it was \
+         judged against stays authored in minor units"
     );
 }
 

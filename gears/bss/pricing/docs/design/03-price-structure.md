@@ -274,9 +274,10 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 tiered **or `package`** usage row (`inst-pk-window`, D-58 — the `package` case had been omitted
 from this description, 2026-07-31 review fix), or `billingGranularity` unset on a usage row; the
 error references the allowed values per the PRD Glossary), `QUANTITY_SOURCE_MISSING` (422), `FIXTURE_MISSING` (422),
-`AMOUNT_PLACEMENT_INVALID` (422 — `amount_minor` NULL on `flat`/`per_unit`, or non-NULL on
-`graduated`/`volume`/`package` where the money lives in the band/package column; §6 per-kind
-amount matrix, 2026-07-28 review fix),
+`AMOUNT_PLACEMENT_INVALID` (422 — a row missing the money column its kind prices from, or
+carrying one of the others: `amount_minor` on `flat`, `unit_rate_nano` on `per_unit`, the band
+column on `graduated`/`volume`, `package_price_minor` on `package`; §6 per-kind amount matrix,
+2026-07-28 review fix, amended by D-311 on 2026-08-11 when `per_unit` moved off `amount_minor`),
 `LEVEL_FIELDS_INVALID` (422 — `aggregationFunction`/`aggregationGranularity` on a non-usage
 row, an unknown value, a non-`sum` row with `maxHold` missing, `< 1`, **or above the bound the
 column can hold** (2026-08-02 wording fix: the gloss named only the lower half, so a reader had
@@ -372,7 +373,8 @@ re-enters (a list that can drift is a guard that differs):
 | Column | Type | Notes |
 |--------|------|-------|
 | `model_kind` | `enum` | `flat \| per_unit \| graduated \| volume \| package`; NOT NULL on publish |
-| `amount_minor` | `bigint` | Foundation-declared, **per-kind semantics owned here** (2026-07-28 review fix, confirmed 2026-07-31): REQUIRED (`≥ 0`, at the currency's ISO 4217 precision) on `flat` — the single amount — and on `per_unit`, where it **is** the unit price; **MUST be NULL** on `graduated`/`volume` (money lives in `pricing_price_tier_band.unit_price_minor`) and on `package` (money lives in `package_price_minor`), so no row carries two competing prices. A non-NULL `amount_minor` on a band/package kind, or a NULL on `flat`/`per_unit`, fails publish (`AMOUNT_PLACEMENT_INVALID`); the "Amount ≥ 0" and precision checks apply to whichever column carries money for the kind |
+| `amount_minor` | `bigint` | Foundation-declared, **per-kind semantics owned here** (2026-07-28 review fix, confirmed 2026-07-31; **amended D-311, 2026-08-11**): REQUIRED (`≥ 0`, at the currency's ISO 4217 precision) on `flat` — the single amount — and **MUST be NULL on every other kind**, whose money lives in `unit_rate_nano` (`per_unit`), `pricing_price_tier_band.unit_price_nano` (`graduated`/`volume`) or `package_price_minor` (`package`), so no row carries two competing prices. **`per_unit` left this column under D-311**: it held an amount on `flat` and a multiplier on `per_unit`, and one column meaning two things by `model_kind` is the defect that decision names |
+| `unit_rate_nano` | `bigint` | **D-311**, 2026-08-11. The `per_unit` **rate**, in 10⁻⁹ minor units. REQUIRED on `per_unit`, MUST be NULL on every other kind. `CHECK (unit_rate_nano >= 0)` on Postgres; on `SQLite` the domain type holds the rule (`m20260802_000066` records why). Frozen on a published row by `m20260802_000069`, which the split had to carry over from `amount_minor` and did not, for the length of one commit |
 | `quantity_source` | `enum` | `subscription_seat_count \| manual`; required for **non-usage** `per_unit`, forbidden on `per_unit` usage rows (the meter supplies `Q` — 2026-07-28 review fix) |
 | `manual_quantity` | `bigint` | required when `quantity_source = manual`; frozen in snapshot |
 | `package_size` | `bigint` | `> 0`; `package` only |
@@ -399,7 +401,7 @@ re-publish, supersession, repricing and clone of an allowance row had no defined
 | `price_id` | `uuid` | FK |
 | `from_qty` | `bigint` | inclusive; ascending, contiguous |
 | `to_qty` | `bigint` | exclusive; NULL = open top |
-| `unit_price_minor` | `bigint` | `≥ 0` (`0` valid — Q5); unit prices only, no per-band flat fee (Q3) |
+| `unit_price_nano` | `bigint` | the band **rate**, in 10⁻⁹ minor units (**D-311**, 2026-08-11 — renamed from `unit_price_minor`, which was whole minor units); `≥ 0` (`0` valid — Q5); unit prices only, no per-band flat fee (Q3). A band price is a multiplier, not an amount: what rounds to a minor unit is the product of a rate and a quantity, never the rate, and sub-minor-unit rates are the ordinary case in metered pricing. At whole minor units a `0.0150 / 0.0110` ladder and a `0.0230 / 0.0120` ladder both collapsed to `0.01` at every band |
 
 **`pricing_conformance_fixture_registry`** (read-side of the shared fixture repo, Q4): `model_kind` /
 `variant`, `fixture_ref`, `status` (`green | missing | stale`). The `FixtureGate` reads it at
@@ -425,7 +427,7 @@ Key constraints: `CHECK (package_size IS NULL OR package_size > 0)` and
 and therefore NULL on every other kind, so the nullable-tolerant spelling is the one that means
 what the row means (2026-08-02 wording fix: SQL already passes NULL against a bare `> 0`, but a
 reader building the table from the bare form infers `NOT NULL` and gets a schema no other kind can
-insert into); `CHECK (unit_price_minor >= 0)`;
+insert into); `CHECK (unit_price_nano >= 0)`;
 `CHECK (to_qty IS NULL OR to_qty > from_qty)` (no zero-width bands); structural exclusivity —
 band rows forbidden unless `model_kind IN ('graduated','volume')`, enforced by a trigger or a
 composite FK on `(price_id, model_kind)` (cross-table, not expressible as a row CHECK); the

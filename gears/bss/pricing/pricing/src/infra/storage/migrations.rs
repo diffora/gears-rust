@@ -98,8 +98,10 @@ pub mod m20260802_000063_add_bulk_operation_rejected_state;
 pub mod m20260802_000064_widen_bulk_operation_client_key_by_kind;
 pub mod m20260802_000065_widen_pricing_migration_key_by_tenant;
 pub mod m20260802_000066_create_pricing_customer_group_taxonomy;
+pub mod m20260802_000066_rate_columns_are_not_amount_columns;
 pub mod m20260802_000067_create_pricing_group_membership;
 pub mod m20260802_000068_widen_approval_subject_kind_bulk_operation;
+pub mod m20260802_000069_guard_pricing_price_unit_rate_column;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -305,6 +307,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260802_000063_add_bulk_operation_rejected_state::Migration),
             Box::new(m20260802_000064_widen_bulk_operation_client_key_by_kind::Migration),
             Box::new(m20260802_000065_widen_pricing_migration_key_by_tenant::Migration),
+            Box::new(m20260802_000066_rate_columns_are_not_amount_columns::Migration),
             // Slice 9's own taxonomy: the BSS customer-group value universe
             // (`inst-cg-taxonomy`), the Slice 4 four's shape on its own table.
             Box::new(m20260802_000066_create_pricing_customer_group_taxonomy::Migration),
@@ -330,6 +333,12 @@ impl MigratorTrait for Migrator {
             // once at `000036`. The older number on the shared line keeps it; this one
             // moved.
             Box::new(m20260802_000068_widen_approval_subject_kind_bulk_operation::Migration),
+            // D-311 split the `per_unit` rate out of `amount_minor`, and
+            // `000066` left the new column outside both engines' frozen-column
+            // guard -- so a published metered row's **price** was editable.
+            // Sorts after `000066` for the obvious reason: it names a column
+            // that migration creates.
+            Box::new(m20260802_000069_guard_pricing_price_unit_rate_column::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

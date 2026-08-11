@@ -7,13 +7,19 @@ use super::{
     LEVEL_RESERVATION_CONSUMPTION_FORBIDDEN, RESERVATION_ON_NON_USAGE, RESERVATION_PAIR_INCOMPLETE,
     ReservationWellFormed,
 };
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, ModelKind, PriceRow,
     ReservationFlavor, TierAggregationWindow, TierBand,
 };
 use crate::domain::scope_key::ChargeKind;
 use crate::domain::validation::{ValidationPipeline, ValidationReport};
+
+/// A band rate in whole minor units, scaled to the stored rate scale
+/// (D-311) so these cases price what they always priced.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("a non-negative rate")
+}
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("a non-negative amount")
@@ -38,7 +44,7 @@ fn usage_row() -> PriceRow {
     row.bands = vec![TierBand {
         from_qty: 0,
         to_qty: BandTop::Open,
-        unit_price_minor: minor(5),
+        unit_price_rate: rate(5),
     }];
     row
 }

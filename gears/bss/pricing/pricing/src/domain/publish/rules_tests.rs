@@ -15,7 +15,7 @@ use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
     CustomIntervalBounds, DescriptorSetComplete, HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL,
     PHASE_GRAPH_INVALID, PLANTIER_MISSING,
@@ -563,9 +563,20 @@ fn a_row_above_the_band_cap_does_the_same_and_names_the_row() {
     let mut shape = clean_plan();
     let mut row = record(0xb200, Some(ModelKind::Graduated), Some("half_up"));
     row.row.bands = vec![
-        crate::domain::price_row::TierBand::closed(0, 10, MinorAmount::new(500).expect("amount")),
-        crate::domain::price_row::TierBand::closed(10, 20, MinorAmount::new(400).expect("amount")),
-        crate::domain::price_row::TierBand::open(20, MinorAmount::new(300).expect("amount")),
+        crate::domain::price_row::TierBand::closed(
+            0,
+            10,
+            RateMinor::from_nano_minor(500_000_000_000).expect("a non-negative rate"),
+        ),
+        crate::domain::price_row::TierBand::closed(
+            10,
+            20,
+            RateMinor::from_nano_minor(400_000_000_000).expect("a non-negative rate"),
+        ),
+        crate::domain::price_row::TierBand::open(
+            20,
+            RateMinor::from_nano_minor(300_000_000_000).expect("a non-negative rate"),
+        ),
     ];
     shape.rows = vec![row];
 

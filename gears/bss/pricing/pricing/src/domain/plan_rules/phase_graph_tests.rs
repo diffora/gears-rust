@@ -23,7 +23,7 @@ use super::{
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
     DISPLAY_TRIAL_DAYS_INVALID, PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID,
     PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_UNCOVERED,
@@ -75,6 +75,12 @@ fn now() -> DateTime<Utc> {
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("test amount is non-negative")
+}
+
+/// A band rate, stated in whole minor units so these cases read as they
+/// always did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
 /// A phase. A non-terminal one carries the duration `inst-ph-duration` requires,
@@ -165,8 +171,8 @@ fn usage_tuned(
     row.billing_granularity = Some(BillingGranularity::PerHour);
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
     row.bands = vec![
-        TierBand::closed(0, 1_000, minor(10)),
-        TierBand::open(1_000, minor(6)),
+        TierBand::closed(0, 1_000, rate(10)),
+        TierBand::open(1_000, rate(6)),
     ];
     tune(&mut row);
     record(ChargeKind::Usage, code, market, on_phase, row)
@@ -723,7 +729,7 @@ fn a_free_trial_override_at_the_same_denomination_publishes() {
     subject.rows = vec![
         usage("usd", "US", phase_id(EVERGREEN), METER),
         usage_tuned("usd", "US", phase_id(TRIAL), METER, |row| {
-            row.bands = vec![TierBand::open(0, minor(0))];
+            row.bands = vec![TierBand::open(0, rate(0))];
         }),
     ];
 

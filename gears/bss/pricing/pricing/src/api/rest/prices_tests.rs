@@ -14,7 +14,7 @@ use super::{
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis};
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, RateMinor};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
     BandTop, IncludedAllowance, PriceRow, RolloverPolicy, TierBand, TierQualificationWindow,
@@ -65,7 +65,7 @@ fn an_open_top_band_is_a_null_upper_bound_and_round_trips_as_one() {
     // is a STATE of the band; the wire spells it `null`, and a round trip that
     // read `null` as "no bound given" would silently close the top band D-17
     // requires to be open.
-    let open = TierBand::open(0, MinorAmount::new(500).expect("amount"));
+    let open = TierBand::open(0, RateMinor::from_nano_minor(500).expect("rate"));
     let rendered = body(&PriceRowView::from(&record(vec![open])));
     assert!(
         rendered["content"]["bands"][0]["to_qty"].is_null(),
@@ -75,7 +75,7 @@ fn an_open_top_band_is_a_null_upper_bound_and_round_trips_as_one() {
     let parsed = band_of(&TierBandView {
         from_qty: 0,
         to_qty: None,
-        unit_price_minor: 500,
+        unit_price_nano_minor: 500,
     })
     .expect("an open band parses");
     assert_eq!(parsed.to_qty, BandTop::Open);
@@ -83,7 +83,7 @@ fn an_open_top_band_is_a_null_upper_bound_and_round_trips_as_one() {
 
 #[test]
 fn a_closed_band_carries_its_exclusive_upper_bound() {
-    let closed = TierBand::closed(0, 100, MinorAmount::new(500).expect("amount"));
+    let closed = TierBand::closed(0, 100, RateMinor::from_nano_minor(500).expect("rate"));
     let rendered = body(&PriceRowView::from(&record(vec![closed])));
     assert_eq!(
         rendered["content"]["bands"][0]["to_qty"],
@@ -99,7 +99,7 @@ fn a_negative_unit_price_is_refused_rather_than_stored() {
     let refusal = band_of(&TierBandView {
         from_qty: 0,
         to_qty: None,
-        unit_price_minor: -1,
+        unit_price_nano_minor: -1,
     })
     .expect_err("a negative amount is refused");
     assert!(
@@ -116,6 +116,7 @@ fn clean_view() -> PriceContentView {
     PriceContentView {
         model_kind: Some("flat".to_owned()),
         amount_minor: Some(1_500),
+        unit_rate_nano_minor: None,
         bands: None,
         package_size: None,
         package_price_minor: None,

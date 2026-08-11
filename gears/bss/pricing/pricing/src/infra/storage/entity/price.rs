@@ -59,6 +59,13 @@ pub struct Model {
     pub cohort: String,
     // --- price / model ---
     pub amount_minor: Option<i64>,
+    /// The `per_unit` **rate**, in 10^-9 minor units (D-311).
+    ///
+    /// Its own column rather than a second meaning for `amount_minor`, which
+    /// documented itself as "the single amount on `flat`, the unit price on
+    /// `per_unit`" — one column standing for an invoice sum and for a multiplier,
+    /// which is the defect D-311 names one level down.
+    pub unit_rate_nano: Option<i64>,
     pub model_kind: Option<String>,
     pub tax_inclusive: bool,
     /// The row's tax category (D-110, `m20260802_000037`).

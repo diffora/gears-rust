@@ -1059,6 +1059,10 @@ fn compare(delta: &delta::RowDelta, basis: ThresholdBasis) -> Comparison {
     for moved in moves {
         match basis {
             ThresholdBasis::Absolute { minor } => {
+                // The scale conversion is `reaches_absolute`'s (D-311), not this
+                // loop's: the bar arrives in minor units and the move may be in
+                // either scale, and putting the arithmetic beside the `>=` keeps
+                // the two from drifting apart.
                 if moved.reaches_absolute(minor) {
                     return Comparison::Reached(*moved);
                 }

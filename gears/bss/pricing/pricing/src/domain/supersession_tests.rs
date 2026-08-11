@@ -353,7 +353,7 @@ fn a_cancelled_window_after_the_changeover_does_not_collide_with_the_successor()
 // ---------------------------------------------------------------------------
 
 use super::{SupersessionPlan, plan_supersession};
-use crate::domain::money::MinorAmount;
+use crate::domain::money::RateMinor;
 use crate::domain::price_row::{
     BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
 };
@@ -364,8 +364,8 @@ use crate::domain::scope_key::ChargeKind;
 fn usage_row(amount: i64, granularity: BillingGranularity) -> PriceRow {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
     row.bands = vec![
-        TierBand::closed(0, 100, MinorAmount::new(0).unwrap()),
-        TierBand::open(100, MinorAmount::new(amount).unwrap()),
+        TierBand::closed(0, 100, RateMinor::from_minor_units(0).unwrap()),
+        TierBand::open(100, RateMinor::from_minor_units(amount).unwrap()),
     ];
     row.meter = Some("api_calls".to_owned());
     "region:eu".clone_into(&mut row.dimension_key);

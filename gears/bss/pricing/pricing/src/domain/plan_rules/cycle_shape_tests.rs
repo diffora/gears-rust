@@ -19,7 +19,7 @@ use super::{
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
     AVAILABLE_FROM_IN_PAST, BASE_MARKET_INCOMPLETE, CYCLE_METADATA_MISSING, HYBRID_INCOMPLETE,
     INVALID_CUSTOM_INTERVAL, PURCHASE_QTY_RANGE_INVALID, SETUP_ROW_INVALID,
@@ -70,6 +70,12 @@ fn now() -> DateTime<Utc> {
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("test amount is non-negative")
+}
+
+/// A band rate, stated in whole minor units so these cases read as they
+/// always did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
 fn scope_key(charge_kind: ChargeKind, code: &str, market: &str, on_phase: PhaseId) -> ScopeKey {
@@ -586,7 +592,7 @@ fn a_setup_row_carrying_billing_timing_fails() {
 fn a_setup_row_carrying_tier_machinery_names_every_field_it_carries() {
     let mut subject = shape(BillingCycle::Hybrid);
     let mut fee = setup(0xf4);
-    fee.row.bands = vec![TierBand::open(0, minor(100))];
+    fee.row.bands = vec![TierBand::open(0, rate(100))];
     fee.row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
     fee.row.tier_qualification_window = Some(TierQualificationWindow::Current);
     subject.rows = vec![fee];
@@ -606,7 +612,7 @@ fn each_forbidden_field_fails_on_its_own() {
     // would pass with three of the four checks deleted.
     let bands = {
         let mut fee = setup(0xf5);
-        fee.row.bands = vec![TierBand::open(0, minor(100))];
+        fee.row.bands = vec![TierBand::open(0, rate(100))];
         fee
     };
     let aggregation = {

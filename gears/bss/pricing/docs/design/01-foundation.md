@@ -1132,6 +1132,7 @@ outside:
   meter                identity - the metered line the row prices
   dimension_key        identity - the line's dimension discriminator
   amount_minor         money
+  unit_rate            money - the per_unit rate, D-311
   bands                money
   package_price_minor  money - D-122's "legitimate price lever"
   reserved_rate_minor  money - the reserved rate, S10 inst-rv-attrs

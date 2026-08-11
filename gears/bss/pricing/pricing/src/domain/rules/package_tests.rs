@@ -3,7 +3,7 @@
 use bss_fixtures::ModelKind;
 
 use super::{PackageFields, PackageWindow};
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::price_row::{BillingGranularity, PriceRow, TierAggregationWindow, TierBand};
 use crate::domain::rules::{EVAL_POLICY_MISSING, PACKAGE_FIELDS_INVALID};
 use crate::domain::scope_key::ChargeKind;
@@ -11,6 +11,12 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("test amount is non-negative")
+}
+
+/// A band rate, stated in whole minor units so these cases read as they
+/// always did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
 fn findings(rule: &impl ValidationRule<PriceRow>, row: &PriceRow) -> ValidationReport {
@@ -63,7 +69,7 @@ fn a_package_row_carrying_tier_bands_fails_publish() {
     // Block pricing and tier bands are two formulas for one price; a row holding
     // both leaves Tariffs to choose.
     let mut row = package_usage();
-    row.bands = vec![TierBand::open(0, minor(5))];
+    row.bands = vec![TierBand::open(0, rate(5))];
 
     assert_eq!(
         codes(&findings(&PackageFields, &row)),

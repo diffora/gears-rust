@@ -145,6 +145,157 @@ impl fmt::Display for MinorAmount {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The rate (D-311).
+// ---------------------------------------------------------------------------
+
+/// How many decimal places a rate carries **past** the currency's minor unit.
+///
+/// Nine, and the number is argued rather than picked. Six is not enough: AWS
+/// Lambda's `$0.0000166667` per GB-second is `1666.67` micro-minor and stays
+/// fractional. Nine expresses it exactly, and `i64` still reaches about
+/// `$92,000,000` per unit — far past any rate. It matches the "nanos" convention
+/// the estate's neighbours use.
+///
+/// It is **fixed** rather than carried per row on purpose: a stored scale is a
+/// second field two rows could disagree about, and comparing two rates would
+/// then mean normalising first — in a gear whose whole job is that two rows on
+/// one key are comparable.
+pub const RATE_SUB_DECIMALS: u32 = 9;
+
+/// Minor units per stored unit, derived from [`RATE_SUB_DECIMALS`] rather than
+/// written out, so the scale has exactly one place it can be changed.
+const NANO_PER_MINOR: i128 = 10_i128.pow(RATE_SUB_DECIMALS);
+const NANO_PER_MINOR_I64: i64 = 10_i64.pow(RATE_SUB_DECIMALS);
+
+/// A **rate**: a multiplier, in 10⁻⁹ minor units (D-311).
+///
+/// # Why this is not [`MinorAmount`]
+///
+/// An amount reaches an invoice and cannot be finer than the currency's minor
+/// unit — there is no way to bill `$0.015`. A rate is multiplied by a quantity,
+/// and what rounds to a minor unit is the **product**. Metered pricing lives
+/// below a cent as a matter of course: S3 at `$0.023` per GB-month, Lambda at
+/// `$0.0000166667` per GB-second.
+///
+/// One type stood for both until 2026-08-11, and refusal was the good half of
+/// it: truncation collapsed a `0.0150 / 0.0110` ladder and a `0.0230 / 0.0120`
+/// ladder both to `0.01` at every band, so two different tariffs became the same
+/// tariff on rows that looked well-formed.
+///
+/// This carries no arithmetic, for [`MinorAmount`]'s reason and more strongly:
+/// multiplying a rate by a quantity **is** charge computation, and this gear
+/// computes no charge.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RateMinor(i64);
+
+impl RateMinor {
+    /// Read a rate from the decimal literal an authoring surface submits.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::InvalidRequest`] when the literal is malformed;
+    /// [`DomainError::AmountNegative`] when it is below zero — zero itself is a
+    /// rate, since a zero-rated usage row is authored rather than absent;
+    /// [`DomainError::PrecisionExceeded`] when it declares more decimals than
+    /// the stored scale can hold.
+    ///
+    /// **This is where `PRECISION_EXCEEDED` becomes reachable.** The code was a
+    /// declared refusal nothing could raise: `check_scale` had no caller, because
+    /// `MinorAmount` could not hold a violation for it to reject. A rate *can*
+    /// carry more digits than are stored, so the refusal now has an operand.
+    pub fn from_decimal(currency: &CurrencyCode, literal: &str) -> Result<Self, DomainError> {
+        let declared = fraction_digits(literal)?;
+        let storable = currency.minor_unit() + RATE_SUB_DECIMALS;
+        if declared > storable {
+            return Err(DomainError::PrecisionExceeded(format!(
+                "a rate on {currency} is stored to {storable} decimal(s), literal declares \
+                 {declared}"
+            )));
+        }
+        if literal.starts_with('-') {
+            return Err(DomainError::AmountNegative(literal.to_owned()));
+        }
+
+        // Scaled by string rather than through a float: `0.0000166667` has no
+        // exact binary representation, and a rate that changed in the ninth
+        // decimal on its way through the parser is the defect this type exists
+        // to prevent.
+        let body = literal.split('.').collect::<Vec<_>>();
+        let whole: i128 = body[0].parse().map_err(|_| {
+            DomainError::InvalidRequest(format!("malformed decimal literal: {literal}"))
+        })?;
+        let mut nano = whole
+            .checked_mul(10_i128.pow(currency.minor_unit()))
+            .and_then(|minor| minor.checked_mul(NANO_PER_MINOR))
+            .ok_or_else(|| DomainError::InvalidRequest(format!("rate out of range: {literal}")))?;
+        if let Some(fraction) = body.get(1) {
+            let digits: i128 = fraction.parse().map_err(|_| {
+                DomainError::InvalidRequest(format!("malformed decimal literal: {literal}"))
+            })?;
+            let shift = storable - declared;
+            let scaled = digits.checked_mul(10_i128.pow(shift)).ok_or_else(|| {
+                DomainError::InvalidRequest(format!("rate out of range: {literal}"))
+            })?;
+            nano = nano.checked_add(scaled).ok_or_else(|| {
+                DomainError::InvalidRequest(format!("rate out of range: {literal}"))
+            })?;
+        }
+        let nano = i64::try_from(nano)
+            .map_err(|_| DomainError::InvalidRequest(format!("rate out of range: {literal}")))?;
+        Ok(Self(nano))
+    }
+
+    /// Wrap an already-scaled nano-minor count, as a stored row reads back.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::AmountNegative`] when below zero.
+    pub fn from_nano_minor(nano: i64) -> Result<Self, DomainError> {
+        if nano < 0 {
+            return Err(DomainError::AmountNegative(nano.to_string()));
+        }
+        Ok(Self(nano))
+    }
+
+    /// A rate expressed in whole minor units — `1` meaning one cent per unit.
+    ///
+    /// The ordinary metered rate is sub-minor-unit, which is why this type
+    /// exists; the whole-unit case is still a lawful rate, and stating it in the
+    /// unit an author thinks in beats writing the nine zeroes out at each site.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::AmountNegative`] when below zero, and
+    /// [`DomainError::InvalidRequest`] when scaling would overflow `i64` — about
+    /// 9.2 billion minor units, far beyond any authored rate.
+    pub fn from_minor_units(minor_units: i64) -> Result<Self, DomainError> {
+        let nano = minor_units.checked_mul(NANO_PER_MINOR_I64).ok_or_else(|| {
+            DomainError::InvalidRequest(format!("rate out of range: {minor_units}"))
+        })?;
+        Self::from_nano_minor(nano)
+    }
+
+    /// The stored count, in 10⁻⁹ minor units.
+    #[must_use]
+    pub const fn nano_minor(self) -> i64 {
+        self.0
+    }
+}
+
+impl fmt::Display for RateMinor {
+    /// The stored count, not a rendered decimal.
+    ///
+    /// Rendering needs the currency, which this type does not carry — the same
+    /// arrangement [`MinorAmount`] has, and for the same reason: a `Display` that
+    /// guessed a scale would put a second opinion about the currency's shape next
+    /// to the one the row already holds.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Is an amount authored with `declared_scale` fraction digits expressible in
 /// `currency`?
 ///

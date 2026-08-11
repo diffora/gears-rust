@@ -1012,6 +1012,7 @@ fn row_value(row: &PriceRow) -> JsonValue {
         charge_kind,
         model_kind,
         amount_minor,
+        unit_rate,
         bands,
         package_size,
         package_price_minor,
@@ -1037,6 +1038,11 @@ fn row_value(row: &PriceRow) -> JsonValue {
         "chargeKind": charge_kind.as_str(),
         "modelKind": model_kind.map(model_kind_wire),
         "amountMinor": amount_minor.map(crate::domain::money::MinorAmount::get),
+        // The `per_unit` rate, in 10^-9 minor units (D-311). A member of its own
+        // rather than a second meaning for `amountMinor`: a consumer reading the
+        // old name would otherwise get a number a billion times too large, on a
+        // read-model row frozen for seven years.
+        "unitRateNanoMinor": unit_rate.map(crate::domain::money::RateMinor::nano_minor),
         "bands": bands.iter().map(band_value).collect::<Vec<_>>(),
         "packageSize": package_size,
         "packagePriceMinor": package_price_minor.map(crate::domain::money::MinorAmount::get),
@@ -1127,12 +1133,16 @@ fn band_value(band: &TierBand) -> JsonValue {
     let TierBand {
         from_qty,
         to_qty,
-        unit_price_minor,
+        unit_price_rate,
     } = band;
     json!({
         "fromQty": from_qty,
         "toQty": to_qty.closed_at(),
-        "unitPriceMinor": unit_price_minor.get(),
+        // Renamed, not reinterpreted (D-311): the member carried whole minor
+        // units and now carries 10^-9 of one. Reusing the name would multiply
+        // every rendered band rate by a billion in any consumer that did not
+        // know — silently. An unknown name reads `undefined`, which is visible.
+        "unitPriceNanoMinor": unit_price_rate.nano_minor(),
     })
 }
 

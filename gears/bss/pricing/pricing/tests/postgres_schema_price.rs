@@ -1027,6 +1027,14 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         "charge_kind = 'usage'".to_owned(),
         format!("cohort = '{COHORT}'"),
         "amount_minor = 2000".to_owned(),
+        // D-311's `per_unit` rate (`m20260802_000066`, guarded by
+        // `m20260802_000069`). It sits beside the column it was split out of
+        // because it is the same fact: the price. Splitting a column carries
+        // every rule the original had, and `000066` shipped without this one for
+        // the length of one commit -- so a published metered row's price was
+        // editable by any writer outside this crate, away from the pin that
+        // approved it. The Slice-6 note below is the same rot found twice.
+        "unit_rate_nano = 23_000_000".to_owned(),
         "model_kind = 'per_unit'".to_owned(),
         "tax_inclusive = true".to_owned(),
         "tax_category_ref = 'reduced'".to_owned(),
@@ -1075,11 +1083,12 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
     ];
     assert_eq!(
         moves.len(),
-        44,
-        "the whitelist has forty-four columns; a shorter list here is a column \
+        45,
+        "the whitelist has forty-five columns; a shorter list here is a column \
          nobody is testing -- it was 34 here against 38 in the guard until \
          2026-08-08, when Slice 10 added its six and the four Slice-6 proration \
-         columns turned out never to have been added at all"
+         columns turned out never to have been added at all, and 44 until \
+         2026-08-11, when D-311 split the `per_unit` rate off `amount_minor`"
     );
 
     for change in &moves {
@@ -1346,7 +1355,7 @@ const BAND_B: &str = "bbbbbbbb-0000-0000-0000-000000000002";
 fn band(band_id: &str, price_id: &str, from_qty: &str, to_qty: &str, unit_price: &str) -> String {
     format!(
         "INSERT INTO bss.pricing_price_tier_band
-            (band_id, tenant_id, price_id, from_qty, to_qty, unit_price_minor)
+            (band_id, tenant_id, price_id, from_qty, to_qty, unit_price_nano)
          VALUES ('{band_id}', '{TENANT}', '{price_id}', {from_qty}, {to_qty}, {unit_price})"
     )
 }
@@ -1739,7 +1748,7 @@ async fn a_band_under_a_frozen_price_row_can_be_neither_updated_nor_deleted() {
     must_be_rejected(
         &conn,
         &format!(
-            "UPDATE bss.pricing_price_tier_band SET unit_price_minor = 1 \
+            "UPDATE bss.pricing_price_tier_band SET unit_price_nano = 1 \
              WHERE band_id = '{BAND_A}'"
         ),
         "UPDATE of a band under a published price row is not permitted",
@@ -1803,7 +1812,7 @@ async fn a_band_under_a_draft_price_row_can_be_updated_and_deleted() {
     must_succeed(
         &conn,
         &format!(
-            "UPDATE bss.pricing_price_tier_band SET unit_price_minor = 400 \
+            "UPDATE bss.pricing_price_tier_band SET unit_price_nano = 400 \
              WHERE band_id = '{BAND_A}'"
         ),
     )

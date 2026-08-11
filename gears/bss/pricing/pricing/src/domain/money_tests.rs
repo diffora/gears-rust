@@ -1,8 +1,8 @@
 //! Tests for the ISO 4217 money primitives.
 
 use super::{
-    CurrencyCode, DEFAULT_MINOR_UNIT, MinorAmount, check_decimal, check_scale, fraction_digits,
-    is_expressible,
+    CurrencyCode, DEFAULT_MINOR_UNIT, MinorAmount, RateMinor, check_decimal, check_scale,
+    fraction_digits, is_expressible,
 };
 use crate::domain::error::DomainError;
 
@@ -124,4 +124,121 @@ fn a_sign_error_is_not_reported_as_a_precision_error() {
     assert_eq!(fraction_digits("-1.00").expect("signed literal"), 2);
     assert!(check_decimal(&code("USD"), "-1.00").is_ok());
     assert!(MinorAmount::new(-100).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// D-311 — a rate is not an amount.
+// ---------------------------------------------------------------------------
+
+/// **The rate a metered plan is actually sold at is expressible.**
+///
+/// `MinorAmount` is whole ISO-4217 minor units, so `0.0150 USD` per unit had no
+/// representation at all — not a refusal, an absence. S3 sells at `$0.023` per
+/// GB-month and Lambda at `$0.0000166667` per GB-second; the studio's own seed
+/// carries `0.0150`, `0.0230`, `0.0120`.
+#[test]
+fn a_sub_cent_rate_is_expressible() {
+    let usd = CurrencyCode::new("USD").expect("iso");
+
+    let rate = RateMinor::from_decimal(&usd, "0.0150").expect("a cent-and-a-half rate");
+    // 0.0150 USD = 1.50 minor units = 1_500_000_000 nano-minor.
+    assert_eq!(rate.nano_minor(), 1_500_000_000);
+}
+
+/// The two industry rates the decision names, to the digit.
+#[test]
+fn the_rates_the_decision_names_are_exact() {
+    let usd = CurrencyCode::new("USD").expect("iso");
+
+    // S3: $0.023 per GB-month = 2.3 minor units.
+    assert_eq!(
+        RateMinor::from_decimal(&usd, "0.023")
+            .expect("s3")
+            .nano_minor(),
+        2_300_000_000
+    );
+    // Lambda: $0.0000166667 per GB-second. Six sub-decimals would leave this
+    // fractional at 1666.67 micro-minor; nine express it exactly.
+    assert_eq!(
+        RateMinor::from_decimal(&usd, "0.0000166667")
+            .expect("lambda")
+            .nano_minor(),
+        1_666_670
+    );
+}
+
+/// **A ladder keeps its gradation**, which is the failure truncation caused.
+///
+/// `0.0150 / 0.0110` and `0.0230 / 0.0120` both collapsed to `0.01` at every
+/// band, so two different ladders became the same ladder and the tariff lost its
+/// meaning — silently, on a row that looked well-formed.
+#[test]
+fn two_ladders_that_used_to_collapse_stay_distinct() {
+    let usd = CurrencyCode::new("USD").expect("iso");
+    let ladder = |a: &str, b: &str| {
+        (
+            RateMinor::from_decimal(&usd, a).expect("band").nano_minor(),
+            RateMinor::from_decimal(&usd, b).expect("band").nano_minor(),
+        )
+    };
+
+    let first = ladder("0.0150", "0.0110");
+    let second = ladder("0.0230", "0.0120");
+
+    assert_ne!(first, second);
+    assert_ne!(first.0, first.1, "the ladder still steps down");
+    assert_ne!(second.0, second.1);
+}
+
+/// A rate is still non-negative, and zero is still legal — a zero-rated usage
+/// row is authored, not absent.
+#[test]
+fn a_rate_is_non_negative_and_zero_is_legal() {
+    let usd = CurrencyCode::new("USD").expect("iso");
+
+    assert_eq!(
+        RateMinor::from_decimal(&usd, "0")
+            .expect("zero is a rate")
+            .nano_minor(),
+        0
+    );
+    assert!(RateMinor::from_decimal(&usd, "-0.01").is_err());
+}
+
+/// **The scale rule is not gone, it is aimed at the rate's own scale.**
+///
+/// `check_scale` had no caller: the ISO-4217 rule was enforced by `MinorAmount`
+/// being unable to hold a violation, so `PRECISION_EXCEEDED` was a declared
+/// refusal nothing could raise. A rate *can* hold more digits than it should, so
+/// here the refusal is reachable and the code means something.
+#[test]
+fn a_rate_finer_than_the_stored_scale_is_refused_by_code() {
+    let usd = CurrencyCode::new("USD").expect("iso");
+
+    // USD stores 2 + 9 = 11 decimals. The boundary is asserted from both sides,
+    // because a case that only checked the refusal would pass equally against a
+    // type that refused everything.
+    assert!(
+        RateMinor::from_decimal(&usd, "0.00000000001").is_ok(),
+        "eleven decimals is exactly what USD stores"
+    );
+    let err = RateMinor::from_decimal(&usd, "0.000000000001").expect_err("a twelfth is not stored");
+    assert!(
+        matches!(err, DomainError::PrecisionExceeded(_)),
+        "the refusal is the declared one: {err:?}"
+    );
+}
+
+/// The currency's own scale still governs an **amount**, and a rate does not
+/// inherit that limit — which is the whole distinction D-311 draws.
+#[test]
+fn a_currency_with_no_decimals_still_bounds_amounts_but_not_rates() {
+    let jpy = CurrencyCode::new("JPY").expect("iso");
+    assert_eq!(jpy.minor_unit(), 0);
+
+    // An amount on JPY may not declare decimals.
+    assert!(check_decimal(&jpy, "100.00").is_err());
+    // A rate on JPY may: it is a multiplier, and what rounds to a whole yen is
+    // the product, never the rate.
+    assert!(RateMinor::from_decimal(&jpy, "0.25").is_ok());
 }

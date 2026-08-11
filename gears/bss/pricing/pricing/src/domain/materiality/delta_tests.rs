@@ -9,11 +9,11 @@
 use chrono::{TimeZone, Utc};
 use uuid::Uuid;
 
-use super::{AmountMove, RowDelta, row_delta};
+use super::{AmountMove, MoveScale, RowDelta, row_delta};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
     IncludedAllowance, MinQtyUsageFallback, ModelKind, PriceRow, QuantitySource, ReservationFlavor,
@@ -22,6 +22,12 @@ use crate::domain::price_row::{
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+
+/// A band rate, stated in whole minor units so these cases read as they always
+/// did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("a non-negative rate")
+}
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("a non-negative amount")
@@ -71,8 +77,8 @@ fn graduated(bands: &[(u64, Option<u64>, i64)]) -> PriceRecord {
     row.bands = bands
         .iter()
         .map(|&(from, to, price)| match to {
-            Some(top) => TierBand::closed(from, top, minor(price)),
-            None => TierBand::open(from, minor(price)),
+            Some(top) => TierBand::closed(from, top, rate(price)),
+            None => TierBand::open(from, rate(price)),
         })
         .collect();
     record(row)
@@ -101,25 +107,51 @@ fn a_flat_rows_delta_is_its_amount() {
         RowDelta::Amount(AmountMove {
             from_minor: 1000,
             to_minor: 1500,
+            scale: MoveScale::Minor,
         })
     );
-    // And a `per_unit` row takes the same operand, which is the half of the
-    // clause a `flat`-only case would leave unproved.
+    // And a `per_unit` row takes **its own** operand: since D-311 its price is a
+    // rate in its own column and its own scale, so the half of the clause a
+    // `flat`-only case would leave unproved is now also the half that proves the
+    // two kinds no longer share `amount_minor`.
     let mut current = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
-    current.amount_minor = Some(minor(12));
+    current.unit_rate = Some(rate(12));
     let mut baseline = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
-    baseline.amount_minor = Some(minor(10));
+    baseline.unit_rate = Some(rate(10));
     assert_eq!(
         row_delta(&record(current), &record(baseline)),
         RowDelta::Amount(AmountMove {
-            from_minor: 10,
-            to_minor: 12,
+            from_minor: 10_000_000_000,
+            to_minor: 12_000_000_000,
+            scale: MoveScale::NanoMinor,
         })
     );
 }
 
-/// `graduated` / `volume` → the band-wise `unit_price_minor` vector, on unchanged
-/// geometry.
+/// **A `per_unit` row still carrying only `amount_minor` has no rate to compare**,
+/// and says which field is missing rather than reporting a zero move.
+///
+/// The pre-D-311 spelling is exactly what a row written by an older writer looks
+/// like, and the dangerous answer would be `Amount(0 → 0)`: a move of nothing,
+/// below every bar, auto-published.
+#[test]
+fn a_per_unit_row_without_its_rate_is_not_computable() {
+    let mut current = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    current.amount_minor = Some(minor(12));
+    let mut baseline = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    baseline.amount_minor = Some(minor(10));
+
+    assert_eq!(
+        row_delta(&record(current), &record(baseline)),
+        RowDelta::NotComputable("unit_rate")
+    );
+}
+
+/// `graduated` / `volume` → the band-wise rate vector, on unchanged geometry.
+///
+/// The bands read back in their own scale (D-311) — the helper states each rate
+/// in whole minor units, so `5` here is the same band price it was before rates
+/// were storable below a cent.
 #[test]
 fn a_graduated_rows_delta_is_the_band_vector() {
     let delta = row_delta(
@@ -131,12 +163,14 @@ fn a_graduated_rows_delta_is_the_band_vector() {
         delta,
         RowDelta::BandVector(vec![
             AmountMove {
-                from_minor: 4,
-                to_minor: 5,
+                from_minor: 4_000_000_000,
+                to_minor: 5_000_000_000,
+                scale: MoveScale::NanoMinor,
             },
             AmountMove {
-                from_minor: 3,
-                to_minor: 3,
+                from_minor: 3_000_000_000,
+                to_minor: 3_000_000_000,
+                scale: MoveScale::NanoMinor,
             },
         ]),
         "one entry per band, in band order, including the bands that did not move"
@@ -153,6 +187,7 @@ fn a_package_rows_delta_is_its_package_price() {
         RowDelta::PackagePrice(AmountMove {
             from_minor: 1000,
             to_minor: 900,
+            scale: MoveScale::Minor,
         }),
         "a cut is a move, and its magnitude is what a threshold compares"
     );
@@ -330,6 +365,7 @@ fn an_unchanged_row_is_a_zero_delta_and_not_an_incomputable_one() {
         RowDelta::Amount(AmountMove {
             from_minor: 1000,
             to_minor: 1000,
+            scale: MoveScale::Minor,
         })
     );
     assert_eq!(
@@ -337,6 +373,7 @@ fn an_unchanged_row_is_a_zero_delta_and_not_an_incomputable_one() {
         RowDelta::PackagePrice(AmountMove {
             from_minor: 1000,
             to_minor: 1000,
+            scale: MoveScale::Minor,
         })
     );
 }
@@ -353,10 +390,12 @@ fn the_magnitude_is_unsigned_so_a_cut_is_measured_like_a_rise() {
     let up = AmountMove {
         from_minor: 1000,
         to_minor: 1500,
+        scale: MoveScale::Minor,
     };
     let down = AmountMove {
         from_minor: 1000,
         to_minor: 500,
+        scale: MoveScale::Minor,
     };
 
     assert_eq!(up.magnitude_minor(), 500);
@@ -374,6 +413,7 @@ fn a_move_that_reaches_the_threshold_is_not_below_it() {
     let move_ = AmountMove {
         from_minor: 1000,
         to_minor: 1500,
+        scale: MoveScale::Minor,
     };
 
     assert!(move_.reaches_absolute(500), "500 reaches 500");
@@ -382,6 +422,7 @@ fn a_move_that_reaches_the_threshold_is_not_below_it() {
         AmountMove {
             from_minor: 1000,
             to_minor: 1000,
+            scale: MoveScale::Minor,
         }
         .reaches_absolute(0),
         "a threshold of zero is reached by a move of nothing, so everything is material"
@@ -395,6 +436,7 @@ fn a_percent_basis_against_a_zero_baseline_computes_nothing() {
     let from_zero = AmountMove {
         from_minor: 0,
         to_minor: 500,
+        scale: MoveScale::Minor,
     };
     assert_eq!(
         from_zero.reaches_percent(500),
@@ -405,6 +447,7 @@ fn a_percent_basis_against_a_zero_baseline_computes_nothing() {
     let ten_percent = AmountMove {
         from_minor: 1000,
         to_minor: 1100,
+        scale: MoveScale::Minor,
     };
     assert_eq!(
         ten_percent.reaches_percent(1000),

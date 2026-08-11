@@ -3,7 +3,7 @@
 use bss_fixtures::ModelKind;
 
 use super::{BandGeometry, BandOrigin, BandTopOpen, UsageEvaluationPolicy};
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::price_row::{BillingGranularity, PriceRow, TierAggregationWindow, TierBand};
 use crate::domain::rules::{
     EVAL_POLICY_MISSING, TIER_BAND_EMPTY, TIER_BAND_PRICE_INCREASE, TIER_BANDS_GAP,
@@ -14,6 +14,12 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("test amount is non-negative")
+}
+
+/// A band rate, stated in whole minor units so these cases read as they
+/// always did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
 fn findings(rule: &impl ValidationRule<PriceRow>, row: &PriceRow) -> ValidationReport {
@@ -42,9 +48,9 @@ fn tiered(bands: Vec<TierBand>) -> PriceRow {
 
 fn descending_ladder() -> Vec<TierBand> {
     vec![
-        TierBand::closed(0, 1_000, minor(10)),
-        TierBand::closed(1_000, 10_000, minor(6)),
-        TierBand::open(10_000, minor(3)),
+        TierBand::closed(0, 1_000, rate(10)),
+        TierBand::closed(1_000, 10_000, rate(6)),
+        TierBand::open(10_000, rate(3)),
     ]
 }
 
@@ -65,8 +71,8 @@ fn adjacent_bands_share_their_boundary_exactly_once() {
     // `[0, 100)` then `[100, open)`: quantity 100 belongs to the second band and
     // to no other. One unit either way is a gap or an overlap.
     let row = tiered(vec![
-        TierBand::closed(0, 100, minor(10)),
-        TierBand::open(100, minor(5)),
+        TierBand::closed(0, 100, rate(10)),
+        TierBand::open(100, rate(5)),
     ]);
 
     assert!(findings(&BandGeometry, &row).violations.is_empty());
@@ -75,8 +81,8 @@ fn adjacent_bands_share_their_boundary_exactly_once() {
 #[test]
 fn overlapping_bands_fail_publish() {
     let row = tiered(vec![
-        TierBand::closed(0, 100, minor(10)),
-        TierBand::open(50, minor(5)),
+        TierBand::closed(0, 100, rate(10)),
+        TierBand::open(50, rate(5)),
     ]);
 
     assert_eq!(
@@ -88,8 +94,8 @@ fn overlapping_bands_fail_publish() {
 #[test]
 fn a_gap_between_bands_fails_publish() {
     let row = tiered(vec![
-        TierBand::closed(0, 100, minor(10)),
-        TierBand::open(150, minor(5)),
+        TierBand::closed(0, 100, rate(10)),
+        TierBand::open(150, rate(5)),
     ]);
 
     let report = findings(&BandGeometry, &row);
@@ -105,9 +111,9 @@ fn a_gap_between_bands_fails_publish() {
 #[test]
 fn a_zero_width_band_fails_publish() {
     let row = tiered(vec![
-        TierBand::closed(0, 100, minor(10)),
-        TierBand::closed(100, 100, minor(8)),
-        TierBand::open(100, minor(5)),
+        TierBand::closed(0, 100, rate(10)),
+        TierBand::closed(100, 100, rate(8)),
+        TierBand::open(100, rate(5)),
     ]);
 
     assert!(codes(&findings(&BandGeometry, &row)).contains(&TIER_BAND_EMPTY));
@@ -122,8 +128,8 @@ fn a_band_below_an_open_top_authored_last_is_not_an_overlap() {
     // differ between the save-time pre-check and the identical re-run inside
     // the publish commit.
     let row = tiered(vec![
-        TierBand::open(1_000, minor(5)),
-        TierBand::closed(0, 1_000, minor(10)),
+        TierBand::open(1_000, rate(5)),
+        TierBand::closed(0, 1_000, rate(10)),
     ]);
 
     assert!(findings(&BandGeometry, &row).is_publishable());
@@ -134,8 +140,8 @@ fn a_band_below_an_open_top_reads_as_an_overlap() {
     // An open top covers every quantity above its floor, so anything after it in
     // the set is inside it by construction.
     let row = tiered(vec![
-        TierBand::open(0, minor(10)),
-        TierBand::open(1_000, minor(5)),
+        TierBand::open(0, rate(10)),
+        TierBand::open(1_000, rate(5)),
     ]);
 
     assert!(codes(&findings(&BandGeometry, &row)).contains(&TIER_BANDS_OVERLAP));
@@ -147,8 +153,8 @@ fn a_rising_ladder_warns_without_blocking() {
     // penalty tiers are real. A warning that could block would be a fail-closed
     // rule hiding behind a soft word.
     let row = tiered(vec![
-        TierBand::closed(0, 1_000, minor(3)),
-        TierBand::open(1_000, minor(9)),
+        TierBand::closed(0, 1_000, rate(3)),
+        TierBand::open(1_000, rate(9)),
     ]);
 
     let report = findings(&BandGeometry, &row);
@@ -161,8 +167,8 @@ fn a_rising_ladder_warns_without_blocking() {
 #[test]
 fn a_flat_step_in_the_ladder_is_not_a_rise() {
     let row = tiered(vec![
-        TierBand::closed(0, 1_000, minor(5)),
-        TierBand::open(1_000, minor(5)),
+        TierBand::closed(0, 1_000, rate(5)),
+        TierBand::open(1_000, rate(5)),
     ]);
 
     assert!(findings(&BandGeometry, &row).warnings.is_empty());
@@ -173,8 +179,8 @@ fn a_closed_top_band_fails_publish() {
     // D-17: "price undefined above X" is never the commercial intent. Capping is
     // an entitlement quota, so any quantity stays rateable.
     let row = tiered(vec![
-        TierBand::closed(0, 1_000, minor(10)),
-        TierBand::closed(1_000, 10_000, minor(5)),
+        TierBand::closed(0, 1_000, rate(10)),
+        TierBand::closed(1_000, 10_000, rate(5)),
     ]);
 
     assert_eq!(codes(&findings(&BandTopOpen, &row)), vec![TIER_TOP_CLOSED]);
@@ -190,8 +196,8 @@ fn an_open_top_band_passes() {
 #[test]
 fn a_tiered_row_whose_first_band_misses_the_origin_fails_publish() {
     let row = tiered(vec![
-        TierBand::closed(10, 1_000, minor(10)),
-        TierBand::open(1_000, minor(5)),
+        TierBand::closed(10, 1_000, rate(10)),
+        TierBand::open(1_000, rate(5)),
     ]);
 
     assert_eq!(codes(&findings(&BandOrigin, &row)), vec![TIER_BANDS_GAP]);
@@ -202,8 +208,8 @@ fn a_zero_priced_first_band_is_valid() {
     // The exception that matters: a free opening band is how "N included" is
     // authored by hand, and it is the shape the D-45 allowance compile projects.
     let row = tiered(vec![
-        TierBand::closed(0, 100, minor(0)),
-        TierBand::open(100, minor(5)),
+        TierBand::closed(0, 100, rate(0)),
+        TierBand::open(100, rate(5)),
     ]);
 
     assert!(findings(&BandOrigin, &row).violations.is_empty());
@@ -277,8 +283,8 @@ fn a_band_set_authored_out_of_order_is_judged_on_its_geometry() {
     // inside the publish commit — a verdict that depends on how the author
     // happened to type it.
     let row = tiered(vec![
-        TierBand::open(1_000, minor(6)),
-        TierBand::closed(0, 1_000, minor(10)),
+        TierBand::open(1_000, rate(6)),
+        TierBand::closed(0, 1_000, rate(10)),
     ]);
 
     assert!(findings(&BandGeometry, &row).is_publishable());
@@ -288,8 +294,8 @@ fn a_band_set_authored_out_of_order_is_judged_on_its_geometry() {
 fn an_out_of_order_set_with_a_real_gap_still_fails() {
     // Sorting must not launder a broken set into a whole one.
     let row = tiered(vec![
-        TierBand::open(1_500, minor(6)),
-        TierBand::closed(0, 1_000, minor(10)),
+        TierBand::open(1_500, rate(6)),
+        TierBand::closed(0, 1_000, rate(10)),
     ]);
 
     let report = findings(&BandGeometry, &row);
@@ -305,8 +311,8 @@ fn a_rise_out_of_a_free_opening_band_does_not_warn() {
     // row, and a channel that is noisy by default is a channel authors stop
     // reading.
     let row = tiered(vec![
-        TierBand::closed(0, 100, minor(0)),
-        TierBand::open(100, minor(5)),
+        TierBand::closed(0, 100, rate(0)),
+        TierBand::open(100, rate(5)),
     ]);
 
     assert!(findings(&BandGeometry, &row).warnings.is_empty());
@@ -317,8 +323,8 @@ fn a_rise_out_of_a_priced_band_still_warns() {
     // The exemption is narrow on purpose: it is about a free opening band, not
     // about every ladder whose first step is cheap.
     let row = tiered(vec![
-        TierBand::closed(0, 100, minor(1)),
-        TierBand::open(100, minor(5)),
+        TierBand::closed(0, 100, rate(1)),
+        TierBand::open(100, rate(5)),
     ]);
 
     let report = findings(&BandGeometry, &row);

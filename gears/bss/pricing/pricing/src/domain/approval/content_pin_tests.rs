@@ -54,7 +54,7 @@ use crate::domain::contracts::{
 };
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{
     Adjustment, AmountSet, Disclosure, LineKey, Magnitude, OverlayInterval, OverlayLifecycle,
     OverlayLine, OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TargetSku,
@@ -78,6 +78,12 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 // ---------------------------------------------------------------------------
 // A maximal shape: every option present, every collection non-empty.
 // ---------------------------------------------------------------------------
+
+/// A band rate in whole minor units, scaled to the stored rate scale
+/// (D-311) so these cases price what they always priced.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("a non-negative rate")
+}
 
 fn at(hour: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 3, hour, 0, 0)
@@ -117,9 +123,17 @@ fn maximal_row() -> PriceRow {
         charge_kind: ChargeKind::Usage,
         model_kind: Some(ModelKind::Graduated),
         amount_minor: Some(money(500)),
+        // Authored, like every other optional field here, so the mutator below
+        // moves a value rather than filling a hole -- a pin that only proved
+        // `None -> Some` would say nothing about a rate a reviewer actually read.
+        // The row is `graduated` and would not publish carrying both, which this
+        // fixture is right to ignore: it exercises the **encoding**, and an
+        // encoding that only framed publishable rows would leave the field
+        // unpinned on exactly the rows a `PATCH` is moving through.
+        unit_rate: Some(rate(6)),
         bands: vec![
-            TierBand::closed(0, 100, money(10)),
-            TierBand::open(100, money(5)),
+            TierBand::closed(0, 100, rate(10)),
+            TierBand::open(100, rate(5)),
         ],
         package_size: Some(50),
         package_price_minor: Some(money(400)),
@@ -616,24 +630,36 @@ fn row_mutators() -> Vec<Mutator> {
         ("row.amount_minor", |s| {
             s.rows[0].row.amount_minor = Some(money(501));
         }),
+        // D-311's `per_unit` rate (`v12`). It is the price of a metered row, and
+        // for the length of one commit it was the only price column outside this
+        // table: `amount_minor` had been pinned since the first version, the rate
+        // was split out of it, and the split did not carry the pin. A reviewer who
+        // approved `0.023` per GB and a commit that published `0.230` would have
+        // matched on every digest, on a column `amount_minor` no longer holds.
+        //
+        // Both directions, as the reservation rate has: setting a rate where the
+        // baseline has none is the same hole as moving one.
+        ("row.unit_rate", |s| {
+            s.rows[0].row.unit_rate = Some(rate(7));
+        }),
         ("row.bands: one dropped", |s| {
-            s.rows[0].row.bands = vec![TierBand::open(100, money(5))];
+            s.rows[0].row.bands = vec![TierBand::open(100, rate(5))];
         }),
         ("band.from_qty", |s| {
-            s.rows[0].row.bands[0] = TierBand::closed(1, 100, money(10));
+            s.rows[0].row.bands[0] = TierBand::closed(1, 100, rate(10));
         }),
         ("band.to_qty", |s| {
-            s.rows[0].row.bands[0] = TierBand::closed(0, 99, money(10));
+            s.rows[0].row.bands[0] = TierBand::closed(0, 99, rate(10));
         }),
         ("band.to_qty -> open", |s| {
             s.rows[0].row.bands[0] = TierBand {
                 from_qty: 0,
                 to_qty: BandTop::Open,
-                unit_price_minor: money(10),
+                unit_price_rate: rate(10),
             };
         }),
-        ("band.unit_price_minor", |s| {
-            s.rows[0].row.bands[0] = TierBand::closed(0, 100, money(11));
+        ("band.unit_price_rate", |s| {
+            s.rows[0].row.bands[0] = TierBand::closed(0, 100, rate(11));
         }),
         ("row.package_size", |s| {
             s.rows[0].row.package_size = Some(51);
@@ -1125,6 +1151,18 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 ///   `row.min_qty_*` / `row.discount_ref` mutators are those properties; this is
 ///   their byte vector.
 ///
+/// - `v11` -> `v12`, on **2026-08-11**, when D-311 gave the `per_unit` rate a
+///   column of its own and `row.unit_rate` joined `put_price_row`. `v11` itself
+///   is absent from this table because it moved the **plan** shape and left this
+///   digest where it stood. This one is the plainest hole of all: the price a
+///   metered row is sold at moved out of `amount_minor`, so between the two
+///   spellings a reviewer who approved `0.023` per GB and a commit that published
+///   `0.230` matched on every digest while the pin still covered the now-empty
+///   `amount_minor`. The band rates need no member of their own — they were
+///   always covered, and only the scale of the integer changed, which is why this
+///   bump is one field and not two. `row.unit_rate` in the mutator table is that
+///   property; this is its byte vector.
+///
 /// What makes any of them an edit rather than a migration today is on
 /// [`CONTENT_PIN_DOMAIN_SEP`](super::CONTENT_PIN_DOMAIN_SEP): this gear is not
 /// deployed, so no durable row holds a `v1` or a `v2` digest. That argument expires
@@ -1133,7 +1171,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "217eeddad8e187c4286704064eabaa6b45d0806c1fa7fa63759f4eabecbbb663"
+        "438ce0eeb88f866d69e09503e2fdc4fa1c4d3bb71e0cc9e73be6b1b8cc66ff3f"
     );
 }
 
@@ -1294,7 +1332,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v11\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v12\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

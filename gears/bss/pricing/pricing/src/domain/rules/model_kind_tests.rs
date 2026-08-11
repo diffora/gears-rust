@@ -3,7 +3,7 @@
 use bss_fixtures::ModelKind;
 
 use super::{ExplicitModelKind, KindChargeKindMatrix, KindForbiddenFields, KindRequiredFields};
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::price_row::{
     BillingGranularity, PriceRow, QuantitySource, TierAggregationWindow, TierBand,
 };
@@ -16,6 +16,12 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("test amount is non-negative")
+}
+
+/// A band rate, stated in whole minor units so these cases read as they
+/// always did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
 fn findings(rule: &impl ValidationRule<PriceRow>, row: &PriceRow) -> ValidationReport {
@@ -42,7 +48,7 @@ fn flat_recurring() -> PriceRow {
 /// A publishable `per_unit` recurring (per-seat) row.
 fn per_unit_recurring() -> PriceRow {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
-    row.amount_minor = Some(minor(900));
+    row.unit_rate = Some(rate(900));
     row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
     row
 }
@@ -50,7 +56,7 @@ fn per_unit_recurring() -> PriceRow {
 /// A publishable `per_unit` usage row — the plain untiered metered rate.
 fn per_unit_usage() -> PriceRow {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
-    row.amount_minor = Some(minor(3));
+    row.unit_rate = Some(rate(3));
     row.meter = Some("api_calls".to_owned());
     row.billing_granularity = Some(BillingGranularity::WholeUnit);
     row
@@ -63,8 +69,8 @@ fn graduated_usage() -> PriceRow {
     row.billing_granularity = Some(BillingGranularity::WholeUnit);
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
     row.bands = vec![
-        TierBand::closed(0, 1_000, minor(10)),
-        TierBand::open(1_000, minor(6)),
+        TierBand::closed(0, 1_000, rate(10)),
+        TierBand::open(1_000, rate(6)),
     ];
     row
 }
@@ -121,20 +127,65 @@ fn a_flat_row_without_an_amount_fails_publish() {
     );
 }
 
+/// **A `per_unit` row prices from its own rate column, and only from it** (D-311).
+///
+/// Both directions, because each half failed on its own for the length of one
+/// commit: the rule still demanded `amount_minor` on a `per_unit` row, so a row
+/// authored the new way was refused for a missing amount while a row authored
+/// the old way passed with its rate column empty — the new column unauthorable
+/// and the superseded spelling still accepted, which is the worst of both.
 #[test]
-fn a_per_unit_row_keeps_its_unit_price_in_the_amount_column() {
-    let mut row = per_unit_recurring();
-    row.amount_minor = None;
-
-    assert_eq!(
-        codes(&findings(&KindRequiredFields, &row)),
-        vec![AMOUNT_PLACEMENT_INVALID]
-    );
+fn a_per_unit_row_keeps_its_unit_price_in_the_rate_column() {
     assert!(
         findings(&KindRequiredFields, &per_unit_recurring())
             .violations
-            .is_empty()
+            .is_empty(),
+        "a rate is what a per_unit row is authored with"
     );
+
+    let mut no_rate = per_unit_recurring();
+    no_rate.unit_rate = None;
+    assert_eq!(
+        codes(&findings(&KindRequiredFields, &no_rate)),
+        vec![AMOUNT_PLACEMENT_INVALID],
+        "a per_unit row with no rate has no price"
+    );
+
+    let mut old_spelling = per_unit_recurring();
+    old_spelling.unit_rate = None;
+    old_spelling.amount_minor = Some(minor(900));
+    assert_eq!(
+        codes(&findings(&KindRequiredFields, &old_spelling)),
+        vec![AMOUNT_PLACEMENT_INVALID, AMOUNT_PLACEMENT_INVALID],
+        "the pre-D-311 spelling is not a second way to price a per_unit row, and it \
+         is two faults rather than one: an amount where none belongs and no rate \
+         where one must be"
+    );
+
+    let mut both = per_unit_recurring();
+    both.amount_minor = Some(minor(900));
+    assert_eq!(
+        codes(&findings(&KindRequiredFields, &both)),
+        vec![AMOUNT_PLACEMENT_INVALID],
+        "two priced columns are two competing prices, and this is the pair that \
+         used to be one column"
+    );
+}
+
+/// **A rate is forbidden on every kind that does not multiply by one** — the
+/// other half of the matrix, and the half a rule that only checked presence
+/// would leave open.
+#[test]
+fn a_kind_that_charges_no_per_unit_multiple_refuses_a_rate() {
+    for mut row in [flat_recurring(), graduated_usage(), package_usage()] {
+        let subject = row.subject();
+        row.unit_rate = Some(rate(1));
+
+        assert!(
+            codes(&findings(&KindRequiredFields, &row)).contains(&AMOUNT_PLACEMENT_INVALID),
+            "expected {subject} to refuse a unit rate"
+        );
+    }
 }
 
 #[test]
@@ -217,7 +268,7 @@ fn a_package_row_without_its_block_fields_fails_publish() {
 #[test]
 fn tier_bands_on_a_per_unit_row_fail_publish() {
     let mut row = per_unit_recurring();
-    row.bands = vec![TierBand::open(0, minor(1))];
+    row.bands = vec![TierBand::open(0, rate(1))];
 
     assert_eq!(
         codes(&findings(&KindForbiddenFields, &row)),

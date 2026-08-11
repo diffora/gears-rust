@@ -64,6 +64,7 @@ fn any_row() -> PriceRow {
         charge_kind: ChargeKind::Recurring,
         model_kind: None,
         amount_minor: None,
+        unit_rate: None,
         bands: Vec::new(),
         package_size: None,
         package_price_minor: None,
@@ -258,16 +259,17 @@ fn the_out_of_roster_set_is_the_documents() {
 fn every_field_of_the_row_is_classified_exactly_once() {
     let (roster, outside) = partition_row_fields(&any_row());
 
-    // 23 is not derived from the struct: it is stated, so that the pattern in
+    // 24 is not derived from the struct: it is stated, so that the pattern in
     // `partition_row_fields` growing an arm without the returned lists growing
     // is a failure here rather than a silent omission from both. It was 17
-    // before Slice 10, 19 after its reservation pair, and 23 after its two
-    // floors, the floor fallback and the discount ref.
-    assert_eq!(roster.len() + outside.len(), 23);
+    // before Slice 10, 19 after its reservation pair, 23 after its two floors,
+    // the floor fallback and the discount ref, and 24 once D-311 gave the
+    // `per_unit` rate a column of its own.
+    assert_eq!(roster.len() + outside.len(), 24);
     let union: BTreeSet<&str> = roster.iter().chain(outside.iter()).copied().collect();
     assert_eq!(
         union.len(),
-        23,
+        24,
         "a field is classified twice or named twice"
     );
 }

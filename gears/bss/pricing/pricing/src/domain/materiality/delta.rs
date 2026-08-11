@@ -67,6 +67,7 @@
 
 use toolkit_macros::domain_model;
 
+use crate::domain::money::RATE_SUB_DECIMALS;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
 
@@ -80,10 +81,44 @@ use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AmountMove {
-    /// The baseline amount, in the row's currency's minor units.
+    /// The baseline amount, in the units [`Self::scale`] names.
     pub from_minor: i64,
     /// The proposed amount, same units.
     pub to_minor: i64,
+    /// Which of the two things this move is about (D-311).
+    ///
+    /// It rides the move rather than being inferred by the comparer because the
+    /// comparer is handed a slice and cannot see which row produced it.
+    pub scale: MoveScale,
+}
+
+/// Whether a move is between **amounts** or between **rates** (D-311).
+///
+/// The distinction is what keeps a threshold meaning the same thing it meant
+/// before rates got their own scale. `pricing_threshold.absolute_minor` is
+/// authored in minor units, and a raw `>=` against a nano-minor move would read
+/// a bar of 5 as `0.000000005` — every band change auto-publishing, which is the
+/// governance control silently inverted. The scale rides the move so the
+/// comparer can put the bar into the operand's units before comparing.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MoveScale {
+    /// Whole ISO-4217 minor units — a `flat` amount or a package price.
+    #[default]
+    Minor,
+    /// 10^-9 minor units — a band rate or a `per_unit` rate.
+    NanoMinor,
+}
+
+impl MoveScale {
+    /// How many stored units make one minor unit, so a bar authored in minor
+    /// units can be raised into this scale.
+    const fn per_minor_unit(self) -> i128 {
+        match self {
+            Self::Minor => 1,
+            Self::NanoMinor => 10_i128.pow(RATE_SUB_DECIMALS),
+        }
+    }
 }
 
 impl AmountMove {
@@ -106,9 +141,21 @@ impl AmountMove {
     /// so a move that reaches the threshold is not below it. It is also what makes
     /// a configured threshold of `0` mean "everything is material" — the reading
     /// the store's `absolute_minor >= 0` CHECK admits zero for.
+    ///
+    /// **The bar is raised into the move's scale (D-311), not the move lowered
+    /// into the bar's.** Rounding a nano-minor move down to whole minor units
+    /// would floor every sub-cent rate change to zero, which is the truncation
+    /// D-311 exists to end, arriving one layer further in. `i128` throughout so
+    /// the 10⁹ multiplication of a large configured bar cannot wrap — a wrapped
+    /// bar goes negative and every move "reaches" it.
+    ///
+    /// A band's bar always compared against the **per-unit** band price, before
+    /// this scale existed and after it; D-311 changed how that number is stored,
+    /// not what the tenant configured it to mean.
     #[must_use]
     pub const fn reaches_absolute(self, absolute_minor: i64) -> bool {
-        self.magnitude_minor() >= absolute_minor
+        let bar = (absolute_minor as i128).saturating_mul(self.scale.per_minor_unit());
+        (self.magnitude_minor() as i128) >= bar
     }
 
     /// Is the move at or above `percent_bp` of its baseline?
@@ -307,12 +354,27 @@ pub fn row_delta(current: &PriceRecord, baseline: &PriceRecord) -> RowDelta {
 }
 
 fn amount_delta(current: &PriceRecord, baseline: &PriceRecord) -> RowDelta {
+    // **`per_unit` moved out of `amount_minor` (D-311)**, so the two kinds this
+    // arm used to serve are now two reads. A `per_unit` row's price is a rate,
+    // and comparing it in minor units against a minor-unit threshold is the
+    // arithmetic that made a third of the price look like nothing.
+    if current.row.model_kind == Some(crate::domain::price_row::ModelKind::PerUnit) {
+        let (Some(to), Some(from)) = (current.row.unit_rate, baseline.row.unit_rate) else {
+            return RowDelta::NotComputable("unit_rate");
+        };
+        return RowDelta::Amount(AmountMove {
+            from_minor: from.nano_minor(),
+            to_minor: to.nano_minor(),
+            scale: MoveScale::NanoMinor,
+        });
+    }
     let (Some(to), Some(from)) = (current.row.amount_minor, baseline.row.amount_minor) else {
         return RowDelta::NotComputable("amount_minor");
     };
     RowDelta::Amount(AmountMove {
         from_minor: from.get(),
         to_minor: to.get(),
+        scale: MoveScale::Minor,
     })
 }
 
@@ -338,8 +400,9 @@ fn band_delta(current: &PriceRecord, baseline: &PriceRecord) -> RowDelta {
             .iter()
             .zip(baseline.row.bands.iter())
             .map(|(to, from)| AmountMove {
-                from_minor: from.unit_price_minor.get(),
-                to_minor: to.unit_price_minor.get(),
+                from_minor: from.unit_price_rate.nano_minor(),
+                to_minor: to.unit_price_rate.nano_minor(),
+                scale: MoveScale::NanoMinor,
             })
             .collect(),
     )
@@ -358,6 +421,9 @@ fn package_delta(current: &PriceRecord, baseline: &PriceRecord) -> RowDelta {
     RowDelta::PackagePrice(AmountMove {
         from_minor: from.get(),
         to_minor: to.get(),
+        // A package price is what the block costs — an amount on the invoice, so
+        // the currency's own scale is right for it.
+        scale: MoveScale::Minor,
     })
 }
 

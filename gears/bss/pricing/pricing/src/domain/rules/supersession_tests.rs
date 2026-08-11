@@ -3,7 +3,7 @@
 use bss_fixtures::ModelKind;
 
 use super::{SupersessionPair, SupersessionUnitGuard};
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,
     ReservationFlavor, RolloverPolicy, TierAggregationWindow, TierBand, TierQualificationWindow,
@@ -15,6 +15,12 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("test amount is non-negative")
+}
+
+/// A band rate, stated in whole minor units so these cases read as they
+/// always did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
 fn judge(pair: &SupersessionPair) -> ValidationReport {
@@ -31,8 +37,8 @@ fn predecessor() -> PriceRow {
     row.billing_granularity = Some(BillingGranularity::PerHour);
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
     row.bands = vec![
-        TierBand::closed(0, 1_000, minor(10)),
-        TierBand::open(1_000, minor(6)),
+        TierBand::closed(0, 1_000, rate(10)),
+        TierBand::open(1_000, rate(6)),
     ];
     row
 }
@@ -43,9 +49,9 @@ fn an_identical_unit_successor_with_new_bands_publishes() {
     // continued counter is simply rated against the new ladder.
     let mut successor = predecessor();
     successor.bands = vec![
-        TierBand::closed(0, 500, minor(9)),
-        TierBand::closed(500, 5_000, minor(7)),
-        TierBand::open(5_000, minor(4)),
+        TierBand::closed(0, 500, rate(9)),
+        TierBand::closed(500, 5_000, rate(7)),
+        TierBand::open(5_000, rate(4)),
     ];
 
     let pair = SupersessionPair::new(predecessor(), successor);
@@ -294,8 +300,8 @@ fn authoring_the_default_qualification_window_is_not_a_unit_change() {
     let mut after = predecessor();
     after.tier_qualification_window = Some(TierQualificationWindow::Current);
     after.bands = vec![
-        TierBand::closed(0, 1_000, minor(9)),
-        TierBand::open(1_000, minor(5)),
+        TierBand::closed(0, 1_000, rate(9)),
+        TierBand::open(1_000, rate(5)),
     ];
 
     assert!(judge(&SupersessionPair::new(before, after)).is_publishable());

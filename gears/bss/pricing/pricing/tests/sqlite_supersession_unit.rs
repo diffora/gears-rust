@@ -48,7 +48,7 @@ use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::events::CatalogEvent;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::materiality::{MaterialityReason, MaterialityVerdict};
-use bss_pricing::domain::money::MinorAmount;
+use bss_pricing::domain::money::{MinorAmount, RateMinor};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::scope_key::{Cohort, PlanId, PriceEligibility, ScopeKey};
 use bss_pricing::domain::window::WindowState;
@@ -1039,7 +1039,9 @@ fn graduated_usage(unit_price: i64) -> PriceContent {
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
     row.bands = vec![TierBand::open(
         0,
-        MinorAmount::new(unit_price).expect("non-negative"),
+        // Stated in whole minor units and scaled to the stored rate scale
+        // (D-311), so this fixture prices what it always priced.
+        RateMinor::from_nano_minor(unit_price * 1_000_000_000).expect("non-negative"),
     )];
     PriceContent {
         row,

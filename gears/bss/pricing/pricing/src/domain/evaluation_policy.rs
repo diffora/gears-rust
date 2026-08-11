@@ -125,6 +125,7 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
         charge_kind: _,
         model_kind: _,
         amount_minor: _,
+        unit_rate: _,
         bands: _,
         package_size: _,
         package_price_minor: _,
@@ -164,6 +165,10 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
     let outside = vec![
         "charge_kind",
         "amount_minor",
+        // The `per_unit` rate (D-311). Outside for `amount_minor`'s reason and
+        // the same one: it is the row's price, not a knob an evaluator reads to
+        // decide *how* to price.
+        "unit_rate",
         "bands",
         "package_price_minor",
         "quantity_source",

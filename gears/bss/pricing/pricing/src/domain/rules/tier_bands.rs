@@ -66,15 +66,15 @@ impl ValidationRule<PriceRow> for BandGeometry {
             // subject is a ladder that gets more expensive as you buy more, and
             // free-then-priced is not that.
             let out_of_a_free_opening_band =
-                previous.from_qty == 0 && previous.unit_price_minor.get() == 0;
-            if next.unit_price_minor > previous.unit_price_minor && !out_of_a_free_opening_band {
+                previous.from_qty == 0 && previous.unit_price_rate.nano_minor() == 0;
+            if next.unit_price_rate > previous.unit_price_rate && !out_of_a_free_opening_band {
                 report.warn(
                     TIER_BAND_PRICE_INCREASE,
                     subject.subject(),
                     format!(
                         "band {next} prices a unit at {} against {} in {previous}: the ladder \
                          rises rather than discounts",
-                        next.unit_price_minor, previous.unit_price_minor
+                        next.unit_price_rate, previous.unit_price_rate
                     ),
                 );
             }

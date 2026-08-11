@@ -9,13 +9,19 @@ use std::path::{Path, PathBuf};
 
 use super::{FixtureGate, Reservation, required_variants};
 use crate::domain::error::DomainError;
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, PriceRow,
     QuantitySource, ReservationFlavor, TierAggregationWindow, TierBand,
 };
 use crate::domain::scope_key::ChargeKind;
 use bss_fixtures::{ModelKind, Variant};
+
+/// A band rate in whole minor units, scaled to the stored rate scale
+/// (D-311) so these cases price what they always priced.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("a non-negative rate")
+}
 
 /// The committed corpus registry, resolved from this crate's manifest so the
 /// test does not depend on the working directory `cargo test` was invoked from.
@@ -54,7 +60,7 @@ fn row(kind: ModelKind) -> PriceRow {
             r.bands = vec![TierBand {
                 from_qty: 0,
                 to_qty: BandTop::Open,
-                unit_price_minor: minor(5),
+                unit_price_rate: rate(5),
             }];
             r
         }

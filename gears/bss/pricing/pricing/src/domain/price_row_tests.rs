@@ -7,11 +7,17 @@ use super::{
     ModelKind, PriceRow, RolloverPolicy, TierAggregationWindow, TierBand, TierQualificationWindow,
     model_kind_wire, unit_determining_mismatch,
 };
-use crate::domain::money::MinorAmount;
+use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::scope_key::ChargeKind;
 
 fn minor(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("test amount is non-negative")
+}
+
+/// A band rate, stated in whole minor units so these cases read as they
+/// always did (D-311). The stored scale is 10^-9 of one.
+fn rate(minor_units: i64) -> RateMinor {
+    RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
 /// A graduated metered row, denominated `per_hour` over the calendar month and
@@ -22,8 +28,8 @@ fn metered() -> PriceRow {
     row.billing_granularity = Some(BillingGranularity::PerHour);
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
     row.bands = vec![
-        TierBand::closed(0, 1_000, minor(10)),
-        TierBand::open(1_000, minor(6)),
+        TierBand::closed(0, 1_000, rate(10)),
+        TierBand::open(1_000, rate(6)),
     ];
     row
 }
@@ -72,17 +78,17 @@ fn each_granule_has_exactly_one_billing_counterpart() {
 
 #[test]
 fn a_band_covers_nothing_when_its_top_is_at_or_below_its_floor() {
-    assert!(TierBand::closed(100, 100, minor(1)).is_zero_width());
-    assert!(TierBand::closed(100, 50, minor(1)).is_zero_width());
-    assert!(!TierBand::closed(100, 101, minor(1)).is_zero_width());
+    assert!(TierBand::closed(100, 100, rate(1)).is_zero_width());
+    assert!(TierBand::closed(100, 50, rate(1)).is_zero_width());
+    assert!(!TierBand::closed(100, 101, rate(1)).is_zero_width());
 }
 
 #[test]
 fn an_open_topped_band_is_never_zero_width() {
     // There is no upper bound to compare against, so the degenerate case cannot
     // arise however high the floor is.
-    assert!(!TierBand::open(u64::MAX, minor(1)).is_zero_width());
-    assert!(TierBand::open(0, minor(1)).to_qty.is_open());
+    assert!(!TierBand::open(u64::MAX, rate(1)).is_zero_width());
+    assert!(TierBand::open(0, rate(1)).to_qty.is_open());
     assert_eq!(BandTop::Closed(42).closed_at(), Some(42));
     assert_eq!(BandTop::Open.closed_at(), None);
 }
@@ -188,7 +194,7 @@ fn the_unit_comparison_says_nothing_about_the_price_levers() {
     // move; `meter`, `dimensionKey` and the allowance are the supersession
     // guard's own three, deliberately not in the shared seven.
     let mut repriced = metered();
-    repriced.bands = vec![TierBand::open(0, minor(0))];
+    repriced.bands = vec![TierBand::open(0, rate(0))];
     repriced.amount_minor = Some(minor(1));
     repriced.package_price_minor = Some(minor(900));
     repriced.meter = Some("ingress_bytes".to_owned());

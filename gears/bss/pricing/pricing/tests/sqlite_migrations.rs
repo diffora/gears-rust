@@ -899,13 +899,19 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     //
     // `m20260802_000057` (Slice 10): it gained `min_qty_purchase`,
     // `min_qty_usage`, `min_qty_usage_fallback` and `discount_ref` — the other
-    // **73** of this roster's 74 entries matched byte for byte. **Exactly one
-    // digest moved in this roster on each occasion**, which is the evidence a
-    // whole-trigger restatement lost nothing, and the only evidence there is,
-    // since neither engine has an incremental form for this check.
+    // **73** of this roster's 74 entries matched byte for byte
+    // (digest `13_930_095_509_110_238_239`).
+    //
+    // `m20260802_000069` (D-311): it gained `unit_rate_nano`, the `per_unit` rate
+    // `m20260802_000066` split out of `amount_minor` and left unguarded — so for
+    // the length of one commit a published metered row's **price** was editable
+    // by any writer outside this crate. Every other entry matched byte for byte.
+    // **Exactly one digest moved in this roster on each occasion**, which is the
+    // evidence a whole-trigger restatement lost nothing, and the only evidence
+    // there is, since neither engine has an incremental form for this check.
     (
         "trg_pricing_price_frozen_columns",
-        13_930_095_509_110_238_239_u64,
+        6_740_267_230_346_231_336_u64,
     ),
     (
         "trg_pricing_price_grandfather_monotonic",

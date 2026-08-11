@@ -39,7 +39,9 @@ pub struct Model {
     pub to_qty: Option<i64>,
     /// The unit price inside the band. `0` is valid: a free first band is a
     /// normal way to author "N included" (Q5).
-    pub unit_price_minor: i64,
+    /// The band's rate in 10^-9 minor units (D-311) — a multiplier, not an
+    /// amount, so it is not bounded by the currency's ISO-4217 scale.
+    pub unit_price_nano: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

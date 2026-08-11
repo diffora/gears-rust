@@ -209,7 +209,7 @@ use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{
     Adjustment, AmountSet, Magnitude, OverlayLine, OverlayRevision, ScopeValue, TargetSku,
 };
@@ -433,7 +433,22 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 /// is the formula's: a reviewer who approved `vCPU + RAM` weighted 1:1 and a
 /// commit that publishes 1:4, with every digest equal. `v6` through `v11` all
 /// collapse for anyone deploying — nothing durable held any of them.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v11\x1f";
+///
+/// # `v12`: a rate stopped being an amount (2026-08-11, D-311)
+///
+/// The band rate and the `per_unit` price left [`MinorAmount`] for
+/// [`RateMinor`], which counts 10⁻⁹ minor units — so one commercial price frames
+/// to a different integer — and `unit_rate` is a field of the preimage that did
+/// not exist before. Either alone would require the bump.
+///
+/// **This one is not free the way `v6`–`v11` were.** Those collapse for anyone
+/// deploying because nothing durable ever held them; this invalidates any
+/// pending unit that does exist. Taken deliberately, and cheap only because
+/// nothing has been published on any stand — the two-person rule has held every
+/// publish, so what exists is drafts. It is also the honest direction: a
+/// reviewer who approved a ladder truncated to `0.01` at every band approved a
+/// document that misstated the price.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v12\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1143,6 +1158,7 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
         charge_kind,
         model_kind,
         amount_minor,
+        unit_rate,
         bands,
         package_size,
         package_price_minor,
@@ -1167,13 +1183,18 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
     put_str(buf, charge_kind.as_str());
     put_opt_str(buf, model_kind.map(model_kind_wire));
     put_opt_i64(buf, amount_minor.map(MinorAmount::get));
+    // The `per_unit` rate (D-311). Framed beside the amount rather than
+    // through it: they are two fields now, and a preimage that folded them
+    // into one slot would let a row that moved its price between them hash
+    // identically to the row it used to be.
+    put_opt_i64(buf, unit_rate.map(RateMinor::nano_minor));
 
     let mut ordered: Vec<&TierBand> = bands.iter().collect();
     ordered.sort_unstable_by_key(|band| {
         (
             band.from_qty,
             band.to_qty.closed_at(),
-            band.unit_price_minor.get(),
+            band.unit_price_rate.nano_minor(),
         )
     });
     put_u64(buf, count_of(ordered.len()));
@@ -1238,14 +1259,14 @@ fn put_tier_band(buf: &mut Vec<u8>, band: &TierBand) {
     let TierBand {
         from_qty,
         to_qty,
-        unit_price_minor,
+        unit_price_rate,
     } = band;
     put_u64(buf, *from_qty);
     // `None` is `open`, which is a *state* of the band and not an absent value —
     // and the ABSENT marker distinguishes it from every closed top including
     // zero.
     put_opt_u64(buf, to_qty.closed_at());
-    put_i64(buf, unit_price_minor.get());
+    put_i64(buf, unit_price_rate.nano_minor());
 }
 
 /// One policy version: its number, the instant it takes effect, and its entries.
