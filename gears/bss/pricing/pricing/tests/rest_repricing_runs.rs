@@ -855,3 +855,56 @@ async fn the_runs_own_adjustment_magnitude_against_the_configured_threshold_deci
         over_units[0]
     );
 }
+
+/// Pins `project_amount`'s rounding **direction**, not merely its arithmetic.
+/// `10_005` minor at `1_000 bp` (10%) is `1_000.5` minor exactly — the one
+/// case the pair above cannot reach, since `500`/`10_000` and `2_000`/`10_000`
+/// both divide evenly and truncation contributes zero error either way. Here
+/// truncation lands the projected move at `1_000`, one minor unit **under** the
+/// `1_001` bar; a round-half-up reading of the identical arithmetic would land
+/// at `1_001` and cross it. The threshold sits exactly between the two answers
+/// on purpose, so a change from truncation to any rounding rule that does not
+/// also round this remainder down reddens this test.
+#[tokio::test]
+async fn the_projected_amount_truncates_toward_zero_at_the_threshold_boundary() {
+    let harness = Harness::new().await;
+    approve_threshold_policy(&harness, &[("USD", 1_001)]).await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    let priced = seed_priced_row(&harness, plan, "eu", 10_005).await;
+    harness.publish_price(plan, priced.price_id).await;
+
+    let run_id = Uuid::now_v7();
+    let mut body = a_run(run_id, &serde_json::json!({ "currency": "USD" }));
+    body["adjustment"]["adjustment_kind"] = serde_json::json!("markup");
+    body["adjustment"]["adjustment_value"] = serde_json::json!(1_000);
+    let response = harness
+        .allowed()
+        .send(with_headers("POST", REPRICING_RUNS, Some(body), &[]))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::Committing,
+        "10_005 * 1_000 bp / 10_000 is exactly 1_000.5 minor: truncation lands the move at \
+         1_000, one minor unit under the 1_001 bar, so this run is not material. A round-half-up \
+         rule over the identical arithmetic would land at 1_001 and cross it -- this assertion is \
+         the direction, not merely that some computation ran: {stored:?}"
+    );
+
+    let units: Vec<_> = approval_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation" && row.subject_ref == operation_id)
+        .collect();
+    assert!(
+        units.is_empty(),
+        "under the bar by truncation's own reckoning opens no unit: {units:?}"
+    );
+}

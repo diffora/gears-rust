@@ -762,9 +762,18 @@ async fn run_materiality(
 /// (discount), truncating — the crate has no other precedent for applying a
 /// basis-points value to money (`materiality::delta::AmountMove::reaches_percent`
 /// is a *comparison* and stays exact by never dividing at all), so this is a
-/// decision, named as one, rather than a rule read off existing code. A
-/// `markup`/`discount` with an `amount` magnitude, or a `fixed` line, needs
-/// `currency`'s entry in the adjustment's `AmountSet`.
+/// decision, named as one, rather than a rule read off existing code. **The
+/// direction is symmetric and the effect is not**: truncation always rounds the
+/// *moved* amount down, so a markup's added minor unit is rounded away — the
+/// projected price ends slightly cheaper than the exact `bp` would give — while
+/// a discount's subtracted minor unit is rounded away too — the projected price
+/// ends slightly less generous than the exact `bp` would give. One rule, and it
+/// favours the payer on a markup and the seller on a discount; a reviewer
+/// comparing this projection against a hand-computed percentage should expect
+/// the projected move to be at most one minor unit short of it, in whichever
+/// direction that row's `bp` moved. A `markup`/`discount` with an `amount`
+/// magnitude, or a `fixed` line, needs `currency`'s entry in the adjustment's
+/// `AmountSet`.
 ///
 /// A result that would go negative is **floored at zero**: a price cannot go
 /// negative, and a floor is itself a real, large move a threshold should see —
