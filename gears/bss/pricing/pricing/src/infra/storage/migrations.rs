@@ -102,6 +102,7 @@ pub mod m20260802_000066_rate_columns_are_not_amount_columns;
 pub mod m20260802_000067_create_pricing_group_membership;
 pub mod m20260802_000068_widen_approval_subject_kind_bulk_operation;
 pub mod m20260802_000069_guard_pricing_price_unit_rate_column;
+pub mod m20260802_000070_widen_approval_subject_kind_membership;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -339,6 +340,21 @@ impl MigratorTrait for Migrator {
             // Sorts after `000066` for the obvious reason: it names a column
             // that migration creates.
             Box::new(m20260802_000069_guard_pricing_price_unit_rate_column::Migration),
+            // D-158's enumeration gains `membership`, `000068`'s reason repeated: a
+            // `AuditSubjectKind` variant is declared (the audit-plane half already
+            // has its writer), and the roster test
+            // (`sqlite_approval_repo::every_subject_kind_d158_declares_is_storable_on_the_mirror`)
+            // binds the declaration rather than the usage — so this CHECK must admit
+            // the token whether or not an approval-plane writer exists yet, which it
+            // does not. Rebuilds `pricing_approval` on `SQLite` again, from the same
+            // object set `000068` rebuilt.
+            //
+            // **Numbered `000070`, not `000069`.** Authored as `000069` on a branch
+            // that did not yet carry the concurrent strand's own `000069`
+            // (`guard_pricing_price_unit_rate_column`, D-311). Both were taken from
+            // the same base — the second such collision on this branch in one day,
+            // after `000065`. The older number on the shared line keeps it.
+            Box::new(m20260802_000070_widen_approval_subject_kind_membership::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

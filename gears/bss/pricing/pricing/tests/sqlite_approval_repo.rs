@@ -633,16 +633,34 @@ async fn a_subject_kind_outside_the_enumeration_is_refused_by_the_mirror() {
 
     // `overlay` stood at the head of this list until 2026-08-06 and moved out of it
     // rather than being deleted: D-221 gave the overlay plane an audit writer, and
-    // D-158 obliges this mirror to admit what the audit vocabulary declares, so
-    // `m20260802_000035` widened the CHECK. `membership` still belongs here even
-    // though `AuditSubjectKind::Membership` now exists (2026-08-11,
-    // `group_membership_repo`): this CHECK is `pricing_approval`'s, not
-    // `pricing_audit_log`'s, and D-158's extend-together rule only reaches it once
-    // a kind gets an *approval*-plane writer — membership has an audit-plane one
-    // and, deliberately, no approval-plane one yet (see that module's doc). The
-    // three that follow it are the shapes a token can be malformed in (empty, wrong
+    // D-158 obliged this mirror to admit what the audit vocabulary declares, so
+    // `m20260802_000035` widened the CHECK. `membership` took its place next, on
+    // the reasoning that `AuditSubjectKind::Membership` (2026-08-11) has an
+    // audit-plane writer and, deliberately, no approval-plane one, so this CHECK
+    // — `pricing_approval`'s, not `pricing_audit_log`'s — need not admit it yet.
+    // **That reasoning was wrong, and it cost this probe its own false
+    // negative.** `m20260802_000069`'s module doc states why:
+    // `every_subject_kind_d158_declares_is_storable_on_the_mirror` (this file)
+    // binds the *declaration*, not who currently writes, so a declared
+    // `AuditSubjectKind` variant obliges this CHECK on the very next test run
+    // regardless of whether an approval-plane writer exists — and
+    // `m20260802_000069` widened it accordingly. This probe stayed on
+    // `membership` through that widening and started asserting the opposite of
+    // what the store does, the same failure mode `overlay` left behind here
+    // once already.
+    //
+    // The replacement is synthetic — `not_a_subject_kind` — for exactly
+    // `approval_repo_tests::a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row`'s
+    // reason (that sibling probe went through the identical fix, and rejected a
+    // third real-word candidate, `historical_import`, before it could repeat the
+    // pattern here too): this probe's whole claim is that an *undeclared* token
+    // is refused, every real domain word here is a candidate to become declared
+    // — and, as `membership` just showed, "no approval-plane writer" is no
+    // defence against that — and a token with no referent anywhere in the design
+    // set or the codebase cannot be declared out from under the test. The three
+    // that follow it are the shapes a token can be malformed in (empty, wrong
     // case, trailing space) and are not going anywhere.
-    for undeclared in ["membership", "", "PLAN_REVISION", "plan_revision "] {
+    for undeclared in ["not_a_subject_kind", "", "PLAN_REVISION", "plan_revision "] {
         let id = Uuid::now_v7();
         let am = bss_pricing::infra::storage::entity::approval::ActiveModel {
             approval_id: sea_orm::ActiveValue::Set(id),

@@ -454,13 +454,17 @@ async fn a_state_outside_the_machine_is_refused() {
 /// next feature to build.
 ///
 /// **This is the copy the fast tier could not reach.** Two siblings carry the same
-/// premise — `approval_repo_tests::a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row`
-/// and `sqlite_approval_repo::a_subject_kind_outside_the_enumeration_is_refused_by_the_mirror`
-/// — and both reddened on the fast suite the moment `membership` landed as a
-/// declared kind. This one is `#[ignore]`d behind Docker, so it would have stayed
-/// green through that whole round and failed only on the next Postgres run, had
-/// its own guard not caught the same fact ahead of a live run. Three copies of one
-/// premise, on two tiers.
+/// premise, on two different triggers rather than one:
+/// `approval_repo_tests::a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row`
+/// reddened the moment `AuditSubjectKind::Membership` was declared — it reads the
+/// Rust enumeration directly, with no database in the loop — while
+/// `sqlite_approval_repo::a_subject_kind_outside_the_enumeration_is_refused_by_the_mirror`
+/// stayed green through that change (this CHECK still correctly refused
+/// `membership` then) and reddened only once `m20260802_000069` widened it to
+/// match the declaration, days later. This one is `#[ignore]`d behind Docker, so
+/// it would have stayed green through both rounds and failed only on the next
+/// Postgres run, had its own guard not caught the same fact ahead of a live run.
+/// Three copies of one premise, on two tiers, tripped by two different events.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_subject_kind_with_no_writer_is_refused() {
