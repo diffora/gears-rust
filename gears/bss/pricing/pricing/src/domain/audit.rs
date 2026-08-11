@@ -471,13 +471,14 @@ pub enum AuditSubjectKind {
     /// still; this member gives it a token but only the repricing run has a
     /// writer so far.
     ///
-    /// **Its approval-plane writer does not exist yet**, [`Self::Overlay`]'s own
-    /// situation exactly: D-158 makes `pricing_approval` and `pricing_audit_log`
-    /// one enumeration extended together, so `chk_pricing_approval_subject_kind`
-    /// admits `bulk_operation` from `m20260802_000065` — storable, and not yet
-    /// stored. The unit that would open one is `inst-bs-approval`'s batch
-    /// approval, and it is unwired; `approval_repo::SUBJECT_KINDS_WITH_A_WRITER`
-    /// says so.
+    /// **Its approval-plane writer landed 2026-08-11**, [`Self::Overlay`]'s own
+    /// situation before D-225 reproduced exactly: D-158 makes `pricing_approval`
+    /// and `pricing_audit_log` one enumeration extended together, so
+    /// `chk_pricing_approval_subject_kind` admitted `bulk_operation` from
+    /// `m20260802_000065` — storable, then stored. The unit that opens one is
+    /// `inst-bs-approval`'s batch approval, on the material edge out of
+    /// `validating` (`api::rest::repricing_runs::advance_on_verdict`);
+    /// `approval_repo::SUBJECT_KINDS_WITH_A_WRITER` carries it now.
     BulkOperation,
 }
 

@@ -182,20 +182,26 @@ use crate::infra::storage::{RepoError, contention_or_db, policy_guard_or_content
 /// D-225. This roster used to say the opposite — that the overlay was absent here
 /// because Slice 9's O-7 was unwired — and stayed true for exactly as long as O-7
 /// was; a roster is a maintained list, and review finding Z8-5 (2026-08-10) is what
-/// caught this one having drifted. `approval_repo_tests::the_price_unit_kind_is_the_one_with_no_writer`
+/// caught this one having drifted.
+/// `approval_repo_tests::every_declared_subject_kind_now_has_an_approval_plane_writer`
 /// carries the arithmetic, corrected the same way.
 ///
-/// **`bulk_operation`, `AuditSubjectKind`'s sixth member, is the one genuinely
-/// absent now**: its audit-plane writer is the mass-repricing run's open
-/// (`crate::api::rest::repricing_runs`), and the unit that would open a batch
-/// approval over it — `inst-bs-approval` — is unwired, exactly Overlay's situation
-/// before D-225.
+/// **`bulk_operation`, `AuditSubjectKind`'s sixth member, gained a writer on
+/// this plane too (2026-08-11), Overlay's own situation before D-225 reproduced
+/// exactly.** Its audit-plane writer has always been the mass-repricing run's
+/// open (`crate::api::rest::repricing_runs::open_run_in`); its approval-plane
+/// writer is now the material edge out of `validating`
+/// (`crate::api::rest::repricing_runs::advance_on_verdict`), which opens the unit
+/// `inst-bs-approval` names. Every declared kind has a writer here as of this
+/// change — the roster is `AuditSubjectKind::ALL`'s whole length for the first
+/// time, and the next member minted is what makes that stop being true again.
 pub const SUBJECT_KINDS_WITH_A_WRITER: &[AuditSubjectKind] = &[
     AuditSubjectKind::PlanRevision,
     AuditSubjectKind::PriceUnit,
     AuditSubjectKind::Window,
     AuditSubjectKind::Policy,
     AuditSubjectKind::Overlay,
+    AuditSubjectKind::BulkOperation,
 ];
 
 /// A record to open — the pending half of `pricing_approval`.

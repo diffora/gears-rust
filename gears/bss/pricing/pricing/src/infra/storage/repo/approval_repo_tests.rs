@@ -132,13 +132,14 @@ fn the_reading_carries_the_row_across_unchanged() {
 }
 
 #[test]
-fn the_price_unit_kind_is_the_one_with_no_writer() {
-    // All four members are storable — D-158 requires the store to declare what the
-    // audit store declares — and three of them are opened by something here:
-    // `ApprovalService::submit` opens a plan revision, `submit_window_mutation`
-    // opens a window, and `infra::approval::open_policy_unit` opens the D-10
-    // threshold-policy unit. Stated so a later slice submitting a price unit on its
-    // own finds the sentence rather than assuming the narrower set was a constraint.
+fn every_declared_subject_kind_now_has_an_approval_plane_writer() {
+    // All six members are storable — D-158 requires the store to declare what the
+    // audit store declares — and every one of them is opened by something here:
+    // `ApprovalService::submit` opens a plan revision, `submit_supersession_on`
+    // opens a price unit, `submit_window_mutation` opens a window,
+    // `infra::approval::open_policy_unit` opens the D-10 threshold-policy unit,
+    // `submit_overlay_on` opens an overlay revision, and — as of 2026-08-11 —
+    // `api::rest::repricing_runs::advance_on_verdict` opens a bulk operation.
     assert_eq!(
         SUBJECT_KINDS_WITH_A_WRITER,
         &[
@@ -158,22 +159,21 @@ fn the_price_unit_kind_is_the_one_with_no_writer() {
             // exact failure mode this comment already named for `price_unit` one entry up:
             // review finding Z8-5 (2026-08-10) is what caught it.
             AuditSubjectKind::Overlay,
+            // **`bulk_operation` joined on 2026-08-11**, when
+            // `api::rest::repricing_runs::advance_on_verdict` became its writer here —
+            // the audit-plane writer (the run's own open) has existed since the token
+            // was minted, but this roster is the *approval* plane's and `inst-bs-approval`
+            // was unwired until now.
+            AuditSubjectKind::BulkOperation,
         ]
     );
-    assert!(AuditSubjectKind::ALL.contains(&AuditSubjectKind::PriceUnit));
 
-    // **A sixth was minted on 2026-08-11, and this is the question being answered.**
-    // The assertion above used to be an equality with `AuditSubjectKind::ALL.len()`,
-    // written so that *"the day a fifth is minted, this equality is what asks whether
-    // it has a writer"*. `bulk_operation` is the sixth, and the answer is: on the
-    // **audit** plane yes — the mass-repricing run's open — and on **this** plane, the
-    // approval one, no. `inst-bs-approval`'s batch approval is the unwired unit that
-    // would open one, Overlay's own situation before D-225.
-    //
-    // So the roster is one short of the enum again, deliberately, and the arithmetic
-    // names which one is missing rather than only how many. A test asserting a bare
-    // count would go green the day `bulk_operation` gained an approval writer and some
-    // other member lost its own.
+    // **The roster is `AuditSubjectKind::ALL`'s whole length for the first time.**
+    // It has been one short of the enum since the fifth member (`price_unit`,
+    // `overlay`, then `bulk_operation` in turn) each landed with the audit-plane
+    // writer ahead of the approval one; this equality is what the next-minted
+    // member will make false again, and a reader who finds it green after that
+    // has found the roster gone stale rather than the enumeration exhausted.
     let without_a_writer: Vec<AuditSubjectKind> = AuditSubjectKind::ALL
         .iter()
         .copied()
@@ -181,8 +181,8 @@ fn the_price_unit_kind_is_the_one_with_no_writer() {
         .collect();
     assert_eq!(
         without_a_writer,
-        [AuditSubjectKind::BulkOperation],
-        "exactly one declared kind has no approval-plane writer, and it is the bulk operation"
+        [],
+        "every declared kind now has an approval-plane writer"
     );
 }
 
