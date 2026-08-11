@@ -136,19 +136,27 @@ pub async fn open_rows(
 /// id with a null instant is admitted by the pair-wise spelling and would be
 /// applied a second time by the re-drive.
 ///
+/// **The swap is the guard.** A statement matching zero rows — the wrong
+/// `(run_id, price_id)` pair, a row the scope gate filtered out, a row already
+/// decided — is refused rather than answered `Ok(())`; the caller here is the
+/// re-drive, and a silent no-op would leave the row `pending` for it to apply a
+/// second time, minting a second successor on the key (Z8-2).
+///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure, including the trigger's
 /// refusal to move a row that is already decided and the `CHECK` refusing a
-/// successor that wears the selected row's own id.
+/// successor that wears the selected row's own id; [`RepoError::NotFound`] when
+/// the swap matches no row.
 pub async fn mark_applied(
     runner: &impl DBRunner,
     scope: &AccessScope,
+    tenant_id: Uuid,
     run_id: Uuid,
     price_id: Uuid,
     applied_price_id: Uuid,
     applied_at: DateTime<Utc>,
 ) -> Result<(), RepoError> {
-    repricing_journal::Entity::update_many()
+    let affected = repricing_journal::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
@@ -163,10 +171,17 @@ pub async fn mark_applied(
             repricing_journal::Column::AppliedAt,
             sea_orm::sea_query::Expr::value(applied_at),
         )
-        .filter(row_of(run_id, price_id))
+        .filter(row_of(tenant_id, run_id, price_id))
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("apply pricing_repricing_journal: {e}")))?;
+        .map_err(|e| RepoError::Db(format!("apply pricing_repricing_journal: {e}")))?
+        .rows_affected;
+    if affected == 0 {
+        return Err(RepoError::NotFound {
+            subject: "repricing journal row".to_owned(),
+            id: format!("{run_id}/{price_id}"),
+        });
+    }
     Ok(())
 }
 
@@ -181,11 +196,12 @@ pub async fn mark_applied(
 pub async fn mark_failed(
     runner: &impl DBRunner,
     scope: &AccessScope,
+    tenant_id: Uuid,
     run_id: Uuid,
     price_id: Uuid,
     reason: &str,
 ) -> Result<(), RepoError> {
-    repricing_journal::Entity::update_many()
+    let affected = repricing_journal::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
@@ -196,10 +212,17 @@ pub async fn mark_failed(
             repricing_journal::Column::FailureReason,
             sea_orm::sea_query::Expr::value(reason),
         )
-        .filter(row_of(run_id, price_id))
+        .filter(row_of(tenant_id, run_id, price_id))
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("fail pricing_repricing_journal: {e}")))?;
+        .map_err(|e| RepoError::Db(format!("fail pricing_repricing_journal: {e}")))?
+        .rows_affected;
+    if affected == 0 {
+        return Err(RepoError::NotFound {
+            subject: "repricing journal row".to_owned(),
+            id: format!("{run_id}/{price_id}"),
+        });
+    }
     Ok(())
 }
 
@@ -260,9 +283,14 @@ pub async fn pending_for_run(
         .collect())
 }
 
-/// The composite key, spelled once.
-fn row_of(run_id: Uuid, price_id: Uuid) -> Condition {
+/// The composite key, spelled once. Carries `tenant_id` beside `run_id` and
+/// `price_id`, the belt-and-braces every sibling filter in this layer already
+/// has — `.scope_with(scope)` is the RLS gate, so this is not load-bearing for
+/// isolation on its own, but a predicate that omits it is the one filter here
+/// that would not stop at a foreign row if the gate above it ever did.
+fn row_of(tenant_id: Uuid, run_id: Uuid, price_id: Uuid) -> Condition {
     Condition::all()
+        .add(repricing_journal::Column::TenantId.eq(tenant_id))
         .add(repricing_journal::Column::RunId.eq(run_id))
         .add(repricing_journal::Column::PriceId.eq(price_id))
 }

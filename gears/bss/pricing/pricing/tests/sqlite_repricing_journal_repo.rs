@@ -21,6 +21,7 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::repricing_journal_repo::NewJournalRow;
 use bss_pricing::infra::storage::repo::{
@@ -225,12 +226,13 @@ async fn a_decided_row_is_final_and_the_re_drive_sees_only_what_is_left() {
     .await
     .expect("freeze the row set");
 
-    repricing_journal_repo::mark_applied(&conn, &scope(), run, applied, successor, at(11))
+    repricing_journal_repo::mark_applied(&conn, &scope(), TENANT, run, applied, successor, at(11))
         .await
         .expect("apply one");
     repricing_journal_repo::mark_failed(
         &conn,
         &scope(),
+        TENANT,
         run,
         failed,
         "the plan-level pass refused",
@@ -318,4 +320,45 @@ async fn a_second_run_under_one_client_key_is_refused_per_kind_and_not_across_ki
         "one key opens one run per kind, never two"
     );
     assert_eq!(found_run.state, BulkState::Validating);
+}
+
+#[tokio::test]
+async fn marking_a_row_that_is_not_in_the_journal_is_refused() {
+    // Z8-2: `mark_applied`/`mark_failed` used to end `.exec(runner).await?; Ok(())`
+    // without reading `rows_affected`, so a swap that matched no row answered
+    // success — and the re-drive, which trusts a decided row to stay decided,
+    // would apply the same row a second time.
+    let p = provider().await;
+    let conn = p.conn().expect("conn");
+    let run = Uuid::now_v7();
+    // No journal row is opened for this pair at all.
+    let outcome = repricing_journal_repo::mark_applied(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        at(11),
+    )
+    .await;
+    assert!(
+        matches!(outcome, Err(RepoError::NotFound { .. })),
+        "a swap that matched no row must refuse, not answer Ok(()) — the re-drive \
+         would otherwise apply the row a second time; got {outcome:?}"
+    );
+
+    let outcome = repricing_journal_repo::mark_failed(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        Uuid::now_v7(),
+        "no row to fail",
+    )
+    .await;
+    assert!(
+        matches!(outcome, Err(RepoError::NotFound { .. })),
+        "same refusal for the failure path; got {outcome:?}"
+    );
 }
