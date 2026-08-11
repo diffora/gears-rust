@@ -168,6 +168,11 @@ fn conflicts_are_409() {
         409
     );
     assert_eq!(status(DomainError::WindowNotCancellable(detail())), 409);
+    // D-09's own two codes, `WindowOverlap`'s reason one plane over: the request
+    // was well-formed and what refused it is a sibling membership on the payer
+    // their own request never named. §5 types both 409 outright.
+    assert_eq!(status(DomainError::MembershipOverlap(detail())), 409);
+    assert_eq!(status(DomainError::MembershipConflict(detail())), 409);
 }
 
 /// The two authority refusals of §5, **403 and carrying only their code**.
@@ -347,6 +352,18 @@ fn the_wire_codes_survive_the_ladder() {
     assert_eq!(
         aborted_reason(DomainError::PendingChangeUnitExists(detail())),
         crate::domain::approval::PENDING_CHANGE_UNIT_EXISTS
+    );
+    // D-09's two codes. Bare literals, `WindowOverlap`'s own convention beside it:
+    // no `domain::membership` module exists to hold a constant, so — like
+    // `DUPLICATE_SCOPE_KEY` and `STALE_VERSION` above — the ladder's literal is
+    // the only spelling and this is what pins it against a silent rename.
+    assert_eq!(
+        aborted_reason(DomainError::MembershipOverlap(detail())),
+        "MEMBERSHIP_OVERLAP"
+    );
+    assert_eq!(
+        aborted_reason(DomainError::MembershipConflict(detail())),
+        "MEMBERSHIP_CONFLICT"
     );
 }
 

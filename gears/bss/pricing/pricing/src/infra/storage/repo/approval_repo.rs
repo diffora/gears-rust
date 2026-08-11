@@ -192,9 +192,19 @@ use crate::infra::storage::{RepoError, contention_or_db, policy_guard_or_content
 /// open (`crate::api::rest::repricing_runs::open_run_in`); its approval-plane
 /// writer is now the material edge out of `validating`
 /// (`crate::api::rest::repricing_runs::advance_on_verdict`), which opens the unit
-/// `inst-bs-approval` names. Every declared kind has a writer here as of this
-/// change — the roster is `AuditSubjectKind::ALL`'s whole length for the first
-/// time, and the next member minted is what makes that stop being true again.
+/// `inst-bs-approval` names. Every declared kind had a writer here as of that
+/// change — the roster was `AuditSubjectKind::ALL`'s whole length for the first
+/// time — and, exactly as predicted, the next member minted is what made that
+/// stop being true again.
+///
+/// **`AuditSubjectKind::Membership` (2026-08-11, `group_membership_repo`) is
+/// that next member, and it is correctly absent from this roster.** Its
+/// audit-plane writer exists (`group_membership_repo::enroll` /
+/// `end_membership`); this plane's does not, because a membership mutation's
+/// materiality (`inst-mm-*`, the renewal-aligned default vs. the immediate /
+/// bulk-move material edges) is a later task's to wire — `infra::approval::re_derive`
+/// and `subject_aggregate` both refuse this kind outright rather than pretend
+/// to resolve a unit that cannot exist yet.
 pub const SUBJECT_KINDS_WITH_A_WRITER: &[AuditSubjectKind] = &[
     AuditSubjectKind::PlanRevision,
     AuditSubjectKind::PriceUnit,

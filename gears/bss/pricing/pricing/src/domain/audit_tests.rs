@@ -95,6 +95,7 @@ fn the_persisted_subject_kind_tokens_are_asserted_against_literals() {
     assert_eq!(AuditSubjectKind::Policy.as_str(), "policy");
     assert_eq!(AuditSubjectKind::Overlay.as_str(), "overlay");
     assert_eq!(AuditSubjectKind::BulkOperation.as_str(), "bulk_operation");
+    assert_eq!(AuditSubjectKind::Membership.as_str(), "membership");
     assert_eq!(
         AuditSubjectKind::ALL,
         &[
@@ -104,6 +105,7 @@ fn the_persisted_subject_kind_tokens_are_asserted_against_literals() {
             AuditSubjectKind::Policy,
             AuditSubjectKind::Overlay,
             AuditSubjectKind::BulkOperation,
+            AuditSubjectKind::Membership,
         ]
     );
 }

@@ -634,10 +634,14 @@ async fn a_subject_kind_outside_the_enumeration_is_refused_by_the_mirror() {
     // `overlay` stood at the head of this list until 2026-08-06 and moved out of it
     // rather than being deleted: D-221 gave the overlay plane an audit writer, and
     // D-158 obliges this mirror to admit what the audit vocabulary declares, so
-    // `m20260802_000035` widened the CHECK. `membership` is the next member of S5 §6's
-    // enumeration this gear declares no kind for, which keeps the list's property
-    // intact — the three that follow it are the shapes a token can be malformed in
-    // (empty, wrong case, trailing space) and are not going anywhere.
+    // `m20260802_000035` widened the CHECK. `membership` still belongs here even
+    // though `AuditSubjectKind::Membership` now exists (2026-08-11,
+    // `group_membership_repo`): this CHECK is `pricing_approval`'s, not
+    // `pricing_audit_log`'s, and D-158's extend-together rule only reaches it once
+    // a kind gets an *approval*-plane writer — membership has an audit-plane one
+    // and, deliberately, no approval-plane one yet (see that module's doc). The
+    // three that follow it are the shapes a token can be malformed in (empty, wrong
+    // case, trailing space) and are not going anywhere.
     for undeclared in ["membership", "", "PLAN_REVISION", "plan_revision "] {
         let id = Uuid::now_v7();
         let am = bss_pricing::infra::storage::entity::approval::ActiveModel {

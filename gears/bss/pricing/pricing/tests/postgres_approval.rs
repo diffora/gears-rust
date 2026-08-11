@@ -417,27 +417,40 @@ async fn a_state_outside_the_machine_is_refused() {
 /// the code deliberately does not — the storable direction is what ranges over
 /// `AuditSubjectKind::ALL`, in `every_state_the_machine_reaches_is_storable`.
 ///
-/// **The token has now moved twice, and the guard below forced both moves to be
-/// deliberate: it fails if the literal this test uses ever becomes declared, so the
-/// test can never quietly assert a refusal the store has stopped performing.**
+/// **The token has now moved three times, and the guard below forced every move
+/// to be deliberate: it fails if the literal this test uses ever becomes
+/// declared, so the test can never quietly assert a refusal the store has
+/// stopped performing.**
 ///
 /// It was `window` until the change that mounted the three window surfaces —
 /// `window` is now declared, admitted by this CHECK on both backends, and written by
 /// `infra::window` and by the pending unit a window mutation opens. Then `overlay`,
 /// until 2026-08-06: D-221 gave the overlay plane its audit writer, D-158 obliged
 /// this mirror to admit what the audit vocabulary declares, and `m20260802_000035`
-/// widened the CHECK. Asserting either is refused would now assert the opposite of
-/// what the gear does.
+/// widened the CHECK. Then `membership`, until 2026-08-11: `group_membership_repo`
+/// (Task 4 of the customer-group plane) gave it an *audit*-plane writer and
+/// `AuditSubjectKind::Membership` a variant — this CHECK was **not** widened
+/// alongside it, deliberately (no approval-plane writer exists for this kind; see
+/// `group_membership_repo`'s module doc), but the guard below tests
+/// `AuditSubjectKind::ALL` and not this CHECK, so it still caught the move.
+/// Asserting any of the three is refused would now assert the opposite of what
+/// the gear does, or would for `window`/`overlay` and is one library rebuild away
+/// from doing so for `membership` the day this plane's approval writer lands.
+///
+/// **`historical_import` is the replacement, chosen because it cannot plausibly
+/// become a real kind soon**: it names S5 §6's backdate-import subject, and this
+/// crate has no `pricing_historical_price` store for it to name a row of at all
+/// (`domain::audit`'s module doc, `inst-bd-store`) — a subject kind cannot get a
+/// writer before the table it would name exists.
 ///
 /// **This is the copy the fast tier could not reach.** Two siblings carry the same
 /// premise — `approval_repo_tests::a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row`
 /// and `sqlite_approval_repo::a_subject_kind_outside_the_enumeration_is_refused_by_the_mirror`
-/// — and both reddened on the fast suite the moment the token landed. This one is
-/// `#[ignore]`d behind Docker, so it stayed green through that whole round and failed
-/// on the Postgres run afterwards. Three copies of one premise, on two tiers.
-///
-/// `membership` is the next member of S5 §6's enumeration this gear declares no kind
-/// for, and Slice 9's membership half is not built.
+/// — and both reddened on the fast suite the moment `membership` landed as a
+/// declared kind. This one is `#[ignore]`d behind Docker, so it would have stayed
+/// green through that whole round and failed only on the next Postgres run, had
+/// its own guard not caught the same fact ahead of a live run. Three copies of one
+/// premise, on two tiers.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_subject_kind_with_no_writer_is_refused() {
@@ -445,7 +458,7 @@ async fn a_subject_kind_with_no_writer_is_refused() {
     assert!(
         !AuditSubjectKind::ALL
             .iter()
-            .any(|kind| kind.as_str() == "membership"),
+            .any(|kind| kind.as_str() == "historical_import"),
         "this test is about a token the gear does not declare"
     );
     must_be_rejected(
@@ -456,7 +469,7 @@ async fn a_subject_kind_with_no_writer_is_refused() {
             "NULL",
             "NULL",
             "NULL",
-            "membership",
+            "historical_import",
         ),
         "chk_pricing_approval_subject_kind",
     )

@@ -410,6 +410,105 @@ fn a_refused_window_edge_lands_with_the_other_refused_lifecycle_edges() {
 }
 
 #[test]
+fn a_same_group_membership_collision_carries_the_membership_overlap_code() {
+    // `MEMBERSHIP_OVERLAP` (§5, 409) — the narrower of D-09's two codes, for a
+    // collision within one group. `group_membership_repo::refuse_overlap` is the
+    // only producer, `window_repo`'s own `WindowOverlap` situation one table
+    // over: no schema object names this arm, so it is the only thing between the
+    // repository's refusal and the wire.
+    let err = RepoError::MembershipOverlap {
+        payer_tenant_id: "0000da01-0000-0000-0000-000000000000".to_owned(),
+        requested: "[2099-09-05T00:00:00+00:00, 2099-09-15T00:00:00+00:00)".to_owned(),
+        conflicting: "membership 0000-b0-01 in group groupA at [2099-09-01T00:00:00+00:00, \
+                      2099-09-10T00:00:00+00:00)"
+            .to_owned(),
+    };
+
+    let DomainError::MembershipOverlap(detail) = repo_failure(&err) else {
+        panic!("a same-group membership collision must map to MEMBERSHIP_OVERLAP");
+    };
+    assert!(detail.contains("0000da01"), "got: {detail}");
+    assert!(detail.contains("2099-09-15"), "got: {detail}");
+    assert!(detail.contains("membership 0000-b0-01"), "got: {detail}");
+    // Emphatically not a conflict-free internal fault, `WindowOverlap`'s own
+    // guard: before the arm existed the caller read a 500 for a request whose
+    // whole remedy is a different interval.
+    assert!(!matches!(repo_failure(&err), DomainError::Internal(_)));
+}
+
+#[test]
+fn a_cross_group_membership_collision_carries_the_membership_conflict_code() {
+    // `MEMBERSHIP_CONFLICT` (§5, 409, D-09) — the case D-09 is actually about: a
+    // payer's interval in one group colliding with an interval in a *different*
+    // group. Deliberately its own arm and not merged with `MembershipOverlap`:
+    // §5 types the two codes separately because the remedies differ, and a
+    // consumer branching on the wire code needs the distinction the mapping is
+    // what carries it through.
+    let err = RepoError::MembershipConflict {
+        payer_tenant_id: "0000da01-0000-0000-0000-000000000000".to_owned(),
+        requested: "[2099-09-05T00:00:00+00:00, 2099-09-15T00:00:00+00:00)".to_owned(),
+        conflicting: "membership 0000-b0-01 in group groupA at [2099-09-01T00:00:00+00:00, \
+                      2099-09-10T00:00:00+00:00)"
+            .to_owned(),
+    };
+
+    let DomainError::MembershipConflict(detail) = repo_failure(&err) else {
+        panic!("a cross-group membership collision must map to MEMBERSHIP_CONFLICT");
+    };
+    assert!(detail.contains("0000da01"), "got: {detail}");
+    assert!(detail.contains("2099-09-15"), "got: {detail}");
+    assert!(detail.contains("membership 0000-b0-01"), "got: {detail}");
+    assert!(!matches!(repo_failure(&err), DomainError::Internal(_)));
+    // And distinguishable from its same-group sibling by category alone — a
+    // consumer must be able to tell the two apart without reading the sentence.
+    let sibling = RepoError::MembershipOverlap {
+        payer_tenant_id: "0000da01-0000-0000-0000-000000000000".to_owned(),
+        requested: "[2099-09-05T00:00:00+00:00, 2099-09-15T00:00:00+00:00)".to_owned(),
+        conflicting: "membership 0000-b0-01 in group groupA at [2099-09-01T00:00:00+00:00, \
+                      2099-09-10T00:00:00+00:00)"
+            .to_owned(),
+    };
+    assert!(!matches!(
+        repo_failure(&sibling),
+        DomainError::MembershipConflict(_)
+    ));
+}
+
+#[test]
+fn an_empty_membership_interval_is_the_callers_mistake_and_keeps_its_rendering() {
+    // The application half of `chk_pricing_group_membership_interval`, and §5
+    // declares no membership code for it either — `WindowIntervalEmpty`'s own
+    // situation, one plane over, so this rides `INVALID_REQUEST` rather than
+    // minting one.
+    let err = RepoError::MembershipIntervalEmpty {
+        requested: "[2099-09-20T00:00:00+00:00, 2099-09-20T00:00:00+00:00)".to_owned(),
+    };
+
+    let DomainError::InvalidRequest(detail) = repo_failure(&err) else {
+        panic!("an empty membership interval must map to INVALID_REQUEST");
+    };
+    assert_eq!(
+        detail,
+        "pricing repo: the membership interval [2099-09-20T00:00:00+00:00, \
+         2099-09-20T00:00:00+00:00) is empty; effective_to must be strictly after \
+         effective_from"
+    );
+
+    // The merge with `ValueOutOfRange` / `WindowIntervalEmpty` is deliberate and
+    // this is what makes it honest: one category, because all three are an
+    // authored value the request can be reshaped around — and three
+    // distinguishable sentences, so a consumer is not asked to act on a
+    // distinction the mapping refused to draw.
+    let sibling = RepoError::WindowIntervalEmpty {
+        requested: "[2099-09-20T00:00:00+00:00, 2099-09-20T00:00:00+00:00)".to_owned(),
+    };
+    let DomainError::InvalidRequest(sibling_detail) = repo_failure(&sibling) else {
+        panic!("the merged sibling arm must land in the same category");
+    };
+    assert_ne!(detail, sibling_detail);
+}
+
+#[test]
 fn an_empty_window_interval_is_the_callers_mistake_and_keeps_its_rendering() {
     // The third of the three window arms, and the one the commit that closed the
     // class missed: corrupting it to `Internal` left the whole suite green at 1127.

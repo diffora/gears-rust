@@ -202,6 +202,59 @@ async fn an_enrollment_overlapping_the_same_group_is_refused_by_name() {
     );
 }
 
+/// **The open-ended collision, unproven at this layer until now.** An
+/// open-ended membership (`effective_to: None`) has no stored upper bound to
+/// compare against, and `intersects`'s `None` arm is what reads that as
+/// infinity rather than as "no data" — the same NULL-safety the migration's
+/// `SQLite` trigger carries in its `WHERE EXISTS`
+/// (`m20260802_000067`'s module doc). Proven only on the Docker-gated
+/// `tests/postgres_group_membership.rs` suite until this case: a bounded
+/// enrollment that starts inside an *open-ended* predecessor must be refused
+/// **by name** at this repository, not only by the trigger.
+#[tokio::test]
+async fn an_enrollment_colliding_with_an_open_ended_membership_is_refused_by_name() {
+    let provider = provider().await;
+    let conn = provider.conn().expect("conn");
+
+    group_membership_repo::enroll(
+        &conn,
+        &scope(),
+        TENANT,
+        new_membership(Uuid::from_u128(0xb0_0e), PAYER, GROUP_A, t(1), None),
+        stamp_at(t(1)),
+    )
+    .await
+    .expect("open-ended enrollment");
+
+    let refusal = group_membership_repo::enroll(
+        &conn,
+        &scope(),
+        TENANT,
+        new_membership(Uuid::from_u128(0xb0_0f), PAYER, GROUP_B, t(10), Some(t(20))),
+        stamp_at(t(10)),
+    )
+    .await
+    .expect_err("a bounded interval starting inside an open-ended one must be refused");
+
+    match refusal {
+        RepoError::MembershipConflict {
+            payer_tenant_id, ..
+        } => {
+            assert_eq!(payer_tenant_id, PAYER.to_string());
+        }
+        other => panic!("expected MembershipConflict, got {other:?}"),
+    }
+
+    let held = group_membership_repo::intervals_for_payer(&conn, &scope(), TENANT, PAYER)
+        .await
+        .expect("read back");
+    assert_eq!(held.len(), 1, "the refused enrollment wrote no row");
+    assert_eq!(
+        held[0].effective_to, None,
+        "the open-ended predecessor is untouched"
+    );
+}
+
 /// **A rule that refuses two sequential future-dated memberships is wrong** —
 /// the 2026-07-28 review fix `design/09-price-overlays.md` §3 records: "scheduled
 /// sequential future-dated memberships are legal". Two intervals with a real gap

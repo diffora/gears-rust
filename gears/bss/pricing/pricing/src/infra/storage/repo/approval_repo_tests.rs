@@ -92,30 +92,43 @@ fn a_subject_kind_outside_d158s_enumeration_is_a_corrupt_row() {
     // stores in step, so one of these arriving here means somebody widened one of
     // them alone.
     //
-    // **The token has moved twice, and both moves are the same event.** It was
-    // `window` until the three window surfaces mounted; then `overlay`, chosen as
-    // *"the next member of S5 §6's enumeration with no writer here"*; and `overlay`
-    // stopped being that on 2026-08-06, when D-221 gave the overlay plane its audit
-    // writer and `chk_pricing_approval_subject_kind` its token. Asserting either is
-    // unreadable would now assert the opposite of what the gear does.
+    // **The token has now moved three times, and all three moves are the same
+    // event.** It was `window` until the three window surfaces mounted; then
+    // `overlay`, chosen as *"the next member of S5 §6's enumeration with no writer
+    // here"*; `overlay` stopped being that on 2026-08-06 (D-221's audit writer);
+    // this example was then moved to `membership` — and `membership` stopped being
+    // that on 2026-08-11, when `group_membership_repo` (Task 4 of the
+    // customer-group plane) gave it a writer and `AuditSubjectKind::Membership` a
+    // variant. Asserting any of the three unreadable now would assert the opposite
+    // of what the gear does — exactly the drift this test is named for catching in
+    // *stored data* and had, ironically, twice now failed to catch in *itself*.
     //
-    // `membership` is the next one — S5 §6 lists it, this gear declares no such kind,
-    // and Slice 9's membership half is not built. The property the test is named for
-    // is unchanged: a token outside `AuditSubjectKind::ALL` is a corrupt row and never
-    // silently the wrong variant.
+    // **The replacement is `historical_import`, chosen for a property the first
+    // three picks did not select for: it cannot plausibly become a real kind
+    // soon.** `window`, `overlay` and `membership` were each picked as "the next
+    // undeclared member" while their own writers were already close — `overlay`'s
+    // landed the same wave, `membership`'s inside days. `historical_import` names
+    // S5 §6's backdate-import subject, and this crate's own audit module doc
+    // records it has **no store to be a subject of**: the `backdate_import` audit
+    // *action* — a different S5 §6 token, on `AuditAction`, and one this gear
+    // declares no variant for either — is owed *because* "there is no
+    // `pricing_historical_price` store (`inst-bd-store`)". A subject kind cannot
+    // get a writer before the table it would name exists, so this token is not
+    // merely undeclared today, it is undeclared until a different feature entirely
+    // is built.
     //
-    // The count is deliberately not in this sentence: it read "three kinds" while
-    // `AuditSubjectKind` declared four, and its sibling in `sqlite_approval_repo.rs`
-    // was updated and this was not. `AuditSubjectKind::ALL` is the roster.
-    let err = to_domain(row("submitted", "membership"))
-        .expect_err("`membership` is not a kind this gear declares");
+    // The count is deliberately not in this sentence, for the same reason the
+    // previous version of this comment gave: `AuditSubjectKind::ALL` is the
+    // roster, not a number restated here to go stale a third time.
+    let err = to_domain(row("submitted", "historical_import"))
+        .expect_err("`historical_import` is not a kind this gear declares");
     match err {
         RepoError::CorruptRow(detail) => {
             assert!(
                 detail.contains("pricing_approval.subject_kind"),
                 "got: {detail}"
             );
-            assert!(detail.contains("membership"), "got: {detail}");
+            assert!(detail.contains("historical_import"), "got: {detail}");
         }
         other => panic!("expected a corrupt row, got: {other:?}"),
     }
@@ -132,9 +145,11 @@ fn the_reading_carries_the_row_across_unchanged() {
 }
 
 #[test]
-fn every_declared_subject_kind_now_has_an_approval_plane_writer() {
-    // All six members are storable — D-158 requires the store to declare what the
-    // audit store declares — and every one of them is opened by something here:
+fn every_declared_subject_kind_but_membership_has_an_approval_plane_writer() {
+    // Six of the seven declared members are storable on this plane — D-158
+    // requires the store to declare what the audit store declares, which the
+    // roster below is silent about `Membership` for the reason below the roster
+    // gives — and each of the six is opened by something here:
     // `ApprovalService::submit` opens a plan revision, `submit_supersession_on`
     // opens a price unit, `submit_window_mutation` opens a window,
     // `infra::approval::open_policy_unit` opens the D-10 threshold-policy unit,
@@ -168,12 +183,23 @@ fn every_declared_subject_kind_now_has_an_approval_plane_writer() {
         ]
     );
 
-    // **The roster is `AuditSubjectKind::ALL`'s whole length for the first time.**
-    // It has been one short of the enum since the fifth member (`price_unit`,
-    // `overlay`, then `bulk_operation` in turn) each landed with the audit-plane
-    // writer ahead of the approval one; this equality is what the next-minted
-    // member will make false again, and a reader who finds it green after that
-    // has found the roster gone stale rather than the enumeration exhausted.
+    // **The roster was `AuditSubjectKind::ALL`'s whole length for exactly one
+    // change.** It had been one short of the enum since the fifth member
+    // (`price_unit`, `overlay`, then `bulk_operation` in turn) each landed with the
+    // audit-plane writer ahead of the approval one, and the next-minted member —
+    // `Membership` (2026-08-11, `group_membership_repo`) — made it one short again,
+    // predicted almost word-for-word by the comment this one replaces. This shape
+    // computes the gap from `AuditSubjectKind::ALL` rather than hard-coding a count
+    // or an `[]`, which is what lets the test notice the *next* addition too,
+    // whatever it turns out to be, instead of going stale a third time the way the
+    // count-based wording already had once.
+    //
+    // `Membership` has an audit-plane writer (`group_membership_repo::enroll` /
+    // `end_membership`) and no approval-plane one: a membership mutation's
+    // materiality (`inst-mm-*`, the renewal-aligned default vs. the immediate /
+    // bulk-move material edges) is unwired, and giving it a writer here is what
+    // would close this gap — the same way D-221/D-225/`inst-bs-approval` closed the
+    // three before it.
     let without_a_writer: Vec<AuditSubjectKind> = AuditSubjectKind::ALL
         .iter()
         .copied()
@@ -181,8 +207,9 @@ fn every_declared_subject_kind_now_has_an_approval_plane_writer() {
         .collect();
     assert_eq!(
         without_a_writer,
-        [],
-        "every declared kind now has an approval-plane writer"
+        [AuditSubjectKind::Membership],
+        "every declared kind but `membership` has an approval-plane writer; \
+         wiring `inst-mm-*`'s material edge is what would close this gap"
     );
 }
 
