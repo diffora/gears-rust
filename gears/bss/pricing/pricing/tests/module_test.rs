@@ -92,7 +92,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::taxonomies::TAXONOMY;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{
-        PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
+        PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
     };
     vec![
         ("GET", FRONTIER),
@@ -164,6 +164,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // The `DELETE` carries no idempotency header, which is §5's own column and is
         // reported as a divergence in `api::rest::windows`.
         ("POST", PRICE_WINDOWS),
+        ("GET", PRICE_WINDOWS_LIST),
         ("PATCH", PRICE_WINDOW),
         ("DELETE", PRICE_WINDOW),
         // Slice 7's interactive repricing: the supersession unit (D-88), one route in a

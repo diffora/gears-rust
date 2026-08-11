@@ -1861,6 +1861,58 @@ pub async fn load_scope_keys_for_plan(
         .collect()
 }
 
+/// The canonical scope keys of a **named set** of price rows, in `price_id` order.
+///
+/// [`load_scope_keys_for_plan`]'s question asked the other way round, and it
+/// exists for the one reader whose starting point is the window plane rather than
+/// a plan: `window_repo::list_page` walks `pricing_price_window` — a table
+/// carrying `price_id` and no plan reference at all — and every
+/// [`WindowRecord`](crate::infra::storage::repo::window_repo::WindowRecord) it
+/// renders has to carry its row's key. Resolving that key per window would be one
+/// query per row of the page; this is the same resolution in **one** query for
+/// the whole page.
+///
+/// The **no lifecycle filter** paragraph on [`load_scope_keys_for_plan`] applies
+/// here verbatim and for its own reason: a window belongs to whatever row it
+/// names, in whatever state that row stands.
+///
+/// An empty `price_ids` yields an empty result without touching the store — an
+/// `IN ()` is a predicate no backend spells the same way, and the answer is known.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+/// when a stored axis is outside the enumeration its CHECK admits.
+pub async fn load_scope_keys_for_ids(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_ids: &[Uuid],
+) -> Result<Vec<(Uuid, ScopeKey)>, RepoError> {
+    if price_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PriceId.is_in(price_ids.iter().copied())),
+        )
+        .order_by(price::Column::PriceId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| {
+            RepoError::Db(format!(
+                "read the scope keys of {} rows: {e}",
+                price_ids.len()
+            ))
+        })?
+        .iter()
+        .map(|row| Ok((row.price_id, to_scope_key(row)?)))
+        .collect()
+}
+
 /// The **published** rows a mass-repricing run's selector reaches, in `price_id`
 /// order (`design/12-operator-efficiency.md` `inst-mr-api`, `inst-mp-grandfathered`;
 /// D-307).

@@ -54,7 +54,7 @@ use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
 use bss_pricing::api::rest::taxonomies::TAXONOMY;
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::api::rest::windows::{
-    PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS,
+    PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
 };
 use bss_pricing::authz::{actions, labels};
 use bss_pricing::domain::approval::ApprovalState;
@@ -314,6 +314,21 @@ fn census() -> Vec<Route> {
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
+        },
+        // The window collection read. `plan x read`, which is what `GET
+        // …/coverage` and `GET …/sellability` already ask for on this surface —
+        // there is no `price` label in the catalogue at all, so a listing over
+        // the window plane is a read of the plan plane by the only vocabulary
+        // this gear has. Catalogued rather than taken as obvious for the reason
+        // the plan collection's row gives: a listing passes `resource_id: None`,
+        // so the pair it asks for is what compiles the tenant filter the whole
+        // walk runs under.
+        Route {
+            method: "GET",
+            path: PRICE_WINDOWS_LIST,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
         },
         // The supersession unit (D-88). **`plan x write`, not `plan x publish`** — S5's
         // endpoint map puts it there beside the cutover, and the reason is the same one

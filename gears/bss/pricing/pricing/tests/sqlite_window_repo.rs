@@ -1410,3 +1410,86 @@ async fn an_adjustment_against_a_stale_act_sequence_is_refused() {
     );
     assert_eq!(read.mutation_seq, 1, "nor did it advance the sequence");
 }
+
+// ---------------------------------------------------------------------------
+// The collection read: `GET /bss-pricing/v1/price-windows`
+// ---------------------------------------------------------------------------
+
+/// The page is a keyset walk on `window_id`, and the walk visits every window
+/// once.
+///
+/// The two assertions are separate facts. That the page is **bounded** is what
+/// `limit` means; that resuming after the last id continues rather than restarts
+/// is what makes the token a cursor rather than an offset. A `list_page` that
+/// ignored `after` would satisfy the first and fail the second.
+#[tokio::test]
+async fn the_window_page_walks_by_window_id_and_never_repeats_one() {
+    let provider = harness().await;
+    must_schedule(&provider, window(0x_11_01, t(10), Some(t(20)))).await;
+    must_schedule(&provider, window(0x_11_02, t(20), Some(t(30)))).await;
+    must_schedule(
+        &provider,
+        on_row(0x_11_03, OTHER_KEY_ROW, t(10), Some(t(20))),
+    )
+    .await;
+    let conn = provider.conn().expect("scoped connection");
+
+    let mut walked: Vec<Uuid> = Vec::new();
+    let mut after = None;
+    loop {
+        let page = window_repo::list_page(&conn, &scope(), TENANT, None, after, 2)
+            .await
+            .expect("list");
+        assert!(page.len() <= 2, "the page is bounded by the limit it asked");
+        let Some(last) = page.last() else { break };
+        after = Some(last.window_id);
+        walked.extend(page.iter().map(|record| record.window_id));
+    }
+
+    assert_eq!(
+        walked,
+        vec![
+            Uuid::from_u128(0x_11_01),
+            Uuid::from_u128(0x_11_02),
+            Uuid::from_u128(0x_11_03),
+        ],
+        "every window once, in window_id order"
+    );
+}
+
+/// `price_id` narrows the page to one price row's windows.
+///
+/// **`plan_id` is not the filter and cannot be**: `pricing_price_window` carries
+/// `price_id` and no plan reference at all (the entity's module doc says why —
+/// the plan lives on `pricing_price` so the two cannot disagree). The filter is
+/// asserted against [`OTHER_KEY_ROW`] rather than [`ROW`] so that a query which
+/// dropped the condition would return the two windows of `ROW` as well and fail.
+#[tokio::test]
+async fn the_window_page_narrows_to_one_price_row() {
+    let provider = harness().await;
+    must_schedule(&provider, window(0x_12_01, t(10), Some(t(20)))).await;
+    must_schedule(&provider, window(0x_12_02, t(20), Some(t(30)))).await;
+    must_schedule(
+        &provider,
+        on_row(0x_12_03, OTHER_KEY_ROW, t(10), Some(t(20))),
+    )
+    .await;
+    let conn = provider.conn().expect("scoped connection");
+
+    let page = window_repo::list_page(&conn, &scope(), TENANT, Some(OTHER_KEY_ROW), None, 100)
+        .await
+        .expect("list");
+
+    assert_eq!(
+        page.iter()
+            .map(|record| record.window_id)
+            .collect::<Vec<_>>(),
+        vec![Uuid::from_u128(0x_12_03)],
+        "only the named row's window"
+    );
+    assert_eq!(
+        page[0].scope_key.plan_id(),
+        PlanId::new(PLAN),
+        "and the page resolves each window's key out of pricing_price, as `find` does"
+    );
+}
