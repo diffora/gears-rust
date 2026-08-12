@@ -109,9 +109,10 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::overlay::Adjustment;
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
 use crate::domain::price_record::PriceContent;
+use crate::domain::price_row::ModelKind;
 use crate::domain::publish::rules::run_publish_rules;
 use crate::domain::read_model::SubjectRef;
-use crate::domain::repricing::project_row;
+use crate::domain::repricing::{adjusts_rate, project_row};
 use crate::domain::scope_key::{PlanId, ScopeKey};
 use crate::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
 use crate::domain::window::WindowInterval;
@@ -580,6 +581,28 @@ async fn apply_rows_in(
                 row.price_id
             ))
         })?;
+        // D-311: a `graduated`/`volume` band's rate is a multiplier, not an
+        // amount, and only a percentage adjustment is well-defined on one
+        // (`domain::repricing::project_rate`'s own doc). An `amount`
+        // markup/discount or a `fixed` line on such a row is refused here
+        // rather than silently applying nothing to it while the journal
+        // still reports the row `applied` — `domain::repricing::adjusts_rate`
+        // is the one predicate both this refusal and `project_rate` read.
+        if matches!(
+            predecessor.row.model_kind,
+            Some(ModelKind::Graduated | ModelKind::Volume)
+        ) && !adjusts_rate(adjustment)
+        {
+            return Err(DomainError::InvalidRequest(format!(
+                "price {}: a graduated/volume row's tier bands hold a rate, not an amount, and \
+                 only a percent_bp markup/discount is a well-defined mutation of one; an amount \
+                 markup/discount has no minor-unit floor to apply to a rate, and a fixed line \
+                 would collapse every band to one rate, which this run refuses rather than \
+                 guess",
+                row.price_id
+            )));
+        }
+
         let key = predecessor.scope_key.clone();
         let plane: Vec<NamedWindow> = stored_windows
             .iter()

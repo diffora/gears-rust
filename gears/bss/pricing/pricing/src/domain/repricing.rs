@@ -68,7 +68,7 @@
 
 use toolkit_macros::domain_model;
 
-use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{Adjustment, Magnitude};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::ModelKind;
@@ -198,19 +198,32 @@ impl RunSelector {
 /// negative, and a floor is itself a real, large move a threshold should see —
 /// not the absence of one.
 ///
-/// # The one field this cannot signal "not computable" on
+/// # `flat`/`per_unit`/`package`'s one field that cannot signal "not computable"
 ///
 /// `flat`/`per_unit`'s `amount_minor` and `package`'s `package_price_minor` are
 /// both `Option<MinorAmount>`, so a currency the adjustment cannot resolve is
 /// left `None` — [`crate::domain::materiality::delta::row_delta`] already reads
 /// an absent amount as `NotComputable("amount_minor" | "package_price_minor")`,
 /// D-115 clause (3)'s existing "no delta, so material regardless of threshold"
-/// fallback, not a new rule minted here. `graduated`/`volume`'s
-/// `TierBand::unit_price_minor` is a bare `MinorAmount`, with no `None` to fall
-/// back to; an unresolvable currency there leaves that band at its **published**
-/// price rather than forcing the row incomputable — named in
-/// [`crate::api::rest::repricing_runs`]'s module doc as the one open corner
-/// rather than papered over with a field this function does not own.
+/// fallback, not a new rule minted here.
+///
+/// # `graduated`/`volume`'s bands go through [`project_rate`], not [`project_amount`]
+///
+/// `TierBand::unit_price_rate` is a `RateMinor` (D-311, 2026-08-11) — a
+/// multiplier at 10⁻⁹-minor-unit precision, not a `MinorAmount` — because a
+/// metered rate routinely prices below the currency's minor unit (S3 at
+/// `$0.023`/GB, Lambda at `$0.0000166667`/GB-second) and a `MinorAmount`
+/// cannot express that at all. Wrapping [`project_amount`]'s own result in a
+/// `RateMinor` would reintroduce the exact defect D-311 removed: `0.0150` and
+/// `0.0110` both truncate to the same minor unit, so two different ladders
+/// would land on one after a reprice. [`project_rate`] applies the identical
+/// percentage formula at the rate's own scale instead, so a sub-minor-unit
+/// rate stays sub-minor-unit; see its own doc for the amount/fixed magnitudes,
+/// which it refuses to apply to a rate at all rather than guessing what they
+/// would mean there. A band [`project_rate`] refuses is left at its
+/// **published** rate, on the same "not this projection's job to decide"
+/// reading, and [`crate::infra::repricing::apply_rows_in`] is the one place
+/// that silence becomes a refusal instead — see [`adjusts_rate`].
 pub(crate) fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> PriceRecord {
     let currency = row.scope_key.currency().clone();
     match row.row.model_kind {
@@ -228,16 +241,90 @@ pub(crate) fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> Pric
         }
         Some(ModelKind::Graduated | ModelKind::Volume) => {
             for band in &mut row.row.bands {
-                if let Some(projected) =
-                    project_amount(band.unit_price_minor.get(), adjustment, &currency)
-                {
-                    band.unit_price_minor = projected;
+                if let Some(projected) = project_rate(band.unit_price_rate, adjustment) {
+                    band.unit_price_rate = projected;
                 }
             }
         }
         None => {}
     }
     row
+}
+
+/// One tier band's rate under `adjustment`, at the rate's own 10⁻⁹-minor-unit
+/// scale (D-311) — [`project_row`]'s band arithmetic, and deliberately **not**
+/// a call to [`project_amount`].
+///
+/// # Why only a percentage computes
+///
+/// `markup`/`discount` with a `percent_bp` magnitude is scale-invariant:
+/// `round_half_even(rate * bp, 10_000)` is the identical formula
+/// [`project_amount`] applies at the minor-unit scale, unchanged, at the
+/// rate's finer nano-minor scale — so a sub-minor-unit rate, the entire
+/// reason [`RateMinor`] exists, stays sub-minor-unit through a reprice rather
+/// than being rounded through a coarser unit on its way to the successor.
+///
+/// # Why a currency amount does not — a decision, not a gap
+///
+/// `markup`/`discount` with an `amount` magnitude, and a `fixed` line, are
+/// both defined in **currency minor units**, and neither is applied to a
+/// rate here, computable currency or not:
+///
+/// * `fixed` sets every band it touches to **one** literal value. Applied to
+///   a ladder that would collapse every band to the identical rate, which
+///   defeats the reason the row has bands at all — not a rounding question,
+///   a shape question, and the answer is refuse rather than flatten a tiered
+///   row into a `flat` one under a `graduated` label.
+/// * `amount` markup/discount is a flat minor-unit delta. A rate has no
+///   minor-unit floor to receive it against, and "the same delta on every
+///   band" is only one of several policies a flat currency shift could mean
+///   for a ladder (proportional to the band index is another) — a choice
+///   this mechanism has no basis to make silently on an operator's behalf.
+///
+/// Both arms return `None` unconditionally. [`project_row`] reads that as
+/// "leave this band at its published rate" — the same reading an
+/// unresolvable currency already gets on `flat`/`per_unit`/`package` — and
+/// [`crate::infra::repricing::apply_rows_in`] is where that silence becomes
+/// an actual refusal of the row, via [`adjusts_rate`], because an apply that
+/// commits a successor identical to its predecessor while marking the row
+/// `applied` is the coercion this function declines to perform quietly.
+fn project_rate(base: RateMinor, adjustment: &Adjustment) -> Option<RateMinor> {
+    let nano = base.nano_minor();
+    let projected: i128 = match adjustment {
+        Adjustment::Markup(Magnitude::PercentBp(bp)) => {
+            i128::from(nano) + round_half_even(i128::from(nano) * i128::from(*bp), 10_000)
+        }
+        Adjustment::Discount(Magnitude::PercentBp(bp)) => {
+            i128::from(nano) - round_half_even(i128::from(nano) * i128::from(*bp), 10_000)
+        }
+        Adjustment::Markup(Magnitude::Amount(_))
+        | Adjustment::Discount(Magnitude::Amount(_))
+        | Adjustment::Fixed(_) => return None,
+    };
+    i64::try_from(projected.max(0))
+        .ok()
+        .and_then(|nano| RateMinor::from_nano_minor(nano).ok())
+}
+
+/// Does `adjustment` compute a real rate mutation for a `graduated`/`volume`
+/// row's bands (D-311), or does every band stay at its published rate under
+/// it ([`project_rate`])?
+///
+/// `pub(crate)` for [`crate::infra::repricing::apply_rows_in`]. Materiality's
+/// own projection (`api::rest::repricing_runs::run_materiality`) is content
+/// to read a [`project_rate`] `None` as a silent zero-delta on that band —
+/// the same "no delta, so material regardless of threshold" fallback D-115
+/// clause (3) already gives an unresolvable currency, an accepted, named gap
+/// for a reviewer's comparison. The apply is not a projection for a reviewer
+/// to weigh; it is the write, and a row this mechanism cannot honestly
+/// reprice must refuse rather than commit a successor identical to its
+/// predecessor while the journal reports the row `applied`.
+#[must_use]
+pub(crate) const fn adjusts_rate(adjustment: &Adjustment) -> bool {
+    matches!(
+        adjustment,
+        Adjustment::Markup(Magnitude::PercentBp(_)) | Adjustment::Discount(Magnitude::PercentBp(_))
+    )
 }
 
 /// `base`'s minor-unit amount under `adjustment`, in `currency` — [`project_row`]'s
