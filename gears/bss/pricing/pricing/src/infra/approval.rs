@@ -1408,12 +1408,47 @@ impl ApprovalService {
     /// about *what*, and a record written around the store (a migration, a
     /// restore) could still name one principal twice.
     ///
+    /// # The replay guard, and why `overlays::submit_overlay`'s does not transfer
+    ///
+    /// `ApprovalState::Approved` is terminal — nothing in this crate moves a
+    /// decided record — so a caller of `POST …/move` who retries after the
+    /// approve (a fresh `Idempotency-Key`, per that route's own doc: a retry
+    /// after approval is a new attempt) finds the **same** approved record
+    /// every time and would re-enter this function for a proposal already
+    /// applied.
+    ///
+    /// `overlays::submit_overlay`'s D-234 shape — the precedent this module's
+    /// doc borrows for "open on first arrival, commit once approved" — is
+    /// replay-safe because its commit checks `lifecycle_state != Draft` on a
+    /// **stored row that already existed before the unit opened**: an
+    /// overlay revision is authored first and reviewed second, so "already
+    /// published" is a fact the row itself can carry. A membership move has
+    /// no such row: `inst-mm-pending`'s whole premise is that nothing is
+    /// written before approval, so there is no pre-existing row whose state
+    /// this call could consult. The row *this call would create* is the only
+    /// candidate witness, which is why the guard below reads the **payer's
+    /// current intervals** rather than a lifecycle flag.
+    ///
+    /// For each proposal: if the payer already holds an interval on exactly
+    /// `(group_value, effective_from)`, an earlier call already applied this
+    /// proposal (the failure mode this closes: without the guard, a second
+    /// call would try to end the row it just created at the instant it
+    /// starts, and `end_membership` correctly refuses that as
+    /// `MembershipIntervalEmpty` — fails closed, but with a confusing
+    /// refusal rather than an idempotent answer). The existing row is
+    /// reported back as the receipt, and the registry is asked again under
+    /// [`crate::infra::membership_publish::move_request_id`]'s **same**
+    /// deterministic id — idempotent by that function's own contract, so the
+    /// caller gets back the same `CatalogVersion` handle rather than a
+    /// second, orphaned request.
+    ///
     /// # Errors
     /// [`DomainError::SelfApprovalForbidden`] when `approved` names one
     /// principal as both submitter and approver; [`DomainError::Internal`]
     /// when `approved` is not `subject_kind = membership` or its payload does
     /// not decode; whatever [`crate::infra::membership_publish::move_payer_in`]
-    /// refuses, per proposal.
+    /// refuses, per proposal not already applied; [`DomainError::CatalogVersionUnavailable`]
+    /// when the registry cannot be reached on a replayed proposal.
     pub async fn commit_membership_move_in(
         runner: &impl DBRunner,
         registry: &dyn CatalogVersionRegistryV1,
@@ -1434,6 +1469,24 @@ impl ApprovalService {
         let set = approval_repo::subject_membership_move(approved).map_err(|e| repo_failure(&e))?;
         let mut receipts = Vec::with_capacity(set.proposals().len());
         for proposal in set.proposals() {
+            if let Some(existing) = already_applied(runner, scope, tenant_id, proposal).await? {
+                let pending = registry
+                    .request_version(
+                        ctx,
+                        &crate::infra::membership_publish::move_request_id(
+                            tenant_id,
+                            existing.membership_id,
+                        ),
+                    )
+                    .await
+                    .map_err(|e| crate::domain::ports::registry_failure(&e))?;
+                receipts.push(crate::infra::membership_publish::MembershipMoveReceipt {
+                    ended: None,
+                    enrolled: existing,
+                    pending_ref: pending.pending_ref,
+                });
+                continue;
+            }
             let new_membership_id = Uuid::now_v7();
             let receipt = crate::infra::membership_publish::move_payer_in(
                 runner,
@@ -1867,6 +1920,42 @@ pub(crate) async fn refuse_held_key(
             holder.approval_id, holder.subject_ref
         ))),
     }
+}
+
+/// [`ApprovalService::commit_membership_move_in`]'s replay witness: does
+/// `proposal`'s payer already hold a membership on exactly its `(group_value,
+/// effective_from)`?
+///
+/// `Some` means an earlier call already applied this proposal — the row it
+/// would have created already exists. `None` means this proposal has not
+/// been applied yet (the ordinary path), including the case where the payer
+/// holds a *different* interval that merely happens to overlap in some other
+/// way; only an exact match on the two fields this proposal actually names
+/// counts, because those are the only two facts the proposal pins.
+///
+/// A linear scan over the payer's own intervals rather than a query filtered
+/// on both columns: a payer's interval count is bounded by their own
+/// membership history, never by tenant size, and `group_membership_repo`
+/// carries no such filtered read today — adding one for a single call site
+/// would be the wrong end of the trade.
+async fn already_applied(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    proposal: &crate::domain::membership_change::MembershipMoveProposal,
+) -> Result<Option<crate::infra::storage::repo::group_membership_repo::MembershipRow>, DomainError>
+{
+    let intervals = crate::infra::storage::repo::group_membership_repo::intervals_for_payer(
+        runner,
+        scope,
+        tenant_id,
+        proposal.payer_tenant_id,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    Ok(intervals.into_iter().find(|row| {
+        row.group_value == proposal.group_value && row.effective_from == proposal.effective_from
+    }))
 }
 
 /// Open the D-10 unit over a proposed threshold-policy version, **inside the

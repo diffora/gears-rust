@@ -443,7 +443,14 @@ fn end_request_id(tenant_id: Uuid, membership_id: Uuid, at: DateTime<Utc>) -> St
 /// `enroll_request_id`'s reason: the new id is minted once by the caller and
 /// the enroll half refuses a second insert under it, so it is the one fact in
 /// this act guaranteed not to repeat across two genuinely different moves.
+///
+/// `pub(crate)` rather than private: [`crate::infra::approval::ApprovalService::commit_membership_move_in`]'s
+/// replay guard re-derives this same id for an **already-applied** proposal,
+/// to re-request the registry's idempotent handle rather than mint a new
+/// membership row a second time. Same formula, same reason `record_id`s are
+/// deterministic everywhere in this module: a caller re-presenting a fact
+/// this crate already minted must land on the handle that fact already has.
 #[must_use]
-fn move_request_id(tenant_id: Uuid, new_membership_id: Uuid) -> String {
+pub(crate) fn move_request_id(tenant_id: Uuid, new_membership_id: Uuid) -> String {
     format!("membership-move/{tenant_id}/{new_membership_id}")
 }

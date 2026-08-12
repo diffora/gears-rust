@@ -909,18 +909,30 @@ async fn moving_a_payer_immediately_is_material_and_writes_no_membership_row_unt
     );
 }
 
-/// **The approve -> commit path works end to end.** Once
-/// [`MOVE_APPROVER`] — independent of the submitter — approves the unit the
-/// call above opened, retrying the identical move (a fresh `Idempotency-Key`,
-/// since this is a new attempt rather than a replay of the first) finds the
-/// approved unit and commits: `200`, a real membership row, and the D-06
-/// publish unit's pending handle.
+/// **The approve -> commit path works end to end, at three calls and not
+/// two.** Once [`MOVE_APPROVER`] — independent of the submitter — approves
+/// the unit the first call opened, retrying the identical move (a fresh
+/// `Idempotency-Key`, since this is a new attempt rather than a replay of
+/// the first) finds the approved unit and commits: `200`, a real membership
+/// row, and the D-06 publish unit's pending handle. A **third** call —
+/// `ApprovalState::Approved` is terminal, so the unit this call finds is the
+/// same one the second call already applied — must answer the same way
+/// rather than trying to re-apply the move: this is the replay guard's own
+/// test, and every earlier version of this suite stopped at two calls, which
+/// is exactly why the guard's absence was invisible.
 ///
-/// To redden this: in `move_membership_immediate`, short-circuit the
-/// `approved_unit` branch to always fall through to "open a new unit"
-/// instead of committing. This call then answers `202` again (a second,
-/// distinct approval unit) instead of `200` with a committed move, and the
-/// membership-row assertion below fails.
+/// To redden this (the commit half): in `move_membership_immediate`,
+/// short-circuit the `approved_unit` branch to always fall through to "open
+/// a new unit" instead of committing. The second call then answers `202`
+/// again (a second, distinct approval unit) instead of `200` with a
+/// committed move, and the membership-row assertion after it fails.
+///
+/// To redden this (the replay guard): remove the `already_applied` check
+/// from `ApprovalService::commit_membership_move_in`. The third call then
+/// re-enters `move_payer_in` for a proposal already applied, which tries to
+/// end the membership row the second call just created at the exact instant
+/// it starts — `end_membership` refuses that `MembershipIntervalEmpty`, and
+/// the third call answers a 4xx interval error instead of replaying `200`.
 #[tokio::test]
 async fn an_immediately_moved_payer_commits_once_a_second_principal_approves() {
     let harness = Harness::new().await;
@@ -993,6 +1005,40 @@ async fn an_immediately_moved_payer_commits_once_a_second_principal_approves() {
             .expect("pending_version_ref")
             .is_empty()
     );
+    let committed_membership_id = body["moved"]["enrolled"]["membership_id"].clone();
+
+    // **The third call.** `ApprovalState::Approved` is terminal, so this
+    // finds the same approved unit the second call already applied. It must
+    // answer idempotently — the same membership, no new row, no interval
+    // refusal — rather than trying to re-apply a proposal that already
+    // landed.
+    let replay_response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "gold")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({
+                "effective_from": "2026-06-01T00:00:00Z",
+                "immediate": true
+            })),
+            &[("idempotency-key", "move-immediate-commit-3")],
+        ))
+        .await;
+    let replay_status = replay_response.status();
+    let replay_body = body_json(replay_response).await;
+    assert_eq!(
+        replay_status,
+        StatusCode::OK,
+        "a third call over an already-committed unit must answer idempotently, not refuse an \
+         interval error: body: {replay_body}"
+    );
+    assert_eq!(replay_body["outcome"], "committed");
+    assert_eq!(
+        replay_body["moved"]["enrolled"]["membership_id"], committed_membership_id,
+        "a replay must report the membership the second call already created, not a new one"
+    );
 
     let conn = harness.db.conn().expect("conn");
     let intervals = group_membership_repo::intervals_for_payer(
@@ -1006,7 +1052,8 @@ async fn an_immediately_moved_payer_commits_once_a_second_principal_approves() {
     assert_eq!(
         intervals.len(),
         1,
-        "the approved move must actually write the membership row"
+        "the approved move must actually write the membership row, and the replay must not \
+         write a second one"
     );
 }
 

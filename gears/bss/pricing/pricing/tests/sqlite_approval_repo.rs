@@ -1292,17 +1292,30 @@ async fn a_membership_moves_pin_re_derives_with_no_store_to_read_from() {
     }
 }
 
-/// **The approve -> commit path works end to end.** A material membership
-/// move, once approved by an independent second principal, actually applies:
-/// no `pricing_group_membership` row exists before the approve
-/// (`inst-mm-pending`'s "nothing is written before approval"), and the
-/// committed row exists after — an opener that can open but never commit is
-/// half a lane.
+/// **The approve -> commit path works end to end, at three calls and not
+/// two.** A material membership move, once approved by an independent second
+/// principal, actually applies: no `pricing_group_membership` row exists
+/// before the approve (`inst-mm-pending`'s "nothing is written before
+/// approval"), and the committed row exists after — an opener that can open
+/// but never commit is half a lane. A **second commit call** over the same
+/// approved (and therefore terminal) record must not try to re-apply the
+/// move: that is the replay guard this test's third act exercises, at the
+/// layer `ApprovalService::commit_membership_move_in` owns rather than at
+/// the one route that happens to call it today.
 ///
-/// To redden this: empty the `for proposal in set.proposals()` loop's body in
-/// `ApprovalService::commit_membership_move_in`, leaving it a no-op that
-/// still returns `Ok(Vec::new())`. The `receipts.len()` assertion and the
-/// `intervals_for_payer` read after commit both fail.
+/// To redden this (the commit half): empty the `for proposal in
+/// set.proposals()` loop's body in `commit_membership_move_in`, leaving it a
+/// no-op that still returns `Ok(Vec::new())`. The `receipts.len()`
+/// assertion and the `intervals_for_payer` read after the first commit both
+/// fail.
+///
+/// To redden this (the replay guard): remove the `already_applied` check
+/// from `commit_membership_move_in`. The second commit call then re-enters
+/// `move_payer_in` for the proposal the first call already applied, which
+/// tries to end the membership row it just created at the exact instant it
+/// starts, and `end_membership` refuses `MembershipIntervalEmpty` — the
+/// second call's `.expect("commit the approved move a second time")` panics
+/// instead of the assertions after it running.
 #[tokio::test]
 async fn an_approved_material_move_actually_commits() {
     let provider = harness().await;
@@ -1378,6 +1391,39 @@ async fn an_approved_material_move_actually_commits() {
         after.len(),
         1,
         "the approved move must actually write the membership row, not merely answer a receipt"
+    );
+
+    // **The third act.** `decided` is still `Approved` — nothing in this
+    // crate moves a decided record — so a second commit call over it must
+    // answer idempotently rather than trying to re-apply the move.
+    let replayed_receipts = ApprovalService::commit_membership_move_in(
+        &conn,
+        &registry,
+        &ctx,
+        &scope,
+        TENANT,
+        &decided,
+        stamp_of(APPROVER, at(12)),
+    )
+    .await
+    .expect("commit the approved move a second time");
+    assert_eq!(
+        replayed_receipts.len(),
+        1,
+        "a replay still answers one receipt"
+    );
+    assert_eq!(
+        replayed_receipts[0].enrolled.membership_id, receipts[0].enrolled.membership_id,
+        "a replay must report the same membership the first commit created, not a new one"
+    );
+
+    let after_replay = group_membership_repo::intervals_for_payer(&conn, &scope, TENANT, payer)
+        .await
+        .expect("read the payer's intervals");
+    assert_eq!(
+        after_replay.len(),
+        1,
+        "a replayed commit must not write a second membership row"
     );
 }
 
