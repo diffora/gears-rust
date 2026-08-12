@@ -1275,6 +1275,167 @@ async fn a_customer_groups_reference_count_is_not_shared_with_another_class() {
     assert_eq!(values(&result.entries), [("gold", TaxonomyState::Retired)]);
 }
 
+// ---------------------------------------------------------------------------
+// The membership plane — Task 8's review finding against Task 6's cut of this
+// guard: `references_to_customer_group` counted published overlay scopes and
+// nothing else, so a group with live members retired unguarded and those
+// memberships were left pointing at a retired value with nothing having
+// checked.
+// ---------------------------------------------------------------------------
+
+/// Seed one `pricing_group_membership` row directly through the entity —
+/// `publish_customer_group_overlay_scoped`'s sibling, one table over: what is
+/// under test is the guard, not `group_membership_repo::enroll`'s own overlap
+/// invariant, which this seed does not need to satisfy.
+async fn seed_customer_group_membership(
+    provider: &DBProvider<DbError>,
+    membership_id: u128,
+    payer_tenant_id: u128,
+    group_value: &str,
+    effective_from: DateTime<Utc>,
+    effective_to: Option<DateTime<Utc>>,
+) {
+    use bss_pricing::infra::storage::entity::group_membership;
+
+    let conn = provider.conn().expect("conn");
+    let row = group_membership::ActiveModel {
+        membership_id: Set(Uuid::from_u128(membership_id)),
+        tenant_id: Set(TENANT),
+        payer_tenant_id: Set(Uuid::from_u128(payer_tenant_id)),
+        group_value: Set(group_value.to_owned()),
+        effective_from: Set(effective_from),
+        effective_to: Set(effective_to),
+        created_by: Set(Uuid::from_u128(0xac_10)),
+        created_at_utc: Set(effective_from),
+        row_version: Set(0),
+    };
+    group_membership::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("seed a group membership");
+}
+
+/// **The gap this task closes.** A live membership — open-ended, started well
+/// before `now()` — blocks the group's retirement, with **no overlay
+/// anywhere**: the seed below writes only a `pricing_group_membership` row.
+///
+/// To redden this: read `references_to_customer_group` as Task 6 left it —
+/// it queries `price_overlay` alone and never touches
+/// `pricing_group_membership`. Against a seed carrying no overlay at all, that
+/// version counts zero references either way and the retirement sails
+/// through; this is the assertion that catches it, and it fails today for
+/// exactly that reason.
+#[tokio::test]
+async fn a_live_membership_blocks_a_customer_groups_retirement() {
+    let (repo, scope, provider) = harness().await;
+    replace_customer_groups_now(&repo, &scope, vec![entry("gold", TaxonomyState::Active)])
+        .await
+        .expect("seed");
+    seed_customer_group_membership(
+        &provider,
+        0x0c_2a,
+        0x0c_2b,
+        "gold",
+        now() - chrono::Duration::days(30),
+        None,
+    )
+    .await;
+
+    let result = replace_customer_groups_now(&repo, &scope, vec![])
+        .await
+        .expect("the call succeeds; the retirement is refused");
+
+    assert_eq!(
+        result
+            .report
+            .violations
+            .iter()
+            .map(|v| v.code.as_str())
+            .collect::<Vec<_>>(),
+        [TAXONOMY_VALUE_IN_USE],
+        "a live membership is a reference, with no overlay in sight"
+    );
+    assert!(
+        result.report.violations[0].detail.contains("membership"),
+        "the refusal must name the membership plane it found, not just the shared code: {}",
+        result.report.violations[0].detail
+    );
+    assert_eq!(
+        values(&result.entries),
+        [("gold", TaxonomyState::Active)],
+        "a refused PUT changes nothing at all"
+    );
+}
+
+/// **The decision on a membership that has not started yet.** `now()` sits
+/// before `effective_from` — the group is a commitment already recorded, not
+/// a draft still open to redirection — and it blocks the retirement exactly
+/// as an already-active one does.
+#[tokio::test]
+async fn a_membership_that_has_not_started_yet_blocks_a_customer_groups_retirement() {
+    let (repo, scope, provider) = harness().await;
+    replace_customer_groups_now(&repo, &scope, vec![entry("gold", TaxonomyState::Active)])
+        .await
+        .expect("seed");
+    seed_customer_group_membership(
+        &provider,
+        0x0c_2c,
+        0x0c_2d,
+        "gold",
+        now() + chrono::Duration::days(30),
+        None,
+    )
+    .await;
+
+    let result = replace_customer_groups_now(&repo, &scope, vec![])
+        .await
+        .expect("the call succeeds; the retirement is refused");
+
+    assert_eq!(
+        result
+            .report
+            .violations
+            .iter()
+            .map(|v| v.code.as_str())
+            .collect::<Vec<_>>(),
+        [TAXONOMY_VALUE_IN_USE],
+        "a scheduled membership is still a live reference"
+    );
+}
+
+/// **The other half of the decision.** A membership whose interval already
+/// ended before `now()` is not a live reference — the same "history is not a
+/// reference" reading the module doc gives a `superseded` price row.
+#[tokio::test]
+async fn an_ended_membership_does_not_block_a_customer_groups_retirement() {
+    let (repo, scope, provider) = harness().await;
+    replace_customer_groups_now(&repo, &scope, vec![entry("gold", TaxonomyState::Active)])
+        .await
+        .expect("seed");
+    seed_customer_group_membership(
+        &provider,
+        0x0c_2e,
+        0x0c_2f,
+        "gold",
+        now() - chrono::Duration::days(60),
+        Some(now() - chrono::Duration::days(1)),
+    )
+    .await;
+
+    let result = replace_customer_groups_now(&repo, &scope, vec![])
+        .await
+        .expect("put");
+
+    assert!(
+        result.report.is_publishable(),
+        "an ended membership is history, not a reference"
+    );
+    assert_eq!(values(&result.entries), [("gold", TaxonomyState::Retired)]);
+}
+
 /// A foreign tenant's customer-group taxonomy is invisible — the same SQL-level
 /// BOLA guard as the four-class store.
 #[tokio::test]

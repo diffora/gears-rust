@@ -714,10 +714,13 @@ pub enum DomainError {
     ///
     /// The retired case is the interesting one and is deliberately not
     /// distinguished from "never declared": `inst-cg-taxonomy`'s retire guard
-    /// exists to protect *published references* a value already carries, not
-    /// to bless a **new** one naming a retired value — so a membership
-    /// enrolled or moved into a retired group would leave the guard's whole
-    /// point unenforced for the one act that most needs it.
+    /// exists to protect the references a value already carries — published
+    /// overlay scopes and live `pricing_group_membership` rows alike
+    /// (`taxonomy_repo::references_to_customer_group`'s own doc) — not to
+    /// bless a **new** one naming a retired value. Blessing a new one is what
+    /// this refusal itself prevents; a membership enrolled or moved into a
+    /// retired group would leave that half of the guard's point unenforced
+    /// for the one act that most needs it.
     #[error("customer group unknown: {0}")]
     GroupUnknown(String),
 

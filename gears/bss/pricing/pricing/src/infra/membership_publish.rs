@@ -351,9 +351,14 @@ pub async fn move_payer_in(
 /// declare — absent, or declared and then **retired** (`GROUP_UNKNOWN`, §5).
 ///
 /// Both are `GroupUnknown`: the retired case is named explicitly because it
-/// is the one `inst-cg-taxonomy`'s retire guard exists to catch, and folding
-/// it into "not found" would read as an oversight rather than the guard
-/// working — see [`DomainError::GroupUnknown`]'s own doc.
+/// is the state `inst-cg-taxonomy`'s retire guard produces, and folding it
+/// into "not found" would read as an oversight rather than the guard working
+/// — see [`DomainError::GroupUnknown`]'s own doc. This function is the other
+/// half of what makes that guard meaningful, not a consumer of it: the guard
+/// (`taxonomy_repo::references_to_customer_group`) refuses a *retirement*
+/// while live references exist, and this refuses the mirror act — a *new*
+/// membership naming a value that is already retired. Neither substitutes for
+/// the other.
 async fn require_active_group(
     runner: &impl DBRunner,
     scope: &AccessScope,

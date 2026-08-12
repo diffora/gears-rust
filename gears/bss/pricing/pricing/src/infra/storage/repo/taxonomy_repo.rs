@@ -61,6 +61,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Set};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
@@ -79,8 +80,8 @@ use crate::domain::taxonomy::{
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::entity::{
-    brand_taxonomy, customer_group_taxonomy, org_tier_taxonomy, partner_taxonomy, price,
-    price_overlay, region_taxonomy,
+    brand_taxonomy, customer_group_taxonomy, group_membership, org_tier_taxonomy, partner_taxonomy,
+    price, price_overlay, region_taxonomy,
 };
 use crate::infra::storage::{RepoError, contention_or_db};
 
@@ -209,11 +210,14 @@ impl TaxonomyRepo {
     /// Same whole-set-replacement, retire-not-delete and single-transaction
     /// semantics as the four-class `PUT` — the module doc's argument applies
     /// unchanged, over one table instead of four. Unlike the four, a customer
-    /// group is never a price-row axis, so the retire guard here counts
-    /// **published overlay scopes only** (`ScopeClass::CustomerGroup`); there is
-    /// no row plane to check, on `references_to`'s own reasoning for `brand`,
-    /// `partner` and `orgTier`. There is likewise no D-245 tax-marker guard: this
-    /// table carries no `tax_*` columns.
+    /// group is never a price-row axis, so there is no row plane to check, on
+    /// `references_to`'s own reasoning for `brand`, `partner` and `orgTier` —
+    /// but it has a plane the four classes do not: the retire guard here also
+    /// counts **live rows of `pricing_group_membership`**
+    /// (`references_to_customer_group`'s own doc says which count as live),
+    /// alongside published overlay scopes (`ScopeClass::CustomerGroup`).
+    /// There is likewise no D-245 tax-marker guard: this table carries no
+    /// `tax_*` columns.
     ///
     /// # Errors
     /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
@@ -1083,12 +1087,43 @@ pub(crate) async fn find_customer_group_on(
         .find(|entry| entry.value.as_str() == value))
 }
 
-/// What still names a customer-group value — the retire guard's one plane.
+/// What still names a customer-group value — the retire guard's two planes.
 ///
-/// Only the overlay plane is counted, unlike [`references_to`]: a customer
+/// There is no row-plane query to run, unlike [`references_to`]: a customer
 /// group is never a price-row axis (Foundation §4.1's row shape has no such
-/// field), so there is no row-plane query to run — a structural zero, on
-/// `check_retirable`'s own reasoning for `brand`, `partner` and `orgTier`.
+/// field) — a structural zero, on `check_retirable`'s own reasoning for
+/// `brand`, `partner` and `orgTier`. But it *is*
+/// `pricing_group_membership.group_value`'s axis, and an earlier cut of this
+/// function (Task 6) counted the overlay plane alone and never queried that
+/// table at all — found by review (Task 8): a group with live members
+/// retired unguarded, and those memberships were left pointing at a retired
+/// value with nothing having checked.
+///
+/// # Which memberships count as a reference
+///
+/// A membership whose interval has already **ended** before `now`
+/// (`effective_to.is_some_and(|end| end <= now)`) is not a live reference —
+/// the same "history is not a reference" reading this module's own doc gives
+/// a `superseded` price row: the group stopped naming that payer, and
+/// retiring the value does not reach backward to change what a past
+/// enrollment named.
+///
+/// A membership whose interval has **not started yet** (`effective_from >
+/// now`) **is** counted. It is not a draft an operator could still redirect
+/// — it is a commitment already recorded, `enroll`'s own write, and
+/// refusing the retire guard here is the same protection an already-active
+/// membership gets; the only difference is that the collision has not
+/// arrived yet. So "live" reduces to "not yet ended":
+/// `effective_to IS NULL OR effective_to > now`, with `effective_from`
+/// unconsulted — a row that has not started is exactly as much a reference
+/// as one already running.
+///
+/// `now` is the caller's own authored instant
+/// ([`AuditStamp::recorded_at`]), the same discipline
+/// [`group_membership_repo::resolve_active_membership`](super::group_membership_repo::resolve_active_membership)
+/// and every interval check in that module hold to: the guard judges
+/// liveness against the instant the mutation is recorded at, not a second,
+/// unpinned `Utc::now()` read mid-transaction.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
@@ -1097,8 +1132,9 @@ async fn references_to_customer_group(
     scope: &AccessScope,
     tenant_id: Uuid,
     value: &ScopeValue,
-) -> Result<u64, RepoError> {
-    price_overlay::Entity::find()
+    now: DateTime<Utc>,
+) -> Result<CustomerGroupReferences, RepoError> {
+    let active_overlay_scopes = price_overlay::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
@@ -1112,35 +1148,98 @@ async fn references_to_customer_group(
         )
         .count(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("count pricing_price_overlay: {e}")))
+        .map_err(|e| RepoError::Db(format!("count pricing_price_overlay: {e}")))?;
+
+    let live_memberships = group_membership::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(group_membership::Column::TenantId.eq(tenant_id))
+                .add(group_membership::Column::GroupValue.eq(value.as_str()))
+                .add(
+                    Condition::any()
+                        .add(group_membership::Column::EffectiveTo.is_null())
+                        .add(group_membership::Column::EffectiveTo.gt(now)),
+                ),
+        )
+        .count(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("count pricing_group_membership: {e}")))?;
+
+    Ok(CustomerGroupReferences {
+        active_overlay_scopes,
+        live_memberships,
+    })
+}
+
+/// The two planes [`references_to_customer_group`] counts —
+/// [`crate::domain::taxonomy::ValueReferences`]'s shape, one field renamed
+/// for its own axis: a customer group has no row plane to fold `region`'s
+/// `published_price_rows` into, and `live_memberships` measures a different
+/// thing than a published/draft lifecycle state (see that function's own
+/// doc), so this is its own small struct rather than a strained reuse of the
+/// four-class one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CustomerGroupReferences {
+    active_overlay_scopes: u64,
+    live_memberships: u64,
+}
+
+impl CustomerGroupReferences {
+    const fn any(self) -> bool {
+        self.active_overlay_scopes > 0 || self.live_memberships > 0
+    }
 }
 
 /// `inst-tx-mutation`'s guard, for the customer-group taxonomy —
 /// [`check_retirable`]'s analogue over one label rather than a
 /// [`TaxonomyClass`].
 ///
-/// **Not built on [`check_retirable`]** even though the shape is identical
-/// minus the row plane: that function interpolates `{class}` — a
-/// [`TaxonomyClass`] — into its message via [`std::fmt::Display`], and this
-/// taxonomy deliberately has no member of that enum to pass it (the module
-/// doc's whole argument). Duplicating the four lines of message-building here
-/// is cheaper than widening a type whose narrowness is the point.
+/// **Not built on [`check_retirable`]** even though the two share a shape —
+/// "no references, an empty report; otherwise name every plane that is
+/// non-zero and violate once" — because they no longer count the same
+/// planes: [`check_retirable`] has the row plane customer groups structurally
+/// lack, and this has the membership plane the four-class taxonomies
+/// structurally lack (`references_to_customer_group`'s own doc). On top of
+/// that, [`check_retirable`] interpolates `{class}` — a [`TaxonomyClass`] —
+/// into its message via [`std::fmt::Display`], and this taxonomy deliberately
+/// has no member of that enum to pass it (the module doc's whole argument).
+/// Duplicating the message-building here is cheaper than widening a type
+/// whose narrowness is the point.
 #[must_use]
 fn check_customer_group_retirable(
     value: &ScopeValue,
-    active_overlay_scopes: u64,
+    references: CustomerGroupReferences,
 ) -> ValidationReport {
     let mut report = ValidationReport::default();
-    if active_overlay_scopes == 0 {
+    if !references.any() {
         return report;
+    }
+    // Named separately and only when present, `check_retirable`'s own
+    // reasoning: an operator retiring a group referenced by overlays alone
+    // should not be told "0 live membership(s)" and sent to audit a plane
+    // that was never the problem.
+    let mut named = Vec::with_capacity(2);
+    if references.active_overlay_scopes > 0 {
+        named.push(format!(
+            "{} published overlay scope(s) select on it",
+            references.active_overlay_scopes
+        ));
+    }
+    if references.live_memberships > 0 {
+        named.push(format!(
+            "{} live membership(s) still name it",
+            references.live_memberships
+        ));
     }
     report.violate(
         TAXONOMY_VALUE_IN_USE,
         value.as_str(),
         format!(
-            "customer_group value `{value}` cannot retire: {active_overlay_scopes} published \
-             overlay scope(s) select on it; retirement is guarded rather than cascading, so end \
-             or retarget every reference first (inst-cg-taxonomy)"
+            "customer_group value `{value}` cannot retire: {}; retirement is guarded rather than \
+             cascading, so end or retarget every reference first (inst-cg-taxonomy)",
+            named.join(" and ")
         ),
     );
     report
@@ -1183,12 +1282,15 @@ async fn apply_replace_customer_group(
         if !retiring || existing.state == TaxonomyState::Retired {
             continue;
         }
-        let active_overlay_scopes =
-            references_to_customer_group(runner, scope, tenant_id, &existing.value).await?;
-        report.absorb(check_customer_group_retirable(
+        let references = references_to_customer_group(
+            runner,
+            scope,
+            tenant_id,
             &existing.value,
-            active_overlay_scopes,
-        ));
+            stamp.recorded_at,
+        )
+        .await?;
+        report.absorb(check_customer_group_retirable(&existing.value, references));
     }
 
     if !report.is_publishable() {
