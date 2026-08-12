@@ -501,6 +501,74 @@ impl OverlayIndexDelta {
     }
 }
 
+/// One `group_membership` document, as one `CatalogVersion` freezes it
+/// (`design/09-price-overlays.md` §1.7's `MembershipLedger`, `SubjectKind::GroupMembership`).
+///
+/// **This is the surface Tariffs reads to do its own resolve-and-freeze.**
+/// `ResolvedGroupFreezer` is the joint contract (D-30): this gear publishes
+/// membership into the read model and stops there — Tariffs performs the
+/// interval resolution at `t` and composes `pricingSnapshotRef` from what it
+/// finds here. Nothing in this crate resolves a group for a payer, freezes one
+/// into a snapshot, or exposes a resolve-for-payer endpoint; §1.7 (`:110`),
+/// `inst-gm-return` (`:173`) and D-30 (`:466`) all say so, and building any of
+/// the three here would be a second, unauthorised composition.
+///
+/// **Read live from the row, not pinned to a revision.** Unlike a plan or an
+/// overlay, `pricing_group_membership` carries no revision-scoped content table
+/// — `group_membership_repo`'s own doc records that a membership row is mutated
+/// in place (`end_membership` narrows `effective_to`) rather than superseded by
+/// a new row. So there is no immutable content to pin a ref to, the way
+/// [`project_plan_subject`](crate::infra::read_model::project_plan_subject) and
+/// [`project_overlay_subject`](crate::infra::read_model::project_overlay_subject)
+/// pin theirs. This delta is therefore the row's state **at projection time**,
+/// [`OverlayIndexDelta`]'s "derived, not pinned" shape rather than
+/// [`PlanSubjectDelta`]'s or [`OverlaySubjectDelta`]'s. **Reported**: a second
+/// mutation of the same membership landing between a publish unit's commit and
+/// the sweep that warms it would freeze the later state under the earlier
+/// commit's version — the same class of defect §4.4's "current revision" note
+/// records for the plan and overlay planes, unaddressed here because nothing in
+/// this gear yet mints more than one publish unit per membership row to notice
+/// it against. Whoever wires `enroll` and `end_membership` into the registry
+/// request/pending-ref path owes that premise a second look.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MembershipSubjectDelta {
+    /// The membership this delta is the subject of. `subject_ref` on the row.
+    pub membership_id: Uuid,
+    /// The payer this interval covers (`inst-cg-record`).
+    pub payer_tenant_id: Uuid,
+    /// The taxonomy value the payer is enrolled in over this interval.
+    pub group_value: String,
+    /// Inclusive start of the half-open interval, UTC.
+    pub effective_from: DateTime<Utc>,
+    /// Exclusive end, UTC; `None` is open-ended — a membership not (yet) ended.
+    pub effective_to: Option<DateTime<Utc>>,
+}
+
+impl MembershipSubjectDelta {
+    /// The payload one `group_membership` delta row carries.
+    ///
+    /// No rest pattern on the destructure below, [`OverlaySubjectDelta::to_value`]'s
+    /// reason: a field added to the row does not compile here until it is named.
+    #[must_use]
+    pub fn to_value(&self) -> JsonValue {
+        let Self {
+            membership_id,
+            payer_tenant_id,
+            group_value,
+            effective_from,
+            effective_to,
+        } = self;
+        json!({
+            "membershipId": membership_id,
+            "payerTenantId": payer_tenant_id,
+            "groupValue": group_value,
+            "effectiveFrom": effective_from,
+            "effectiveTo": effective_to,
+        })
+    }
+}
+
 /// The plan-subject content of one `CatalogVersion`.
 ///
 /// Composed from the types that already model each part rather than restating

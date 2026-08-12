@@ -197,8 +197,8 @@ use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::projection::{
-    OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta, PROJECTED_ROW_STATES,
-    PROJECTED_WINDOW_STATES, PlanSubjectDelta, RowTaxProjection,
+    MembershipSubjectDelta, OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta,
+    PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta, RowTaxProjection,
 };
 use crate::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
 use crate::domain::scope_key::PlanId;
@@ -206,8 +206,8 @@ use crate::domain::tax_display::{TAX_ENGINE_GA, is_not_sellable_ga};
 use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
 use crate::infra::storage::repo::{
-    NewDelta, PendingVersionRow, catalog_version_ref_repo, overlay_repo, pin_frontier_repo,
-    plan_repo, plan_shape_repo, price_repo, read_model_repo, window_repo,
+    NewDelta, PendingVersionRow, catalog_version_ref_repo, group_membership_repo, overlay_repo,
+    pin_frontier_repo, plan_repo, plan_shape_repo, price_repo, read_model_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -516,6 +516,12 @@ impl ReadModelProjector {
                             .await?;
                             (SubjectRef::OverlayIndex(shard), delta.to_value())
                         }
+                        ProjectedSubject::GroupMembership { membership_id } => {
+                            let delta =
+                                project_membership_subject(txn, &scope, tenant_id, membership_id)
+                                    .await?;
+                            (SubjectRef::GroupMembership(membership_id), delta.to_value())
+                        }
                     };
                     read_model_repo::project_subject(
                         txn,
@@ -667,9 +673,15 @@ fn outstanding_subjects(
 /// `pricing_price_overlay`, so a reader checking the claim by grepping for the
 /// table would have found it and read the refusal as stale.
 ///
-/// Today `Plan` and `PriceOverlay` are answerable. `OverlayIndex` is **owed and
-/// named as owed**: its store is the same overlay plane, and what it needs is the
-/// derivation, not a table. `GroupMembership` has no store at all.
+/// **`GroupMembership` had no store at all until 2026-08-12, and this doc said
+/// so until then.** `pricing_group_membership` is the store — it existed
+/// already, `group_membership_repo::enroll`/`end_membership` write it — what
+/// was missing was the projector's own read of it, [`project_membership_subject`].
+/// That is the surface Tariffs reads to do its own resolve-and-freeze
+/// (`ResolvedGroupFreezer`, D-30): this gear publishes membership into the read
+/// model and stops there, exactly as `MembershipSubjectDelta`'s doc states at
+/// length. **Every member of `SubjectKind::ALL` is answerable as of this
+/// change.**
 #[derive(Debug)]
 enum ProjectedSubject {
     /// A plan, at the revision and lifecycle state its publish judged.
@@ -707,16 +719,31 @@ enum ProjectedSubject {
         /// Which shard.
         shard: OverlayIndexShard,
     },
+    /// One membership record, read live rather than pinned to a revision.
+    ///
+    /// No revision and no lifecycle state either, [`OverlayIndex`](Self::OverlayIndex)'s
+    /// reason with a sharper cause: `pricing_group_membership` carries no
+    /// revision-scoped content table at all, so there is nothing for a ref row
+    /// to pin against the way a plan or an overlay revision does. See
+    /// [`project_membership_subject`] and `MembershipSubjectDelta`'s doc for
+    /// what that costs.
+    GroupMembership {
+        /// Which membership.
+        membership_id: Uuid,
+    },
 }
 
-/// Read a ref row's subject columns, refusing what this projector cannot answer.
+/// Read a ref row's subject columns, resolving them into something projectable.
+///
+/// Every `SubjectKind` is answerable as of 2026-08-12; what used to be this
+/// function's by-name refusal of an unbuildable kind is gone with the last of
+/// them, `GroupMembership`. A malformed reference still refuses.
 ///
 /// # Errors
-/// [`DomainError::Internal`] naming the kind this gear cannot project, or naming
-/// a reference that is not the identifier its kind is keyed by, or a revisioned
-/// subject arriving with no revision. There is no other class: every input here
-/// comes from this gear's own tables, so a refusal is an invariant breach and
-/// never a caller mistake.
+/// [`DomainError::Internal`] naming a reference that is not the identifier its
+/// kind is keyed by, or a revisioned subject arriving with no revision. There is
+/// no other class: every input here comes from this gear's own tables, so a
+/// refusal is an invariant breach and never a caller mistake.
 fn subject_of(subject: &PendingVersionRow) -> Result<ProjectedSubject, DomainError> {
     match subject.subject_kind {
         SubjectKind::Plan => {
@@ -754,11 +781,10 @@ fn subject_of(subject: &PendingVersionRow) -> Result<ProjectedSubject, DomainErr
                 ))
             })?,
         }),
-        kind @ SubjectKind::GroupMembership => Err(DomainError::Internal(format!(
-            "bss-pricing: catalog version ref {} names subject kind {kind}, which has no store \
-             in this gear and therefore no publish unit that could have written it",
-            subject.pending_ref
-        ))),
+        SubjectKind::GroupMembership => {
+            let membership_id = subject_uuid(subject, "group membership")?;
+            Ok(ProjectedSubject::GroupMembership { membership_id })
+        }
     }
 }
 
@@ -827,6 +853,50 @@ async fn project_overlay_subject(
         })?;
     Ok(OverlaySubjectDelta {
         content: record.content(),
+    })
+}
+
+/// Build one membership document's delta by reading the row live.
+///
+/// **Live, not pinned to a revision — unlike [`project_plan_subject`] and
+/// [`project_overlay_subject`].** `MembershipSubjectDelta`'s own doc carries the
+/// argument in full: `pricing_group_membership` has no revision-scoped content
+/// table for a ref row to pin against, because the row itself is the truth and
+/// is mutated in place (`group_membership_repo::end_membership` narrows
+/// `effective_to`) rather than superseded by a new one. So there is nothing
+/// this function could read *instead of* the current row, the way the plan and
+/// overlay arms read a specific, immutable revision instead of the current one.
+///
+/// A membership that is a subject of a committed catalog version and is not
+/// there is an **internal fault**, D-128's rule applied here: the row is
+/// referenced by a `pricing_catalog_version_ref` row this gear itself wrote, so
+/// its absence is an invariant breach and not a caller mistake.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the membership is absent, or on a storage
+/// failure.
+async fn project_membership_subject(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    membership_id: Uuid,
+) -> Result<MembershipSubjectDelta, DomainError> {
+    let record = group_membership_repo::find(runner, scope, tenant_id, membership_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| {
+            DomainError::Internal(format!(
+                "bss-pricing: membership {membership_id} is a subject of a committed catalog \
+                 version and is not there; projecting an empty membership document is what \
+                 D-128 exists to prevent"
+            ))
+        })?;
+    Ok(MembershipSubjectDelta {
+        membership_id: record.membership_id,
+        payer_tenant_id: record.payer_tenant_id,
+        group_value: record.group_value,
+        effective_from: record.effective_from,
+        effective_to: record.effective_to,
     })
 }
 

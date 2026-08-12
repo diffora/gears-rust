@@ -76,28 +76,53 @@ fn the_warm_set_is_matched_on_the_kind_as_well_as_the_reference() {
     );
 }
 
+// There used to be a test here asserting that some `SubjectKind` this
+// projector cannot build is refused by name. **`PriceOverlay` left that case
+// when the document arm landed, `OverlayIndex` when the shard arm did, and
+// `GroupMembership` leaves it with this task (task 5): every member of
+// `SubjectKind::ALL` now resolves to a `ProjectedSubject`.** The case is
+// deleted rather than kept pointed at nothing, because a `SubjectKind::ALL`
+// with no member left to name would make the test either not compile (E0004,
+// were it a `match`) or silently vacuous - and D-91's per-subject-kind
+// exhaustiveness is exactly the property `a_plan_subject_whose_reference_is_not_a_plan_id_is_refused`
+// and its two membership siblings below still hold per kind, over the failure
+// mode each kind's own reference parsing can still produce.
+
 #[test]
-fn a_subject_kind_this_projector_cannot_build_is_refused_by_name() {
-    // Refused rather than skipped. A skipped subject holds its version
-    // incomplete, and therefore holds the frontier, forever with nothing saying
-    // why - which is the failure mode the materialized frontier makes silent.
-    //
-    // **`PriceOverlay` left this list when the document arm landed, and
-    // `OverlayIndex` when the shard arm did.** The list shrinks as the projector
-    // grows, which is the point: a list still naming a projectable kind would be
-    // asserting a refusal the code no longer makes. What remains is membership,
-    // refused for the older and simpler reason - it has no store at all.
-    let subject = SubjectRef::GroupMembership(Uuid::from_u128(2));
-    let kind = subject.kind();
-    let refusal = subject_of(&ref_row("pend-x", &subject))
-        .expect_err("this projector can build no delta for that subject");
-    match refusal {
-        DomainError::Internal(message) => assert!(
-            message.contains(kind.as_str()),
-            "the refusal must name the kind, got: {message}"
-        ),
-        other => panic!("expected an internal fault, got {other:?}"),
-    }
+fn a_membership_subject_whose_reference_is_not_a_uuid_is_refused() {
+    // `for_subject` writes the kind and the reference together, so this is
+    // unreachable through that constructor and reachable only through a row
+    // something else wrote - `a_plan_subject_whose_reference_is_not_a_plan_id_is_refused`'s
+    // reason, one kind over.
+    let mut row = ref_row("pend-x", &SubjectRef::GroupMembership(Uuid::from_u128(1)));
+    row.subject_ref = "not-a-uuid".to_owned();
+
+    let refusal = subject_of(&row).expect_err("a membership subject is keyed by a membership id");
+    assert!(matches!(refusal, DomainError::Internal(_)), "{refusal:?}");
+}
+
+#[test]
+fn a_membership_subject_resolves_to_its_membership_id() {
+    // No revision and no lifecycle state to pin, unlike the plan arm -
+    // `MembershipSubjectDelta`'s doc gives the reason: the row has no
+    // revision-scoped content table to pin against, so `None, None` here is
+    // not an omission to redden on the way `a_plan_subject_with_no_pinned_*`
+    // tests are.
+    let id = Uuid::from_u128(0x_9e_bb);
+    let row = PendingVersionRow::for_subject(
+        Uuid::from_u128(0x7e_11),
+        "pend-membership".to_owned(),
+        &SubjectRef::GroupMembership(id),
+        None,
+        None,
+        Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(),
+    );
+    let resolved =
+        subject_of(&row).expect("a membership subject names the membership it publishes");
+    let ProjectedSubject::GroupMembership { membership_id } = resolved else {
+        panic!("a membership ref resolves to a membership subject");
+    };
+    assert_eq!(membership_id, id);
 }
 
 #[test]

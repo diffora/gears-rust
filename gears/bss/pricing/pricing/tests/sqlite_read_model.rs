@@ -60,11 +60,12 @@ use bss_pricing::infra::storage::entity::{
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
+use bss_pricing::infra::storage::repo::group_membership_repo;
 use bss_pricing::infra::storage::repo::overlay_repo::{NewOverlay, OverlayRepo};
 use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 use bss_pricing::infra::storage::repo::{
-    NewPlanDraft, NewPriceDraft, PendingVersionRow, PinFrontierRepo, PlanRepo, PlanShapeRepo,
-    PriceRepo, catalog_version_ref_repo, plan_repo,
+    NewMembership, NewPlanDraft, NewPriceDraft, PendingVersionRow, PinFrontierRepo, PlanRepo,
+    PlanShapeRepo, PriceRepo, catalog_version_ref_repo, plan_repo,
 };
 use bss_pricing_sdk::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{
@@ -931,38 +932,89 @@ async fn an_overlay_ref_naming_an_overlay_that_is_not_there_is_an_internal_fault
 }
 
 #[tokio::test]
-async fn a_subject_kind_with_no_store_in_this_gear_is_still_refused_by_name() {
-    // **`overlay_index` left this case when its arm landed**, which is what the
-    // case was written to do: it named both unbuildable kinds and reddened the
-    // moment one became buildable, instead of quietly asserting a refusal the
-    // code no longer makes.
+async fn an_enrolled_membership_reaches_the_read_model_as_a_published_subject() {
+    // Task 5's own claim, proved through the real repository rather than by
+    // constructing `MembershipRow`s by hand. **This replaces
+    // `a_subject_kind_with_no_store_in_this_gear_is_still_refused_by_name`**,
+    // which asserted the opposite of what is now true: `group_membership` was
+    // the last kind `subject_of` refused by name (`overlay_index` had already
+    // left the case when its own arm landed), and it leaves with this task.
     //
-    // `group_membership` is what remains, and it is refused for the older and
-    // simpler reason - no store at all. Refused rather than skipped, because a
-    // subject silently unprojected holds its version incomplete and therefore
-    // holds the frontier, forever, with nothing saying why.
+    // Proved by the projection's **content**, not by the hard error's absence -
+    // "no error occurred" would pass just as well against a projection that
+    // silently wrote nothing.
+    //
+    // `enroll` itself does not yet open a publish unit - see
+    // `MembershipSubjectDelta`'s module doc and this crate's task-5 report for
+    // what is owed to whoever wires `enroll`/`end_membership` into the registry
+    // request/pending-ref path. This test records the ref the way
+    // `a_published_overlay_subject_projects_its_document` does, standing in for
+    // that owed publish unit exactly as that overlay test would if
+    // `OverlayPublishService` did not exist yet.
     let h = harness().await;
     let conn = h.provider.conn().expect("conn");
+    let payer_tenant_id = Uuid::new_v4();
+    let membership_id = Uuid::new_v4();
+    let enrolled = group_membership_repo::enroll(
+        &conn,
+        &h.scope,
+        TENANT,
+        NewMembership {
+            membership_id,
+            tenant_id: TENANT,
+            payer_tenant_id,
+            group_value: "gold".to_owned(),
+            effective_from: at(1),
+            effective_to: Some(at(9)),
+        },
+        stamp_of(ACTOR, at(1)),
+    )
+    .await
+    .expect("enroll the payer");
+
     catalog_version_ref_repo::record_pending(
         &conn,
         &h.scope,
         PendingVersionRow::for_subject(
             TENANT,
             "pend-membership".to_owned(),
-            &SubjectRef::GroupMembership(Uuid::new_v4()),
+            &SubjectRef::GroupMembership(membership_id),
             None,
             None,
             at_min(12, 0),
         ),
     )
     .await
-    .expect("record a membership subject's ref");
+    .expect("record the membership subject's ref");
     h.registry.commit("pend-membership", 4);
 
     let report = sweep(&h, at(13)).await;
 
-    assert_eq!(report.subjects_failed, 1);
-    assert!(deltas(&h).await.is_empty());
+    assert_eq!(report.subjects_failed, 0);
+    assert_eq!(report.subjects_projected, 1);
+    let rows = deltas(&h).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].subject_kind, "group_membership");
+    assert_eq!(rows[0].subject_ref, membership_id.to_string());
+    assert_eq!(rows[0].catalog_version, 4);
+    assert_eq!(
+        rows[0].payload.get("payerTenantId"),
+        Some(&serde_json::json!(payer_tenant_id)),
+        "{:?}",
+        rows[0].payload
+    );
+    assert_eq!(
+        rows[0].payload.get("groupValue"),
+        Some(&serde_json::json!("gold"))
+    );
+    assert_eq!(
+        rows[0].payload.get("effectiveFrom"),
+        Some(&serde_json::json!(enrolled.effective_from))
+    );
+    assert_eq!(
+        rows[0].payload.get("effectiveTo"),
+        Some(&serde_json::json!(enrolled.effective_to))
+    );
 }
 
 /// Declare `partner/acme`, the value both overlay seeds scope themselves to.

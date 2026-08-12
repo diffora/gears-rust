@@ -373,6 +373,48 @@ pub async fn intervals_for_payer(
     rows.into_iter().map(to_domain).collect()
 }
 
+/// `inst-cg-resolve`'s narrowing rule: which of the payer's membership
+/// intervals covers `at`, if any.
+///
+/// Pure — no repository access, layered over [`intervals_for_payer`]'s output
+/// rather than reading anything itself, so the resolution rule is testable
+/// without a store. `window::WindowInterval::covers`'s half-open reading,
+/// verbatim, over this table's own pair of instants: `effective_from` is
+/// included, `effective_to` is excluded, and `effective_to = None` reads as
+/// open-ended.
+///
+/// # What this function is not
+///
+/// It does not compose a `pricingSnapshotRef` and it does not freeze anything.
+/// `design/09-price-overlays.md` draws that seam at Tariffs three times — §1.7
+/// (`:110`), `inst-gm-return` (`:173`) and D-30 (`:466`) — and all three say the
+/// same thing: the catalog resolves nothing *for a subscription* and stamps no
+/// snapshot. This is the narrowing arithmetic alone, callable by whichever
+/// gear needs "the interval covering `t`" without needing this crate's store.
+///
+/// # Which interval wins when more than one could
+///
+/// D-09's non-overlap invariant (`refuse_overlap`, backstopped physically by
+/// `m20260802_000067`'s exclusion constraint / trigger) makes this a
+/// non-question over a real payer's stored intervals: at most one interval in
+/// the same group can cover any instant, and cross-group overlap is refused
+/// outright, so `intervals_for_payer`'s own output never presents this
+/// function with two covering candidates. It is not written to lean on that
+/// guarantee, though: it returns the **first** covering interval in
+/// `intervals`' own order, so a caller that hands it a synthetic or
+/// already-filtered slice — a test, or a future caller assembling candidates
+/// from more than one source — gets a deterministic answer rather than one
+/// that depends on iteration order silently matching insertion order.
+#[must_use]
+pub fn resolve_active_membership(
+    intervals: &[MembershipRow],
+    at: DateTime<Utc>,
+) -> Option<&MembershipRow> {
+    intervals
+        .iter()
+        .find(|row| row.effective_from <= at && row.effective_to.is_none_or(|end| at < end))
+}
+
 /// Append this membership mutation's audit record — D-14, `inst-mm-audit`.
 ///
 /// Called **inside** each mutation's own transaction: a record that commits
@@ -602,10 +644,18 @@ async fn load_for_payer(
 /// [`window_repo::find`](super::window_repo::find)'s reason: membership is
 /// payer-level commercial data.
 ///
+/// `pub(crate)`, not `pub`: [`require`] is `enroll`/`end_membership`'s own
+/// caller, and [`crate::infra::read_model::project_membership_subject`] is the
+/// projector's — the read a `group_membership` delta is built from, since this
+/// table carries no revision-scoped content to pin against instead (see
+/// `MembershipSubjectDelta`'s doc). Both are inside this crate; neither is a
+/// second public entry point this module owes documentation or a stability
+/// promise for.
+///
 /// # Errors
 /// [`RepoError::CorruptRow`] when a stored `row_version` is negative.
 /// [`RepoError::Db`] on a scope or storage failure.
-async fn find(
+pub(crate) async fn find(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
@@ -663,3 +713,7 @@ fn to_domain(row: group_membership::Model) -> Result<MembershipRow, RepoError> {
         })?,
     })
 }
+
+#[cfg(test)]
+#[path = "group_membership_repo_tests.rs"]
+mod group_membership_repo_tests;
