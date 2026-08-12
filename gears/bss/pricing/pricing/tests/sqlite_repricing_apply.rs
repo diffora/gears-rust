@@ -368,6 +368,75 @@ async fn seed_published_row(
     price_id
 }
 
+/// A real, currently-published `existing_grandfathered` generation on
+/// `plan`/`phase`/`region` — [`seed_published_row`]'s own recipe (a scheduled
+/// coverage window included, so the aggregate pass's `WINDOW_COVERAGE_MISSING`
+/// never fires on it), over a key whose `priceEligibility` and `cohort` axes
+/// mark it immutable in price (Foundation §4.3, `inst-mp-grandfathered`).
+async fn seed_grandfathered_row(
+    h: &Harness,
+    plan: PlanId,
+    phase: Uuid,
+    region: &str,
+    generation: DateTime<Utc>,
+    amount_minor: i64,
+) -> Uuid {
+    let price_id = Uuid::now_v7();
+    let key = ScopeKey::new(
+        plan,
+        CurrencyCode::new("USD").expect("currency"),
+        Region::new(region).expect("region"),
+        PhaseId::new(phase),
+        PriceEligibility::ExistingGrandfathered,
+        ChargeKind::Recurring,
+        Cohort::Generation(generation),
+    )
+    .expect("a grandfathered eligibility pairs with a non-none cohort");
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id,
+                scope_key: key,
+                content: publishable_row(amount_minor),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("author the grandfathered row");
+    common::schedule_coverage_window(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        price_id,
+        stamp(),
+    )
+    .await;
+    let scope = h.scope.clone();
+    let (_, outcome) = h
+        .provider
+        .db()
+        .in_transaction::<_, bss_pricing::infra::storage::RepoError, _>(move |txn| {
+            Box::pin(async move {
+                bss_pricing::infra::storage::repo::price_repo::publish_rows(
+                    txn,
+                    &scope,
+                    TENANT,
+                    plan,
+                    &[(price_id, RowVersion::new(0))],
+                    &bss_pricing::domain::tax_display::RegionTaxReadiness::empty(),
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.expect("publish the seeded grandfathered row");
+    price_id
+}
+
 /// A **stray draft** row: authored, never published, no window scheduled —
 /// exactly the shape this suite's module doc explains as the mechanism that
 /// fails plan B's aggregate pass. On a different key from every published row
@@ -682,5 +751,166 @@ async fn a_plan_whose_aggregate_pass_fails_applies_none_of_that_plans_rows() {
         BulkState::CompletedWithConflicts,
         "one plan applied, one failed - a success with conflicts (`inst-bk-phase2`'s reading, \
          carried over from bulk import to repricing): {stored:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `inst-mp-grandfathered` clause 2 — the apply's own per-row refusal of an
+// explicitly-selected grandfathered row (task 6).
+// ---------------------------------------------------------------------------
+
+/// A selector that names the eligibility axis outright still expands over
+/// `existing_grandfathered` rows and freezes them `pending`
+/// (`RunSelector::admits_grandfathered`, `domain::repricing`'s own module doc) —
+/// dropping them would be the silent skip the clause forbids. This suite drives
+/// the apply directly at the repository seam, exactly as the atomicity test
+/// above does, so the journal below is built by hand to carry exactly what such
+/// a selector would have frozen: the grandfathered row, `pending`, beside an
+/// ordinary row the same run also selected.
+///
+/// The ordinary row is the positive control the task-6 brief names in as many
+/// words: without it, a handler that failed every row on the plan (the shape
+/// the plan-wide `Err` used by `adjusts_rate`'s own refusal would produce, since
+/// both rows share one plan and one transaction) would pass this test too.
+#[tokio::test]
+async fn a_grandfathered_row_the_selector_named_explicitly_is_refused_while_the_plans_other_row_applies()
+ {
+    let h = harness().await;
+
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+
+    let ordinary_row = seed_published_row(&h, PlanId::new(plan), phase, "eu", 9_900).await;
+    let grandfathered_row =
+        seed_grandfathered_row(&h, PlanId::new(plan), phase, "us", at(1), 5_000).await;
+
+    let run_id = open_committing_run(&h, &[ordinary_row, grandfathered_row]).await;
+
+    let outcome = apply_run_in(
+        &h.provider,
+        &h.policies,
+        &(Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>),
+        &ctx(),
+        &h.scope,
+        TENANT,
+        run_id,
+        apply_stamp(),
+    )
+    .await
+    .expect("apply_run_in itself does not fail over a grandfathered row - only that row does");
+
+    assert_eq!(
+        outcome.applied, 1,
+        "the run's other row still applies - the positive control: {outcome:?}"
+    );
+    assert_eq!(
+        outcome.failed, 1,
+        "the grandfathered row is refused outright, neither silently skipped nor applied: \
+         {outcome:?}"
+    );
+
+    let (ord_state, ord_reason, ord_applied) = journal_state(&h, run_id, ordinary_row).await;
+    assert_eq!(
+        ord_state,
+        JournalState::Applied,
+        "one grandfathered row on the plan does not take the plan's other row down with it"
+    );
+    assert!(ord_reason.is_none());
+    assert!(
+        ord_applied.is_some(),
+        "a real successor exists for the ordinary row"
+    );
+
+    let (gf_state, gf_reason, gf_applied) = journal_state(&h, run_id, grandfathered_row).await;
+    assert_eq!(
+        gf_state,
+        JournalState::Failed,
+        "inst-mp-grandfathered clause 2: an explicit attempt to include the class fails that row \
+         with a per-row validation error"
+    );
+    assert!(gf_applied.is_none(), "never repriced");
+    let reason = gf_reason.expect("a failed row carries a reason an operator reads");
+    assert!(
+        reason.to_lowercase().contains("grandfathered"),
+        "the reason names why: {reason}"
+    );
+
+    // The row itself never moved: still published under its own id, and no
+    // successor was authored on its key - proof this is a refusal and not a
+    // reprice wearing a different journal state.
+    let plan_rows = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        PlanId::new(plan),
+        &[
+            bss_pricing::domain::lifecycle::LifecycleState::Published,
+            bss_pricing::domain::lifecycle::LifecycleState::Superseded,
+        ],
+    )
+    .await
+    .expect("read the plan's rows");
+    let gf_after = plan_rows
+        .iter()
+        .find(|r| r.price_id == grandfathered_row)
+        .expect("the grandfathered row still exists");
+    assert_eq!(
+        gf_after.lifecycle_state,
+        bss_pricing::domain::lifecycle::LifecycleState::Published,
+        "still published, never superseded: {gf_after:?}"
+    );
+    assert!(
+        !plan_rows
+            .iter()
+            .any(|r| r.scope_key == gf_after.scope_key && r.price_id != grandfathered_row),
+        "no successor was authored on the grandfathered row's own key"
+    );
+}
+
+/// `inst-mp-grandfathered` clause 1's own half, already built
+/// (`RunSelector::admits_grandfathered`) — proven here rather than assumed, so
+/// this task does not close clause 2 over an expansion that silently regressed
+/// clause 1: a selector that does not name the eligibility axis excludes the
+/// `existing_grandfathered` class from the expansion entirely, so no such row
+/// is ever frozen into a journal for the apply to see.
+#[tokio::test]
+async fn a_selector_that_does_not_name_the_eligibility_axis_excludes_grandfathered_rows() {
+    let h = harness().await;
+
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+
+    let ordinary_row = seed_published_row(&h, PlanId::new(plan), phase, "eu", 9_900).await;
+    let grandfathered_row =
+        seed_grandfathered_row(&h, PlanId::new(plan), phase, "us", at(1), 5_000).await;
+
+    let selector = bss_pricing::domain::repricing::RunSelector {
+        plan_id: Some(PlanId::new(plan)),
+        ..Default::default()
+    };
+    assert!(
+        !selector.admits_grandfathered(),
+        "an absent eligibility axis excludes the class - RunSelector's own rule"
+    );
+
+    let selected = bss_pricing::infra::storage::repo::price_repo::load_published_for_selector(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        &selector,
+    )
+    .await
+    .expect("expand the selector");
+
+    assert!(
+        selected.contains(&ordinary_row),
+        "the ordinary row is in scope: {selected:?}"
+    );
+    assert!(
+        !selected.contains(&grandfathered_row),
+        "clause 1: an unnamed eligibility axis structurally excludes the grandfathered row - it \
+         is never frozen into a journal for the apply to see: {selected:?}"
     );
 }

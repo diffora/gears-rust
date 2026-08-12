@@ -581,6 +581,37 @@ async fn apply_rows_in(
                 row.price_id
             ))
         })?;
+        // `inst-mp-grandfathered` clause 2: a selector that names the eligibility
+        // axis outright still expands over `existing_grandfathered` rows and
+        // freezes them into the journal `pending` (`RunSelector::admits_grandfathered`,
+        // `domain::repricing`'s own module doc) — dropping them here would be the
+        // silent skip the clause forbids, and a journal row cannot be *born*
+        // `failed` (D-261). So this is the only place the clause's own words —
+        // "an explicit attempt to include one fails **that row** with a per-row
+        // validation error" — can be honoured. `price_repo::refuse_unsupersedable_class`
+        // is the one floor `infra::cutover` and `infra::supersession` already read for
+        // the identical class, reused here rather than a second spelling of "is this
+        // row immutable" — but reached *before* `insert_successor_draft_on` would hit
+        // it, and refused **per row** rather than let it propagate: an `Err` here
+        // would roll back this whole plan's transaction and fail every one of its
+        // other rows too (`adjusts_rate`'s shape below), which is not what "fails
+        // that row" says. The class is immutable regardless of what this run's
+        // adjustment would otherwise compute, so this check runs before
+        // `adjusts_rate`'s and independently of the row's `model_kind`.
+        if let Err(err) = price_repo::refuse_unsupersedable_class(&predecessor.scope_key) {
+            repricing_journal_repo::mark_failed(
+                txn,
+                scope,
+                tenant_id,
+                operation_id,
+                row.price_id,
+                &format!("inst-mp-grandfathered: {err}"),
+            )
+            .await
+            .map_err(|e| repo_failure(&e))?;
+            continue;
+        }
+
         // D-311: a `graduated`/`volume` band's rate is a multiplier, not an
         // amount, and only a percentage adjustment is well-defined on one
         // (`domain::repricing::project_rate`'s own doc). An `amount`
