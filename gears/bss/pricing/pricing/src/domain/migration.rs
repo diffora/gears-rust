@@ -266,9 +266,37 @@ impl NoticePeriod {
 
     /// The earliest instant a migration announced at `announced_at` may take
     /// effect.
-    #[must_use]
-    pub fn earliest_effective(self, announced_at: DateTime<Utc>) -> DateTime<Utc> {
-        announced_at + Duration::days(self.days)
+    ///
+    /// A configured period has no upper `CHECK` — the column only enforces
+    /// `>= 60` — so this cannot assume the addition fits. `Duration::days`
+    /// panics on its own internal overflow before the addition is even
+    /// attempted (a large-enough `i64` day count overflows the
+    /// seconds-multiply inside `chrono` itself), and the addition onto
+    /// `announced_at` can separately walk outside chrono's representable
+    /// range even for a `Duration` that itself constructed cleanly. Both are
+    /// refused here rather than left to panic on a request path.
+    ///
+    /// # Errors
+    /// [`DomainError::MigrationNoticeTooShort`]: an unrepresentable period
+    /// **is** "too short" from the caller's vantage — no `effective_at` a
+    /// request could carry can be at or past an earliest instant that cannot
+    /// even be computed, so every request is inside the (unbounded) notice
+    /// window.
+    pub fn earliest_effective(
+        self,
+        announced_at: DateTime<Utc>,
+    ) -> Result<DateTime<Utc>, DomainError> {
+        Duration::try_days(self.days)
+            .and_then(|notice| announced_at.checked_add_signed(notice))
+            .ok_or_else(|| {
+                DomainError::MigrationNoticeTooShort(format!(
+                    "this tenant's {} day migration notice period cannot be honoured: it does \
+                     not fit within the representable date range from the announcement instant \
+                     {announced_at:?}. There is no override on this request: a shorter migration \
+                     requires an audited change to the tenant's notice policy first",
+                    self.days
+                ))
+            })
     }
 
     /// Validate `effective_at` against this period (`inst-mg-target`, D-49).
@@ -288,7 +316,7 @@ impl NoticePeriod {
         announced_at: DateTime<Utc>,
         effective_at: DateTime<Utc>,
     ) -> Result<(), DomainError> {
-        let earliest = self.earliest_effective(announced_at);
+        let earliest = self.earliest_effective(announced_at)?;
         if effective_at >= earliest {
             return Ok(());
         }

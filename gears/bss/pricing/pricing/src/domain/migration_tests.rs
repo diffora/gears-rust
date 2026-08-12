@@ -134,7 +134,9 @@ fn a_tenant_may_raise_the_period_and_the_raised_value_is_what_binds() {
     assert_eq!(NoticePeriod::resolved(90).days(), 90);
     let announced = at(2026, 1, 1);
     assert_eq!(
-        NoticePeriod::resolved(90).earliest_effective(announced),
+        NoticePeriod::resolved(90)
+            .earliest_effective(announced)
+            .unwrap(),
         announced + Duration::days(90)
     );
 }
@@ -166,6 +168,27 @@ fn a_migration_inside_the_notice_period_is_refused_naming_the_earliest_instant()
     // neither is reachable from a refusal that only says "too short".
     assert!(detail.contains("60"), "{detail}");
     assert!(detail.contains("earliest admissible"), "{detail}");
+    assert!(detail.contains("no override"), "{detail}");
+}
+
+#[test]
+fn a_notice_period_too_large_to_add_is_refused_not_panicked() {
+    // F-11: the column has no upper CHECK, only `>= 60`, so a corrupt or
+    // maliciously-large configured period must not reach the unchecked date
+    // addition `earliest_effective` used to do. `i64::MAX` overflows both
+    // `Duration::days` itself (its own internal multiply) and a
+    // `checked_add_signed` onto `announced_at`, so this proves the guard
+    // covers both overflow sites, not just the second one.
+    let announced = at(2026, 1, 1);
+    let period = NoticePeriod::resolved(i64::MAX);
+    let err = period
+        .ensure_honoured(announced, announced)
+        .expect_err("an unrepresentable notice period must be refused, not panic");
+
+    let DomainError::MigrationNoticeTooShort(detail) = err else {
+        panic!("expected MigrationNoticeTooShort, got {err:?}");
+    };
+    assert!(detail.contains(&i64::MAX.to_string()), "{detail}");
     assert!(detail.contains("no override"), "{detail}");
 }
 
