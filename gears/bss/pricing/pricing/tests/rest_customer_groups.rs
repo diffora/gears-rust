@@ -36,8 +36,8 @@ use bss_pricing::infra::jobs::readmodel_warm::ReadModelWarmJob;
 use bss_pricing::infra::storage::repo::audit_repo;
 use bss_pricing::infra::storage::repo::{NewApproval, approval_repo};
 use rest_support::{
-    Harness, approval_rows, audit_rows, body_json, etag_of, pending_version_refs, problem_code,
-    request, stamp_of, with_headers,
+    Harness, approval_rows, audit_rows, body_json, etag_of, membership_row, pending_version_refs,
+    problem_code, request, stamp_of, with_headers,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -397,7 +397,13 @@ async fn a_caller_holding_only_customer_group_write_succeeds() {
 const MEMBERSHIP_ADMIN: uuid::Uuid = uuid::Uuid::from_u128(0xca_d2);
 
 /// Enroll a payer through the real route, returning the parsed body.
+///
+/// Declares `gold` active first — `GROUP_UNKNOWN` refuses a group the
+/// taxonomy never declared, and this suite's own subject is the membership
+/// mutation, not the taxonomy gate (that is `retiring_a_referenced_value_
+/// answers_409_with_the_declared_code` and its siblings above).
 async fn enroll(harness: &Harness, payer_tenant_id: Uuid) -> (StatusCode, serde_json::Value) {
+    rest_support::declare_customer_group(harness, "gold").await;
     let response = harness
         .allowed_as(MEMBERSHIP_ADMIN)
         .send(with_headers(
@@ -575,6 +581,7 @@ async fn a_move_records_both_membership_subjects_against_one_pending_ref() {
         .as_str()
         .expect("membership_id")
         .to_owned();
+    rest_support::declare_customer_group(&harness, "silver").await;
 
     let response = harness
         .allowed_as(MEMBERSHIP_ADMIN)
@@ -662,5 +669,176 @@ async fn adjusting_a_membership_is_also_its_own_publish_unit() {
         refs.iter()
             .any(|r| r.subject_ref == membership_id && r.pending_ref == pending_ref),
         "the PATCH must record its own pending ref: {refs:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `GROUP_UNKNOWN` (§5:257): `{group}` must be declared and active.
+// ---------------------------------------------------------------------------
+
+/// A `{group}` the taxonomy has never declared is refused `GROUP_UNKNOWN`, and
+/// nothing lands: no membership row, no pending ref, no audit record.
+///
+/// **The positive control** is `a_route_level_enrollment_is_a_real_publish_unit`
+/// above: it already proves an enrollment into a group `declare_customer_group`
+/// made active succeeds end to end, so this refusal is provably about the
+/// undeclared group and not about the route being broken in general.
+///
+/// To redden this: remove the `require_active_group` call from
+/// `membership_publish::enroll_in`. The route still answers `201` and the
+/// positive control above still passes, which is why this needs its own test
+/// rather than a shared one.
+#[tokio::test]
+async fn enrolling_into_an_undeclared_group_is_refused_group_unknown_and_writes_nothing() {
+    let harness = Harness::new().await;
+    // No `declare_customer_group` call: the tenant's taxonomy is empty.
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBERS.replace("{group}", "nonexistent"),
+            Some(json!({
+                "payer_tenant_id": Uuid::now_v7(),
+                "effective_from": "2026-01-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "undeclared-1")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "GROUP_UNKNOWN");
+
+    assert_eq!(pending_version_refs(&harness).await, Vec::new());
+    assert!(audit_rows(&harness).await.is_empty());
+}
+
+/// **The retired case (§5's "declared and then retired" reading).** A
+/// `{group}` that was declared and then retired is refused `GROUP_UNKNOWN`
+/// exactly as an undeclared one is — retirement guards existing references,
+/// it does not bless a new one.
+///
+/// To redden this: in `membership_publish::require_active_group`, change the
+/// `Some(entry) if entry.state == TaxonomyState::Active => Ok(())` arm's
+/// negative case to answer `Ok(())` regardless of state (i.e. only refuse
+/// `None`). The sibling test above (an **undeclared** group) still catches
+/// nothing wrong — its group answers `None`, not `Some(Retired)` — which is
+/// exactly why the retired case needs a test of its own rather than trusting
+/// the undeclared one to cover it.
+#[tokio::test]
+async fn enrolling_into_a_retired_group_is_refused_group_unknown_and_writes_nothing() {
+    let harness = Harness::new().await;
+    rest_support::declare_customer_group(&harness, "silver-tier").await;
+    rest_support::retire_customer_group(&harness, "silver-tier").await;
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBERS.replace("{group}", "silver-tier"),
+            Some(json!({
+                "payer_tenant_id": Uuid::now_v7(),
+                "effective_from": "2026-01-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "retired-1")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "GROUP_UNKNOWN");
+
+    assert_eq!(pending_version_refs(&harness).await, Vec::new());
+    assert!(audit_rows(&harness).await.is_empty());
+}
+
+/// The move route's target group is checked the same way — a payer cannot be
+/// moved into a group the taxonomy does not currently declare.
+#[tokio::test]
+async fn moving_a_payer_into_an_undeclared_group_is_refused_group_unknown_and_writes_nothing() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    let (status, body) = enroll(&harness, payer_tenant_id).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let refs_before = pending_version_refs(&harness).await;
+    let audits_before = audit_rows(&harness).await.len();
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "nonexistent")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({ "effective_from": "2026-06-01T00:00:00Z" })),
+            &[("idempotency-key", "move-undeclared-1")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "GROUP_UNKNOWN");
+
+    // Nothing moved: the payer's one prior membership is still exactly what
+    // it was, and no second pending ref or audit record appeared.
+    assert_eq!(pending_version_refs(&harness).await, refs_before);
+    assert_eq!(audit_rows(&harness).await.len(), audits_before);
+}
+
+// ---------------------------------------------------------------------------
+// `PATCH .../members/{id}`: `{group}` is checked, not decorative
+// (`api::rest::prices::row_of_plan`'s shape).
+// ---------------------------------------------------------------------------
+
+/// A `PATCH` whose `{group}` disagrees with the addressed membership's own
+/// stored group is refused exactly like an absent membership, and the row is
+/// untouched — no new pending ref, no row version moved.
+///
+/// Paired with `adjusting_a_membership_is_also_its_own_publish_unit` as the
+/// positive control: that test `PATCH`es the **same** membership through its
+/// **correct** group and succeeds, which is what proves this refusal is about
+/// the mismatch and not about the route being broken in general.
+///
+/// To redden this: remove the `membership_of_group` call from
+/// `adjust_membership`. The positive-control PATCH still succeeds (it never
+/// exercises a mismatch), which is why the pairing is necessary rather than
+/// decorative — a broken removal would silently pass the paired test too if
+/// the paired test were the only one changed to catch it.
+#[tokio::test]
+async fn patching_a_membership_through_the_wrong_group_is_refused_and_writes_nothing() {
+    let harness = Harness::new().await;
+    let (status, body) = enroll(&harness, Uuid::now_v7()).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let membership_id: Uuid = body["membership"]["membership_id"]
+        .as_str()
+        .expect("membership_id")
+        .parse()
+        .expect("a UUID");
+    rest_support::declare_customer_group(&harness, "wrong-group").await;
+    let refs_before = pending_version_refs(&harness).await;
+    let before = membership_row(&harness, membership_id)
+        .await
+        .expect("the enrolled row exists");
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "PATCH",
+            &CUSTOMER_GROUP_MEMBER
+                .replace("{group}", "wrong-group")
+                .replace("{id}", &membership_id.to_string()),
+            Some(json!({ "effective_to": "2026-03-01T00:00:00Z" })),
+            &[("if-match", "\"0\"")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let after = membership_row(&harness, membership_id)
+        .await
+        .expect("the row still exists, untouched");
+    assert_eq!(
+        after.effective_to, before.effective_to,
+        "effective_to moved"
+    );
+    assert_eq!(after.row_version, before.row_version, "row_version moved");
+    assert_eq!(
+        pending_version_refs(&harness).await,
+        refs_before,
+        "a refused PATCH must record no pending ref"
     );
 }

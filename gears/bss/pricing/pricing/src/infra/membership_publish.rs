@@ -125,11 +125,12 @@ pub struct MembershipMoveReceipt {
 /// `runner`'s transaction.
 ///
 /// # Errors
-/// Whatever [`group_membership_repo::enroll`] refuses
-/// (`RepoError::MembershipOverlap` / `MembershipConflict` /
-/// `MembershipIntervalEmpty`, mapped through [`repo_failure`]);
-/// [`DomainError::CatalogVersionUnavailable`] when the registry cannot be
-/// reached; [`DomainError::Internal`] on a storage failure.
+/// [`DomainError::GroupUnknown`] when `new.group_value` is absent from the
+/// tenant's customer-group taxonomy or is retired there (§5:257); whatever
+/// [`group_membership_repo::enroll`] refuses (`RepoError::MembershipOverlap` /
+/// `MembershipConflict` / `MembershipIntervalEmpty`, mapped through
+/// [`repo_failure`]); [`DomainError::CatalogVersionUnavailable`] when the
+/// registry cannot be reached; [`DomainError::Internal`] on a storage failure.
 pub async fn enroll_in(
     runner: &impl DBRunner,
     registry: &dyn CatalogVersionRegistryV1,
@@ -141,6 +142,8 @@ pub async fn enroll_in(
 ) -> Result<MembershipPublishReceipt, DomainError> {
     let membership_id = new.membership_id;
     let request_id = enroll_request_id(tenant_id, membership_id);
+
+    require_active_group(runner, scope, tenant_id, &new.group_value).await?;
 
     let membership = group_membership_repo::enroll(runner, scope, tenant_id, new, stamp)
         .await
@@ -238,8 +241,10 @@ pub async fn end_in(
 /// duplicating that here would be a second description of one act.
 ///
 /// # Errors
-/// Whatever the two repository calls refuse; the registry/storage errors
-/// [`enroll_in`] documents.
+/// [`DomainError::GroupUnknown`] when `target_group` is absent from the
+/// tenant's customer-group taxonomy or is retired there, checked before
+/// either write; whatever the two repository calls refuse; the
+/// registry/storage errors [`enroll_in`] documents.
 #[allow(
     clippy::too_many_arguments,
     reason = "every argument is a fact only the caller holds: the runner and registry, the \
@@ -261,6 +266,12 @@ pub async fn move_payer_in(
     stamp: AuditStamp,
 ) -> Result<MembershipMoveReceipt, DomainError> {
     let request_id = move_request_id(tenant_id, new_membership_id);
+
+    // Validated before either write: a move that ended the payer's prior
+    // membership and only then discovered the target group unknown would
+    // have to roll the whole transaction back anyway, and validating first
+    // means it never has to.
+    require_active_group(runner, scope, tenant_id, &target_group).await?;
 
     let intervals =
         group_membership_repo::intervals_for_payer(runner, scope, tenant_id, payer_tenant_id)
@@ -334,6 +345,40 @@ pub async fn move_payer_in(
         enrolled,
         pending_ref: pending.pending_ref,
     })
+}
+
+/// Refuse a `{group}` the tenant's customer-group taxonomy does not currently
+/// declare — absent, or declared and then **retired** (`GROUP_UNKNOWN`, §5).
+///
+/// Both are `GroupUnknown`: the retired case is named explicitly because it
+/// is the one `inst-cg-taxonomy`'s retire guard exists to catch, and folding
+/// it into "not found" would read as an oversight rather than the guard
+/// working — see [`DomainError::GroupUnknown`]'s own doc.
+async fn require_active_group(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    group_value: &str,
+) -> Result<(), DomainError> {
+    let entry = crate::infra::storage::repo::taxonomy_repo::find_customer_group_on(
+        runner,
+        scope,
+        tenant_id,
+        group_value,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    match entry {
+        Some(entry) if entry.state == crate::domain::taxonomy::TaxonomyState::Active => Ok(()),
+        Some(_) => Err(DomainError::GroupUnknown(format!(
+            "customer group `{group_value}` is retired; a membership cannot be created or moved \
+             into a retired group"
+        ))),
+        None => Err(DomainError::GroupUnknown(format!(
+            "customer group `{group_value}` is not declared in this tenant's customer-group \
+             taxonomy"
+        ))),
+    }
 }
 
 /// Record one pending ref for one membership subject.

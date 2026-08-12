@@ -417,6 +417,10 @@ impl From<DomainError> for CanonicalError {
             // membership on the payer their own request never named.
             D::MembershipOverlap(detail) => aborted(detail, "MEMBERSHIP_OVERLAP"),
             D::MembershipConflict(detail) => aborted(detail, "MEMBERSHIP_CONFLICT"),
+            // Architectural 422 (rendered 400; see the module note): the
+            // request was well-formed and what refused it is the taxonomy
+            // never having declared `{group}`, or having retired it.
+            D::GroupUnknown(detail) => precondition("group", &detail, "GROUP_UNKNOWN"),
             // `inst-re-references`, 409 in §5's own words. The conflict class for
             // `TaxonomyValueInUse`'s reason and it is the same fact one plane
             // over: what refused the retirement is a bundle or an add-on

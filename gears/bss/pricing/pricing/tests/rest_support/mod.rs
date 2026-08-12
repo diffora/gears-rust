@@ -1698,6 +1698,61 @@ pub async fn seed_priced_row(
         .expect("seed a draft price row")
 }
 
+/// Declare one **active** customer-group taxonomy value, straight through the
+/// entity — `seed_window`'s reason: a membership-route suite that needs
+/// `GROUP_UNKNOWN` to stay out of its way must not depend on the taxonomy
+/// `PUT` route working, or a defect there would redden every membership
+/// suite at once and none of them would say which rule broke.
+pub async fn declare_customer_group(harness: &Harness, value: &str) {
+    use bss_pricing::infra::storage::entity::customer_group_taxonomy;
+    use toolkit_db::secure::SecureInsertExt;
+
+    let conn = harness.db.conn().expect("conn");
+    let row = customer_group_taxonomy::ActiveModel {
+        tenant_id: sea_orm::ActiveValue::Set(harness.tenant),
+        value: sea_orm::ActiveValue::Set(value.to_owned()),
+        display_name: sea_orm::ActiveValue::Set(value.to_owned()),
+        state: sea_orm::ActiveValue::Set("active".to_owned()),
+    };
+    customer_group_taxonomy::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("declare the customer-group value");
+}
+
+/// Retire an already-declared customer-group value — [`declare_customer_group`]
+/// then this, the "declared and then retired" sequence
+/// `DomainError::GroupUnknown`'s own doc names as the interesting case: it is
+/// not the same as never having declared the value, because
+/// `inst-cg-taxonomy`'s retire guard is what makes retirement mean something.
+pub async fn retire_customer_group(harness: &Harness, value: &str) {
+    use bss_pricing::infra::storage::entity::customer_group_taxonomy;
+
+    let conn = harness.db.conn().expect("conn");
+    let updated = customer_group_taxonomy::Entity::update_many()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .col_expr(
+            customer_group_taxonomy::Column::State,
+            Expr::value("retired"),
+        )
+        .filter(
+            Condition::all()
+                .add(customer_group_taxonomy::Column::TenantId.eq(harness.tenant))
+                .add(customer_group_taxonomy::Column::Value.eq(value)),
+        )
+        .exec(&conn)
+        .await
+        .expect("retire the customer-group value");
+    assert_eq!(
+        updated.rows_affected, 1,
+        "the seed must have moved exactly the one declared row"
+    );
+}
+
 /// Seed one `scheduled` window on a price row, straight through the repository.
 ///
 /// **The repository and not the route**, deliberately: a suite that needs a window

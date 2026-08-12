@@ -635,13 +635,18 @@ pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegis
              the Foundation engine (D-06, `dod-customer-group`'s MUST): the response carries the \
              registry's **pending** handle, and a caller resolving this payer's group through the \
              read model sees the new membership only once `CatalogVersionPublished` warms it. \
-             Interval validation is D-09's: an interval overlapping the payer's existing \
-             membership in the **same** group is `MEMBERSHIP_OVERLAP` (409); one overlapping a \
-             membership in **another** group is `MEMBERSHIP_CONFLICT` (409 - a payer holds at \
-             most one active membership across all groups) - use the move operation instead. \
-             **An `Idempotency-Key` header is required and is honoured**: the same key with the \
-             same body returns the first answer verbatim and mints no second membership. Gates \
-             on `customer_group` x `write`.",
+             `{group}` MUST be declared and **active** in the tenant's customer-group taxonomy \
+             (`GET/PUT .../customer-groups/taxonomy`) - absent or **retired** both answer `422` \
+             `GROUP_UNKNOWN`, the retired case deliberately not merged into a generic \"not \
+             found\": `inst-cg-taxonomy`'s retire guard protects references a value already \
+             carries, and a route that enrolled a new one into a retired group would leave that \
+             guard's point unenforced for the one act that most needs it. Interval validation is \
+             D-09's: an interval overlapping the payer's existing membership in the **same** group \
+             is `MEMBERSHIP_OVERLAP` (409); one overlapping a membership in **another** group is \
+             `MEMBERSHIP_CONFLICT` (409 - a payer holds at most one active membership across all \
+             groups) - use the move operation instead. **An `Idempotency-Key` header is required \
+             and is honoured**: the same key with the same body returns the first answer verbatim \
+             and mints no second membership. Gates on `customer_group` x `write`.",
         )
         .tag(TAG)
         .authenticated()
@@ -670,15 +675,23 @@ pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegis
             "Moves a membership's `effectiveTo` under the `If-Match` precondition - \
              `inst-ms-time`'s \"ending early = setting `to`\" (audited); records are never \
              mutated in place otherwise, history is retained. Audit-only and commits directly, \
-             exactly as the create does, and is its own publish unit (D-06). The overlap checks \
-             run again against the narrowed interval: `MEMBERSHIP_OVERLAP` / \
+             exactly as the create does, and is its own publish unit (D-06). **`{group}` is \
+             checked, not decorative**: `{id}` is what the store keys on, and `{group}` MUST name \
+             the membership's own `groupValue` or the response is `404` exactly as an absent \
+             membership's would be (`api::rest::prices`' `row_of_plan` shape, applied here so a \
+             caller cannot act on `{id}` through a `{group}` segment that disagrees with it). The \
+             overlap checks run again against the narrowed interval: `MEMBERSHIP_OVERLAP` / \
              `MEMBERSHIP_CONFLICT` as the create's. A stale `If-Match` is `409` \
              `STALE_VERSION`. Gates on `customer_group` x `write`.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
-        .path_param("group", "The membership's own group (addressing only).")
+        .path_param(
+            "group",
+            "The membership's own group. Checked against the stored row, not merely addressing - \
+             a mismatch answers 404.",
+        )
         .path_param("id", "The membership to end or adjust.")
         .param(crate::api::rest::plans::if_match_param(
             "The membership's own `rowVersion`, as an opaque tag - there is no `GET` on a \
@@ -713,8 +726,11 @@ pub fn governance_router(state: Arc<MembershipState>, openapi: &dyn OpenApiRegis
                  response's `pendingVersionRef` is the one handle both memberships were recorded \
                  against, so the registry's D-47 batching resolves them into the same \
                  `CatalogVersion` together. A payer with no active membership at the move instant \
-                 is simply enrolled - `ended` answers `null`. **An `Idempotency-Key` header is \
-                 required and is honoured.** Gates on `customer_group` x `write`.",
+                 is simply enrolled - `ended` answers `null`. `{group}` MUST be declared and \
+                 **active** in the tenant's customer-group taxonomy - absent or retired both \
+                 answer `422` `GROUP_UNKNOWN`, `create_customer_group_member`'s own reason. **An \
+                 `Idempotency-Key` header is required and is honoured.** Gates on `customer_group` \
+                 x `write`.",
             )
             .tag(TAG)
             .authenticated()
@@ -757,6 +773,44 @@ fn required_group(group: &str) -> Result<String, CanonicalError> {
                 "the group segment must not be blank or whitespace".to_owned(),
             ))
         })
+}
+
+/// The membership named by `{id}`, **confirmed to belong to `{group}`**.
+///
+/// `PATCH .../members/{id}` names two identifiers in one path — `{group}` and
+/// `{id}` — while [`group_membership_repo`] keys on `membership_id` alone, so
+/// nothing else confirms they agree. `prices::row_of_plan`'s shape and its own
+/// reason, applied here on the coordinator's explicit direction: a membership
+/// under the wrong group's URL is answered exactly like an absent one, rather
+/// than silently acted on through `{id}` while `{group}` is ignored — the
+/// silent version is what lets a caller move a membership it did not mean to
+/// touch.
+///
+/// # Errors
+/// [`DomainError::NotFound`] when no membership in the caller's scope answers
+/// to `id`, **or** one does and its own `group_value` is not `group` — the
+/// same answer either way, so the response does not confirm which group a
+/// membership the caller cannot reach through this path actually belongs to.
+async fn membership_of_group(
+    state: &MembershipState,
+    scope: &AccessScope,
+    tenant: Uuid,
+    group: &str,
+    membership_id: Uuid,
+) -> Result<(), CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::internal(format!("bss-pricing: membership lookup: {e}")).create()
+    })?;
+    let found = group_membership_repo::find(&conn, scope, tenant, membership_id)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    match found {
+        Some(row) if row.group_value == group => Ok(()),
+        _ => Err(CanonicalError::from(DomainError::NotFound {
+            subject: "membership".to_owned(),
+            id: membership_id.to_string(),
+        })),
+    }
 }
 
 /// `POST /customer-groups/{group}/members`.
@@ -864,9 +918,8 @@ async fn adjust_membership(
     let tenant = ctx.subject_tenant_id();
     let expected = preconditions::if_match(&headers)?;
     let request: EndMembershipRequest = preconditions::parse_body(&body)?;
-    // Addressing only (§5's path shape); the row's own group is not
-    // re-asserted against it — see the module doc's scope note.
-    let _group = required_group(&group)?;
+    let group_value = required_group(&group)?;
+    membership_of_group(&state, &scope, tenant, &group_value, id).await?;
 
     let now = Utc::now();
     let stamp = audit_stamp(&ctx, now, correlation);

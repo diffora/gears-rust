@@ -1052,6 +1052,37 @@ async fn list_customer_group_on(
         .collect()
 }
 
+/// Resolve one customer-group value, whatever state it stands in — the
+/// membership routes' own reader (Task 6, `GROUP_UNKNOWN`,
+/// `design/09-price-overlays.md` §5:257).
+///
+/// **Every state, not `active` alone**, because the caller has to tell "never
+/// declared" from "declared and then retired" apart before it can decide the
+/// refusal it means: both are `GROUP_UNKNOWN`, but only the second is
+/// `inst-cg-taxonomy`'s retire guard doing its job — see
+/// [`DomainError::GroupUnknown`](crate::domain::error::DomainError::GroupUnknown)'s
+/// own doc.
+///
+/// `pub(crate)`: called from a transaction the caller already opened
+/// (`crate::infra::membership_publish`), so it takes a runner rather than
+/// opening a connection of its own the way [`TaxonomyRepo::list_customer_groups`]
+/// does for a plain read.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+/// on an unreadable stored row.
+pub(crate) async fn find_customer_group_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    value: &str,
+) -> Result<Option<TaxonomyEntry>, RepoError> {
+    Ok(list_customer_group_on(runner, scope, tenant_id)
+        .await?
+        .into_iter()
+        .find(|entry| entry.value.as_str() == value))
+}
+
 /// What still names a customer-group value — the retire guard's one plane.
 ///
 /// Only the overlay plane is counted, unlike [`references_to`]: a customer

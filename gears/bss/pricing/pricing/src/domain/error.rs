@@ -706,6 +706,20 @@ pub enum DomainError {
     /// operation as the correct next call.
     #[error("membership conflict: {0}")]
     MembershipConflict(String),
+    /// A membership route named a `{group}` the tenant's customer-group
+    /// taxonomy does not currently declare — absent, or declared and then
+    /// **retired** (`design/09-price-overlays.md` §5, `GROUP_UNKNOWN`, an
+    /// architectural 422 rendered 400; see the module note in
+    /// `infra::error_mapping`).
+    ///
+    /// The retired case is the interesting one and is deliberately not
+    /// distinguished from "never declared": `inst-cg-taxonomy`'s retire guard
+    /// exists to protect *published references* a value already carries, not
+    /// to bless a **new** one naming a retired value — so a membership
+    /// enrolled or moved into a retired group would leave the guard's whole
+    /// point unenforced for the one act that most needs it.
+    #[error("customer group unknown: {0}")]
+    GroupUnknown(String),
 
     // -- The aggregate validation envelope --
     /// The fail-closed validation pipeline rejected the publish. Carries the
