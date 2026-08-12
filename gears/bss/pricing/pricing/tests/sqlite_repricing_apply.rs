@@ -914,3 +914,123 @@ async fn a_selector_that_does_not_name_the_eligibility_axis_excludes_grandfather
          is never frozen into a journal for the apply to see: {selected:?}"
     );
 }
+
+/// The one interaction task 6 newly creates, found by review rather than by this
+/// suite's first pass: a plan carrying an explicitly-selected grandfathered row
+/// **and** an aggregate-pass failure, together.
+///
+/// `apply_rows_in`'s new check marks the grandfathered row `failed` **inside**
+/// the plan's own transaction, before the aggregate pass runs — the first writer
+/// to call `mark_failed` from in there rather than from `apply_run_in`'s
+/// pre-existing, separate-transaction catch-all. When the aggregate pass then
+/// fails (a stray draft, this suite's own mechanism — see the module doc), the
+/// whole transaction rolls back, undoing that in-transaction mark along with
+/// everything else: the row reads `pending` again the instant the transaction
+/// returns, exactly as if the check had never run. It is the **catch-all**, in
+/// its own separate transaction, that has to reach the row a second time. This
+/// test pins that it actually does — the row ends `failed`, never left
+/// `pending` — and, since the in-transaction mark's own reason was rolled back
+/// with it, that the row carries the plan's **shared** aggregate-failure reason
+/// rather than the `inst-mp-grandfathered` reason it was marked with the first
+/// time. Pinning what actually happens rather than the tidier thing a reader
+/// might assume.
+#[tokio::test]
+async fn a_grandfathered_row_whose_plan_also_fails_its_aggregate_pass_still_ends_failed_with_the_plans_shared_reason()
+ {
+    let h = harness().await;
+
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+
+    let ordinary_row = seed_published_row(&h, PlanId::new(plan), phase, "eu", 9_900).await;
+    let grandfathered_row =
+        seed_grandfathered_row(&h, PlanId::new(plan), phase, "us", at(1), 5_000).await;
+    // This suite's own mechanism (see the module doc) for tripping the
+    // aggregate-only `WINDOW_COVERAGE_MISSING`: a stray draft on a third,
+    // untouched key, never selected by this run.
+    seed_stray_draft(&h, PlanId::new(plan), phase).await;
+
+    let run_id = open_committing_run(&h, &[ordinary_row, grandfathered_row]).await;
+
+    let outcome = apply_run_in(
+        &h.provider,
+        &h.policies,
+        &(Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>),
+        &ctx(),
+        &h.scope,
+        TENANT,
+        run_id,
+        apply_stamp(),
+    )
+    .await
+    .expect("apply_run_in itself does not fail - only the plan's own rows do");
+
+    assert_eq!(
+        outcome.applied, 0,
+        "the plan's aggregate pass takes its whole selection down, the grandfathered row \
+         included: {outcome:?}"
+    );
+    assert_eq!(
+        outcome.failed, 2,
+        "both of this plan's rows end failed: {outcome:?}"
+    );
+
+    let (ord_state, ord_reason, ord_applied) = journal_state(&h, run_id, ordinary_row).await;
+    let (gf_state, gf_reason, gf_applied) = journal_state(&h, run_id, grandfathered_row).await;
+
+    assert_eq!(ord_state, JournalState::Failed);
+    assert!(ord_applied.is_none());
+
+    assert_eq!(
+        gf_state,
+        JournalState::Failed,
+        "the in-transaction mark rolled back with the rest of the plan - the catch-all is what \
+         has to reach this row a second time, and it does: the row is never left pending"
+    );
+    assert!(gf_applied.is_none(), "never repriced");
+
+    let ord_reason = ord_reason.expect("a failed row carries a reason");
+    let gf_reason = gf_reason.expect("a failed row carries a reason");
+    assert_eq!(
+        ord_reason, gf_reason,
+        "both of this plan's rows share the one reason the catch-all wrote in its own separate \
+         transaction, over both price_ids alike"
+    );
+    assert!(
+        gf_reason.contains("WINDOW_COVERAGE_MISSING"),
+        "the plan's real aggregate-pass violation - the shared reason a `Err` propagating out of \
+         `apply_plan_in` renders, not the row-local check's own text: {gf_reason}"
+    );
+    assert!(
+        !gf_reason.contains("inst-mp-grandfathered"),
+        "the row-local reason the in-transaction check wrote does not survive the rollback that \
+         also undid the mark itself, so the row must not still be read as carrying it: {gf_reason}"
+    );
+
+    // The grandfathered row itself never moved: still published under its own
+    // id, no successor authored on its key at all - proof this is a refusal
+    // both times, not a reprice that happened to land on the losing side of a
+    // rollback.
+    let plan_rows = bss_pricing::infra::storage::repo::price_repo::load_for_plan(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        PlanId::new(plan),
+        &[
+            bss_pricing::domain::lifecycle::LifecycleState::Published,
+            bss_pricing::domain::lifecycle::LifecycleState::Superseded,
+        ],
+    )
+    .await
+    .expect("read the plan's rows");
+    let gf_after = plan_rows
+        .iter()
+        .find(|r| r.price_id == grandfathered_row)
+        .expect("the grandfathered row still exists");
+    assert_eq!(
+        gf_after.lifecycle_state,
+        bss_pricing::domain::lifecycle::LifecycleState::Published,
+        "still published, never superseded: {gf_after:?}"
+    );
+}
