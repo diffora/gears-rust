@@ -20,11 +20,13 @@
 //! That is a deliberate slice and not an oversight, so the debts that remain
 //! are named rather than left to be discovered:
 //!
-//! * **The apply** (`inst-mr-apply`, `inst-mr-validate-scope`) owes the per-plan
-//!   transaction D-134 requires — successor rows, their outbox records and the
-//!   journal's `pending -> applied` flips in one commit per plan; taking the
-//!   bulk lock and re-running the row-local and plan-aggregate rule sets are
-//!   all still unbuilt. **Materiality does not wait on any of that.** The
+//! * **The apply** (`inst-mr-apply`, `inst-mr-validate-scope`) — successor
+//!   rows, their outbox records, the journal's `pending -> applied` flips in
+//!   one commit per plan, the re-run of the row-local and plan-aggregate rule
+//!   sets, and (2026-08-12) the bulk lock over the run's own rows — is built
+//!   in [`crate::infra::repricing::apply_run_in`]; see that module's own doc
+//!   for what the lock does and, as plainly, does not close. **Materiality
+//!   does not wait on any of that.** The
 //!   `ChangeSet` [`run_materiality`] evaluates carries each selected row with
 //!   the run's own adjustment already applied to it ([`project_row`]) — real
 //!   arithmetic over the row's published amount, not the apply's durable
@@ -531,20 +533,33 @@ async fn open_repricing_run(
                 .unwrap_or(run),
             // **Best-effort, and the run answers `202` either way.** The apply
             // failing is not this request's failure: the run and its journal
-            // are already durable, `committing` is a legitimate state to
-            // report, and a caller reading the `GET` afterwards sees exactly
-            // what happened rather than a 500 for a run that did open. What
-            // is missing is a redrive trigger for the run stranded here —
-            // named rather than built, `api::rest::repricing_runs`'s module
-            // doc's own remaining debt.
+            // are already durable, and a caller reading the `GET` afterwards
+            // sees exactly what happened rather than a 500 for a run that did
+            // open.
+            //
+            // **Re-read, not the stale `run` this match started from.**
+            // Before `apply_run_in` took its own bulk lock (task 7), an
+            // `Err` here left the run exactly where it was — `committing`,
+            // nothing to release — and returning the pre-call `run` was
+            // accurate. `apply_run_in`'s own tail now lands the run terminal
+            // and releases the lock on an ordinary `Err` too
+            // (`infra::repricing::RunLockGuard`/`finish_run`), so the stale
+            // `run` this closure captured before the call is not what the
+            // store holds by the time this arm runs, most of the time — the
+            // one exception is a failure raised before the apply ever took
+            // its lock (a corrupt stored report, the run failing to resolve),
+            // where the run genuinely is still wherever it was and `unwrap_or`
+            // below is the honest fallback if the re-read itself fails too.
             Err(err) => {
                 tracing::error!(
                     error = %err,
                     run_id = %run.operation_id,
-                    "bss-pricing: repricing run apply failed synchronously; the run stays \
-                     committing for a later redrive"
+                    "bss-pricing: repricing run apply failed synchronously"
                 );
-                run
+                bulk_repo::read(&conn, &scope, tenant, run.operation_id)
+                    .await
+                    .map_err(|e| CanonicalError::from(repo_failure(&e)))?
+                    .unwrap_or(run)
             }
         }
     } else {

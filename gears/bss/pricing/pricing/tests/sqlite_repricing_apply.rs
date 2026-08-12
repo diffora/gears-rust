@@ -1034,3 +1034,135 @@ async fn a_grandfathered_row_whose_plan_also_fails_its_aggregate_pass_still_ends
         "still published, never superseded: {gf_after:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 7 - the bulk lock and its Drop guard.
+// ---------------------------------------------------------------------------
+
+/// **The RED this task is about.** `infra::bulk`'s own sibling releases the
+/// bulk lock in its `Ok`/`Err` match arms alone (Z8-8/Z9-5) - a shape that
+/// misses two of `apply_run_in`'s three abnormal exits: a panic unwinds past a
+/// match arm exactly as it unwinds past everything else, and a dropped future
+/// - a client disconnect, a shutdown signal, a losing `select!` arm - never
+/// runs any of this crate's own code again, match arm or not. This test is
+/// the third one: cancel the future genuinely mid-flight (`JoinHandle::abort`,
+/// tokio's own mechanism for exactly that shape) after confirming it has
+/// already taken its bulk lock, and prove the lock and the run's state both
+/// recover anyway. A green test that dropped the future *before* the lock was
+/// ever taken would prove nothing about the guard - the polling loop below
+/// exists so this test cannot pass that way.
+#[tokio::test]
+async fn a_future_dropped_mid_apply_releases_its_bulk_lock_and_lands_the_run_terminal() {
+    let h = harness().await;
+
+    // Two plans, so there is real work left in the per-plan loop between the
+    // moment the lock becomes visible and the moment the whole run could
+    // possibly finish - the margin this test cancels inside.
+    let plan_a = Uuid::now_v7();
+    let phase_a = Uuid::now_v7();
+    seed_plan(&h, plan_a, phase_a).await;
+    let row_a = seed_published_row(&h, PlanId::new(plan_a), phase_a, "eu", 9_900).await;
+
+    let plan_b = Uuid::now_v7();
+    let phase_b = Uuid::now_v7();
+    seed_plan(&h, plan_b, phase_b).await;
+    let row_b = seed_published_row(&h, PlanId::new(plan_b), phase_b, "eu", 10_000).await;
+
+    let run_id = open_committing_run(&h, &[row_a, row_b]).await;
+
+    let provider = h.provider.clone();
+    let policies = h.policies.clone();
+    let registry: Arc<dyn CatalogVersionRegistryV1> =
+        Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>;
+    let scope = h.scope.clone();
+
+    let handle = tokio::spawn(async move {
+        apply_run_in(
+            &provider,
+            &policies,
+            &registry,
+            &ctx(),
+            &scope,
+            TENANT,
+            run_id,
+            apply_stamp(),
+        )
+        .await
+    });
+
+    // Wait for the lock to actually be visible - polled rather than slept a
+    // fixed amount, so this is not a timing bet on how fast one test box is.
+    let take_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let held =
+            bulk_repo::lock_holder(&h.provider.conn().expect("conn"), &h.scope, TENANT, row_a)
+                .await
+                .expect("read the lock");
+        if held == Some(run_id) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < take_deadline,
+            "the apply never took its bulk lock over row_a within 5s - this test cannot prove \
+             anything about the drop guard without first observing the lock taken"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+
+    // Cancel it. `JoinHandle::abort` is `select!`'s own mechanism for a losing
+    // arm - the future stops running at its next await point and every one of
+    // its locals, the drop guard included, drops right there.
+    handle.abort();
+    let joined = handle.await;
+    match joined {
+        Err(ref e) if e.is_cancelled() => {}
+        other => panic!(
+            "the task must have been genuinely cancelled mid-flight for this test to prove \
+             anything about the drop guard, not merely finished before the abort landed: \
+             {other:?}"
+        ),
+    }
+
+    // The guard's own fallback is a detached spawn, not synchronous with the
+    // abort - poll for it rather than sleep a fixed amount.
+    let settle_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (mut run, mut lock_a, mut lock_b);
+    loop {
+        run = bulk_repo::read(&h.provider.conn().expect("conn"), &h.scope, TENANT, run_id)
+            .await
+            .expect("read the run");
+        lock_a = bulk_repo::lock_holder(&h.provider.conn().expect("conn"), &h.scope, TENANT, row_a)
+            .await
+            .expect("read the lock");
+        lock_b = bulk_repo::lock_holder(&h.provider.conn().expect("conn"), &h.scope, TENANT, row_b)
+            .await
+            .expect("read the lock");
+        let settled = run
+            .as_ref()
+            .is_some_and(|r| r.state != BulkState::Committing)
+            && lock_a.is_none()
+            && lock_b.is_none();
+        if settled {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < settle_deadline,
+            "the drop guard never released the lock and landed the run terminal within 5s: \
+             run={run:?} lock_a={lock_a:?} lock_b={lock_b:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let run = run.expect("the run exists");
+    assert_ne!(
+        run.state,
+        BulkState::Committing,
+        "no run is left committing after a dropped apply future: {run:?}"
+    );
+    assert!(
+        run.state.is_terminal(),
+        "and it lands on one of the seven states that is terminal: {run:?}"
+    );
+    assert!(lock_a.is_none(), "row_a's lock is released");
+    assert!(lock_b.is_none(), "row_b's lock is released");
+}

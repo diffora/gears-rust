@@ -65,32 +65,62 @@
 //! key. That is a real property worth its cost even though this run's own
 //! adjustment can never be the thing that trips it.
 //!
-//! # The bulk lock is not taken here, and taking it would not close the hole
+//! # The bulk lock is taken here, on the run's own rows — and here is exactly
+//! # what that does and does not close
 //!
 //! `inst-bs-commit` gives the run's bulk lock over its rows starting at entry
-//! to `committing`, and the module doc `api::rest::repricing_runs` carries
-//! names it beside this apply's other debts. It is not built in this task:
-//! neither the brief's Interfaces list nor its numbered steps name
-//! `bulk_repo::take_locks`, and building it was judged out of this task's
-//! scope rather than forgotten. The consequence is real and is named rather
-//! than hidden: without the lock, a concurrent interactive edit on the same
-//! plan could leave a stray `draft` row on the plan when this transaction's
-//! aggregate pass reads `CANDIDATE_ROW_STATES = [Published, Draft]` back, and
-//! that stray row would be judged as though this act were about to publish
-//! it. The failure mode this leaves open is a false aggregate refusal (or,
-//! rarer, a false pass) attributable to a row this apply never touched — not
-//! a corrupted write, because [`price_repo::insert_successor_draft_on`] and
-//! [`price_repo::commit_supersession_rows`] each re-read their own
-//! preconditions and refuse rather than misapply when the world has moved.
+//! to `committing`, and D-134 leans on it explicitly. [`apply_run_in`] takes
+//! it now, over the price ids [`repricing_journal_repo::pending_for_run`]
+//! answers — this call's whole target set — on the same autocommit connection
+//! every other run-level statement here already uses, never inside a plan's
+//! own transaction: [`bulk_repo::take_locks`]'s own doc is explicit that it
+//! must run outside one, because Postgres aborts an enclosing transaction on
+//! the insert its own conflict path issues, which would degrade
+//! [`RepoError::BulkRowLocked`] to a bare [`RepoError::Db`] and lose the
+//! holder `fr-concurrent-edit` needs named.
 //!
-//! **And the lock would not close it even built as D-134 describes it.**
-//! `take_locks` is scoped to the rows *this run selected*; the aggregate
-//! pass's candidate set is the *whole plan's* published-and-draft rows. A
-//! stray draft on a key the run never targeted sits outside any lock scoped
-//! to "the run's rows" — `tests/sqlite_repricing_apply.rs`'s own atomicity
-//! test exploits exactly that key. D-134's soundness sentence does not hold
-//! as written for that case; that is a design question for a later task, not
-//! one this module can paper over by taking a lock that would not answer it.
+//! Releasing it is [`RunLockGuard`]'s whole job, and the reason that type
+//! exists rather than an `Err`-arm release like `infra::bulk`'s own sibling
+//! (review findings Z8-8/Z9-5): a panic unwinds past a match arm exactly as it
+//! unwinds past everything else, and a dropped future — a client disconnect,
+//! a shutdown signal, a losing `select!` arm — never runs *any* of this
+//! function's own code again, match arm or not. Only [`Drop`] reaches every
+//! one of those three abnormal exits. [`apply_run_in`]'s own explicit tail
+//! ([`finish_run`]) covers the two paths its own code is still running for —
+//! a clean finish, and an ordinary [`DomainError`] this function's own code
+//! catches and lands terminal before propagating — and disarms the guard once
+//! it has; the guard's `Drop` is the fallback for the two paths that reach no
+//! code of this function's at all. See [`RunLockGuard`]'s own doc for what
+//! that fallback can and cannot promise.
+//!
+//! **And the lock does not close the concurrency hole even taken exactly as
+//! D-134 describes it.** Two facts, both established by grep rather than by
+//! argument, drive this:
+//!
+//! * **No aggregate rule is amount-sensitive.** Every rule `run_publish_rules`
+//!   registers was checked against `amount_minor` / `package_price_minor` /
+//!   `unit_price_rate`: zero references. Every amount-touching rule is
+//!   row-local and already runs pre-commit in `plan_supersession`. A
+//!   repricing run changes only amounts and rates, so it cannot make a clean
+//!   plan's aggregate pass fail by its own effect — that pass is a
+//!   concurrency guard, not a soundness check over this run's own writes (see
+//!   the section above).
+//! * **The lock is narrower than the pass.** `take_locks` covers the rows the
+//!   run *selected*; the aggregate pass's candidate set is the *whole plan's*
+//!   published-and-draft rows (`CANDIDATE_ROW_STATES`, `src/infra/publish.rs:117`).
+//!   A stray draft on a key the run never targeted sits outside any lock
+//!   scoped to "the run's rows" — `tests/sqlite_repricing_apply.rs`'s own
+//!   atomicity test exploits exactly that key, and the lock this task builds
+//!   would not have prevented it: its insert never names a row the run did
+//!   not select.
+//!
+//! So: this lock serialises interactive edits **on the run's own rows**
+//! against this run, and nothing wider. Whether to narrow the aggregate pass
+//! to the run's own keys, widen the lock to the whole plan, or accept the
+//! residual as a standing property of `inst-mr-validate-scope` is a design
+//! decision nobody has taken, and this module does not take it here —
+//! narrowing the pass or widening the lock in code would be answering a
+//! question the design set has not.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -238,11 +268,9 @@ pub async fn apply_run_in(
     }
     if run.state == BulkState::AwaitingApproval {
         // `inst-bs-commit`'s own state edge — `awaiting_approval -> committing`
-        // — and the one this apply is the sole owner of taking. **Not** the
-        // bulk lock itself: this module does not take `bulk_repo::take_locks`
-        // at all (see the module doc's own named gap). See the module doc for
-        // why this edge is spent here rather than by either of this
-        // function's two callers.
+        // — and the one this apply is the sole owner of taking. See the
+        // module doc for why this edge is spent here rather than by either of
+        // this function's two callers.
         bulk_repo::advance(
             &conn,
             scope,
@@ -263,38 +291,138 @@ pub async fn apply_run_in(
         .await
         .map_err(|e| repo_failure(&e))?;
 
-    let mut by_plan: BTreeMap<PlanId, Vec<JournalRow>> = BTreeMap::new();
-    if !pending.is_empty() {
-        let ids: Vec<Uuid> = pending.iter().map(|row| row.price_id).collect();
-        let plan_of: HashMap<Uuid, PlanId> =
-            price_repo::load_plan_ids(&conn, scope, ids.iter().copied())
-                .await
-                .map_err(|e| repo_failure(&e))?
-                .into_iter()
-                .collect();
-        for row in pending {
-            match plan_of.get(&row.price_id) {
-                Some(&plan_id) => by_plan.entry(plan_id).or_default().push(row),
-                // Unreachable in this schema — a price row is append-only and
-                // never deleted — but a journal row cannot be left `pending`
-                // forever over an id that cannot be grouped, so it is decided
-                // here rather than silently skipped.
-                None => {
-                    repricing_journal_repo::mark_failed(
-                        &conn,
-                        scope,
-                        tenant_id,
-                        operation_id,
-                        row.price_id,
-                        "bss-pricing: this row's price_id no longer resolves to any plan",
-                    )
+    let mut target_ids: Vec<Uuid> = pending.iter().map(|row| row.price_id).collect();
+    target_ids.sort_unstable();
+    target_ids.dedup();
+
+    // **The bulk lock, taken now that the run is `committing`.** See the
+    // module doc for what this closes and — as plainly — what it does not.
+    bulk_repo::take_locks(
+        &conn,
+        scope,
+        tenant_id,
+        operation_id,
+        &target_ids,
+        stamp.recorded_at,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    // From here the run holds its row locks, and `RunLockGuard`'s own doc is
+    // why this exists: everything below can still return early through `?`,
+    // and this function's own code handles that explicitly — but a panic or a
+    // dropped future runs none of it, and only `Drop` reaches those two.
+    let mut lock_guard = RunLockGuard::new(db.clone(), scope.clone(), tenant_id, operation_id);
+
+    // Everything from here through `finish_run` below is wrapped so a `?`
+    // inside it lands on `inner` rather than leaving this function early —
+    // `finish_run` must run whether this block succeeds or fails, and an
+    // inline `async` block reached by `.await` right here is the plain way to
+    // get one `Result` out of a body that used to return straight through
+    // `apply_run_in`'s own `?`.
+    let inner: Result<(), DomainError> = async {
+        let mut by_plan: BTreeMap<PlanId, Vec<JournalRow>> = BTreeMap::new();
+        if !pending.is_empty() {
+            let ids: Vec<Uuid> = pending.iter().map(|row| row.price_id).collect();
+            let plan_of: HashMap<Uuid, PlanId> =
+                price_repo::load_plan_ids(&conn, scope, ids.iter().copied())
                     .await
-                    .map_err(|e| repo_failure(&e))?;
+                    .map_err(|e| repo_failure(&e))?
+                    .into_iter()
+                    .collect();
+            for row in pending {
+                match plan_of.get(&row.price_id) {
+                    Some(&plan_id) => by_plan.entry(plan_id).or_default().push(row),
+                    // Unreachable in this schema — a price row is append-only
+                    // and never deleted — but a journal row cannot be left
+                    // `pending` forever over an id that cannot be grouped, so
+                    // it is decided here rather than silently skipped.
+                    None => {
+                        repricing_journal_repo::mark_failed(
+                            &conn,
+                            scope,
+                            tenant_id,
+                            operation_id,
+                            row.price_id,
+                            "bss-pricing: this row's price_id no longer resolves to any plan",
+                        )
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
+                    }
                 }
             }
         }
-    }
 
+        apply_by_plan(
+            db,
+            policies,
+            registry,
+            ctx,
+            scope,
+            tenant_id,
+            operation_id,
+            by_plan,
+            &adjustment,
+            changeover,
+            stamp,
+        )
+        .await
+    }
+    .await;
+
+    // **Everything from here lands the run terminal and releases its lock, on
+    // every path this function's own code can still reach** — the two
+    // `RunLockGuard` cannot: a clean finish, and an ordinary `Err`. See
+    // `finish_run`'s own doc.
+    let finished = finish_run(
+        &conn,
+        scope,
+        tenant_id,
+        operation_id,
+        "bss-pricing: the apply run ended (its own transaction or bookkeeping failed) before \
+         this row's plan was reached",
+        stamp.recorded_at,
+    )
+    .await;
+    lock_guard.disarm();
+
+    match inner {
+        Ok(()) => finished,
+        Err(err) => {
+            if let Err(release_err) = finished {
+                tracing::error!(
+                    error = %release_err,
+                    run_id = %operation_id,
+                    "bss-pricing: repricing apply: finishing the run after its own failure also \
+                     failed; it may still hold its bulk lock"
+                );
+            }
+            Err(err)
+        }
+    }
+}
+
+/// The per-plan loop half of [`apply_run_in`], split out so the closure that
+/// wraps it above has one call to make rather than the loop's own body typed
+/// out a second time.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "apply_run_in's own reason: every argument here is a fact only that function's \
+              caller holds, cut to exactly what grouping and committing the run's plans needs"
+)]
+async fn apply_by_plan(
+    db: &DBProvider<DbError>,
+    policies: &PolicyObjectRepo,
+    registry: &Arc<dyn CatalogVersionRegistryV1>,
+    ctx: &SecurityContext,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    by_plan: BTreeMap<PlanId, Vec<JournalRow>>,
+    adjustment: &Adjustment,
+    changeover: DateTime<Utc>,
+    stamp: AuditStamp,
+) -> Result<(), DomainError> {
     for (plan_id, rows) in by_plan {
         let row_ids: Vec<Uuid> = rows.iter().map(|row| row.price_id).collect();
         let scope_for_tx = scope.clone();
@@ -375,24 +503,12 @@ pub async fn apply_run_in(
         }
     }
 
-    let outcome = tally(&conn, scope, tenant_id, operation_id).await?;
-    bulk_repo::advance(
-        &conn,
-        scope,
-        tenant_id,
-        operation_id,
-        if outcome.failed > 0 {
-            BulkState::CompletedWithConflicts
-        } else {
-            BulkState::Completed
-        },
-        run.report.clone(),
-        stamp.recorded_at,
-    )
-    .await
-    .map_err(|e| repo_failure(&e))?;
-
-    Ok(outcome)
+    // No tally, no advance: `apply_run_in`'s own tail ([`finish_run`]) is the
+    // one place both happen now, reached whether this loop finishes clean or
+    // its caller's `inner` block short-circuited before ever calling this
+    // function at all — a second copy here would be a second answer to "is
+    // this run terminal yet" that `finish_run` does not read.
+    Ok(())
 }
 
 /// The run's journal, summed into [`RunOutcome`] — [`apply_run_in`]'s answer
@@ -415,6 +531,213 @@ async fn tally(
         .filter(|row| row.state == JournalState::Failed)
         .count();
     Ok(RunOutcome { applied, failed })
+}
+
+/// Release the run's bulk lock and land it on a terminal state, marking every
+/// journal row this call still finds `pending` `failed` first.
+///
+/// **Shared by two very different callers.** [`apply_run_in`]'s own explicit
+/// tail reaches this after the per-plan loop has already decided every row it
+/// touched — so the straggler loop below is a no-op there, and this is just
+/// the tally-then-advance the old tail used to do inline, now also releasing
+/// the lock that did not exist before this task. [`RunLockGuard`]'s `Drop`
+/// fallback reaches this too, and there it is not a no-op: a panic or a
+/// dropped future can leave whole plans never reached, and their rows are
+/// exactly what [`repricing_journal_repo::pending_for_run`] still finds
+/// `pending` here. Marking them `failed` rather than leaving them `pending`
+/// under a now-terminal run is `infra::bulk`'s own idiom for a run with no
+/// failure state to land in — "nothing committed, every row conflicted, the
+/// report lists them for retry" — carried over rather than invented fresh:
+/// a `pending` row under a terminal run is unreachable by anything (no
+/// re-drive exists, and a terminal run can never be handed to
+/// [`apply_run_in`] again to produce one), which is worse than a `failed` row
+/// an operator can read and resubmit.
+///
+/// # Errors
+/// [`DomainError`] on a storage failure releasing the lock, marking a
+/// straggler, tallying the journal or advancing the run — the same failures
+/// [`bulk_repo`] and [`repricing_journal_repo`] themselves raise.
+async fn finish_run(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    straggler_reason: &str,
+    now: DateTime<Utc>,
+) -> Result<RunOutcome, DomainError> {
+    bulk_repo::release_locks(runner, scope, tenant_id, operation_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+
+    let stragglers =
+        repricing_journal_repo::pending_for_run(runner, scope, tenant_id, operation_id)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+    for row in stragglers {
+        repricing_journal_repo::mark_failed(
+            runner,
+            scope,
+            tenant_id,
+            operation_id,
+            row.price_id,
+            straggler_reason,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    }
+
+    let outcome = tally(runner, scope, tenant_id, operation_id).await?;
+    let run = bulk_repo::read(runner, scope, tenant_id, operation_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "repricing run".to_owned(),
+            id: operation_id.to_string(),
+        })?;
+    bulk_repo::advance(
+        runner,
+        scope,
+        tenant_id,
+        operation_id,
+        if outcome.failed > 0 {
+            BulkState::CompletedWithConflicts
+        } else {
+            BulkState::Completed
+        },
+        run.report,
+        now,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+
+    Ok(outcome)
+}
+
+/// The reason [`RunLockGuard`]'s `Drop` fallback marks a straggler row with.
+const ABANDONED_STRAGGLER_REASON: &str = "bss-pricing: the mass-repricing apply was interrupted \
+    (a panic or a dropped future) before this row's plan was reached; its bulk lock has been \
+    released and the run has landed on a terminal state without applying it - resubmit a new \
+    run over its key if the repricing still needs to land";
+
+/// Owns [`apply_run_in`]'s bulk lock across its two abnormal exits that no
+/// match arm can reach: a panic, and a dropped future (a client disconnect, a
+/// shutdown signal, a losing `select!` arm).
+///
+/// `infra::bulk`'s own sibling (`commit_batch`) releases the lock in its
+/// `Ok`/`Err` match arms alone — review findings Z8-8/Z9-5 name the gap that
+/// leaves: a panic unwinds *past* a match arm exactly as it unwinds past
+/// everything else, and a dropped future never runs any of this crate's code
+/// again at all, match arm or not. [`Drop`] is the one thing the language
+/// itself guarantees runs on all three exits (a normal return, a panic, and a
+/// cancellation), which is why this type exists rather than a fourth attempt
+/// to enumerate exits by hand.
+///
+/// [`apply_run_in`]'s own explicit tail — [`finish_run`] — [`disarm`](Self::disarm)s
+/// this guard once it has released the lock and landed the run terminal
+/// itself, for a clean finish and for an ordinary [`DomainError`] this
+/// function's own code caught and is about to propagate. Both reach this
+/// guard's `disarm`; only a panic or a cancellation reach its `Drop` instead.
+///
+/// # What the fallback cannot promise
+///
+/// [`Drop::drop`] cannot `.await`, so releasing the lock and landing the run
+/// terminal from here means spawning a detached task on whatever Tokio
+/// runtime is current when the value drops — best-effort, not synchronous
+/// with the moment it does. A caller that reads the run back immediately
+/// afterwards may still observe it `committing` for a beat before that task
+/// runs. And a runtime that has itself gone away — the process killed
+/// outright rather than merely cancelling this future — cannot run even that:
+/// this guard closes the in-process gap (a panic, a cancellation) and nothing
+/// past it. The gap past it is `infra::bulk`'s own: "no operator remedy until
+/// D-37's lease takeover exists, which it does not."
+struct RunLockGuard {
+    db: DBProvider<DbError>,
+    scope: AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+    disarmed: bool,
+}
+
+impl RunLockGuard {
+    fn new(
+        db: DBProvider<DbError>,
+        scope: AccessScope,
+        tenant_id: Uuid,
+        operation_id: Uuid,
+    ) -> Self {
+        Self {
+            db,
+            scope,
+            tenant_id,
+            operation_id,
+            disarmed: false,
+        }
+    }
+
+    /// Tell the guard its own caller already released the lock and landed the
+    /// run terminal, so its `Drop` has nothing left to do. Takes `&mut self`
+    /// rather than consuming the guard so a caller can disarm it and then let
+    /// the ordinary end of scope drop it, rather than having to name a
+    /// no-op `Drop` path explicitly at every return point.
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for RunLockGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+        let db = self.db.clone();
+        let scope = self.scope.clone();
+        let tenant_id = self.tenant_id;
+        let operation_id = self.operation_id;
+        // No runtime to spawn onto — a bare panic during shutdown, say — is
+        // exactly the gap this guard's own doc names as past what it can
+        // promise. Logged and left rather than panicking a second time out of
+        // a `Drop`, which would abort the process outright.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::error!(
+                run_id = %operation_id,
+                "bss-pricing: repricing apply dropped with its bulk lock still held and no Tokio \
+                 runtime current to release it on; the lock and the run's committing state are \
+                 both stuck until an operator clears them by hand"
+            );
+            return;
+        };
+        handle.spawn(async move {
+            let conn = match db.conn() {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        run_id = %operation_id,
+                        "bss-pricing: repricing apply drop-guard could not open a connection to \
+                         release its bulk lock"
+                    );
+                    return;
+                }
+            };
+            if let Err(e) = finish_run(
+                &conn,
+                &scope,
+                tenant_id,
+                operation_id,
+                ABANDONED_STRAGGLER_REASON,
+                Utc::now(),
+            )
+            .await
+            {
+                tracing::error!(
+                    error = %e,
+                    run_id = %operation_id,
+                    "bss-pricing: repricing apply drop-guard failed to release its bulk lock and \
+                     land the run terminal; it may still be stuck committing"
+                );
+            }
+        });
+    }
 }
 
 /// The one shared reason a plan's every pending row is marked `failed` with.
