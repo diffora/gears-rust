@@ -22,6 +22,7 @@ pub mod import;
 pub mod instant;
 pub mod lifecycle;
 pub mod materiality;
+pub mod membership_change;
 pub mod migration;
 pub mod migration_delta;
 pub mod money;

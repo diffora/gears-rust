@@ -209,6 +209,7 @@ use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
+use crate::domain::membership_change::MembershipMoveSet;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{
     Adjustment, AmountSet, Magnitude, OverlayLine, OverlayRevision, ScopeValue, TargetSku,
@@ -478,6 +479,14 @@ pub const OVERLAY_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-OVERLAY-PIN-v1\x1f";
 /// component swap.
 pub const BUNDLE_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-BUNDLE-PIN-v1\x1f";
 
+/// The domain separator of the **membership move** pin (`inst-mm-pending`).
+///
+/// Its own, for [`OVERLAY_PIN_DOMAIN_SEP`]'s reason: a digest that could
+/// collide with a plan, overlay, threshold or bundle pin would let an approve
+/// taken for one kind of unit authorize a decision about another. `v1`
+/// because nothing has been pinned under it yet.
+pub const MEMBERSHIP_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-MEMBERSHIP-PIN-v1\x1f";
+
 /// The token the preimage frames an absolute threshold basis as.
 ///
 /// Written out here rather than taken from any wire or column spelling, for
@@ -609,6 +618,39 @@ pub fn bundle_content_hash(shape: &PlanShape, revision_version: RowVersion) -> [
     // framings of one document, free to disagree.
     put(&mut buf, &content_hash(shape));
     put_u64(&mut buf, revision_version.get());
+    digest32(&buf)
+}
+
+/// The pin a material membership-move unit is opened under (`inst-mm-pending`).
+///
+/// **Total**, for [`content_hash`]'s reason: there is no non-empty set this
+/// cannot hash, so a unit can always be opened and a reviewer is never shown
+/// content the pin did not cover. [`MembershipMoveSet::new`] is what refuses
+/// the empty and duplicate-payer cases before one of these is ever built.
+///
+/// Proposals are framed in the set's own canonical (payer-sorted) order — see
+/// [`MembershipMoveSet`]'s doc — so two requests naming the same payers in a
+/// different authored order pin identically.
+#[must_use]
+pub fn membership_content_hash(set: &MembershipMoveSet) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(256);
+    buf.extend_from_slice(MEMBERSHIP_PIN_DOMAIN_SEP);
+    let proposals = set.proposals();
+    put_u64(&mut buf, count_of(proposals.len()));
+    for proposal in proposals {
+        // Destructured with no rest pattern, so a field added to
+        // `MembershipMoveProposal` fails to compile here until it is decided
+        // whether the pin covers it — `content_pin`'s own module-doc guard,
+        // applied to this type.
+        let crate::domain::membership_change::MembershipMoveProposal {
+            payer_tenant_id,
+            group_value,
+            effective_from,
+        } = proposal;
+        put_uuid(&mut buf, *payer_tenant_id);
+        put_str(&mut buf, group_value);
+        put_instant(&mut buf, *effective_from);
+    }
     digest32(&buf)
 }
 

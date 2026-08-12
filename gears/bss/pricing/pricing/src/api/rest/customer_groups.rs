@@ -60,6 +60,7 @@ use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::approvals::{ApprovalView, MaterialityView};
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
@@ -68,11 +69,16 @@ use crate::api::rest::preconditions;
 use crate::api::rest::state::AuthoringState;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::error::DomainError;
+use crate::domain::materiality::triggers::Trigger;
+use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict};
+use crate::domain::membership_change::{MembershipMoveProposal, MembershipMoveSet};
 use crate::domain::overlay::ScopeValue;
 use crate::domain::ports::CatalogVersionRegistryV1;
 use crate::domain::taxonomy::{TAXONOMY_VALUE_IN_USE, TaxonomyEntry, TaxonomyState};
+use crate::infra::approval::ApprovalService;
 use crate::infra::idempotent::{self, Guarded, GuardedRequest};
 use crate::infra::membership_publish;
+use crate::infra::storage::repo::approval_repo;
 use crate::infra::storage::repo::taxonomy_repo::customer_group_tag_of;
 use crate::infra::storage::repo::{IdempotencyGate, NewMembership, group_membership_repo};
 use crate::infra::storage::repo_failure;
@@ -609,7 +615,51 @@ pub struct MoveMembershipRequest {
     /// `effectiveTo` and the new one's `effectiveFrom`, both at once (D-09:
     /// "no gap, no overlap").
     pub effective_from: DateTime<Utc>,
+    /// Request an **immediate** re-resolution rather than the renewal-aligned
+    /// default (`inst-mm-immediate`, `inst-mm-renewal`). Absent or `false` is
+    /// the default: the move commits directly, audit-only, exactly as it did
+    /// before this field existed. `true` makes the move a **material** change
+    /// — it takes the Slice 5 two-person rule and commits nothing until a
+    /// second principal approves.
+    pub immediate: Option<bool>,
 }
+
+/// What `POST .../move` answers when `immediate: true` names the material
+/// path (`inst-mm-immediate`).
+///
+/// [`crate::api::rest::windows::WindowMutationOutcomeView`]'s shape, for the
+/// same reason: this route now has two possible acts — open a unit, or apply
+/// one an earlier call already opened and a second principal has since
+/// approved — and a reader must be able to tell which one this response
+/// documents rather than inferring it from which fields happen to be
+/// populated.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct MembershipMoveMaterialView {
+    /// `"submitted_for_approval"` or `"committed"` — see
+    /// [`crate::api::rest::publish::OUTCOME_SUBMITTED`] and
+    /// [`MEMBERSHIP_OUTCOME_COMMITTED`].
+    pub outcome: String,
+    /// The move as committed, when this call is the one that applied it.
+    /// `None` while the unit is still `submitted`.
+    pub moved: Option<MembershipMoveView>,
+    /// The materiality verdict this act was opened under. `None` once
+    /// committed — that verdict is `approval`'s own, and repeating it here
+    /// would be a second reading of one record.
+    pub materiality: Option<MaterialityView>,
+    /// The approval unit, in either state: `submitted` right after this call
+    /// opened it, or `approved` when this call is the one reading it back to
+    /// commit.
+    pub approval: Option<ApprovalView>,
+}
+
+/// The outcome token [`MembershipMoveMaterialView::outcome`] carries once this
+/// call has applied an approved unit.
+///
+/// Not `crate::api::rest::publish::OUTCOME_PUBLISHED`: that token means a plan
+/// became addressable, which is not what committing a membership move is —
+/// `windows::OUTCOME_MUTATED`'s reading, applied to this subject.
+const MEMBERSHIP_OUTCOME_COMMITTED: &str = "committed";
 
 /// The operation `POST .../members` claims idempotency keys under.
 const CREATE_MEMBER_OPERATION: &str = "bss_pricing.create_customer_group_member";
@@ -987,6 +1037,28 @@ async fn move_membership(
     let digest = preconditions::request_digest(&request)?;
     let group_value = required_group(&group)?;
 
+    // **The material fork (`inst-mm-immediate`), ahead of the guard.** An
+    // immediate re-resolution is a different act from the renewal-aligned
+    // default below, not a variation on it: it opens no idempotency claim at
+    // all (`idempotent::guarded`'s replay would answer the *first* call's 202
+    // forever, which is exactly wrong for a caller retrying after a second
+    // principal has approved — the same "a fresh Idempotency-Key marks a
+    // fresh attempt" contract `windows::schedule_window`'s material arm
+    // relies on) and it may commit nothing on this call at all.
+    if request.immediate == Some(true) {
+        return move_membership_immediate(
+            &state,
+            &ctx,
+            &scope,
+            tenant,
+            group_value,
+            payer_id,
+            request.effective_from,
+            correlation,
+        )
+        .await;
+    }
+
     let now = Utc::now();
     let stamp = audit_stamp(&ctx, now, correlation);
     let registry = Arc::clone(&state.registry);
@@ -1034,6 +1106,162 @@ async fn move_membership(
         }
         Guarded::Replayed { status, body } => replayed(status, &body),
     })
+}
+
+/// The material half of `POST .../move`: `inst-mm-immediate`'s two acts on one
+/// route (`overlays::submit_overlay`'s D-234 shape, applied to a subject with
+/// no draft table).
+///
+/// **First arrival** — no approved unit over this exact `(payer, group,
+/// instant)` yet: evaluate materiality (always [`Trigger::ImmediateMembershipReresolution`]),
+/// open the Slice 5 unit and answer `202`. **Nothing is written to the
+/// membership plane on this call** — `inst-mm-pending`'s own rule, restated
+/// from the route's side: no `pricing_group_membership` row exists until a
+/// second principal approves.
+///
+/// **A later arrival, once approved** — [`approval_repo::find_approved_for_content`]
+/// finds a unit over this exact subject and content, [`ApprovalService::commit_membership_move_in`]
+/// re-verifies the two-person rule and applies the move atomically, and this
+/// call answers `200` carrying the committed membership and the D-06 publish
+/// unit's pending handle — the same shape the audit-only path answers,
+/// because from the payer's read model onward a material move and a
+/// renewal-aligned one converge on one publish unit.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the state, the security context \
+              and scope the gate compiled, the tenant, the target group and payer the path \
+              names, the instant the move pivots on, and the correlation the HTTP edge \
+              established. `move_membership`'s own reason, one call up."
+)]
+async fn move_membership_immediate(
+    state: &MembershipState,
+    ctx: &SecurityContext,
+    scope: &AccessScope,
+    tenant: Uuid,
+    group_value: String,
+    payer_id: Uuid,
+    effective_from: DateTime<Utc>,
+    correlation: Uuid,
+) -> Result<Response, CanonicalError> {
+    let set = MembershipMoveSet::new(vec![MembershipMoveProposal {
+        payer_tenant_id: payer_id,
+        group_value,
+        effective_from,
+    }])
+    .map_err(CanonicalError::from)?;
+    let subject_ref = approval_repo::membership_move_subject_ref(&set)
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    let pin = crate::domain::approval::content_pin::membership_content_hash(&set);
+
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::internal(format!("bss-pricing: membership move lookup: {e}")).create()
+    })?;
+    let approved =
+        approval_repo::find_approved_for_content(&conn, scope, tenant, &subject_ref, &pin)
+            .await
+            .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+
+    if let Some(approved) = approved {
+        let stamp = audit_stamp(ctx, Utc::now(), correlation);
+        let registry = Arc::clone(&state.registry);
+        let commit_ctx = ctx.clone();
+        let commit_scope = scope.clone();
+        let (_, outcome) = state
+            .db
+            .db()
+            .in_transaction::<Vec<membership_publish::MembershipMoveReceipt>, DomainError, _>(
+                move |txn| {
+                    Box::pin(async move {
+                        ApprovalService::commit_membership_move_in(
+                            txn,
+                            registry.as_ref(),
+                            &commit_ctx,
+                            &commit_scope,
+                            tenant,
+                            &approved,
+                            stamp,
+                        )
+                        .await
+                    })
+                },
+            )
+            .await;
+        let receipts = outcome.map_err(|err| {
+            err.into_domain(|infra| {
+                DomainError::Internal(format!("bss-pricing: membership move commit: {infra}"))
+            })
+        })?;
+        let receipt = receipts.into_iter().next().ok_or_else(|| {
+            CanonicalError::from(DomainError::Internal(
+                "an approved single-payer membership move committed no receipt".to_owned(),
+            ))
+        })?;
+        return Ok((
+            StatusCode::OK,
+            Json(MembershipMoveMaterialView {
+                outcome: MEMBERSHIP_OUTCOME_COMMITTED.to_owned(),
+                moved: Some(MembershipMoveView::from(&receipt)),
+                materiality: None,
+                approval: None,
+            }),
+        )
+            .into_response());
+    }
+
+    let verdict = immediate_membership_materiality();
+    let (_reason, stored_materiality) = crate::api::rest::overlays::rendered_materiality(&verdict)?;
+    let stamp = audit_stamp(ctx, Utc::now(), correlation);
+    let submit_scope = scope.clone();
+    let set_for_submit = set.clone();
+    let (_, outcome) = state
+        .db
+        .db()
+        .in_transaction::<approval_repo::ApprovalRecord, DomainError, _>(move |txn| {
+            Box::pin(async move {
+                ApprovalService::submit_membership_move_on(
+                    txn,
+                    &submit_scope,
+                    tenant,
+                    &set_for_submit,
+                    Uuid::now_v7(),
+                    stored_materiality,
+                    stamp,
+                )
+                .await
+            })
+        })
+        .await;
+    let opened = outcome.map_err(|err| {
+        err.into_domain(|infra| {
+            DomainError::Internal(format!("bss-pricing: membership move submit: {infra}"))
+        })
+    })?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(MembershipMoveMaterialView {
+            outcome: crate::api::rest::publish::OUTCOME_SUBMITTED.to_owned(),
+            moved: None,
+            materiality: Some(MaterialityView::from(&verdict)),
+            approval: Some(ApprovalView::from(&opened)),
+        }),
+    )
+        .into_response())
+}
+
+/// The materiality verdict `inst-mm-immediate`'s unit records — **evaluated,
+/// not asserted** (`threshold_policy::policy_diff_materiality`'s shape and
+/// reason): the stored `materiality` jsonb is produced by the same evaluator
+/// every other unit's is, and this call is what makes
+/// [`Trigger::ImmediateMembershipReresolution`] real — see that trigger's own
+/// note in `domain::materiality::triggers` on a declaration being distinct
+/// from a `pub fn` that builds one.
+fn immediate_membership_materiality() -> MaterialityVerdict {
+    materiality::evaluate(
+        &ChangeSet::of_act(Trigger::ImmediateMembershipReresolution, Vec::new()),
+        /* policy */ None,
+        /* baseline */ None,
+    )
 }
 
 /// The recorded body of a guarded membership mutation: the view, as JSON.

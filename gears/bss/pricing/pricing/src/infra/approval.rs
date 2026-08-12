@@ -127,10 +127,11 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value as JsonValue, json};
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
+use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::domain::approval::content_pin::{
-    bundle_content_hash, overlay_content_hash, threshold_content_hash,
+    bundle_content_hash, membership_content_hash, overlay_content_hash, threshold_content_hash,
 };
 use crate::domain::approval::{
     DecisionBy, DecisionRefusal, DecisionRequest, WithdrawAuthority, authorize_decision,
@@ -140,9 +141,11 @@ use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{ThresholdEntry, ThresholdVersion};
+use crate::domain::membership_change::MembershipMoveSet;
 use crate::domain::money::CurrencyCode;
 use crate::domain::overlay::{OverlayRevision, ScopeClass};
 use crate::domain::plan_shape::PlanShape;
+use crate::domain::ports::CatalogVersionRegistryV1;
 use crate::domain::scope_key::{PlanId, Region};
 use crate::infra::storage::repo::approval_repo::{ApprovalRecord, NewApproval};
 use crate::infra::storage::repo::bundle_repo::{self, CompositionDraft};
@@ -346,6 +349,24 @@ pub enum PinnedSubject {
     /// about it. It rides here rather than being fetched by the surface because
     /// this is the read the pin was taken over.
     BundleComposition(Box<PlanShape>, RowVersion, Box<CompositionDraft>),
+    /// A **material membership move** (`inst-mm-immediate`, `inst-mm-bulk`,
+    /// D-215's `inst-mm-pending`).
+    ///
+    /// Not boxed, unlike [`Self::Plan`] and [`Self::Overlay`]: a
+    /// [`MembershipMoveSet`] carries no plan shape and no line set, and its
+    /// size is bounded by the request that proposed it rather than by
+    /// anything this crate authors without limit.
+    ///
+    /// # Why this subject re-derives with **no store read at all**
+    ///
+    /// Every other variant is re-read from a store that can move between
+    /// submit and decide — a plan's draft, an overlay's revision, a threshold
+    /// version's rows. A membership move has no such store: `inst-mm-pending`
+    /// settles that its whole payload travels *inside* the approval record's
+    /// own `subject_ref`, so re-deriving it is decoding text that cannot have
+    /// changed since the transaction that wrote it — there is no world for it
+    /// to have moved in. See [`re_derive`]'s `Membership` arm.
+    Membership(MembershipMoveSet),
 }
 
 impl PinnedSubject {
@@ -364,6 +385,7 @@ impl PinnedSubject {
             Self::ThresholdPolicy(version) => threshold_content_hash(version),
             Self::Overlay(revision) => overlay_content_hash(revision),
             Self::BundleComposition(shape, version, _) => bundle_content_hash(shape, *version),
+            Self::Membership(set) => membership_content_hash(set),
         }
     }
 
@@ -381,7 +403,14 @@ impl PinnedSubject {
     pub fn regions(&self) -> BTreeSet<Region> {
         match self {
             Self::Plan(shape) | Self::BundleComposition(shape, ..) => regions_of(shape),
-            Self::ThresholdPolicy(_) => BTreeSet::new(),
+            // **Neither a policy version nor a membership move reaches a
+            // region, and that is one reading applied twice rather than two.**
+            // A threshold policy has no rows and a payer's group membership
+            // has no region axis at all — the customer-group taxonomy is
+            // tenant-wide — so both answer the empty set, which every grant
+            // covers: there is no region a restricted reviewer would be
+            // reaching outside of by deciding either.
+            Self::ThresholdPolicy(_) | Self::Membership(_) => BTreeSet::new(),
             // **An overlay reaches a region exactly when it is scoped to one.** A
             // brand- or partner-scoped overlay has no region axis at all and answers
             // the empty set, which every grant covers — the same reading the policy
@@ -408,7 +437,7 @@ impl PinnedSubject {
     pub const fn plan(&self) -> Option<&PlanShape> {
         match self {
             Self::Plan(shape) | Self::BundleComposition(shape, ..) => Some(shape),
-            Self::ThresholdPolicy(_) | Self::Overlay(_) => None,
+            Self::ThresholdPolicy(_) | Self::Overlay(_) | Self::Membership(_) => None,
         }
     }
 
@@ -417,7 +446,10 @@ impl PinnedSubject {
     pub const fn threshold_policy(&self) -> Option<&ThresholdVersion> {
         match self {
             Self::ThresholdPolicy(version) => Some(version),
-            Self::Plan(_) | Self::Overlay(_) | Self::BundleComposition(..) => None,
+            Self::Plan(_)
+            | Self::Overlay(_)
+            | Self::BundleComposition(..)
+            | Self::Membership(_) => None,
         }
     }
 
@@ -429,7 +461,9 @@ impl PinnedSubject {
     pub const fn composition(&self) -> Option<&CompositionDraft> {
         match self {
             Self::BundleComposition(_, _, composition) => Some(composition),
-            Self::Plan(_) | Self::ThresholdPolicy(_) | Self::Overlay(_) => None,
+            Self::Plan(_) | Self::ThresholdPolicy(_) | Self::Overlay(_) | Self::Membership(_) => {
+                None
+            }
         }
     }
 
@@ -438,7 +472,10 @@ impl PinnedSubject {
     pub const fn overlay(&self) -> Option<&OverlayRevision> {
         match self {
             Self::Overlay(revision) => Some(revision),
-            Self::Plan(_) | Self::ThresholdPolicy(_) | Self::BundleComposition(..) => None,
+            Self::Plan(_)
+            | Self::ThresholdPolicy(_)
+            | Self::BundleComposition(..)
+            | Self::Membership(_) => None,
         }
     }
 }
@@ -1287,6 +1324,135 @@ impl ApprovalService {
         outcome.map_err(into_domain)
     }
 
+    /// Open the **material membership-move** unit (`inst-mm-immediate`,
+    /// `inst-mm-bulk`, `inst-mm-pending`), inside the caller's transaction.
+    ///
+    /// [`Self::submit_overlay_on`]'s shape, adapted to a subject with no store
+    /// of its own: the pin is [`membership_content_hash`] rather than a
+    /// re-derivation of a stored row, and `subject_ref` is
+    /// `approval_repo::membership_move_subject_ref(set)` — the whole payload,
+    /// not a pointer to one, per [`PinnedSubject::Membership`]'s doc.
+    ///
+    /// # It holds no keys, for [`Self::submit_overlay_on`]'s reason
+    ///
+    /// A membership move writes no price row and touches no canonical scope
+    /// key, so `inst-co-single-pending`'s register — keyed on scope keys —
+    /// does not reach it. What guards it instead is the subject ref: one
+    /// pending unit per **exact proposed set**. Two units proposing
+    /// overlapping-but-different sets over one payer are **not** guarded
+    /// here — the same residual gap `submit_overlay_on`'s doc records for two
+    /// different overlays on one precedence slot, and for the same reason: a
+    /// register keyed on something other than a scope key is a decision the
+    /// design set has not made for this subject either.
+    ///
+    /// # Errors
+    /// [`DomainError::PendingChangeUnitExists`] when a unit over this exact
+    /// set is already submitted; [`DomainError::Internal`] on a storage
+    /// failure.
+    pub async fn submit_membership_move_on(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        set: &MembershipMoveSet,
+        approval_id: Uuid,
+        materiality: JsonValue,
+        stamp: AuditStamp,
+    ) -> Result<ApprovalRecord, DomainError> {
+        let subject_ref =
+            approval_repo::membership_move_subject_ref(set).map_err(|e| repo_failure(&e))?;
+        if let Some(held) =
+            approval_repo::find_pending_for_subject(runner, scope, tenant_id, &subject_ref)
+                .await
+                .map_err(|e| repo_failure(&e))?
+        {
+            return Err(DomainError::PendingChangeUnitExists(format!(
+                "this membership move: approval {} is still submitted over it; decide it, or \
+                 withdraw it to submit again",
+                held.approval_id
+            )));
+        }
+        let new = NewApproval {
+            approval_id,
+            tenant_id,
+            subject_ref,
+            subject_kind: AuditSubjectKind::Membership,
+            content_hash: membership_content_hash(set).to_vec(),
+            materiality,
+            held_keys: BTreeSet::new(),
+        };
+        approval_repo::open(runner, scope, new, stamp)
+            .await
+            .map_err(|e| repo_failure(&e))
+    }
+
+    /// Apply an **approved** membership-move unit, atomically, inside the
+    /// caller's transaction — `inst-mm-pending`'s "the commit applies the
+    /// whole set atomically".
+    ///
+    /// One [`crate::infra::membership_publish::move_payer_in`] per proposal, in
+    /// the set's own canonical order, all inside `runner`'s transaction: each
+    /// call is already the atomic end-then-enroll D-09 requires for one payer,
+    /// and running the whole set inside one transaction is what makes *all of
+    /// them* land together or none do, which is the atomicity `inst-mm-pending`
+    /// promises for the set as a whole. Each call requests its own registry
+    /// handle — D-06's own batching coalesces the several requests into one
+    /// `CatalogVersion` (§3's own note on the audit-only path, unchanged here),
+    /// so a bulk move is several publish units rather than a hand-rolled single
+    /// one.
+    ///
+    /// **No re-verification of the content hash.** Unlike a plan-shape unit,
+    /// whose subject can move between approve and this call, a membership
+    /// move's whole content is [`ApprovalRecord::subject_ref`] itself — there
+    /// is nothing else it could have drifted from. [`independent_approver`] is
+    /// still checked: the two-person rule is a fact about *who decided*, not
+    /// about *what*, and a record written around the store (a migration, a
+    /// restore) could still name one principal twice.
+    ///
+    /// # Errors
+    /// [`DomainError::SelfApprovalForbidden`] when `approved` names one
+    /// principal as both submitter and approver; [`DomainError::Internal`]
+    /// when `approved` is not `subject_kind = membership` or its payload does
+    /// not decode; whatever [`crate::infra::membership_publish::move_payer_in`]
+    /// refuses, per proposal.
+    pub async fn commit_membership_move_in(
+        runner: &impl DBRunner,
+        registry: &dyn CatalogVersionRegistryV1,
+        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        approved: &ApprovalRecord,
+        stamp: AuditStamp,
+    ) -> Result<Vec<crate::infra::membership_publish::MembershipMoveReceipt>, DomainError> {
+        independent_approver(approved)?;
+        if approved.subject_kind != AuditSubjectKind::Membership {
+            return Err(DomainError::Internal(format!(
+                "approval {} is not a membership unit ({}); refusing to apply it as one",
+                approved.approval_id,
+                approved.subject_kind.as_str()
+            )));
+        }
+        let set = approval_repo::subject_membership_move(approved).map_err(|e| repo_failure(&e))?;
+        let mut receipts = Vec::with_capacity(set.proposals().len());
+        for proposal in set.proposals() {
+            let new_membership_id = Uuid::now_v7();
+            let receipt = crate::infra::membership_publish::move_payer_in(
+                runner,
+                registry,
+                ctx,
+                scope,
+                tenant_id,
+                proposal.payer_tenant_id,
+                new_membership_id,
+                proposal.group_value.clone(),
+                proposal.effective_from,
+                stamp,
+            )
+            .await?;
+            receipts.push(receipt);
+        }
+        Ok(receipts)
+    }
+
     pub async fn list(
         &self,
         scope: &AccessScope,
@@ -2002,18 +2168,27 @@ async fn re_derive(
              the decide surface, not built yet",
             record.approval_id
         ))),
-        // **Not built.** `group_membership_repo` (Task 4 of the customer-group
-        // plane) writes `pricing_audit_log` records of this kind and opens no
-        // approval unit — `inst-mm-pending`'s bulk-move payload, the one case
-        // that would need one, is not wired. A record of this kind reaching
-        // `decide` cannot occur yet, and this arm's shape is
-        // [`AuditSubjectKind::BulkOperation`]'s: `Err` rather than `Ok(None)`,
-        // because `None` means *the subject is gone* and that is not what "no
-        // opener exists yet" means.
-        AuditSubjectKind::Membership => Err(DomainError::Internal(format!(
-            "approval {} is a membership unit; no opener exists for this subject kind yet",
-            record.approval_id
-        ))),
+        // **Paid 2026-08-12** (Task 7 of the customer-group plane).
+        // `ApprovalService::submit_membership_move_on` is the writer now, and
+        // this arm is the re-derivation the module doc's own note anticipated:
+        // "the payload lives in the approval record", so re-deriving it is
+        // `approval_repo::subject_membership_move` decoding `subject_ref` —
+        // **no store read**, unlike every other arm above.
+        //
+        // `Ok(Some(...))` unconditionally rather than the `Option` every other
+        // arm threads: there is no store for the subject to have vanished
+        // *from*. A well-formed record's payload cannot fail to decode — the
+        // same content was validated by `MembershipMoveSet::new` when the
+        // unit was opened, over exactly this text — so a decode failure here
+        // means the row was written around the store, and
+        // `subject_membership_move`'s own `RepoError::CorruptRow` is the
+        // honest answer for that rather than a silent `None` that reads as
+        // "the subject moved".
+        AuditSubjectKind::Membership => {
+            let set =
+                approval_repo::subject_membership_move(record).map_err(|e| repo_failure(&e))?;
+            Ok(Some(PinnedSubject::Membership(set)))
+        }
     }
 }
 

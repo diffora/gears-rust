@@ -14,17 +14,30 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use async_trait::async_trait;
 use bss_pricing::domain::approval::{ApprovalDecision, ApprovalState};
 use bss_pricing::domain::audit::{AuditStamp, AuditSubjectKind};
+use bss_pricing::domain::materiality::triggers::Trigger;
+use bss_pricing::domain::materiality::{self, ChangeSet};
+use bss_pricing::domain::membership_change::{MembershipMoveProposal, MembershipMoveSet};
+use bss_pricing::infra::approval::{ApprovalService, PinnedSubject};
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::migrations::Migrator;
-use bss_pricing::infra::storage::repo::approval_repo::{self, ApprovalRecord, NewApproval};
+use bss_pricing::infra::storage::repo::approval_repo::{
+    self, ApprovalRecord, NewApproval, SubjectAggregate,
+};
+use bss_pricing::infra::storage::repo::group_membership_repo;
+use bss_pricing_sdk::catalog_version::CatalogVersion;
+use bss_pricing_sdk::catalog_version_registry::{
+    CatalogVersionRegistryError, CatalogVersionRegistryV1, PendingVersionRef,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureInsertExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
@@ -1010,4 +1023,431 @@ async fn a_policy_unit_reusing_a_decided_units_id_is_contention_and_not_the_mint
         },
         "a duplicate id is retriable contention; only the mint guard is a pending-unit conflict"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The material membership-move path (Task 7 of the customer-group plane):
+// `inst-mm-immediate`, `inst-mm-bulk`, `inst-mm-pending`. `subject_aggregate`
+// and `re_derive` both refused `AuditSubjectKind::Membership` outright before
+// this task; these are the tests that pin the opener down.
+// ---------------------------------------------------------------------------
+
+/// Declare one **active** customer-group value directly through the entity —
+/// `rest_support::declare_customer_group`'s shape, reproduced here because
+/// this file drives the repository layer with no `Harness` to hang it off.
+async fn declare_customer_group(
+    conn: &impl toolkit_db::secure::DBRunner,
+    tenant: Uuid,
+    value: &str,
+) {
+    use bss_pricing::infra::storage::entity::customer_group_taxonomy;
+    use sea_orm::EntityTrait;
+
+    let row = customer_group_taxonomy::ActiveModel {
+        tenant_id: sea_orm::ActiveValue::Set(tenant),
+        value: sea_orm::ActiveValue::Set(value.to_owned()),
+        display_name: sea_orm::ActiveValue::Set(value.to_owned()),
+        state: sea_orm::ActiveValue::Set("active".to_owned()),
+    };
+    customer_group_taxonomy::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("scope")
+        .exec(conn)
+        .await
+        .expect("declare the customer-group value");
+}
+
+/// A registry that hands out one pending handle per `request_id` —
+/// `sqlite_publish_commit.rs`'s `RegistryDouble`, reproduced for the same
+/// reason `declare_customer_group` above is: this file has no shared harness
+/// with that one.
+#[derive(Default)]
+struct RegistryDouble;
+
+#[async_trait]
+impl CatalogVersionRegistryV1 for RegistryDouble {
+    async fn request_version(
+        &self,
+        _ctx: &SecurityContext,
+        request_id: &str,
+    ) -> Result<PendingVersionRef, CatalogVersionRegistryError> {
+        Ok(PendingVersionRef {
+            request_id: request_id.to_owned(),
+            pending_ref: format!("pend-{request_id}"),
+        })
+    }
+
+    async fn committed_version(
+        &self,
+        _ctx: &SecurityContext,
+        _pending_ref: &str,
+    ) -> Result<Option<CatalogVersion>, CatalogVersionRegistryError> {
+        Ok(None)
+    }
+}
+
+fn security_context(principal: Uuid, tenant: Uuid) -> SecurityContext {
+    SecurityContext::builder()
+        .subject_id(principal)
+        .subject_tenant_id(tenant)
+        .build()
+        .expect("a subject and a tenant are all a context needs")
+}
+
+/// The materiality verdict rendered exactly as a surface would store it —
+/// **evaluated, not asserted**: this helper calls `materiality::evaluate`
+/// itself rather than taking a literal, so a test using it cannot
+/// accidentally prove F-1's mistake (comparing a constant to itself).
+fn evaluated_materiality(act: Trigger) -> serde_json::Value {
+    let verdict = materiality::evaluate(&ChangeSet::of_act(act, Vec::new()), None, None);
+    json!({
+        "material": verdict.is_material(),
+        "reason": verdict.reason().map(bss_pricing::domain::materiality::MaterialityReason::as_str),
+    })
+}
+
+/// **The claim this test exists to prove:** a bulk group move — many payers,
+/// one unit — is registered as an always-material trigger, and what proves it
+/// is the record the *store* holds after a fresh read, never the value handed
+/// to `submit_membership_move_on`. Comparing the handler's own literal against
+/// itself is review finding F-1 in this crate; this test reads the row back.
+///
+/// To redden this: comment out the `triggers::triggered(change)` early return
+/// in `domain::materiality::evaluate`. This change set then falls through to
+/// `inst-mat-failsafe` and stores `noConfiguredThreshold` instead of
+/// `alwaysMaterialTrigger`. Proved by doing exactly that (see the report).
+#[tokio::test]
+async fn a_bulk_group_move_is_always_material_and_the_store_reflects_it() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let approval_id = Uuid::from_u128(0xb0_01);
+
+    let set = MembershipMoveSet::new(vec![
+        MembershipMoveProposal {
+            payer_tenant_id: Uuid::from_u128(0xb0_11),
+            group_value: "gold".to_owned(),
+            effective_from: at(9),
+        },
+        MembershipMoveProposal {
+            payer_tenant_id: Uuid::from_u128(0xb0_12),
+            group_value: "gold".to_owned(),
+            effective_from: at(9),
+        },
+    ])
+    .expect("two distinct payers make a valid set");
+
+    ApprovalService::submit_membership_move_on(
+        &conn,
+        &scope,
+        TENANT,
+        &set,
+        approval_id,
+        evaluated_materiality(Trigger::BulkGroupMove),
+        stamp_of(SUBMITTER, at(9)),
+    )
+    .await
+    .expect("open the bulk-move unit");
+
+    let stored = approval_repo::read(&conn, &scope, TENANT, approval_id)
+        .await
+        .expect("read")
+        .expect("the unit exists");
+    assert_eq!(stored.subject_kind, AuditSubjectKind::Membership);
+    assert_eq!(
+        stored.materiality["reason"], "alwaysMaterialTrigger",
+        "a bulk group move must be registered as an always-material trigger: {:?}",
+        stored.materiality
+    );
+    assert_eq!(stored.materiality["material"], true);
+
+    // A many-payer unit's own trail lands on `BulkOperation`, not on either
+    // payer's chain — `subject_aggregate`'s Membership arm, exercised end to
+    // end rather than unit-tested against a bare record.
+    let aggregate = approval_repo::subject_aggregate(&stored).expect("resolve the aggregate");
+    assert!(
+        matches!(aggregate, SubjectAggregate::BulkOperation(_)),
+        "a set spanning several payers must not land on one payer's own chain: {aggregate:?}"
+    );
+}
+
+/// The positive control the sibling test needs: an ordinary change set with
+/// **no** registered act reaches a different reason than `alwaysMaterialTrigger`.
+/// Without this, `a_bulk_group_move_is_always_material_and_the_store_reflects_it`
+/// could be passing because `evaluate` answers `alwaysMaterialTrigger` for
+/// everything, which would make the trigger claim vacuous.
+#[tokio::test]
+async fn an_ordinary_change_set_with_no_registered_act_is_not_forced_material_by_accident() {
+    let verdict = materiality::evaluate(&ChangeSet::of_records(Vec::new()), None, None);
+    assert_eq!(
+        verdict.reason(),
+        Some(bss_pricing::domain::materiality::MaterialityReason::NoConfiguredThreshold),
+        "a change set carrying no registered act must not answer alwaysMaterialTrigger, or the \
+         bulk test's own assertion would be indistinguishable from every other act"
+    );
+}
+
+/// A **single-payer** material move — `inst-mm-immediate` — lands its own
+/// trail on that payer's chain (`SubjectAggregate::Payer`), not on a
+/// synthetic bulk one. The sibling proof to the bulk test's `BulkOperation`
+/// assertion: one payer and many payers must resolve to genuinely different
+/// aggregates, or a reviewer walking one payer's history would see every
+/// bulk move that happened to include them too.
+#[tokio::test]
+async fn a_single_payer_immediate_move_lands_on_that_payers_own_chain() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let payer = Uuid::from_u128(0xb0_21);
+    let approval_id = Uuid::from_u128(0xb0_02);
+
+    let set = MembershipMoveSet::new(vec![MembershipMoveProposal {
+        payer_tenant_id: payer,
+        group_value: "gold".to_owned(),
+        effective_from: at(9),
+    }])
+    .expect("one payer is a valid set");
+
+    ApprovalService::submit_membership_move_on(
+        &conn,
+        &scope,
+        TENANT,
+        &set,
+        approval_id,
+        evaluated_materiality(Trigger::ImmediateMembershipReresolution),
+        stamp_of(SUBMITTER, at(9)),
+    )
+    .await
+    .expect("open the immediate-move unit");
+
+    let stored = approval_repo::read(&conn, &scope, TENANT, approval_id)
+        .await
+        .expect("read")
+        .expect("the unit exists");
+    let aggregate = approval_repo::subject_aggregate(&stored).expect("resolve the aggregate");
+    assert_eq!(
+        aggregate,
+        SubjectAggregate::Payer(payer),
+        "one payer's own move must land on that payer's own chain"
+    );
+}
+
+/// The pin re-derives with **no store read at all** — `inst-mm-pending`'s own
+/// shape, proved through `ApprovalService::find` rather than asserted from
+/// the module doc: the payload lives in `subject_ref` itself, so
+/// `content_matches_pin` must read `true` the moment the unit is opened, with
+/// nothing else in this crate having been written for it to re-derive from.
+///
+/// To redden this: replace `AuditSubjectKind::Membership`'s arm in
+/// `infra::approval::re_derive` with the pre-Task-7 refusal
+/// (`Err(DomainError::Internal(...))`). `ApprovalService::find` then answers
+/// `Err` instead of a detail with `content_matches_pin: true`, and the
+/// `.expect("find")` below panics.
+#[tokio::test]
+async fn a_membership_moves_pin_re_derives_with_no_store_to_read_from() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let approval_id = Uuid::from_u128(0xb0_03);
+
+    let set = MembershipMoveSet::new(vec![MembershipMoveProposal {
+        payer_tenant_id: Uuid::from_u128(0xb0_31),
+        group_value: "gold".to_owned(),
+        effective_from: at(9),
+    }])
+    .expect("one payer is a valid set");
+
+    ApprovalService::submit_membership_move_on(
+        &conn,
+        &scope,
+        TENANT,
+        &set,
+        approval_id,
+        evaluated_materiality(Trigger::ImmediateMembershipReresolution),
+        stamp_of(SUBMITTER, at(9)),
+    )
+    .await
+    .expect("open the unit");
+
+    let service = ApprovalService::new(provider.clone());
+    let detail = service
+        .find(&scope, TENANT, approval_id, at(10))
+        .await
+        .expect("find")
+        .expect("the unit exists");
+    assert!(
+        detail.content_matches_pin,
+        "a membership move's pin must always match: nothing in this crate can move its own \
+         subject_ref between submit and this read"
+    );
+    match detail.subject {
+        Some(PinnedSubject::Membership(re_derived)) => {
+            assert_eq!(
+                re_derived, set,
+                "re-derivation must decode exactly the proposed set"
+            );
+        }
+        other => panic!("expected PinnedSubject::Membership, got {other:?}"),
+    }
+}
+
+/// **The approve -> commit path works end to end.** A material membership
+/// move, once approved by an independent second principal, actually applies:
+/// no `pricing_group_membership` row exists before the approve
+/// (`inst-mm-pending`'s "nothing is written before approval"), and the
+/// committed row exists after — an opener that can open but never commit is
+/// half a lane.
+///
+/// To redden this: empty the `for proposal in set.proposals()` loop's body in
+/// `ApprovalService::commit_membership_move_in`, leaving it a no-op that
+/// still returns `Ok(Vec::new())`. The `receipts.len()` assertion and the
+/// `intervals_for_payer` read after commit both fail.
+#[tokio::test]
+async fn an_approved_material_move_actually_commits() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    declare_customer_group(&conn, TENANT, "gold").await;
+
+    let payer = Uuid::from_u128(0xb0_41);
+    let approval_id = Uuid::from_u128(0xb0_04);
+    let set = MembershipMoveSet::new(vec![MembershipMoveProposal {
+        payer_tenant_id: payer,
+        group_value: "gold".to_owned(),
+        effective_from: at(9),
+    }])
+    .expect("one payer is a valid set");
+
+    ApprovalService::submit_membership_move_on(
+        &conn,
+        &scope,
+        TENANT,
+        &set,
+        approval_id,
+        evaluated_materiality(Trigger::ImmediateMembershipReresolution),
+        stamp_of(SUBMITTER, at(9)),
+    )
+    .await
+    .expect("open the unit");
+
+    // Before approval: `inst-mm-pending`'s own promise — nothing written yet.
+    let before = group_membership_repo::intervals_for_payer(&conn, &scope, TENANT, payer)
+        .await
+        .expect("read the payer's intervals");
+    assert!(
+        before.is_empty(),
+        "no membership row exists before the unit is approved"
+    );
+
+    let decided = approval_repo::decide(
+        &conn,
+        &scope,
+        TENANT,
+        approval_id,
+        ApprovalDecision::Approve,
+        Some(APPROVER),
+        None,
+        stamp_of(APPROVER, at(10)),
+    )
+    .await
+    .expect("approve as the independent second principal");
+
+    let registry = RegistryDouble;
+    let ctx = security_context(APPROVER, TENANT);
+    let receipts = ApprovalService::commit_membership_move_in(
+        &conn,
+        &registry,
+        &ctx,
+        &scope,
+        TENANT,
+        &decided,
+        stamp_of(APPROVER, at(11)),
+    )
+    .await
+    .expect("commit the approved move");
+
+    assert_eq!(receipts.len(), 1, "one proposal must produce one receipt");
+    assert_eq!(receipts[0].enrolled.group_value, "gold");
+    assert_eq!(receipts[0].enrolled.payer_tenant_id, payer);
+
+    let after = group_membership_repo::intervals_for_payer(&conn, &scope, TENANT, payer)
+        .await
+        .expect("read the payer's intervals");
+    assert_eq!(
+        after.len(),
+        1,
+        "the approved move must actually write the membership row, not merely answer a receipt"
+    );
+}
+
+/// The two-person rule still holds at commit: a record naming one principal
+/// as both submitter and approver authorizes nothing, even though its
+/// content cannot have moved the way a plan's can.
+///
+/// To redden this: remove the `independent_approver(approved)?` call from
+/// `ApprovalService::commit_membership_move_in`. This test then commits a
+/// hand-crafted self-approved record successfully instead of refusing it.
+#[tokio::test]
+async fn a_self_approved_membership_record_still_commits_nothing() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    declare_customer_group(&conn, TENANT, "gold").await;
+
+    let payer = Uuid::from_u128(0xb0_51);
+    let set = MembershipMoveSet::new(vec![MembershipMoveProposal {
+        payer_tenant_id: payer,
+        group_value: "gold".to_owned(),
+        effective_from: at(9),
+    }])
+    .expect("one payer is a valid set");
+
+    // A record this store's own CHECKs would refuse if it went through
+    // `decide` — built by hand precisely to prove the commit path re-checks
+    // rather than trusting a stored `approver_principal` column, exactly as
+    // `independent_approver`'s own doc argues for a row "written around the
+    // store".
+    let approval_id = Uuid::from_u128(0xb0_05);
+    let forged = ApprovalRecord {
+        approval_id,
+        tenant_id: TENANT,
+        subject_ref: approval_repo::membership_move_subject_ref(&set).expect("encode"),
+        subject_kind: AuditSubjectKind::Membership,
+        content_hash: bss_pricing::domain::approval::content_pin::membership_content_hash(&set)
+            .to_vec(),
+        state: ApprovalState::Approved,
+        submitter_principal: SUBMITTER,
+        approver_principal: Some(SUBMITTER),
+        reason: None,
+        materiality: evaluated_materiality(Trigger::ImmediateMembershipReresolution),
+        submitted_at: at(9),
+        decided_at: Some(at(10)),
+    };
+
+    let registry = RegistryDouble;
+    let ctx = security_context(SUBMITTER, TENANT);
+    let err = ApprovalService::commit_membership_move_in(
+        &conn,
+        &registry,
+        &ctx,
+        &scope,
+        TENANT,
+        &forged,
+        stamp_of(SUBMITTER, at(11)),
+    )
+    .await
+    .expect_err("a self-approved record must authorize nothing");
+    assert!(
+        matches!(
+            err,
+            bss_pricing::domain::error::DomainError::SelfApprovalForbidden(_)
+        ),
+        "expected SelfApprovalForbidden, got {err:?}"
+    );
+
+    let after = group_membership_repo::intervals_for_payer(&conn, &scope, TENANT, payer)
+        .await
+        .expect("read the payer's intervals");
+    assert!(after.is_empty(), "a refused commit must write nothing");
 }

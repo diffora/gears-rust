@@ -275,10 +275,16 @@ impl Trigger {
             | Self::BundleComposition
             | Self::RevenueShareChange
             | Self::GrandfatheringCutover
-            | Self::PriceOverlayMutation => true,
-            Self::RetirementUnwindingACutover
+            | Self::PriceOverlayMutation
+            // **Paid 2026-08-12** (Task 7 of the customer-group plane, `inst-mm-*`):
+            // `MembershipMoveSet` is this crate's subject for both, and
+            // `ApprovalService::submit_membership_move_on` is the writer that
+            // now declares one or the other via `ChangeSet::of_act` — the same
+            // "declared, not merely stored" bar `GrandfatheringCutover`'s own
+            // note states.
             | Self::ImmediateMembershipReresolution
-            | Self::BulkGroupMove
+            | Self::BulkGroupMove => true,
+            Self::RetirementUnwindingACutover
             | Self::HistoricalImport
             | Self::GaGateClearingRepublish
             | Self::PrepaidGateClearingRepublish

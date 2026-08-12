@@ -152,8 +152,10 @@ use toolkit_db::secure::{
 };
 use uuid::Uuid;
 
+use crate::domain::approval::content_pin::membership_content_hash;
 use crate::domain::approval::{ApprovalDecision, ApprovalState};
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
+use crate::domain::membership_change::{MembershipMoveProposal, MembershipMoveSet};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::{approval, approval_key};
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
@@ -1180,6 +1182,16 @@ pub enum SubjectAggregate {
     /// first touched plan's chain would put a run's approval trail on a chain an
     /// auditor reading that plan alone would never reach the rest of.
     BulkOperation(Uuid),
+    /// One payer's membership history, named by `payer_tenant_id` — S5 §6's
+    /// fifth aggregate (`audit_repo::payer_chain`'s own doc: "makes a payer
+    /// one in its own right").
+    ///
+    /// The fifth member and the fourth that is not a plan, for [`Self::Overlay`]'s
+    /// exact reason: a membership row has no plan (D-09's non-overlap is per
+    /// `(tenant, payer)`, not per plan), so putting `inst-mm-immediate`'s unit
+    /// on [`Self::Plan`] would put a payer's group history on a chain that
+    /// happens to share a plan with them, which is not what the row is about.
+    Payer(Uuid),
 }
 
 impl SubjectAggregate {
@@ -1191,6 +1203,7 @@ impl SubjectAggregate {
             Self::Policy => audit_repo::policy_chain(),
             Self::Overlay(price_overlay_id) => audit_repo::overlay_chain(price_overlay_id),
             Self::BulkOperation(operation_id) => audit_repo::bulk_operation_chain(operation_id),
+            Self::Payer(payer_tenant_id) => audit_repo::payer_chain(payer_tenant_id),
         }
     }
 
@@ -1205,12 +1218,13 @@ impl SubjectAggregate {
     pub const fn plan(self) -> Option<PlanId> {
         match self {
             Self::Plan(plan_id) => Some(plan_id),
-            // Three aggregates that are not a plan, and the overlay and the bulk
-            // operation are the two where saying so matters: both are **subjects
-            // with a plan-shaped id**, so an accessor that answered `Some` here
-            // would hand a caller a `PlanId` built from an overlay's or a run's
-            // uuid and every read under it would miss quietly.
-            Self::Policy | Self::Overlay(_) | Self::BulkOperation(_) => None,
+            // Four aggregates that are not a plan, and the overlay, the bulk
+            // operation and the payer are the ones where saying so matters: all
+            // three are **subjects with a plan-shaped id**, so an accessor that
+            // answered `Some` here would hand a caller a `PlanId` built from an
+            // overlay's, a run's or a payer's uuid and every read under it would
+            // miss quietly.
+            Self::Policy | Self::Overlay(_) | Self::BulkOperation(_) | Self::Payer(_) => None,
         }
     }
 }
@@ -1275,18 +1289,133 @@ pub fn subject_aggregate(record: &ApprovalRecord) -> Result<SubjectAggregate, Re
         AuditSubjectKind::BulkOperation => {
             subject_bulk_operation(record).map(SubjectAggregate::BulkOperation)
         }
-        // **Not built.** No approval unit opens on this subject kind yet —
-        // `group_membership_repo` (Task 4 of the customer-group plane) writes
-        // `pricing_audit_log` records of this kind and nothing else, the same
-        // pre-D-225 situation `AuditSubjectKind::Overlay`'s comment above
-        // describes. No ref format is decided for it either, so it is refused
-        // here rather than resolved — this function's own doc's "a subject kind
-        // with no resolution".
-        AuditSubjectKind::Membership => Err(RepoError::CorruptRow(format!(
-            "approval record names subject_kind membership, for which no approval unit \
-             opener exists yet: {}",
-            record.subject_ref
-        ))),
+        // **Paid 2026-08-12** (Task 7 of the customer-group plane). This arm
+        // refused outright while the unit was unwired — `AuditSubjectKind::Overlay`'s
+        // own situation before D-225, reproduced exactly: `membership` was
+        // storable (`chk_pricing_approval_subject_kind`, `m20260802_000070`)
+        // and not resolvable, because `ApprovalService::submit_membership_move_on`
+        // was the writer that would open one and it did not exist yet.
+        //
+        // **Resolved by parse, like every other kind — and the parse is the
+        // whole subject**, not a prefix of it. `inst-mm-pending` settles that a
+        // material membership change carries its payload *inside* the
+        // approval record, so `subject_membership_move` decodes the whole
+        // proposed member set out of `subject_ref`. No store read, and
+        // therefore no `RepoError::Db` on this arm either.
+        //
+        // **One payer names [`SubjectAggregate::Payer`]** — S5 §6's own
+        // aggregate for exactly this shape (`inst-mm-immediate`). **Many
+        // payers reuse [`SubjectAggregate::BulkOperation`]**, deliberately:
+        // `inst-mm-bulk`'s unit spans several payers the same way a
+        // repricing run spans several plans, so no one payer's chain is the
+        // right home for its submit/approve/reject trail, and
+        // `bulk_operation_chain` is a pure function of any `Uuid` rather than
+        // a fact about `pricing_bulk_operation` specifically — nothing about
+        // reusing it here claims a row in that table exists. The id fed to it
+        // is the set's own content digest (truncated to 16 bytes), so two
+        // requests naming the same payer set land on the same segment and a
+        // segment is never shared between two different proposed sets.
+        AuditSubjectKind::Membership => {
+            let set = subject_membership_move(record)?;
+            match set.proposals() {
+                [one] => Ok(SubjectAggregate::Payer(one.payer_tenant_id)),
+                _many => {
+                    let digest = membership_content_hash(&set);
+                    let mut bytes = [0u8; 16];
+                    bytes.copy_from_slice(&digest[..16]);
+                    Ok(SubjectAggregate::BulkOperation(Uuid::from_bytes(bytes)))
+                }
+            }
+        }
+    }
+}
+
+/// The `subject_ref` a membership-move unit is opened under — `inst-mm-pending`'s
+/// whole payload, encoded as the subject rather than read from a second store.
+///
+/// A JSON array of the set's own canonical (payer-sorted) order — see
+/// [`MembershipMoveSet`]'s doc — prefixed so a reader can tell this ref apart
+/// from every other kind's at a glance, exactly as [`audit_repo::plan_revision_ref`]'s
+/// `<plan_id>/<revision>` and [`audit_repo::overlay_revision_ref`]'s
+/// `<overlay_id>/<revision>` are each their own kind's shape.
+///
+/// # Errors
+/// [`RepoError::Db`] when the set will not serialize — unreachable for
+/// [`MembershipMoveProposalWire`]'s three fields (a `Uuid`, a `String` and a
+/// `DateTime<Utc>`, none of which can fail to serialize), and *reported*
+/// rather than unwrapped so a caller on a route answers 500 instead of
+/// panicking a request thread.
+pub fn membership_move_subject_ref(set: &MembershipMoveSet) -> Result<String, RepoError> {
+    let wire: Vec<MembershipMoveProposalWire> = set
+        .proposals()
+        .iter()
+        .map(MembershipMoveProposalWire::of)
+        .collect();
+    let json = serde_json::to_string(&wire)
+        .map_err(|e| RepoError::Db(format!("cannot render a membership move set: {e}")))?;
+    Ok(format!("membership-move/{json}"))
+}
+
+/// The membership-move payload a unit's `subject_ref` names.
+///
+/// [`subject_overlay`]'s counterpart for the one kind whose whole content —
+/// not merely an id and a revision — lives in the ref. Re-validated through
+/// [`MembershipMoveSet::new`] rather than trusted as constructed, so a row
+/// written around the store (a migration, a restore) with an empty or
+/// duplicate-payer payload is caught here rather than handed to a caller as
+/// though it were reviewable.
+///
+/// # Errors
+/// [`RepoError::CorruptRow`] on a ref this crate cannot have written.
+pub fn subject_membership_move(record: &ApprovalRecord) -> Result<MembershipMoveSet, RepoError> {
+    let corrupt = || {
+        RepoError::CorruptRow(format!(
+            "approval {} names the subject {:?}, which is not membership-move/<json>",
+            record.approval_id, record.subject_ref
+        ))
+    };
+    let json = record
+        .subject_ref
+        .strip_prefix("membership-move/")
+        .ok_or_else(corrupt)?;
+    let wire: Vec<MembershipMoveProposalWire> =
+        serde_json::from_str(json).map_err(|_| corrupt())?;
+    let proposals = wire
+        .into_iter()
+        .map(MembershipMoveProposalWire::into_domain)
+        .collect();
+    MembershipMoveSet::new(proposals).map_err(|_| corrupt())
+}
+
+/// The wire shape [`membership_move_subject_ref`] and [`subject_membership_move`]
+/// serialize [`MembershipMoveProposal`] through.
+///
+/// A private mirror rather than `#[derive(Serialize, Deserialize)]` on the
+/// domain type itself: the `subject_ref`'s JSON shape is this store's own
+/// concern (`subject_plan`'s "one place to answer how a subject is named"),
+/// not a wire contract the domain type should carry for every caller.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MembershipMoveProposalWire {
+    payer_tenant_id: Uuid,
+    group_value: String,
+    effective_from: DateTime<Utc>,
+}
+
+impl MembershipMoveProposalWire {
+    fn of(proposal: &MembershipMoveProposal) -> Self {
+        Self {
+            payer_tenant_id: proposal.payer_tenant_id,
+            group_value: proposal.group_value.clone(),
+            effective_from: proposal.effective_from,
+        }
+    }
+
+    fn into_domain(self) -> MembershipMoveProposal {
+        MembershipMoveProposal {
+            payer_tenant_id: self.payer_tenant_id,
+            group_value: self.group_value,
+            effective_from: self.effective_from,
+        }
     }
 }
 

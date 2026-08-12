@@ -23,6 +23,7 @@ mod common;
 mod rest_support;
 
 use axum::http::StatusCode;
+use bss_pricing::api::rest::approvals::APPROVAL_APPROVE;
 use bss_pricing::api::rest::customer_groups::{
     CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
     CUSTOMER_GROUP_TAXONOMY,
@@ -34,10 +35,11 @@ use bss_pricing::domain::ports::CatalogVersionRegistryV1;
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::jobs::readmodel_warm::ReadModelWarmJob;
 use bss_pricing::infra::storage::repo::audit_repo;
+use bss_pricing::infra::storage::repo::group_membership_repo;
 use bss_pricing::infra::storage::repo::{NewApproval, approval_repo};
 use rest_support::{
-    Harness, approval_rows, audit_rows, body_json, etag_of, membership_row, pending_version_refs,
-    problem_code, request, stamp_of, with_headers,
+    Harness, approval_row, approval_rows, audit_rows, body_json, etag_of, membership_row,
+    pending_version_refs, problem_code, request, stamp_of, with_headers,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -778,6 +780,234 @@ async fn moving_a_payer_into_an_undeclared_group_is_refused_group_unknown_and_wr
     // it was, and no second pending ref or audit record appeared.
     assert_eq!(pending_version_refs(&harness).await, refs_before);
     assert_eq!(audit_rows(&harness).await.len(), audits_before);
+}
+
+// ---------------------------------------------------------------------------
+// The material path: `inst-mm-immediate` / `inst-mm-renewal`'s control pair,
+// and the approve -> commit lane (Task 7 of the customer-group plane).
+// ---------------------------------------------------------------------------
+
+/// The independent second principal every material-path test below decides
+/// under — distinct from [`MEMBERSHIP_ADMIN`], which is what
+/// `chk_pricing_approval_distinct_principals` and `inst-tp-distinct` both
+/// require of an approve.
+const MOVE_APPROVER: uuid::Uuid = uuid::Uuid::from_u128(0xca_d3);
+
+/// `POST .../move` with no `immediate` field at all.
+///
+/// **The negative half of the control pair.** Paired with
+/// [`moving_a_payer_immediately_is_material_and_writes_no_membership_row_until_approved`]:
+/// one alone proves nothing, because a route that opened a unit on *every*
+/// move would still pass a test that only checked the immediate case, and a
+/// route that opened one on *no* move would still pass a test that only
+/// checked the default case. Together they prove the field is what decides
+/// it.
+///
+/// To redden this: give `move_membership`'s renewal-aligned branch a call
+/// that opens an approval unit (any `ApprovalService::submit_membership_move_on`
+/// call before it returns). The route still answers `200` and the sibling
+/// pending-ref test still holds, which is why this is checked on its own.
+#[tokio::test]
+async fn moving_a_payer_without_immediate_still_opens_no_approval_unit() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    let (status, body) = enroll(&harness, payer_tenant_id).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    rest_support::declare_customer_group(&harness, "silver").await;
+    let before = approval_rows(&harness).await.len();
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "silver")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({ "effective_from": "2026-06-01T00:00:00Z" })),
+            &[("idempotency-key", "move-renewal-1")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(
+        approval_rows(&harness).await.len(),
+        before,
+        "a renewal-aligned move must open no approval unit (inst-mm-renewal)"
+    );
+}
+
+/// **The positive half of the control pair.** `immediate: true` makes the
+/// move material: the route answers `202`, an approval unit opens carrying
+/// `alwaysMaterialTrigger` — read back from the **store**, never from the
+/// response body (F-1: a route that echoes its own literal proves nothing
+/// about what the store holds) — and, `inst-mm-pending`'s own promise, no
+/// `pricing_group_membership` row exists yet.
+///
+/// To redden this: delete the `if request.immediate == Some(true)` branch
+/// from `move_membership`, folding the immediate call into the ordinary
+/// audit-only path. The response then answers `200` with a committed move
+/// instead of `202`, and `approval_rows` stays at `before`.
+#[tokio::test]
+async fn moving_a_payer_immediately_is_material_and_writes_no_membership_row_until_approved() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    rest_support::declare_customer_group(&harness, "gold").await;
+    let before = approval_rows(&harness).await.len();
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "gold")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({
+                "effective_from": "2026-06-01T00:00:00Z",
+                "immediate": true
+            })),
+            &[("idempotency-key", "move-immediate-1")],
+        ))
+        .await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "body: {body}");
+    assert_eq!(body["outcome"], "submitted_for_approval");
+    assert!(body["moved"].is_null(), "nothing has committed yet");
+
+    assert_eq!(
+        approval_rows(&harness).await.len(),
+        before + 1,
+        "an immediate re-resolution must open exactly one approval unit"
+    );
+    let approval_id: Uuid = body["approval"]["approval_id"]
+        .as_str()
+        .expect("approval.approval_id")
+        .parse()
+        .expect("a UUID");
+    let stored = approval_row(&harness, approval_id).await;
+    assert_eq!(stored.subject_kind, AuditSubjectKind::Membership);
+    assert_eq!(
+        stored.materiality["reason"], "alwaysMaterialTrigger",
+        "an immediate re-resolution must be stored as an always-material trigger: {:?}",
+        stored.materiality
+    );
+
+    // `inst-mm-pending`: nothing is written to the membership plane before
+    // approval.
+    let conn = harness.db.conn().expect("conn");
+    let intervals = group_membership_repo::intervals_for_payer(
+        &conn,
+        &harness.scope(),
+        harness.tenant,
+        payer_tenant_id,
+    )
+    .await
+    .expect("read the payer's intervals");
+    assert!(
+        intervals.is_empty(),
+        "no membership row may exist before the unit is approved"
+    );
+}
+
+/// **The approve -> commit path works end to end.** Once
+/// [`MOVE_APPROVER`] — independent of the submitter — approves the unit the
+/// call above opened, retrying the identical move (a fresh `Idempotency-Key`,
+/// since this is a new attempt rather than a replay of the first) finds the
+/// approved unit and commits: `200`, a real membership row, and the D-06
+/// publish unit's pending handle.
+///
+/// To redden this: in `move_membership_immediate`, short-circuit the
+/// `approved_unit` branch to always fall through to "open a new unit"
+/// instead of committing. This call then answers `202` again (a second,
+/// distinct approval unit) instead of `200` with a committed move, and the
+/// membership-row assertion below fails.
+#[tokio::test]
+async fn an_immediately_moved_payer_commits_once_a_second_principal_approves() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    rest_support::declare_customer_group(&harness, "gold").await;
+
+    let submit_response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "gold")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({
+                "effective_from": "2026-06-01T00:00:00Z",
+                "immediate": true
+            })),
+            &[("idempotency-key", "move-immediate-commit-1")],
+        ))
+        .await;
+    assert_eq!(submit_response.status(), StatusCode::ACCEPTED);
+    let submit_body = body_json(submit_response).await;
+    let approval_id: Uuid = submit_body["approval"]["approval_id"]
+        .as_str()
+        .expect("approval.approval_id")
+        .parse()
+        .expect("a UUID");
+
+    let approve_response = harness
+        .allowed_as(MOVE_APPROVER)
+        .send(request(
+            "POST",
+            &APPROVAL_APPROVE.replace("{approvalId}", &approval_id.to_string()),
+            None,
+        ))
+        .await;
+    assert_eq!(
+        approve_response.status(),
+        StatusCode::OK,
+        "body: {:?}",
+        body_json(approve_response).await
+    );
+
+    let commit_response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "gold")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({
+                "effective_from": "2026-06-01T00:00:00Z",
+                "immediate": true
+            })),
+            &[("idempotency-key", "move-immediate-commit-2")],
+        ))
+        .await;
+    let status = commit_response.status();
+    let body = body_json(commit_response).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["outcome"], "committed");
+    assert_eq!(body["moved"]["enrolled"]["group_value"], "gold");
+    assert_eq!(
+        body["moved"]["enrolled"]["payer_tenant_id"],
+        payer_tenant_id.to_string()
+    );
+    assert!(
+        !body["moved"]["pending_version_ref"]
+            .as_str()
+            .expect("pending_version_ref")
+            .is_empty()
+    );
+
+    let conn = harness.db.conn().expect("conn");
+    let intervals = group_membership_repo::intervals_for_payer(
+        &conn,
+        &harness.scope(),
+        harness.tenant,
+        payer_tenant_id,
+    )
+    .await
+    .expect("read the payer's intervals");
+    assert_eq!(
+        intervals.len(),
+        1,
+        "the approved move must actually write the membership row"
+    );
 }
 
 // ---------------------------------------------------------------------------

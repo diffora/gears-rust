@@ -170,6 +170,8 @@ fn only_the_triggers_with_a_subject_in_this_crate_answer_true() {
         [
             "grandfatherHorizonTightening",
             "grandfatheringCutover",
+            "immediateMembershipReresolution",
+            "bulkGroupMove",
             "thresholdPolicyDiff",
             "priceOverlayMutation",
             "windowCancellation",
