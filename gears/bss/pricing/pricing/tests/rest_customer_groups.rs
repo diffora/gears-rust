@@ -23,10 +23,25 @@ mod common;
 mod rest_support;
 
 use axum::http::StatusCode;
-use bss_pricing::api::rest::customer_groups::CUSTOMER_GROUP_TAXONOMY;
+use bss_pricing::api::rest::customer_groups::{
+    CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
+    CUSTOMER_GROUP_TAXONOMY,
+};
 use bss_pricing::authz::{actions, labels};
-use rest_support::{Harness, audit_rows, body_json, etag_of, problem_code, request, with_headers};
+use bss_pricing::config::JobsConfig;
+use bss_pricing::domain::audit::AuditSubjectKind;
+use bss_pricing::domain::ports::CatalogVersionRegistryV1;
+use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::infra::jobs::readmodel_warm::ReadModelWarmJob;
+use bss_pricing::infra::storage::repo::audit_repo;
+use bss_pricing::infra::storage::repo::{NewApproval, approval_repo};
+use rest_support::{
+    Harness, approval_rows, audit_rows, body_json, etag_of, pending_version_refs, problem_code,
+    request, stamp_of, with_headers,
+};
 use serde_json::json;
+use std::sync::Arc;
+use uuid::Uuid;
 
 /// The `CatalogAdmin` who configures the taxonomies.
 const ADMIN: uuid::Uuid = uuid::Uuid::from_u128(0xca_d1);
@@ -369,5 +384,283 @@ async fn a_caller_holding_only_customer_group_write_succeeds() {
         response.status(),
         StatusCode::OK,
         "customer_group x write alone, with no config grant at all, must authorize the write"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 6: the membership routes, and the publish unit `dod-customer-group`'s
+// MUST requires (`design/09-price-overlays.md:472-473`) — audit-only path
+// only (`inst-mm-renewal`).
+// ---------------------------------------------------------------------------
+
+/// The admin who enrolls payers.
+const MEMBERSHIP_ADMIN: uuid::Uuid = uuid::Uuid::from_u128(0xca_d2);
+
+/// Enroll a payer through the real route, returning the parsed body.
+async fn enroll(harness: &Harness, payer_tenant_id: Uuid) -> (StatusCode, serde_json::Value) {
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBERS.replace("{group}", "gold"),
+            Some(json!({
+                "payer_tenant_id": payer_tenant_id,
+                "effective_from": "2026-01-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "enroll-1")],
+        ))
+        .await;
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+/// Run the read-model warm sweep the way `sqlite_read_model.rs`'s own
+/// `sweep` helper does — a fresh [`ReadModelWarmJob`] over the harness's own
+/// provider and the **same** registry double the route's publish unit
+/// requested its handle from, so a ref this test recorded and a ref the
+/// sweep resolves are the same act's two halves.
+async fn sweep(harness: &Harness, now: chrono::DateTime<chrono::Utc>) -> u64 {
+    let job = ReadModelWarmJob::new(
+        harness.db.clone(),
+        Arc::clone(&harness.registry) as Arc<dyn CatalogVersionRegistryV1>,
+        JobsConfig::default(),
+    );
+    let report = job.run(now).await.expect("the sweep pass runs");
+    report.subjects_projected
+}
+
+/// **The claim this section exists to prove.** A route-level enrollment is a
+/// real publish unit: a pending ref recorded against the membership subject,
+/// the audit record written, and the projector able to run on it and land a
+/// warm delta — not merely a response that says so.
+///
+/// To redden this: comment out `record_ref`'s call inside
+/// `membership_publish::enroll_in` (or drop the call to it entirely). The row
+/// still lands and the `201` still answers — the response body proves
+/// nothing here, which is exactly why every assertion below reads the
+/// **store** instead. With no ref recorded, `pending_version_refs` returns
+/// empty and the sweep has nothing to resolve, so `subjects_projected` reads
+/// `0` and the third assertion catches what the first two, read alone, could
+/// each still pass past (a ref recorded for the wrong subject id would fail
+/// only the first).
+#[tokio::test]
+async fn a_route_level_enrollment_is_a_real_publish_unit() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+
+    let (status, body) = enroll(&harness, payer_tenant_id).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let membership_id = body["membership"]["membership_id"]
+        .as_str()
+        .expect("membership_id")
+        .to_owned();
+    let pending_ref = body["pending_version_ref"]
+        .as_str()
+        .expect("pending_version_ref")
+        .to_owned();
+    assert!(!pending_ref.is_empty());
+
+    // 1. A pending ref, recorded against exactly this membership subject.
+    let refs = pending_version_refs(&harness).await;
+    let matched: Vec<_> = refs
+        .iter()
+        .filter(|r| r.subject_kind == "group_membership" && r.subject_ref == membership_id)
+        .collect();
+    assert_eq!(
+        matched.len(),
+        1,
+        "expected exactly one pending ref for membership {membership_id}, got {refs:?}"
+    );
+    assert_eq!(matched[0].pending_ref, pending_ref);
+
+    // 2. The audit record `group_membership_repo::enroll` writes.
+    let audits = audit_rows(&harness).await;
+    assert!(
+        audits
+            .iter()
+            .any(|a| a.subject_ref == membership_id && a.action == "create"),
+        "no audit record named membership {membership_id}: {audits:?}"
+    );
+
+    // 3. The projector can run on the ref this route recorded: commit the
+    // handle on the registry double and sweep.
+    harness.registry.commit(&pending_ref, 9);
+    let projected = sweep(&harness, chrono::Utc::now()).await;
+    assert_eq!(
+        projected, 1,
+        "the projector must land exactly one warm delta off this route's own pending ref"
+    );
+}
+
+/// **The audit-only property.** `inst-mm-renewal`'s default commits directly
+/// and opens **no** approval unit.
+///
+/// Paired with [`a_pending_approval_unit_is_visible_through_the_same_readback`]
+/// as the positive control the module doc's TESTS section requires: without
+/// it, a broken `approval_rows` that always answered empty would make this
+/// test pass for the wrong reason.
+///
+/// To redden this: give `membership_publish::enroll_in` a call that opens an
+/// approval unit (any `approval_repo::open` call over the enrolled
+/// membership's subject) before it returns. The route still answers `201`
+/// and the publish-unit assertions in the sibling test still hold, which is
+/// why this is its own test rather than a fourth assertion bolted onto that
+/// one.
+#[tokio::test]
+async fn enrolling_a_payer_opens_no_approval_unit() {
+    let harness = Harness::new().await;
+    let before = approval_rows(&harness).await.len();
+
+    let (status, _body) = enroll(&harness, Uuid::now_v7()).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    assert_eq!(
+        approval_rows(&harness).await.len(),
+        before,
+        "the audit-only path must open no approval unit"
+    );
+}
+
+/// The positive control for the test above: `approval_rows` really does see
+/// a unit when one is opened, seeded independently of the membership route
+/// through `approval_repo::open` directly (no plan needed — the approval
+/// store's own writer takes a bare subject).
+///
+/// To redden this: remove the `approval_repo::open` call below. Then this
+/// test asserts `1 == 0` and fails loudly, which is what proves it was
+/// checking something rather than passing by construction.
+#[tokio::test]
+async fn a_pending_approval_unit_is_visible_through_the_same_readback() {
+    let harness = Harness::new().await;
+    let conn = harness.db.conn().expect("conn");
+    assert_eq!(approval_rows(&harness).await.len(), 0, "clean start");
+
+    approval_repo::open(
+        &conn,
+        &harness.scope(),
+        NewApproval {
+            approval_id: Uuid::now_v7(),
+            tenant_id: harness.tenant,
+            // The approval store's own shape (`<plan_id>/<revision>`), unrelated
+            // to any membership route — a bare label tripped `CorruptRow` here
+            // during this test's own development, which is `subject_of`'s own
+            // fail-closed reading of a subject no writer in this crate produces.
+            subject_ref: audit_repo::plan_revision_ref(PlanId::new(Uuid::now_v7()), 0),
+            subject_kind: AuditSubjectKind::PlanRevision,
+            content_hash: vec![0u8; 32],
+            materiality: json!({ "material": true, "reason": "positive-control" }),
+            held_keys: std::collections::BTreeSet::new(),
+        },
+        stamp_of(MEMBERSHIP_ADMIN, chrono::Utc::now()),
+    )
+    .await
+    .expect("seed a pending unit unrelated to any membership route");
+
+    assert_eq!(
+        approval_rows(&harness).await.len(),
+        1,
+        "the readback must see a unit that genuinely exists"
+    );
+}
+
+/// The move route composes an end and an enroll on one publish unit — both
+/// subjects recorded against the **same** pending ref.
+#[tokio::test]
+async fn a_move_records_both_membership_subjects_against_one_pending_ref() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    let (status, body) = enroll(&harness, payer_tenant_id).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let old_membership_id = body["membership"]["membership_id"]
+        .as_str()
+        .expect("membership_id")
+        .to_owned();
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "silver")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({ "effective_from": "2026-06-01T00:00:00Z" })),
+            &[("idempotency-key", "move-1")],
+        ))
+        .await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    let ended_id = body["ended"]["membership_id"]
+        .as_str()
+        .expect("ended.membership_id");
+    assert_eq!(
+        ended_id, old_membership_id,
+        "the move ended the payer's prior membership"
+    );
+    let enrolled_id = body["enrolled"]["membership_id"]
+        .as_str()
+        .expect("enrolled.membership_id")
+        .to_owned();
+    let pending_ref = body["pending_version_ref"]
+        .as_str()
+        .expect("pending_version_ref")
+        .to_owned();
+
+    let refs = pending_version_refs(&harness).await;
+    let for_pending: Vec<_> = refs
+        .iter()
+        .filter(|r| r.pending_ref == pending_ref)
+        .collect();
+    let subjects: std::collections::BTreeSet<&str> =
+        for_pending.iter().map(|r| r.subject_ref.as_str()).collect();
+    assert!(
+        subjects.contains(old_membership_id.as_str()) && subjects.contains(enrolled_id.as_str()),
+        "the one handle must carry both membership subjects: {refs:?}"
+    );
+}
+
+/// The `PATCH` ends a membership under its own `If-Match`, and the same
+/// publish unit and audit-only properties hold for it.
+#[tokio::test]
+async fn adjusting_a_membership_is_also_its_own_publish_unit() {
+    let harness = Harness::new().await;
+    let (status, body) = enroll(&harness, Uuid::now_v7()).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let membership_id = body["membership"]["membership_id"]
+        .as_str()
+        .expect("membership_id")
+        .to_owned();
+    // There is no `GET` on a membership (§5), so the tag a `PATCH` asserts is
+    // the one the create's own response carried — read off the body rather
+    // than a second request.
+    let row_version = body["membership"]["row_version"]
+        .as_u64()
+        .expect("row_version");
+    let expected_tag = format!("\"{row_version}\"");
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "PATCH",
+            &CUSTOMER_GROUP_MEMBER
+                .replace("{group}", "gold")
+                .replace("{id}", &membership_id),
+            Some(json!({ "effective_to": "2026-03-01T00:00:00Z" })),
+            &[("if-match", &expected_tag)],
+        ))
+        .await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let pending_ref = body["pending_version_ref"]
+        .as_str()
+        .expect("pending_version_ref");
+
+    let refs = pending_version_refs(&harness).await;
+    assert!(
+        refs.iter()
+            .any(|r| r.subject_ref == membership_id && r.pending_ref == pending_ref),
+        "the PATCH must record its own pending ref: {refs:?}"
     );
 }

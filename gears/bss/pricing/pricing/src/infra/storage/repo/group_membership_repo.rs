@@ -67,17 +67,13 @@
 //! `customer_group_taxonomy`'s own repository arm. A route that authors an
 //! enrollment owes that check before calling [`enroll`].
 //!
-//! **The `If-Match` precondition on `row_version`.** The design set
-//! (`window_repo::adjust_effective_to`'s own arrangement, D-191) puts a
-//! caller-supplied `expected` version in the `UPDATE`'s own `WHERE` so a
-//! concurrent editor cannot win a race the caller's read predates. This
-//! module's `end_membership` signature carries no such parameter — an
-//! unconditional update, naming a real gap rather than a silent one: two
-//! concurrent `PATCH`es of one membership can both succeed, the second
-//! overwriting the first's `effective_to` with no conflict raised. The column
-//! exists for exactly this (`group_membership::Model::row_version`'s own doc:
-//! "an authoring `PATCH` … answers `If-Match` against it"); wiring it is owed
-//! to whichever task builds that route.
+//! **The `If-Match` precondition on `row_version`.** [`end_membership`] takes
+//! `expected_version` and puts it in the `UPDATE`'s own `WHERE` beside the row
+//! id, `window_repo::adjust_effective_to`'s arrangement (D-191): a caller whose
+//! read predates a concurrent editor's write loses the race at the statement
+//! rather than silently overwriting it. Wired by the membership route task
+//! (`design/09-price-overlays.md` §5's `PATCH .../members/{id}`), which is the
+//! caller `group_membership::Model::row_version`'s own doc names.
 //!
 //! **The atomic move operation** (`inst-ms-move`, D-09: "end the active
 //! membership + create the new one at the same instant"). Composing that out
@@ -258,6 +254,11 @@ pub async fn enroll(
 /// constrained here to be *earlier* than the row's current end, so treating
 /// this as pure narrowing would be a promise the signature does not make.
 ///
+/// `expected_version` rides the `UPDATE`'s own `WHERE`, [`window_repo::adjust_effective_to`]'s
+/// arrangement (D-191): the caller's precondition is presented, never re-read
+/// and compared beforehand, because a tag read and then handed to a statement
+/// is a decision racing the write it authorizes.
+///
 /// # Errors
 /// [`RepoError::NotFound`] when no membership in scope answers to
 /// `membership_id` — which is what a foreign tenant sees, deliberately
@@ -265,14 +266,16 @@ pub async fn enroll(
 /// an instant finer than the millisecond quantum.
 /// [`RepoError::MembershipIntervalEmpty`] when `at` is not strictly after the
 /// row's `effective_from`. [`RepoError::MembershipOverlap`] /
-/// [`RepoError::MembershipConflict`] as [`enroll`]'s. [`RepoError::Db`] on a
-/// scope or storage failure.
+/// [`RepoError::MembershipConflict`] as [`enroll`]'s.
+/// [`RepoError::StaleRowVersion`] when `expected_version` no longer matches the
+/// stored row. [`RepoError::Db`] on a scope or storage failure.
 pub async fn end_membership(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     membership_id: Uuid,
     at: DateTime<Utc>,
+    expected_version: u64,
     stamp: AuditStamp,
 ) -> Result<MembershipRow, RepoError> {
     check_authored_instant("effectiveTo", Some(at))?;
@@ -298,8 +301,14 @@ pub async fn end_membership(
              which is past what the column can hold"
         ))
     })?;
+    let stored_expected = i64::try_from(expected_version).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "pricing_group_membership {membership_id} was asked to compare against row version \
+             {expected_version}, which is past what the column can hold"
+        ))
+    })?;
 
-    group_membership::Entity::update_many()
+    let result = group_membership::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(group_membership::Column::EffectiveTo, Expr::value(Some(at)))
@@ -310,11 +319,26 @@ pub async fn end_membership(
         .filter(
             Condition::all()
                 .add(group_membership::Column::TenantId.eq(tenant_id))
-                .add(group_membership::Column::MembershipId.eq(membership_id)),
+                .add(group_membership::Column::MembershipId.eq(membership_id))
+                .add(group_membership::Column::RowVersion.eq(stored_expected)),
         )
         .exec(runner)
         .await
         .map_err(|e| RepoError::Db(format!("end pricing_group_membership {membership_id}: {e}")))?;
+
+    if result.rows_affected == 0 {
+        // The row is known to exist (`require` above proved it); the only way
+        // the `WHERE` can have matched nothing is that `row_version` has moved
+        // since the caller read it — `window_repo::adjust_effective_to`'s own
+        // diagnosis, re-read rather than guessed at.
+        let fresh = require(runner, scope, tenant_id, membership_id).await?;
+        return Err(RepoError::StaleRowVersion {
+            subject: "membership".to_owned(),
+            id: membership_id.to_string(),
+            current: fresh.row_version,
+            submitted: expected_version,
+        });
+    }
 
     record_membership_mutation(
         runner,

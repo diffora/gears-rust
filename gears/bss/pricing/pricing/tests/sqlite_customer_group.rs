@@ -382,6 +382,7 @@ async fn another_tenants_membership_is_invisible_and_unwritable() {
         OTHER_TENANT,
         created.membership_id,
         t(5),
+        created.row_version,
         stamp_at(t(5)),
     )
     .await
@@ -491,6 +492,7 @@ async fn ending_a_membership_writes_exactly_one_more_audit_record() {
         TENANT,
         created.membership_id,
         t(20),
+        created.row_version,
         stamp_at(t(20)),
     )
     .await

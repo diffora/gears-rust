@@ -123,6 +123,14 @@ pub(crate) struct PricingRuntime {
     pub authoring_api: Arc<AuthoringState>,
     /// Per-request state for the approval surface and the publish mount.
     pub governance_api: Arc<GovernanceState>,
+    /// Per-request state for the three membership mutations
+    /// (`api::rest::customer_groups::governance_router`).
+    ///
+    /// Its own state rather than a field on [`GovernanceState`] —
+    /// `api::rest::customer_groups`'s section banner states why: the same
+    /// `Arc<dyn CatalogVersionRegistryV1>` [`Self::governance_api`] holds, one
+    /// more requester of one registry.
+    pub membership_api: Arc<crate::api::rest::customer_groups::MembershipState>,
     /// The alarm and metric plane, carried so the **background** work reports on
     /// the same port the request paths do (D-238).
     ///
@@ -880,6 +888,18 @@ impl Gear for BssPricingGear {
             metrics: Arc::clone(&metrics),
         });
 
+        // Slice 9's membership mutations (`dod-customer-group`'s MUST): the
+        // **seventh** requester of the one registry `Arc`. Built here rather
+        // than folded into `governance_api` above — see
+        // `api::rest::customer_groups`'s section banner for why a route that
+        // requests a `CatalogVersion` does not have to widen the crate-wide
+        // governance state to reach one.
+        let membership_api = Arc::new(crate::api::rest::customer_groups::MembershipState {
+            db: db.clone(),
+            idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
+            registry: Arc::clone(&catalog_version_registry),
+        });
+
         self.runtime.store(Some(Arc::new(PricingRuntime {
             db,
             config,
@@ -889,6 +909,7 @@ impl Gear for BssPricingGear {
             history_api,
             authoring_api,
             governance_api,
+            membership_api,
             metrics,
         })));
         info!("bss-pricing: runtime published");
@@ -1067,6 +1088,15 @@ impl RestApiCapability for BssPricingGear {
             // `api::rest::customer_groups`'s module doc.
             .merge(crate::api::rest::customer_groups::router(
                 Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            // The three membership mutations (`dod-customer-group`'s MUST).
+            // Mounted apart from the taxonomy pair above because every one of
+            // them requests a `CatalogVersion` — `api::rest::customer_groups`'s
+            // section banner is the criterion, `overlays::governance_router`'s
+            // own split one plane over.
+            .merge(crate::api::rest::customer_groups::governance_router(
+                Arc::clone(&rt.membership_api),
                 openapi,
             ))
             .merge(crate::api::rest::tax_display_policy::router(

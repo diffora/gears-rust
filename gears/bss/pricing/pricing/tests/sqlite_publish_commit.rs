@@ -1844,6 +1844,8 @@ async fn drive_the_membership_plane(h: &Harness) {
                         TENANT,
                         membership_id,
                         at(22),
+                        // Fresh from `enroll`, which always writes `row_version = 0`.
+                        0,
                         stamp_of(ACTOR, at(22)),
                     )
                     .await

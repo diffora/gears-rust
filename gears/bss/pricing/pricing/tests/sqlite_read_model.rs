@@ -944,13 +944,14 @@ async fn an_enrolled_membership_reaches_the_read_model_as_a_published_subject() 
     // "no error occurred" would pass just as well against a projection that
     // silently wrote nothing.
     //
-    // `enroll` itself does not yet open a publish unit - see
-    // `MembershipSubjectDelta`'s module doc and this crate's task-5 report for
-    // what is owed to whoever wires `enroll`/`end_membership` into the registry
-    // request/pending-ref path. This test records the ref the way
-    // `a_published_overlay_subject_projects_its_document` does, standing in for
-    // that owed publish unit exactly as that overlay test would if
-    // `OverlayPublishService` did not exist yet.
+    // `enroll` itself did not open a publish unit until Task 6's
+    // `infra::membership_publish`; the route-level suite
+    // (`tests/rest_customer_groups.rs::a_route_level_enrollment_is_a_real_publish_unit`)
+    // is what proves that producer end to end. This test stays a lower-level
+    // proof of the projector alone: it records the ref directly the way
+    // `a_published_overlay_subject_projects_its_document` does, so the
+    // projector's own correctness is provable without going through the route
+    // and the idempotency gate.
     let h = harness().await;
     let conn = h.provider.conn().expect("conn");
     let payer_tenant_id = Uuid::new_v4();

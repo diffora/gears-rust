@@ -72,7 +72,10 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     };
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
-    use bss_pricing::api::rest::customer_groups::CUSTOMER_GROUP_TAXONOMY;
+    use bss_pricing::api::rest::customer_groups::{
+        CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
+        CUSTOMER_GROUP_TAXONOMY,
+    };
     use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
     use bss_pricing::api::rest::frontier::FRONTIER;
     use bss_pricing::api::rest::history::HISTORY;
@@ -145,6 +148,13 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // doc for why this is not a fifth arm of `TAXONOMY` above.
         ("GET", CUSTOMER_GROUP_TAXONOMY),
         ("PUT", CUSTOMER_GROUP_TAXONOMY),
+        // Task 6: the membership routes, and the publish unit `dod-customer-group`'s
+        // MUST requires — every committed membership mutation is its own publish
+        // unit through the Foundation engine (D-06). Audit-only (`inst-mm-renewal`);
+        // no approval unit opens.
+        ("POST", CUSTOMER_GROUP_MEMBERS),
+        ("PATCH", CUSTOMER_GROUP_MEMBER),
+        ("POST", CUSTOMER_GROUP_MEMBER_MOVE),
         ("GET", TAX_DISPLAY_POLICY),
         ("PUT", TAX_DISPLAY_POLICY),
         ("POST", BUNDLES),
@@ -316,6 +326,17 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         ),
     });
 
+    // Task 6's membership state, `governance`'s own reason for a fresh
+    // fail-closed registry per field: registration happens while the router is
+    // built and this test sends no request.
+    let membership_state = Arc::new(bss_pricing::api::rest::customer_groups::MembershipState {
+        db: db.clone(),
+        idempotency: IdempotencyGate::new(Duration::from_hours(1)),
+        registry: Arc::new(
+            bss_pricing_sdk::catalog_version_registry::UnconfiguredCatalogVersionRegistryV1,
+        ),
+    });
+
     drop(
         bss_pricing::api::rest::frontier::router(frontier_state, &openapi)
             // Slice 12's history read, mounted here for the same reason every
@@ -377,6 +398,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
             ))
             .merge(bss_pricing::api::rest::customer_groups::router(
                 Arc::clone(&authoring),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::customer_groups::governance_router(
+                Arc::clone(&membership_state),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::tax_display_policy::router(

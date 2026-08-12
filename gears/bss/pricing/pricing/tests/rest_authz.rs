@@ -36,7 +36,10 @@ use bss_pricing::api::rest::approvals::{
 };
 use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
-use bss_pricing::api::rest::customer_groups::CUSTOMER_GROUP_TAXONOMY;
+use bss_pricing::api::rest::customer_groups::{
+    CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
+    CUSTOMER_GROUP_TAXONOMY,
+};
 use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
 use bss_pricing::api::rest::frontier::FRONTIER;
 use bss_pricing::api::rest::history::HISTORY;
@@ -501,6 +504,31 @@ fn config_routes() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
+        // Task 6's membership mutations, on the **same** `customer_group x write`
+        // pair the taxonomy `PUT` above asks for — `dod-customer-group`'s MUST that
+        // every committed membership mutation is its own publish unit through the
+        // Foundation engine (D-06). No new authz vocabulary.
+        Route {
+            method: "POST",
+            path: CUSTOMER_GROUP_MEMBERS,
+            resource_type: labels::CUSTOMER_GROUP,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "PATCH",
+            path: CUSTOMER_GROUP_MEMBER,
+            resource_type: labels::CUSTOMER_GROUP,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "POST",
+            path: CUSTOMER_GROUP_MEMBER_MOVE,
+            resource_type: labels::CUSTOMER_GROUP,
+            action: actions::WRITE,
+            mutating: true,
+        },
         // C4's enforcement mode. `config`, like the taxonomies and unlike the
         // approval-threshold policy — this one softens how one publish rule
         // reports one missing external fact; that one decides whether a change
@@ -821,7 +849,17 @@ fn drive(
         // gate. `brand` is used because it is the one Slice 9's overlay scope
         // actually reads, so a denial here is a denial on the path an operator
         // is really walking.
-        .replace("{class}", "brand");
+        .replace("{class}", "brand")
+        // Task 6's membership routes. `{group}` is a taxonomy **value**, not a
+        // seeded id — `group_membership_repo` validates no taxonomy universe
+        // (its own module doc), so any non-blank token drives the gate; a
+        // fixed literal is used for `{class}`'s reason. `{id}`/`{payerId}` are
+        // well-formed ids nothing points at — every membership route asks the
+        // PDP before it resolves either, so an absent membership still drives
+        // the gate, `{migrationId}`'s reasoning.
+        .replace("{group}", "gold")
+        .replace("{id}", "00000000-0000-4000-8000-0000000005c1")
+        .replace("{payerId}", "00000000-0000-4000-8000-0000000005c2");
     // The sellability surface requires all three of §5's query parameters and
     // parses them **before** it asks the PDP — `schedule_window`'s ordering, and
     // for its reason: a caller who omitted one is told that rather than being told
@@ -834,7 +872,23 @@ fn drive(
     } else {
         path
     };
-    let (body, headers): DrivenBody = match (route.method, route.path) {
+    let (body, headers) = body_for(route, seeded, version, key);
+    with_headers(route.method, &path, body, &headers)
+}
+
+/// The well-formed body and preconditions [`drive`] sends for one route.
+///
+/// Split out of `drive` to keep it under `clippy::too_many_lines` — `census`'s
+/// own reason for the sibling lint's `allow` applies here too: the catalogue
+/// is one match arm per route and its length **is** its content, so there is
+/// nothing to split on but the function boundary itself.
+fn body_for(
+    route: &Route,
+    seeded: &Seeded,
+    version: &'static str,
+    key: &'static str,
+) -> DrivenBody {
+    match (route.method, route.path) {
         // Slice 9's four. The `POST` takes an idempotency key and a whole
         // overlay; the `PATCH` takes the **overlay revision's** tag, which the
         // seeded draft stands at as `"0-0"`; the submit takes neither, since its
@@ -995,7 +1049,11 @@ fn drive(
             })),
             vec![],
         ),
-        ("PATCH", PRICE_WINDOW) => (
+        // The membership `PATCH` takes the same well-formed body and the same
+        // wrong-but-well-formed tag as the price-window `PATCH` — merged into
+        // one arm on `clippy::match_same_arms`'s say-so, not a coincidence
+        // worth two spellings.
+        ("PATCH", PRICE_WINDOW | CUSTOMER_GROUP_MEMBER) => (
             Some(serde_json::json!({ "effective_to": "2099-06-01T00:00:00Z" })),
             vec![("if-match", "\"0\"")],
         ),
@@ -1048,6 +1106,19 @@ fn drive(
                 "\"0000000000000000000000000000000000000000000000000000000000000000\"",
             )],
         ),
+        // Task 6's two `POST`s take an idempotency key; the `PATCH` is merged
+        // into `PRICE_WINDOW`'s arm above (identical body and tag).
+        ("POST", CUSTOMER_GROUP_MEMBERS) => (
+            Some(serde_json::json!({
+                "payer_tenant_id": Uuid::now_v7(),
+                "effective_from": "2099-01-01T00:00:00Z"
+            })),
+            vec![("idempotency-key", key)],
+        ),
+        ("POST", CUSTOMER_GROUP_MEMBER_MOVE) => (
+            Some(serde_json::json!({ "effective_from": "2099-01-01T00:00:00Z" })),
+            vec![("idempotency-key", key)],
+        ),
         ("POST", APPROVAL_REJECT) => (
             Some(serde_json::json!({ "reason": "not signed off" })),
             Vec::new(),
@@ -1059,8 +1130,7 @@ fn drive(
         // identical to this one and would only invite somebody to add a header to
         // it. The three read routes reach here for the same reason.
         _ => (None, Vec::new()),
-    };
-    with_headers(route.method, &path, body, &headers)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,6 +1217,10 @@ async fn registered_paths() -> Vec<String> {
             ))
             .merge(bss_pricing::api::rest::customer_groups::router(
                 Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::customer_groups::governance_router(
+                Arc::clone(&harness.membership),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::tax_display_policy::router(

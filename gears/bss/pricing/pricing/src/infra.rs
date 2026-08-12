@@ -14,6 +14,7 @@ pub mod history;
 pub mod idempotent;
 pub mod import;
 pub mod jobs;
+pub mod membership_publish;
 pub mod metrics;
 pub mod migration;
 pub mod overlay_publish;

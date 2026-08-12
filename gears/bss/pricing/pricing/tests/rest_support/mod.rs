@@ -59,7 +59,9 @@ use bss_pricing::infra::approval::ApprovalService;
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::metrics::test_harness::MetricsHarness;
 use bss_pricing::infra::publish::PublishService;
-use bss_pricing::infra::storage::entity::{approval, audit_log, catalog_version_ref, outbox, plan};
+use bss_pricing::infra::storage::entity::{
+    approval, audit_log, catalog_version_ref, group_membership, outbox, plan,
+};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::approval_repo::ApprovalRecord;
 use bss_pricing::infra::storage::repo::{
@@ -409,6 +411,10 @@ pub struct Harness {
     /// The one registry both services hold, kept concretely so a suite can script a
     /// commit on it. See [`RegistryDouble::commit`].
     pub registry: Arc<RegistryDouble>,
+    /// The state the three membership mutations are built over (Task 6,
+    /// `dod-customer-group`'s MUST). Its own state rather than a field on
+    /// [`GovernanceState`] — `api::rest::customer_groups`'s section banner.
+    pub membership: Arc<bss_pricing::api::rest::customer_groups::MembershipState>,
 }
 
 impl Harness {
@@ -504,6 +510,15 @@ impl Harness {
             ),
             metrics: Arc::clone(&metrics),
         });
+        // Task 6's membership state — the same registry `Arc` `governance` holds,
+        // one more requester of one registry.
+        let membership = Arc::new(bss_pricing::api::rest::customer_groups::MembershipState {
+            db: db.clone(),
+            idempotency: bss_pricing::infra::storage::repo::IdempotencyGate::new(
+                LimitsConfig::default().idempotency_key_ttl(),
+            ),
+            registry: Arc::clone(&registry) as Arc<_>,
+        });
         let frontier = Arc::new(FrontierState {
             pin_frontier: PinFrontierRepo::new(db.clone()),
         });
@@ -532,6 +547,7 @@ impl Harness {
             frontier,
             history,
             registry,
+            membership,
         }
     }
 
@@ -643,6 +659,10 @@ impl Harness {
             ))
             .merge(bss_pricing::api::rest::customer_groups::router(
                 Arc::clone(&self.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::customer_groups::governance_router(
+                Arc::clone(&self.membership),
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::tax_display_policy::router(
@@ -1508,6 +1528,31 @@ pub async fn pending_version_refs(harness: &Harness) -> Vec<catalog_version_ref:
         .expect("read the pending version refs")
 }
 
+/// One `pricing_group_membership` row, read back the way the projector does —
+/// through the entity rather than the repository, so a route-level suite can
+/// assert what actually landed without going back through the authz gate a
+/// second time.
+///
+/// Read with `AccessScope::allow_all()` for `price_rows`' reason: what
+/// landed, not what the caller was allowed to see.
+pub async fn membership_row(
+    harness: &Harness,
+    membership_id: Uuid,
+) -> Option<group_membership::Model> {
+    let conn = harness.db.conn().expect("conn");
+    group_membership::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(group_membership::Column::TenantId.eq(harness.tenant))
+                .add(group_membership::Column::MembershipId.eq(membership_id)),
+        )
+        .one(&conn)
+        .await
+        .expect("read pricing_group_membership")
+}
+
 /// Seed one draft price row on a distinct region, so several can coexist.
 pub async fn seed_price(harness: &Harness, plan_id: Uuid, region: &str) -> PriceRecord {
     seed_price_keyed(
@@ -2201,9 +2246,9 @@ pub async fn mutable_planes(
     plan_id: Uuid,
 ) -> std::collections::BTreeMap<&'static str, Vec<String>> {
     use bss_pricing::infra::storage::entity::{
-        brand_taxonomy, bulk_operation, bundle, bundle_component, migration, org_tier_taxonomy,
-        partner_taxonomy, policy_object, price_overlay, price_overlay_line, price_window,
-        region_taxonomy,
+        brand_taxonomy, bulk_operation, bundle, bundle_component, group_membership, migration,
+        org_tier_taxonomy, partner_taxonomy, policy_object, price_overlay, price_overlay_line,
+        price_window, region_taxonomy,
     };
 
     let conn = harness.db.conn().expect("conn");
@@ -2237,6 +2282,10 @@ pub async fn mutable_planes(
     plane!("policy", policy_object);
     plane!("migration", migration);
     plane!("bulk_run", bulk_operation);
+    // Task 6's membership mutations write here — `every_mutating_route_is_denied_
+    // with_the_state_unchanged` needs this plane to prove a denied `POST
+    // .../members` / `PATCH .../members/{id}` / `POST .../move` wrote nothing.
+    plane!("group_membership", group_membership);
 
     // The price plane whole, not its head: `prices_after.first()` compared one row's
     // version, so a denied write that moved the *second* of several rows was caught
