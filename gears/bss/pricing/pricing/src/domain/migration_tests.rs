@@ -172,13 +172,21 @@ fn a_migration_inside_the_notice_period_is_refused_naming_the_earliest_instant()
 }
 
 #[test]
-fn a_notice_period_too_large_to_add_is_refused_not_panicked() {
-    // F-11: the column has no upper CHECK, only `>= 60`, so a corrupt or
-    // maliciously-large configured period must not reach the unchecked date
-    // addition `earliest_effective` used to do. `i64::MAX` overflows both
-    // `Duration::days` itself (its own internal multiply) and a
-    // `checked_add_signed` onto `announced_at`, so this proves the guard
-    // covers both overflow sites, not just the second one.
+fn a_day_count_that_overflows_try_days_itself_is_refused_not_panicked() {
+    // F-11, site 1 of 2. The column has no upper CHECK, only `>= 60`, so a
+    // corrupt or maliciously-large configured period must not reach the
+    // unchecked date addition `earliest_effective` used to do. `i64::MAX`
+    // overflows `Duration::try_days`'s own internal `checked_mul` (days *
+    // 86_400 seconds), so `try_days` returns `None` and the `.and_then`
+    // closure that would call `checked_add_signed` never runs.
+    //
+    // This proves only the *first* overflow site is guarded — the pre-fix
+    // panic this reproduces is `Duration::days`'s own "out of bounds"
+    // panic, not a `DateTime` add overflow. See the sibling test below for
+    // the second site, which this value cannot reach: `try_days`'s ceiling
+    // (~1.07e14 days) is six orders of magnitude past chrono's date range
+    // (~9.6e7 days), so anything that overflows the add already overflowed
+    // the multiply first, at a far smaller magnitude on this axis alone.
     let announced = at(2026, 1, 1);
     let period = NoticePeriod::resolved(i64::MAX);
     let err = period
@@ -190,6 +198,51 @@ fn a_notice_period_too_large_to_add_is_refused_not_panicked() {
     };
     assert!(detail.contains(&i64::MAX.to_string()), "{detail}");
     assert!(detail.contains("no override"), "{detail}");
+}
+
+#[test]
+fn a_day_count_that_builds_but_cannot_be_added_is_refused_not_panicked() {
+    // F-11, site 2 of 2 — the one the test above cannot reach.
+    //
+    // 10_000_000_000 days (~27.4 million years) sits strictly between the two
+    // ceilings: comfortably under `try_days`'s ~1.07e14-day bound (so
+    // `Duration::try_days` succeeds and returns `Some`), but far past
+    // chrono's ~9.6e7-day representable range from `announced_at` (so
+    // `checked_add_signed` is what returns `None`). This is the case that
+    // was reddened by hand against a bare `+` in place of
+    // `checked_add_signed`, to confirm this test — and not its sibling —
+    // is the one that actually exercises the add.
+    let announced = at(2026, 1, 1);
+    let period = NoticePeriod::resolved(10_000_000_000);
+    let err = period
+        .ensure_honoured(announced, announced)
+        .expect_err("a period that overflows the add, but not try_days, must be refused");
+
+    let DomainError::MigrationNoticeTooShort(detail) = err else {
+        panic!("expected MigrationNoticeTooShort, got {err:?}");
+    };
+    assert!(detail.contains("10000000000"), "{detail}");
+    assert!(detail.contains("no override"), "{detail}");
+}
+
+#[test]
+fn a_large_but_representable_notice_period_still_resolves_and_is_honoured() {
+    // The fix must not have narrowed the accepted range — only closed the
+    // two panics. 400 days is far past the floor and nowhere near either
+    // ceiling, and must still round-trip exactly as it did before F-11.
+    let announced = at(2026, 1, 1);
+    let period = NoticePeriod::resolved(400);
+    assert_eq!(period.days(), 400);
+
+    let earliest = period.earliest_effective(announced).unwrap();
+    assert_eq!(earliest, announced + Duration::days(400));
+
+    assert!(period.ensure_honoured(announced, earliest).is_ok());
+    assert!(
+        period
+            .ensure_honoured(announced, earliest - Duration::days(1))
+            .is_err()
+    );
 }
 
 #[test]
