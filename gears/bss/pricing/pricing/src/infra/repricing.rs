@@ -79,19 +79,37 @@
 //! [`RepoError::BulkRowLocked`] to a bare [`RepoError::Db`] and lose the
 //! holder `fr-concurrent-edit` needs named.
 //!
-//! Releasing it is [`RunLockGuard`]'s whole job, and the reason that type
-//! exists rather than an `Err`-arm release like `infra::bulk`'s own sibling
-//! (review findings Z8-8/Z9-5): a panic unwinds past a match arm exactly as it
-//! unwinds past everything else, and a dropped future — a client disconnect,
-//! a shutdown signal, a losing `select!` arm — never runs *any* of this
-//! function's own code again, match arm or not. Only [`Drop`] reaches every
-//! one of those three abnormal exits. [`apply_run_in`]'s own explicit tail
-//! ([`finish_run`]) covers the two paths its own code is still running for —
-//! a clean finish, and an ordinary [`DomainError`] this function's own code
-//! catches and lands terminal before propagating — and disarms the guard once
-//! it has; the guard's `Drop` is the fallback for the two paths that reach no
-//! code of this function's at all. See [`RunLockGuard`]'s own doc for what
-//! that fallback can and cannot promise.
+//! Releasing it is split across two mechanisms, because [`apply_run_in`] does
+//! not treat its four ways of ending alike:
+//!
+//! * **A clean finish, and an ordinary [`DomainError`] this function's own
+//!   code is still running to handle** — the two paths its own `match` can
+//!   still reach. A clean finish calls [`finish_run`]: release the lock,
+//!   tally, land the run terminal. An ordinary `Err` after lock-taking does
+//!   deliberately *less*: it releases the lock and returns, leaving the run
+//!   `committing` with its unreached rows exactly `pending` —
+//!   [`domain::bulk::JournalState`]'s own doc is explicit that this is what
+//!   lets a second call tell "never reached" from "decided", and nothing
+//!   about a plain storage hiccup should cost that. Force-landing the run
+//!   terminal here would freeze every unreached plan `failed` with no
+//!   redrive possible; leaving it `committing` costs nothing, because
+//!   `bulk_repo::take_locks` is called unconditionally at this function's own
+//!   top for a run already `committing` exactly as for one just entering it
+//!   — a second call simply retakes the lock and carries on.
+//! * **A panic, and a dropped future** — the two paths no code of this
+//!   function's own ever runs for again. Only [`Drop`] is the language's own
+//!   guarantee across both (review findings Z8-8/Z9-5 name the gap an
+//!   `Err`-arm-only release like `infra::bulk`'s own sibling leaves: a panic
+//!   unwinds past a match arm exactly as it unwinds past everything else, and
+//!   a dropped future — a client disconnect, a shutdown signal, a losing
+//!   `select!` arm — never runs *any* of this function's own code again,
+//!   match arm or not). [`RunLockGuard`]'s `Drop` fallback runs the *same*
+//!   force-terminal sweep ([`finish_run`]) a clean finish uses, because here
+//!   — unlike an ordinary `Err` — no code is left running to make the more
+//!   careful, redrive-preserving choice above; a `pending` row under a run
+//!   nothing will ever call [`apply_run_in`] on again is worse than a
+//!   `failed` one an operator can read and resubmit. See [`RunLockGuard`]'s
+//!   own doc for what that fallback can and cannot promise.
 //!
 //! **And the lock does not close the concurrency hole even taken exactly as
 //! D-134 describes it.** Two facts, both established by grep rather than by
@@ -370,36 +388,87 @@ pub async fn apply_run_in(
     }
     .await;
 
-    // **Everything from here lands the run terminal and releases its lock, on
-    // every path this function's own code can still reach** — the two
-    // `RunLockGuard` cannot: a clean finish, and an ordinary `Err`. See
-    // `finish_run`'s own doc.
-    let finished = finish_run(
-        &conn,
-        scope,
-        tenant_id,
-        operation_id,
-        "bss-pricing: the apply run ended (its own transaction or bookkeeping failed) before \
-         this row's plan was reached",
-        stamp.recorded_at,
-    )
-    .await;
-    lock_guard.disarm();
-
     match inner {
-        Ok(()) => finished,
+        // **The clean finish.** Every row this call reached is already
+        // decided, so `finish_run`'s straggler sweep below is a no-op here —
+        // this is the tally-then-advance the old tail did inline, plus the
+        // lock release this task adds.
+        Ok(()) => match finish_run(
+            &conn,
+            scope,
+            tenant_id,
+            operation_id,
+            UNEXPECTED_STRAGGLER_REASON,
+            stamp.recorded_at,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                lock_guard.disarm();
+                Ok(outcome)
+            }
+            // The guard stays armed: if even this synchronous release
+            // failed, its `Drop` fallback — reached when this function
+            // returns and drops `lock_guard` — is the one thing left that
+            // will still try.
+            Err(finish_err) => Err(finish_err),
+        },
+        // **An ordinary `Err`, preserving the redrive contract.** See the
+        // module doc's own paragraph on why this releases the lock and stops
+        // there, rather than reaching for `finish_run`'s force-terminal
+        // sweep: this function's own code is still running, which is exactly
+        // what distinguishes this exit from the two `RunLockGuard`'s `Drop`
+        // fallback covers.
         Err(err) => {
-            if let Err(release_err) = finished {
-                tracing::error!(
-                    error = %release_err,
-                    run_id = %operation_id,
-                    "bss-pricing: repricing apply: finishing the run after its own failure also \
-                     failed; it may still hold its bulk lock"
-                );
+            match release_lock_after_ordinary_failure(&conn, scope, tenant_id, operation_id).await {
+                Ok(()) => lock_guard.disarm(),
+                Err(release_err) => {
+                    // The guard stays armed. Its `Drop` fallback is a harder
+                    // recovery than this arm chose (it force-lands the run
+                    // terminal and fails whatever is still pending) rather
+                    // than the redrive-preserving release above — the last
+                    // resort once even that lighter release has failed too,
+                    // not the first choice.
+                    tracing::error!(
+                        error = %release_err,
+                        run_id = %operation_id,
+                        "bss-pricing: repricing apply: releasing the bulk lock after an ordinary \
+                         failure also failed; the drop guard's fallback will attempt a full \
+                         recovery"
+                    );
+                }
             }
             Err(err)
         }
     }
+}
+
+/// [`apply_run_in`]'s ordinary-`Err` exit: release the bulk lock and return,
+/// touching neither the run's own state nor its journal.
+///
+/// **Deliberately does less than [`finish_run`].** This function's own caller
+/// is reached only while `apply_run_in`'s own code is still running — the
+/// module doc's own redrive-contract paragraph is why that distinction
+/// matters: leaving the run `committing` with its unreached rows `pending` is
+/// what lets a second call to `apply_run_in` retake the lock (taken
+/// unconditionally at that function's own top for a run already `committing`)
+/// and carry on, rather than freezing every unreached row `failed` with no
+/// redrive possible — `finish_run`'s force-terminal sweep, reserved for the
+/// two exits ([`RunLockGuard`]'s `Drop` fallback) with no code left running
+/// to make this gentler choice at all.
+///
+/// # Errors
+/// [`DomainError`] on a storage failure releasing the lock.
+async fn release_lock_after_ordinary_failure(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+) -> Result<(), DomainError> {
+    bulk_repo::release_locks(runner, scope, tenant_id, operation_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    Ok(())
 }
 
 /// The per-plan loop half of [`apply_run_in`], split out so the closure that
@@ -536,22 +605,31 @@ async fn tally(
 /// Release the run's bulk lock and land it on a terminal state, marking every
 /// journal row this call still finds `pending` `failed` first.
 ///
-/// **Shared by two very different callers.** [`apply_run_in`]'s own explicit
-/// tail reaches this after the per-plan loop has already decided every row it
-/// touched — so the straggler loop below is a no-op there, and this is just
-/// the tally-then-advance the old tail used to do inline, now also releasing
-/// the lock that did not exist before this task. [`RunLockGuard`]'s `Drop`
-/// fallback reaches this too, and there it is not a no-op: a panic or a
-/// dropped future can leave whole plans never reached, and their rows are
-/// exactly what [`repricing_journal_repo::pending_for_run`] still finds
-/// `pending` here. Marking them `failed` rather than leaving them `pending`
-/// under a now-terminal run is `infra::bulk`'s own idiom for a run with no
-/// failure state to land in — "nothing committed, every row conflicted, the
-/// report lists them for retry" — carried over rather than invented fresh:
-/// a `pending` row under a terminal run is unreachable by anything (no
-/// re-drive exists, and a terminal run can never be handed to
-/// [`apply_run_in`] again to produce one), which is worse than a `failed` row
-/// an operator can read and resubmit.
+/// **This is the force-terminal sweep, not the release every exit gets.**
+/// [`apply_run_in`]'s own explicit tail calls this on a clean finish only,
+/// where the per-plan loop has already decided every row it touched and the
+/// straggler loop below is a no-op — this is then just the tally-then-advance
+/// the old tail did inline, plus the lock release that did not exist before
+/// this task. An **ordinary `Err`** after lock-taking does not reach this
+/// function at all: it releases the lock and leaves the run `committing` with
+/// its unreached rows `pending`, exactly as before this task — see the module
+/// doc's own paragraph on why that distinction is load-bearing rather than
+/// tidiness.
+///
+/// [`RunLockGuard`]'s `Drop` fallback reaches this, and there it is not a
+/// no-op: a panic or a dropped future leaves no code of this function's own
+/// still running to make that more careful, redrive-preserving choice, and
+/// whole plans can be left never reached. Marking their rows `failed` rather
+/// than leaving them `pending` under a now-terminal run is `infra::bulk`'s
+/// own idiom for a run with no failure state to land in — "nothing
+/// committed, every row conflicted, the report lists them for retry" —
+/// carried over rather than invented fresh: a `pending` row under a terminal
+/// run is unreachable by anything (no re-drive exists, and a terminal run can
+/// never be handed to [`apply_run_in`] again to produce one), which is worse
+/// than a `failed` row an operator can read and resubmit. **This is the one
+/// place [`crate::domain::bulk::JournalState`]'s "an aborted run leaves
+/// `pending` rows standing" stops holding** — deliberately, and only for the
+/// two exits with no code left running to preserve it.
 ///
 /// # Errors
 /// [`DomainError`] on a storage failure releasing the lock, marking a
@@ -613,6 +691,20 @@ async fn finish_run(
     Ok(outcome)
 }
 
+/// The reason a clean finish's own call to [`finish_run`] would mark a
+/// straggler with, if it ever found one.
+///
+/// **Never expected to fire.** By the time `apply_run_in`'s `inner` block
+/// returns `Ok(())`, the per-plan loop has decided every row it reached —
+/// `pending_for_run`'s own doc calls this the re-drive's whole safety
+/// property — so a row still `pending` here would mean that property broke,
+/// not that an ordinary failure occurred. The message says so rather than
+/// reusing [`ABANDONED_STRAGGLER_REASON`]'s wording, which would misdescribe
+/// a logic gap as an interrupted apply.
+const UNEXPECTED_STRAGGLER_REASON: &str = "bss-pricing: this journal row was still pending after \
+    the apply's own per-plan loop finished without error; every row the loop reaches should \
+    already be decided, so this indicates a logic gap rather than an ordinary failure";
+
 /// The reason [`RunLockGuard`]'s `Drop` fallback marks a straggler row with.
 const ABANDONED_STRAGGLER_REASON: &str = "bss-pricing: the mass-repricing apply was interrupted \
     (a panic or a dropped future) before this row's plan was reached; its bulk lock has been \
@@ -632,11 +724,17 @@ const ABANDONED_STRAGGLER_REASON: &str = "bss-pricing: the mass-repricing apply 
 /// cancellation), which is why this type exists rather than a fourth attempt
 /// to enumerate exits by hand.
 ///
-/// [`apply_run_in`]'s own explicit tail — [`finish_run`] — [`disarm`](Self::disarm)s
-/// this guard once it has released the lock and landed the run terminal
-/// itself, for a clean finish and for an ordinary [`DomainError`] this
-/// function's own code caught and is about to propagate. Both reach this
-/// guard's `disarm`; only a panic or a cancellation reach its `Drop` instead.
+/// [`apply_run_in`]'s own explicit tail [`disarm`](Self::disarm)s this guard
+/// on two of its four outcomes: a clean finish, where [`finish_run`] has
+/// released the lock and landed the run terminal; and an ordinary
+/// [`DomainError`] whose own, lighter release ([`bulk_repo::release_locks`]
+/// alone — see the module doc's redrive-contract paragraph for why it stops
+/// there) succeeded. It stays armed on the other two: a panic or a
+/// cancellation, where no code of this function's own is left running to
+/// reach either disarm site at all; and the rare case where even that
+/// ordinary-`Err` release itself failed, a harder failure than the first that
+/// this guard's own `Drop` fallback — the force-terminal sweep, since nothing
+/// gentler is left to try — is the last resort for.
 ///
 /// # What the fallback cannot promise
 ///
@@ -1255,6 +1353,225 @@ async fn commit_plan_aggregate_in(
 /// runs) never share a handle.
 fn repricing_request_id(tenant_id: Uuid, operation_id: Uuid, plan_id: PlanId) -> String {
     format!("repricing-run/{tenant_id}/{operation_id}/{plan_id}")
+}
+
+#[cfg(test)]
+mod ordinary_failure_release {
+    //! **The Critical review found and this pins.** [`super::release_lock_after_ordinary_failure`]
+    //! is what an ordinary `Err` out of `apply_run_in`'s own `inner` block reaches — see the
+    //! module doc's redrive-contract paragraph — and its whole contract is *doing less* than
+    //! [`super::finish_run`]: release the lock, and touch neither the run's own state nor its
+    //! journal, so a run left `committing` with a row still `pending` stays exactly that
+    //! ([`crate::domain::bulk::JournalState`]'s own doc names why: that is what lets a second
+    //! call tell "never reached" from "decided").
+    //!
+    //! **Why this is a direct, in-file test of the function itself rather than an integration
+    //! test that forces a genuine `Err` out of `apply_run_in`.** An earlier version tried
+    //! exactly that — racing a direct write against `apply_run_in`'s own in-flight processing of
+    //! the same row, timed off the lock becoming visible, the technique
+    //! `tests/sqlite_repricing_apply.rs`'s cancellation test uses successfully for a different
+    //! property. It lost the race reliably rather than merely flakily: this crate's
+    //! `sqlite::memory:` harness gives every `DBProvider` a single-connection pool
+    //! (`libs/toolkit-db`), and `SQLite`'s own single-writer semantics mean a transaction holds
+    //! that one connection for its whole duration — so a competing write from a second task can
+    //! only land in the gaps *between* transactions, never during one, and by the time a
+    //! lock-visibility poll from a second task gets its own turn at the shared connection, the
+    //! target transaction has typically already finished. Testing
+    //! `release_lock_after_ordinary_failure` directly proves the same contract without depending
+    //! on winning a race this harness cannot reliably lose on purpose.
+
+    use chrono::{TimeZone, Utc};
+    use sea_orm_migration::MigratorTrait;
+    use toolkit_db::migration_runner::run_migrations_for_testing;
+    use toolkit_db::secure::AccessScope;
+    use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+    use uuid::Uuid;
+
+    use crate::domain::bulk::{BulkKind, BulkState, JournalState};
+    use crate::domain::money::{CurrencyCode, MinorAmount};
+    use crate::domain::price_record::PriceContent;
+    use crate::domain::price_row::{ModelKind, PriceRow};
+    use crate::domain::scope_key::{
+        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    };
+    use crate::infra::storage::migrations::Migrator;
+    use crate::infra::storage::repo::repricing_journal_repo::NewJournalRow;
+    use crate::infra::storage::repo::{
+        NewBulkOperation, NewPlanDraft, NewPriceDraft, PlanRepo, PriceRepo, bulk_repo,
+        repricing_journal_repo,
+    };
+
+    #[tokio::test]
+    async fn releases_the_lock_and_touches_neither_the_run_nor_its_journal() {
+        let db = connect_db("sqlite::memory:", ConnectOpts::default())
+            .await
+            .expect("connect in-memory sqlite");
+        run_migrations_for_testing(&db, Migrator::migrations())
+            .await
+            .expect("run migrator");
+        let provider = DBProvider::<DbError>::new(db);
+        let conn = provider.conn().expect("conn");
+
+        let tenant_id = Uuid::from_u128(0x7e);
+        let scope = AccessScope::for_tenant(tenant_id);
+        let plan_id = PlanId::new(Uuid::from_u128(0x9a));
+        let now = Utc.with_ymd_and_hms(2026, 8, 12, 0, 0, 0).unwrap();
+
+        // The plan, minimally - `step0_probe`'s own shape, since what is
+        // under test here has nothing to do with the plan's own revision.
+        PlanRepo::new(provider.clone())
+            .create_draft(
+                &scope,
+                NewPlanDraft {
+                    plan_id,
+                    tenant_id,
+                    created_by: Uuid::from_u128(0x1),
+                    created_at_utc: now,
+                    sku_id: None,
+                    plan_tier: None,
+                    billing_cycle: None,
+                    frequency: None,
+                    plan_tier_override: false,
+                    purchase_min_qty: None,
+                    purchase_max_qty: None,
+                    invoice_grouping_key: None,
+                    available_from: None,
+                    available_to: None,
+                    cloned_from: None,
+                    correlation_id: Uuid::from_u128(0x2),
+                },
+            )
+            .await
+            .expect("create the plan's first draft");
+
+        let price_id = Uuid::from_u128(0xb_00);
+        let key = ScopeKey::new(
+            plan_id,
+            CurrencyCode::new("EUR").expect("three letters"),
+            Region::new("eu").expect("non-blank"),
+            PhaseId::new(Uuid::from_u128(0xc0)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+        )
+        .expect("the class pairs with cohort none");
+        let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        row.amount_minor = Some(MinorAmount::new(1_000).expect("non-negative"));
+        PriceRepo::new(provider.clone())
+            .create_draft(
+                &scope,
+                tenant_id,
+                NewPriceDraft {
+                    price_id,
+                    scope_key: key,
+                    content: PriceContent {
+                        row,
+                        tax_inclusive: false,
+                        tax_category_ref: None,
+                        billing_timing: None,
+                        proration_contract: None,
+                        rounding_policy_ref: None,
+                        grandfather_until: None,
+                        supersedes_price_id: None,
+                    },
+                    created_by: Uuid::from_u128(0x1),
+                    created_at_utc: now,
+                    correlation_id: Uuid::from_u128(0x2),
+                },
+            )
+            .await
+            .expect("author the price row");
+
+        // A committing repricing run, its journal row frozen `pending`, and
+        // its bulk lock taken over that one row - `apply_run_in`'s own
+        // preamble, replicated by hand at the repo seam so this test can
+        // call the function under test directly rather than through the
+        // whole apply.
+        let operation_id = Uuid::now_v7();
+        bulk_repo::open(
+            &conn,
+            &scope,
+            NewBulkOperation {
+                operation_id,
+                tenant_id,
+                kind: BulkKind::Repricing,
+                client_key: operation_id.to_string(),
+                report: serde_json::json!({}),
+                submitted_by: Uuid::from_u128(0x1),
+                submitted_at: now,
+            },
+        )
+        .await
+        .expect("open the run");
+        repricing_journal_repo::open_rows(
+            &conn,
+            &scope,
+            &[NewJournalRow {
+                run_id: operation_id,
+                price_id,
+                tenant_id,
+            }],
+        )
+        .await
+        .expect("freeze the journal");
+        bulk_repo::advance(
+            &conn,
+            &scope,
+            tenant_id,
+            operation_id,
+            BulkState::Committing,
+            serde_json::json!({}),
+            now,
+        )
+        .await
+        .expect("enter committing");
+        bulk_repo::take_locks(&conn, &scope, tenant_id, operation_id, &[price_id], now)
+            .await
+            .expect("take the lock");
+
+        // Sanity: the lock is held before the call under test, so its
+        // absence afterward is this test's own doing and not a fixture bug.
+        assert_eq!(
+            bulk_repo::lock_holder(&conn, &scope, tenant_id, price_id)
+                .await
+                .expect("read the lock"),
+            Some(operation_id),
+            "the fixture itself must hold the lock before the call under test"
+        );
+
+        super::release_lock_after_ordinary_failure(&conn, &scope, tenant_id, operation_id)
+            .await
+            .expect("release after an ordinary failure");
+
+        assert_eq!(
+            bulk_repo::lock_holder(&conn, &scope, tenant_id, price_id)
+                .await
+                .expect("read the lock"),
+            None,
+            "the lock is released"
+        );
+        let run = bulk_repo::read(&conn, &scope, tenant_id, operation_id)
+            .await
+            .expect("read the run")
+            .expect("the run exists");
+        assert_eq!(
+            run.state,
+            BulkState::Committing,
+            "the run itself is untouched - still committing, not forced terminal: {run:?}"
+        );
+        let journal = repricing_journal_repo::list_for_run(&conn, &scope, tenant_id, operation_id)
+            .await
+            .expect("read the journal");
+        let journal_row = journal
+            .into_iter()
+            .find(|row| row.price_id == price_id)
+            .expect("the row is on the journal");
+        assert_eq!(
+            journal_row.state,
+            JournalState::Pending,
+            "the journal row is untouched - still pending, not marked failed: {journal_row:?}"
+        );
+    }
 }
 
 #[cfg(test)]

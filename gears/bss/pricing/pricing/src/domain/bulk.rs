@@ -70,6 +70,18 @@ impl BulkKind {
 /// therefore leaves `pending` rows standing, which is what lets a re-drive tell
 /// "never reached" from "decided".
 ///
+/// **That holds for an ordinary failure and stops holding for the two the
+/// apply's own code cannot see coming.** `infra::repricing::apply_run_in`'s
+/// tail preserves it exactly for a plain storage `Err`: the run stays
+/// `committing`, its unreached rows stay `pending`, and a second call retakes
+/// the lock and carries on. A panic or a dropped future is a different case —
+/// no code is left running to make that redrive-preserving choice at all —
+/// and there `infra::repricing::RunLockGuard`'s `Drop` fallback marks every
+/// straggler `failed` instead, so the run can still reach a terminal state
+/// rather than sit `committing` forever with its lock held by nothing. The
+/// distinction between "never reached" and "decided" survives that case only
+/// in the row's free-text `failure_reason`, not in its `state`.
+///
 /// The edges and the finality of the two decided states are the table's trigger,
 /// not this type's: a `match` here listing them would be the second spelling
 /// [`BulkState`]'s own doc refuses for the same reason.

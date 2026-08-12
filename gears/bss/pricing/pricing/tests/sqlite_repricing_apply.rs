@@ -1166,3 +1166,18 @@ async fn a_future_dropped_mid_apply_releases_its_bulk_lock_and_lands_the_run_ter
     assert!(lock_a.is_none(), "row_a's lock is released");
     assert!(lock_b.is_none(), "row_b's lock is released");
 }
+
+// A test for the narrowed ordinary-`Err` behaviour lives beside
+// `release_lock_after_ordinary_failure` itself, in `src/infra/repricing.rs`'s
+// own `#[cfg(test)]` module (`step0_probe`'s own precedent in this file) —
+// not here. Forcing a genuine, non-corrupting `Err` out of `apply_run_in`
+// requires racing a direct write against the run's own in-flight processing,
+// and this crate's `sqlite::memory:` harness gives every `DBProvider` a
+// single-connection pool (`libs/toolkit-db`) with real single-writer SQLite
+// semantics under it: a transaction holds that one connection for its whole
+// duration, so a competing write from a second task can only ever land in the
+// narrow gaps *between* transactions, never during one. An earlier version of
+// this test tried exactly that race and lost it reliably — the raced row was
+// already decided by the time the direct write ran, not merely flaky. The
+// property is real and still worth pinning; it is pinned deterministically
+// instead, against `release_lock_after_ordinary_failure` directly.

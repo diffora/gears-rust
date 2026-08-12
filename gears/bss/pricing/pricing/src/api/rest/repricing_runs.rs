@@ -273,7 +273,15 @@ pub struct RepricingJournalRowView {
     ///
     /// **`not-attempted` is not among them.** D-261 makes that a *rendering* of a
     /// `pending` row on a report, never a stored value, which is what lets a
-    /// re-drive tell "never reached" from "decided".
+    /// re-drive tell "never reached" from "decided" — for a run left
+    /// `committing` after an ordinary apply failure, where a row reading
+    /// `pending` here genuinely means "not yet reached, retake the lock and
+    /// carry on". A run a panic or a dropped future ended instead reaches a
+    /// terminal state with every such row marked `failed`
+    /// (`infra::repricing::RunLockGuard`'s `Drop` fallback, which has no code
+    /// left running to preserve the distinction any other way) — there,
+    /// "never reached" survives only in `failure_reason`'s free text, not in
+    /// this field.
     pub state: String,
     /// Why it did not apply. Present exactly on `failed`.
     pub failure_reason: Option<String>,
