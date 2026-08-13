@@ -1048,18 +1048,43 @@ async fn apply_rows_in(
         // identical silent-no-op this guard exists for. It was omitted while
         // `project_row` still routed `per_unit` through `flat`'s arm, where
         // the omission was invisible because *no* adjustment moved such a row.
+        //
+        // **The failure unit here is the plan, and that is the design set's
+        // choice rather than this function's.** `inst-mr-apply` (S12 §5, D-134,
+        // and the Mass Repricing DoD's own MUST in §10): *"The transaction unit
+        // is the plan, not the row — a run commits all of one plan's selected
+        // rows together, and a per-row validation failure fails **every** row
+        // of that plan with the shared reason — never a partial plan."* So an
+        // `Err` is right here, and the per-row `mark_failed`-and-`continue`
+        // above is **not** the shape to copy: `inst-mp-grandfathered` names its
+        // own unit in as many words (*"fails **that row**"*), and the general
+        // rule governs every case the design set does not carve out. D-134's
+        // reason is the plan-level aggregate pass below, which runs over the
+        // plan's row set *as it will stand post-commit* — a partial plan is a
+        // set that pass never evaluated.
+        //
+        // Which makes the **rendering** load-bearing: `apply_by_plan` stamps
+        // `failure_reason`'s one string onto every row of the plan, so a
+        // message opening `price <id>:` reads, on a `flat` row's journal entry,
+        // as the false claim that *that* row holds a rate. The refusing row is
+        // named as the trigger and the plan is named as the unit, so an entry
+        // on a row the run could have repriced says why it did not.
         if matches!(
             predecessor.row.model_kind,
             Some(ModelKind::PerUnit | ModelKind::Graduated | ModelKind::Volume)
         ) && !adjusts_rate(adjustment)
         {
             return Err(DomainError::InvalidRequest(format!(
-                "price {}: a per_unit row's unit rate and a graduated/volume row's tier bands \
+                "inst-mr-apply (D-134): this plan's whole selected row set failed together and \
+                 none of it applied — the run's transaction unit is the plan, not the row, so a \
+                 row of it this run cannot reprice fails the rest with it. The row that refused \
+                 is price {}: a per_unit row's unit rate and a graduated/volume row's tier bands \
                  hold a rate, not an amount, and only a percent_bp markup/discount is a \
                  well-defined mutation of one; an amount markup/discount has no minor-unit floor \
                  to apply to a rate, and a fixed line reads a currency amount as a rate — which \
                  would collapse a ladder to one rate and can only ever author a whole-minor-unit \
-                 one — so this run refuses rather than guess",
+                 one — so this run refuses rather than guess. Re-run with a percent_bp \
+                 markup/discount, or under a selector that excludes the rate-priced rows",
                 row.price_id
             )));
         }

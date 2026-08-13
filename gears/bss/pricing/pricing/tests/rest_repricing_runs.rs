@@ -1237,3 +1237,262 @@ async fn a_fixed_adjustment_fails_a_per_unit_row_rather_than_applying_nothing_to
         "at the rate it was published with: {predecessor:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D-134's failure unit, over the widened rate refusal: the plan, not the row.
+// ---------------------------------------------------------------------------
+
+/// The `flat` amount both cases below seed, and the `fixed` line they submit.
+///
+/// `9_900 -> 50` is a move of `9_850` minor units, which is real, large, and
+/// still far under the `1_000_000` bar these cases configure — so the run is
+/// auto-publishable and its apply spends in the same request, which is what
+/// puts the *apply's* failure unit under test rather than the approval gate.
+const FLAT_AMOUNT_MINOR: i64 = 9_900;
+/// The `fixed` line's literal. Not a divisor or multiple of
+/// [`FLAT_AMOUNT_MINOR`] and not the projection of it under any percentage, so
+/// the successor this value pins cannot also be produced by a `markup`,
+/// a truncation, or a row left at its published amount.
+const FIXED_LINE_MINOR: i64 = 50;
+
+/// A `fixed $0.50` run over one named currency — the one adjustment kind
+/// `project_rate` refuses outright on a rate.
+fn a_fixed_run(run_id: Uuid) -> serde_json::Value {
+    let mut body = a_run(run_id, &serde_json::json!({ "currency": "USD" }));
+    body["adjustment"] = serde_json::json!({
+        "adjustment_kind": "fixed",
+        "magnitude_kind": "amount",
+        "amounts": [{ "currency": "USD", "value_minor": FIXED_LINE_MINOR }],
+    });
+    body
+}
+
+/// **The positive control** for the mixed-plan case below, and the half that
+/// makes it mean anything: on a plan holding **only** a `flat` row, this exact
+/// `fixed` line applies.
+///
+/// Without this, "both rows failed" over the mixed plan would be satisfied by a
+/// `flat` row that was never repriceable under a `fixed` adjustment in the
+/// first place — the fixture-proves-nothing shape. Here the same row, the same
+/// adjustment and the same bar produce `applied` and a successor at the
+/// literal, so the *only* difference in the case below is the `per_unit` row
+/// sitting beside it.
+#[tokio::test]
+async fn a_flat_row_alone_applies_the_same_fixed_line_the_mixed_plan_refuses() {
+    let harness = Harness::new().await;
+    approve_threshold_policy(&harness, &[("USD", 1_000_000)]).await;
+    let plan = Uuid::now_v7();
+    seed_current_plan_with_phase(&harness, plan).await;
+    let flat = seed_priced_row(&harness, plan, "us", FLAT_AMOUNT_MINOR).await;
+    harness.publish_price(plan, flat.price_id).await;
+    common::schedule_coverage_window(
+        &harness.db.conn().expect("conn"),
+        &harness.scope(),
+        harness.tenant,
+        flat.price_id,
+        rest_support::seed_stamp(),
+    )
+    .await;
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_fixed_run(run_id)),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::Completed,
+        "a `fixed` line on a `flat` row is a well-defined reprice and nothing refuses it: {stored:?}"
+    );
+
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &run_path(run_id), None, &[]))
+        .await;
+    let run = body_json(read).await;
+    let journal = run["journal"].as_array().expect("a journal");
+    assert_eq!(journal.len(), 1, "one selected row: {run}");
+    assert_eq!(
+        journal[0]["state"],
+        serde_json::json!("applied"),
+        "the control is the row applying: {run}"
+    );
+
+    let rows = price_rows(&harness, plan).await;
+    let successor = rows
+        .iter()
+        .find(|row| row.supersedes_price_id == Some(flat.price_id))
+        .unwrap_or_else(|| {
+            panic!("the apply writes a successor for the row it superseded: {rows:?}")
+        });
+    assert_eq!(
+        successor
+            .row
+            .amount_minor
+            .map(bss_pricing::domain::money::MinorAmount::get),
+        Some(FIXED_LINE_MINOR),
+        "a `fixed` line sets the amount to its literal, so the control's successor is a real \
+         reprice and not the published amount carried forward: {successor:?}"
+    );
+}
+
+/// **D-134, `inst-mr-apply`**: the transaction unit is the **plan**, not the
+/// row — *"a per-row validation failure fails **every** row of that plan with
+/// the shared reason — never a partial plan"*
+/// (`design/12-operator-efficiency.md` §5 `inst-mr-apply`, and the Mass
+/// Repricing `DoD`'s own **MUST** in §10).
+///
+/// So the widened D-311 rate refusal is deliberately **not** the per-row
+/// refusal `inst-mp-grandfathered` owes: that clause names its own unit in as
+/// many words (*"fails **that row**"*, `inst-mp-grandfathered` clause 1a) and
+/// the general rule governs everything it does not name. A mixed plan — a
+/// `per_unit` row the run cannot honestly reprice beside a `flat` row it could
+/// — therefore fails **whole**, and the `flat` row's successor is never
+/// written even though the projection for it is well-defined. D-134's own
+/// reason is why: the plan-level aggregate pass runs inside the plan's commit
+/// transaction over the row set *as it will stand post-commit*, and a partial
+/// plan is a set that pass never evaluated.
+///
+/// The other half this pins is the **shared reason**. Before this case the
+/// refusal's rendering opened `price <id>:` and named the offending row alone,
+/// which is then stamped onto every row of the plan — so the `flat` row's
+/// journal entry read as a statement about itself, asserting that a row whose
+/// money is an `amount_minor` holds a rate. An operator reading that entry
+/// cannot tell why a row the run could reprice did not apply, which is the
+/// whole of what the journal is for.
+#[tokio::test]
+async fn a_per_unit_refusal_fails_its_whole_plan_with_a_reason_that_says_so() {
+    let harness = Harness::new().await;
+    approve_threshold_policy(&harness, &[("USD", 1_000_000)]).await;
+    let plan = Uuid::now_v7();
+    seed_current_plan_with_phase(&harness, plan).await;
+    // One plan, two kinds, on two regions of the one currency the selector
+    // names — the mixed plan none of `4817562f5`'s three single-row cases could
+    // see.
+    let per_unit = seed_per_unit_rate_row(&harness, plan, "eu", PER_UNIT_RATE_NANO).await;
+    harness.publish_price(plan, per_unit.price_id).await;
+    let flat = seed_priced_row(&harness, plan, "us", FLAT_AMOUNT_MINOR).await;
+    harness.publish_price(plan, flat.price_id).await;
+    for price_id in [per_unit.price_id, flat.price_id] {
+        common::schedule_coverage_window(
+            &harness.db.conn().expect("conn"),
+            &harness.scope(),
+            harness.tenant,
+            price_id,
+            rest_support::seed_stamp(),
+        )
+        .await;
+    }
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_fixed_run(run_id)),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::CompletedWithConflicts,
+        "every row of the one plan failed, so the run is a conflict rather than a success: \
+         {stored:?}"
+    );
+
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &run_path(run_id), None, &[]))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let run = body_json(read).await;
+    let journal = run["journal"].as_array().expect("a journal");
+    assert_eq!(journal.len(), 2, "both published rows were frozen: {run}");
+    let entry = |price_id: Uuid| -> &serde_json::Value {
+        journal
+            .iter()
+            .find(|row| row["price_id"] == serde_json::json!(price_id))
+            .unwrap_or_else(|| panic!("the journal carries {price_id}: {run}"))
+    };
+    let per_unit_entry = entry(per_unit.price_id);
+    let flat_entry = entry(flat.price_id);
+    assert_eq!(
+        (&per_unit_entry["state"], &flat_entry["state"]),
+        (&serde_json::json!("failed"), &serde_json::json!("failed")),
+        "D-134: the plan is the transaction unit, so the `flat` row the run could reprice fails \
+         with the `per_unit` row it cannot -- never a partial plan: {run}"
+    );
+
+    let flat_reason = flat_entry["failure_reason"]
+        .as_str()
+        .expect("a `failed` row carries its reason");
+    assert_eq!(
+        Some(flat_reason),
+        per_unit_entry["failure_reason"].as_str(),
+        "`inst-mr-apply`'s words are `the shared reason`, one rendering of the rolled-back \
+         transaction for every row of the plan: {run}"
+    );
+    assert!(
+        flat_reason.contains(&per_unit.price_id.to_string()),
+        "the reason names the row that actually refused, which is the one an operator has to \
+         change or exclude -- and it is not this entry's own row: {flat_reason}"
+    );
+    assert!(
+        !flat_reason.contains(&flat.price_id.to_string()),
+        "and it does not name this row as a cause: a `flat` row's money is an amount, so a \
+         reason claiming it holds a rate is false of it: {flat_reason}"
+    );
+    assert!(
+        flat_reason.contains("D-134"),
+        "and it states the failure unit, so an entry on a row the run could have repriced says \
+         why it did not: {flat_reason}"
+    );
+
+    let rows = price_rows(&harness, plan).await;
+    assert!(
+        rows.iter().all(|row| row.supersedes_price_id.is_none()),
+        "nothing was superseded: a partial plan is the state D-134's aggregate pass never \
+         evaluated, and the `flat` row's successor is the one that would have made it partial: \
+         {rows:?}"
+    );
+    for price_id in [per_unit.price_id, flat.price_id] {
+        let predecessor = rows
+            .iter()
+            .find(|row| row.price_id == price_id)
+            .expect("the seeded row is still there");
+        assert_eq!(
+            predecessor.lifecycle_state,
+            LifecycleState::Published,
+            "and both rows are still the published occupants of their keys: {predecessor:?}"
+        );
+    }
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.price_id == flat.price_id)
+            .and_then(|row| row.row.amount_minor)
+            .map(bss_pricing::domain::money::MinorAmount::get),
+        Some(FLAT_AMOUNT_MINOR),
+        "at the amount it was published with -- the control above proves this same row and this \
+         same adjustment produce {FIXED_LINE_MINOR} when no `per_unit` row shares its plan"
+    );
+}
