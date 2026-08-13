@@ -4467,3 +4467,133 @@ async fn a_scope_value_withdrawn_between_submit_and_commit_refuses_and_writes_no
         "a refused commit announces nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Z10-5 — the Critical's own frontier read.
+// ---------------------------------------------------------------------------
+
+/// Take `pricing_pin_frontier` away, through the one door this crate opens the
+/// schema with.
+///
+/// The finding says "verify with an unmigrated store", and
+/// [`harness_migrated_to`] cannot deliver one here: the table is
+/// `m20260802_000005`, so withholding it withholds sixty migrations after it and
+/// the pass would have no tables to run against at all. A migration of the
+/// test's own is the same thing arriving from the other side, and it keeps the
+/// DDL where the crate's rule puts DDL.
+///
+/// The fault is the narrowest one that reaches the read under test: nothing else
+/// in a warm pass touches this table except `frontier_is_blocked`, which
+/// documents its own `Ok`-only choice and answers `false`.
+struct DropTheFrontierTable;
+
+impl sea_orm_migration::MigrationName for DropTheFrontierTable {
+    fn name(&self) -> &str {
+        "ztest_drop_pricing_pin_frontier"
+    }
+}
+
+#[async_trait::async_trait]
+impl sea_orm_migration::MigrationTrait for DropTheFrontierTable {
+    async fn up(&self, manager: &sea_orm_migration::SchemaManager) -> Result<(), sea_orm::DbErr> {
+        manager
+            .drop_table(
+                sea_orm_migration::prelude::Table::drop()
+                    .table(sea_orm_migration::prelude::Alias::new(
+                        "pricing_pin_frontier",
+                    ))
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(
+        &self,
+        _manager: &sea_orm_migration::SchemaManager,
+    ) -> Result<(), sea_orm::DbErr> {
+        Ok(())
+    }
+}
+
+async fn drop_the_frontier_table(h: &Harness) {
+    run_migrations_for_testing(&h.provider.db(), vec![Box::new(DropTheFrontierTable)])
+        .await
+        .expect("take the table the pin-eligibility pass reads away");
+}
+
+/// **The RED this case is about.** `observe_pin_eligibility` opened with an
+/// `if let Ok(frontiers) = pin_frontier_repo::list_all(…)` and no `else` — no
+/// log, no counter, nothing. On a storage failure the tenant map degenerated to
+/// *only the tenants holding a pending ref this pass*, which is precisely the
+/// population the method's own doc says the frontier read exists to go beyond:
+/// "the first half is what finds a tenant whose frontier is stale precisely
+/// because nothing of it has moved". So the arm that carries this gear's only
+/// Critical about a stuck frontier disappeared with no trace, and the pass went
+/// on answering `pin_eligibility_overdue: 0`, which reads as healthy.
+///
+/// **Armed at the observability, not at a proxy for it.** The scenario is one
+/// that alarms either way — the tenant is also in the pending set — so the
+/// alarm count cannot move, and the case asserts that: every other member of the
+/// report is *identical* between the healthy pass and the broken one. That is
+/// the claim. If any counter had moved, a test could have watched the counter
+/// instead and this field would be redundant; none does, so before the `Err` arm
+/// existed there was nothing in this crate a case could have asserted.
+///
+/// The first assertion is the positive control: a pass over a store that answers
+/// must not report a failure, or a field wired to `true` unconditionally would
+/// satisfy the second.
+#[tokio::test]
+async fn a_frontier_scan_that_cannot_read_reports_it_rather_than_disappearing() {
+    let h = harness().await;
+    let (_, pending_a) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
+    h.registry.commit(&pending_a, 5);
+    sweep(&h, at_min(12, 1)).await;
+    assert_eq!(frontier_version(&h).await, Some(5));
+
+    // A later version whose subject cannot project: V6 stands committed and short
+    // of pin-eligibility while the frontier ages at V5 — the sibling scenario of
+    // `a_stale_frontier_with_a_version_waiting_behind_it_alarms_on_its_own_age`.
+    let conn = h.provider.conn().expect("conn");
+    catalog_version_ref_repo::record_pending(
+        &conn,
+        &h.scope,
+        PendingVersionRow::for_subject(
+            TENANT,
+            "pend-stuck".to_owned(),
+            &SubjectRef::Plan(Uuid::new_v4()),
+            Some(0),
+            Some(LifecycleState::Published),
+            at_min(12, 2),
+        ),
+    )
+    .await
+    .expect("record the stuck subject");
+    h.registry.commit("pend-stuck", 6);
+    drop(conn);
+
+    // Two passes, so the baseline is a steady state rather than the first pass's
+    // one-off emissions, and the broken pass below is compared against a pass
+    // that would otherwise repeat it exactly.
+    sweep(&h, at(14)).await;
+    let healthy = sweep(&h, at(14)).await;
+    assert!(
+        !healthy.frontier_scan_failed,
+        "a store that answers is not a failed read: {healthy:?}"
+    );
+    assert_eq!(
+        healthy.pin_eligibility_overdue, 1,
+        "and the Critical this arm carries does fire on this fixture: {healthy:?}"
+    );
+
+    drop_the_frontier_table(&h).await;
+    let broken = sweep(&h, at(14)).await;
+
+    let mut only_the_read_failed = healthy.clone();
+    only_the_read_failed.frontier_scan_failed = true;
+    assert_eq!(
+        broken, only_the_read_failed,
+        "the frontier read failed and the report says so, and nothing else in the report moved \
+         — so no other member of it was ever a proxy an operator or a case could have watched \
+         instead: healthy={healthy:?}"
+    );
+}

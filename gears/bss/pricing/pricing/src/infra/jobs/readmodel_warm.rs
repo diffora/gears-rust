@@ -234,6 +234,17 @@ pub struct SweepReport {
     /// Tenants whose blocked frontier tripped
     /// `pricing.readmodel.pin_eligibility_overdue`.
     pub pin_eligibility_overdue: u64,
+    /// The cross-tenant frontier read that opens the pin-eligibility pass
+    /// failed, so that pass saw only the tenants holding a pending ref (Z10-5).
+    ///
+    /// Reported rather than only logged, and that is the whole point of the
+    /// field: this crate has no tracing capture, so a swallowed read had
+    /// **nothing** a case could assert and the pass went on answering
+    /// `pin_eligibility_overdue: 0`, which reads as healthy. Every other counter
+    /// here is unchanged when the read fails — see
+    /// [`ReadModelWarmJob::observe_pin_eligibility`] — so no existing member of
+    /// this report is a proxy for it.
+    pub frontier_scan_failed: bool,
 }
 
 /// The read-model warm re-drive: one pass, cross-tenant.
@@ -509,7 +520,10 @@ impl ReadModelWarmJob {
     ///
     /// The tenant set is every tenant with a frontier row, plus the tenants of
     /// this pass's still-pending refs. The first half is what finds a tenant
-    /// whose frontier is stale precisely because nothing of it has moved.
+    /// whose frontier is stale precisely because nothing of it has moved — and
+    /// when the read producing that half fails, the pass says so on
+    /// [`SweepReport::frontier_scan_failed`] and at `error` rather than
+    /// continuing over the other half in silence (Z10-5).
     async fn observe_pin_eligibility(
         &self,
         conn: &impl DBRunner,
@@ -521,14 +535,7 @@ impl ReadModelWarmJob {
         else {
             return;
         };
-        let mut tenants: BTreeMap<Uuid, Option<DateTime<Utc>>> = BTreeMap::new();
-        if let Ok(frontiers) =
-            pin_frontier_repo::list_all(conn, &AccessScope::allow_all(), FRONTIER_SCAN_LIMIT).await
-        {
-            for (tenant_id, frontier) in frontiers {
-                tenants.insert(tenant_id, Some(frontier.advanced_at));
-            }
-        }
+        let mut tenants = self.frontier_ages(conn, report).await;
         for row in pending {
             tenants.entry(row.tenant_id).or_insert(None);
         }
@@ -562,6 +569,58 @@ impl ReadModelWarmJob {
             self.metrics
                 .alarm(crate::domain::ports::metrics::PricingAlarm::ReadModelPinEligibilityOverdue);
             report.pin_eligibility_overdue += 1;
+        }
+    }
+
+    /// Every tenant that has a frontier row, with the instant it last advanced.
+    ///
+    /// **The half of [`Self::observe_pin_eligibility`]'s population that nothing
+    /// else in the pass produces**, and the reason its failure may not be
+    /// swallowed (Z10-5). This was an `if let Ok` with no `else`: on a storage
+    /// failure the map came back empty, the tenant set degenerated to *only the
+    /// tenants holding a pending ref this pass* — precisely the population this
+    /// read exists to go beyond — and the pass reported
+    /// `pin_eligibility_overdue: 0`, which reads as healthy.
+    ///
+    /// [`Self::frontier_is_blocked`] makes the same `Ok`-only choice and
+    /// documents it: *"an alarm that cannot read must not become a second fault,
+    /// and the pass has already alarmed on the ref itself"*. That argument does
+    /// not transfer to this call, because the tenants it finds are by
+    /// construction the ones nothing else in the pass has alarmed about.
+    ///
+    /// Reported as well as logged. [`Self::read_pending`]'s `error!` is the shape
+    /// the log takes; [`SweepReport::frontier_scan_failed`] is what a case can
+    /// assert, and without it the swallow was untestable — every other counter
+    /// this pass produces is identical between a pass that read the frontiers and
+    /// one whose read failed.
+    async fn frontier_ages(
+        &self,
+        conn: &impl DBRunner,
+        report: &mut SweepReport,
+    ) -> BTreeMap<Uuid, Option<DateTime<Utc>>> {
+        match pin_frontier_repo::list_all(conn, &AccessScope::allow_all(), FRONTIER_SCAN_LIMIT)
+            .await
+        {
+            Ok(frontiers) => frontiers
+                .into_iter()
+                .map(|(tenant_id, frontier)| (tenant_id, Some(frontier.advanced_at)))
+                .collect(),
+            Err(e) => {
+                report.frontier_scan_failed = true;
+                // **Not stamped `alarm = …`.** That string is what an operator's
+                // runbook greps for and what `metrics.alarm` labels; putting it
+                // here would report the Critical as *raised*, where what happened
+                // is that it could not be evaluated. The guard is named instead.
+                tracing::error!(
+                    error = ?e,
+                    degraded_guard = ALARM_PIN_ELIGIBILITY_OVERDUE,
+                    "bss-pricing: the cross-tenant pin frontier read failed, so this pass judged \
+                     pin-eligibility only over the tenants holding a pending ref; a tenant whose \
+                     frontier is stale precisely because nothing of it has moved cannot be seen \
+                     this tick, and the Critical it would raise is not raised"
+                );
+                BTreeMap::new()
+            }
         }
     }
 
