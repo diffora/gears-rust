@@ -1003,7 +1003,7 @@ async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
     assert!(
         !census.owed.is_empty(),
         "the census read no columns at all, which is the shape a mistyped table \
-         name leaves — it would report every guard complete"
+         name leaves -- it would report every guard complete"
     );
     assert!(
         census.missing().is_empty(),

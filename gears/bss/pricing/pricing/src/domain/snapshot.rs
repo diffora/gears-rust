@@ -46,7 +46,8 @@
 //! **The producer is deliberately not built, and the type is deliberately not
 //! deleted.** Building one would be a design change: D-30 puts the composition
 //! system of record in Tariffs and the catalog "never stamps snapshots" —
-//! `09-price-overlays.md` §1.7 and its DoD, with the single named exception of
+//! `09-price-overlays.md` §1.7 and that slice's definition of done, with the
+//! single named exception of
 //! the `migrated-origin` payload (D-102), which is per-subscription governed
 //! history served read-only on its own surface and composes nothing here. What
 //! this gear owes is the *identifiers*
