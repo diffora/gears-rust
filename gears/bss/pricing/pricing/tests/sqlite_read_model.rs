@@ -1739,6 +1739,83 @@ async fn a_shard_does_not_list_an_overlay_published_into_a_later_version() {
     assert_eq!(shard_at(5), 2, "V5 knows both");
 }
 
+#[tokio::test]
+async fn one_version_holding_two_publishes_of_one_overlay_resolves_the_greater_revision() {
+    // Z7-3. `overlay_revisions_at_or_below` folds "later row wins" over an order
+    // that was total on `catalog_version` alone, and D-47's five-minute batching is
+    // precisely the mechanism that puts two publishes of ONE overlay into one
+    // version: two handles, two refs, one version, revisions 0 and 1. At that
+    // point the two rows tie, SQL leaves their relative order undefined, and the
+    // fold freezes an arbitrary revision into the frozen `overlay_index` shard -
+    // permanently, because a delta is INSERT-only over the seven-year horizon and
+    // no later write exists to correct it.
+    //
+    // The function's own doc states the rule the fold must keep: **the greatest
+    // ref, not any ref**. So the claim is about *which* revision wins a tie, and a
+    // probe that resolves one overlay per version proves nothing about it. Both
+    // overlays here carry the tie and differ only in the order their two refs were
+    // written and in the alphabetical order of their handles - which are the two
+    // things the store is free to order tied rows by, the second being this
+    // table's primary key. Neither arrangement may change the answer.
+    //
+    // Asked of the repository directly, because the ref rows are the only input
+    // this function reads, and the sweep cannot be made to write two refs of one
+    // overlay into one version without a registry double answering two handles the
+    // same number - which is `two_publishes_of_one_tenant_commit_into_one_version`
+    // one plane over, and would assert the projector rather than the fold.
+    let h = harness().await;
+    let conn = h.provider.conn().expect("conn");
+    let greater_written_first = Uuid::new_v4();
+    let greater_written_last = Uuid::new_v4();
+    for (price_overlay_id, handle, revision) in [
+        (greater_written_first, "pend-a-tie-rev1", 1_u64),
+        (greater_written_first, "pend-b-tie-rev0", 0),
+        (greater_written_last, "pend-c-tie-rev0", 0),
+        (greater_written_last, "pend-d-tie-rev1", 1),
+    ] {
+        let row = PendingVersionRow::for_subject(
+            TENANT,
+            handle.to_owned(),
+            &SubjectRef::PriceOverlay(price_overlay_id),
+            Some(revision),
+            Some(LifecycleState::Published),
+            at_min(12, 0),
+        );
+        catalog_version_ref_repo::record_pending(&conn, &h.scope, row.clone())
+            .await
+            .expect("one publish's overlay document ref");
+        catalog_version_ref_repo::finalize(
+            &conn,
+            &h.scope,
+            RefIdentity::of(&row),
+            CatalogVersion::new(4),
+            at(13),
+        )
+        .await
+        .expect("both publishes of the overlay batch into V4");
+    }
+
+    let resolved = catalog_version_ref_repo::overlay_revisions_at_or_below(
+        &conn,
+        &h.scope,
+        TENANT,
+        CatalogVersion::new(4),
+    )
+    .await
+    .expect("the overlays live at V4");
+
+    assert_eq!(
+        resolved.get(&greater_written_first),
+        Some(&1),
+        "the greatest ref wins the tie when it was written first: {resolved:?}"
+    );
+    assert_eq!(
+        resolved.get(&greater_written_last),
+        Some(&1),
+        "...and when it was written last: {resolved:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Batching — the finding this group's migration amendment exists for.
 // ---------------------------------------------------------------------------

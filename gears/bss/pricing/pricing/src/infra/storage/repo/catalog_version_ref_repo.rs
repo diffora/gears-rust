@@ -746,8 +746,16 @@ pub async fn overlay_revisions_at_or_below(
                 .add(catalog_version_ref::Column::CatalogVersion.lte(target)),
         )
         // Ascending, so the fold below keeps the **greatest** ref of each overlay
-        // by simply letting later rows win.
+        // by simply letting later rows win. The revision is the tie-break and it
+        // is load-bearing, not tidiness: an order total on `catalog_version` alone
+        // leaves two publishes of ONE overlay batched into one version — D-47's
+        // ordinary case — in an order SQL does not define, and the fold would then
+        // freeze whichever the store happened to return last into the
+        // `overlay_index` shard, permanently. Same discipline as
+        // [`list_pending_for_tenant`], which orders by `pending_ref` after
+        // `requested_at` for the same reason.
         .order_by(catalog_version_ref::Column::CatalogVersion, Order::Asc)
+        .order_by(catalog_version_ref::Column::SubjectRevision, Order::Asc)
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("list overlay refs at or below a version: {e}")))?;
