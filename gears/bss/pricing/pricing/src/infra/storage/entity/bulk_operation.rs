@@ -7,7 +7,9 @@
 //!
 //! Only `state`, `report` and `completed_at` ever move; everything else is
 //! frozen by the table's trigger, because a run's identity, kind and submitter
-//! are what its report is *about*.
+//! are what its report is *about* — `request_hash` among them since
+//! `m20260802_000073`, the digest being what the replay compares an arriving body
+//! against.
 
 use sea_orm::entity::prelude::*;
 use uuid::Uuid;
@@ -34,6 +36,15 @@ pub struct Model {
     pub state: String,
     /// O4's idempotency key, unique per tenant.
     pub client_key: String,
+    /// The SHA-256 of the canonical rendering of the request the key was first
+    /// spent on (Z11-5, `m20260802_000072`) — a digest and never the payload, for
+    /// `pricing_idempotency_dedup.request_hash`'s reason.
+    ///
+    /// **Empty means "opened before the column existed"**, which is the only value
+    /// no writer produces: the `ALTER` backfilled every pre-existing row with it
+    /// and a real digest is 32 bytes. A replay reading an empty digest cannot
+    /// compare and does not pretend to.
+    pub request_hash: Vec<u8>,
     /// Per-row outcomes. Grows as the run progresses; one of the three columns
     /// the trigger lets move.
     pub report: Json,

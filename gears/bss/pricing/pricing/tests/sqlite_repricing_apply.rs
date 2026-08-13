@@ -62,8 +62,8 @@ use bss_pricing::infra::repricing::apply_run_in;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::repricing_journal_repo::NewJournalRow;
 use bss_pricing::infra::storage::repo::{
-    NewBulkOperation, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PolicyObjectRepo,
-    PriceRepo, bulk_repo, repricing_journal_repo,
+    IdempotencyGate, NewBulkOperation, NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo,
+    PolicyObjectRepo, PriceRepo, bulk_repo, repricing_journal_repo,
 };
 use bss_pricing_sdk::catalog_version_registry::{
     CatalogVersionRegistryError, CatalogVersionRegistryV1, PendingVersionRef,
@@ -508,6 +508,7 @@ async fn open_committing_run(h: &Harness, price_ids: &[Uuid]) -> Uuid {
             tenant_id: TENANT,
             kind: BulkKind::Repricing,
             client_key: operation_id.to_string(),
+            request_hash: IdempotencyGate::payload_hash(&operation_id.to_string()),
             report: report(),
             submitted_by: ACTOR,
             submitted_at: at(11),

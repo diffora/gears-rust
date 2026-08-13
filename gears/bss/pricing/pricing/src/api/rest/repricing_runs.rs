@@ -202,7 +202,7 @@ pub const REPRICING_RUN: &str = "/bss-pricing/v1/repricing-runs/{runId}";
 ///
 /// [`ScopeKeyRequest`]: crate::api::rest::prices::ScopeKeyRequest
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
+#[toolkit_macros::api_dto(request, response)]
 pub struct RepricingSelectorRequest {
     /// Axis 1. Absent selects across plans; named, it is also the axis D-134
     /// groups the apply's transactions by.
@@ -249,7 +249,7 @@ pub struct RepricingSelectorRequest {
 ///
 /// [`OverlayLineRequest`]: crate::api::rest::overlays::OverlayLineRequest
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
+#[toolkit_macros::api_dto(request, response)]
 pub struct RepricingAdjustmentRequest {
     /// `markup | discount | fixed`.
     pub adjustment_kind: String,
@@ -264,7 +264,10 @@ pub struct RepricingAdjustmentRequest {
 
 /// `inst-mr-api`'s four fields, and nothing else.
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
+// `(request, response)` and not `(request)` alone, for `ScheduleWindowRequest`'s
+// reason: the run records the digest of the **parsed** request on its row (Z11-5),
+// and that needs the type to serialize.
+#[toolkit_macros::api_dto(request, response)]
 pub struct RepricingRunRequest {
     /// The caller's name for this run, and §5's idempotency column for the
     /// surface. It becomes the run's `client_key`, so a second `POST` under it
@@ -516,6 +519,17 @@ async fn open_repricing_run(
             tenant_id: tenant,
             kind: BulkKind::Repricing,
             client_key,
+            // **Recorded here, and this surface's replay does not compare it**
+            // (Z11-5). The run's key is spent on one request either way, so the
+            // digest is part of what a run *is* and every writer of the table sets
+            // it — but the two flows differ in what a second `POST` is owed. This
+            // one's idempotency column is the `run_id` **inside** the body
+            // (`inst-rr-idem`), and the arm above answers the frozen run precisely
+            // so a retry is not re-judged against a selector that now matches
+            // different rows. Refusing a changed body here would be a second
+            // decision on a second surface, not this fix; it is stated rather than
+            // left to be inferred from an uncompared column.
+            request_hash: preconditions::request_digest(&body)?,
             report,
             submitted_by: ctx.subject_id(),
             submitted_at: now,

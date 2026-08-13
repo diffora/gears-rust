@@ -54,7 +54,9 @@ use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use bss_pricing::infra::storage::RepoError;
-use bss_pricing::infra::storage::repo::{NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo};
+use bss_pricing::infra::storage::repo::{
+    IdempotencyGate, NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use pg_support::Pg;
 use toolkit_db::secure::{AccessScope, DbConn};
@@ -99,6 +101,7 @@ fn new_run(kind: BulkKind, client_key: &str) -> NewBulkOperation {
         tenant_id: TENANT,
         kind,
         client_key: client_key.to_owned(),
+        request_hash: IdempotencyGate::payload_hash(client_key),
         report: serde_json::json!({ "rows": [] }),
         submitted_by: ACTOR,
         submitted_at: at(10),

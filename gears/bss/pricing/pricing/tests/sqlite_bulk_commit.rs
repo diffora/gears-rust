@@ -26,7 +26,9 @@ use bss_pricing::domain::scope_key::{
 use bss_pricing::infra::bulk::{BULK_ROW_CONFLICT, CommitReceipt, commit_batch};
 use bss_pricing::infra::storage::entity::price;
 use bss_pricing::infra::storage::migrations::Migrator;
-use bss_pricing::infra::storage::repo::{NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo};
+use bss_pricing::infra::storage::repo::{
+    IdempotencyGate, NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
@@ -144,6 +146,7 @@ async fn open_run(h: &Harness, client_key: &str) -> Uuid {
             tenant_id: TENANT,
             kind: BulkKind::Import,
             client_key: client_key.to_owned(),
+            request_hash: IdempotencyGate::payload_hash(client_key),
             report: serde_json::json!({}),
             submitted_by: ACTOR,
             submitted_at: at(10),

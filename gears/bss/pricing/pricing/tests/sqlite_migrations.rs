@@ -692,9 +692,17 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         "trg_pricing_bulk_operation_born_validating",
         15_400_506_675_831_746_121_u64,
     ),
+    // Re-pinned 2026-08-13 by `m20260802_000073` (Z11-5): the whitelist gains
+    // `request_hash`, the digest of the request the run's client key was spent on,
+    // which the replay compares an arriving body against. Read off the built schema
+    // and copied out of this census's own failure, as the roster requires. It is the
+    // **only** digest that moved in that wave — the Postgres side keeps the same arm
+    // inside `pricing_bulk_operation_transitions()`, whose SQLite counterpart holds
+    // only the edge list and is therefore untouched. Was
+    // `4_811_342_419_971_160_178`.
     (
         "trg_pricing_bulk_operation_frozen_columns",
-        4_811_342_419_971_160_178_u64,
+        6_962_147_701_888_848_379_u64,
     ),
     (
         "trg_pricing_bulk_operation_no_delete",

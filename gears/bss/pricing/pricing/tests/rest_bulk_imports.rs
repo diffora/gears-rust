@@ -125,6 +125,15 @@ async fn a_duplicate_inside_the_batch_blocks_it_and_commits_nothing() {
     );
 }
 
+/// **The positive control, and it is armed on the *same* batch** (Z11-5).
+///
+/// This case used to replay a **different** batch — `row(plan, "us", 9_900)`
+/// against a first call's `row(plan, "eu", 1_500)` — and assert `202` with the
+/// first run's report. That is not `inst-bk-idem`: it pinned the inversion Z11-5
+/// found, because a caller whose corrected batch is answered `202` over a stale
+/// report has been told a resubmit succeeded that imported nothing. The replay
+/// property is about **one request** arriving twice, so the second body is the
+/// first one byte for byte, and the different-batch case is the sibling below.
 #[tokio::test]
 async fn a_replayed_key_answers_the_run_it_opened_and_imports_nothing_twice() {
     // `inst-bk-idem`. The run's own unique `(tenant, client_key)` is the record,
@@ -150,7 +159,7 @@ async fn a_replayed_key_answers_the_run_it_opened_and_imports_nothing_twice() {
         .send(with_headers(
             "POST",
             BULK_IMPORTS,
-            Some(batch(&[row(plan, "us", 9_900)])),
+            Some(batch(&[row(plan, "eu", 1_500)])),
             &keyed("bulk-3"),
         ))
         .await;
@@ -168,6 +177,144 @@ async fn a_replayed_key_answers_the_run_it_opened_and_imports_nothing_twice() {
             .len(),
         1,
         "and the second body imported nothing: {replayed}"
+    );
+}
+
+/// **The RED this case is about** (Z11-5).
+///
+/// The replay was `find_by_client_key` and nothing else: the body was never
+/// compared with what the key first carried. So an operator who corrected a batch
+/// and resubmitted it under the same key was answered `202`, handed the **first**
+/// batch's report, and imported nothing — with no member in `BulkImportView` that
+/// could reveal the substitution. That is the same inversion D-295 closed on the
+/// state axis and D-307 on the kind axis, on the third one, and the crate's own
+/// interactive gate has carried the guard from the start
+/// (`idempotency_repo::claim` → `IDEMPOTENCY_PAYLOAD_MISMATCH`).
+///
+/// Armed on a **genuinely different** payload: the second batch prices a region
+/// the first never named. Replaying the same payload proves the opposite property
+/// and is the case immediately above, which is this one's positive control.
+#[tokio::test]
+async fn a_different_batch_under_a_spent_key_is_refused_rather_than_answered_202() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let first = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-payload-guard"),
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first = body_json(first).await;
+    let first_id = first["operation_id"].as_str().expect("the ref").to_owned();
+
+    // A different batch: another region, another amount, under the spent key.
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "us", 9_900)])),
+            &keyed("bulk-payload-guard"),
+        ))
+        .await;
+
+    assert_eq!(
+        refused.status(),
+        StatusCode::CONFLICT,
+        "a batch the key never carried must not be answered as though it had been imported"
+    );
+    assert!(
+        problem_code(refused)
+            .await
+            .contains("IDEMPOTENCY_PAYLOAD_MISMATCH"),
+        "and it is refused under the code the interactive gate already uses for it"
+    );
+
+    // Nothing of the second batch reached the store, and the run still holds the
+    // first batch's answer: the refusal is not a partial import.
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &import_path(&first_id), None, &[]))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let run = body_json(read).await;
+    assert_eq!(
+        run["report"]["committed"]
+            .as_array()
+            .expect("an array")
+            .len(),
+        1,
+        "the run is still the first batch's, unmoved by the refusal: {run}"
+    );
+    let landed = rest_support::price_rows(&harness, plan).await;
+    assert_eq!(
+        landed.len(),
+        1,
+        "and the second batch's row was never imported: {landed:?}"
+    );
+}
+
+/// **A run that predates the digest replays as it always did** (Z11-5).
+///
+/// The refusal above must not reach the runs `m20260802_000072` backfilled: their
+/// bodies are stored nowhere, so "the digests differ" would be a claim the store
+/// cannot support, and refusing them would spend the harm on the caller who did
+/// nothing wrong. A `!=` written without the emptiness test would refuse every one
+/// of them, and no case armed on a *live* run could see it — this one opens the run
+/// through the repository with the empty digest the `ALTER` left, which is the only
+/// way that row shape now exists (the column is frozen against `UPDATE` since
+/// `m20260802_000073`).
+#[tokio::test]
+async fn a_run_opened_before_the_digest_existed_still_replays() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+
+    let conn = harness.db.conn().expect("conn");
+    let opened = bulk_repo::open(
+        &conn,
+        &harness.scope(),
+        bss_pricing::infra::storage::repo::NewBulkOperation {
+            operation_id: Uuid::now_v7(),
+            tenant_id: harness.tenant,
+            kind: BulkKind::Import,
+            client_key: "bulk-pre-digest".to_owned(),
+            // The backfilled value, and the only one no writer produces.
+            request_hash: Vec::new(),
+            report: serde_json::json!({ "rows": [] }),
+            submitted_by: Uuid::from_u128(0xac_12),
+            submitted_at: chrono::Utc::now(),
+        },
+    )
+    .await
+    .expect("open a run the way the pre-Z11-5 writer did");
+
+    let replay = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[row(plan, "eu", 1_500)])),
+            &keyed("bulk-pre-digest"),
+        ))
+        .await;
+
+    assert_eq!(
+        replay.status(),
+        StatusCode::ACCEPTED,
+        "a run whose payload nobody recorded cannot be told its payload differs"
+    );
+    let replayed = body_json(replay).await;
+    assert_eq!(
+        replayed["operation_id"],
+        serde_json::json!(opened.operation_id),
+        "and it is answered the run its key opened: {replayed}"
     );
 }
 

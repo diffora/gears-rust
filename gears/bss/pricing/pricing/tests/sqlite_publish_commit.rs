@@ -75,8 +75,8 @@ use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle,
 };
 use bss_pricing::infra::storage::repo::{
-    NewAuditEntry, NewBulkOperation, NewMembership, NewOutboxEvent, NewPlanDraft, NewPriceDraft,
-    PlanPublishedPayload, PlanRepo, PlanShapeRepo, PriceRepo, audit_repo, bulk_repo,
+    IdempotencyGate, NewAuditEntry, NewBulkOperation, NewMembership, NewOutboxEvent, NewPlanDraft,
+    NewPriceDraft, PlanPublishedPayload, PlanRepo, PlanShapeRepo, PriceRepo, audit_repo, bulk_repo,
     group_membership_repo, outbox_repo,
 };
 use bss_pricing_sdk::catalog_version::CatalogVersion;
@@ -1748,6 +1748,7 @@ async fn drive_the_bulk_operation_plane(h: &Harness) {
                             tenant_id: TENANT,
                             kind: BulkKind::Repricing,
                             client_key: operation_id.to_string(),
+                            request_hash: IdempotencyGate::payload_hash(&operation_id.to_string()),
                             report: serde_json::json!({}),
                             submitted_by: ACTOR,
                             submitted_at: at(20),

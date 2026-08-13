@@ -325,6 +325,12 @@ async fn one_client_key_opens_one_run_per_tenant() {
 }
 
 /// Identity and provenance are frozen; `DELETE` is refused in every state.
+///
+/// `request_hash` is asserted here as well as on the `SQLite` twin because the two
+/// engines carry the arm in **different objects** — Postgres inside
+/// `bss.pricing_bulk_operation_transitions()`, `SQLite` as a trigger of its own —
+/// so `m20260802_000073` restated two texts and a slip in either is invisible to the
+/// other's suite.
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn a_run_is_frozen_and_undeletable() {
@@ -336,6 +342,26 @@ async fn a_run_is_frozen_and_undeletable() {
             "UPDATE bss.pricing_bulk_operation SET kind = 'repricing' WHERE operation_id = '{OP}'"
         ),
         "is frozen",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE bss.pricing_bulk_operation SET request_hash = '\\x00'::bytea \
+             WHERE operation_id = '{OP}'"
+        ),
+        "is frozen",
+    )
+    .await;
+    // The positive control: `report` is the column of this group a caller may still
+    // write, and the same shape of statement lands on it. Without it a function
+    // refusing every UPDATE would satisfy both refusals above.
+    must_succeed(
+        &conn,
+        &format!(
+            "UPDATE bss.pricing_bulk_operation SET report = '{{\"rows\":[]}}'::jsonb \
+             WHERE operation_id = '{OP}'"
+        ),
     )
     .await;
     must_be_rejected(

@@ -74,6 +74,14 @@ pub struct BulkOperationRecord {
     pub state: BulkState,
     /// O4's client key, unique per tenant.
     pub client_key: String,
+    /// The digest of the request the key was first spent on (Z11-5).
+    ///
+    /// **Empty for a run opened before `m20260802_000072`**, and that is the only
+    /// way it can be empty — the column's `NOT NULL DEFAULT` backfilled every
+    /// pre-existing row and every writer since sets a 32-byte digest. A replay
+    /// that reads an empty digest has nothing to compare against and must say so
+    /// rather than treat "no record" as "a different request".
+    pub request_hash: Vec<u8>,
     /// The per-row report, which grows as the run progresses.
     pub report: JsonValue,
     /// Who submitted it.
@@ -99,6 +107,17 @@ pub struct NewBulkOperation {
     pub kind: BulkKind,
     /// O4's client key.
     pub client_key: String,
+    /// The digest of the request this key is being spent on (Z11-5).
+    ///
+    /// Required rather than optional, and the caller computes it from the request
+    /// it has already parsed (`preconditions::request_digest`): a run's key is
+    /// spent on **one** request, so a writer that could omit the digest could
+    /// leave a key whose payload no replay can check. What each flow does with it
+    /// on the replay is that surface's own decision — the import refuses a
+    /// mismatch, the repricing surface answers the frozen run (see
+    /// `api::rest::repricing_runs`' replay arm) — but recording it is not
+    /// optional for either.
+    pub request_hash: Vec<u8>,
     /// The report as it stands at birth — Phase 1 has not run.
     pub report: JsonValue,
     /// Who submitted it.
@@ -155,6 +174,7 @@ pub async fn open(
         kind: Set(new.kind.as_str().to_owned()),
         state: Set(BulkState::Validating.as_str().to_owned()),
         client_key: Set(new.client_key.clone()),
+        request_hash: Set(new.request_hash.clone()),
         report: Set(new.report.clone()),
         submitted_by: Set(new.submitted_by),
         submitted_at: Set(new.submitted_at),
@@ -212,6 +232,15 @@ pub async fn read(
 /// a view carrying no `kind` member to reveal the substitution. The index behind
 /// it moved to `(tenant_id, kind, client_key)` in the same wave; either half
 /// alone leaves the other's hole open.
+///
+/// **The payload is not a predicate here, and deliberately not** (Z11-5). The
+/// record this returns carries `request_hash`, and the caller compares it: a
+/// mismatch has to be *answered* — `IDEMPOTENCY_PAYLOAD_MISMATCH` — rather than
+/// filtered away, because a key that opened a run under a different body must not
+/// read as a key that opened nothing at all. Folding the digest into the `WHERE`
+/// would turn the refusal into a second `open` under a spent key, which the unique
+/// index would then refuse with a storage collision naming nothing an operator can
+/// act on.
 ///
 /// # Errors
 /// Exactly [`read`]'s.
@@ -469,6 +498,7 @@ fn record_of(row: &bulk_operation::Model) -> Result<BulkOperationRecord, RepoErr
         kind: BulkKind::parse(&row.kind).map_err(|_| corrupt("kind", &row.kind))?,
         state: BulkState::parse(&row.state).map_err(|_| corrupt("state", &row.state))?,
         client_key: row.client_key.clone(),
+        request_hash: row.request_hash.clone(),
         report: row.report.clone(),
         submitted_by: row.submitted_by,
         submitted_at: row.submitted_at,

@@ -104,6 +104,8 @@ pub mod m20260802_000068_widen_approval_subject_kind_bulk_operation;
 pub mod m20260802_000069_guard_pricing_price_unit_rate_column;
 pub mod m20260802_000070_widen_approval_subject_kind_membership;
 pub mod m20260802_000071_pin_membership_state_on_catalog_version_ref;
+pub mod m20260802_000072_add_bulk_operation_request_hash;
+pub mod m20260802_000073_guard_bulk_operation_request_hash;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -379,6 +381,13 @@ impl MigratorTrait for Migrator {
             // refusal that lands on rows the old writer produced owes those rows
             // a value in the transaction that installs the refusal.
             Box::new(m20260802_000071_pin_membership_state_on_catalog_version_ref::Migration),
+            // Z11-5's payload axis: the bulk run gains the digest of the request its
+            // client key was first spent on, and the frozen-column whitelist gains
+            // that column. Two migrations for the reason `000061`/`000062` are two:
+            // the `ALTER` and the guard restatement are different statements on
+            // different objects, and on Postgres the guard is a whole function body.
+            Box::new(m20260802_000072_add_bulk_operation_request_hash::Migration),
+            Box::new(m20260802_000073_guard_bulk_operation_request_hash::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work
             // is coordinated as a singleton via the coordination lease library),

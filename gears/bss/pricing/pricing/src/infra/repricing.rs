@@ -1539,6 +1539,12 @@ mod ordinary_failure_release {
                 tenant_id,
                 kind: BulkKind::Repricing,
                 client_key: operation_id.to_string(),
+                // A fixture, so the digest is of the fixture's own request text:
+                // nothing here replays a key, and an empty digest is reserved for
+                // the runs that predate `m20260802_000072`.
+                request_hash: crate::infra::storage::repo::IdempotencyGate::payload_hash(
+                    "repricing-fixture",
+                ),
                 report: serde_json::json!({}),
                 submitted_by: Uuid::from_u128(0x1),
                 submitted_at: now,

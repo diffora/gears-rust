@@ -38,6 +38,18 @@
 //! `bulk_repo::find_by_client_key`, and a second `POST` under a key that already
 //! opened a run answers the run it opened.
 //!
+//! **What the substitution cost, and what it costs now** (Z11-5). Replacing the
+//! gate with the run's row dropped the gate's *payload* guard, and for a while
+//! nothing here replaced it: the replay was `find_by_client_key` and nothing else,
+//! so an operator who corrected a batch and resubmitted it under the same key was
+//! answered `202` over the **first** batch's report, having imported nothing, with
+//! no member of `BulkImportView` that could reveal it. The run now carries
+//! `request_hash` (`m20260802_000072`) — the same digest, on the same axis, as the
+//! gate's own `pricing_idempotency_dedup.request_hash` — and a body that does not
+//! match it is refused `IDEMPOTENCY_PAYLOAD_MISMATCH` rather than answered. So all
+//! three axes the replay can be wrong on are closed: the state (D-295), the kind
+//! (D-307) and the payload.
+//!
 //! # Abort is an edge, not a new state
 //!
 //! `inst-bs-abort`: `committing → completed_with_conflicts`, uncommitted rows
@@ -94,8 +106,13 @@ pub const BULK_VALIDATION_FAILED: &str = "BULK_VALIDATION_FAILED";
 /// because a batch may span plans — `pricing_bulk_operation` carries a tenant and
 /// no plan. The key and content views are the interactive route's own, so a row
 /// an operator can author one at a time is the row they can author a thousand of.
+// `(request, response)` and not `(request)` alone, for `ScheduleWindowRequest`'s
+// reason: the submit digests the **parsed** batch (Z11-5, so member order and
+// whitespace cannot make an honest retry look like a different intent), and that
+// needs the type to serialize. Every keyed create in this gear is declared the
+// same way.
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
+#[toolkit_macros::api_dto(request, response)]
 pub struct BulkImportRowRequest {
     /// The plan this row prices.
     pub plan_id: Uuid,
@@ -110,7 +127,7 @@ pub struct BulkImportRowRequest {
 
 /// The submitted batch.
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
+#[toolkit_macros::api_dto(request, response)]
 pub struct BulkImportRequest {
     /// The rows, in the order the report will name them.
     pub rows: Vec<BulkImportRowRequest>,
@@ -272,6 +289,11 @@ async fn submit_bulk_import(
     // `Json<T>` as an extractor would run before the handler and answer 415 or
     // 400 where a 403 is owed — which is what the authz census caught.
     let body: BulkImportRequest = preconditions::parse_body(&body)?;
+    // The digest of what was *understood*, not of the bytes — `request_digest`'s
+    // own argument: two bodies differing in member order or whitespace are one
+    // request, and hashing the bytes would refuse an honest retry made through a
+    // different HTTP client.
+    let request_hash = preconditions::request_digest(&body)?;
 
     let conn =
         state.authoring.db.conn().map_err(|e| {
@@ -310,6 +332,42 @@ async fn submit_bulk_import(
                     .to_owned(),
             }));
         }
+        // **The payload guard, and it stands *after* the state one on purpose**
+        // (Z11-5). The replay above was `find_by_client_key` and nothing else, so
+        // the body was never compared with what the key first carried: a corrected
+        // batch resubmitted under a spent key was answered `202` over the first
+        // batch's report, having imported nothing, with no member of
+        // `BulkImportView` that could reveal the substitution. That is the
+        // inversion D-295 closed on the state axis and D-307 on the kind axis, on
+        // the third one.
+        //
+        // The order is what partitions the two refusals rather than stacking them.
+        // `validation_failed` already answers a changed body with the remedy —
+        // "a corrected batch is a new batch and needs its own idempotency key",
+        // the sentence directly above — and answering that caller a payload
+        // mismatch instead would replace a refusal naming their batch's fault with
+        // one naming their key's. Every other state reaches here, and for those a
+        // changed body has no refusal at all without this one: the run **did**
+        // import, so `202` over its report is precisely the "your resubmit
+        // succeeded" the guard exists to prevent.
+        //
+        // Empty is the one stored value no writer produces: `m20260802_000072`
+        // backfilled the runs that predate the column with it, and their bodies
+        // are not recoverable from anywhere. Those replay as they did before this
+        // guard existed — the alternative is refusing a legitimate retry of a run
+        // whose payload nobody can verify, which spends the harm on the caller who
+        // did nothing wrong.
+        if !existing.request_hash.is_empty() && existing.request_hash != request_hash {
+            return Err(CanonicalError::from(
+                DomainError::IdempotencyPayloadMismatch(format!(
+                    "idempotency key `{}` opened bulk import run {} over a different batch. A \
+                     corrected or otherwise changed batch is a new batch and needs its own key; \
+                     the run this key holds is at `GET {BULK_IMPORTS}/{}` and nothing of the \
+                     batch just sent was imported",
+                    existing.client_key, existing.operation_id, existing.operation_id
+                )),
+            ));
+        }
         return Ok((StatusCode::ACCEPTED, Json(run_view(&existing))).into_response());
     }
 
@@ -324,6 +382,7 @@ async fn submit_bulk_import(
             tenant_id: tenant,
             kind: BulkKind::Import,
             client_key,
+            request_hash,
             report: serde_json::json!({ "rows": [] }),
             submitted_by: ctx.subject_id(),
             submitted_at: now,

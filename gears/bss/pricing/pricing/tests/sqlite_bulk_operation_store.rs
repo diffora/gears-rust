@@ -233,6 +233,14 @@ async fn a_state_may_not_be_skipped() {
 }
 
 /// Identity and provenance are frozen; only the run's progress moves.
+///
+/// `request_hash` is the third one asserted here and it arrived last
+/// (`m20260802_000073`, Z11-5). The behavioural half matters more for it than for
+/// the other two: the replay refuses a body that does not match this column, so a
+/// writer able to move it could relicense a spent client key onto a batch the
+/// operator never submitted — and the whitelist census two files over is a **text**
+/// assertion, which cannot tell a column named in the trigger from one that
+/// refuses.
 #[tokio::test]
 async fn a_runs_identity_and_provenance_are_frozen() {
     let conn = migrated_db().await;
@@ -253,6 +261,51 @@ async fn a_runs_identity_and_provenance_are_frozen() {
         "frozen",
     )
     .await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE pricing_bulk_operation SET request_hash = X'00' WHERE operation_id = '{OP}'"
+        ),
+        "frozen",
+    )
+    .await;
+    // The positive control the three refusals rest on: the one column of this
+    // group that a caller may still write is `report`, and the same shape of
+    // statement lands on it. Without this a trigger refusing **every** UPDATE
+    // would satisfy all three above.
+    must_succeed(
+        &conn,
+        &format!("UPDATE pricing_bulk_operation SET report = '{{\"rows\":[]}}' WHERE operation_id = '{OP}'"),
+    )
+    .await;
+}
+
+/// The column `m20260802_000072` added reads back **empty** for a row that did not
+/// name it, which is the whole of the backfill.
+///
+/// `NOT NULL DEFAULT X''` rather than a nullable column and an `UPDATE`: the
+/// digest of a request nobody stored cannot be derived, so every run that predates
+/// the column has to read back the one value the replay treats as "unverifiable",
+/// and it has to be a value rather than `NULL` — a reader that refuses `NULL`
+/// wedged a frontier in this gear permanently once. The `seed` above names eight
+/// columns and not this one, so this case is that path exactly.
+#[tokio::test]
+async fn a_run_that_names_no_digest_reads_back_the_unverifiable_one() {
+    let conn = migrated_db().await;
+    must_succeed(&conn, &seed("import")).await;
+    let length = common::scalar(
+        &conn,
+        &format!(
+            "SELECT CAST(length(request_hash) AS text) AS v FROM pricing_bulk_operation \
+             WHERE operation_id = '{OP}'"
+        ),
+    )
+    .await;
+    assert_eq!(
+        length, "0",
+        "a run opened without a digest holds the empty one, not NULL, and not a \
+         fabricated value a replay would compare against"
+    );
 }
 
 /// A run is a record, not a draft: `DELETE` is refused in every state.

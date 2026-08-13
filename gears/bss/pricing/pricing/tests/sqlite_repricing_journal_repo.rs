@@ -25,7 +25,7 @@ use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::repricing_journal_repo::NewJournalRow;
 use bss_pricing::infra::storage::repo::{
-    NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo, repricing_journal_repo,
+    IdempotencyGate, NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo, repricing_journal_repo,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
@@ -109,6 +109,7 @@ async fn a_run(p: &DBProvider<DbError>, kind: BulkKind, client_key: &str) -> Uui
             tenant_id: TENANT,
             kind,
             client_key: client_key.to_owned(),
+            request_hash: IdempotencyGate::payload_hash(client_key),
             report: serde_json::json!({ "rows": [] }),
             submitted_by: ACTOR,
             submitted_at: at(10),
@@ -309,6 +310,7 @@ async fn a_second_run_under_one_client_key_is_refused_per_kind_and_not_across_ki
             tenant_id: TENANT,
             kind: BulkKind::Import,
             client_key: "shared".to_owned(),
+            request_hash: IdempotencyGate::payload_hash("shared"),
             report: serde_json::json!({ "rows": [] }),
             submitted_by: ACTOR,
             submitted_at: at(10),
