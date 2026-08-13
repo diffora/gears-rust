@@ -92,11 +92,31 @@ pub use window_repo::{NewWindow, WindowRecord};
 
 /// Refuse an authored instant finer than the millisecond quantum (D-144).
 ///
-/// Here rather than in each repository because both of them store instants an
+/// Here rather than in each repository because several of them store instants an
 /// operator authored — `grandfatherUntil`, `availableFrom`/`availableTo` — and
 /// the quantum is one rule. The predicate itself stays in
 /// [`crate::domain::instant`]: the resolution the catalog compares at is a
 /// domain fact, and this is only the storage boundary refusing to write past it.
+///
+/// # Its callers are the tables holding an authored instant, and that is checkable
+///
+/// The sentence above said "both of them" while four repositories called it and
+/// three more stored an authored instant without calling it, which is how the
+/// divergence stayed invisible: a rule stated over an unnamed set cannot be checked
+/// against the set. As of 2026-08-13 the callers are `plan_repo`
+/// (`availableFrom`/`availableTo`), `price_repo` (`grandfatherUntil`),
+/// `window_repo` and `group_membership_repo` and `threshold_repo`
+/// (`effectiveFrom`/`effectiveTo`), `overlay_repo` (the overlay interval and a
+/// line's `cohort`), `migration_repo` (`effectiveAt`) and `synthesis_repo`
+/// (`snapshotInstant`) — every table with such a column, which is the invariant to
+/// re-derive by grep rather than a list to trust.
+///
+/// **What is outside it is machine-generated, not merely uncompared.** `created_at`,
+/// the audit chain, outbox timestamps, `pricing_migration.announced_at` and a
+/// window activation's flip instant are all minted from `Utc::now()`, which carries
+/// sub-millisecond precision — [`window_repo::transition`] measured what applying
+/// the quantum there does: it refuses every write. `domain::instant` states the
+/// same exclusion from the domain side.
 ///
 /// The columns will not do it for us. `timestamptz` holds microseconds and
 /// `SQLite`'s text rendering holds whatever it is handed, so a finer instant

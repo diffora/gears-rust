@@ -157,6 +157,49 @@ async fn two_tenants_may_hold_one_migration_id_and_neither_can_deny_the_other() 
     assert_eq!(reread.state, MigrationState::Scheduled);
 }
 
+/// **D-144's quantum on the authored `effectiveAt`, and deliberately not on
+/// `announcedAt`.**
+///
+/// `effectiveAt` arrives on the schedule request, is carried back in a contract
+/// field and is *compared* — D-49's notice floor is `effective_at - announced_at`
+/// — so it is inside the rule the whole gate exists for. `announcedAt` is the
+/// scheduling commit instant the gear mints from `Utc::now()`, so applying the
+/// quantum to it would refuse **every** schedule; `window_repo::transition`
+/// measured exactly that on its flip timestamp and says so.
+///
+/// The offset is 137 microseconds — a prime number of them, so no implementation
+/// that divided or truncated its way to an answer could land on the same instant
+/// by accident, and nothing about the value is a round fraction of the quantum.
+#[tokio::test]
+async fn an_effective_instant_finer_than_the_quantum_is_refused_and_the_announcement_is_not() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("conn");
+
+    let mut unquantized = new_migration(Uuid::now_v7());
+    unquantized.effective_at += Duration::microseconds(137);
+    let refusal = migration_repo::insert_or_load(&conn, &scope(), unquantized)
+        .await
+        .expect_err("a sub-millisecond effectiveAt must be refused");
+    assert!(
+        matches!(
+            &refusal,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "effectiveAt"
+        ),
+        "got {refusal:?}"
+    );
+
+    // The announcement instant is the commit's own and is **not** subject to the
+    // rule: a schedule whose `announced_at` carries the microseconds `Utc::now()`
+    // hands every caller still lands.
+    let mut machine_stamped = new_migration(Uuid::now_v7());
+    machine_stamped.announced_at += Duration::microseconds(137);
+    machine_stamped.created_at += Duration::microseconds(137);
+    let scheduled = migration_repo::insert_or_load(&conn, &scope(), machine_stamped)
+        .await
+        .expect("a machine-stamped announcement is not a precision fault");
+    assert!(scheduled.created);
+}
+
 #[tokio::test]
 async fn a_retry_of_one_migration_id_returns_the_original_schedule_and_never_a_second() {
     // `inst-ms-api`, verbatim: "a timed-out client retry returns the original

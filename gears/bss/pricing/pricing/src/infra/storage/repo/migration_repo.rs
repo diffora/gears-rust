@@ -59,6 +59,7 @@ use uuid::Uuid;
 use crate::domain::migration::MigrationState;
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::migration;
+use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::{RepoError, contention_or_db};
 
 /// A migration schedule as this gear holds it.
@@ -127,8 +128,25 @@ pub struct Scheduled {
 /// Create a schedule, or return the one this `migration_id` already names
 /// (`inst-ms-api`, `inst-mg-idem`, M2).
 ///
+/// # `effectiveAt` meets D-144's quantum and `announcedAt` deliberately does not
+///
+/// [`super::check_authored_instant`] holds the millisecond quantum for the tables
+/// storing an instant an operator authored, and `effective_at` is one: it arrives
+/// on the schedule request, is carried back in a contract field, and is
+/// **compared** — D-49's notice floor is `effective_at - announced_at`, and the
+/// table's own `CHECK` compares the pair too.
+///
+/// `announced_at` is the scheduling **commit** instant, minted here from the act's
+/// stamp rather than authored, and it is outside the rule for the reason
+/// [`super::window_repo::transition`] records after measuring it: `Utc::now()`
+/// carries sub-millisecond precision, so gating a machine-generated timestamp
+/// refuses every write that would ever be attempted. `created_at` is outside it on
+/// the same footing — `domain::instant` names storage bookkeeping explicitly.
+///
 /// # Errors
-/// [`RepoError::Db`] on a storage failure; [`RepoError::CorruptRow`] when the
+/// [`RepoError::TimestampPrecisionExceeded`] when `effective_at` is finer than the
+/// millisecond quantum; [`RepoError::Db`] on a storage failure;
+/// [`RepoError::CorruptRow`] when the
 /// stored row cannot be read back into the domain's vocabulary;
 /// [`RepoError::ConcurrentMutation`] when the insert is refused and the row it
 /// conflicted with has vanished, which the table's `DELETE` ban makes
@@ -138,6 +156,7 @@ pub async fn insert_or_load(
     scope: &AccessScope,
     new: NewMigration,
 ) -> Result<Scheduled, RepoError> {
+    check_authored_instant("effectiveAt", Some(new.effective_at))?;
     let Ok(revision) = i32::try_from(new.source_revision) else {
         return Err(RepoError::CorruptRow(format!(
             "plan {} stands at a revision {} no column can address",

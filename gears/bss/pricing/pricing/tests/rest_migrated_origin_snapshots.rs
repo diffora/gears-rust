@@ -150,6 +150,66 @@ async fn an_instant_before_the_window_fails_closed_and_never_takes_the_current_r
     assert!(rendered.contains("were not paying"), "{rendered}");
 }
 
+/// **D-144's quantum on `snapshotInstant`** — the third authored-instant plane the
+/// gate `repo.rs` calls "one rule" did not reach.
+///
+/// D-81's `t` is supplied by the trigger, carried back in a contract field
+/// (`MigratedOriginSnapshotView.snapshot_instant`) and compared against window
+/// bounds to select the rows, which is the whole of the rule's scope. Refused
+/// rather than truncated, for D-144's reason: the caller can correct one value,
+/// and a truncating freeze would resolve a different `t` than the one it recorded.
+///
+/// The instant is 137 microseconds inside the covering window, so the resolution
+/// itself succeeds and the refusal can only be the gate — a value outside the
+/// window would have been refused by the reader and proved nothing.
+#[tokio::test]
+async fn a_snapshot_instant_finer_than_the_quantum_is_refused() {
+    let h = Harness::new().await;
+    let plan_id = covered_plan(&h).await;
+    let subscription = Uuid::now_v7();
+    let unquantized = covered_at() + chrono::TimeDelta::microseconds(137);
+
+    let err = h
+        .governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(subscription, plan_id, unquantized),
+        )
+        .await
+        .expect_err("a sub-millisecond snapshot instant must be refused");
+    let rendered = format!("{err:?}");
+    assert!(
+        rendered.contains("snapshotInstant"),
+        "the refusal names the field the caller corrects: {rendered}"
+    );
+    assert!(
+        rendered.contains("TimestampPrecisionExceeded"),
+        "and it is the precision refusal, not a resolution failure: {rendered}"
+    );
+
+    // Nothing was frozen, so the subscription is still free to be synthesized at
+    // the quantum — the same instant with its microseconds cleared.
+    assert!(
+        h.governance
+            .synthesis
+            .load(&h.scope(), h.tenant, subscription)
+            .await
+            .expect("load")
+            .is_none()
+    );
+    h.governance
+        .synthesis
+        .synthesize(
+            &h.scope(),
+            h.tenant,
+            synthesis_request(subscription, plan_id, covered_at()),
+        )
+        .await
+        .expect("clearing the sub-millisecond digits is the whole remedy");
+}
+
 #[tokio::test]
 async fn a_key_the_plan_does_not_publish_fails_closed() {
     // The key axis, not the time axis: the plan sells on `(EUR, eu)` and nothing

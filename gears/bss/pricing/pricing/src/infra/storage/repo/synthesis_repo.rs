@@ -30,6 +30,7 @@ use crate::domain::scope_key::PlanId;
 use crate::domain::synthesis::SynthesisTrigger;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::snapshot_provenance;
+use crate::infra::storage::repo::check_authored_instant;
 
 /// A frozen `migrated-origin` snapshot as this gear holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,8 +94,26 @@ pub struct Frozen {
 /// Freeze a snapshot, or return the one this subscription already holds
 /// (`inst-sy-freeze`, §9).
 ///
+/// # `snapshot_instant` meets D-144's quantum; `created_at` does not
+///
+/// D-81's `t` is supplied by the trigger, carried back in a contract field
+/// (`MigratedOriginSnapshotView.snapshot_instant`) and **compared** — the whole
+/// selection is "the row whose window covered `t`" — which is
+/// [`super::check_authored_instant`]'s scope exactly. Refused rather than
+/// truncated, for D-144's reason and one of this table's own: the freeze records
+/// the instant it resolved at, and a truncating write would record an instant it
+/// did not resolve at.
+///
+/// `created_at` is the commit instant, which `domain::instant` names as bookkeeping
+/// outside the rule — the same split [`super::migration_repo::insert_or_load`]
+/// makes between its two columns. The two are equal on today's only caller and
+/// that is a coincidence of the caller, not a fact about the columns: the migration
+/// declares no relation between them.
+///
 /// # Errors
-/// [`RepoError::Db`] on a storage failure; [`RepoError::CorruptRow`] when the
+/// [`RepoError::TimestampPrecisionExceeded`] when `snapshot_instant` is finer than
+/// the millisecond quantum; [`RepoError::Db`] on a storage failure;
+/// [`RepoError::CorruptRow`] when the
 /// stored row cannot be read back; [`RepoError::ConcurrentMutation`] when the
 /// insert is refused and the conflicting row cannot then be read, which the
 /// table's `DELETE` ban makes unreachable and which is reported rather than
@@ -104,6 +123,7 @@ pub async fn freeze_or_load(
     scope: &AccessScope,
     new: NewProvenance,
 ) -> Result<Frozen, RepoError> {
+    check_authored_instant("snapshotInstant", Some(new.snapshot_instant))?;
     let revision = match new.source_revision {
         Some(revision) => match i32::try_from(revision) {
             Ok(revision) => Some(revision),

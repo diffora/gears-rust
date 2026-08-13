@@ -440,6 +440,80 @@ async fn a_cohort_finer_than_the_quantum_is_refused_on_both_line_write_paths() {
     );
 }
 
+/// **The overlay's own interval meets the same quantum** — `window_repo` gates the
+/// identically-shaped `effectiveFrom`/`effectiveTo` pair one module over.
+///
+/// Both bounds, and one at a time, because a gate on the opening bound alone would
+/// leave the closing one open: the interval is *compared* (`OverlayInterval::intersects`
+/// decides `check_dating`'s collisions), so it is the pair that has to be at one
+/// resolution, not either end of it.
+#[tokio::test]
+async fn an_overlay_interval_bound_finer_than_the_quantum_is_refused() {
+    let (repo, scope) = repo().await;
+    let opens = Utc
+        .with_ymd_and_hms(2099, 3, 4, 5, 6, 7)
+        .single()
+        .expect("a valid instant");
+    let closes = Utc
+        .with_ymd_and_hms(2099, 5, 6, 7, 8, 9)
+        .single()
+        .expect("a valid instant");
+    let interval = |from, to| {
+        let mut overlay = new_overlay(OVERLAY, 10);
+        overlay.interval = OverlayInterval {
+            from: Some(from),
+            to: Some(to),
+        };
+        overlay
+    };
+    let lines = || vec![percent_line(LINE_A, LineKey::for_plan(plan(1)), 1000)];
+
+    let refusal = repo
+        .create(
+            &scope,
+            interval(opens + chrono::TimeDelta::microseconds(456), closes),
+            lines(),
+            stamp(),
+        )
+        .await
+        .expect_err("a sub-millisecond effective_from must be refused");
+    assert!(
+        matches!(
+            &refusal,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "effectiveFrom"
+        ),
+        "got {refusal:?}"
+    );
+
+    let refusal = repo
+        .create(
+            &scope,
+            interval(opens, closes + chrono::TimeDelta::microseconds(789)),
+            lines(),
+            stamp(),
+        )
+        .await
+        .expect_err("a sub-millisecond effective_to must be refused");
+    assert!(
+        matches!(
+            &refusal,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "effectiveTo"
+        ),
+        "got {refusal:?}"
+    );
+
+    // Neither refusal wrote anything, and clearing the digits is the whole remedy.
+    assert!(
+        repo.load(&scope, TENANT, OVERLAY, 0)
+            .await
+            .expect("the read succeeds")
+            .is_none()
+    );
+    repo.create(&scope, interval(opens, closes), lines(), stamp())
+        .await
+        .expect("the quantized interval is accepted");
+}
+
 // ---------------------------------------------------------------------------
 // The revision discipline (D-92).
 // ---------------------------------------------------------------------------

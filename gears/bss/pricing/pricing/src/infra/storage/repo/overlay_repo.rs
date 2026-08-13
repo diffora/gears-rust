@@ -215,9 +215,9 @@ impl OverlayRepo {
     /// audit record that belongs in it is owed — see the module doc.
     ///
     /// # Errors
-    /// [`RepoError::TimestampPrecisionExceeded`] when a line's `cohort` is finer
-    /// than the millisecond quantum (D-144; see [`write_lines`]);
-    /// [`RepoError::Db`] on a scope or storage failure.
+    /// [`RepoError::TimestampPrecisionExceeded`] when a line's `cohort` or either
+    /// bound of the overlay's own interval is finer than the millisecond quantum
+    /// (D-144; see [`write_lines`]); [`RepoError::Db`] on a scope or storage failure.
     ///
     /// **Not [`RepoError::OverlayPrecedenceHeld`]**, although a precedence is
     /// written here: `uq_pricing_price_overlay_precedence` is partial on
@@ -232,6 +232,14 @@ impl OverlayRepo {
         lines: Vec<OverlayLine>,
         stamp: AuditStamp,
     ) -> Result<u64, RepoError> {
+        // The overlay's own interval is an authored, published, **compared**
+        // instant pair — `OverlayInterval::intersects` is what `check_dating`
+        // decides collisions with — so it meets D-144's quantum here, exactly as
+        // `window_repo::schedule` gates the identically-shaped pair one module
+        // over. Before the transaction opens: a precision fault is a property of
+        // the request alone and needs no row read to decide.
+        check_authored_instant("effectiveFrom", new.interval.from)?;
+        check_authored_instant("effectiveTo", new.interval.to)?;
         let scope = scope.clone();
         let (_, outcome) = self
             .db

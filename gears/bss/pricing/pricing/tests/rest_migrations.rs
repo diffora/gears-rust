@@ -20,7 +20,7 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, SubsecRound, Utc};
 use rest_support::{Harness, body_json, request, seed_publishable_plan};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use toolkit_db::secure::SecureEntityExt;
@@ -41,13 +41,25 @@ async fn published(h: &Harness) -> Uuid {
     plan_id
 }
 
+/// **An authored instant at the millisecond quantum** (D-144), relative to now.
+///
+/// `Utc::now()` carries microseconds and `effective_at` is authored, carried in a
+/// contract field and compared, so the store refuses a finer one —
+/// `an_effective_instant_finer_than_the_quantum_is_refused_and_the_announcement_is_not`
+/// is that gate's own case. It is offset from *now* rather than fixed in 2099
+/// because D-49's notice floor is measured from the scheduling commit, so a fixture
+/// instant that did not move with the clock would be testing the wrong distance.
+fn authored(days: i64) -> DateTime<Utc> {
+    Utc::now().trunc_subsecs(3) + Duration::days(days)
+}
+
 /// A schedule body clearing D-49's 60-day floor by a wide margin.
 fn schedule_body(migration_id: Uuid, source: Uuid, target: Uuid) -> serde_json::Value {
     serde_json::json!({
         "migration_id": migration_id,
         "source_plan_id": source,
         "target_plan_id": target,
-        "effective_at": Utc::now() + Duration::days(120),
+        "effective_at": authored(120),
         "reason_code": "consolidation",
     })
 }
@@ -107,7 +119,7 @@ async fn a_replay_of_one_migration_id_answers_200_with_the_original_schedule() {
     // The retry carries a **different** effective date. The stored schedule is
     // what answers: the key is the identity, and the second body never lands.
     let mut retry = schedule_body(migration_id, source, target);
-    retry["effective_at"] = serde_json::json!(Utc::now() + Duration::days(300));
+    retry["effective_at"] = serde_json::json!(authored(300));
     let second = h
         .allowed_as(OPERATOR)
         .send(request("POST", MIGRATIONS, Some(retry)))
@@ -257,6 +269,40 @@ async fn a_draft_target_is_refused_because_it_has_no_current_revision() {
     );
 }
 
+/// **An `effective_at` finer than the millisecond quantum is refused on the wire**
+/// (D-144), and the refusal names the field rather than the notice period.
+///
+/// The instant clears D-49's floor by sixty days, so the only thing wrong with it is
+/// its precision — a body that also fell inside the notice period would be refused
+/// by the earlier rule and would prove nothing about this one. `+137µs`, because an
+/// instant already at the quantum is accepted with the gate and without it.
+#[tokio::test]
+async fn an_effective_instant_below_the_quantum_is_refused_on_the_wire() {
+    let h = Harness::new().await;
+    let source = published(&h).await;
+    let target = published(&h).await;
+
+    let mut body = schedule_body(Uuid::now_v7(), source, target);
+    body["effective_at"] = serde_json::json!(authored(120) + Duration::microseconds(137));
+
+    let response = h
+        .allowed_as(OPERATOR)
+        .send(request("POST", MIGRATIONS, Some(body)))
+        .await;
+
+    // The architectural 422 reaches the wire as a 400 carrying its code.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let rendered = body_json(response).await.to_string();
+    assert!(
+        rendered.contains("TIMESTAMP_PRECISION_EXCEEDED"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("effectiveAt"),
+        "the author is told which of the request's instants to correct: {rendered}"
+    );
+}
+
 #[tokio::test]
 async fn a_migration_inside_the_notice_period_is_refused_naming_the_earliest_instant() {
     // D-49. There is no override on this request: a shorter migration needs an
@@ -266,7 +312,7 @@ async fn a_migration_inside_the_notice_period_is_refused_naming_the_earliest_ins
     let target = published(&h).await;
 
     let mut body = schedule_body(Uuid::now_v7(), source, target);
-    body["effective_at"] = serde_json::json!(Utc::now() + Duration::days(30));
+    body["effective_at"] = serde_json::json!(authored(30));
 
     let response = h
         .allowed_as(OPERATOR)
