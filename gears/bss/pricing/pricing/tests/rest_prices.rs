@@ -1299,6 +1299,97 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
     );
 }
 
+/// A `PATCH` that moves the usage line is refused by the axis rule's own code.
+///
+/// **The paired negative for the case above, and the only observation of one arm
+/// of `repo_failure`.** `RepoError::UsageLineDisagrees` had no assertion anywhere
+/// on what it maps to: the store's suites asserted the `RepoError` and stopped,
+/// so corrupting `storage.rs`'s arm to `DomainError::Internal` left the whole
+/// crate green while an author whose row's meter disagrees with its key read a
+/// 500 for a request they could fix by editing one field. That is the same shape
+/// the fold's own comment records having been caught once on `WindowOverlap`.
+///
+/// The body names **no** `scope_key`, so the key-immutability check above never
+/// runs and the refusal can only come from the store's line guard
+/// (`price_repo::check_update_keeps_the_line`). Everything else about the content
+/// is legal — a `usage` row with a meter and a granularity — so a green here
+/// would mean the line really did move, which is D-196's whole point: the pair
+/// are key axes, and moving them re-files the row under a key nothing checked for
+/// occupancy.
+#[tokio::test]
+async fn a_patch_that_moves_the_usage_line_is_refused_by_its_code() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let create = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(serde_json::json!({
+                "scope_key": {
+                    "currency": "USD",
+                    "region": "EU",
+                    "phase": harness_phase(),
+                    "price_eligibility": "all_subscriptions",
+                    "charge_kind": "usage",
+                    "cohort": serde_json::Value::Null
+                },
+                "content": {
+                    "model_kind": "per_unit",
+                    "amount_minor": 700,
+                    "tax_inclusive": false,
+                    "meter": "cloudlets",
+                    "billing_granularity": "per_hour"
+                }
+            })),
+            &keyed("d196-line-move-create"),
+        ))
+        .await;
+    assert_eq!(create.status(), StatusCode::CREATED, "{:?}", create.body());
+    let price_id = price_rows(&harness, plan_id).await[0].price_id;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id),
+            Some(serde_json::json!({
+                "content": {
+                    "model_kind": "per_unit",
+                    "amount_minor": 700,
+                    "tax_inclusive": false,
+                    "meter": "egress_gb",
+                    "billing_granularity": "per_hour"
+                }
+            })),
+            &[("if-match", "\"0\"")],
+        ))
+        .await;
+
+    assert_eq!(
+        problem_code(response).await,
+        "USAGE_LINE_AXIS_MISMATCH",
+        "a moved usage line is the axis rule's refusal, not a fault of the store"
+    );
+
+    let after = price_rows(&harness, plan_id).await;
+    assert_eq!(after.len(), 1, "the refusal creates no second row");
+    assert_eq!(
+        after[0]
+            .scope_key
+            .meter()
+            .map(bss_pricing::domain::scope_key::Meter::as_str),
+        Some("cloudlets"),
+        "and the refused edit leaves the stored line where it was"
+    );
+    assert_eq!(
+        after[0].row.meter.as_deref(),
+        Some("cloudlets"),
+        "on the row's own copy of the pair as well as on its key"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Slice 10's authorable primitives, end to end through the create surface
 // ---------------------------------------------------------------------------

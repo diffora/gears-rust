@@ -308,6 +308,38 @@ fn a_horizon_on_a_class_that_may_not_carry_one_carries_its_own_code() {
 }
 
 #[test]
+fn a_row_whose_line_disagrees_with_its_key_carries_the_axis_rules_own_code() {
+    // The arm this fold's own `WindowOverlap` comment describes, found a second
+    // time: the store's suites asserted the `RepoError` and stopped, so nothing
+    // observed what it maps to and corrupting this line to `Internal` left the
+    // whole crate green while an author whose row's meter disagrees with its key
+    // read a 500 for a request they could fix by editing one field.
+    //
+    // It is **not** a dead arm — the three producers are live doors:
+    // `price_repo::resolve_authored_usage_line` on create (`prepare_draft`) and
+    // on bulk import (`api::rest::bulk_imports::rows_of`, which folds through
+    // this very function), and `check_update_keeps_the_line` on `PATCH`. The
+    // usage line is authored on the *content* view, so a caller can state one
+    // the key does not agree with on every one of them.
+    //
+    // Both halves of the disagreement are named: the pair is only wrong
+    // *together*, and the remedy is to move one of them to the other.
+    let err = RepoError::UsageLineDisagrees {
+        key_line: "cloudlets/eu-west".to_owned(),
+        row_line: "egress_gb/eu-west".to_owned(),
+    };
+
+    let DomainError::UsageLineAxisMismatch(detail) = repo_failure(&err) else {
+        panic!("a disagreeing usage line must map to USAGE_LINE_AXIS_MISMATCH");
+    };
+    assert!(detail.contains("cloudlets/eu-west"), "got: {detail}");
+    assert!(detail.contains("egress_gb/eu-west"), "got: {detail}");
+    // The property the arm exists for, stated separately: §4.1 declares this a
+    // refusal the author can act on, not a fault of the store.
+    assert!(!matches!(repo_failure(&err), DomainError::Internal(_)));
+}
+
+#[test]
 fn an_instant_below_the_quantum_is_refused_where_it_would_have_been_stored() {
     // `timestamptz` holds microseconds, so nothing downstream refuses this: the
     // value persists and is then matched for equality against an instant another
