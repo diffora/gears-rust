@@ -1662,6 +1662,14 @@ const MUTATING_BUILDERS: &[&str] = &[
     "OperationBuilder::delete(",
 ];
 
+/// The fifth verb, which is deliberately **not** in [`MUTATING_BUILDERS`].
+///
+/// The correlation-edge scan wants the four above and only those. The
+/// authentication scan wants all five, because a read served to an anonymous
+/// caller is the disclosure this gear's design set calls commercially sensitive —
+/// so the two scans take the same list plus this.
+const READ_BUILDER: &str = "OperationBuilder::get(";
+
 #[test]
 fn every_mutating_router_applies_the_correlation_edge() {
     // D-178's edge is applied inside each mutating router's own `router()` rather
@@ -1720,14 +1728,271 @@ fn every_mutating_router_applies_the_correlation_edge() {
 }
 
 // ---------------------------------------------------------------------------
+// 1b. The gate that runs before every other one: authentication.
+//
+// Numbered out of order deliberately. `require_authenticated` is the FIRST thing
+// every handler does — before the PDP call, before the repository — and it was
+// the last gate in this gear still proven per route, on 6 of the 48. The other
+// five sections below range over the whole census; this one had no set-level
+// property at all, so every route mounted since 2026-08-10 arrived with no
+// unauthenticated proof, and several did.
+//
+// Two halves, for the same reason section 1 has two: the behavioural half drives
+// the census, and the source half starts from the filesystem so that a route
+// whose census row does not exist yet is still bound.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_unauthenticated_caller_is_refused_on_every_route() {
+    // 401, and not 403: an anonymous caller is not a caller the PDP refused, and
+    // a route that answered 403 here would be one whose gate ran on a context it
+    // built for itself.
+    //
+    // # Why each case carries an authenticated twin
+    //
+    // `Harness::anonymous()` differs from `allowed()` in exactly one thing — no
+    // security context — and its PDP is the same allowing one. That is what makes
+    // the pairing sound: if the 401 came from anything else about the request (a
+    // path template left unfilled, a body the extractor rejects, a precondition
+    // header the route parses before the gate), the twin would fail too, and the
+    // loop would be reporting a malformed request as a proof of authentication.
+    // Thirteen authz scenarios in this crate were once simultaneously green and
+    // untestable for want of that control, so it is not optional here.
+    for route in census() {
+        let harness = Harness::new().await;
+        let seeded = seed(&harness).await;
+
+        let anonymous = harness
+            .anonymous()
+            .send(drive(&route, &seeded, "\"0-3\"", "anonymous-key"))
+            .await;
+        assert_eq!(
+            anonymous.status(),
+            StatusCode::UNAUTHORIZED,
+            "{} {} served a caller with no authenticated context",
+            route.method,
+            route.path
+        );
+
+        // The positive control. A different idempotency key, so the twin is a
+        // request of its own and not a replay of one the gate refused.
+        let authenticated = harness
+            .allowed()
+            .send(drive(&route, &seeded, "\"0-3\"", "authenticated-key"))
+            .await;
+        assert!(
+            authenticated.status() != StatusCode::UNAUTHORIZED
+                && authenticated.status() != StatusCode::FORBIDDEN,
+            "{} {} refuses the authenticated twin with {}, so the 401 above is evidence about \
+             the request and not about authentication",
+            route.method,
+            route.path,
+            authenticated.status()
+        );
+    }
+}
+
+#[test]
+fn every_registered_operation_has_a_handler_that_demands_a_context() {
+    // The source half, and the one that binds a route whose census row nobody has
+    // written yet.
+    //
+    // Counted rather than merely looked for, which is where this departs from
+    // `every_mutating_router_applies_the_correlation_edge`. The correlation edge
+    // is applied once **per router**, so presence of `correlation::establish`
+    // anywhere in the file is the whole property. `require_authenticated` is
+    // called once **per handler**, so a file that already contains one call
+    // satisfies a presence scan for every route added to it afterwards — the exact
+    // hole this gear grew, one router at a time. Equality against the number of
+    // registered operations is the property at the granularity the call is made
+    // at.
+    //
+    // What it cannot see is *which* handler is missing the call, only that one is;
+    // `an_unauthenticated_caller_is_refused_on_every_route` above is the half that
+    // names the route, for every route the census knows about.
+    let builders: Vec<&str> = MUTATING_BUILDERS
+        .iter()
+        .copied()
+        .chain(std::iter::once(READ_BUILDER))
+        .collect();
+
+    let mut registering = 0usize;
+    let mut operations = 0usize;
+    let mut offenders = Vec::new();
+    for path in rest_sources() {
+        let source = scannable(&path);
+        let registered: usize = builders
+            .iter()
+            .map(|verb| source.matches(verb).count())
+            .sum();
+        if registered == 0 {
+            continue;
+        }
+        registering += 1;
+        operations += registered;
+        // `require_authenticated(` and not the bare name: the import spells the
+        // name too, and a file that imports it and calls it nowhere is the very
+        // thing being looked for.
+        let demanded = source.matches("require_authenticated(").count();
+        if demanded != registered {
+            offenders.push(format!(
+                "{}: {registered} registered operation(s), {demanded} call(s) to \
+                 require_authenticated",
+                path.display()
+            ));
+        }
+    }
+
+    // Anti-vacuity, both dimensions: a scan that found no registering file, or one
+    // that found files but no operations in them, would pass having measured
+    // nothing. The floors are well under what the gear mounts, so they bound the
+    // scan without pinning a count the next slice invalidates.
+    assert!(
+        registering >= 20,
+        "the scan sees {registering} route-registering files; this gear has more"
+    );
+    assert!(
+        operations >= 40,
+        "the scan sees {operations} registered operations; this gear has more"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a registered operation's handler does not demand an authenticated context, so it \
+         serves an anonymous caller or builds a security context of its own; \
+         `require_authenticated` is called once per handler and the counts must match:\n{}",
+        offenders.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 2. A recording PDP: the pair each route actually asked about.
 // ---------------------------------------------------------------------------
+
+/// One question a route asks the PDP **after** its catalogued gate.
+struct FurtherQuestion {
+    /// The route that asks it — the census's own key.
+    method: &'static str,
+    /// The registered path template.
+    path: &'static str,
+    /// The label the question is about.
+    resource_type: &'static str,
+    /// The action the question is about.
+    action: &'static str,
+    /// Whether it demands a **constrained** allow.
+    ///
+    /// Not assumed, and that is the point of carrying it here: it is `true` for
+    /// every gate in this gear and `false` for exactly one question, the
+    /// withdraw's, deliberately — see the row. A property that asserted `true`
+    /// across the board would be armed wider than the claim and would have to be
+    /// weakened the first time it met the real code.
+    require_constraints: bool,
+}
+
+/// Every question the census's routes ask after their gate, in the order asked.
+///
+/// Four routes ask a second, and until this table existed all four were bound by
+/// nothing: the census records one pair per route and the property below read
+/// `asked.first()`, so anything asked second could be about any label, any action,
+/// and constrained or not, and stay green. That is the census's own failure mode
+/// one position along.
+///
+/// A table beside the census rather than a field on [`Route`], because a stale row
+/// here is *catchable* — `every_further_question_belongs_to_a_route_that_asks_one`
+/// asserts both directions, where a per-row default on 58 rows would leave a
+/// question that stopped being asked looking exactly like one never asked.
+const FURTHER_QUESTIONS: &[FurtherQuestion] = &[
+    // The three window mutations ask **their own pair twice**: once for the window
+    // row, once for the plan whose coverage it moves. The same pair twice is still
+    // two questions — an implementation that asked the second about `plan × read`
+    // would let a caller who may only read a plan re-shape its coverage, and
+    // nothing else in the crate looks at the second one.
+    FurtherQuestion {
+        method: "POST",
+        path: PRICE_WINDOWS,
+        resource_type: labels::PLAN,
+        action: actions::WRITE,
+        require_constraints: true,
+    },
+    FurtherQuestion {
+        method: "PATCH",
+        path: PRICE_WINDOW,
+        resource_type: labels::PLAN,
+        action: actions::WRITE,
+        require_constraints: true,
+    },
+    FurtherQuestion {
+        method: "DELETE",
+        path: PRICE_WINDOW,
+        resource_type: labels::PLAN,
+        action: actions::WRITE,
+        require_constraints: true,
+    },
+    // The withdraw's, and the only question in the gear that is **not a gate**.
+    // `inst-as-void` names the withdrawer as "the submitter (or a CatalogAdmin)",
+    // and nothing at this layer can answer a question about roles, so
+    // `CatalogAdmin` is asked as `plan × publish` — tenant-wide, and
+    // `require_constraints: false`, because the question is whether the principal
+    // is a catalog authority at all and a denial narrows their authority to their
+    // own units rather than refusing the request (`api::rest::approvals`, and
+    // `rest_approvals.rs`'s bespoke pin of the same call).
+    //
+    // The `false` is why this table carries the flag per row. It is also why the
+    // sequence is compared as a whole: the *only* thing that makes this question
+    // safe to leave unconstrained is that it does not gate, and if it ever moved
+    // to first position it would be a gate accepting an allow that filters
+    // nothing. Position is part of the claim.
+    FurtherQuestion {
+        method: "POST",
+        path: APPROVAL_WITHDRAW,
+        resource_type: labels::PLAN,
+        action: actions::PUBLISH,
+        require_constraints: false,
+    },
+];
+
+/// The full sequence a route must ask — catalogued gate first, then its table
+/// rows — as `(resource_type, action, require_constraints)` triples.
+///
+/// The gate's own `require_constraints` is `true` and is not table-driven: an
+/// unconstrained allow on a gate is a scope that filters nothing, which is
+/// section 5's whole subject.
+fn expected_questions(route: &Route) -> Vec<(&'static str, &'static str, bool)> {
+    let mut asked = vec![(route.resource_type, route.action, true)];
+    asked.extend(
+        FURTHER_QUESTIONS
+            .iter()
+            .filter(|q| q.method == route.method && q.path == route.path)
+            .map(|q| (q.resource_type, q.action, q.require_constraints)),
+    );
+    asked
+}
 
 #[tokio::test]
 async fn every_route_asks_the_catalogued_pair() {
     // The one property no allow/deny test can reach. A mutating route gated on
     // `plan x read` behaves identically under every fixture that grants both and
     // under every fixture that grants neither; only what it ASKED separates them.
+    //
+    // # Every question, not the first one
+    //
+    // This used to read `asked.first()` and assert three things about it, which
+    // bound the first question of each route and nothing else. Four routes ask a
+    // second (see [`FURTHER_QUESTIONS`]), and one of them — the withdraw — asks
+    // about the publish entrance, the highest authority this gear gates on. The
+    // sequence is now compared **whole and in order**, `require_constraints`
+    // included, so a question added, removed, reordered or re-labelled fails here.
+    //
+    // # What it still cannot bind, and why that is not papered over
+    //
+    // A question behind a branch this seed does not take is never recorded, so it
+    // is neither asserted nor catalogued. There is exactly one:
+    // `POST /approvals/{approvalId}/approve` asks `plan × write` a second time
+    // when the unit it approved is a **repricing run**
+    // (`approvals::apply_approved_repricing_run`), and `seed` opens a
+    // plan-content unit. Recording it needs a second seeded world rather than a
+    // table row — a row for a question the drive cannot reach would fail the
+    // equality below on every run — so it is named here as owed and left to the
+    // repricing suite.
     for route in census() {
         let harness = Harness::new().await;
         let seeded = seed(&harness).await;
@@ -1745,25 +2010,73 @@ async fn every_route_asks_the_catalogued_pair() {
         );
 
         let asked = seen.lock().expect("recorder");
-        let first = asked
-            .first()
-            .unwrap_or_else(|| panic!("{} {} asked the PDP nothing", route.method, route.path));
-        assert_eq!(
-            first.resource.resource_type, route.resource_type,
-            "{} {} gates on the wrong resource label",
-            route.method, route.path
-        );
-        assert_eq!(
-            first.action.name, route.action,
-            "{} {} gates on the wrong action",
-            route.method, route.path
-        );
+        let questions: Vec<(&str, &str, bool)> = asked
+            .iter()
+            .map(|request| {
+                (
+                    request.resource.resource_type.as_str(),
+                    request.action.name.as_str(),
+                    request.context.require_constraints,
+                )
+            })
+            .collect();
         assert!(
-            first.context.require_constraints,
-            "{} {} would accept an unconstrained allow",
-            route.method, route.path
+            !questions.is_empty(),
+            "{} {} asked the PDP nothing",
+            route.method,
+            route.path
+        );
+        assert_eq!(
+            questions,
+            expected_questions(&route),
+            "{} {} does not ask the catalogued sequence of \
+             (resource, action, require_constraints)",
+            route.method,
+            route.path
         );
     }
+}
+
+#[test]
+fn every_further_question_belongs_to_a_route_that_asks_one() {
+    // The table's own staleness guard — `no_exemption_outlives_the_surface_it_was_
+    // waiting_for`'s shape, one construct over.
+    //
+    // The forward direction (a question asked and not catalogued) is enforced by
+    // the sequence equality above and needs nothing here. What needs a test is a
+    // row for a route that no longer exists: `expected_questions` only ever fires
+    // on a route it matches, so such a row is compared against nothing and reads
+    // as coverage to anyone who greps for it.
+    let routes: std::collections::BTreeSet<(&str, &str)> =
+        census().iter().map(|r| (r.method, r.path)).collect();
+
+    let orphans: Vec<&str> = FURTHER_QUESTIONS
+        .iter()
+        .filter(|q| !routes.contains(&(q.method, q.path)))
+        .map(|q| q.path)
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "these rows catalogue a further PDP question for a route the census does not have, so \
+         nothing compares them to anything: {orphans:?}"
+    );
+
+    // Anti-vacuity. An empty table makes the sequence property above assert
+    // exactly what `asked.first()` did, and it would do it silently.
+    assert!(
+        FURTHER_QUESTIONS.len() >= 4,
+        "the table has shrunk below the four routes known to ask a further question; if a route \
+         stopped asking, that is a decision and belongs in a comment beside it"
+    );
+    // And the flag is genuinely per-row rather than a constant nobody varies: the
+    // withdraw's unconstrained authority question is the one row that makes the
+    // field load-bearing, and a table where every row said `true` would be a
+    // table that could be replaced by an assertion.
+    assert!(
+        FURTHER_QUESTIONS.iter().any(|q| !q.require_constraints),
+        "no row is unconstrained, so `require_constraints` is carried per row for nothing; if \
+         the withdraw's authority question became a gate, that is the finding"
+    );
 }
 
 // ---------------------------------------------------------------------------
