@@ -116,7 +116,7 @@ use crate::infra::storage::entity::{
     price_overlay_line, price_overlay_line_amount, region_taxonomy,
 };
 use crate::infra::storage::repo::plan_repo::{read_token, tx_failure};
-use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
+use crate::infra::storage::repo::{NewAuditEntry, audit_repo, check_authored_instant};
 
 // ---------------------------------------------------------------------------
 // The authoring surface's types.
@@ -215,6 +215,8 @@ impl OverlayRepo {
     /// audit record that belongs in it is owed — see the module doc.
     ///
     /// # Errors
+    /// [`RepoError::TimestampPrecisionExceeded`] when a line's `cohort` is finer
+    /// than the millisecond quantum (D-144; see [`write_lines`]);
     /// [`RepoError::Db`] on a scope or storage failure.
     ///
     /// **Not [`RepoError::OverlayPrecedenceHeld`]**, although a precedence is
@@ -403,6 +405,8 @@ impl OverlayRepo {
     /// # Errors
     /// [`RepoError::StaleRowVersion`] / [`RepoError::NotDraft`] /
     /// [`RepoError::NotFound`] as [`refuse_edit`] resolves them;
+    /// [`RepoError::TimestampPrecisionExceeded`] when a submitted line's `cohort`
+    /// is finer than the millisecond quantum (D-144; see [`write_lines`]);
     /// [`RepoError::Db`] on a scope or storage failure.
     #[allow(
         clippy::too_many_arguments,
@@ -1262,6 +1266,27 @@ async fn refuse_edit(
 
 /// Write one revision's whole line set — lines before amounts, per the foreign
 /// key.
+///
+/// **The line key's `cohort` meets D-144's quantum here** (`super::check_authored_instant`),
+/// beside the nil-plan sentinel and for the same reason: this is the one funnel
+/// every line write passes through — `create`, `replace_lines` and the
+/// `open_revision` copy — so a gate on any single caller would leave a plane open.
+///
+/// It is the axis the price plane already gates twice (`ScopeKey::new` and the
+/// cutover narrowing), and the two planes are matched against each other for
+/// **equality**: [`published_generation`] rebuilds the price plane's milliseconds,
+/// so an unquantized cohort belongs to no generation set. Without this the fault
+/// still surfaced — fail-closed, as `OVERLAY_LINE_COHORT_UNKNOWN` — but naming the
+/// wrong cause: the operator was told the plan publishes no generation at that
+/// instant when what was wrong was the instant's precision, on exactly the value a
+/// client gets by copying a `timestamptz` rendering out of another gear. Two rules
+/// behind that single gate were disarmed as well: `check_dating` skips a line whose
+/// key does not match a holder's, and `check_duplicate_keys` counts two cohorts a
+/// microsecond apart as two keys.
+///
+/// **The read path is deliberately not gated.** `line_of` rebuilds a stored key,
+/// and refusing there would make a row already written unreadable rather than
+/// unwritable — the authoring edge is where an author can still correct one value.
 async fn write_lines(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1271,6 +1296,7 @@ async fn write_lines(
     lines: &[OverlayLine],
 ) -> Result<(), RepoError> {
     for line in lines {
+        check_authored_instant("cohort", line.key.cohort())?;
         if line.key.plan_id() == Some(PlanId::new(Uuid::nil())) {
             // The line key's index coalesces an absent plan to the nil uuid, so
             // a request naming it would key as the list-default line and collide

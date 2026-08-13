@@ -21,16 +21,17 @@ use bss_pricing::domain::overlay::{
     OverlayLine, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use bss_pricing::domain::scope_key::PlanId;
-use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{audit_log, brand_taxonomy, plan, price_overlay};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewOverlay, OverlayRepo, audit_repo};
+use bss_pricing::infra::storage::{RepoError, repo_failure};
 use chrono::{TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition};
 use sea_orm_migration::MigratorTrait;
+use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::SecureDeleteExt;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
@@ -327,6 +328,115 @@ async fn a_line_naming_the_nil_plan_id_is_refused() {
     assert!(
         matches!(refusal, RepoError::ValueOutOfRange { ref field, .. } if field == "plan_id"),
         "got {refusal:?}"
+    );
+}
+
+/// **D-144's quantum on the overlay plane's `cohort`** — the axis the price plane
+/// gates twice and this one did not.
+///
+/// `cohort` is the same kind of value as the price plane's generation and is
+/// matched for **equality** against it: `published_generation` rebuilds the price
+/// plane's milliseconds, so an unquantized cohort is a member of no generation
+/// set. Before this gate, `ScopeKey::new` refused the finer instant and the line
+/// table took it, and the fault then surfaced as
+/// `OVERLAY_LINE_COHORT_UNKNOWN` — a refusal naming the wrong cause, on the value
+/// a client gets by copying a `timestamptz` rendering out of another gear.
+///
+/// **123 microseconds, on both write paths.** The value is deliberately not a
+/// round fraction of the quantum: an instant already at the quantum passes with
+/// the gate and without it, and a half-millisecond one is the value a truncating
+/// implementation is most likely to land on by accident. And both paths, because
+/// `create` alone would leave the only editable plane open — `plan_repo`'s
+/// availability probe makes the same argument one module over.
+#[tokio::test]
+async fn a_cohort_finer_than_the_quantum_is_refused_on_both_line_write_paths() {
+    let (repo, scope) = repo().await;
+    let generation = Utc
+        .with_ymd_and_hms(2099, 3, 4, 5, 6, 7)
+        .single()
+        .expect("a valid instant");
+    let unquantized = generation + chrono::TimeDelta::microseconds(123);
+    let cohort_line = |cohort| {
+        percent_line(
+            LINE_A,
+            LineKey::for_plan(plan(1))
+                .for_cohort(cohort)
+                .expect("the key names its plan"),
+            1000,
+        )
+    };
+
+    let refusal = repo
+        .create(
+            &scope,
+            new_overlay(OVERLAY, 10),
+            vec![cohort_line(unquantized)],
+            stamp(),
+        )
+        .await
+        .expect_err("a sub-millisecond cohort must be refused");
+    assert!(
+        matches!(
+            &refusal,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "cohort"
+        ),
+        "got {refusal:?}"
+    );
+    let mapped = CanonicalError::from(repo_failure(&refusal));
+    assert!(
+        format!("{mapped:?}").contains("TIMESTAMP_PRECISION_EXCEEDED"),
+        "the operator is told the precision is the fault, not that the generation is unknown: \
+         {mapped:?}"
+    );
+    assert_eq!(mapped.status_code(), 400);
+
+    // Nothing landed: the whole create is one transaction, so the identity is
+    // still free for the corrected authoring.
+    assert!(
+        repo.load(&scope, TENANT, OVERLAY, 0)
+            .await
+            .expect("the read succeeds")
+            .is_none(),
+        "the refused create must leave no revision behind"
+    );
+    repo.create(
+        &scope,
+        new_overlay(OVERLAY, 10),
+        vec![cohort_line(generation)],
+        stamp(),
+    )
+    .await
+    .expect("clearing the sub-millisecond digits is the whole remedy");
+
+    // And the draft-edit plane refuses it too, leaving the line set it holds.
+    let refusal = repo
+        .replace_lines(
+            &scope,
+            TENANT,
+            OVERLAY,
+            0,
+            0,
+            vec![cohort_line(unquantized)],
+            stamp(),
+        )
+        .await
+        .expect_err("a sub-millisecond cohort must be refused on the edit path too");
+    assert!(
+        matches!(
+            &refusal,
+            RepoError::TimestampPrecisionExceeded { field, .. } if field == "cohort"
+        ),
+        "got {refusal:?}"
+    );
+    let held = repo
+        .load(&scope, TENANT, OVERLAY, 0)
+        .await
+        .expect("the read succeeds")
+        .expect("revision 0 exists");
+    assert_eq!(
+        held.lines.first().expect("its one line").key.cohort(),
+        Some(generation),
+        "the refused edit must not have moved the stored cohort"
     );
 }
 
