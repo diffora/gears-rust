@@ -20,13 +20,41 @@
 //! and this gear's submit path is the first writer of); a consumer matches the
 //! category coarsely and the code **exactly**.
 //!
-//! **One code below is *not* a name the design set uses**, and it is called out
-//! here rather than left to be assumed: `WITHDRAW_FORBIDDEN` is minted by this
-//! crate. §5 declares no code for a withdraw refused on the withdrawer's identity,
-//! because the design set does not contemplate the refusal existing —
-//! `inst-as-void` states the identity rule while the endpoint map gates the route
-//! on `approval × approve`, and nothing reconciles the two. See
-//! `domain::approval::decision::WithdrawAuthority`.
+//! # Why a registry refusal is a 400 and a registry outage is a 503
+//!
+//! `CatalogVersionRegistryError` has four variants and until 2026-08-13 all four
+//! reached this ladder as one `CatalogVersionUnavailable`, rendering a bare 503
+//! with no code and no discriminator. Three of them deserve that: `Unconfigured`,
+//! `Unreachable` and `Internal` are deployment states, and a later request may
+//! find them changed. `Rejected` — an unknown SKU, a closed version — is the
+//! registry having **answered**, and it will answer the same way for as long as
+//! the request is made unchanged.
+//!
+//! A status code is a retry instruction, so the collapse was not merely a lost
+//! diagnostic: it told every client to retry a decision that never moves, and a
+//! client that honours it retries forever. `Rejected` therefore lands on
+//! `CatalogVersionRejected` and this ladder's failed-precondition family — the
+//! 400 the paragraph below calls architectural, carrying
+//! `CATALOG_VERSION_REJECTED` as the discriminator — while the other three keep
+//! the 503. The classification rule is the family's own: a rejection is
+//! classified by **what it is**, and this one is a precondition on the plan's
+//! content that the author has to change. `crate::domain::ports::registry_failure`
+//! is the single place the split is made and carries the withdrawn argument.
+//!
+//! **Two codes below are *not* names the design set uses**, and they are called
+//! out here rather than left to be assumed.
+//!
+//! `WITHDRAW_FORBIDDEN` is minted by this crate. §5 declares no code for a
+//! withdraw refused on the withdrawer's identity, because the design set does not
+//! contemplate the refusal existing — `inst-as-void` states the identity rule
+//! while the endpoint map gates the route on `approval × approve`, and nothing
+//! reconciles the two. See `domain::approval::decision::WithdrawAuthority`.
+//!
+//! `CATALOG_VERSION_REJECTED` is minted for the same kind of reason one plane
+//! over: D-47 fixes the registry as the sole incrementer and the contract names
+//! four failures, but the design set declares a code for none of them because it
+//! treats every one of them as the same fail-closed publish. It is not — see the
+//! section above — and a 400 has to carry a code or it discriminates nothing.
 //!
 //! *Exactly* is why the three 403 arms carry a **bare code** in `reason` and drop
 //! their detail. `permission_denied()` has no detail slot — its detail is the
@@ -524,6 +552,23 @@ impl From<DomainError> for CanonicalError {
                 PlanResource::not_found(format!("{subject} {id} not found"))
                     .with_resource(id)
                     .create()
+            }
+
+            // -- The registry's own refusal (400) -- permanent, and told apart
+            // from its outage by both the status and the code.
+            //
+            // The status is chosen against the caller's retry policy and nothing
+            // else. See the module note "Why a registry refusal is a 400 and a
+            // registry outage is a 503" and
+            // `crate::domain::ports::registry_failure`.
+            //
+            // The detail is **kept**, where the 503 arm below drops its own: it is
+            // the registry's sentence naming the SKU or the closed version, which
+            // is the only thing the author can act on. A 400 that names nothing to
+            // fix leaves retrying as the caller's only move, which is the
+            // behaviour this arm exists to end.
+            D::CatalogVersionRejected(detail) => {
+                precondition("catalog_version", &detail, "CATALOG_VERSION_REJECTED")
             }
 
             // -- Unavailable (503) -- fail closed, retry later.

@@ -599,12 +599,14 @@ fn a_bad_request_is_400_and_an_internal_fault_is_500() {
 fn a_registry_failure_becomes_the_fail_closed_domain_variant() {
     use crate::domain::ports::{CatalogVersionRegistryError, registry_failure};
 
-    // Every registry failure lands on the same answer: no version, no publish.
-    // Inventing one locally would make this gear a second incrementer.
+    // Every registry failure lands on the same answer *in this gear*: no version,
+    // no publish. Inventing one locally would make this gear a second incrementer.
+    // What differs is what the **caller** is told to do about it, which is the
+    // sibling test below — so the three transient states are asserted here and
+    // `Rejected` is deliberately not in this loop.
     for err in [
         CatalogVersionRegistryError::Unconfigured,
         CatalogVersionRegistryError::Unreachable("down".to_owned()),
-        CatalogVersionRegistryError::Rejected("unknown sku".to_owned()),
         CatalogVersionRegistryError::Internal("boom".to_owned()),
     ] {
         assert!(matches!(
@@ -612,6 +614,62 @@ fn a_registry_failure_becomes_the_fail_closed_domain_variant() {
             DomainError::CatalogVersionUnavailable(_)
         ));
     }
+}
+
+/// The status a registry refusal deserves, against the status a registry outage
+/// deserves — the one distinction the collapsed mapping erased.
+///
+/// A 503 is a retry instruction. `Unconfigured`, `Unreachable` and `Internal` are
+/// deployment states that a later request may find changed, so it is the right
+/// instruction for them. `Rejected` is a decision — an unknown SKU, a closed
+/// version — and it will be made identically for as long as the request is made
+/// unchanged, so a client that honours a 503 there retries forever against an
+/// answer that never moves.
+///
+/// Asserted from the two stubs rather than from the domain variants, because the
+/// defect was in the **fold**: four registry errors reaching one variant is what
+/// made the two indistinguishable on the wire, and a test that started from the
+/// variants would have had nothing to say about it.
+#[test]
+fn a_registry_refusal_is_a_permanent_400_and_only_an_outage_is_a_retriable_503() {
+    use crate::domain::ports::{CatalogVersionRegistryError, registry_failure};
+
+    let rejected = || {
+        registry_failure(&CatalogVersionRegistryError::Rejected(
+            "sku sku-unknown is not registered".to_owned(),
+        ))
+    };
+
+    assert_eq!(status(rejected()), 400);
+    assert_eq!(precondition_code(rejected()), "CATALOG_VERSION_REJECTED");
+    assert_eq!(precondition_field(rejected()), "catalog_version");
+    // The detail is on the wire here where the 503 arm hides it, and the
+    // asymmetry is the point: a caller told only "failed precondition" cannot
+    // find the SKU the registry would not address, and a 400 that names nothing
+    // to fix is a 400 the caller can only answer by retrying — which is the
+    // behaviour this arm exists to stop.
+    assert!(rendered(rejected()).contains("sku-unknown"));
+
+    // The other three keep the retriable answer, and keep hiding their
+    // diagnostic: the caller's only action is to retry, and the registry's
+    // internals are not its business.
+    for transient in [
+        CatalogVersionRegistryError::Unconfigured,
+        CatalogVersionRegistryError::Unreachable("10.0.0.7 refused".to_owned()),
+        CatalogVersionRegistryError::Internal("boom".to_owned()),
+    ] {
+        assert_eq!(
+            status(registry_failure(&transient)),
+            503,
+            "{transient} must stay retriable"
+        );
+    }
+    assert!(
+        !rendered(registry_failure(&CatalogVersionRegistryError::Unreachable(
+            "10.0.0.7 refused".to_owned()
+        )))
+        .contains("10.0.0.7")
+    );
 }
 
 #[test]

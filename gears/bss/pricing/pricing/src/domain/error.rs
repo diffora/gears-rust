@@ -262,6 +262,24 @@ pub enum DomainError {
     #[error("threshold policy invalid: {0}")]
     ThresholdInvalid(String),
 
+    /// The `CatalogVersion` registry **answered, and refused** — an unknown SKU, a
+    /// closed version.
+    ///
+    /// Publish stops here exactly as [`Self::CatalogVersionUnavailable`] does, and
+    /// the two are separate variants for one reason: the refusal will be made
+    /// identically for as long as the request is made unchanged, so it belongs to
+    /// this family and not to the retriable one. It sat on the unavailable arm
+    /// until 2026-08-13 and reached every caller as a 503, which told them to
+    /// retry a decision that never moves — see `infra::error_mapping`'s note on
+    /// the pair, and [`crate::domain::ports::registry_failure`], which is the only
+    /// producer of either.
+    ///
+    /// The detail is the registry's own sentence and it **is** carried to the
+    /// caller, unlike the unavailable arm's: it names the SKU or version the
+    /// author has to change, which is the whole remedy.
+    #[error("catalog-version registry rejected the request: {0}")]
+    CatalogVersionRejected(String),
+
     // -- Aborted (conflict; the caller may retry with fresh state) --
     /// Another current row already occupies the canonical scope key.
     #[error("duplicate canonical scope key: {0}")]
@@ -749,6 +767,10 @@ pub enum DomainError {
     /// The `CatalogVersion` registry could not be reached or has no registered
     /// client. Publish stops here: addressability is not optional, and the
     /// registry is the sole incrementer.
+    ///
+    /// **Transient states only.** A registry that answered and said *no* is
+    /// [`Self::CatalogVersionRejected`]; this variant is for the three that a
+    /// later request may find changed.
     #[error("catalog-version registry unavailable: {0}")]
     CatalogVersionUnavailable(String),
     /// The read model is unavailable. The read path fails closed rather than
