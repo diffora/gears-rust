@@ -513,23 +513,33 @@ impl OverlayIndexDelta {
 /// `inst-gm-return` (`:173`) and D-30 (`:466`) all say so, and building any of
 /// the three here would be a second, unauthorised composition.
 ///
-/// **Read live from the row, not pinned to a revision.** Unlike a plan or an
-/// overlay, `pricing_group_membership` carries no revision-scoped content table
-/// — `group_membership_repo`'s own doc records that a membership row is mutated
+/// **Pinned at the commit, like every other subject — with the pin's shape set
+/// by how a membership is stored.** Unlike a plan or an overlay,
+/// `pricing_group_membership` carries no revision-scoped content table:
+/// `group_membership_repo`'s own doc records that a membership row is mutated
 /// in place (`end_membership` narrows `effective_to`) rather than superseded by
-/// a new row. So there is no immutable content to pin a ref to, the way
+/// a new row, so there is no immutable revision for a ref to name the way
 /// [`project_plan_subject`](crate::infra::read_model::project_plan_subject) and
 /// [`project_overlay_subject`](crate::infra::read_model::project_overlay_subject)
-/// pin theirs. This delta is therefore the row's state **at projection time**,
-/// [`OverlayIndexDelta`]'s "derived, not pinned" shape rather than
-/// [`PlanSubjectDelta`]'s or [`OverlaySubjectDelta`]'s. **Reported**: a second
-/// mutation of the same membership landing between a publish unit's commit and
-/// the sweep that warms it would freeze the later state under the earlier
-/// commit's version — the same class of defect §4.4's "current revision" note
-/// records for the plan and overlay planes, unaddressed here because nothing in
-/// this gear yet mints more than one publish unit per membership row to notice
-/// it against. Whoever wires `enroll` and `end_membership` into the registry
-/// request/pending-ref path owes that premise a second look.
+/// name theirs. What a mutation *moves*, though, is one column, and that is what
+/// the ref pins: `pricing_catalog_version_ref.subject_effective_to`, written by
+/// the publish unit itself (`m20260802_000071`), with the row version beside it
+/// in `subject_revision` so that a pinned `None` reads as **open-ended** rather
+/// than as no pin at all. The fields no mutation touches — payer, group value,
+/// interval start — are read from the row, which is D-165's split exactly, at
+/// the boundary this store's shape puts it.
+///
+/// **This was reported and then reached.** The doc here used to say the live
+/// read was "unaddressed here because nothing in this gear yet mints more than
+/// one publish unit per membership row to notice it against", and asked whoever
+/// wired `enroll` and `end_membership` into the registry request/pending-ref
+/// path to look again. Task 6 wired them — `POST …/members` and `PATCH
+/// …/members/{id}` mint one publish unit each — and the premise stopped holding
+/// in that commit: an enrollment followed by an end before the sweep froze the
+/// **ended** state under both versions, so a consumer pinned at the enrollment's
+/// version read a membership that had already finished at an instant when it had
+/// not. Permanently, on an INSERT-only row with a ≥ 7-year horizon, on the
+/// surface Tariffs resolves the group at `t` against (D-30).
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MembershipSubjectDelta {

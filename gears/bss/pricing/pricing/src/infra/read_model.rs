@@ -516,10 +516,20 @@ impl ReadModelProjector {
                             .await?;
                             (SubjectRef::OverlayIndex(shard), delta.to_value())
                         }
-                        ProjectedSubject::GroupMembership { membership_id } => {
-                            let delta =
-                                project_membership_subject(txn, &scope, tenant_id, membership_id)
-                                    .await?;
+                        ProjectedSubject::GroupMembership {
+                            membership_id,
+                            row_version,
+                            effective_to,
+                        } => {
+                            let delta = project_membership_subject(
+                                txn,
+                                &scope,
+                                tenant_id,
+                                membership_id,
+                                row_version,
+                                effective_to,
+                            )
+                            .await?;
                             (SubjectRef::GroupMembership(membership_id), delta.to_value())
                         }
                     };
@@ -719,17 +729,28 @@ enum ProjectedSubject {
         /// Which shard.
         shard: OverlayIndexShard,
     },
-    /// One membership record, read live rather than pinned to a revision.
+    /// One membership record, at the row version its publish judged and with
+    /// the interval end that version froze.
     ///
-    /// No revision and no lifecycle state either, [`OverlayIndex`](Self::OverlayIndex)'s
-    /// reason with a sharper cause: `pricing_group_membership` carries no
-    /// revision-scoped content table at all, so there is nothing for a ref row
-    /// to pin against the way a plan or an overlay revision does. See
-    /// [`project_membership_subject`] and `MembershipSubjectDelta`'s doc for
-    /// what that costs.
+    /// **Pinned, since 2026-08-13**, and the shape of the pin is the one
+    /// `pricing_group_membership`'s storage allows: the row carries no
+    /// revision-scoped content table, because it is mutated in place, so what a
+    /// ref can pin is not "which immutable rows to read" but the one column a
+    /// mutation moves. That column is `effective_to`
+    /// (`group_membership_repo::end_membership` narrows it; a move is an end
+    /// plus a new row), and the row version it belongs to is pinned with it —
+    /// which is what makes `effective_to: None` readable as *open-ended* rather
+    /// than as *unpinned*. See [`project_membership_subject`].
     GroupMembership {
         /// Which membership.
         membership_id: Uuid,
+        /// The row version the publish unit judged. Carried for the refusal
+        /// below and for the diagnostics of a projection that finds the row
+        /// gone; the content it addresses is the pin's other half.
+        row_version: u64,
+        /// The interval end that publish judged. `None` is an open-ended
+        /// membership — a fact, not an absence.
+        effective_to: Option<DateTime<Utc>>,
     },
 }
 
@@ -783,7 +804,17 @@ fn subject_of(subject: &PendingVersionRow) -> Result<ProjectedSubject, DomainErr
         }),
         SubjectKind::GroupMembership => {
             let membership_id = subject_uuid(subject, "group membership")?;
-            Ok(ProjectedSubject::GroupMembership { membership_id })
+            Ok(ProjectedSubject::GroupMembership {
+                membership_id,
+                // Refused rather than defaulted, [`pinned_revision`]'s own rule:
+                // the row version is what says a pin was written at all, and
+                // without it `subject_effective_to`'s `None` is unreadable — an
+                // open-ended membership and an unpinned ref spell it the same
+                // way. Defaulting either would be a guess about which state a
+                // frozen version froze.
+                row_version: pinned_revision(subject, &membership_id.to_string())?,
+                effective_to: subject.subject_effective_to,
+            })
         }
     }
 }
@@ -856,16 +887,35 @@ async fn project_overlay_subject(
     })
 }
 
-/// Build one membership document's delta by reading the row live.
+/// Build one membership document's delta — the interval end from the **pin**,
+/// the facts no mutation moves from the row.
 ///
-/// **Live, not pinned to a revision — unlike [`project_plan_subject`] and
-/// [`project_overlay_subject`].** `MembershipSubjectDelta`'s own doc carries the
-/// argument in full: `pricing_group_membership` has no revision-scoped content
-/// table for a ref row to pin against, because the row itself is the truth and
-/// is mutated in place (`group_membership_repo::end_membership` narrows
-/// `effective_to`) rather than superseded by a new one. So there is nothing
-/// this function could read *instead of* the current row, the way the plan and
-/// overlay arms read a specific, immutable revision instead of the current one.
+/// # The split, and why it is not the plan arm's split by accident
+///
+/// [`project_plan_subject`] reads a specific immutable revision for content and
+/// the ref for the state that keeps moving. This arm does the same thing with
+/// the same reason and a different boundary, because the storage is different:
+/// `pricing_group_membership` has no revision-scoped content table — a
+/// membership is minted by `enroll` and thereafter mutated **in place** — so
+/// "the immutable content" is the row itself, and the moving part is one column.
+///
+/// `group_membership_repo`'s only in-place mutation is `end_membership`, which
+/// narrows `effective_to` and bumps `row_version` (`inst-ms-time`: "ending early
+/// = setting `to`"; the atomic move ends one row and **inserts** another, so it
+/// moves nothing on an existing row either). `payer_tenant_id`, `group_value`
+/// and `effective_from` are written once at enrollment and never again, so
+/// reading them from the row reads the same values the publish judged.
+/// `effective_to` is the one that can differ by the time the sweep arrives — up
+/// to D-47's five-minute batching maximum after the commit — and it comes from
+/// the ref row, where the mutation that minted this version froze it
+/// (`membership_publish::record_ref`, `m20260802_000071`).
+///
+/// **This is what the premise `MembershipSubjectDelta`'s doc recorded now costs
+/// nothing.** While the plane minted one publish unit per membership row the
+/// live read was indistinguishable from the pin; Task 6 gave `enroll` and
+/// `end_membership` a publish unit each, and the live read then froze the
+/// *later* state under the *earlier* commit's version, permanently, on an
+/// INSERT-only row a consumer resolves a pin against.
 ///
 /// A membership that is a subject of a committed catalog version and is not
 /// there is an **internal fault**, D-128's rule applied here: the row is
@@ -880,15 +930,17 @@ async fn project_membership_subject(
     scope: &AccessScope,
     tenant_id: Uuid,
     membership_id: Uuid,
+    row_version: u64,
+    effective_to: Option<DateTime<Utc>>,
 ) -> Result<MembershipSubjectDelta, DomainError> {
     let record = group_membership_repo::find(runner, scope, tenant_id, membership_id)
         .await
         .map_err(|e| repo_failure(&e))?
         .ok_or_else(|| {
             DomainError::Internal(format!(
-                "bss-pricing: membership {membership_id} is a subject of a committed catalog \
-                 version and is not there; projecting an empty membership document is what \
-                 D-128 exists to prevent"
+                "bss-pricing: membership {membership_id}, pinned at row version {row_version}, \
+                 is a subject of a committed catalog version and is not there; projecting an \
+                 empty membership document is what D-128 exists to prevent"
             ))
         })?;
     Ok(MembershipSubjectDelta {
@@ -896,7 +948,8 @@ async fn project_membership_subject(
         payer_tenant_id: record.payer_tenant_id,
         group_value: record.group_value,
         effective_from: record.effective_from,
-        effective_to: record.effective_to,
+        // The pin, never `record.effective_to` — see this function's own doc.
+        effective_to,
     })
 }
 

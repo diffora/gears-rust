@@ -90,7 +90,6 @@ use uuid::Uuid;
 use crate::domain::audit::AuditStamp;
 use crate::domain::error::DomainError;
 use crate::domain::ports::{CatalogVersionRegistryV1, registry_failure};
-use crate::domain::read_model::SubjectRef;
 use crate::infra::storage::repo::{
     NewMembership, PendingVersionRow, catalog_version_ref_repo, group_membership_repo,
 };
@@ -158,7 +157,7 @@ pub async fn enroll_in(
         runner,
         scope,
         tenant_id,
-        membership_id,
+        &membership,
         &pending.pending_ref,
         stamp.recorded_at,
     )
@@ -218,7 +217,7 @@ pub async fn end_in(
         runner,
         scope,
         tenant_id,
-        membership_id,
+        &membership,
         &pending.pending_ref,
         stamp.recorded_at,
     )
@@ -324,7 +323,7 @@ pub async fn move_payer_in(
             runner,
             scope,
             tenant_id,
-            ended.membership_id,
+            ended,
             &pending.pending_ref,
             stamp.recorded_at,
         )
@@ -334,7 +333,7 @@ pub async fn move_payer_in(
         runner,
         scope,
         tenant_id,
-        enrolled.membership_id,
+        &enrolled,
         &pending.pending_ref,
         stamp.recorded_at,
     )
@@ -386,30 +385,54 @@ async fn require_active_group(
     }
 }
 
-/// Record one pending ref for one membership subject.
+/// Record one pending ref for one membership subject, **pinning the state this
+/// unit's own mutation produced**.
 ///
-/// No revision and no lifecycle state — `ProjectedSubject::GroupMembership`'s
-/// own reason (`crate::infra::read_model`): `pricing_group_membership` carries
-/// no revision-scoped content table, so there is nothing for the ref row to
-/// pin beyond the subject reference itself. The projector reads the row live
-/// through [`group_membership_repo::find`].
+/// # The pin, and why this function takes a row rather than an id
+///
+/// D-165's rule is that a version freezes what its own publish judged, frozen
+/// on the ref row at commit and read from there — never re-read at the sweep,
+/// which arrives up to D-47's five-minute batching maximum later. The plan and
+/// overlay planes satisfy it by pinning a revision, because their content is
+/// revision-scoped and immutable once published. `pricing_group_membership` has
+/// no such table: the row is minted by [`group_membership_repo::enroll`] and
+/// mutated **in place** thereafter, and exactly one column of it moves —
+/// `effective_to`, which [`group_membership_repo::end_membership`] narrows
+/// (`inst-ms-time`; a *move* is an end plus a **new** row, never an edit of an
+/// existing one).
+///
+/// So this pins that one column, plus the row version it belongs to, and the
+/// projector reads the interval end from the pin and the immutable facts from
+/// the row. It takes the whole [`group_membership_repo::MembershipRow`] the
+/// mutation returned rather than an id, so a caller cannot record a ref against
+/// a state it did not just produce.
+///
+/// **The premise this discharges was stated in code and then broken by this
+/// module.** `MembershipSubjectDelta`'s doc named the live read as unaddressed
+/// "because nothing in this gear yet mints more than one publish unit per
+/// membership row to notice it against", and asked whoever wired `enroll` and
+/// `end_membership` into this path to look again. Task 6 wired them and left the
+/// live read: enroll, end the membership before the sweep, and both frozen
+/// deltas carried the ended state — the enrollment's version reporting a
+/// membership already over at an instant when it was not, permanently, to the
+/// surface Tariffs resolves the group at `t` against.
 async fn record_ref(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    membership_id: Uuid,
+    membership: &group_membership_repo::MembershipRow,
     pending_ref: &str,
     requested_at: DateTime<Utc>,
 ) -> Result<(), DomainError> {
     catalog_version_ref_repo::record_pending(
         runner,
         scope,
-        PendingVersionRow::for_subject(
+        PendingVersionRow::for_membership(
             tenant_id,
             pending_ref.to_owned(),
-            &SubjectRef::GroupMembership(membership_id),
-            None,
-            None,
+            membership.membership_id,
+            membership.row_version,
+            membership.effective_to,
             requested_at,
         ),
     )

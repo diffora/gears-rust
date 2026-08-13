@@ -48,6 +48,15 @@ pub struct Model {
     /// the two D-128 sanctions for a projected subject. `NULL` for a subject
     /// kind with no lifecycle.
     pub subject_lifecycle_state: Option<String>,
+    /// The end of the interval the publish unit judged — the membership plane's
+    /// pin (`m20260802_000071`), and `NULL` on every other kind.
+    ///
+    /// `NULL` is also what an **open-ended** membership pins, which is why the
+    /// membership arm additionally pins the row's version in `subject_revision`
+    /// and the projector refuses a membership subject that arrives without one:
+    /// the presence of the pin is read off that column, so this one is free to
+    /// carry a fact rather than an absence.
+    pub subject_effective_to: Option<DateTime<Utc>>,
     /// `None` until `CatalogVersionPublished` resolves the handle.
     pub catalog_version: Option<i64>,
     pub requested_at: DateTime<Utc>,

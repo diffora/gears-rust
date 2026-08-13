@@ -146,6 +146,23 @@ pub struct PendingVersionRow {
     /// is refused by the projector, for the reason
     /// [`PendingVersionRow::subject_revision`] gives.
     pub subject_lifecycle_state: Option<LifecycleState>,
+    /// The interval end the publish unit **judged** — the membership plane's
+    /// pin, and `None` on every other kind.
+    ///
+    /// The same fix as the two fields above, on the one plane that was exempt
+    /// from it while it minted a single publish unit per row (D-165's argument;
+    /// `m20260802_000071` carries the whole of it). A membership row has no
+    /// revision-scoped content to pin, because it is mutated in place — and
+    /// exactly one column of it moves, `effective_to`, which
+    /// `group_membership_repo::end_membership` narrows. So that column is
+    /// frozen here at commit and the projector reads it from here, while the
+    /// facts no mutation touches are read from the row.
+    ///
+    /// `None` on a membership subject means **open-ended**, not "unpinned":
+    /// [`PendingVersionRow::subject_revision`] carries the row version on that
+    /// kind and the projector refuses a membership subject that arrives without
+    /// one, so the pin's presence is never inferred from this field.
+    pub subject_effective_to: Option<DateTime<Utc>>,
     /// When addressability was requested, UTC.
     pub requested_at: DateTime<Utc>,
     /// When this gear **first saw** the registry's answer for the handle
@@ -206,10 +223,45 @@ impl PendingVersionRow {
             subject_ref: subject.to_string(),
             subject_revision,
             subject_lifecycle_state,
+            // The membership plane's pin, and no other kind's — see
+            // [`PendingVersionRow::for_membership`], which is the only
+            // constructor that sets it.
+            subject_effective_to: None,
             requested_at,
             commit_observed_at: None,
             catalog_version: None,
             committed_at: None,
+        }
+    }
+
+    /// Build the row one **membership** publish unit records — the subject, and
+    /// the state that unit's own mutation produced.
+    ///
+    /// Its own constructor rather than two more parameters on
+    /// [`PendingVersionRow::for_subject`], for the reason the pin exists at all:
+    /// the two values are the membership plane's and no other kind may set
+    /// them, and a shared constructor taking them would let a plan publish pin
+    /// an interval end. Every caller of this function is in
+    /// [`crate::infra::membership_publish`].
+    ///
+    /// `row_version` is the version the mutation **produced** — `0` from an
+    /// enrollment, the incremented value from an end — not the one it was
+    /// presented as a precondition. `effective_to` is that same mutation's
+    /// output, `None` for an open-ended membership.
+    #[must_use]
+    pub fn for_membership(
+        tenant_id: Uuid,
+        pending_ref: String,
+        membership_id: Uuid,
+        row_version: u64,
+        effective_to: Option<DateTime<Utc>>,
+        requested_at: DateTime<Utc>,
+    ) -> Self {
+        let subject = SubjectRef::GroupMembership(membership_id);
+        Self {
+            subject_revision: Some(row_version),
+            subject_effective_to: effective_to,
+            ..Self::for_subject(tenant_id, pending_ref, &subject, None, None, requested_at)
         }
     }
 }
@@ -241,6 +293,7 @@ pub async fn record_pending(
         subject_lifecycle_state: Set(entry
             .subject_lifecycle_state
             .map(|state| state.as_str().to_owned())),
+        subject_effective_to: Set(entry.subject_effective_to),
         // Both NULL until `CatalogVersionPublished`; the CHECK ties them.
         catalog_version: Set(None),
         requested_at: Set(entry.requested_at),
@@ -788,6 +841,7 @@ fn to_domain(row: catalog_version_ref::Model) -> Result<PendingVersionRow, RepoE
         subject_ref: row.subject_ref,
         subject_revision,
         subject_lifecycle_state,
+        subject_effective_to: row.subject_effective_to,
         requested_at: row.requested_at,
         commit_observed_at: row.commit_observed_at,
         catalog_version,

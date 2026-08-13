@@ -34,6 +34,7 @@ use bss_pricing::domain::audit::AuditSubjectKind;
 use bss_pricing::domain::ports::CatalogVersionRegistryV1;
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::jobs::readmodel_warm::ReadModelWarmJob;
+use bss_pricing::infra::storage::entity::read_model;
 use bss_pricing::infra::storage::repo::audit_repo;
 use bss_pricing::infra::storage::repo::group_membership_repo;
 use bss_pricing::infra::storage::repo::{NewApproval, approval_repo};
@@ -41,8 +42,10 @@ use rest_support::{
     Harness, approval_row, approval_rows, audit_rows, body_json, etag_of, membership_row,
     pending_version_refs, problem_code, request, stamp_of, with_headers,
 };
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use serde_json::json;
 use std::sync::Arc;
+use toolkit_db::secure::{AccessScope, SecureEntityExt};
 use uuid::Uuid;
 
 /// The `CatalogAdmin` who configures the taxonomies.
@@ -437,6 +440,34 @@ async fn sweep(harness: &Harness, now: chrono::DateTime<chrono::Utc>) -> u64 {
     report.subjects_projected
 }
 
+/// Every warm delta of one membership subject, as `(catalog_version, payload)`.
+///
+/// Read through the entity with `AccessScope::allow_all()`, `rest_support`'s own
+/// readbacks' reason: the assertion is about what landed in the store, not about
+/// what the calling principal may see.
+async fn membership_deltas(
+    harness: &Harness,
+    membership_id: &str,
+) -> Vec<(i64, serde_json::Value)> {
+    let conn = harness.db.conn().expect("conn");
+    read_model::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(read_model::Column::TenantId.eq(harness.tenant))
+                .add(read_model::Column::SubjectKind.eq("group_membership"))
+                .add(read_model::Column::SubjectRef.eq(membership_id)),
+        )
+        .order_by(read_model::Column::CatalogVersion, Order::Asc)
+        .all(&conn)
+        .await
+        .expect("read the membership deltas")
+        .into_iter()
+        .map(|row| (row.catalog_version, row.payload))
+        .collect()
+}
+
 /// **The claim this section exists to prove.** A route-level enrollment is a
 /// real publish unit: a pending ref recorded against the membership subject,
 /// the audit record written, and the projector able to run on it and land a
@@ -671,6 +702,111 @@ async fn adjusting_a_membership_is_also_its_own_publish_unit() {
         refs.iter()
             .any(|r| r.subject_ref == membership_id && r.pending_ref == pending_ref),
         "the PATCH must record its own pending ref: {refs:?}"
+    );
+}
+
+/// **Two publish units over one membership row, through the two routes that
+/// mint them, and each version freezes the state its own commit judged.**
+///
+/// `MembershipSubjectDelta`'s doc named this sequence as the premise the
+/// projector's live read of the row was safe under — *"nothing in this gear yet
+/// mints more than one publish unit per membership row"* — and asked whoever
+/// wired `enroll` and `end_membership` into the registry request/pending-ref
+/// path to look again. `POST …/members` and `PATCH …/members/{id}` are that
+/// wiring, so the order below is the whole test: enroll, **commit** its version,
+/// end the membership, commit that version, and only then sweep. Read live at
+/// that point the projector answers "ended" for both, so the enrollment's
+/// version reports a membership already over at an instant when it was not —
+/// permanently, on an INSERT-only delta a consumer resolves a pin against.
+///
+/// The sibling in `tests/sqlite_read_model.rs`
+/// (`each_of_two_publish_units_over_one_membership_freezes_the_state_it_judged`)
+/// proves the same property one layer down. This one is at the routes because
+/// what has to hold is that **the producers** pin — a route reaching the
+/// repository around `membership_publish` would record a ref with no pin and
+/// fail here rather than silently freeze the wrong interval.
+///
+/// To redden this: have `membership_publish::record_ref` pass `None` for the
+/// interval end, or make `read_model::project_membership_subject` read
+/// `record.effective_to` again. Both make version 9 carry `2026-03-01`.
+#[tokio::test]
+async fn two_route_level_mutations_of_one_membership_freeze_two_different_intervals() {
+    let harness = Harness::new().await;
+    let (status, body) = enroll(&harness, Uuid::now_v7()).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let membership_id = body["membership"]["membership_id"]
+        .as_str()
+        .expect("membership_id")
+        .to_owned();
+    assert!(
+        body["membership"]["effective_to"].is_null(),
+        "the enrollment is open-ended, which is the state its version must freeze: {body}"
+    );
+    let enrolled_ref = body["pending_version_ref"]
+        .as_str()
+        .expect("pending_version_ref")
+        .to_owned();
+    let expected_tag = format!(
+        "\"{}\"",
+        body["membership"]["row_version"]
+            .as_u64()
+            .expect("row_version")
+    );
+
+    // The first unit's version commits, and the second mutation lands before
+    // the sweep — the window D-47 makes up to five minutes wide.
+    harness.registry.commit(&enrolled_ref, 9);
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "PATCH",
+            &CUSTOMER_GROUP_MEMBER
+                .replace("{group}", "gold")
+                .replace("{id}", &membership_id),
+            Some(json!({ "effective_to": "2026-03-01T00:00:00Z" })),
+            &[("if-match", &expected_tag)],
+        ))
+        .await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let ended_ref = body["pending_version_ref"]
+        .as_str()
+        .expect("pending_version_ref")
+        .to_owned();
+    assert_ne!(
+        ended_ref, enrolled_ref,
+        "the two mutations are two publish units, which is the premise this test drives"
+    );
+    harness.registry.commit(&ended_ref, 10);
+
+    assert_eq!(
+        sweep(&harness, chrono::Utc::now()).await,
+        2,
+        "one warm delta per publish unit"
+    );
+
+    let deltas = membership_deltas(&harness, &membership_id).await;
+    let at_9 = deltas
+        .iter()
+        .find(|(version, _)| *version == 9)
+        .map(|(_, payload)| payload)
+        .expect("the enrollment's version is warm");
+    let at_10 = deltas
+        .iter()
+        .find(|(version, _)| *version == 10)
+        .map(|(_, payload)| payload)
+        .expect("the end's version is warm");
+    assert_eq!(
+        at_9.get("effectiveTo"),
+        Some(&serde_json::Value::Null),
+        "version 9 froze the enrollment, which was open-ended when its publish judged it: {at_9}"
+    );
+    assert_eq!(
+        at_10.get("effectiveTo"),
+        Some(&json!("2026-03-01T00:00:00Z")),
+        "and version 10 froze the end, which is the state its own publish judged: {at_10}"
     );
 }
 

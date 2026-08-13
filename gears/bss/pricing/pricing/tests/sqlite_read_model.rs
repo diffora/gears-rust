@@ -52,11 +52,12 @@ use bss_pricing::domain::window::{WindowInterval, WindowState};
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::jobs::readmodel_warm::{ReadModelWarmJob, SweepReport};
 use bss_pricing::infra::jobs::window_activation::WindowActivationJob;
+use bss_pricing::infra::membership_publish;
 use bss_pricing::infra::overlay_publish::OverlayPublishService;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{
-    catalog_version_ref, outbox, partner_taxonomy, plan, price, read_model,
+    catalog_version_ref, customer_group_taxonomy, outbox, partner_taxonomy, plan, price, read_model,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
@@ -973,15 +974,20 @@ async fn an_enrolled_membership_reaches_the_read_model_as_a_published_subject() 
     .await
     .expect("enroll the payer");
 
+    // Pinned the way `infra::membership_publish` pins it — the row version this
+    // mutation produced and the interval end it judged. `for_subject`'s
+    // `None, None` was what this seed used until the pin existed, and the
+    // projector refuses it now: a membership subject with no pinned version is
+    // one whose `effective_to` cannot be told from an unpinned `NULL`.
     catalog_version_ref_repo::record_pending(
         &conn,
         &h.scope,
-        PendingVersionRow::for_subject(
+        PendingVersionRow::for_membership(
             TENANT,
             "pend-membership".to_owned(),
-            &SubjectRef::GroupMembership(membership_id),
-            None,
-            None,
+            membership_id,
+            enrolled.row_version,
+            enrolled.effective_to,
             at_min(12, 0),
         ),
     )
@@ -1016,6 +1022,147 @@ async fn an_enrolled_membership_reaches_the_read_model_as_a_published_subject() 
         rows[0].payload.get("effectiveTo"),
         Some(&serde_json::json!(enrolled.effective_to))
     );
+}
+
+/// Two publish units over **one** membership row, and each freezes the state its
+/// own commit judged.
+///
+/// # The interleaving, not a helper in isolation
+///
+/// `MembershipSubjectDelta`'s doc named this exact sequence as the premise the
+/// membership plane was safe under while nothing minted a second publish unit
+/// per row — the enroll route and the PATCH route mint one each, so it is minted
+/// now. The order below is the whole test: **enroll**, its version committed,
+/// **then** the end, its version committed, and only **then** the sweep. Reading
+/// the row live at that point answers "ended" for both versions, so the
+/// enrollment's version — pinned, INSERT-only, on a ≥ 7-year horizon in a store
+/// whose contract is that a completed version never changes — would say the
+/// payer's membership had already ended at an instant when it had not, to
+/// Tariffs, which resolves the group at `t` against exactly this surface.
+///
+/// Driven through `infra::membership_publish`, which is what the two routes
+/// call, rather than by recording refs by hand: the pin is the *producer's*
+/// half, so a test that wrote the ref rows itself would prove the projector
+/// against a pin no route ever writes.
+///
+/// The instants are ordered so that only the freeze can distinguish the two
+/// deltas: the enrollment is open-ended (`effectiveTo: null`) and the end
+/// narrows it to a real instant.
+#[tokio::test]
+async fn each_of_two_publish_units_over_one_membership_freezes_the_state_it_judged() {
+    let h = harness().await;
+    let conn = h.provider.conn().expect("conn");
+    let ctx = ctx_of(TENANT);
+    let payer_tenant_id = Uuid::new_v4();
+    let membership_id = Uuid::new_v4();
+    // `membership_publish` refuses a group the taxonomy does not declare
+    // (`GROUP_UNKNOWN`), so the fixture reaches a world a real route could have
+    // produced rather than one only the repository would accept.
+    declare_customer_group(&h, "gold").await;
+
+    let enrolled = membership_publish::enroll_in(
+        &conn,
+        h.registry.as_ref(),
+        &ctx,
+        &h.scope,
+        TENANT,
+        NewMembership {
+            membership_id,
+            tenant_id: TENANT,
+            payer_tenant_id,
+            group_value: "gold".to_owned(),
+            effective_from: at(1),
+            effective_to: None,
+        },
+        stamp_of(ACTOR, at(1)),
+    )
+    .await
+    .expect("the enrollment is its own publish unit");
+    assert_eq!(
+        enrolled.membership.effective_to, None,
+        "the enrollment is open-ended, which is the state its version must freeze"
+    );
+    h.registry.commit(&enrolled.pending_ref, 4);
+
+    // The second mutation lands between the first unit's commit and the sweep —
+    // the window D-47 makes up to five minutes wide.
+    let ended = membership_publish::end_in(
+        &conn,
+        h.registry.as_ref(),
+        &ctx,
+        &h.scope,
+        TENANT,
+        membership_id,
+        at(9),
+        enrolled.membership.row_version,
+        stamp_of(ACTOR, at(2)),
+    )
+    .await
+    .expect("the end is its own publish unit");
+    assert_eq!(ended.membership.effective_to, Some(at(9)));
+    h.registry.commit(&ended.pending_ref, 5);
+
+    let report = sweep(&h, at(13)).await;
+    assert_eq!(report.subjects_failed, 0, "{report:?}");
+    assert_eq!(report.subjects_projected, 2, "{report:?}");
+
+    let rows = deltas(&h).await;
+    assert_eq!(rows.len(), 2, "one delta per publish unit: {rows:?}");
+    assert_eq!(rows[0].catalog_version, 4);
+    assert_eq!(rows[1].catalog_version, 5);
+    assert_eq!(
+        rows[0].payload.get("effectiveTo"),
+        Some(&serde_json::json!(None::<DateTime<Utc>>)),
+        "version 4 froze the enrollment, which was open-ended when its publish judged it; \
+         reading the row live at sweep time is what freezes the *later* state under the \
+         earlier commit's version, permanently, on an INSERT-only row"
+    );
+    assert_eq!(
+        rows[1].payload.get("effectiveTo"),
+        Some(&serde_json::json!(at(9))),
+        "and version 5 froze the end, which is the state *its* publish judged"
+    );
+
+    // The facts no mutation moves are the same in both, so the assertion above is
+    // about the interval and not about two unrelated documents.
+    for row in &rows {
+        assert_eq!(
+            row.payload.get("membershipId"),
+            Some(&serde_json::json!(membership_id))
+        );
+        assert_eq!(
+            row.payload.get("payerTenantId"),
+            Some(&serde_json::json!(payer_tenant_id))
+        );
+        assert_eq!(
+            row.payload.get("groupValue"),
+            Some(&serde_json::json!("gold"))
+        );
+        assert_eq!(
+            row.payload.get("effectiveFrom"),
+            Some(&serde_json::json!(at(1)))
+        );
+    }
+}
+
+/// Declare one customer-group value, the way `declare_partner` below declares
+/// the partner one and for the same reason: `membership_publish` validates the
+/// group against `inst-cg-taxonomy` before it writes anything.
+async fn declare_customer_group(h: &Harness, value: &str) {
+    let conn = h.provider.conn().expect("a connection");
+    let row = customer_group_taxonomy::ActiveModel {
+        tenant_id: Set(TENANT),
+        value: Set(value.to_owned()),
+        display_name: Set(value.to_owned()),
+        state: Set("active".to_owned()),
+    };
+    customer_group_taxonomy::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&h.scope, &row)
+        .expect("the scope admits the row")
+        .exec(&conn)
+        .await
+        .expect("the customer-group value is declared");
 }
 
 /// Declare `partner/acme`, the value both overlay seeds scope themselves to.

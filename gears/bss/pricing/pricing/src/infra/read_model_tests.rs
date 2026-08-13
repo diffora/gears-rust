@@ -102,27 +102,69 @@ fn a_membership_subject_whose_reference_is_not_a_uuid_is_refused() {
 }
 
 #[test]
-fn a_membership_subject_resolves_to_its_membership_id() {
-    // No revision and no lifecycle state to pin, unlike the plan arm -
-    // `MembershipSubjectDelta`'s doc gives the reason: the row has no
-    // revision-scoped content table to pin against, so `None, None` here is
-    // not an omission to redden on the way `a_plan_subject_with_no_pinned_*`
-    // tests are.
+fn a_membership_subject_resolves_to_the_state_its_publish_judged() {
+    // No lifecycle state to pin, unlike the plan arm - a membership has none -
+    // but a **row version** and an **interval end**, which is what
+    // `PendingVersionRow::for_membership` writes and what the projector reads
+    // instead of the row's own `effective_to`. An open-ended pin is the case
+    // below; the interleaving that makes the distinction observable is
+    // `sqlite_read_model`'s
+    // `each_of_two_publish_units_over_one_membership_freezes_the_state_it_judged`.
     let id = Uuid::from_u128(0x_9e_bb);
-    let row = PendingVersionRow::for_subject(
+    let row = PendingVersionRow::for_membership(
         Uuid::from_u128(0x7e_11),
         "pend-membership".to_owned(),
-        &SubjectRef::GroupMembership(id),
-        None,
+        id,
+        0,
         None,
         Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(),
     );
     let resolved =
         subject_of(&row).expect("a membership subject names the membership it publishes");
-    let ProjectedSubject::GroupMembership { membership_id } = resolved else {
+    let ProjectedSubject::GroupMembership {
+        membership_id,
+        row_version,
+        effective_to,
+    } = resolved
+    else {
         panic!("a membership ref resolves to a membership subject");
     };
     assert_eq!(membership_id, id);
+    assert_eq!(row_version, 0);
+    assert_eq!(
+        effective_to, None,
+        "an open-ended membership pins `None`, which is a fact and not an absent pin"
+    );
+}
+
+#[test]
+fn a_membership_subject_with_no_pinned_row_version_is_refused_rather_than_read_live() {
+    // The refusal is what makes `subject_effective_to: None` mean *open-ended*.
+    // Both an unpinned ref and a live membership spell that column `NULL`, so
+    // without a second column saying a pin was written, the projector would have
+    // to guess - and the guess is wrong exactly when a second mutation beat the
+    // warm, which is the case the pin exists for. The row version is that second
+    // column, `a_plan_subject_with_no_pinned_revision_is_refused_rather_than_defaulted`'s
+    // rule one kind over.
+    let id = Uuid::from_u128(0x_9e_bb);
+    let mut row = PendingVersionRow::for_membership(
+        Uuid::from_u128(0x7e_11),
+        "pend-membership".to_owned(),
+        id,
+        3,
+        None,
+        Utc.with_ymd_and_hms(2026, 8, 12, 12, 0, 0).unwrap(),
+    );
+    row.subject_revision = None;
+
+    let refusal = subject_of(&row).expect_err("a membership subject pins the version it judged");
+    match refusal {
+        DomainError::Internal(message) => assert!(
+            message.contains("no revision"),
+            "the refusal must say what is missing, got: {message}"
+        ),
+        other => panic!("expected an internal fault, got {other:?}"),
+    }
 }
 
 #[test]
