@@ -314,7 +314,12 @@ async fn harness_with(jobs: JobsConfig) -> Harness {
 /// per migration name, so a second call with the whole chain applies exactly the
 /// ones this one withheld — which is what
 /// [`a_membership_ref_written_before_the_pin_existed_sweeps_after_the_backfill`]
-/// does, and how it can assert that the withheld count was 1.
+/// does.
+///
+/// **`stop_before` withholds the named migration AND everything after it**, so a
+/// caller must assert on the name it cares about rather than on how many applied.
+/// The count is a property of where the chain happens to end, and it changes under
+/// any later migration by any author.
 async fn harness_migrated_to(jobs: JobsConfig, stop_before: Option<&str>) -> Harness {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
@@ -1184,9 +1189,18 @@ async fn a_membership_ref_written_before_the_pin_existed_sweeps_after_the_backfi
     let caught_up = run_migrations_for_testing(&h.provider.db(), Migrator::migrations())
         .await
         .expect("the withheld migration applies over the older rows");
-    assert_eq!(
-        caught_up.applied, 1,
-        "exactly one migration was withheld, so exactly one applies here: {:?}",
+    // Named, not counted. This asserted `applied == 1` until 2026-08-13, which
+    // held only while `PIN_MIGRATION` happened to be last in the chain:
+    // `harness_migrated_to` withholds everything at or after it, so the moment two
+    // later migrations landed the count read 3 and this test failed for a reason
+    // that had nothing to do with the backfill it defends. What it needs to know is
+    // that the migration under test is one of the ones that just ran.
+    assert!(
+        caught_up
+            .applied_names
+            .iter()
+            .any(|name| name == PIN_MIGRATION),
+        "the withheld migration under test must be among those that just applied: {:?}",
         caught_up.applied_names
     );
 
