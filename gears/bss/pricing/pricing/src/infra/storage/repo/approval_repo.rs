@@ -161,52 +161,60 @@ use crate::infra::storage::entity::{approval, approval_key};
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
 use crate::infra::storage::{RepoError, contention_or_db, policy_guard_or_contention};
 
-/// The subjects this gear can open an approval over.
+/// The subjects this gear can open an approval over — **every member of
+/// `AuditSubjectKind::ALL`, as of 2026-08-12**.
 ///
-/// Three of the four `AuditSubjectKind` declares: a plan revision, opened by
-/// `ApprovalService::submit`; a **window**, opened by
-/// `ApprovalService::submit_window_mutation` — the D-62/D-99 window unit
-/// `inst-co-single-pending` names in its own enumeration of the units that hold a
-/// key; and a **policy**, opened by
-/// [`crate::infra::approval::open_policy_unit`] on behalf of
-/// `infra::threshold::ThresholdService::propose` — D-10's always-material unit over
-/// a proposed threshold-policy version. `price_unit` still has none: nothing
-/// submits a price row on its own. It is stated as a constant rather than left
-/// implicit so a later slice widening the store finds the sentence rather than the
-/// assumption.
+/// One writer per kind, and each is named here so a reader can check the claim
+/// rather than take it:
 ///
-/// **This roster is the *approval* plane's, and as of `AuditSubjectKind`'s fifth
-/// member that distinction is load-bearing rather than pedantic.**
+/// * `plan_revision` — `ApprovalService::submit`, plus the retirement and
+///   supersession units that carry the same kind.
+/// * `price_unit` — `ApprovalService::submit_supersession_on` (D-88).
+/// * `window` — `ApprovalService::submit_window_mutation`, the D-62/D-99 window
+///   unit `inst-co-single-pending` names in its own enumeration of the units
+///   that hold a key.
+/// * `policy` — [`crate::infra::approval::open_policy_unit`] on behalf of
+///   `infra::threshold::ThresholdService::propose`, D-10's always-material unit
+///   over a proposed threshold-policy version.
+/// * `overlay` — `ApprovalService::submit_overlay_on` (D-225).
+/// * `bulk_operation` — `crate::api::rest::repricing_runs::advance_on_verdict`,
+///   the material edge out of `validating` that opens `inst-bs-approval`'s unit.
+/// * `membership` — `ApprovalService::submit_membership_move_on`, reached from
+///   `crate::api::rest::customer_groups`' move route on the material edge
+///   (`inst-mm-immediate` / `inst-mm-bulk`).
+///
+/// It is stated as a constant rather than left implicit so a later slice
+/// widening the store finds the sentence rather than the assumption.
+///
+/// # This roster is the *approval* plane's, and the distinction is load-bearing
+///
 /// `AuditSubjectKind` spells two columns — `pricing_audit_log.subject_kind` and
-/// `pricing_approval.subject_kind`. **`price_overlay` now has a writer on both**:
-/// `OverlayRepo`'s four mutations on the audit plane, and
-/// `crate::infra::approval::ApprovalService::submit_overlay_on` on this one, as of
-/// D-225. This roster used to say the opposite — that the overlay was absent here
-/// because Slice 9's O-7 was unwired — and stayed true for exactly as long as O-7
-/// was; a roster is a maintained list, and review finding Z8-5 (2026-08-10) is what
-/// caught this one having drifted.
-/// `approval_repo_tests::every_declared_subject_kind_now_has_an_approval_plane_writer`
-/// carries the arithmetic, corrected the same way.
+/// `pricing_approval.subject_kind` — and D-158 requires the two stores to
+/// declare the same enumeration. A kind reaches the audit plane first every
+/// time: the mutation is audited on the day it is built, while the unit that
+/// asks two people to approve it is a separate task. So "storable here" (D-158)
+/// and "written here" (this roster) are different properties, and this constant
+/// is only ever the second.
 ///
-/// **`bulk_operation`, `AuditSubjectKind`'s sixth member, gained a writer on
-/// this plane too (2026-08-11), Overlay's own situation before D-225 reproduced
-/// exactly.** Its audit-plane writer has always been the mass-repricing run's
-/// open (`crate::api::rest::repricing_runs::open_run_in`); its approval-plane
-/// writer is now the material edge out of `validating`
-/// (`crate::api::rest::repricing_runs::advance_on_verdict`), which opens the unit
-/// `inst-bs-approval` names. Every declared kind had a writer here as of that
-/// change — the roster was `AuditSubjectKind::ALL`'s whole length for the first
-/// time — and, exactly as predicted, the next member minted is what made that
-/// stop being true again.
+/// # It has now gone stale three times, and this is what stopped it
 ///
-/// **`AuditSubjectKind::Membership` (2026-08-11, `group_membership_repo`) is
-/// that next member, and it is correctly absent from this roster.** Its
-/// audit-plane writer exists (`group_membership_repo::enroll` /
-/// `end_membership`); this plane's does not, because a membership mutation's
-/// materiality (`inst-mm-*`, the renewal-aligned default vs. the immediate /
-/// bulk-move material edges) is a later task's to wire — `infra::approval::re_derive`
-/// and `subject_aggregate` both refuse this kind outright rather than pretend
-/// to resolve a unit that cannot exist yet.
+/// `price_unit` (D-88), then `overlay` (D-225, caught by review finding Z8-5 on
+/// 2026-08-10 rather than by any gate), then `membership` — whose writer landed
+/// on 2026-08-12 with Task 7 of the customer-group plane while this doc went on
+/// asserting that the plane had no writer and that
+/// `infra::approval::re_derive` and [`subject_aggregate`] "both refuse this kind
+/// outright". Both had been un-refused in the same wave: `subject_aggregate`
+/// resolves a membership move into [`SubjectAggregate::Payer`] or
+/// [`SubjectAggregate::BulkOperation`], and `re_derive` decodes the pinned
+/// payload back out of the `subject_ref`.
+///
+/// Each time, the test guarding the roster compared it against a hard-coded copy
+/// of itself, so both operands moved together and the drift was invisible to it.
+/// `approval_repo_tests::the_roster_is_exactly_the_kinds_production_opens_a_unit_of`
+/// no longer does that: it reads this crate's own sources for every production
+/// construction of [`NewApproval`] and asserts the roster is exactly the set of
+/// kinds they name. That operand moves when a **writer** moves, which is the
+/// only thing this constant claims to describe.
 pub const SUBJECT_KINDS_WITH_A_WRITER: &[AuditSubjectKind] = &[
     AuditSubjectKind::PlanRevision,
     AuditSubjectKind::PriceUnit,
@@ -214,6 +222,7 @@ pub const SUBJECT_KINDS_WITH_A_WRITER: &[AuditSubjectKind] = &[
     AuditSubjectKind::Policy,
     AuditSubjectKind::Overlay,
     AuditSubjectKind::BulkOperation,
+    AuditSubjectKind::Membership,
 ];
 
 /// A record to open — the pending half of `pricing_approval`.

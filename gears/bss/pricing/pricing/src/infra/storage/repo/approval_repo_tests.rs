@@ -23,6 +23,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
@@ -150,73 +152,184 @@ fn the_reading_carries_the_row_across_unchanged() {
     assert_eq!(record.subject_ref, "0000ffff-0000-0000-0000-000000000001/3");
 }
 
+/// The roster is the set of kinds this crate **actually opens a unit of**, and
+/// this test is what makes that sentence checkable.
+///
+/// # Why the operands are not what they were
+///
+/// The assertion this replaces compared [`SUBJECT_KINDS_WITH_A_WRITER`] against
+/// a hard-coded copy of itself, and then compared `ALL \ ROSTER` against a
+/// hard-coded copy of *that*. Both operands moved with the constant: an author
+/// adding a kind to the roster edited the literal in the same keystroke, and an
+/// author adding a **writer** without touching the roster moved neither. So the
+/// test could only ever fail on a typo, and the drift it is named for went
+/// through it three times — `price_unit` (D-88), `overlay` (D-225, caught by
+/// review finding Z8-5 rather than by this test) and now `membership`, whose
+/// writer `ApprovalService::submit_membership_move_on` landed on 2026-08-12
+/// while the roster and its own doc kept saying the plane had none.
+///
+/// The operand here moves **independently**: it is the crate's own source, read
+/// at test time, and specifically every production construction of
+/// [`NewApproval`] — the one value that can reach [`open`], and therefore the
+/// one thing that makes a kind *written* on this plane. A writer cannot be added
+/// without constructing one, so the scan sees the new kind the moment the writer
+/// compiles, whether or not anybody remembers this file.
+///
+/// # Why a source scan rather than a driver
+///
+/// `tests/sqlite_publish_commit.rs`'s `every_declared_action_has_a_production_writer`
+/// drives every audited path and reads the rows back, which is the stronger
+/// shape and the one to prefer where the paths are already driven. It is not
+/// available here: three of the seven kinds are opened only behind a REST route
+/// with an idempotency gate, a threshold policy and an approved verdict in front
+/// of them, and a census that had to build all of that would be a publish-plane
+/// integration test that happens to end in an assertion about a constant.
+/// `tests/rest_authz.rs`'s `every_mounted_router_is_merged_into_both_censuses`
+/// is the precedent for reading this crate's sources to bind a roster to the
+/// code rather than to a second copy of the roster.
 #[test]
-fn every_declared_subject_kind_but_membership_has_an_approval_plane_writer() {
-    // Six of the seven declared members are storable on this plane — D-158
-    // requires the store to declare what the audit store declares, which the
-    // roster below is silent about `Membership` for the reason below the roster
-    // gives — and each of the six is opened by something here:
-    // `ApprovalService::submit` opens a plan revision, `submit_supersession_on`
-    // opens a price unit, `submit_window_mutation` opens a window,
-    // `infra::approval::open_policy_unit` opens the D-10 threshold-policy unit,
-    // `submit_overlay_on` opens an overlay revision, and — as of 2026-08-11 —
-    // `api::rest::repricing_runs::advance_on_verdict` opens a bulk operation.
-    assert_eq!(
-        SUBJECT_KINDS_WITH_A_WRITER,
-        &[
-            AuditSubjectKind::PlanRevision,
-            // **`price_unit` joined the roster on 2026-08-06**, when D-88's
-            // `ApprovalService::submit_supersession_on` became its first writer. This
-            // assertion asserted the opposite — "price_unit has none" — and stayed true
-            // for exactly as long as nothing opened such a unit; a roster is a
-            // maintained list, so the day it is wrong is the day a reader takes it as
-            // normative and the writer as the mistake.
-            AuditSubjectKind::PriceUnit,
-            AuditSubjectKind::Window,
-            AuditSubjectKind::Policy,
-            // **`overlay` joined on 2026-08-06 too**, when D-225's
-            // `ApprovalService::submit_overlay_on` became its writer. This assertion kept
-            // asserting the opposite — overlay absent — after that landed, which is the
-            // exact failure mode this comment already named for `price_unit` one entry up:
-            // review finding Z8-5 (2026-08-10) is what caught it.
-            AuditSubjectKind::Overlay,
-            // **`bulk_operation` joined on 2026-08-11**, when
-            // `api::rest::repricing_runs::advance_on_verdict` became its writer here —
-            // the audit-plane writer (the run's own open) has existed since the token
-            // was minted, but this roster is the *approval* plane's and `inst-bs-approval`
-            // was unwired until now.
-            AuditSubjectKind::BulkOperation,
-        ]
+fn the_roster_is_exactly_the_kinds_production_opens_a_unit_of() {
+    let opened = kinds_production_opens();
+
+    // The floor is the broken-parse guard `every_mounted_router_is_merged_into_both_censuses`
+    // carries for the same reason: a scan that silently matched nothing would
+    // make this test assert that the roster is empty, and pass the day somebody
+    // emptied it.
+    assert!(
+        opened.len() >= 5,
+        "the scan found {opened:?}, which is fewer kinds than this gear has opened units of \
+         since D-88 — the scan is broken, not the roster"
     );
 
-    // **The roster was `AuditSubjectKind::ALL`'s whole length for exactly one
-    // change.** It had been one short of the enum since the fifth member
-    // (`price_unit`, `overlay`, then `bulk_operation` in turn) each landed with the
-    // audit-plane writer ahead of the approval one, and the next-minted member —
-    // `Membership` (2026-08-11, `group_membership_repo`) — made it one short again,
-    // predicted almost word-for-word by the comment this one replaces. This shape
-    // computes the gap from `AuditSubjectKind::ALL` rather than hard-coding a count
-    // or an `[]`, which is what lets the test notice the *next* addition too,
-    // whatever it turns out to be, instead of going stale a third time the way the
-    // count-based wording already had once.
-    //
-    // `Membership` has an audit-plane writer (`group_membership_repo::enroll` /
-    // `end_membership`) and no approval-plane one: a membership mutation's
-    // materiality (`inst-mm-*`, the renewal-aligned default vs. the immediate /
-    // bulk-move material edges) is unwired, and giving it a writer here is what
-    // would close this gap — the same way D-221/D-225/`inst-bs-approval` closed the
-    // three before it.
-    let without_a_writer: Vec<AuditSubjectKind> = AuditSubjectKind::ALL
+    let roster: BTreeSet<AuditSubjectKind> = SUBJECT_KINDS_WITH_A_WRITER.iter().copied().collect();
+    assert_eq!(
+        roster,
+        opened,
+        "the roster and the crate's own approval-unit writers disagree. Kinds a writer opens \
+         and the roster omits: {:?}. Kinds the roster claims and nothing opens: {:?}. \
+         `SUBJECT_KINDS_WITH_A_WRITER` and its doc comment are a maintained list — the day \
+         they are wrong is the day a reader takes the roster as normative and the writer as \
+         the mistake.",
+        opened.difference(&roster).collect::<Vec<_>>(),
+        roster.difference(&opened).collect::<Vec<_>>(),
+    );
+
+    // The roster is a *set* spelled as a slice, so the two properties a slice can
+    // break and a set cannot are asserted rather than assumed: no kind twice, and
+    // `AuditSubjectKind::ALL`'s order, which is the order every other roster in
+    // this crate is read in.
+    assert_eq!(
+        SUBJECT_KINDS_WITH_A_WRITER.len(),
+        roster.len(),
+        "the roster names a kind twice: {SUBJECT_KINDS_WITH_A_WRITER:?}"
+    );
+    let in_declaration_order: Vec<AuditSubjectKind> = AuditSubjectKind::ALL
         .iter()
         .copied()
-        .filter(|kind| !SUBJECT_KINDS_WITH_A_WRITER.contains(kind))
+        .filter(|kind| roster.contains(kind))
         .collect();
     assert_eq!(
-        without_a_writer,
-        [AuditSubjectKind::Membership],
-        "every declared kind but `membership` has an approval-plane writer; \
-         wiring `inst-mm-*`'s material edge is what would close this gap"
+        SUBJECT_KINDS_WITH_A_WRITER, in_declaration_order,
+        "the roster is out of `AuditSubjectKind::ALL` order"
     );
+}
+
+/// Every [`AuditSubjectKind`] some **production** source of this crate opens an
+/// approval unit of.
+///
+/// The evidence is a `NewApproval { … subject_kind: AuditSubjectKind::X … }`
+/// construction, which every writer performs and which nothing but a writer has
+/// a reason to perform: `open` takes the value and the store takes it from
+/// `open` alone. Every site spells the kind as a literal path — a caller passing
+/// a variable would be a writer of *whatever kind it was handed*, which no
+/// caller in this crate is and which this scan would (deliberately) not count,
+/// since a roster cannot name a kind nobody can predict.
+///
+/// `*_tests.rs` files are skipped: a test opening a unit of some kind proves the
+/// **store** takes it (that is `sqlite_approval_repo`'s
+/// `every_subject_kind_d158_declares_is_storable_on_the_mirror`), not that
+/// anything in production ever does. Counting them would make the roster mean
+/// "storable", which is D-158's property and already has its own test.
+fn kinds_production_opens() -> BTreeSet<AuditSubjectKind> {
+    let mut found = BTreeSet::new();
+    for path in production_sources() {
+        let text = std::fs::read_to_string(&path).expect("a readable source file");
+        let lines: Vec<&str> = text.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            // The type's own declaration ends in the same four characters and
+            // writes nothing.
+            if !line.trim_end().ends_with("NewApproval {") || line.contains("struct ") {
+                continue;
+            }
+            // The field is written within the initializer, and `NewApproval`'s
+            // longest is nine lines of fields plus their comments. Bounded rather
+            // than scanned to the closing brace: a brace matcher over Rust source
+            // is a parser, and what this needs is the next `subject_kind:`.
+            let field = lines[index..]
+                .iter()
+                .take(40)
+                .find_map(|line| line.trim_start().strip_prefix("subject_kind:"))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}:{} constructs a `NewApproval` and names no `subject_kind` within \
+                         40 lines; the scan cannot tell which kind it writes",
+                        path.display(),
+                        index + 1
+                    )
+                });
+            let Some(rest) = field.trim().strip_prefix("AuditSubjectKind::") else {
+                panic!(
+                    "{}:{} opens a unit whose kind is not a literal `AuditSubjectKind::…`, but \
+                     {field:?}; a roster cannot name a kind chosen at run time",
+                    path.display(),
+                    index + 1
+                )
+            };
+            let variant = rest
+                .trim_end_matches(',')
+                .trim_end_matches(|c: char| !c.is_alphanumeric());
+            let kind = AuditSubjectKind::ALL
+                .iter()
+                .copied()
+                .find(|kind| format!("{kind:?}") == variant)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}:{} opens a `AuditSubjectKind::{variant}`, which is not a member of \
+                         `AuditSubjectKind::ALL`",
+                        path.display(),
+                        index + 1
+                    )
+                });
+            found.insert(kind);
+        }
+    }
+    found
+}
+
+/// Every `.rs` file under `src`, recursively, that is not a test module.
+///
+/// Recursive for `rest_sources`' reason one suite over: a scan that reads one
+/// directory level is a guard a reorganisation switches off silently.
+fn production_sources() -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the crate's own source tree") {
+            let path = entry.expect("a readable dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with("_tests.rs"))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 // ---------------------------------------------------------------------------
