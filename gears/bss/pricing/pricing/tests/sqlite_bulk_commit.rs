@@ -23,7 +23,10 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
-use bss_pricing::infra::bulk::{BULK_ROW_CONFLICT, CommitReceipt, commit_batch};
+use bss_pricing::infra::bulk::{
+    ABORT_NOTE, ABORTED_MEMBER, BULK_ROW_CONFLICT, CommitReceipt, abandon_committing_run,
+    commit_batch,
+};
 use bss_pricing::infra::storage::entity::price;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
@@ -795,4 +798,275 @@ async fn a_commit_that_ends_normally_is_not_touched_by_the_guard() {
         "and no interruption note was stamped over a run that finished: {}",
         stored.report
     );
+}
+
+// ---------------------------------------------------------------------------
+// Z9-5 — the sweep the guard cannot promise, and what a swept report does and
+// does not say.
+// ---------------------------------------------------------------------------
+
+/// The run's stored report, whole.
+async fn report_of(h: &Harness, operation_id: Uuid) -> serde_json::Value {
+    let conn = h.provider.conn().expect("conn");
+    bulk_repo::read(&conn, &scope(), TENANT, operation_id)
+        .await
+        .expect("read")
+        .expect("exists")
+        .report
+}
+
+/// A run left exactly where an abnormal exit leaves one and where **the guard
+/// did not run**: `committing`, its row locks held, nothing in flight.
+///
+/// That state is not hypothetical and is the reason `POST …/abort` stays. The
+/// guard's `Drop` fallback is a detached spawn, so it needs a live Tokio runtime
+/// and a live process; a runtime that has gone away or a `kill -9` runs neither,
+/// and its own doc says so. What is left over is exactly this row, and the sweep
+/// below is the whole remedy for it.
+async fn a_run_stuck_committing(h: &Harness, client_key: &str, price_id: Uuid) -> Uuid {
+    let conn = h.provider.conn().expect("conn");
+    let run = open_run(h, client_key).await;
+    bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run,
+        BulkState::Validating,
+        BulkState::Committing,
+        serde_json::json!({ "phase": "committing", "rows": 1 }),
+        at(11),
+    )
+    .await
+    .expect("the run enters committing exactly as `commit_batch` moves it");
+    bulk_repo::take_locks(&conn, &scope(), TENANT, run, &[price_id], at(11))
+        .await
+        .expect("and takes its row locks there");
+    run
+}
+
+/// **The half of Z9-5's probe the drop-guard case cannot reach**: "assert the
+/// run is still recoverable through abort".
+///
+/// [`a_commit_future_dropped_mid_flight_releases_its_locks_and_lands_the_run_terminal`]
+/// proves the guard sweeps a cancelled commit — but by sweeping it, it also means
+/// no case ever reaches the door the guard's own doc names as the residue's
+/// remedy. `abandon_committing_run` had **no success-path coverage anywhere in
+/// the crate**: `rest_bulk_imports` exercises only its two refusals (a finished
+/// run, a run that ended with conflicts), and the drop case asserts state and
+/// locks without ever reading the report.
+///
+/// So this asserts the sweep as an *operator remedy*, which is three claims and
+/// not one: the rows come unfrozen, the run leaves a state §4 gives it no edge
+/// out of, and the report says an abort happened **without discarding what the
+/// column already held**. The last is the one a state assertion cannot see and
+/// the one D-300 wrote the "added to, never replaced" rule for.
+#[tokio::test]
+async fn a_run_no_guard_swept_is_recoverable_through_the_abort_sweep() {
+    let h = harness().await;
+    let (price_id, _) = seed_draft(&h, key("eu"), 9_900).await;
+    let run = a_run_stuck_committing(&h, "c-stuck-1", price_id).await;
+
+    let conn = h.provider.conn().expect("conn");
+    assert_eq!(
+        bulk_repo::lock_holder(&conn, &scope(), TENANT, price_id)
+            .await
+            .expect("read the lock"),
+        Some(run),
+        "the fixture has to be genuinely frozen, or this case proves nothing about thawing it"
+    );
+
+    abandon_committing_run(&conn, &scope(), TENANT, run, ABORT_NOTE, at(12))
+        .await
+        .expect("the sweep is the abort route's whole body");
+
+    assert_eq!(
+        bulk_repo::lock_holder(&conn, &scope(), TENANT, price_id)
+            .await
+            .expect("read the lock"),
+        None,
+        "the interactive editors get their row back"
+    );
+    let state = state_of(&h, run).await;
+    assert_eq!(
+        state,
+        BulkState::CompletedWithConflicts,
+        "and the run leaves `committing`, which section 4 gives it no failure edge out of"
+    );
+    let report = report_of(&h, run).await;
+    assert_eq!(
+        report
+            .get(ABORTED_MEMBER)
+            .and_then(serde_json::Value::as_str),
+        Some(ABORT_NOTE),
+        "the note is stamped where an operator reads it: {report}"
+    );
+    assert_eq!(
+        report.get("rows").and_then(serde_json::Value::as_u64),
+        Some(1),
+        "and it is added to the report rather than replacing it, so what the column already \
+         held survives the sweep: {report}"
+    );
+}
+
+/// The premise the sweep is only correct under is judged **by the statement**,
+/// not by a read in front of it.
+///
+/// A second sweep of a run the first already landed must not rewrite
+/// `completed_at` and stamp a second note over a report whose rows were all
+/// attempted — the exact hazard `abort_bulk_import`'s state guard was written for
+/// when D-293 wrongly claimed the trigger refused it. Here the refusal is the
+/// `Committing -> …` premise riding into the `UPDATE`, which is what makes the
+/// sweep safe to retry and safe to race with the guard's detached fallback.
+#[tokio::test]
+async fn a_second_sweep_of_a_landed_run_is_refused_by_the_statements_own_premise() {
+    let h = harness().await;
+    let (price_id, _) = seed_draft(&h, key("eu"), 9_900).await;
+    let run = a_run_stuck_committing(&h, "c-stuck-2", price_id).await;
+
+    let conn = h.provider.conn().expect("conn");
+    abandon_committing_run(&conn, &scope(), TENANT, run, ABORT_NOTE, at(12))
+        .await
+        .expect("the first sweep lands it");
+
+    let second = abandon_committing_run(&conn, &scope(), TENANT, run, "a second note", at(13))
+        .await
+        .expect_err("a run that is over has no locks to clear and no work to stop");
+
+    assert!(
+        matches!(
+            second,
+            bss_pricing::infra::storage::RepoError::ConcurrentMutation { .. }
+        ),
+        "got: {second:?}"
+    );
+    let report = report_of(&h, run).await;
+    assert_eq!(
+        report
+            .get(ABORTED_MEMBER)
+            .and_then(serde_json::Value::as_str),
+        Some(ABORT_NOTE),
+        "and the first sweep's note is not overwritten by the refused one: {report}"
+    );
+}
+
+/// **The recorded residual, made visible rather than papered over.**
+///
+/// A cancelled commit lands terminal carrying only the report `commit_batch`
+/// wrote *on entry* — how many rows the run was about — because the receipt that
+/// would have listed what committed died with the future. So the rows this run
+/// did commit are in the store and are **not** in its report, and the note is the
+/// only thing that says so.
+///
+/// This case exists to pin that as a known state rather than let a later reader
+/// discover it as a surprise: it drives the cancellation only after observing a
+/// row actually committed, so "the report omits what the store holds" is asserted
+/// about a run where the omission is real. `INTERRUPTED_NOTE` is what carries the
+/// remedy ("re-read the rows and resubmit whatever is still owed"), which is why
+/// the note's presence is asserted beside the omission rather than instead of it.
+#[tokio::test]
+async fn a_cancelled_commits_report_says_it_was_interrupted_and_not_what_it_committed() {
+    let h = harness().await;
+
+    let mut rows = Vec::new();
+    let mut price_ids = Vec::new();
+    for index in 0..40_u32 {
+        let region = format!("s{index}");
+        let (price_id, version) = seed_draft(&h, key(&region), 9_900).await;
+        price_ids.push(price_id);
+        rows.push(row(key(&region), 12_500, Some(version)));
+    }
+    let run = open_run(&h, "c-residual-1").await;
+
+    let provider = h.provider.clone();
+    let prices = h.prices.clone();
+    let handle = tokio::spawn(async move {
+        commit_batch(
+            &provider,
+            &prices,
+            &scope(),
+            TENANT,
+            run,
+            &rows,
+            stamp(),
+            at(11),
+        )
+        .await
+    });
+
+    // Wait for a row to have **actually committed**, not merely for the locks to
+    // be taken: the claim below is about rows the store holds and the report does
+    // not, and a cancellation landing before the first row would make it vacuous.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if amount_of(&h, price_ids[0]).await == Some(12_500) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no row committed within 10s, so this case cannot say anything about a report that \
+             omits committed rows"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+
+    handle.abort();
+    match handle.await {
+        Err(ref e) if e.is_cancelled() => {}
+        other => panic!("the task must have been genuinely cancelled mid-flight: {other:?}"),
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let report = loop {
+        let report = report_of(&h, run).await;
+        if report.get(ABORTED_MEMBER).is_some() {
+            break report;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "10s after a cancelled commit nothing stamped an interruption note, so an operator \
+             reading this run cannot tell it was interrupted at all: {report}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    };
+
+    let note = report
+        .get(ABORTED_MEMBER)
+        .and_then(serde_json::Value::as_str)
+        .expect("the note is a string");
+    assert!(
+        note.contains("interrupted") && note.contains("resubmit"),
+        "the note has to say what happened and what is owed, because the report cannot: {note}"
+    );
+    assert!(
+        note != ABORT_NOTE,
+        "and it is the guard's note, not the abort route's: an operator who did not press abort \
+         must not read that somebody did"
+    );
+
+    // The residual itself. Recorded, not papered over: the store holds a row this
+    // run committed and the report names none of them.
+    assert_eq!(
+        amount_of(&h, price_ids[0]).await,
+        Some(12_500),
+        "the row committed and stands"
+    );
+    assert!(
+        report.get("committed").is_none(),
+        "and the report lists nothing it committed - it carries only what `commit_batch` wrote \
+         on entry, because the receipt died with the future. This is the residual Z9-5 records; \
+         the note above is the whole of what an operator is given instead: {report}"
+    );
+}
+
+/// One draft row's authored amount, or `None` when the row is not there.
+async fn amount_of(h: &Harness, price_id: Uuid) -> Option<i64> {
+    let conn = h.provider.conn().expect("conn");
+    price::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .filter(Condition::all().add(price::Column::PriceId.eq(price_id)))
+        .one(&conn)
+        .await
+        .expect("read the row")
+        .and_then(|row| row.amount_minor)
 }

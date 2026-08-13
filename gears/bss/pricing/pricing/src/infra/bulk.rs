@@ -391,10 +391,21 @@ pub async fn commit_batch(
 
     // **Everything from here lands the run terminal and releases its locks, on
     // every path.** §4 offers no failure edge out of `committing`, so a run that
-    // enters it and stops has no exit — holding its rows against every interactive
-    // editor, with no operator remedy until D-37's lease takeover exists, which it
-    // does not. `inst-bs-done` says the lock is released "either way"; the `?` that
-    // used to sit on `commit_rows` made that false.
+    // enters it and stops has no exit of its own — holding its rows against every
+    // interactive editor. `inst-bs-done` says the lock is released "either way";
+    // the `?` that used to sit on `commit_rows` made that false.
+    //
+    // **There is an operator remedy, and this comment denied it** (Z9-5): the
+    // sentence here read "with no operator remedy until D-37's lease takeover
+    // exists, which it does not", while `api::rest::bulk_imports`' own module doc
+    // twelve lines long said the opposite — "§4 already has that edge, which is
+    // why abort needs no state of its own, and why a crashed import cannot freeze
+    // interactive authoring: the operator has a door". The door is
+    // `POST …/bulk-imports/{id}/abort`, its body is [`abandon_committing_run`],
+    // and it was built in D-300. Two module docs in one crate with opposite
+    // claims about one edge, and the one that was wrong is the one a reader of
+    // *this* function meets. D-37's lease takeover is still unbuilt and is still
+    // not what rescues this run.
     //
     // The two `?`s the arms below deliberately do not carry are the *arms*' half of
     // that sentence. The guard is the other half: a panic unwinds past an arm and a

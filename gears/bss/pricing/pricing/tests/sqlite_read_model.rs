@@ -4488,7 +4488,7 @@ async fn a_scope_value_withdrawn_between_submit_and_commit_refuses_and_writes_no
 struct DropTheFrontierTable;
 
 impl sea_orm_migration::MigrationName for DropTheFrontierTable {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ztest_drop_pricing_pin_frontier"
     }
 }
@@ -4569,7 +4569,6 @@ async fn a_frontier_scan_that_cannot_read_reports_it_rather_than_disappearing() 
     .await
     .expect("record the stuck subject");
     h.registry.commit("pend-stuck", 6);
-    drop(conn);
 
     // Two passes, so the baseline is a steady state rather than the first pass's
     // one-off emissions, and the broken pass below is compared against a pass
