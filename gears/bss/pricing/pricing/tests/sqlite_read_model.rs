@@ -303,10 +303,34 @@ async fn harness() -> Harness {
 }
 
 async fn harness_with(jobs: JobsConfig) -> Harness {
+    harness_migrated_to(jobs, None).await
+}
+
+/// The harness over a chain that stops **short of** `stop_before`, so a test can
+/// write the rows an older schema's writer produced and then let the migration
+/// under test meet them.
+///
+/// `run_migrations_for_testing` is the production runner and its bookkeeping is
+/// per migration name, so a second call with the whole chain applies exactly the
+/// ones this one withheld — which is what
+/// [`a_membership_ref_written_before_the_pin_existed_sweeps_after_the_backfill`]
+/// does, and how it can assert that the withheld count was 1.
+async fn harness_migrated_to(jobs: JobsConfig, stop_before: Option<&str>) -> Harness {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
         .expect("connect in-memory sqlite");
-    run_migrations_for_testing(&db, Migrator::migrations())
+    let mut chain = Migrator::migrations();
+    if let Some(stop) = stop_before {
+        // By name, which is the order the runner itself applies the chain in.
+        chain.sort_by(|a, b| a.name().cmp(b.name()));
+        let before = chain.len();
+        chain.retain(|migration| migration.name() < stop);
+        assert!(
+            chain.len() < before,
+            "`{stop}` is not a migration this chain carries, so nothing was withheld"
+        );
+    }
+    run_migrations_for_testing(&db, chain)
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
@@ -1022,6 +1046,176 @@ async fn an_enrolled_membership_reaches_the_read_model_as_a_published_subject() 
         rows[0].payload.get("effectiveTo"),
         Some(&serde_json::json!(enrolled.effective_to))
     );
+}
+
+/// The migration under test: `m20260802_000071`, whose new rule refuses rows its
+/// own chain already contains.
+const PIN_MIGRATION: &str = "m20260802_000071_pin_membership_state_on_catalog_version_ref";
+
+/// A membership ref written **before** the pin existed still sweeps, because
+/// `m20260802_000071` backfills it.
+///
+/// # Why this is a projector test and not only a migration test
+///
+/// The refusal in `pinned_revision` is right, and the migration that armed it
+/// added the column by plain `ALTER TABLE` with no `UPDATE`. Every membership ref
+/// the pre-fix writer produced therefore arrived at the projector with
+/// `subject_revision = NULL` and was refused — and a refusal here is not a
+/// logged fault that clears. `project_version` counts the subject `failed` and
+/// leaves the ref pending; the frontier advances in version order only (D-114's
+/// prefix), so one un-pinnable ref of one tenant queues **every later version of
+/// that tenant** behind it, on every sweep, with no operator remedy. Asserting
+/// the backfilled columns alone would not have shown that: what makes the defect
+/// a defect is the sweep, so the sweep is what this drives.
+///
+/// # The fixture is a genuinely older database, not a hand-nulled row
+///
+/// The chain is applied up to but excluding [`PIN_MIGRATION`], the ref is written
+/// with the column absent — `..Default::default()` leaves it out of the `INSERT`,
+/// which is exactly what the pre-fix writer's `SeaORM` model did when the column
+/// did not exist — and only then does the withheld migration run. A test that
+/// applied the whole chain and then nulled the pin would prove the projector's
+/// refusal, which is not in doubt, rather than the migration's remedy.
+///
+/// # What the assertions pin about the *choice* of backfill value
+///
+/// The membership is **ended** before the migration, and the projected
+/// `effectiveTo` is asserted to be that end. That discriminates the backfill this
+/// migration performs — copy the truth row's `row_version` and `effective_to` —
+/// from the `subject_revision = 0` sentinel that was considered and rejected:
+/// the sentinel leaves `subject_effective_to` NULL, which on this kind is a
+/// positive claim that the publish judged the interval **open-ended**, so it
+/// would advertise this payer's membership as still running under the very
+/// version whose publish ended it.
+#[tokio::test]
+async fn a_membership_ref_written_before_the_pin_existed_sweeps_after_the_backfill() {
+    let h = harness_migrated_to(JobsConfig::default(), Some(PIN_MIGRATION)).await;
+    let conn = h.provider.conn().expect("conn");
+    let payer_tenant_id = Uuid::new_v4();
+    let membership_id = Uuid::new_v4();
+
+    // The truth row, through the real repository: `pricing_group_membership` is
+    // complete at `m20260802_000067` and untouched by the migration under test.
+    let enrolled = group_membership_repo::enroll(
+        &conn,
+        &h.scope,
+        TENANT,
+        NewMembership {
+            membership_id,
+            tenant_id: TENANT,
+            payer_tenant_id,
+            group_value: "gold".to_owned(),
+            effective_from: at(1),
+            effective_to: None,
+        },
+        stamp_of(ACTOR, at(1)),
+    )
+    .await
+    .expect("enroll the payer");
+    let ended = group_membership_repo::end_membership(
+        &conn,
+        &h.scope,
+        TENANT,
+        membership_id,
+        at(9),
+        enrolled.row_version,
+        stamp_of(ACTOR, at(2)),
+    )
+    .await
+    .expect("end the membership, the way the PATCH route does");
+    assert_eq!(
+        ended.effective_to,
+        Some(at(9)),
+        "the fixture's point is a membership whose interval has an end to carry"
+    );
+
+    // The ref the pre-fix `membership_publish::record_ref` wrote: the subject and
+    // nothing else. `subject_revision` NULL is what made the projector refuse it,
+    // and `subject_effective_to` is not named at all because on this database the
+    // column does not exist yet.
+    let stale = catalog_version_ref::ActiveModel {
+        tenant_id: Set(TENANT),
+        pending_ref: Set("pend-before-the-pin".to_owned()),
+        subject_kind: Set(SubjectKind::GroupMembership.as_str().to_owned()),
+        subject_ref: Set(membership_id.to_string()),
+        subject_revision: Set(None),
+        subject_lifecycle_state: Set(None),
+        requested_at: Set(at_min(12, 0)),
+        ..Default::default()
+    };
+    // A sibling of a kind that pins nothing, to bound the backfill's `WHERE`: an
+    // `overlay_index` ref legitimately carries no revision (the projector's arm
+    // for it reads none), so a backfill that keyed on the NULL alone would write
+    // a pin onto a kind that has no such concept. Left uncommitted, so the
+    // registry answers `None` for it and the sweep leaves it pending rather than
+    // projecting a shard this test does not seed.
+    let untouched = catalog_version_ref::ActiveModel {
+        tenant_id: Set(TENANT),
+        pending_ref: Set("pend-shard".to_owned()),
+        subject_kind: Set(SubjectKind::OverlayIndex.as_str().to_owned()),
+        subject_ref: Set(OverlayIndexShard::Global.to_string()),
+        subject_revision: Set(None),
+        subject_lifecycle_state: Set(None),
+        requested_at: Set(at_min(12, 0)),
+        ..Default::default()
+    };
+    for row in [stale, untouched] {
+        catalog_version_ref::Entity::insert(row.clone())
+            .secure()
+            .scope_with_model(&h.scope, &row)
+            .expect("scope")
+            .exec(&conn)
+            .await
+            .expect("a ref row of the shape the older writer produced");
+    }
+
+    // Now the migration meets those rows.
+    let caught_up = run_migrations_for_testing(&h.provider.db(), Migrator::migrations())
+        .await
+        .expect("the withheld migration applies over the older rows");
+    assert_eq!(
+        caught_up.applied, 1,
+        "exactly one migration was withheld, so exactly one applies here: {:?}",
+        caught_up.applied_names
+    );
+
+    h.registry.commit("pend-before-the-pin", 4);
+    let report = sweep(&h, at(13)).await;
+
+    assert_eq!(
+        report.subjects_failed, 0,
+        "the pre-pin ref must project rather than be refused for want of a pin — a refusal here \
+         stalls this tenant's frontier at every later version, forever: {report:?}"
+    );
+    assert_eq!(report.subjects_projected, 1, "{report:?}");
+    assert_eq!(
+        frontier_version(&h).await,
+        Some(4),
+        "and the frontier moves, which is the consequence the refusal denied"
+    );
+
+    let rows = deltas(&h).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].subject_kind, "group_membership");
+    assert_eq!(
+        rows[0].payload.get("effectiveTo"),
+        Some(&serde_json::json!(at(9))),
+        "the backfill reads the interval end off the truth row, which is what the pre-fix \
+         projector would have read live for this very ref; a `0` sentinel would have left the \
+         pin NULL and published this ended membership as open-ended: {:?}",
+        rows[0].payload
+    );
+
+    let refs = refs(&h).await;
+    let shard = refs
+        .iter()
+        .find(|row| row.subject_kind == "overlay_index")
+        .expect("the sibling ref is still there");
+    assert_eq!(
+        shard.subject_revision, None,
+        "the backfill is the membership kind's; a shard ref has no revision to pin"
+    );
+    assert_eq!(shard.subject_effective_to, None, "nor an interval");
 }
 
 /// Two publish units over **one** membership row, and each freezes the state its

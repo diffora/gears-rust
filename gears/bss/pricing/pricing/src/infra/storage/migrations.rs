@@ -363,6 +363,17 @@ impl MigratorTrait for Migrator {
             // premise `MembershipSubjectDelta`'s doc said the live read was safe
             // under, so the projector's live read started freezing the later
             // state under the earlier commit's version.
+            //
+            // **It backfills**, and that half is not housekeeping: the projector
+            // now refuses a membership subject whose `subject_revision` is NULL,
+            // which is every membership ref the pre-fix writer produced, and a
+            // refused ref stays pending while the frontier — advancing only in
+            // version order — queues every later version behind it. Every other
+            // data statement on this chain is a `sqlite_rebuild!` row copy, which
+            // carries values across unchanged; this is its first migration to
+            // **change** one, and the rule it sets is worth carrying: a new
+            // refusal that lands on rows the old writer produced owes those rows
+            // a value in the transaction that installs the refusal.
             Box::new(m20260802_000071_pin_membership_state_on_catalog_version_ref::Migration),
             // Shared `coord_leases` table, owned by the `coord` crate. This gear's
             // background work is coordinated as a singleton (§3.8: background work

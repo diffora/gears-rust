@@ -104,14 +104,21 @@
 
 mod pg_support;
 
+use bss_pricing::infra::storage::migrations::Migrator;
 use pg_support::Pg;
 use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
+use sea_orm_migration::MigratorTrait;
+use toolkit_db::migration_runner::run_migrations_for_testing;
 
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 const TENANT_B: &str = "11111111-1111-1111-1111-1111111111b0";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
 const PLAN: &str = "22222222-0000-0000-0000-00000000000a";
 const PLAN_B: &str = "22222222-0000-0000-0000-00000000000b";
+/// One membership row and its payer, for the backfill arm of
+/// `m20260802_000071`.
+const MEMBERSHIP: &str = "33333333-0000-0000-0000-00000000000a";
+const PAYER: &str = "33333333-0000-0000-0000-0000000000b0";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -668,6 +675,144 @@ async fn one_pending_ref_is_one_row_per_tenant_and_subject() {
         &version_ref("pending-1", &[("tenant_id", &format!("'{TENANT_B}'"))]),
     )
     .await;
+}
+
+/// The migration that pins the membership interval, whose `up` must also give a
+/// value to the rows the pre-fix writer left without one.
+const PIN_MIGRATION: &str = "m20260802_000071_pin_membership_state_on_catalog_version_ref";
+
+/// `m20260802_000071` backfills the membership refs its own new rule refuses —
+/// **on Postgres**, which is the arm production runs.
+///
+/// # Why this is here and not only on the mirror
+///
+/// The `SQLite` sibling
+/// (`sqlite_read_model::a_membership_ref_written_before_the_pin_existed_sweeps_after_the_backfill`)
+/// drives the whole consequence — a sweep that completes instead of stalling the
+/// tenant's frontier forever — and it is the stronger test for that reason. What
+/// it cannot exercise is this arm's SQL: the two engines' backfills share not one
+/// clause. Postgres has `UPDATE … FROM` and a real `uuid` type, so the join is a
+/// `::text` cast; the mirror has neither, so it is correlated subqueries over a
+/// hex comparison. A green mirror says nothing about whether the statement that
+/// runs in production parses, let alone matches a row.
+///
+/// The chain is applied in two passes with the migration under test withheld
+/// from the first, so the rows it meets are written by a genuinely older schema
+/// rather than nulled by hand after the fact.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_membership_pin_backfills_the_refs_written_before_it() {
+    let pg = Pg::empty().await;
+    let db = pg.db().await;
+    let mut chain = Migrator::migrations();
+    chain.sort_by(|a, b| a.name().cmp(b.name()));
+    let withheld = chain.len();
+    chain.retain(|migration| migration.name() < PIN_MIGRATION);
+    assert!(
+        chain.len() < withheld,
+        "`{PIN_MIGRATION}` is not a migration this chain carries"
+    );
+    run_migrations_for_testing(&db, chain)
+        .await
+        .expect("apply the chain up to the migration under test");
+    let conn = pg.raw().await;
+
+    // The truth row, ended: `row_version` has moved to 1 and `effective_to` is a
+    // real instant, so the assertions below can tell a copy of the row from a
+    // `0`/`NULL` sentinel.
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO bss.pricing_group_membership \
+             (membership_id, tenant_id, payer_tenant_id, group_value, effective_from, \
+              effective_to, created_by, row_version) \
+             VALUES ('{MEMBERSHIP}', '{TENANT}', '{PAYER}', 'gold', \
+                     '2026-08-03 01:00:00+00', '2026-08-03 09:00:00+00', '{ACTOR}', 1)"
+        ),
+    )
+    .await;
+    // The ref the pre-fix `membership_publish::record_ref` wrote: the subject, and
+    // no pin. `subject_effective_to` is not named because on this database the
+    // column does not exist yet, which is the whole point of the two passes.
+    must_succeed(
+        &conn,
+        &version_ref(
+            "pend-before-the-pin",
+            &[
+                ("subject_kind", "'group_membership'"),
+                ("subject_ref", &format!("'{MEMBERSHIP}'")),
+                ("catalog_version", "4"),
+                ("committed_at", "'2026-08-03 12:00:00+00'"),
+            ],
+        ),
+    )
+    .await;
+    // A kind that pins nothing, to bound the backfill's `WHERE`: an
+    // `overlay_index` ref carries no revision by design, so a backfill keyed on
+    // the NULL alone would write a pin onto a kind with no such concept.
+    must_succeed(
+        &conn,
+        &version_ref(
+            "pend-shard",
+            &[
+                ("subject_kind", "'overlay_index'"),
+                ("subject_ref", "'region/eu-west'"),
+            ],
+        ),
+    )
+    .await;
+
+    let caught_up = run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("the withheld migration applies over the older rows");
+    assert_eq!(
+        caught_up.applied, 1,
+        "exactly one migration was withheld: {:?}",
+        caught_up.applied_names
+    );
+
+    let pinned = conn
+        .query_one(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            "SELECT subject_revision AS rev, \
+                    to_char(subject_effective_to, 'YYYY-MM-DD HH24:MI:SS') AS ends \
+               FROM bss.pricing_catalog_version_ref \
+              WHERE pending_ref = 'pend-before-the-pin'"
+                .to_owned(),
+        ))
+        .await
+        .expect("read the backfilled ref")
+        .expect("the ref is still there");
+    assert_eq!(
+        pinned.try_get::<Option<i64>>("", "rev").expect("read rev"),
+        Some(1),
+        "the pin carries the truth row's own version, not a sentinel, and `0` could not be \
+         told from an enrolment's genuine pin"
+    );
+    assert_eq!(
+        pinned
+            .try_get::<Option<String>>("", "ends")
+            .expect("read ends"),
+        Some("2026-08-03 09:00:00".to_owned()),
+        "and the interval end off the same row: leaving it NULL is a positive claim that the \
+         publish judged this membership open-ended, which is the opposite of what ended it"
+    );
+
+    let shard = conn
+        .query_one(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            "SELECT subject_revision AS rev FROM bss.pricing_catalog_version_ref \
+              WHERE pending_ref = 'pend-shard'"
+                .to_owned(),
+        ))
+        .await
+        .expect("read the sibling ref")
+        .expect("the sibling is still there");
+    assert_eq!(
+        shard.try_get::<Option<i64>>("", "rev").expect("read rev"),
+        None,
+        "the backfill is the membership kind's alone"
+    );
 }
 
 // ===========================================================================
