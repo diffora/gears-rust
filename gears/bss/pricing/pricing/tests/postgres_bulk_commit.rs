@@ -231,6 +231,7 @@ async fn a_neighbour_holding(h: &Harness, client_key: &str, price_id: Uuid) -> U
         &scope(),
         TENANT,
         neighbour,
+        BulkState::Validating,
         BulkState::Committing,
         serde_json::json!({}),
         at(11),

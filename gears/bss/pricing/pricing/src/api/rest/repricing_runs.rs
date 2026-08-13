@@ -911,6 +911,9 @@ async fn advance_on_verdict(
             scope,
             tenant_id,
             run.operation_id,
+            // The state this verdict was evaluated over, carried into the
+            // statement (Z8-7) rather than trusted to still hold.
+            run.state,
             BulkState::AwaitingApproval,
             run.report.clone(),
             stamp.recorded_at,
@@ -922,6 +925,7 @@ async fn advance_on_verdict(
             scope,
             tenant_id,
             run.operation_id,
+            run.state,
             BulkState::Committing,
             run.report.clone(),
             stamp.recorded_at,

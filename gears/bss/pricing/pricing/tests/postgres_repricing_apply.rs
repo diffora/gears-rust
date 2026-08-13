@@ -511,6 +511,7 @@ async fn open_committing_run(h: &Harness, price_ids: &[Uuid]) -> Uuid {
         &h.scope,
         TENANT,
         operation_id,
+        BulkState::Validating,
         BulkState::Committing,
         report(),
         at(11),

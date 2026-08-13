@@ -117,6 +117,7 @@ async fn committing_run(conn: &toolkit_db::secure::DbConn<'_>, client_key: &str)
         &scope(),
         TENANT,
         run.operation_id,
+        BulkState::Validating,
         BulkState::Committing,
         serde_json::json!({}),
         at(11),
@@ -183,6 +184,7 @@ async fn an_imports_happy_path_is_validating_then_committing_then_completed() {
         &scope(),
         TENANT,
         run.operation_id,
+        BulkState::Validating,
         BulkState::Committing,
         serde_json::json!({ "phase": 2 }),
         at(11),
@@ -200,6 +202,7 @@ async fn an_imports_happy_path_is_validating_then_committing_then_completed() {
         &scope(),
         TENANT,
         run.operation_id,
+        BulkState::Committing,
         BulkState::Completed,
         serde_json::json!({ "committed": 3 }),
         at(12),
@@ -230,6 +233,7 @@ async fn a_move_that_is_not_an_edge_is_refused_by_the_store() {
         &scope(),
         TENANT,
         run.operation_id,
+        BulkState::Validating,
         BulkState::Completed,
         serde_json::json!({}),
         at(11),
@@ -265,6 +269,7 @@ async fn an_import_cannot_wait_for_an_approval_it_never_needs() {
             &scope(),
             TENANT,
             import.operation_id,
+            BulkState::Validating,
             BulkState::AwaitingApproval,
             serde_json::json!({}),
             at(11),
@@ -283,6 +288,7 @@ async fn an_import_cannot_wait_for_an_approval_it_never_needs() {
         &scope(),
         TENANT,
         repricing.operation_id,
+        BulkState::Validating,
         BulkState::AwaitingApproval,
         serde_json::json!({}),
         at(11),
@@ -306,6 +312,7 @@ async fn a_rejected_run_leaves_awaiting_approval_and_is_over() {
         &scope(),
         TENANT,
         run.operation_id,
+        BulkState::Validating,
         BulkState::AwaitingApproval,
         serde_json::json!({}),
         at(11),
@@ -318,6 +325,7 @@ async fn a_rejected_run_leaves_awaiting_approval_and_is_over() {
         &scope(),
         TENANT,
         run.operation_id,
+        BulkState::AwaitingApproval,
         BulkState::Rejected,
         serde_json::json!({ "reason": "refused" }),
         at(12),
@@ -337,6 +345,7 @@ async fn a_rejected_run_leaves_awaiting_approval_and_is_over() {
             &scope(),
             TENANT,
             run.operation_id,
+            BulkState::Rejected,
             BulkState::Committing,
             serde_json::json!({}),
             at(13),
@@ -444,5 +453,202 @@ async fn a_release_takes_only_its_own_runs_locks() {
             .expect("read"),
         Some(theirs),
         "the other run still holds its own row"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Z8-7 — the compare-and-set premise, and the self-edge the trigger admits.
+// ---------------------------------------------------------------------------
+
+/// **The RED this case is about.** `pricing_bulk_operation`'s transition trigger
+/// returns early when `NEW.state = OLD.state` — a self-edge is not judged at all
+/// — so a second [`bulk_repo::advance`] to the state a run already holds lands
+/// silently. And `advance` does not merely restate the state: it rewrites
+/// `report` and `completed_at` wholesale, so the repeat **clobbers the run's
+/// stored answer** with whatever the late caller happened to carry. That answer
+/// is the operator-facing record of money that moved.
+///
+/// The premise has to be *in the statement*, which is `window_repo`'s own rule —
+/// "a tag read, compared and then handed to a statement is a decision racing the
+/// write it authorizes" — and every look-alike in this crate obeys it
+/// (`approval_repo::swap`, `overlay_repo`, `window_repo`, `pin_frontier_repo`,
+/// `policy_repo`, `idempotency_repo`).
+///
+/// Armed at the **repeat**, not at the happy path: the first two moves are here
+/// only as the fixture that makes the third one a repeat.
+#[tokio::test]
+async fn a_repeat_move_to_the_state_a_run_already_holds_is_refused_and_leaves_its_report_alone() {
+    let p = provider().await;
+    let conn = p.conn().expect("conn");
+    let run = bulk_repo::open(&conn, &scope(), new_run(BulkKind::Import, "k-cas-1"))
+        .await
+        .expect("open");
+
+    bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run.operation_id,
+        BulkState::Validating,
+        BulkState::Committing,
+        serde_json::json!({ "phase": "committing", "rows": 2 }),
+        at(11),
+    )
+    .await
+    .expect("validating -> committing");
+
+    let landed = bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run.operation_id,
+        BulkState::Committing,
+        BulkState::CompletedWithConflicts,
+        serde_json::json!({ "committed": [{ "row": 0 }], "conflicted": [] }),
+        at(12),
+    )
+    .await
+    .expect("committing -> completed_with_conflicts");
+
+    // The repeat. A caller that read `committing` a moment ago and is only now
+    // writing its own terminal move — an abort racing the commit's own tail,
+    // which is the shape `bulk_imports`' route guard stands in front of and
+    // cannot close, being a read.
+    let repeat = bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run.operation_id,
+        BulkState::Committing,
+        BulkState::CompletedWithConflicts,
+        serde_json::json!({ "committed": [], "conflicted": [], "aborted": "clobbered" }),
+        at(13),
+    )
+    .await;
+
+    let err = repeat.expect_err(
+        "the move's premise, the run still being `committing`, is gone, and the trigger cannot \
+         say so because a self-edge returns early on both engines",
+    );
+    assert!(
+        matches!(err, RepoError::ConcurrentMutation { .. }),
+        "the refusal is a lost-update refusal naming the state the run now reads, not a \
+         not-found: {err:?}"
+    );
+
+    let after = bulk_repo::read(&conn, &scope(), TENANT, run.operation_id)
+        .await
+        .expect("read")
+        .expect("exists");
+    assert_eq!(
+        after.report, landed.report,
+        "and the run's stored report is the one the commit wrote, not the repeat's"
+    );
+    assert_eq!(
+        after.completed_at,
+        Some(at(12)),
+        "nor was the end instant re-stamped"
+    );
+}
+
+/// The **positive control** for the case above: a legitimate edge whose named
+/// prior state is the run's own still moves, and still returns the moved record.
+/// Without this, a store that refused every `advance` outright would satisfy the
+/// refusal case.
+#[tokio::test]
+async fn the_named_prior_state_admits_the_edge_it_belongs_to() {
+    let p = provider().await;
+    let conn = p.conn().expect("conn");
+    let run = bulk_repo::open(&conn, &scope(), new_run(BulkKind::Import, "k-cas-2"))
+        .await
+        .expect("open");
+
+    let committing = bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run.operation_id,
+        BulkState::Validating,
+        BulkState::Committing,
+        serde_json::json!({ "phase": "committing" }),
+        at(11),
+    )
+    .await
+    .expect("validating -> committing, whose premise is the run's own state");
+    assert_eq!(committing.state, BulkState::Committing);
+
+    let done = bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run.operation_id,
+        BulkState::Committing,
+        BulkState::Completed,
+        serde_json::json!({ "committed": [] }),
+        at(12),
+    )
+    .await
+    .expect("committing -> completed");
+    assert_eq!(done.state, BulkState::Completed);
+    assert_eq!(done.completed_at, Some(at(12)));
+}
+
+/// A stale premise the trigger **cannot** catch, because the move it names is a
+/// legal edge from where the row now stands.
+///
+/// `validating -> committing` and `awaiting_approval -> committing` are both
+/// edges. So a caller that read a repricing run `validating`, decided the change
+/// was immaterial and only then wrote `committing` would commit a run a
+/// concurrent evaluation had meanwhile parked in `awaiting_approval` — spending
+/// `inst-bs-commit`'s edge on a run whose approval nobody has given. The
+/// trigger's edge list admits that write; only the caller's own premise refuses
+/// it, which is why the premise has to travel into the statement.
+#[tokio::test]
+async fn a_move_whose_premise_has_moved_is_refused_even_when_the_edge_is_legal() {
+    let p = provider().await;
+    let conn = p.conn().expect("conn");
+    let run = bulk_repo::open(&conn, &scope(), new_run(BulkKind::Repricing, "k-cas-3"))
+        .await
+        .expect("open");
+
+    // Somebody else's evaluation found the run material and parked it.
+    bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run.operation_id,
+        BulkState::Validating,
+        BulkState::AwaitingApproval,
+        serde_json::json!({ "materiality": "always" }),
+        at(11),
+    )
+    .await
+    .expect("validating -> awaiting_approval");
+
+    // Ours still believes it read `validating`.
+    let raced = bulk_repo::advance(
+        &conn,
+        &scope(),
+        TENANT,
+        run.operation_id,
+        BulkState::Validating,
+        BulkState::Committing,
+        serde_json::json!({ "phase": "committing" }),
+        at(12),
+    )
+    .await;
+
+    assert!(
+        raced.is_err(),
+        "the premise the caller acted on is gone, and the store is where that is judged"
+    );
+    assert_eq!(
+        bulk_repo::read(&conn, &scope(), TENANT, run.operation_id)
+            .await
+            .expect("read")
+            .expect("exists")
+            .state,
+        BulkState::AwaitingApproval,
+        "the run is still waiting for the approval nobody has given"
     );
 }

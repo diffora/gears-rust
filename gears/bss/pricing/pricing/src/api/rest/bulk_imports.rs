@@ -330,6 +330,7 @@ async fn submit_bulk_import(
             &scope,
             tenant,
             run.operation_id,
+            BulkState::Validating,
             BulkState::ValidationFailed,
             stored,
             now,
@@ -472,6 +473,12 @@ async fn abort_bulk_import(
             serde_json::json!("uncommitted rows were not attempted"),
         );
     }
+    // The state guard above is a read, so it cannot be the whole of the refusal:
+    // the run may move between it and the statement below. The premise therefore
+    // rides into the statement too (Z8-7), which is what makes a repeat abort
+    // against a run that has meanwhile completed a refusal rather than a rewrite
+    // of the report every row of which WAS attempted.
+    //
     // **The release goes first, and D-300 is why.** With the terminal move ahead of
     // it, a release that failed for any transient reason left the run terminal and
     // every lock held — and D-294's own state guard above then refuses the retry
@@ -489,6 +496,7 @@ async fn abort_bulk_import(
         &scope,
         tenant,
         operation_id,
+        BulkState::Committing,
         BulkState::CompletedWithConflicts,
         report,
         Utc::now(),

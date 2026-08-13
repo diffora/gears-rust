@@ -294,6 +294,9 @@ pub async fn apply_run_in(
             scope,
             tenant_id,
             operation_id,
+            // The premise is the state read above, in the statement (Z8-7): two
+            // approvals landing at once cannot both spend this edge.
+            BulkState::AwaitingApproval,
             BulkState::Committing,
             run.report.clone(),
             stamp.recorded_at,
@@ -677,6 +680,12 @@ async fn finish_run(
         scope,
         tenant_id,
         operation_id,
+        // Only a `committing` run reaches here — `apply_run_in` returns early on a
+        // terminal one, and this function is otherwise reached from the drop
+        // guard's fallback over a run that never left `committing`. Carried into
+        // the statement (Z8-7) so a fallback racing a clean finish cannot
+        // re-stamp the report the clean finish wrote.
+        BulkState::Committing,
         if outcome.failed > 0 {
             BulkState::CompletedWithConflicts
         } else {
@@ -1553,6 +1562,7 @@ mod ordinary_failure_release {
             &scope,
             tenant_id,
             operation_id,
+            BulkState::Validating,
             BulkState::Committing,
             serde_json::json!({}),
             now,

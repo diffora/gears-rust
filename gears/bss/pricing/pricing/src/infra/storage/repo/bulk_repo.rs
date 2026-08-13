@@ -10,6 +10,30 @@
 //! spelling of a rule that already exists in two places — and `rejected` arriving
 //! four migrations after the table is the demonstration that the two would drift.
 //!
+//! **What the trigger cannot judge, and what [`advance`] therefore carries**
+//! (Z8-7). The deferral above covers the *edge*; it does not cover the caller's
+//! *premise*. Two holes are left by it, and both are the same shape:
+//!
+//! * A move to the state a run is already in returns early on both engines
+//!   (`NEW.state = OLD.state` → `RETURN NEW`), so a repeat is admitted in
+//!   silence — and `advance` rewrites `report` and `completed_at` wholesale, so
+//!   the repeat clobbers the run's stored answer with whatever the late caller
+//!   carried.
+//! * A caller acting on a state it read a moment ago may name a target that is a
+//!   legal edge from where the row *now* stands: `validating -> committing` and
+//!   `awaiting_approval -> committing` are both edges, so an immateriality
+//!   decision taken over `validating` would commit a run a concurrent evaluation
+//!   had meanwhile parked for approval.
+//!
+//! So [`advance`] takes the state the caller believes the run is in and puts it in
+//! the `WHERE`. That is not a second spelling of the edge list — it is the
+//! caller's own premise, which no trigger can know — and it is the arrangement
+//! every state-moving write in this crate already uses
+//! (`approval_repo::swap`, `overlay_repo`, `window_repo`, `pin_frontier_repo`,
+//! `policy_repo`, `idempotency_repo`). `window_repo`'s own sentence is the rule:
+//! "a tag read, compared and then handed to a statement is a decision racing the
+//! write it authorizes".
+//!
 //! # The lock's mutual exclusion is its primary key
 //!
 //! `pricing_bulk_row_lock` is keyed `(tenant_id, price_id)`, so two runs cannot
@@ -213,22 +237,37 @@ pub async fn find_by_client_key(
     row.as_ref().map(record_of).transpose()
 }
 
-/// Move a run to `to`, writing the report it has reached.
+/// Move a run from `from` to `to`, writing the report it has reached.
 ///
 /// `completed_at` is supplied for a terminal state and `None` otherwise, which
 /// the `CHECK` pairs with the state — so a caller that disagrees with itself is
 /// refused by the store rather than by a comparison here.
 ///
+/// **`from` is the caller's premise, carried into the `WHERE`** (Z8-7). See the
+/// module doc for the two holes a target-only statement leaves: the self-edge the
+/// trigger returns early on, and a stale premise whose target happens to be a
+/// legal edge from where the row now stands. Matching no row is **re-read before
+/// it is reported**, `approval_repo::swap`'s arrangement and its reason: the state
+/// named in the refusal is the row's own as of now, not the one the caller read.
+///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure — which includes the
 /// transition trigger's refusal of a move that is not an edge, and the `CHECK`'s
-/// refusal of a terminal state without an instant; [`RepoError::NotFound`] when
-/// the run does not exist.
+/// refusal of a terminal state without an instant;
+/// [`RepoError::ConcurrentMutation`] when the run has moved off `from`;
+/// [`RepoError::NotFound`] when nothing in this caller's scope answers to the id.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the run's address, the move's two ends, the report it carries and the instant; \
+              the two ends are the whole of what Z8-7 added and neither is derivable from \
+              the other"
+)]
 pub async fn advance(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     operation_id: Uuid,
+    from: BulkState,
     to: BulkState,
     report: JsonValue,
     at: DateTime<Utc>,
@@ -252,15 +291,27 @@ pub async fn advance(
         .filter(
             Condition::all()
                 .add(bulk_operation::Column::TenantId.eq(tenant_id))
-                .add(bulk_operation::Column::OperationId.eq(operation_id)),
+                .add(bulk_operation::Column::OperationId.eq(operation_id))
+                .add(bulk_operation::Column::State.eq(from.as_str())),
         )
         .exec(runner)
         .await
         .map_err(|e| RepoError::Db(format!("advance pricing_bulk_operation: {e}")))?;
     if affected.rows_affected == 0 {
-        return Err(RepoError::NotFound {
-            subject: "bulk operation".to_owned(),
-            id: operation_id.to_string(),
+        return Err(match read(runner, scope, tenant_id, operation_id).await? {
+            Some(fresh) => RepoError::ConcurrentMutation {
+                aggregate: format!(
+                    "bulk operation {operation_id}: the move {} -> {} names a run that now \
+                     reads {}",
+                    from.as_str(),
+                    to.as_str(),
+                    fresh.state.as_str()
+                ),
+            },
+            None => RepoError::NotFound {
+                subject: "bulk operation".to_owned(),
+                id: operation_id.to_string(),
+            },
         });
     }
     read(runner, scope, tenant_id, operation_id)

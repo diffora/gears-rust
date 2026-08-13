@@ -148,6 +148,10 @@ pub async fn commit_batch(
         scope,
         tenant_id,
         operation_id,
+        // Phase 1 has just passed on a run this function's own contract says is
+        // `validating`; the premise rides into the statement (Z8-7) so a second
+        // caller on one run cannot re-enter `committing` over the first's work.
+        BulkState::Validating,
         BulkState::Committing,
         // **Not a placeholder.** This column is what an abort reports from, and
         // overwriting it on entry left a run that died mid-flight with nothing
@@ -212,6 +216,7 @@ pub async fn commit_batch(
         scope,
         tenant_id,
         operation_id,
+        BulkState::Committing,
         receipt.terminal_state(),
         report_of(&receipt),
         now,
