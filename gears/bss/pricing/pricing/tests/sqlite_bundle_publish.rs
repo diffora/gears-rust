@@ -1,0 +1,394 @@
+//! `BundleService::publish_composition` — D-07's normalisation, as a **write**
+//! (`design/08-bundles.md` §2, `inst-rs-residual`, `inst-ba-return`).
+//!
+//! Where `tests/sqlite_bundle_repo.rs` drives the composition's authoring and
+//! `src/domain/bundle_tests.rs` drives the reconciler's arithmetic, this suite
+//! drives the one thing neither can: the statement that puts the reconciled
+//! shares in the store, and what happens when it addresses nothing.
+//!
+//! **Nothing exercised that statement before this file.** `rest_bundles`' publish
+//! case runs an `own_price` bundle, which carries no rev-share group at all, so
+//! `write_effective_share` had no caller under any green tree — the column
+//! downstream vendors are paid on was written by code no test ever ran.
+
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+use bss_pricing::domain::audit::AuditStamp;
+use bss_pricing::domain::bundle::{
+    Absorber, InvoiceItemization, Party, PartyShare, PriceBasis, RevShareGroup,
+};
+use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::infra::bundle::BundleService;
+use bss_pricing::infra::storage::RepoError;
+use bss_pricing::infra::storage::entity::{bundle_revshare, outbox};
+use bss_pricing::infra::storage::migrations::Migrator;
+use bss_pricing::infra::storage::repo::{
+    BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, PlanRepo,
+};
+use chrono::{DateTime, TimeZone, Utc};
+use sea_orm::ActiveValue::Set;
+use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm_migration::MigratorTrait;
+use toolkit_db::migration_runner::run_migrations_for_testing;
+use toolkit_db::secure::{AccessScope, SecureDeleteExt, SecureEntityExt, SecureInsertExt};
+use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+use uuid::Uuid;
+
+const TENANT: Uuid = Uuid::from_u128(0x7e_b1);
+const ACTOR: Uuid = Uuid::from_u128(0xac_b1);
+const CORRELATION: Uuid = Uuid::from_u128(0xc0_b1);
+const VENDOR: Uuid = Uuid::from_u128(0x5e_b1);
+const BUNDLE: Uuid = Uuid::from_u128(0xb0_b1);
+const PLAN: Uuid = Uuid::from_u128(0x91_b1);
+
+fn at(hour: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 8, 13, hour, 0, 0)
+        .single()
+        .expect("instant")
+}
+
+fn scope() -> AccessScope {
+    AccessScope::for_tenant(TENANT)
+}
+
+fn plan() -> PlanId {
+    PlanId::new(PLAN)
+}
+
+fn stamp() -> AuditStamp {
+    AuditStamp {
+        actor_principal_id: ACTOR,
+        recorded_at: at(10),
+        correlation_id: CORRELATION,
+    }
+}
+
+struct Harness {
+    provider: DBProvider<DbError>,
+    plans: PlanRepo,
+    bundles: BundleRepo,
+    service: BundleService,
+}
+
+async fn harness() -> Harness {
+    let db = connect_db("sqlite::memory:", ConnectOpts::default())
+        .await
+        .expect("connect in-memory sqlite");
+    run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("run migrator");
+    let provider = DBProvider::<DbError>::new(db);
+    Harness {
+        plans: PlanRepo::new(provider.clone()),
+        bundles: BundleRepo::new(provider.clone()),
+        service: BundleService::new(provider.clone()),
+        provider,
+    }
+}
+
+/// A plan with an open draft revision 0 and a bundle on it.
+///
+/// The revision stays **draft** on purpose: `pricing_bundle_revshare`'s
+/// append-only trigger refuses an `UPDATE` under a non-draft plan revision, so a
+/// published revision would make the statement under test fail for a reason that
+/// is not this suite's.
+async fn seeded(h: &Harness) {
+    h.plans
+        .create_draft(
+            &scope(),
+            NewPlanDraft {
+                plan_id: plan(),
+                tenant_id: TENANT,
+                created_by: ACTOR,
+                created_at_utc: at(9),
+                sku_id: Some(Uuid::from_u128(0x5_c1)),
+                plan_tier: Some("gold".to_owned()),
+                billing_cycle: None,
+                frequency: None,
+                plan_tier_override: false,
+                purchase_min_qty: None,
+                purchase_max_qty: None,
+                invoice_grouping_key: None,
+                available_from: None,
+                available_to: None,
+                cloned_from: None,
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("create the plan draft");
+    h.bundles
+        .create(
+            &scope(),
+            NewBundle {
+                bundle_id: BUNDLE,
+                tenant_id: TENANT,
+                plan_id: plan(),
+                price_basis: PriceBasis::SumOfParts,
+                invoice_itemization: InvoiceItemization::Aggregate,
+            },
+            stamp(),
+        )
+        .await
+        .expect("create the bundle");
+}
+
+fn component(id: u128) -> BundleComponentDraft {
+    BundleComponentDraft {
+        component_plan_id: Uuid::from_u128(id),
+        included_sku_id: Uuid::from_u128(id + 0x1000),
+        min_qty: None,
+        max_qty: None,
+    }
+}
+
+/// Every stored party row of revision 0, as `(party, share_bp, effective)`.
+async fn stored_shares(h: &Harness) -> Vec<(String, i32, Option<i32>)> {
+    let conn = h.provider.conn().expect("conn");
+    bundle_revshare::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .filter(
+            Condition::all()
+                .add(bundle_revshare::Column::TenantId.eq(TENANT))
+                .add(bundle_revshare::Column::BundleId.eq(BUNDLE))
+                .add(bundle_revshare::Column::PlanRevision.eq(0_i64)),
+        )
+        .all(&conn)
+        .await
+        .expect("read the party rows")
+        .into_iter()
+        .map(|row| (row.party, row.share_bp, row.effective_share_bp))
+        .collect()
+}
+
+/// Every `BundleUpdated` the outbox holds for this plan.
+async fn announcements(h: &Harness) -> Vec<serde_json::Value> {
+    let conn = h.provider.conn().expect("conn");
+    outbox::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .filter(
+            Condition::all()
+                .add(outbox::Column::TenantId.eq(TENANT))
+                .add(outbox::Column::EventName.eq("BundleUpdated")),
+        )
+        .all(&conn)
+        .await
+        .expect("read the outbox")
+        .into_iter()
+        .map(|row| row.payload)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The positive control: the statement does write, and writes the reconciled
+// value rather than the typed one.
+// ---------------------------------------------------------------------------
+
+/// D-07's residual lands on the nominated party and the **effective** column is
+/// what moves; the typed one is retained for audit.
+///
+/// The absorbed residual is 1 bp because that is the whole admissible range:
+/// `reconcile` refuses anything further than `RESIDUAL_TOLERANCE_BP` from the
+/// whole, so a group publish admits at all is a group whose authored sum is
+/// 9999, 10000 or 10001.
+#[tokio::test]
+async fn the_reconciled_shares_are_written_to_the_effective_column_on_publish() {
+    let h = harness().await;
+    seeded(&h).await;
+
+    let absorber = Party::new("acme").expect("party");
+    h.bundles
+        .replace_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(0),
+            CompositionDraft {
+                components: vec![component(1)],
+                rev_share_groups: vec![RevShareGroup {
+                    vendor_sku_id: VENDOR,
+                    platform_cut_bp: 1_000,
+                    residual_absorber: Absorber::Party(absorber.clone()),
+                    parties: vec![
+                        PartyShare {
+                            party: absorber,
+                            share_bp: 4_499,
+                        },
+                        PartyShare {
+                            party: Party::new("globex").expect("party"),
+                            share_bp: 4_500,
+                        },
+                    ],
+                }],
+            },
+            stamp(),
+        )
+        .await
+        .expect("author the composition");
+
+    assert_eq!(
+        stored_shares(&h).await,
+        vec![
+            ("acme".to_owned(), 4_499, None),
+            ("globex".to_owned(), 4_500, None),
+        ],
+        "unpublished, the effective column is absent — that is what `None` means here"
+    );
+
+    h.service
+        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION, at(11))
+        .await
+        .expect("publish the composition");
+
+    assert_eq!(
+        stored_shares(&h).await,
+        vec![
+            ("acme".to_owned(), 4_499, Some(4_500)),
+            ("globex".to_owned(), 4_500, Some(4_500)),
+        ],
+        "the absorber took the 1 bp residual and the typed value stands beside it"
+    );
+    assert_eq!(
+        announcements(&h).await.len(),
+        1,
+        "and the composition change was announced once"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Z9-6 — the zero-row outcome, which was indistinguishable from success.
+// ---------------------------------------------------------------------------
+
+/// **The RED this case is about.** `write_effective_share` was a blind
+/// `update_many` whose `UpdateResult` was dropped on the floor: a filter matching
+/// no row left the stored `effective_share_bp` at whatever it was, the act
+/// answered `Ok(())`, and a `BundleUpdated` event announced a composition whose
+/// reconciled shares were never stored. Downstream vendors are paid on that
+/// column.
+///
+/// The way in, here, is the party name. `chk_pricing_bundle_revshare_party`
+/// admits any non-empty value that is not the `platform` sentinel — it does not
+/// require a trimmed one — while `Party::new` trims on the way out
+/// (`bundle_repo::read_composition` builds every group member through it). So a
+/// row written around this repository (a data fix, a restore, a migration from
+/// another shape) reads back under a name the write cannot address, and the whole
+/// group's normalisation silently does not happen. Any other route to a
+/// non-matching `(bundle, revision, vendor_sku, party)` filter has the same
+/// ending; this one is deterministic.
+///
+/// Armed at the **zero-row** case: the reconciliation is well-formed and the
+/// event is the thing that must not be enqueued. A case that only proved the
+/// normal write still works would prove nothing about this.
+#[tokio::test]
+async fn a_reconciled_share_the_write_cannot_address_is_refused_rather_than_announced() {
+    let h = harness().await;
+    seeded(&h).await;
+
+    // The group is authored through the repository so the FK the party row needs
+    // exists and the revision is the one the publish will load.
+    h.bundles
+        .replace_composition(
+            &scope(),
+            TENANT,
+            plan(),
+            0,
+            RowVersion::new(0),
+            CompositionDraft {
+                components: vec![component(1)],
+                rev_share_groups: vec![RevShareGroup {
+                    vendor_sku_id: VENDOR,
+                    platform_cut_bp: 1_000,
+                    residual_absorber: Absorber::Platform,
+                    parties: vec![PartyShare {
+                        party: Party::new("acme").expect("party"),
+                        share_bp: 9_000,
+                    }],
+                }],
+            },
+            stamp(),
+        )
+        .await
+        .expect("author the composition");
+
+    // Now replace that party row with one the store admits and the write cannot
+    // name: the same party, spelled with the leading space no CHECK forbids.
+    let conn = h.provider.conn().expect("conn");
+    bundle_revshare::Entity::delete_many()
+        .secure()
+        .scope_with(&scope())
+        .filter(
+            Condition::all()
+                .add(bundle_revshare::Column::TenantId.eq(TENANT))
+                .add(bundle_revshare::Column::BundleId.eq(BUNDLE))
+                .add(bundle_revshare::Column::Party.eq("acme")),
+        )
+        .exec(&conn)
+        .await
+        .expect("clear the well-spelled row");
+    let padded = bundle_revshare::ActiveModel {
+        bundle_id: Set(BUNDLE),
+        plan_revision: Set(0),
+        vendor_sku_id: Set(VENDOR),
+        party: Set(" acme".to_owned()),
+        tenant_id: Set(TENANT),
+        share_bp: Set(9_000),
+        effective_share_bp: Set(None),
+    };
+    bundle_revshare::Entity::insert(padded.clone())
+        .secure()
+        .scope_with_model(&scope(), &padded)
+        .expect("scope the seed")
+        .exec(&conn)
+        .await
+        .expect("the party CHECK admits a padded name, which is the premise here");
+
+    // Sanity: the group still reconciles, so nothing below is a reconciliation
+    // refusal wearing this case's name.
+    let draft = h
+        .bundles
+        .load_composition(&scope(), TENANT, plan(), 0)
+        .await
+        .expect("read the composition");
+    assert_eq!(draft.rev_share_groups.len(), 1);
+    assert_eq!(
+        draft.rev_share_groups[0].parties[0].party.get(),
+        "acme",
+        "the read trims, which is exactly why the write addresses nothing"
+    );
+
+    let refused = h
+        .service
+        .publish_composition(&scope(), TENANT, plan(), 0, CORRELATION, at(11))
+        .await
+        .expect_err(
+            "a normalisation that stored nothing is not a publish; answering `Ok` leaves the \
+             effective column stale and the event asserts a change that did not happen",
+        );
+    let rendered = format!("{refused:?}");
+    assert!(
+        matches!(
+            refused,
+            RepoError::NotFound { .. } | RepoError::CorruptRow(_)
+        ),
+        "the refusal names the row the write could not find: {rendered}"
+    );
+    assert!(
+        rendered.contains("acme") && rendered.contains(&VENDOR.to_string()),
+        "and it names the four-column key, because that is what an operator has to look \
+         at: {rendered}"
+    );
+
+    assert_eq!(
+        stored_shares(&h).await,
+        vec![(" acme".to_owned(), 9_000, None)],
+        "the effective column is still absent, which is the state the `Ok` was hiding"
+    );
+    assert!(
+        announcements(&h).await.is_empty(),
+        "and nothing announced a composition change that never reached the store"
+    );
+}

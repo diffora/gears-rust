@@ -256,8 +256,10 @@ impl BundleService {
     /// reason.
     ///
     /// # Errors
-    /// [`RepoError::NotFound`] when the plan carries no bundle;
-    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::NotFound`] when the plan carries no bundle, and — Z9-6 —
+    /// when a reconciled share addresses no stored party row, which rolls the
+    /// whole transaction back so no `BundleUpdated` announces a normalisation
+    /// that did not land; [`RepoError::Db`] on a scope or storage failure;
     /// [`RepoError::CorruptRow`] when a group refuses reconciliation at commit
     /// time — which is a state the pre-check should have caught, so it is
     /// reported as a corrupt read rather than as a caller error.
@@ -678,6 +680,28 @@ async fn siblings_of(
 }
 
 /// Write one party's normalised effective share.
+///
+/// **The zero-row outcome is a refusal, not a success** (Z9-6). `update_many`
+/// answers `Ok` for a filter that matched nothing, and dropping its
+/// `rows_affected` made that outcome indistinguishable from a write: the stored
+/// `effective_share_bp` stayed at whatever it was, `publish_composition` returned
+/// `Ok(())`, and the `BundleUpdated` in the same transaction announced a
+/// composition whose reconciled shares were never stored. Downstream parties are
+/// paid on this column, so a normalisation that addressed no row has to be told
+/// rather than announced — the same reading `repricing_journal_repo::mark_applied`
+/// and `mark_failed` take of their own zero-row case.
+///
+/// The read behind the write is `bundle_repo::load_composition`, on a **separate**
+/// connection and before the transaction opens, so the state it described is not
+/// the state this statement runs against: a concurrent composition replace or a
+/// `plan_repo::abandon_draft` between the two leaves exactly this filter matching
+/// nothing. `Party::new` also trims, and `chk_pricing_bundle_revshare_party` does
+/// not, so a row written around this repository reads back under a name no
+/// statement here can address.
+///
+/// # Errors
+/// [`RepoError::NotFound`] naming the four-column key when no row answers to it;
+/// [`RepoError::Db`] on a scope or storage failure.
 #[allow(
     clippy::too_many_arguments,
     reason = "the row's whole four-column primary key plus the tenant, the scope \
@@ -697,7 +721,7 @@ async fn write_effective_share(
     use sea_orm::sea_query::Expr;
     use toolkit_db::secure::SecureUpdateExt;
 
-    bundle_revshare::Entity::update_many()
+    let affected = bundle_revshare::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
@@ -714,6 +738,15 @@ async fn write_effective_share(
         )
         .exec(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("write effective share: {e}")))?;
+        .map_err(|e| RepoError::Db(format!("write effective share: {e}")))?
+        .rows_affected;
+    if affected == 0 {
+        return Err(RepoError::NotFound {
+            subject: "bundle rev-share party row".to_owned(),
+            // The whole filter, because any one of the four could be the axis
+            // that missed and an operator cannot tell which from a bundle id.
+            id: format!("{bundle_id}/{revision}/{vendor_sku_id}/{party}"),
+        });
+    }
     Ok(())
 }
