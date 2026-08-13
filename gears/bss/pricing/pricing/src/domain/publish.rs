@@ -427,15 +427,33 @@ impl PublishReceipt {
         self.audit_seq
     }
 
-    /// The catalog-side `pricingSnapshotRef` this commit stamped — all three
-    /// segments (D-162).
+    /// The catalog-side `pricingSnapshotRef` segments this commit produced — all
+    /// three (D-162), composed as one value.
     ///
     /// The evaluation-policy generation is taken from the constant rather than
     /// carried in the receipt: it is the publishing gear's, not the publish's,
     /// so there is no call site that could stamp a period with a semantics its
-    /// rows were never frozen under. The version ref is still structurally
-    /// pending; `CatalogVersionPublished` finalizes it through
-    /// [`PricingSnapshotRef::finalize`].
+    /// rows were never frozen under. The version ref is structurally pending.
+    ///
+    /// **What finalizes that pending ref is not this type.** The live one-way
+    /// pin is a row compare-and-swap on `pricing_catalog_version_ref` —
+    /// [`catalog_version_ref_repo::finalize`], whose predicate is
+    /// `catalog_version IS NULL` so two sweeps resolving one handle cannot both
+    /// win — and its own doc calls
+    /// [`VersionRef::finalize`](crate::domain::snapshot::VersionRef::finalize)
+    /// "the storage-side sibling … not one mechanism and cannot be". This
+    /// sentence used to say `CatalogVersionPublished` finalizes the value
+    /// through [`PricingSnapshotRef::finalize`], which named a call no code
+    /// makes: that method has no caller outside `domain::snapshot_tests`, and a
+    /// reader following it went looking for a finalizer on the live path that is
+    /// not there.
+    ///
+    /// This constructor likewise has no consumer beyond `publish_tests` — the
+    /// segments reach the wire through `outbox_repo`'s own composition. See
+    /// [`crate::domain::snapshot`] for why the type is kept rather than built
+    /// out or deleted.
+    ///
+    /// [`catalog_version_ref_repo::finalize`]: crate::infra::storage::repo::catalog_version_ref_repo::finalize
     #[must_use]
     pub fn snapshot_ref(&self) -> PricingSnapshotRef {
         PricingSnapshotRef::new(

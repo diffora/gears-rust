@@ -17,6 +17,50 @@
 //!   resolve through the pin, which is why the finalize step is one-way: a ref
 //!   that could be re-pointed would let a later publish change what an already
 //!   posted period was priced from.
+//!
+//! # [`PricingSnapshotRef`] is the catalog-side model, and it is not on any live
+//! path
+//!
+//! Stated here because the type reads as live — it is public, it has a
+//! constructor, three accessors and a finalizer, and the two normative properties
+//! above are asserted **on it**, in `snapshot_tests`. A reader meeting it would
+//! reasonably conclude that the composition and the one-way pin have their home
+//! in this file. They do not, and the two facts a reader needs are:
+//!
+//! - **Its only producer is
+//!   [`PublishReceipt::snapshot_ref`](crate::domain::publish::PublishReceipt::snapshot_ref),
+//!   which nothing outside `domain::publish_tests` calls.** The composition that
+//!   actually reaches consumers is built beside this type, as the three keys
+//!   `pendingVersionRef` / `priceIds` / `evaluationPolicyVersion` of
+//!   [`outbox_repo`](crate::infra::storage::repo::outbox_repo)'s `PlanPublished`
+//!   payload, and the 202 body re-lists two of the three
+//!   (`api::rest::publish::PublishReceiptView`, which carries no policy version).
+//! - **[`PricingSnapshotRef::finalize`] has no caller outside
+//!   `snapshot_tests`.** The live one-way pin is a row compare-and-swap on
+//!   `pricing_catalog_version_ref`
+//!   ([`catalog_version_ref_repo::finalize`](crate::infra::storage::repo::catalog_version_ref_repo::finalize)),
+//!   which that module's own doc calls the "storage-side sibling" of
+//!   [`VersionRef::finalize`] — "not one mechanism and cannot be: that one moves
+//!   a value a caller holds, this one moves a row several sweeps can reach".
+//!
+//! **The producer is deliberately not built, and the type is deliberately not
+//! deleted.** Building one would be a design change: D-30 puts the composition
+//! system of record in Tariffs and the catalog "never stamps snapshots" —
+//! `09-price-overlays.md` §1.7 and its DoD, with the single named exception of
+//! the `migrated-origin` payload (D-102), which is per-subscription governed
+//! history served read-only on its own surface and composes nothing here. What
+//! this gear owes is the *identifiers*
+//! (`cpt-cf-bss-pricing-fr-pricing-snapshot`), and it stamps them: the pending
+//! handle and its subject in `pricing_catalog_version_ref`, the three segments in
+//! the published payload. Deleting the type would take with it the only place the
+//! aligned entry is one value rather than three keys of a `json!`.
+//!
+//! **What owes its use is `outbox_repo`'s payload build.** The day the
+//! three-segment composition needs one home — a second emitter, or a consumer
+//! that reads the entry back — this is the type it should be routed through, and
+//! `outbox_repo_tests` is where that adoption would be observed. Until then the
+//! wire spelling is guarded there and the invariants are guarded here, and the
+//! two are separate spellings of one composition.
 
 use bss_pricing_sdk::CatalogVersion;
 use toolkit_macros::domain_model;
@@ -96,6 +140,12 @@ impl VersionRef {
 /// Fields are private and [`PricingSnapshotRef::finalize`] is the only way to
 /// move the version ref, so the immutability the design set states is a
 /// property of the type rather than a convention every call site has to keep.
+///
+/// **Not on a live path** — see the module doc: the only producer is
+/// [`PublishReceipt::snapshot_ref`](crate::domain::publish::PublishReceipt::snapshot_ref),
+/// nothing consumes it outside tests, and the finalizer below has no caller
+/// outside `snapshot_tests`. The wire's composition is `outbox_repo`'s, and the
+/// live one-way pin is that module's row compare-and-swap.
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PricingSnapshotRef {
@@ -138,6 +188,13 @@ impl PricingSnapshotRef {
     }
 
     /// Finalize the version ref on `CatalogVersionPublished`.
+    ///
+    /// **No caller outside `snapshot_tests`.** The sweep that answers
+    /// `CatalogVersionPublished` today finalizes the *row*, through
+    /// [`catalog_version_ref_repo::finalize`](crate::infra::storage::repo::catalog_version_ref_repo::finalize),
+    /// and never a value of this type. Kept, not deleted: it is the domain-side
+    /// statement of the one-way pin, and the storage-side sibling's own doc
+    /// argues the two cannot be one mechanism.
     ///
     /// # Errors
     ///
