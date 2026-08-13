@@ -96,6 +96,27 @@ fn the_wire_code_is_the_one_the_design_set_declares() {
 fn a_graduated_record(bands: Vec<TierBand>, currency: CurrencyCode) -> PriceRecord {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Graduated));
     row.bands = bands;
+    a_record(row, currency)
+}
+
+/// A `per_unit` row's fixture, priced the way D-311 makes one: `amount_minor`
+/// **NULL** and the money in `unit_rate`, which is exactly what
+/// `rules::model_kind::check_amount_placement` requires of a published
+/// `per_unit` row and exactly what the pre-D-311 shared `flat`/`per_unit` arm
+/// could not reprice.
+fn a_per_unit_record(rate: RateMinor, currency: CurrencyCode) -> PriceRecord {
+    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+    row.unit_rate = Some(rate);
+    assert!(
+        row.amount_minor.is_none(),
+        "the fixture's own precondition, and the defect's whole mechanism: a published per_unit \
+         row's amount_minor is NULL, so an arm that reprices amount_minor reprices nothing"
+    );
+    a_record(row, currency)
+}
+
+/// The record wrapper both fixtures above share — everything but the row.
+fn a_record(row: PriceRow, currency: CurrencyCode) -> PriceRecord {
     PriceRecord {
         price_id: Uuid::from_u128(0xb_10),
         scope_key: ScopeKey::new(
@@ -176,6 +197,74 @@ fn an_amount_or_fixed_adjustment_leaves_every_band_at_its_published_rate() {
         assert_eq!(
             projected.row.bands[0].unit_price_rate, rate,
             "an amount/fixed adjustment computes no rate mutation, so the band stays published: \
+             {adjustment:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D-311's other stranded site: `per_unit`'s own rate.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_per_unit_rows_rate_moves_under_a_percentage_adjustment() {
+    // D-311 moved a `per_unit` row's money out of `amount_minor` into
+    // `unit_rate` and `check_amount_placement` now **requires** `amount_minor`
+    // to be NULL on one. `project_row` kept repricing `per_unit` through the
+    // shared `flat` arm, whose `and_then` over that guaranteed-`None` field
+    // short-circuits — so every `per_unit` reprice returned the row unchanged,
+    // the apply published a byte-identical successor and materiality saw a
+    // zero delta. This is that arm's own operand.
+    let currency = CurrencyCode::new("USD").expect("three letters");
+    // $0.0230777165 per unit — sub-minor-unit, and deliberately **not** a round
+    // number of nano-minor units: 2_307_770_150 x 500 bp leaves a remainder of
+    // exactly 5_000 over an **odd** quotient, so half-to-even rounds the move
+    // up to 115_388_508 where truncation would have stopped at 115_388_507. The
+    // pinned value below therefore separates four implementations at once —
+    // the no-op this defect is, a truncating one, one routed through
+    // `project_amount`'s minor-unit scale, and the correct one.
+    let published = RateMinor::from_nano_minor(2_307_770_150).expect("a non-negative rate");
+    let record = a_per_unit_record(published, currency);
+
+    let projected = project_row(record, &Adjustment::Markup(Magnitude::PercentBp(500)));
+
+    assert_eq!(
+        projected.row.unit_rate,
+        Some(RateMinor::from_nano_minor(2_423_158_658).expect("a non-negative rate")),
+        "+5% of 2_307_770_150 nano-minor is 115_388_507.5, half-to-even 115_388_508; a rate that \
+         came back at its published 2_307_770_150 is the shared-arm no-op, and 2_423_158_657 is \
+         truncation"
+    );
+    assert!(
+        projected.row.amount_minor.is_none(),
+        "the projection must not resurrect the column D-311 emptied: two priced columns are two \
+         competing prices (AMOUNT_PLACEMENT_INVALID)"
+    );
+}
+
+#[test]
+fn an_amount_or_fixed_adjustment_leaves_a_per_unit_rate_published() {
+    // `project_rate`'s refusal half, on `per_unit`'s field: a currency amount
+    // has no well-defined meaning as a rate mutation, so the row comes back at
+    // its published rate rather than at a guess — and
+    // `infra::repricing::apply_rows_in` is where that silence becomes a
+    // refusal, via `adjusts_rate`, rather than a successor identical to its
+    // predecessor marked `applied`.
+    let currency = CurrencyCode::new("USD").expect("three letters");
+    let published = RateMinor::from_nano_minor(2_307_770_150).expect("a non-negative rate");
+    let record = a_per_unit_record(published, currency.clone());
+
+    let amounts = AmountSet::new(vec![(currency, 50)]);
+    for adjustment in [
+        Adjustment::Markup(Magnitude::Amount(amounts.clone())),
+        Adjustment::Discount(Magnitude::Amount(amounts.clone())),
+        Adjustment::Fixed(amounts),
+    ] {
+        let projected = project_row(record.clone(), &adjustment);
+        assert_eq!(
+            projected.row.unit_rate,
+            Some(published),
+            "an amount/fixed adjustment computes no rate mutation, so the rate stays published: \
              {adjustment:?}"
         );
     }

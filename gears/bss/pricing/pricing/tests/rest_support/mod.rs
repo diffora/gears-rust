@@ -42,7 +42,7 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::CurrencyCode;
-use bss_pricing::domain::money::MinorAmount;
+use bss_pricing::domain::money::{MinorAmount, RateMinor};
 use bss_pricing::domain::plan::PlanRevision;
 use bss_pricing::domain::plan_shape::Frequency;
 use bss_pricing::domain::plan_shape::{
@@ -51,7 +51,7 @@ use bss_pricing::domain::plan_shape::{
 use bss_pricing::domain::ports::metrics::PricingMetricsPort;
 use bss_pricing::domain::price_record::PriceContent as PriceContentAlias;
 use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
-use bss_pricing::domain::price_row::PriceRow;
+use bss_pricing::domain::price_row::{PriceRow, QuantitySource};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
@@ -1696,6 +1696,79 @@ pub async fn seed_priced_row(
         )
         .await
         .expect("seed a draft price row")
+}
+
+/// [`seed_priced_row`]'s `per_unit` sibling: a row whose money is a **rate**.
+///
+/// A separate fixture rather than a flag on [`seed_priced_row`], because after
+/// D-311 the two kinds do not differ by a value — they differ by **which
+/// column is NULL**. `check_amount_placement` requires `amount_minor` to be
+/// absent and `unit_rate` to be present on a `per_unit` row and refuses the
+/// reverse, so a `per_unit` fixture built by setting `amount_minor` would be a
+/// row no publish accepts, and one built by setting both would be the "two
+/// competing prices" the rule exists to forbid.
+///
+/// `rate_nano_minor` is the stored 10⁻⁹-minor-unit count, stated rather than
+/// authored from a decimal literal: the suites that use this are pinning an
+/// exact projected rate, and a literal would put a scaling step between the
+/// number a test asserts and the number it seeded.
+///
+/// `quantity_source` is `subscription_seat_count` because `inst-mk-required`
+/// makes a **non-usage** `per_unit` row declare where its quantity comes from,
+/// and the seat count is the one answer that needs no second field beside it
+/// (`manual` additionally requires `manual_quantity`).
+pub async fn seed_per_unit_rate_row(
+    harness: &Harness,
+    plan_id: Uuid,
+    region: &str,
+    rate_nano_minor: i64,
+) -> PriceRecord {
+    let key = ScopeKey::new(
+        PlanId::new(plan_id),
+        CurrencyCode::new("USD").expect("currency"),
+        Region::new(region).expect("region"),
+        seeded_phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+    )
+    .expect("scope key");
+    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+    row.unit_rate = Some(RateMinor::from_nano_minor(rate_nano_minor).expect("a non-negative rate"));
+    row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
+    harness
+        .state
+        .prices
+        .create_draft(
+            &harness.scope(),
+            harness.tenant,
+            NewPriceDraft {
+                price_id: Uuid::now_v7(),
+                scope_key: key,
+                content: PriceContent {
+                    row,
+                    tax_inclusive: false,
+                    tax_category_ref: None,
+                    // `seed_priced_row`'s three clean-publish inputs, verbatim:
+                    // a fixture asserting the run's real apply needs a row the
+                    // whole aggregate rule set passes.
+                    billing_timing: Some("advance".to_owned()),
+                    proration_contract: Some(ProrationContract {
+                        billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+                        proration_basis: ProrationBasis::CalendarDaysActual,
+                        credit_on_downgrade: false,
+                    }),
+                    rounding_policy_ref: Some("half_up".to_owned()),
+                    grandfather_until: None,
+                    supersedes_price_id: None,
+                },
+                created_by: SEED_ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("seed a draft per_unit price row")
 }
 
 /// Declare one **active** customer-group taxonomy value, straight through the

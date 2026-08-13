@@ -1033,24 +1033,33 @@ async fn apply_rows_in(
             continue;
         }
 
-        // D-311: a `graduated`/`volume` band's rate is a multiplier, not an
-        // amount, and only a percentage adjustment is well-defined on one
-        // (`domain::repricing::project_rate`'s own doc). An `amount`
-        // markup/discount or a `fixed` line on such a row is refused here
-        // rather than silently applying nothing to it while the journal
-        // still reports the row `applied` — `domain::repricing::adjusts_rate`
-        // is the one predicate both this refusal and `project_rate` read.
+        // D-311: a rate is a multiplier, not an amount, and only a percentage
+        // adjustment is well-defined on one (`domain::repricing::project_rate`'s
+        // own doc). An `amount` markup/discount or a `fixed` line on a row
+        // whose money is a rate is refused here rather than silently applying
+        // nothing to it while the journal still reports the row `applied` —
+        // `domain::repricing::adjusts_rate` is the one predicate both this
+        // refusal and `project_rate` read.
+        //
+        // **Three kinds, not two.** `per_unit` prices from `unit_rate` and not
+        // from `amount_minor` after D-311 — `rules::model_kind::check_amount_placement`
+        // is the matrix, and it makes `amount_minor` NULL by rule on such a
+        // row — so a `per_unit` row under an amount/fixed adjustment is the
+        // identical silent-no-op this guard exists for. It was omitted while
+        // `project_row` still routed `per_unit` through `flat`'s arm, where
+        // the omission was invisible because *no* adjustment moved such a row.
         if matches!(
             predecessor.row.model_kind,
-            Some(ModelKind::Graduated | ModelKind::Volume)
+            Some(ModelKind::PerUnit | ModelKind::Graduated | ModelKind::Volume)
         ) && !adjusts_rate(adjustment)
         {
             return Err(DomainError::InvalidRequest(format!(
-                "price {}: a graduated/volume row's tier bands hold a rate, not an amount, and \
-                 only a percent_bp markup/discount is a well-defined mutation of one; an amount \
-                 markup/discount has no minor-unit floor to apply to a rate, and a fixed line \
-                 would collapse every band to one rate, which this run refuses rather than \
-                 guess",
+                "price {}: a per_unit row's unit rate and a graduated/volume row's tier bands \
+                 hold a rate, not an amount, and only a percent_bp markup/discount is a \
+                 well-defined mutation of one; an amount markup/discount has no minor-unit floor \
+                 to apply to a rate, and a fixed line reads a currency amount as a rate — which \
+                 would collapse a ladder to one rate and can only ever author a whole-minor-unit \
+                 one — so this run refuses rather than guess",
                 row.price_id
             )));
         }

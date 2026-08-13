@@ -198,14 +198,29 @@ impl RunSelector {
 /// negative, and a floor is itself a real, large move a threshold should see —
 /// not the absence of one.
 ///
-/// # `flat`/`per_unit`/`package`'s one field that cannot signal "not computable"
+/// # `flat`/`package`'s one field that cannot signal "not computable"
 ///
-/// `flat`/`per_unit`'s `amount_minor` and `package`'s `package_price_minor` are
-/// both `Option<MinorAmount>`, so a currency the adjustment cannot resolve is
+/// `flat`'s `amount_minor` and `package`'s `package_price_minor` are both
+/// `Option<MinorAmount>`, so a currency the adjustment cannot resolve is
 /// left `None` — [`crate::domain::materiality::delta::row_delta`] already reads
 /// an absent amount as `NotComputable("amount_minor" | "package_price_minor")`,
 /// D-115 clause (3)'s existing "no delta, so material regardless of threshold"
 /// fallback, not a new rule minted here.
+///
+/// # `per_unit` has its own arm, and `flat`'s would have repriced nothing
+///
+/// D-311 moved a `per_unit` row's money out of `amount_minor` into
+/// [`crate::domain::price_row::PriceRow::unit_rate`], and
+/// `rules::model_kind::check_amount_placement` now **requires** `amount_minor`
+/// to be NULL and `unit_rate` present on one. The two kinds shared an arm
+/// through that change, which made the arm inert rather than approximate: the
+/// `and_then` over a field guaranteed absent short-circuits, so every
+/// `per_unit` reprice returned its row unchanged — the apply superseded a
+/// published row and republished a byte-identical successor (audit record,
+/// two outbox events, journal `applied`), and `run_materiality`'s own
+/// projection saw a zero delta and skipped the approval gate on a rate change
+/// consumers do see. `per_unit`'s rate goes through [`project_rate`] for the
+/// same reason a band's does, and refuses the same magnitudes.
 ///
 /// # `graduated`/`volume`'s bands go through [`project_rate`], not [`project_amount`]
 ///
@@ -223,15 +238,33 @@ impl RunSelector {
 /// would mean there. A band [`project_rate`] refuses is left at its
 /// **published** rate, on the same "not this projection's job to decide"
 /// reading, and [`crate::infra::repricing::apply_rows_in`] is the one place
-/// that silence becomes a refusal instead — see [`adjusts_rate`].
+/// that silence becomes a refusal instead — see [`adjusts_rate`]. All of that
+/// holds verbatim for `per_unit`'s single rate, which is why the two arms
+/// share [`project_rate`] rather than each owning a copy of one formula.
 pub(crate) fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> PriceRecord {
     let currency = row.scope_key.currency().clone();
     match row.row.model_kind {
-        Some(ModelKind::Flat | ModelKind::PerUnit) => {
+        Some(ModelKind::Flat) => {
             row.row.amount_minor = row
                 .row
                 .amount_minor
                 .and_then(|amount| project_amount(amount.get(), adjustment, &currency));
+        }
+        Some(ModelKind::PerUnit) => {
+            // Its **own** arm, and the field is `unit_rate`. Sharing `flat`'s
+            // arm is the defect D-311 names, and after D-311 it was not merely
+            // imprecise but inert: `check_amount_placement` requires
+            // `amount_minor` to be NULL on a `per_unit` row, so the `and_then`
+            // above short-circuits on every published one and the row comes
+            // back byte-identical — an apply that supersedes and republishes a
+            // copy, and a materiality verdict of zero on a rate that moved.
+            if let Some(projected) = row
+                .row
+                .unit_rate
+                .and_then(|rate| project_rate(rate, adjustment))
+            {
+                row.row.unit_rate = Some(projected);
+            }
         }
         Some(ModelKind::Package) => {
             row.row.package_price_minor = row
@@ -251,9 +284,10 @@ pub(crate) fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> Pric
     row
 }
 
-/// One tier band's rate under `adjustment`, at the rate's own 10⁻⁹-minor-unit
-/// scale (D-311) — [`project_row`]'s band arithmetic, and deliberately **not**
-/// a call to [`project_amount`].
+/// One rate under `adjustment`, at the rate's own 10⁻⁹-minor-unit scale
+/// (D-311) — [`project_row`]'s arithmetic for a tier band **and** for a
+/// `per_unit` row's `unit_rate`, and deliberately **not** a call to
+/// [`project_amount`].
 ///
 /// # Why only a percentage computes
 ///
@@ -274,7 +308,11 @@ pub(crate) fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> Pric
 ///   a ladder that would collapse every band to the identical rate, which
 ///   defeats the reason the row has bands at all — not a rounding question,
 ///   a shape question, and the answer is refuse rather than flatten a tiered
-///   row into a `flat` one under a `graduated` label.
+///   row into a `graduated`-labelled `flat` row. On a `per_unit` row there is
+///   no ladder to flatten and the refusal is the *scale* argument instead:
+///   reading a minor-unit literal as a rate is the amount/rate conflation
+///   D-311 removed, and it can only ever author a rate that is a whole number
+///   of minor units — never the sub-minor-unit rate the column exists for.
 /// * `amount` markup/discount is a flat minor-unit delta. A rate has no
 ///   minor-unit floor to receive it against, and "the same delta on every
 ///   band" is only one of several policies a flat currency shift could mean
@@ -282,8 +320,8 @@ pub(crate) fn project_row(mut row: PriceRecord, adjustment: &Adjustment) -> Pric
 ///   this mechanism has no basis to make silently on an operator's behalf.
 ///
 /// Both arms return `None` unconditionally. [`project_row`] reads that as
-/// "leave this band at its published rate" — the same reading an
-/// unresolvable currency already gets on `flat`/`per_unit`/`package` — and
+/// "leave this rate at its published value" — the same reading an
+/// unresolvable currency already gets on `flat`/`package` — and
 /// [`crate::infra::repricing::apply_rows_in`] is where that silence becomes
 /// an actual refusal of the row, via [`adjusts_rate`], because an apply that
 /// commits a successor identical to its predecessor while marking the row
@@ -306,9 +344,16 @@ fn project_rate(base: RateMinor, adjustment: &Adjustment) -> Option<RateMinor> {
         .and_then(|nano| RateMinor::from_nano_minor(nano).ok())
 }
 
-/// Does `adjustment` compute a real rate mutation for a `graduated`/`volume`
-/// row's bands (D-311), or does every band stay at its published rate under
-/// it ([`project_rate`])?
+/// Does `adjustment` compute a real rate mutation for a row whose money is a
+/// **rate** — `graduated`/`volume`'s bands and `per_unit`'s `unit_rate`
+/// (D-311) — or does every such rate stay published under it
+/// ([`project_rate`])?
+///
+/// The predicate is about the *adjustment*, not the kind: which kinds price
+/// from a rate is `rules::model_kind::check_amount_placement`'s matrix, and
+/// [`crate::infra::repricing::apply_rows_in`] pairs the two. `per_unit` was
+/// absent from that pairing for as long as [`project_row`] had it sharing
+/// `flat`'s arm.
 ///
 /// `pub(crate)` for [`crate::infra::repricing::apply_rows_in`]. Materiality's
 /// own projection (`api::rest::repricing_runs::run_materiality`) is content

@@ -36,12 +36,14 @@ mod rest_support;
 use axum::http::StatusCode;
 use bss_pricing::api::rest::repricing_runs::REPRICING_RUNS;
 use bss_pricing::domain::bulk::BulkState;
+use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::domain::money::RateMinor;
 use bss_pricing::domain::scope_key::{Cohort, PriceEligibility};
 use chrono::{TimeZone, Utc};
 use rest_support::{
-    Harness, approval_rows, approve_threshold_policy, body_json, bulk_operation_row, problem_code,
-    seed_current_plan, seed_current_plan_with_phase, seed_price, seed_price_keyed, seed_priced_row,
-    with_headers,
+    Harness, approval_rows, approve_threshold_policy, body_json, bulk_operation_row, price_rows,
+    problem_code, seed_current_plan, seed_current_plan_with_phase, seed_per_unit_rate_row,
+    seed_price, seed_price_keyed, seed_priced_row, with_headers,
 };
 use uuid::Uuid;
 
@@ -945,5 +947,293 @@ async fn the_projected_amount_rounds_half_to_even_not_toward_zero() {
         Some(&serde_json::json!("thresholdReached")),
         "the real per-row comparison tripped it: {:?}",
         units[0]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-311's `per_unit` half: the money is a rate, and both the apply and the
+// materiality verdict have to see it move.
+// ---------------------------------------------------------------------------
+
+/// The rate every case below seeds, in stored 10⁻⁹ minor units — `$0.230777165`
+/// per unit.
+///
+/// Sub-minor-unit, the reason `RateMinor` exists at all, and deliberately
+/// **not** a round count of nano-minor units: `23_077_701_650 x 700 bp` is
+/// `1_615_439_115.5`, a remainder of exactly half over an **odd** quotient, so
+/// half-to-even rounds the move up to `1_615_439_116` where truncation would
+/// have stopped one nano-minor short. The pinned successor below therefore
+/// separates four implementations — the no-op this defect was, a truncating
+/// projection, one routed through `project_amount`'s coarse minor-unit scale,
+/// and the correct one.
+const PER_UNIT_RATE_NANO: i64 = 23_077_701_650;
+/// `PER_UNIT_RATE_NANO` after `+7%`, half-to-even.
+const PER_UNIT_RATE_AFTER_MARKUP_NANO: i64 = 24_693_140_766;
+/// The `percent_bp` both cases submit. The move it produces is `1.615439116`
+/// whole minor units, and the two bars below straddle it: `1` is crossed, `2`
+/// is not.
+const PER_UNIT_MARKUP_BP: i64 = 700;
+
+/// A `+7%` run over one named currency.
+fn a_markup_run(run_id: Uuid) -> serde_json::Value {
+    let mut body = a_run(run_id, &serde_json::json!({ "currency": "USD" }));
+    body["adjustment"]["adjustment_kind"] = serde_json::json!("markup");
+    body["adjustment"]["adjustment_value"] = serde_json::json!(PER_UNIT_MARKUP_BP);
+    body
+}
+
+/// **Consequence 1**: the apply writes a successor whose rate actually moved.
+///
+/// D-311 moved a `per_unit` row's money out of `amount_minor` into `unit_rate`
+/// and made `amount_minor` NULL by rule on such a row
+/// (`check_amount_placement`), while `project_row` went on repricing
+/// `per_unit` through the shared `flat` arm — an `and_then` over a field that
+/// is guaranteed absent, so it short-circuited and the row came back
+/// unchanged. The apply then superseded a published row and published a
+/// **byte-identical** successor in its place, writing the audit record, the
+/// outbox events and a journal marked `applied` for a reprice that repriced
+/// nothing.
+///
+/// The bar is `2` minor units and the move is `1.615439116`, so this run is
+/// under it and non-material — which is what makes the apply run
+/// **synchronously in this same request** (`open_repricing_run`'s own hook)
+/// and gives this case a successor to read. The assertion is on the **stored**
+/// successor's rate, never on the response: a run that reported `completed`
+/// having written a copy of its predecessor passes every weaker check.
+#[tokio::test]
+async fn a_per_unit_rows_rate_moves_through_the_apply() {
+    let harness = Harness::new().await;
+    // 2 minor units, in USD's own currency. `AmountMove::reaches_absolute`
+    // raises the bar into the move's nano-minor scale (D-311), so the
+    // comparison is `1.615439116 < 2` and the run is auto-publishable.
+    approve_threshold_policy(&harness, &[("USD", 2)]).await;
+    let plan = Uuid::now_v7();
+    seed_current_plan_with_phase(&harness, plan).await;
+    let priced = seed_per_unit_rate_row(&harness, plan, "eu", PER_UNIT_RATE_NANO).await;
+    harness.publish_price(plan, priced.price_id).await;
+    // `inst-wc-required`: the apply supersedes, and a supersession presupposes
+    // current coverage the raw publish door never schedules.
+    common::schedule_coverage_window(
+        &harness.db.conn().expect("conn"),
+        &harness.scope(),
+        harness.tenant,
+        priced.price_id,
+        rest_support::seed_stamp(),
+    )
+    .await;
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_markup_run(run_id)),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::Completed,
+        "1.615439116 minor units is under the 2-minor bar, so the run auto-publishes and its \
+         apply spends in the same request: {stored:?}"
+    );
+
+    let rows = price_rows(&harness, plan).await;
+    let successor = rows
+        .iter()
+        .find(|row| row.supersedes_price_id == Some(priced.price_id))
+        .unwrap_or_else(|| {
+            panic!("the apply writes exactly one successor for the row it superseded: {rows:?}")
+        });
+    assert_eq!(
+        successor.row.unit_rate.map(RateMinor::nano_minor),
+        Some(PER_UNIT_RATE_AFTER_MARKUP_NANO),
+        "+7% of {PER_UNIT_RATE_NANO} nano-minor is 1_615_439_115.5, half-to-even 1_615_439_116. A \
+         successor still at {PER_UNIT_RATE_NANO} is the shared-`flat`-arm no-op this case exists \
+         for -- an apply that superseded a published row and republished it unchanged while its \
+         journal said `applied`: {successor:?}"
+    );
+    assert!(
+        successor.row.amount_minor.is_none(),
+        "the successor keeps its money in the one column its kind prices from: two priced columns \
+         are AMOUNT_PLACEMENT_INVALID's two competing prices: {successor:?}"
+    );
+}
+
+/// **Consequence 2**, and the one that reaches consumers approver-free: a
+/// `per_unit` run whose rate move crosses the configured bar is judged
+/// **material** and stops for a second principal.
+///
+/// `run_materiality` projects through the same `project_row`, so while that
+/// function left `unit_rate` alone every `per_unit` row's delta was a rate
+/// compared against itself — zero, under every bar — and the run skipped the
+/// approval gate entirely on its way to `committing`. The fixture is the same
+/// row and the same `+7%` as the case above; only the bar differs, `1` minor
+/// unit instead of `2`, and `1.615439116 >= 1`. A projection that leaves the
+/// rate published answers `autoPublishable` here whatever the bar says, so
+/// this case is red against the defect and green only against a real
+/// comparison.
+#[tokio::test]
+async fn a_per_unit_runs_rate_move_crosses_the_configured_threshold() {
+    let harness = Harness::new().await;
+    approve_threshold_policy(&harness, &[("USD", 1)]).await;
+    let plan = Uuid::now_v7();
+    seed_current_plan_with_phase(&harness, plan).await;
+    let priced = seed_per_unit_rate_row(&harness, plan, "eu", PER_UNIT_RATE_NANO).await;
+    harness.publish_price(plan, priced.price_id).await;
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_markup_run(run_id)),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::AwaitingApproval,
+        "the rate moves 1.615439116 minor units and the bar is 1: a run that reached `committing` \
+         here is one whose projection never moved the rate, so its delta was zero and it skipped \
+         the approval gate on a change consumers do see: {stored:?}"
+    );
+
+    let units: Vec<_> = approval_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation" && row.subject_ref == operation_id)
+        .collect();
+    assert_eq!(
+        units.len(),
+        1,
+        "crossing the bar opens exactly one unit: {units:?}"
+    );
+    assert_eq!(
+        units[0].materiality.get("reason"),
+        Some(&serde_json::json!("thresholdReached")),
+        "the real per-currency comparison tripped it, not the no-policy fail-safe -- a policy is \
+         configured here precisely so the fail-safe cannot supply this verdict: {:?}",
+        units[0]
+    );
+}
+
+/// The refusal half, on `per_unit`'s field: an adjustment that computes **no**
+/// rate mutation must fail the row rather than mark it `applied` over a
+/// successor identical to its predecessor.
+///
+/// `project_rate` returns `None` for an `amount` markup/discount and for a
+/// `fixed` line, and `project_row` reads that as "leave the rate published" —
+/// which on the apply side is indistinguishable from the defect above unless
+/// something refuses. `apply_rows_in` is that something, and its `matches!`
+/// named `graduated`/`volume` only: the arm that would have caught `per_unit`
+/// was never reached, because while `per_unit` shared `flat`'s arm no
+/// adjustment of any kind moved such a row and the omission showed up as
+/// nothing.
+///
+/// A `fixed` line is the sharpest case: it is the one adjustment that reads a
+/// currency minor-unit literal as a price outright, and applied to a rate it
+/// would silently reinterpret `$0.50` as a rate scale that can never express
+/// the sub-minor-unit value the column exists for.
+#[tokio::test]
+async fn a_fixed_adjustment_fails_a_per_unit_row_rather_than_applying_nothing_to_it() {
+    let harness = Harness::new().await;
+    // A bar the zero delta this adjustment projects can never reach, so the run
+    // is judged non-material and its apply spends in the same request — which
+    // is what puts the refusal under test rather than the approval gate.
+    approve_threshold_policy(&harness, &[("USD", 1_000_000)]).await;
+    let plan = Uuid::now_v7();
+    seed_current_plan_with_phase(&harness, plan).await;
+    let priced = seed_per_unit_rate_row(&harness, plan, "eu", PER_UNIT_RATE_NANO).await;
+    harness.publish_price(plan, priced.price_id).await;
+    common::schedule_coverage_window(
+        &harness.db.conn().expect("conn"),
+        &harness.scope(),
+        harness.tenant,
+        priced.price_id,
+        rest_support::seed_stamp(),
+    )
+    .await;
+
+    let run_id = Uuid::now_v7();
+    let mut body = a_run(run_id, &serde_json::json!({ "currency": "USD" }));
+    body["adjustment"] = serde_json::json!({
+        "adjustment_kind": "fixed",
+        "magnitude_kind": "amount",
+        "amounts": [{ "currency": "USD", "value_minor": 50 }],
+    });
+    let response = harness
+        .allowed()
+        .send(with_headers("POST", REPRICING_RUNS, Some(body), &[]))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::CompletedWithConflicts,
+        "a row this run cannot honestly reprice is a conflict, not a success: {stored:?}"
+    );
+
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &run_path(run_id), None, &[]))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let run = body_json(read).await;
+    let journal = run["journal"].as_array().expect("a journal");
+    assert_eq!(journal.len(), 1, "one selected row: {run}");
+    assert_eq!(
+        journal[0]["state"],
+        serde_json::json!("failed"),
+        "the row is `failed`, and an `applied` here is the silent no-op this guard exists for -- \
+         a successor byte-identical to its predecessor under a journal reporting success: {run}"
+    );
+    assert!(
+        journal[0]["failure_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("rate")),
+        "the reason names the thing the operator has to reconsider: {run}"
+    );
+
+    let rows = price_rows(&harness, plan).await;
+    assert!(
+        rows.iter()
+            .all(|row| row.supersedes_price_id != Some(priced.price_id)),
+        "a refused row is superseded by nothing: {rows:?}"
+    );
+    let predecessor = rows
+        .iter()
+        .find(|row| row.price_id == priced.price_id)
+        .expect("the seeded row is still there");
+    assert_eq!(
+        predecessor.lifecycle_state,
+        LifecycleState::Published,
+        "and it is still the published occupant of its key: {predecessor:?}"
+    );
+    assert_eq!(
+        predecessor.row.unit_rate.map(RateMinor::nano_minor),
+        Some(PER_UNIT_RATE_NANO),
+        "at the rate it was published with: {predecessor:?}"
     );
 }
