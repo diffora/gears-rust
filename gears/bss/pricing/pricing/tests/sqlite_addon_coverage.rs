@@ -271,6 +271,60 @@ async fn a_grandfathered_row_is_not_coverage() {
     assert_eq!(markets(&provider).await, Vec::<String>::new());
 }
 
+/// **The exclusion is the predicate's, not an empty read's** — Z13-1's fail-open
+/// site.
+///
+/// `a_grandfathered_row_is_not_coverage` above cannot tell "the grandfathered row
+/// was excluded" from "no row was read at all", because both answer the empty
+/// set. The eligibility predicate is the crate's only `.ne()` over this
+/// vocabulary, so it is the one member of the hand-spelled-token class that fails
+/// **open**: a spelling that stops matching the stored token makes it match every
+/// row, and a grandfathered row then counts as add-on coverage and lets an
+/// `inst-cb-addon` publish through that D-95 requires refused.
+///
+/// So the refusal gets its positive control in the same fixture: one market
+/// covered by an eligible row, one market covered only by a grandfathered one.
+/// The market that must not appear is named beside a market that must, which is
+/// what makes a drifted token show up as a wrong answer rather than as a
+/// coincidentally equal one.
+#[tokio::test]
+async fn a_grandfathered_rows_market_is_excluded_beside_a_sibling_that_covers() {
+    let provider = provider().await;
+    seed_plan(&provider, TENANT, 0xa1, "published").await;
+    seed_row(
+        &provider,
+        RowSpec {
+            tenant: TENANT,
+            plan_id: 0xa1,
+            price_id: 0xb1,
+            currency: "EUR",
+            region: "eu",
+            state: "published",
+            eligibility: "all_subscriptions",
+        },
+    )
+    .await;
+    seed_row(
+        &provider,
+        RowSpec {
+            tenant: TENANT,
+            plan_id: 0xa1,
+            price_id: 0xb2,
+            currency: "USD",
+            region: "us",
+            state: "published",
+            eligibility: "existing_grandfathered",
+        },
+    )
+    .await;
+
+    assert_eq!(
+        markets(&provider).await,
+        ["EUR/eu"],
+        "USD/us is covered only by a grandfathered row, which is not coverage"
+    );
+}
+
 /// Another tenant's plan selling the same SKU contributes nothing.
 #[tokio::test]
 async fn a_foreign_tenants_plan_does_not_cover_this_tenants_addon() {

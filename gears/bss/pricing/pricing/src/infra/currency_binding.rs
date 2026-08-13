@@ -38,30 +38,16 @@ use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
 use uuid::Uuid;
 
 use crate::domain::currency_binding::{AddonCoverage, Market};
+use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
-use crate::domain::scope_key::Region;
+use crate::domain::scope_key::{PriceEligibility, Region};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{plan, price};
+use crate::infra::storage::repo::plan_repo;
 
 /// What each add-on SKU covers, as this module assembles it.
 type CoverageBySku = BTreeMap<Uuid, BTreeSet<Market>>;
-
-/// The lifecycle states a plan revision is **current** in.
-///
-/// Both, because `published` and `retired` are both current (D-31): a retired
-/// plan's rows keep resolving for in-flight subscribers, so an add-on on a
-/// retired plan still covers what it covered. Reading `retired` as "not
-/// published" here would make every required add-on on a retired plan look
-/// uncovered and block its base plan's remediation publish — the exact shape D-31
-/// forbids.
-const CURRENT_PLAN_STATES: &[&str] = &["published", "retired"];
-
-/// The row state that counts as coverage.
-const PUBLISHED: &str = "published";
-
-/// The `existing_grandfathered` token, excluded on both sides of the comparison.
-const GRANDFATHERED: &str = "existing_grandfathered";
 
 /// Resolve the markets each of `shape`'s add-on SKUs covers.
 ///
@@ -98,7 +84,14 @@ pub async fn addon_coverage(
             Condition::all()
                 .add(plan::Column::TenantId.eq(tenant_id))
                 .add(plan::Column::SkuId.is_in(skus.iter().copied()))
-                .add(plan::Column::LifecycleState.is_in(CURRENT_PLAN_STATES.iter().copied())),
+                // `published` **and** `retired`, because both are current
+                // (D-31): a retired plan's rows keep resolving for in-flight
+                // subscribers, so an add-on on a retired plan still covers what
+                // it covered, and reading `retired` as "not published" would
+                // block its base plan's remediation publish. Derived from
+                // `LifecycleState::is_current_revision` rather than written out,
+                // so a widening of that predicate moves this query with it.
+                .add(plan::Column::LifecycleState.is_in(plan_repo::current_tokens())),
         )
         .all(runner)
         .await
@@ -122,8 +115,18 @@ pub async fn addon_coverage(
             Condition::all()
                 .add(price::Column::TenantId.eq(tenant_id))
                 .add(price::Column::PlanId.is_in(plan_to_sku.keys().copied()))
-                .add(price::Column::LifecycleState.eq(PUBLISHED))
-                .add(price::Column::PriceEligibility.ne(GRANDFATHERED)),
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
+                // **The one `.ne()` over this vocabulary in the crate**, which is
+                // what made a hand-spelled token here fail *open*: a spelling
+                // that stopped matching the stored one would match every row and
+                // count grandfathered rows as coverage, letting an
+                // `inst-cb-addon` publish through that D-95 requires refused.
+                // Every `.eq()` sibling drifts to zero rows and is loud. So this
+                // predicate renders through the enum that owns the token.
+                .add(
+                    price::Column::PriceEligibility
+                        .ne(PriceEligibility::ExistingGrandfathered.as_str()),
+                ),
         )
         .all(runner)
         .await

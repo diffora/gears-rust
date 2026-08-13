@@ -1597,7 +1597,11 @@ fn revision_model(
 /// so widening or narrowing that predicate moves this query with it. D-128
 /// widened it once already, and the version of this list that did not move would
 /// have been the one silently returning `None` for every retired plan.
-fn current_tokens() -> Vec<&'static str> {
+///
+/// `pub(crate)` because `infra::currency_binding` asks the same question of the
+/// same column — which plan revisions still sell an add-on — and a second
+/// derivation of "current" is a second rule free to disagree with this one.
+pub(crate) fn current_tokens() -> Vec<&'static str> {
     LifecycleState::ALL
         .iter()
         .copied()
